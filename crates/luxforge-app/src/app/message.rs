@@ -10,6 +10,7 @@ pub(crate) mod action;
 pub(crate) mod capability;
 pub(crate) mod control;
 pub(crate) mod copy_settings;
+pub(crate) mod corrections;
 pub(crate) mod crop;
 pub(crate) mod develop;
 pub(crate) mod draft;
@@ -34,6 +35,7 @@ pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
+pub(crate) mod usage;
 pub(crate) mod view;
 pub(crate) mod visibility;
 
@@ -58,6 +60,7 @@ pub(crate) enum Message {
     Crop(crop::CropMessage),
     /// One Masks-panel change.
     Mask(mask::MaskMessage),
+    Corrections(corrections::CorrectionMessage),
     /// One decision about, or owner answer for, the open slider or mask gesture's core draft.
     Draft(draft::DraftMessage),
     /// One Presets-section change.
@@ -68,6 +71,8 @@ pub(crate) enum Message {
     Performance(performance::PerformanceMessage),
     /// One Settings sheet gesture or answer.
     Settings(settings::SettingsMessage),
+    /// Usage statistics: the startup notice and the Privacy tab.
+    Usage(usage::UsageMessage),
     /// An owner answer to the desktop's preference writer or to a read of the preferences.
     Preferences(preferences::PreferenceMessage),
     /// One Appearance-tab gesture or theme library answer.

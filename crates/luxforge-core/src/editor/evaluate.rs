@@ -201,6 +201,11 @@ impl Evaluation {
         self
     }
 
+    /// The RAW sensor this evaluation holds, shared, for another evaluation of the same source.
+    pub(crate) fn sensor_arc(&self) -> Option<Arc<dyn crate::tiles::SensorClip>> {
+        self.sensor.clone()
+    }
+
     /// The RAW sensor this evaluation holds, when it was given one.
     pub(crate) fn sensor(&self) -> Option<&dyn crate::tiles::SensorClip> {
         self.sensor.as_deref()
@@ -881,7 +886,7 @@ mod tests {
     use super::*;
     use crate::PreviewQueue;
     use crate::editor::test_support::{
-        SHRINK_ACTION, ShrinkModule, fixture, mutation, shrink, temp,
+        SAMPLE_ACTION, SHRINK_ACTION, SampleModule, ShrinkModule, fixture, mutation, shrink, temp,
     };
 
     fn geometry_photo() -> std::path::PathBuf {
@@ -1228,7 +1233,7 @@ mod tests {
         let asset = service.import(&fixture()).unwrap().asset.id;
         let original = service.render_current(&asset).unwrap().pixel(0, 0).unwrap();
         service
-            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "pixel"), 0.1)
             .unwrap();
         service
             .apply_action(
@@ -1256,7 +1261,6 @@ mod tests {
             (480, 320),
             "one layer renders the crop's input stage"
         );
-        assert_eq!(prefix.pixel(0, 0), Some([1, 2, 3, 255]));
         let none = rendered(&service, Some(0));
         assert_eq!((none.width, none.height), (480, 320));
         assert_eq!(none.pixel(0, 0), Some(original), "no layer, no edit");
@@ -1332,7 +1336,7 @@ mod tests {
         let asset = imported.asset.id;
         let original = imported.current_entry.id;
         service
-            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "pixel"), 0.1)
             .unwrap();
         service
             .apply_action(
@@ -1501,8 +1505,7 @@ mod tests {
                 .unwrap();
             asset
         };
-        let mut service =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
+        let mut service = EditorService::open_with(&catalog, SampleModule::registry()).unwrap();
         let state = service.state(&asset).unwrap();
         let original = service.history(&asset, None, 10).unwrap().entries[1].clone();
         assert_eq!(original.action_id, "original");
@@ -1519,17 +1522,17 @@ mod tests {
         assert_eq!(refused.kind, ErrorKind::PreparationRequired);
         assert_eq!(refused.needs(), Some(&needs(&original.id)));
 
-        // A pixel replacement compares the pixel it would replace, so its plan samples.
+        // A plan that samples a pixel needs the original, so its commit and its draft are refused.
         let refused = service
-            .apply_pixel(&asset, mutation(1, "pixel"), 0, 0, [1, 2, 3])
+            .apply_action(
+                &asset,
+                mutation(1, "sample"),
+                SAMPLE_ACTION,
+                serde_json::json!({}),
+            )
             .unwrap_err();
         assert_eq!(refused.needs(), Some(&needs(&state.current_entry.id)));
-        let mut draft = Draft::new("set-pixel", asset.clone(), 1);
-        draft.merge(serde_json::Map::from_iter([
-            ("x".to_owned(), serde_json::json!(0)),
-            ("y".to_owned(), serde_json::json!(0)),
-            ("rgb".to_owned(), serde_json::json!([1, 2, 3])),
-        ]));
+        let draft = Draft::new(SAMPLE_ACTION, asset.clone(), 1);
         let refused = service.draft_recipe(&asset, &draft).unwrap_err();
         assert_eq!(refused.needs(), Some(&needs(&state.current_entry.id)));
 

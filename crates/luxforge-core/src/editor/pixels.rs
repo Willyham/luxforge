@@ -104,6 +104,12 @@ pub(crate) enum PixelRead {
         id: String,
         parameters: Map<String, Value>,
     },
+    /// A bounded region of a stage ([`crate::tiles::region`]), which only a query reads, and only
+    /// on the tile service: deferring one defers the query that asked, which its dispatcher then
+    /// asks of the tile service whole. It is never answered on its own.
+    Region {
+        index: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -251,6 +257,9 @@ impl DeferredRead {
             evaluation,
         } = self;
         match read {
+            PixelRead::Region { .. } => Err(Error::internal(
+                "a region read is answered inside the query that asked for it",
+            )),
             PixelRead::Point { index, x, y } => {
                 let stage = TileStage::new(&evaluation, reads, cancel);
                 let value = PixelValue::Point {
@@ -437,6 +446,7 @@ impl EditorService {
         let index = match &read {
             PixelRead::Point { index, .. } => *index,
             PixelRead::Query { .. } => recipe.layers.len(),
+            PixelRead::Region { index } => (*index).min(recipe.layers.len()),
         };
         let prefix = super::prefix(&recipe.layers, index)?;
         let mut hash = Sha256::new();
@@ -629,7 +639,7 @@ impl QueryPlan {
             }
         };
         let context = self.evaluation.context().clone();
-        let answered = held.1.answered.clone();
+        let answered = held.answered().clone();
         Ok(Step::then(context, move |_cancel| {
             let questions = HeldGrid {
                 evaluation: &self.evaluation,
@@ -721,14 +731,35 @@ pub(crate) struct TileStage<'a> {
     session: RefCell<Box<dyn TileSession + 'a>>,
     /// The renderer that drew the latest read.
     answered: RefCell<Option<Answered>>,
-    /// Whether a grid read is held here for the analysis worker rather than answered
-    /// ([`Self::holding_grids`]), and the grid held.
+    /// Whether a grid or region read is held here for the analysis worker rather than answered
+    /// ([`Self::holding_grids`]), and the read held.
     holding: bool,
-    held: RefCell<Option<(usize, crate::tiles::GridRead)>>,
+    held: RefCell<Option<Held>>,
 }
 
-/// What a query's first pass answers in place of the grid it reads when the grid is held for the
-/// analysis worker ([`QueryPlan::evaluate_steps`]): the pass's answer is discarded.
+/// The one read a query's first pass made on the tile service and holds for the analysis worker,
+/// which asks the query again over it ([`QueryPlan::evaluate_steps`]).
+enum Held {
+    /// The sample grid of the stage this layer receives.
+    Grid(usize, crate::tiles::GridRead),
+    /// A bounded region, with the request it answers.
+    Region(
+        Box<crate::tiles::region::RegionRequest>,
+        crate::tiles::region::RegionRead,
+    ),
+}
+
+impl Held {
+    fn answered(&self) -> &Answered {
+        match self {
+            Self::Grid(_, read) => &read.answered,
+            Self::Region(_, read) => &read.answered,
+        }
+    }
+}
+
+/// What a query's first pass answers in place of the grid or region it reads when the read is held
+/// for the analysis worker ([`QueryPlan::evaluate_steps`]): the pass's answer is discarded.
 const GRID_HELD: &str = "sample grid read; its analysis continues on the analysis worker";
 
 impl<'a> TileStage<'a> {
@@ -748,8 +779,8 @@ impl<'a> TileStage<'a> {
         }
     }
 
-    /// These questions, keeping the first sample grid a query reads rather than answering it, so
-    /// the query stops there and is asked again over the grid on the analysis worker.
+    /// These questions, keeping the first sample grid or region a query reads rather than answering
+    /// it, so the query stops there and is asked again over the read on the analysis worker.
     fn holding_grids(mut self) -> Self {
         self.holding = true;
         self
@@ -796,10 +827,27 @@ impl StageQuestions for TileStage<'_> {
         let read = crate::tiles::grid::read(self.evaluation, index, self.reads, self.cancel)?;
         *self.answered.borrow_mut() = Some(read.answered.clone());
         if self.holding {
-            *self.held.borrow_mut() = Some((index, read));
+            *self.held.borrow_mut() = Some(Held::Grid(index, read));
             return Err(Error::internal(GRID_HELD));
         }
         Ok(read)
+    }
+
+    fn region_before(
+        &self,
+        request: &crate::tiles::region::RegionRequest,
+    ) -> Result<crate::tiles::region::RegionRead, Error> {
+        let read = crate::tiles::region::read(self.evaluation, request, self.reads, self.cancel)?;
+        *self.answered.borrow_mut() = Some(read.answered.clone());
+        if self.holding {
+            *self.held.borrow_mut() = Some(Held::Region(Box::new(request.clone()), read));
+            return Err(Error::internal(GRID_HELD));
+        }
+        Ok(read)
+    }
+
+    fn strokes(&self) -> Option<&crate::path::StrokeTable> {
+        Some(&self.evaluation.recipe().strokes)
     }
 
     fn stage_before(&self, index: usize) -> Result<Stage, Error> {
@@ -843,17 +891,31 @@ fn stage_before(evaluation: &Evaluation, index: usize) -> Result<Stage, Error> {
 /// nothing more.
 struct HeldGrid<'a> {
     evaluation: &'a Evaluation,
-    held: RefCell<Option<(usize, crate::tiles::GridRead)>>,
+    held: RefCell<Option<Held>>,
 }
 
 impl StageQuestions for HeldGrid<'_> {
     fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
         match self.held.take() {
-            Some((read, grid)) if read == index => Ok(grid),
+            Some(Held::Grid(read, grid)) if read == index => Ok(grid),
             _ => Err(Error::internal(
                 "an analysis asked again for a sample grid the tile service did not read for it",
             )),
         }
+    }
+    fn region_before(
+        &self,
+        request: &crate::tiles::region::RegionRequest,
+    ) -> Result<crate::tiles::region::RegionRead, Error> {
+        match self.held.take() {
+            Some(Held::Region(read, region)) if *read == *request => Ok(region),
+            _ => Err(Error::internal(
+                "an analysis asked again for a region the tile service did not read for it",
+            )),
+        }
+    }
+    fn strokes(&self) -> Option<&crate::path::StrokeTable> {
+        Some(&self.evaluation.recipe().strokes)
     }
     fn stage_before(&self, index: usize) -> Result<Stage, Error> {
         stage_before(self.evaluation, index)

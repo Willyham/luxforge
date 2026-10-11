@@ -20,6 +20,7 @@ mod grid;
 mod plan;
 mod preview;
 mod program;
+pub(crate) mod repair;
 mod spatial;
 mod sweeps;
 pub(crate) mod tiles;
@@ -67,10 +68,14 @@ pub(crate) use preview::{plan_preview_reducing, plan_rest, plan_warm_list};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};
+pub use repair::{
+    GpuReadAtlas, GpuRepair, GpuRepairOperation, REPAIR_ATLAS_SIDE, REPAIR_LEVEL_BYTES,
+    REPAIR_PASSES_MAX,
+};
 pub use spatial::{
     GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuLight, GpuLightInput,
     GpuLightPasses, GpuLightRestoration, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat,
-    GpuPlaneSize, GpuSpatial, GpuSpatialUnit, gpu_lights,
+    GpuPlaneSize, GpuResident, GpuSpatial, GpuSpatialUnit, gpu_lights,
 };
 pub(crate) use spatial::{Word, Words};
 pub use sweeps::{

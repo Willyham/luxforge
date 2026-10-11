@@ -55,18 +55,6 @@ impl ExactGeometry {
         }
     }
 
-    /// Where an input-stage point lands, or `None` when it falls outside the output stage: a point
-    /// replacement cropped away later is simply not visible.
-    pub(super) fn map(self, x: u32, y: u32) -> Option<(u32, u32)> {
-        let out_x = self.a * i64::from(x) + self.b * i64::from(y) + self.tx;
-        let out_y = self.c * i64::from(x) + self.d * i64::from(y) + self.ty;
-        let inside = out_x >= 0
-            && out_x < i64::from(self.output_width)
-            && out_y >= 0
-            && out_y < i64::from(self.output_height);
-        inside.then_some((out_x as u32, out_y as u32))
-    }
-
     /// Whether every output pixel of this mapping reads a pixel that exists in the given input
     /// stage. A module declares its own exact step, so the host checks it before any pass reads a
     /// frame through it: the image of the output rectangle is a rectangle, so its corners decide.

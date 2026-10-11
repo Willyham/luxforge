@@ -385,7 +385,6 @@ impl Step {
     }
 
     /// The step as the script writes it.
-    #[cfg(test)]
     pub fn script(&self) -> Option<Value> {
         self.script.as_ref().map(script::Step::to_value)
     }
@@ -608,7 +607,6 @@ impl Plan {
         plan
     }
 
-    #[cfg(test)]
     pub fn steps(&self) -> &[Step] {
         &self.steps
     }

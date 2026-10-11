@@ -3,11 +3,12 @@
 //! and, with the host's three differences, for the host's own descriptors.
 use super::chord::{Chord, host_chord};
 use super::types::{
-    ActionControl, ActionDescriptor, CanvasInteraction, ChoiceControl, ColorControl, Control,
-    CurveControl, EffectStage, GroupControl, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
-    NumberControl, PRESET_SETTINGS, ParameterDescriptor, ParameterKind, PickerControl,
-    PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN,
-    TaskControl, ToggleControl, ViewControl, WheelControl,
+    ActionControl, ActionDescriptor, BrushEdit, BrushSource, CanvasInteraction, ChoiceControl,
+    ColorControl, Control, CurveControl, EffectStage, GroupControl, IdentityKind, MAX_OPERATIONS,
+    MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout, NumberControl, PRESET_SETTINGS,
+    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, QueryChoiceControl,
+    RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN, TaskControl, ToggleControl,
+    ViewControl, WheelControl,
 };
 use super::values::check_value;
 use crate::Error;
@@ -104,6 +105,24 @@ impl ModuleDescriptor {
                     repeated.label()
                 )));
             }
+            if let Some(operations) = effect.operations {
+                // The list is one layer's, addressed by the one identity a module may mint.
+                if !effect.single
+                    || !(1..=MAX_OPERATIONS).contains(&operations.max)
+                    || operations.identity != IdentityKind::Correction
+                {
+                    return Err(Error::validation(format!(
+                        "effect {} declares operations {{identity: {}, max: {}}}; an operation \
+                         list is a single effect's, of at most 1..={MAX_OPERATIONS} corrections",
+                        effect.id,
+                        serde_json::to_value(operations.identity)
+                            .ok()
+                            .and_then(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_default(),
+                        operations.max
+                    )));
+                }
+            }
             // A mask is stored in content-stage coordinates, so an effect whose input is not that
             // content stage has nothing to read one in: a geometry effect changes the stage and a
             // finish effect is defined in the output coordinates the geometry tail produced.
@@ -137,6 +156,9 @@ impl ModuleDescriptor {
                     query.id
                 )));
             }
+        }
+        if declarer == Declarer::Module {
+            self.check_operation_identities()?;
         }
         let mut chords = HashSet::new();
         for action in &self.actions {
@@ -319,9 +341,233 @@ impl ModuleDescriptor {
                 // Fitting a ratio needs the draft angle, so the fit action declares one too.
                 self.canvas_number(fit, angle)?;
             }
+            Some(CanvasInteraction::BrushMask {
+                action,
+                points,
+                radius,
+                feather,
+                opacity,
+                mode,
+                source,
+                edit,
+                title,
+                shortcut,
+                icon,
+            }) => {
+                self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
+                self.check_brush(
+                    action,
+                    points,
+                    radius,
+                    [feather, opacity, mode],
+                    source.as_ref(),
+                    edit.as_ref(),
+                )?;
+            }
             None => {}
         }
         Ok(())
+    }
+
+    /// Every binding of a declared brush ([`CanvasInteraction::BrushMask`]): each named parameter
+    /// exists on its action with the kind it binds — the path a `points` parameter, the radius and
+    /// the source coordinates `number`s, feather and opacity a `number` or an `integer`, the mode an
+    /// `enum` — no name is bound twice, the queries are declared, and the edit is a field patch
+    /// whose identity parameter is required and of the identity an effect's operation list
+    /// declares, and which declares the path, the radius and the source as the action does, so a
+    /// dragged value is valid for both. A new path is added whole and names no operation, and is
+    /// one photograph's geometry, so the action is not a patch, declares no identity and is not
+    /// presettable.
+    fn check_brush(
+        &self,
+        action: &str,
+        points: &str,
+        radius: &str,
+        settings: [&Option<String>; 3],
+        source: Option<&BrushSource>,
+        edit: Option<&BrushEdit>,
+    ) -> Result<(), Error> {
+        let [feather, opacity, mode] = settings;
+        let numbers: Vec<&str> = std::iter::once(radius)
+            .chain(
+                source
+                    .into_iter()
+                    .flat_map(|source| [&*source.x, &*source.y]),
+            )
+            .collect();
+        let named: Vec<&str> = std::iter::once(points)
+            .chain(numbers.iter().copied())
+            .chain(
+                [feather, opacity, mode]
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            )
+            .collect();
+        let mut bound = HashSet::with_capacity(named.len());
+        if let Some(twice) = named.iter().find(|name| !bound.insert(**name)) {
+            return Err(Error::validation(format!(
+                "brush-mask canvas of module {} binds parameter {twice} twice",
+                self.id
+            )));
+        }
+        let add = self.declared_action(action)?;
+        if add.patch {
+            return Err(Error::validation(format!(
+                "brush-mask action {action} is a field patch; a painted path is added whole"
+            )));
+        }
+        if add.preset {
+            return Err(Error::validation(format!(
+                "brush-mask action {action} paints one photograph's path and must declare \
+                 preset: false"
+            )));
+        }
+        if let Some(identity) = add
+            .parameters
+            .iter()
+            .find(|parameter| parameter.kind.is_identity())
+        {
+            return Err(Error::validation(format!(
+                "brush-mask action {action} declares identity {}; a new path names no operation",
+                identity.name
+            )));
+        }
+        let setting = |declared: &ActionDescriptor, name: &str| -> Result<(), Error> {
+            let parameter = self.declared_parameter(declared, name)?;
+            if matches!(
+                parameter.kind,
+                ParameterKind::Number { .. } | ParameterKind::Integer { .. }
+            ) {
+                Ok(())
+            } else {
+                Err(Error::validation(format!(
+                    "canvas parameter {name} of action {} is not a number or an integer",
+                    declared.id
+                )))
+            }
+        };
+        self.canvas_points(add, points)?;
+        for name in &numbers {
+            self.canvas_number(add, name)?;
+        }
+        for name in [feather, opacity].into_iter().flatten() {
+            setting(add, name)?;
+        }
+        if let Some(mode) = mode
+            && !matches!(
+                self.declared_parameter(add, mode)?.kind,
+                ParameterKind::Enum { .. }
+            )
+        {
+            return Err(Error::validation(format!(
+                "canvas parameter {mode} of action {action} is not an enum"
+            )));
+        }
+        if let Some(source) = source {
+            self.declared_query(&source.query)?;
+        }
+        let Some(edit) = edit else {
+            return Ok(());
+        };
+        self.declared_query(&edit.list)?;
+        let patch = self.declared_action(&edit.action)?;
+        if !patch.patch {
+            return Err(Error::validation(format!(
+                "brush-mask edit {} is not a field patch",
+                edit.action
+            )));
+        }
+        let identity = self.declared_parameter(patch, &edit.operation)?;
+        let declared_list = identity.kind.module_identity().is_some_and(|kind| {
+            self.effects.iter().any(|effect| {
+                effect
+                    .operations
+                    .is_some_and(|operations| operations.identity == kind)
+            })
+        });
+        if !identity.required || !declared_list {
+            return Err(Error::validation(format!(
+                "brush-mask edit {} does not require parameter {} as the identity of an \
+                 operation list module {} declares",
+                edit.action, edit.operation, self.id
+            )));
+        }
+        // What a pin, source or size drag sends must mean on the edit what it means on the add;
+        // a setting the edit declares too must agree as well.
+        let dragged = std::iter::once(points).chain(numbers.iter().copied());
+        let settings = [feather, opacity, mode]
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|name| patch.parameter(name).is_some());
+        for name in dragged.chain(settings) {
+            if self.declared_parameter(patch, name)?.kind
+                != self.declared_parameter(add, name)?.kind
+            {
+                return Err(Error::validation(format!(
+                    "brush-mask parameter {name} of edit {} is not declared as action {action} \
+                     declares it",
+                    edit.action
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// A module action or query may name a correction only when one of the module's effects
+    /// declares the operation list that identity addresses ([`EffectDescriptor::operations`]): the
+    /// module resolves it against that list, so without one there is nothing it could name.
+    fn check_operation_identities(&self) -> Result<(), Error> {
+        if let Some(action) = self.actions.iter().find(|action| action.accepts_candidate)
+            && !self.effects.iter().any(|effect| effect.artifacts)
+        {
+            return Err(Error::validation(format!(
+                "action {} accepts a candidate, but no effect of module {} declares artifacts",
+                action.id, self.id
+            )));
+        }
+        for (kind, declared) in self
+            .actions
+            .iter()
+            .map(|action| ("action", action))
+            .chain(self.queries.iter().map(|query| ("query", query)))
+        {
+            for parameter in &declared.parameters {
+                let Some(identity) = parameter.kind.module_identity() else {
+                    continue;
+                };
+                if !self.effects.iter().any(|effect| {
+                    effect
+                        .operations
+                        .is_some_and(|operations| operations.identity == identity)
+                }) {
+                    return Err(Error::validation(format!(
+                        "parameter {} of {kind} {} names {}, but no effect of module {} declares \
+                         an operation list of that identity",
+                        parameter.name,
+                        declared.id,
+                        identity.with_article(),
+                        self.id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A brush's path parameter is a declared `points` path, bounded by the host's per-stroke limit
+    /// ([`check_declaration`] has already held its bounds to that limit).
+    fn canvas_points(&self, action: &ActionDescriptor, name: &str) -> Result<(), Error> {
+        let parameter = self.declared_parameter(action, name)?;
+        if matches!(parameter.kind, ParameterKind::Points { .. }) {
+            Ok(())
+        } else {
+            Err(Error::validation(format!(
+                "canvas parameter {name} of action {} is not a points path",
+                action.id
+            )))
+        }
     }
 
     /// A canvas mode needs a name for the mode strip, its optional shortcut is exactly one
@@ -777,7 +1023,9 @@ impl ModuleDescriptor {
                 match &self.canvas {
                     Some(CanvasInteraction::PointPick { .. })
                     | Some(CanvasInteraction::SampleApply { .. }) => {}
-                    Some(CanvasInteraction::CropFrame { .. }) | None => {
+                    Some(CanvasInteraction::CropFrame { .. })
+                    | Some(CanvasInteraction::BrushMask { .. })
+                    | None => {
                         return Err(Error::validation(format!(
                             "module {} declares a picker control without a point-pick or sample-apply canvas",
                             self.id
@@ -1006,8 +1254,7 @@ impl ModuleDescriptor {
         Ok(())
     }
 
-    /// A presets control submits its action with a preset's settings set and its origin, and
-    /// nothing else, so the action declares exactly those parameters with the kinds that carry
+    /// A presets control submits its action with a preset's settings set and its origin, and optionally an Amount, so the action declares those parameters with the kinds that carry
     /// them. A field patch makes every parameter optional, so it cannot require them.
     fn check_presets_action(&self, action: &ActionDescriptor) -> Result<(), Error> {
         let id = &action.id;
@@ -1031,14 +1278,27 @@ impl ModuleDescriptor {
         required(SETTINGS_ORIGIN, "settings-origin", |kind| {
             matches!(kind, ParameterKind::SettingsOrigin)
         })?;
-        if let Some(extra) = action
-            .parameters
-            .iter()
-            .find(|parameter| ![PRESET_SETTINGS, SETTINGS_ORIGIN].contains(&&*parameter.name))
-        {
+        if let Some(extra) = action.parameters.iter().find(|parameter| {
+            ![PRESET_SETTINGS, SETTINGS_ORIGIN, "amount"].contains(&&*parameter.name)
+        }) {
             return Err(Error::validation(format!(
                 "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS} and {SETTINGS_ORIGIN}",
                 extra.name
+            )));
+        }
+        if let Some(amount) = action.parameter("amount")
+            && (amount.required
+                || !matches!(
+                    amount.kind,
+                    ParameterKind::Number {
+                        min: 0.0,
+                        max: 200.0
+                    }
+                )
+                || amount.default != Some(serde_json::json!(100.0)))
+        {
+            return Err(Error::validation(format!(
+                "presets control action {id} amount must be optional, 0..=200 with default 100"
             )));
         }
         Ok(())
@@ -1209,7 +1469,34 @@ fn check_declared<'a>(
             declared.id
         )));
     }
-    declared_parameters(declarer, kind, &declared.id, &declared.parameters)
+    let accepting = declared.accepts_candidate && kind == "action";
+    declared_parameters(
+        declarer,
+        kind,
+        &declared.id,
+        &declared.parameters,
+        accepting,
+    )?;
+    if declared.accepts_candidate {
+        check_accepting(declarer, kind, declared)?;
+    }
+    // A correction is one photograph's: its identity, and the geometry and sources an action on it
+    // carries, mean nothing on another photograph, so no preset may capture or apply an action
+    // that names one (`docs/design/corrections.md`, decided 2026-10-07).
+    if declarer == Declarer::Module
+        && kind == "action"
+        && declared.preset
+        && let Some(parameter) = declared
+            .parameters
+            .iter()
+            .find(|parameter| parameter.kind.module_identity().is_some())
+    {
+        return Err(Error::validation(format!(
+            "{kind} {} names a correction through parameter {} and must declare preset: false",
+            declared.id, parameter.name
+        )));
+    }
+    Ok(())
 }
 
 /// An action's shortcut holds `Command`, so it never takes a letter a canvas mode or a text field
@@ -1275,7 +1562,50 @@ pub(crate) fn check_parameter_declarations(
     id: &str,
     declared: &[ParameterDescriptor],
 ) -> Result<(), Error> {
-    declared_parameters(Declarer::Module, kind, id, declared)
+    declared_parameters(Declarer::Module, kind, id, declared, false)
+}
+
+/// The names a candidate-accepting action addresses its candidate by.
+pub(crate) const ACCEPT_JOB: &str = "job_id";
+pub(crate) const ACCEPT_CANDIDATE: &str = "candidate";
+
+/// A candidate-accepting action ([`ActionDescriptor::accepts_candidate`]): a module's action, not a
+/// preset's, requiring `job_id` (a job) and `candidate` (`0..=3`). That the module declares an
+/// artifact effect is checked with the whole descriptor.
+fn check_accepting(
+    declarer: Declarer,
+    kind: &str,
+    declared: &ActionDescriptor,
+) -> Result<(), Error> {
+    let refuse = |why: &str| {
+        Err(Error::validation(format!(
+            "{kind} {} accepts a candidate, so it {why}",
+            declared.id
+        )))
+    };
+    if declarer != Declarer::Module || kind != "action" {
+        return refuse("must be a module's action");
+    }
+    if declared.preset || declared.patch {
+        return refuse("must declare preset: false and not be a field patch");
+    }
+    let job = declared.parameter(ACCEPT_JOB).is_some_and(|parameter| {
+        parameter.required
+            && parameter.kind
+                == ParameterKind::Identity {
+                    of: IdentityKind::Job,
+                }
+    });
+    let candidate = declared
+        .parameter(ACCEPT_CANDIDATE)
+        .is_some_and(|parameter| {
+            parameter.required
+                && matches!(parameter.kind, ParameterKind::Integer { min: 0, max: 3 })
+        });
+    if !job || !candidate {
+        return refuse("must require job_id, a job, and candidate, an integer within 0..=3");
+    }
+    Ok(())
 }
 
 fn declared_parameters(
@@ -1283,12 +1613,15 @@ fn declared_parameters(
     kind: &str,
     id: &str,
     declared: &[ParameterDescriptor],
+    accepting: bool,
 ) -> Result<(), Error> {
     let host = declarer == Declarer::Host;
     let mut parameters = HashSet::with_capacity(declared.len());
     for parameter in declared {
-        let valid =
-            valid_name(&parameter.name) || (host && valid_segments(&parameter.name, '_', false));
+        // A candidate-accepting action names its job as every host job method does.
+        let valid = valid_name(&parameter.name)
+            || (host && valid_segments(&parameter.name, '_', false))
+            || (accepting && parameter.name == ACCEPT_JOB);
         if !valid {
             return Err(Error::validation(format!(
                 "invalid parameter name {} of {kind} {id}",
@@ -1309,8 +1642,19 @@ fn declared_parameters(
             )));
         }
         // An identity names one of the host's own objects, which only the host's commands address;
-        // a module edits through the host's `mask` target and never names a mask itself.
-        if !host && parameter.kind.host_only() {
+        // a module edits through the host's `mask` target and never names a mask itself. The one
+        // exception is the identity of a correction in the module's own ordered list, which its
+        // actions and queries name — never a task's or a setting's; that the module declares the
+        // list is checked where the whole descriptor is known (`check_operation_identities`).
+        let admitted = (parameter.kind.module_identity().is_some()
+            && matches!(kind, "action" | "query"))
+            || (accepting
+                && parameter.name == ACCEPT_JOB
+                && parameter.kind
+                    == ParameterKind::Identity {
+                        of: IdentityKind::Job,
+                    });
+        if !host && parameter.kind.host_only() && !admitted {
             return Err(Error::validation(format!(
                 "parameter {} of {kind} {id} declares kind {}, which only a host command declares",
                 parameter.name,

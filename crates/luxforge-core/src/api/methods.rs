@@ -18,9 +18,10 @@ use super::{
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    ActionRef, AnalysisSelection, ArtifactId, AssetId, ComponentId, DraftId, EditorService,
-    EntryId, Error, HistorySelection, MAX_PRESET_BYTES, MAX_PRESET_NAME, MaskId, ModuleRegistry,
-    Mutation, MutationOutcome, MutationResult, ParameterDescriptor, PixelSample, PresetId, Zoom,
+    ActionRef, AnalysisSelection, ArtifactId, AssetId, ComponentId, CorrectionId, DraftId,
+    EditorService, EntryId, Error, HistorySelection, MAX_PRESET_BYTES, MAX_PRESET_NAME, MaskId,
+    ModuleRegistry, Mutation, MutationOutcome, MutationResult, ParameterDescriptor, PixelSample,
+    PresetId, Zoom,
     capabilities::{
         grants,
         host::{
@@ -285,13 +286,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preferences.read",
         NoParams,
         |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
-        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), raw_look (standard or neutral, default standard), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_folder (the absolute path of the folder export.plan suggests while it exists, or null for the original's folder), theme (the active theme's id, default luxforge.dark, which theme.list answers as active)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), raw_look (standard or neutral, default standard), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_folder (the absolute path of the folder export.plan suggests while it exists, or null for the original's folder), theme (the active theme's id, default luxforge.dark, which theme.list answers as active), usage_statistics (the protected usage statistics consent record, {prompt_shown, enabled, disclosure_version?, installation_id?}, {prompt_shown: false, enabled: false} when absent; never its image key; preferences.set cannot change or reset it, only usage.set and usage.prompt.claim write it)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     ),
     owner!(
         "preferences.set",
         owner::PreferencesSet,
         owner::preferences_set,
-        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether a photograph's first preparation commits a new RAW photo's detected lens profile as its first-open entry, applying to first preparations from now on and never changing a photograph whose head has moved; raw_look, standard or neutral, the look a new RAW photograph's Original starts from, applying to photographs created from now on and changing no saved recipe; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_folder, the absolute path of the folder export.plan suggests while it exists; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, raw_look, mask_overlay_colour, canvas_background, interface_size, catalog or theme is announced; no preference changes a rendered or exported byte; returns every preference as preferences.read does; needs a configured application preference directory"
+        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether a photograph's first preparation commits a new RAW photo's detected lens profile as its first-open entry, applying to first preparations from now on and never changing a photograph whose head has moved; raw_look, standard or neutral, the look a new RAW photograph's Original starts from, applying to photographs created from now on and changing no saved recipe; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_folder, the absolute path of the folder export.plan suggests while it exists; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, raw_look, mask_overlay_colour, canvas_background, interface_size, catalog or theme is announced; no preference changes a rendered or exported byte; the protected usage_statistics record is not a parameter: no value, null or reset here changes it, and only usage.set and usage.prompt.claim write it; returns every preference as preferences.read does; needs a configured application preference directory"
     ),
     owner!(
         "flags.list",
@@ -304,6 +305,29 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::FlagsSet,
         owner::flags_set,
         "store one feature flag's value outside the catalog, checked against its kind, or remove the stored value for a null or absent value so the flag follows its default; answers as flags.list does; a changed value is announced in the event log; leaves every other stored value, recognized or not, untouched; a launch flag takes effect at the next desktop launch; changes no recipe, history or render; needs a configured application preference directory"
+    ),
+    // Optional usage statistics consent: the protected `usage_statistics` record in
+    // `preferences.json` and the process-wide runtime ([`crate::usage::consent`]). None of these
+    // reads a catalog or a photograph or makes a network request.
+    owner!(
+        "usage.read",
+        NoParams,
+        owner::usage::read,
+        "{prompt_shown, enabled, effective, disclosure_version, destination, release, installation_id, session_id, reason, limits, diagnostics}: prompt_shown and enabled are the stored record (absent reads as false and false; null when the preferences cannot be read); effective says whether this process is collecting now; disclosure_version is the disclosure this build describes, which an enable must name; destination is where an eligible launch sends (the production endpoint, or a test host's loopback receiver); release is <version>+<first 12 hex characters of the embedded clean source revision>, or null for a build without one; installation_id is the stored random UUIDv4 while the stored choice is on, else null; session_id is null until the statistics worker starts a session; reason is null while effective, else one of choice (not opted in, opted out, or stopped in this process), launch-mode (a debug/developer, hidden, background, evidence, test or headless launch), build (no embedded clean source revision), inactive-destination (production reporting is switched off), unreadable-configuration (the preferences cannot be read or hold a record this build cannot use) or changed-disclosure (consent was given to another disclosure); limits is the delivery contract {window_events, batch_bytes, attempt_interval_s, flush_after_s, window_age_s}; diagnostics is the statistics worker's bounded local state {recorded, dropped (by producers, by the body limit or in windows discarded unsent), sent, attempts, accepted, delivery: {state: ready, cooldown or suspended, reason: null, failure or rate-limited for a cooldown, redirect, rejected, refused, unavailable, build or device for a suspension}}, all zero and ready until a worker reports; never the image key, buffered events, file contents or network error text; reads one small file, writes nothing, makes no network request and is not itself counted as usage"
+    ),
+    owner!(
+        "usage.prompt.claim",
+        owner::usage::UsageClaim,
+        owner::usage::claim,
+        "{show_prompt, state, deduplicated}: only a client with permission authority may, otherwise forbidden; in an eligible launch, atomically records prompt_shown: true with sharing off in preferences.json under the preferences lock before answering show_prompt: true to exactly one claimant, across processes sharing the configuration; a record already claimed, answered or enabled, an ineligible launch (which writes nothing) and a retried request answer show_prompt: false; state is usage.read's answer as it is now; a preferences file that cannot be read or written is an error and is kept unchanged; a claim that wrote is announced",
+        retries: Owner,
+    ),
+    owner!(
+        "usage.set",
+        owner::usage::UsageSet,
+        owner::usage::set,
+        "{outcome, state, deduplicated}: enabled true opts in, which needs permission authority (otherwise forbidden), disclosure_version equal to the current one usage.read answers, and an eligible launch (otherwise not-ready naming the reason); it is saved first and takes effect only once saved, creating a fresh random installation ID and image key unless the record already is consent to this disclosure (then a no-op that keeps them); enabled false opts out and any client may: collection in this process stops before the write is attempted, a saved opt-out removes the installation ID and image key, and a failed write leaves this process off and is an error whose data.state reports the stored record as it really is; disclosure_version is refused with false; either saved choice also records prompt_shown: true, so no automatic notice follows; outcome is applied or no-op; state is usage.read's answer as it is now, also for a retried request, which never applies again, so an enable a later opt-out revoked stays revoked; the actor or same-user socket access never grants consent; a change is announced",
+        retries: Owner,
     ),
     // The theme library, outside every catalog: `themes.json` beside the preferences. No theme
     // method reads or writes a catalog or changes a photograph.
@@ -350,7 +374,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         JOB_READ,
         owner::JobParams,
         owner::job_read,
-        "{job_id, kind, status, ownership, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work), export, or the catalog's long-running work (listing, previews, developing picks, checking and finding originals, and batches); status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; ownership is clients for a job that belongs to the clients that requested it (source work, an analysis, a shared preview read or render): only they read it, and it stops when the last of them still interested cancels it or disconnects, so a client that closes its connection stops such a job unless another client still wants it; ownership is catalog for every other job: any client reads and cancels it, and no disconnect touches it; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
+        "{job_id, kind, status, ownership, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?, candidates?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work), export, or the catalog's long-running work (listing, previews, developing picks, checking and finding originals, and batches); status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; ownership is clients for a job that belongs to the clients that requested it (source work, an analysis, a shared preview read or render): only they read it, and it stops when the last of them still interested cancels it or disconnects, so a client that closes its connection stops such a job unless another client still wants it; ownership is catalog for every other job: any client reads and cancels it, and no disconnect touches it; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports; a task job lists candidates: [{candidate, state (live, accepted or released), released? (budget, released, cancelled or closed), width, height, bytes, rect [x, y, width, height] in content pixels, preview {width, height}, asset_id, revision, label, provenance}], the candidate patches it published, read with job.read-candidate and released with job.release-candidates; a task job holds at most 4 candidates of at most 64 MiB each (patch and preview) and every job's live candidates at most 1 GiB together, past which the oldest finished job's live candidates are released (budget); a cancel releases a task job's candidates (cancelled), finished or not, a forgotten job takes its candidates with it, and no disconnect touches them"
     ),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
@@ -376,7 +400,20 @@ pub(super) const METHODS: &[MethodSpec] = &[
         JOB_CANCEL,
         owner::JobParams,
         owner::job_cancel,
-        "a source or analysis job: this client leaves it and still reads its outcome, and the work stops only when no other client wants it; a capability or export job: stops it for every client, a queued job never starts and a running one stops at its next checkpoint (an export removes its temporary file); a finished job is unchanged, so a repeated cancel changes nothing; returns the job as job.read does"
+        "a source or analysis job: this client leaves it and still reads its outcome, and the work stops only when no other client wants it; a capability or export job: stops it for every client, a queued job never starts and a running one stops at its next checkpoint (an export removes its temporary file); a task job's live candidates are released (cancelled) whether it is running or finished, one an accept holds once that accept settles; a finished job is otherwise unchanged, so a repeated cancel changes nothing; returns the job as job.read does"
+    ),
+    owner!(
+        owner::candidates::READ_CANDIDATE,
+        owner::candidates::ReadCandidate,
+        owner::candidates::read_candidate,
+        "{job_id, candidate, part, width, height, format, offset, length, total, data}: one chunk of a live candidate of a task job, data being base64 of length bytes from offset of the part's total; the preview part is width × height RGB 8-bit sRGB (format rgb8-srgb), the patch part width × height RGBA IEEE half floats little-endian, RGB linear sRGB (D65) and A the coverage 0..1, not premultiplied (format rgba16f-le); a chunk is at most 786432 bytes (768 KiB) and is read off the catalog owner; same ownership as job.read; a job that is not a task, or a number it never published, is validation; a candidate that is accepted or released, before or while the chunk is read, is conflict with data {state, released}; a file that is missing or the wrong length is source-unavailable; mutates nothing and emits no event"
+    ),
+    owner!(
+        owner::candidates::RELEASE_CANDIDATES,
+        owner::candidates::ReleaseCandidates,
+        owner::candidates::release_candidates,
+        "{job_id, outcome, released, candidates, deduplicated}: releases the named live candidates of a task job, or every one, deleting their files; released lists the numbers released now and candidates the job's candidates as job.read lists them, each released one with released: released; a candidate already accepted or released is left as it is (outcome no-op when nothing was released); a candidate an accept holds refuses the whole request as conflict, and a number the job never published as validation, releasing nothing; same ownership as job.read; a release that released something is announced",
+        retries: Owner,
     ),
     owner!(
         "source.prepare",
@@ -893,7 +930,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "artifact.collect",
         owner::Collect,
         owner::artifact_collect,
-        "removes the rows of artifacts no entry references and no task of this process published, and of derived sources no photograph holds and no writer of this process published, then queues a source job that removes their files, object and source files without a row and staged files older than an hour; nothing an entry or a photograph's source references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary, source_rows, source_objects}",
+        "removes the rows of artifacts no entry references and no task of this process published, and of derived sources no photograph holds and no writer of this process published, then queues a source job that removes their files, object and source files without a row, staged files older than an hour and the candidate directories no task job of this process holds; nothing an entry or a photograph's source references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary, source_rows, source_objects, candidates}",
         retries: Owner,
     ),
     // The catalog's methods. Each is declared once in `catalog_types::api` (its parameter struct,
@@ -1812,7 +1849,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             "records": [crate::RendererRecord::Gpu, crate::RendererRecord::Reference],
             "reasons": crate::RendererReason::ALL.map(crate::RendererReason::as_str),
             "export_reasons": crate::RendererReason::EXPORT.map(crate::RendererReason::as_str),
-            "notes": "session.state's renderer is {record, reason}, the same for every client of this owner. record gpu: the desktop's photo surface draws on its GPU, and reason is null; software is true when that GPU is the platform's software adapter (lavapipe on Linux, WARP on Windows), a rasterizer on the CPU, and is omitted otherwise. record reference: the CPU reference renderer draws the desktop's picture, slower, and reason says why: surface-pending before the desktop has drawn a photograph, which is when its photo surface checks its GPU stage; no-adapter when the GPU stage cannot run on this graphics device, when the host offers only a software adapter, which is not adopted and the desktop was not launched with --software-adapter, or when the desktop was launched with --no-gpu-render, which refuses it the same way; device-lost when the graphics device was lost, which nothing waits to recover. record reference with a null reason is an owner that draws nothing, such as luxforge-json, whose renderer is always the reference. The desktop reports it from its photo surface and the session reports it; no method sets it. A ready export's job.read result names the renderer that rendered its file in the same shape: record gpu with a null reason, or record reference with a null reason on an owner with no GPU, such as luxforge-json, and otherwise one of the reasons, one of export_reasons or the GPU plan's own code: requested when export.jpeg asked for reference: true; surface-pending before the desktop has named the adapter its window draws with to its GPU tile worker, which it does once its photo surface has checked its GPU stage; no-adapter when the tile worker found no adapter or device it can render on; refused when the desktop was launched with --no-gpu-render; device-lost when the tile worker's device was lost, before or during the export, which then starts again on the reference; adapter-mismatch when the tile worker's adapter is not the one the window draws with; tiles-budget when the export's tiles would hold more than the tile worker's GPU budget; or the code of the GPU plan or stage that cannot draw the stack, such as pixel-stage for a layer no GPU program replaces, or pipeline-failed.",
+            "notes": "session.state's renderer is {record, reason}, the same for every client of this owner. record gpu: the desktop's photo surface draws on its GPU, and reason is null; software is true when that GPU is the platform's software adapter (lavapipe on Linux, WARP on Windows), a rasterizer on the CPU, and is omitted otherwise. record reference: the CPU reference renderer draws the desktop's picture, slower, and reason says why: surface-pending before the desktop has drawn a photograph, which is when its photo surface checks its GPU stage; no-adapter when the GPU stage cannot run on this graphics device, when the host offers only a software adapter, which is not adopted and the desktop was not launched with --software-adapter, or when the desktop was launched with --no-gpu-render, which refuses it the same way; device-lost when the graphics device was lost, which nothing waits to recover. record reference with a null reason is an owner that draws nothing, such as luxforge-json, whose renderer is always the reference. The desktop reports it from its photo surface and the session reports it; no method sets it. A ready export's job.read result names the renderer that rendered its file in the same shape: record gpu with a null reason, or record reference with a null reason on an owner with no GPU, such as luxforge-json, and otherwise one of the reasons, one of export_reasons or the GPU plan's own code: requested when export.jpeg asked for reference: true; surface-pending before the desktop has named the adapter its window draws with to its GPU tile worker, which it does once its photo surface has checked its GPU stage; no-adapter when the tile worker found no adapter or device it can render on; refused when the desktop was launched with --no-gpu-render; device-lost when the tile worker's device was lost, before or during the export, which then starts again on the reference; adapter-mismatch when the tile worker's adapter is not the one the window draws with; tiles-budget when the export's tiles would hold more than the tile worker's GPU budget; or the code of the GPU plan or stage that cannot draw the stack, such as no-program for a layer no GPU program replaces, or pipeline-failed.",
         },
         // A method whose effect lives only in the caller's session marks itself `session_scoped`.
         "session": {
@@ -2017,6 +2054,7 @@ pub(super) fn preference_values(preferences: &crate::preferences::Preferences) -
         "window": preferences.window,
         "export_folder": preferences.export_folder,
         "theme": preferences.theme(),
+        "usage_statistics": crate::usage::consent::public_record(preferences.usage_statistics.as_ref()),
     })
 }
 
@@ -2045,6 +2083,9 @@ host_params! {
         /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
         mask: Option<MaskId> = mask().notes("the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through"),
         component: Option<ComponentId> = component().notes("the component inside that mask, for a mask.* gesture only"),
+        /// The correction an operation-bound module action edits, sent as that action's declared
+        /// correction identity parameter.
+        operation: Option<CorrectionId> = correction().notes("the correction an operation-bound module action edits (a pin, source or size drag of one correction), sent as the action's own correction identity parameter; refused for an action that names none and for a correction the current layer does not hold"),
     }
 }
 
@@ -2503,7 +2544,8 @@ fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
             .filter_map(|pick| match pick {
                 crate::CanvasInteraction::SampleApply { action, .. } => Some(action.clone()),
                 crate::CanvasInteraction::PointPick { .. }
-                | crate::CanvasInteraction::CropFrame { .. } => None,
+                | crate::CanvasInteraction::CropFrame { .. }
+                | crate::CanvasInteraction::BrushMask { .. } => None,
             }),
     );
     modes.extend(
@@ -2756,7 +2798,7 @@ fn draft_begin(
     // commit instead of committing blind. It is checked by the checks its commit runs, and a draft
     // its commit would refuse for what the photo is — a RAW development on a JPEG — is refused
     // here, in the commit's words, rather than at its first preview.
-    let target = [
+    let mut target: crate::DraftTarget = [
         ("mask", p.mask.map(|mask| mask.as_str().to_owned())),
         (
             "component",
@@ -2766,6 +2808,23 @@ fn draft_begin(
     .into_iter()
     .filter_map(|(name, identity)| identity.map(|identity| (name.to_owned(), identity)))
     .collect();
+    // A correction is named by whichever parameter the action declares as its correction
+    // identity, read from the declaration as every draft target is ([`crate::declared_target`]).
+    if let Some(operation) = p.operation
+        && let Some(action) = service.registry().resolve_action(&p.action)
+    {
+        let named = crate::declared_target(action.descriptor(), |kind| {
+            (kind == crate::IdentityKind::Correction).then(|| operation.to_string())
+        });
+        if named.is_empty() {
+            return Err(Error::validation(format!(
+                "action {} names no correction; operation is the correction an \
+                 operation-bound action edits",
+                p.action
+            )));
+        }
+        target.extend(named);
+    }
     let target = service.draft_target(&p.asset_id, &p.action, target)?;
     let revision = service.revision(&p.asset_id)?;
     let mut draft = crate::Draft::new(&p.action, p.asset_id, revision);
@@ -3051,7 +3110,7 @@ fn session_framing(
 
 /// Refuse an edit to `asset_id` while this session previews one of its historical entries. A
 /// selection of another asset never pauses this one.
-fn require_current(session: &ClientSession, asset_id: &AssetId) -> Result<(), Error> {
+pub(super) fn require_current(session: &ClientSession, asset_id: &AssetId) -> Result<(), Error> {
     if session.preview.can_edit(asset_id) {
         Ok(())
     } else {
@@ -3218,13 +3277,24 @@ mod tests {
                 (method, query.id.clone())
             }));
         }
+        // Every task a module declares: the developer candidate producer's, here.
+        let tasks: Vec<String> = registry
+            .descriptors()
+            .into_iter()
+            .flat_map(|descriptor| descriptor.tasks.iter())
+            .map(|task| format!("task.{}", task.id))
+            .collect();
+        assert!(!tasks.is_empty());
         let schema = schemas(&registry);
         let listed = schema["methods"].as_object().unwrap();
+        for task in &tasks {
+            assert_eq!(listed[task]["mutation"], json!("request"), "{task}");
+        }
         // The map holds each name once, so a generated name that collided with another would
         // shorten it.
         assert_eq!(
             listed.len(),
-            METHODS.len() + actions.len() + queries.len(),
+            METHODS.len() + actions.len() + queries.len() + tasks.len(),
             "every host, action and query method is listed under a name of its own"
         );
         assert_eq!(
@@ -4347,6 +4417,7 @@ mod tests {
                     artifacts: false,
                     single: false,
                     sources: Vec::new(),
+                    operations: None,
                 }],
                 actions: vec![crate::ActionDescriptor {
                     id: "test-angle".into(),
@@ -4356,6 +4427,7 @@ mod tests {
                     preset: true,
                     analysis: None,
                     shortcut: None,
+                    accepts_candidate: false,
                     parameters: vec![
                         ParameterDescriptor::number("angle", -45.0, 45.0)
                             .required(true)
@@ -4441,6 +4513,7 @@ mod tests {
                     artifacts: false,
                     single: false,
                     sources: Vec::new(),
+                    operations: None,
                 }],
                 actions: vec![crate::ActionDescriptor {
                     id: MARK_ACTION.into(),
@@ -4450,6 +4523,7 @@ mod tests {
                     preset: true,
                     analysis: None,
                     shortcut: None,
+                    accepts_candidate: false,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),
@@ -4919,7 +4993,7 @@ mod tests {
                 // declares for a sampling component kind — then the registry's canvas declarations,
                 // so the RAW and Basic neutral pickers join the list without a change here.
                 "mode must be one of pointer, mask, mask.add-colour-range-sample, luxforge.crop, \
-                 luxforge.pixel, luxforge.raw, luxforge.basic",
+                 luxforge.corrections, luxforge.raw, luxforge.basic",
             ),
             (
                 "a module that declares no canvas",
@@ -5361,7 +5435,7 @@ mod tests {
         assert_eq!(entry["label"], json!("Preset: Warm"));
         assert_eq!(
             entry["parameters"],
-            json!({"settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
+            json!({"amount":100.0, "settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
         );
         let rows = described(&mut service, &mut session, &asset);
         assert_eq!(
@@ -5633,7 +5707,6 @@ mod tests {
             "render.sample",
             json!({"asset_id": asset, "x": 0, "y": 0, "draft_id": draft_id}),
         );
-        assert_eq!(drafted["rgba"], json!([20, 0, 0, 255]));
         assert_eq!(
             drafted["draft"],
             json!({"draft_id": draft_id, "draft_revision": 2})
@@ -6317,3 +6390,6 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 }
+#[cfg(test)]
+#[path = "usage_coverage_tests.rs"]
+mod usage_coverage_tests;

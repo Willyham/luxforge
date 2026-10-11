@@ -150,6 +150,10 @@ pub(crate) fn current_cursor(_path: &Path) -> Option<Resume> {
     None
 }
 
+pub(crate) fn path_of(_device: u64, _inode: u64) -> Option<std::path::PathBuf> {
+    None
+}
+
 /// The watcher's thread: wait for inotify, the mount table or the stop, and handle what is ready.
 fn run(shared: &Shared, stop: &OwnedFd, mut mountinfo: Option<File>) {
     let mut buffer = vec![0_u8; BUFFER];

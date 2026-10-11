@@ -108,6 +108,10 @@ pub(crate) enum Outcome<'a> {
     /// A message was handled while Select is shown: what an HDR merge's pending row and its result
     /// show may have changed.
     MergeShown,
+    /// The usage statistics notice settled: shown, or the claim answered not to show it.
+    UsageNotice,
+    /// A `usage.read` answered, or the last outstanding `usage.set` did, or either was refused.
+    UsageAnswered,
 }
 
 /// What reached the photo surface.
@@ -170,6 +174,8 @@ impl Outcome<'_> {
             Self::SelectSettled => "select_settled",
             Self::LongWorkShown => "long_work_shown",
             Self::MergeShown => "merge_shown",
+            Self::UsageNotice => "usage_notice",
+            Self::UsageAnswered => "usage_answered",
         }
     }
 }

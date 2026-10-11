@@ -4,6 +4,7 @@
 //! catalog owner only stats files and reads the small manifest.
 use super::{
     ArtifactId, ArtifactMeta, ArtifactRecord, LiveArtifacts, MAX_ARTIFACT_BYTES, PreparedArtifact,
+    candidates::Candidates,
     derived_source::{self, LiveSources},
     lock,
 };
@@ -244,9 +245,15 @@ impl ArtifactWriter {
         ))
     }
 
+    /// The artifact root this writer publishes into.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Make the root usable: claim it when it has no manifest yet, refuse it when its manifest
-    /// names another catalog, and make sure its object and staging directories exist.
-    pub(super) fn prepare_root(&self) -> Result<(), Error> {
+    /// names another catalog, and make sure its object and staging directories exist. Worker-side:
+    /// it reads the manifest and may create directories.
+    pub(crate) fn prepare_root(&self) -> Result<(), Error> {
         match root_state(&self.root, &self.catalog_id)? {
             RootState::Ready => {}
             RootState::Foreign(detail) => return Err(Error::incompatible(detail)),
@@ -396,9 +403,13 @@ pub(crate) struct Collection {
     pub(crate) live_sources: LiveSources,
     /// The derived source rows the owner already removed.
     pub(crate) source_rows: usize,
+    /// The catalog's candidate store, whose jobs' directories under `tmp/candidates/` are kept;
+    /// every other one is what an earlier process left.
+    pub(crate) candidates: Arc<Candidates>,
 }
 
-/// What a collection removed.
+/// What a collection removed: rows, object files, derived source rows and objects, stale staged
+/// files, and the candidate directories no job of this process holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Collected {
     pub(crate) rows: usize,
@@ -406,12 +417,13 @@ pub(crate) struct Collected {
     pub(crate) temporary: usize,
     pub(crate) source_rows: usize,
     pub(crate) source_objects: usize,
+    pub(crate) candidates: usize,
 }
 
 /// Remove the object files the catalog no longer records and that are not live, the derived source
-/// objects it no longer retains and that are not live, and staged files older than an hour. A root
-/// whose manifest does not name this catalog is left untouched, and a name that is not a hash is
-/// never removed.
+/// objects it no longer retains and that are not live, staged files older than an hour and the
+/// candidate directories no job of this process holds. A root whose manifest does not name this
+/// catalog is left untouched, and a name that is not a hash is never removed.
 pub(crate) fn collect_files(
     collection: &Collection,
     cancel: &AtomicBool,
@@ -423,6 +435,7 @@ pub(crate) fn collect_files(
         temporary: 0,
         source_rows: collection.source_rows,
         source_objects: 0,
+        candidates: 0,
     };
     match root_state(root, &collection.catalog_id)? {
         RootState::Absent => return Ok(collected),
@@ -492,6 +505,7 @@ pub(crate) fn collect_files(
             }
         }
     }
+    collected.candidates = collection.candidates.sweep(cancel)?;
     Ok(collected)
 }
 
@@ -734,6 +748,12 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() - 2 * STALE_TEMPORARY)
             .unwrap();
+        // What an earlier process's candidates left: a job's directory, and a stray file.
+        let candidates = Candidates::new(open.clone());
+        let left = candidates.directory().join("job-left-by-a-crash");
+        fs::create_dir_all(&left).unwrap();
+        fs::write(left.join("0.patch"), b"patch").unwrap();
+        fs::write(candidates.directory().join("stray"), b"stray").unwrap();
         let collection = Collection {
             root: root.clone(),
             catalog_id: "catalog-a".into(),
@@ -743,6 +763,7 @@ mod tests {
             keep_sources: HashSet::new(),
             live_sources: LiveSources::default(),
             source_rows: 0,
+            candidates,
         };
         let never = AtomicBool::new(false);
         assert_eq!(
@@ -753,7 +774,14 @@ mod tests {
                 temporary: 1,
                 source_rows: 0,
                 source_objects: 0,
+                candidates: 2,
             }
+        );
+        assert_eq!(
+            fs::read_dir(collection.candidates.directory())
+                .unwrap()
+                .count(),
+            0
         );
         assert!(object_path(&root, &kept.id).exists(), "recorded");
         assert!(object_path(&root, &fresh.id).exists(), "live");

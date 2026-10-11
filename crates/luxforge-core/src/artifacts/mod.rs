@@ -5,13 +5,21 @@
 //! verified bytes evaluation binds, the table a recipe carries them in, the bounded cache the
 //! catalog owner keeps them in and the on-disk store (`store.rs`). The catalog rows, references,
 //! root and the binding step live with the editor service.
+pub(crate) mod candidates;
+#[cfg(test)]
+mod candidates_tests;
 pub(crate) mod derived_source;
 mod store;
 
 pub use derived_source::{DerivedColour, DerivedInterpretation, DerivedSourceId, ReferenceCrop};
+
+pub use candidates::{
+    CandidatePart, CandidateRead, CandidateState, PATCH_FORMAT, PREVIEW_FORMAT, PreviewSize,
+    ReleaseReason,
+};
 pub(crate) use store::{
-    ArtifactRead, ArtifactWriter, Collected, Collection, MANIFEST, RootState, VerifiedArtifact,
-    collect_files, object_path, read_verified, root_state,
+    ArtifactRead, ArtifactWriter, Collected, Collection, MANIFEST, RootState, TEMPORARY,
+    VerifiedArtifact, collect_files, object_path, read_verified, root_state,
 };
 #[cfg(test)]
 pub(crate) mod testing;

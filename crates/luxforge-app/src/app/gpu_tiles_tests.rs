@@ -123,6 +123,99 @@ pub(super) fn recipe(layers: Vec<Layer>, masked: Vec<(usize, luxforge_core::Comp
     recipe
 }
 
+/// The built-in modules and the test repair-stage module, whose payload is the repair table: the
+/// registry every family is planned and read through.
+pub(super) fn registry() -> ModuleRegistry {
+    let mut registry = ModuleRegistry::builtin();
+    registry
+        .register(luxforge_core::qualification::repair::RepairTestModule::shared())
+        .expect("the test repair module");
+    registry
+}
+
+/// Clone and Heal operations over the [`WIDTH`] × [`HEIGHT`] stage: independent spots, a Heal
+/// from far across the frame, a Clone over a Heal's output and a source past the edge.
+pub(super) fn corrections() -> Layer {
+    use super::gpu_repair_plan_tests::{op, repair};
+    let size = (WIDTH, HEIGHT);
+    repair(vec![
+        op(1, true, size, &[[90.0, 60.0]], 9.0, [40.0, 12.0], 50, 100),
+        op(
+            2,
+            false,
+            size,
+            &[[250.0, 170.0]],
+            7.0,
+            [-60.0, -30.0],
+            30,
+            100,
+        ),
+        op(
+            3,
+            true,
+            size,
+            &[[60.0, 190.0], [120.0, 200.0]],
+            6.0,
+            [230.0, -150.0],
+            40,
+            90,
+        ),
+        op(4, false, size, &[[95.0, 62.0]], 6.0, [0.0, 50.0], 0, 80),
+        op(5, true, size, &[[355.0, 120.0]], 8.0, [20.0, 0.0], 50, 100),
+    ])
+}
+
+/// Frozen patches over the [`WIDTH`] × [`HEIGHT`] stage (`docs/design/corrections.md`, "Frozen
+/// patches"): a Clone, two overlapping patches — coverage stepping through 0 to 1, values past
+/// both ends of the linear range, the second at opacity 60 — and a Heal sampling the patches'
+/// output, then `after`: the patch composite alone, chained and read by a later operation.
+pub(super) fn patches(after: Vec<Layer>) -> Recipe {
+    use luxforge_core::qualification::corrections::{QualBrush, QualPatch, QualStep, repair_stack};
+    let (w, h) = (f64::from(WIDTH), f64::from(HEIGHT));
+    let ramp = |seed: u32| -> Box<dyn Fn(u32, u32) -> ([f32; 3], f32)> {
+        Box::new(move |x, y| {
+            let value = |channel: u32| {
+                ((x * 7 + y * 3 + channel * 61 + seed) % 256) as f32 / 255.0 * 1.5 - 0.25
+            };
+            (
+                [value(0), value(1), value(2)],
+                ((x + y + seed) % 5) as f32 / 4.0,
+            )
+        })
+    };
+    repair_stack(
+        vec![
+            QualStep::Brush(QualBrush {
+                heal: false,
+                points: vec![[90.0 / w, 60.0 / h]],
+                radius: 9.0 / h,
+                source: [130.0 / w, 72.0 / h],
+                feather: 50,
+                opacity: 100,
+            }),
+            QualStep::Patch(QualPatch {
+                rect: [80, 50, 60, 40],
+                opacity: 100,
+                pixel: ramp(3),
+            }),
+            QualStep::Patch(QualPatch {
+                rect: [120, 70, 50, 37],
+                opacity: 60,
+                pixel: ramp(11),
+            }),
+            QualStep::Brush(QualBrush {
+                heal: true,
+                points: vec![[260.0 / w, 150.0 / h]],
+                radius: 10.0 / h,
+                source: [125.0 / w, 80.0 / h],
+                feather: 40,
+                opacity: 100,
+            }),
+        ],
+        after,
+    )
+}
+
 /// The families a tile is drawn through: every kind of step a plan holds, a link before the last
 /// among them.
 pub(super) fn families() -> Vec<(&'static str, Recipe)> {
@@ -158,6 +251,37 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
     let presence = |values| Layer::new(PRESENCE_EFFECT, values);
     vec![
         ("a colour stack", recipe(colour, Vec::new())),
+        (
+            "Clone and Heal",
+            recipe(vec![corrections(), basic.clone()], Vec::new()),
+        ),
+        (
+            "a hundred Clone and Heal corrections",
+            recipe(
+                vec![super::gpu_repair_plan_tests::repair(
+                    super::gpu_repair_plan_tests::hundred((WIDTH, HEIGHT), 4),
+                )],
+                Vec::new(),
+            ),
+        ),
+        (
+            "frozen patches among Clone and Heal",
+            patches(vec![basic.clone()]),
+        ),
+        (
+            "frozen patches before Detail",
+            patches(vec![Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0}))]),
+        ),
+        (
+            "Clone and Heal before Detail",
+            recipe(
+                vec![
+                    corrections(),
+                    Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0})),
+                ],
+                Vec::new(),
+            ),
+        ),
         (
             "a masked stack",
             recipe(
@@ -261,7 +385,7 @@ struct Case {
 /// each tile's rectangle, anchored to the plan, every global estimate read from the store the
 /// exact render filled. `O(cases × tiles)` CPU work: each tile's window is the CPU's own.
 fn cases() -> Vec<Case> {
-    let registry = ModuleRegistry::builtin();
+    let registry = registry();
     let stage = Stage {
         width: WIDTH,
         height: HEIGHT,
@@ -546,7 +670,7 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_
     };
     let runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
-    let registry = ModuleRegistry::builtin();
+    let registry = registry();
     let stage = Stage {
         width: 9504,
         height: 6336,
@@ -628,4 +752,228 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_
     eprintln!("{test}: a summed halo of {halo} px, the anchor {anchor:?}");
     assert!(charge(2048) <= GPU_TILE_BUDGET - super::gpu_tiles::STREAM_READ_RESERVE);
     charge(1024);
+}
+
+/// A repair whose sources lie across a frame wider than one GPU texture's 8,192 texels, drawn as
+/// an export streams it: a Heal at the right edge sampling the left, and a Clone stroke at the
+/// left sampling over that Heal's output, so the second group reads the first's, alone and before
+/// Detail, on both paths. Each tile's window is its own rectangle and Detail's halo, never the box
+/// around the reads; the repair step holds its read set in an atlas cut from the source, and the
+/// stitched frame meets the spatial class's limits against the reference's frame of the stack.
+#[test]
+fn a_far_source_repair_wider_than_a_texture_meets_the_spatial_limits_in_tiles() {
+    use super::gpu_repair_plan_tests::{op, repair};
+    use luxforge_reference::preview_error::{self, Class, Rgb8};
+    let test = "a_far_source_repair_wider_than_a_texture_meets_the_spatial_limits_in_tiles";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(
+        install_output_encoding(),
+        "the surface holds the core's output encoding"
+    );
+    let mut runner = crate::adapters::tile_runner(&backend, &name)
+        .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
+    runner.set_poison(true);
+    eprintln!("{test}: the runner's adapter {:?}", runner.adapter());
+    let (width, height) = (9000u32, 160u32);
+    let size = (width, height);
+    let value = |x: u32, y: u32, channel: u32| {
+        let (x, y) = (f64::from(x), f64::from(y));
+        let wave = (x * 0.29 + y * 0.13 + f64::from(channel)).sin() * 0.25
+            + (x * 0.0007 + y * 0.02 * f64::from(channel + 1)).cos() * 0.2;
+        (0.45 + wave + ((x * 5.0 + y * 3.0) % 13.0) / 80.0).clamp(0.0, 1.0)
+    };
+    let jpeg = {
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                for channel in 0..3 {
+                    rgba.push((value(x, y, channel) * 255.0).round() as u8);
+                }
+                rgba.push(255);
+            }
+        }
+        PreviewSource::Jpeg(luxforge_core::SourceImage {
+            width,
+            height,
+            rgba: rgba.into(),
+            fingerprint: "sha256:gpu-far-repair".into(),
+            orientation: 1,
+            capture: Default::default(),
+        })
+    };
+    let raw = {
+        let mut planes = Vec::with_capacity((width * height * 3) as usize);
+        for channel in 0..3 {
+            for y in 0..height {
+                for x in 0..width {
+                    planes.push((value(x, y, channel) * 1.4 - 0.05) as f32);
+                }
+            }
+        }
+        PreviewSource::Raw {
+            image: LinearImage::new(width, height, planes).expect("an image"),
+            settings: luxforge_core::LinearSettings::default(),
+        }
+    };
+    let corrections = repair(vec![
+        op(
+            1,
+            true,
+            size,
+            &[[8850.0, 80.0]],
+            12.0,
+            [-8700.0, 0.0],
+            50,
+            100,
+        ),
+        op(
+            2,
+            false,
+            size,
+            &[[120.0, 60.0], [220.0, 90.0]],
+            10.0,
+            [8700.0, 10.0],
+            30,
+            100,
+        ),
+        op(
+            3,
+            true,
+            size,
+            &[[4500.0, 100.0]],
+            9.0,
+            [40.0, -20.0],
+            50,
+            90,
+        ),
+    ]);
+    let registry = registry();
+    let mut missed = Vec::new();
+    for (path, source, version) in [("the byte path", jpeg, 1), ("the linear path", raw, 2)] {
+        let gpu = gpu_source(version, &source);
+        for (tail, after) in [
+            ("", Vec::new()),
+            (
+                " before Detail",
+                vec![Layer::new(DETAIL_EFFECT, json!({"sharpening": 60.0}))],
+            ),
+        ] {
+            let label = format!("the far repair{tail} on {path}");
+            let mut layers = vec![corrections.clone()];
+            layers.extend(after);
+            let stack = recipe(layers, Vec::new());
+            let reference = render(
+                &registry,
+                &source,
+                &stack,
+                RenderOptions::exact(&Cancel::never()),
+                &RenderContext::new(),
+            )
+            .and_then(|render| render.frame(luxforge_core::SnapshotId::new()))
+            .expect("the reference frame");
+            let evaluation = super::gpu_rest_tests::committed(source.clone(), stack);
+            let stream = luxforge_core::plan_stream(&evaluation, 512)
+                .unwrap_or_else(|fallback| panic!("{label}: {fallback:?}"));
+            let step = &stream.plan.spatial[0];
+            let atlas = step
+                .repair
+                .as_ref()
+                .and_then(|repair| repair.atlas.as_ref())
+                .expect("the repair step holds its read set");
+            let (x0, x1) = atlas
+                .rects
+                .iter()
+                .fold((u32::MAX, 0), |(lo, hi), (rect, _)| {
+                    (lo.min(rect.x0), hi.max(rect.x1()))
+                });
+            assert!(
+                x1 - x0 > luxforge_core::REPAIR_ATLAS_SIDE,
+                "{label}: the box around the reads is past one texture"
+            );
+            let mut frame = vec![0u8; (width * height * 3) as usize];
+            let mut versions = 0;
+            for tile in &stream.tiles {
+                let window = tile.window;
+                assert!(
+                    window.width <= 1024,
+                    "{label}: the tile at {:?} reads its own window, not the reads' box: {window:?}",
+                    tile.rect
+                );
+                versions += 1;
+                let boundary = GpuBoundary::derived(
+                    &gpu,
+                    Derivation::Cut {
+                        origin: (window.x0, window.y0),
+                    },
+                    window.width,
+                    window.height,
+                    versions,
+                )
+                .expect("a derived boundary");
+                let plan = surface_plan_over(
+                    &stream.plan,
+                    boundary,
+                    (window.x0, window.y0),
+                    None,
+                    Some(tile.rect),
+                )
+                .expect("a runnable plan");
+                let codes = match runner.run(
+                    &plan,
+                    &gpu,
+                    [window.x0, window.y0, window.width, window.height],
+                    TileEnd::Codes,
+                ) {
+                    Ok(TilePixels::Codes(codes)) => codes,
+                    other => panic!("{label}: the tile at {:?}: {other:?}", tile.rect),
+                };
+                let rect = tile.rect;
+                for (index, pixel) in codes.chunks_exact(4).enumerate() {
+                    let (x, y) = (
+                        rect.x0 + index as u32 % rect.width,
+                        rect.y0 + index as u32 / rect.width,
+                    );
+                    let at = ((y * width + x) * 3) as usize;
+                    frame[at..at + 3].copy_from_slice(&pixel[..3]);
+                }
+            }
+            let expected: Vec<u8> = reference
+                .rgba
+                .chunks_exact(4)
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                .collect();
+            if let (PreviewSource::Jpeg(image), "") = (&source, tail) {
+                // The Heal's and the Clone's centres show the repair, as the reference draws it.
+                for (x, y) in [(8850u32, 80u32), (170, 75)] {
+                    let at = (y * width + x) as usize;
+                    let (gpu, cpu) = (&frame[at * 3..at * 3 + 3], &expected[at * 3..at * 3 + 3]);
+                    assert_ne!(gpu, &image.rgba[at * 4..at * 4 + 3], "{label}: ({x}, {y})");
+                    assert!(
+                        gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(*b) <= 2),
+                        "{label}: ({x}, {y}): {gpu:?} against the reference's {cpu:?}"
+                    );
+                }
+            }
+            let rgb = |bytes| Rgb8::new(width, height, bytes).expect("a whole frame");
+            let measured =
+                preview_error::compare(rgb(&frame), rgb(&expected), [0, 0, width, height])
+                    .expect("comparable frames");
+            let passed = preview_error::verdict(&measured, Class::Spatial).passed();
+            eprintln!(
+                "{test}: {label}: {} tiles, an atlas of {}x{} for {} rects: {}{}",
+                stream.tiles.len(),
+                atlas.size.0,
+                atlas.size.1,
+                atlas.rects.len(),
+                super::gpu_qualification::figures(&measured),
+                if passed { "" } else { " MISS" }
+            );
+            if !passed {
+                missed.push(label);
+            }
+        }
+    }
+    assert!(missed.is_empty(), "missing the spatial limits: {missed:?}");
 }

@@ -65,6 +65,8 @@ The Select workspace browses photographs, develops picks into the catalog and lo
 
 ## Getting started
 
+Maintainers can [run `cargo xtask release v0.1` from clean, synchronized `main`](docs/engineering/releases.md) to build macOS and Linux downloads. The workflow automatically publishes pre-release build candidates; no qualified public download exists yet.
+
 You'll need Rust (the toolchain is pinned) and a few platform prerequisites, listed in [development](docs/engineering/development.md). Then:
 
 ```sh
@@ -75,7 +77,7 @@ cargo xtask develop --open fixtures/s0/orientation-6.jpg
 
 That builds an optimized editor and opens a sample photo. Use `--catalog path/to/catalog.sqlite` to keep your edits somewhere specific, or `--open` any JPEG or supported RAW file of your own. Luxforge only records a reference to the original and never copies or changes it.
 
-The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts and every tool.
+The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts and every tool. Initial [v0.1 distribution preparation](docs/design/release-v0.1.md) is planned; there is no published app download yet.
 
 ## Scripting it
 

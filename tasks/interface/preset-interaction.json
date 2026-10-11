@@ -1,0 +1,138 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "preset-interaction",
+  "title": "Preset Amount and hover preview",
+  "objective": "Deliver an adjustable preset amount and reversible hover preview through shared commands.",
+  "context_summary": "Owner requested implementation. Existing apply-settings drafts support patch presets; analysis cannot be drafted. Scaling uses module descriptors, and unsupported presets remain applicable at 100%. See the current preset contract.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Implement schema-described preset Amount scaling in the core",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner request. Routine widget and numerical choices delegated within the design. No performance claim without photo-sized measurement."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Preset contract",
+          "target": "docs/design/presets.md",
+          "locator": "Amount and hover preview",
+          "relevance": "Defines scaling, draft lifecycle and limitations."
+        }
+      ],
+      "acceptance_criteria": [
+        "100% is unchanged; 0%, partial and amplified values use bounded module defaults and identity curves.",
+        "Unsupported amount fields fail explicitly; exact reference buffers, drafts and commits agree; originals are preserved."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run scoped correctness checks at completion and inspect correlated evidence."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core preset"
+        ],
+        "expected_results": [
+          "Checks pass with source and immutable history preserved; skipped checks remain outstanding."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Implement desktop Amount and cancellable hover through shared drafts",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Implementation authorized by the owner request. Routine widget and numerical choices delegated within the design. No performance claim without photo-sized measurement."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Preset contract",
+          "target": "docs/design/presets.md",
+          "locator": "Amount and hover preview",
+          "relevance": "Defines scaling, draft lifecycle and limitations."
+        }
+      ],
+      "acceptance_criteria": [
+        "Hover leave and Escape write no history; stale previews cannot replace the current picture.",
+        "Click commits once; Amount remains adjustable without accumulation; unavailable analysis previews explain why.",
+        "Selection follows matching current-entry provenance; history, photo and library changes cannot retain an unrelated adjustment target. Existing gestures and busy/Compare states are respected."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run scoped correctness checks at completion and inspect correlated evidence."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app preset"
+        ],
+        "expected_results": [
+          "Checks pass with source and immutable history preserved; skipped checks remain outstanding."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Verify rendered preset journeys and update current documentation",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Implementation authorized by the owner request. Routine widget and numerical choices delegated within the design. No performance claim without photo-sized measurement.",
+        "The preset interaction is delivered: exact reference and desktop interaction checks and the M4 Pro / Metal synthetic preset journey pass. The aggregate quick gate remains open for native filesystem-watcher failures, including watcher replay and catalog rename row identity; isolated retries pass, while serial Rust tests do not qualify the aggregate watcher target. These paths match current main. Qualify the unrelated watcher checks before claiming a passing aggregate quick result; do not change preset behavior to suppress them."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Preset contract",
+          "target": "docs/design/presets.md",
+          "locator": "Amount and hover preview",
+          "relevance": "Defines scaling, draft lifecycle and limitations."
+        }
+      ],
+      "acceptance_criteria": [
+        "Rendered hover/leave/click/amount evidence correlates state, logs and captures.",
+        "Quick verification passes; current docs describe support and honest unmeasured performance scope."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run scoped correctness checks at completion and inspect correlated evidence."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output /tmp/luxforge-preset-quick",
+          "tools/cargo-cached xtask smoke --scenario presets --output /tmp/luxforge-preset-rendered"
+        ],
+        "expected_results": [
+          "Checks pass with source and immutable history preserved; skipped checks remain outstanding."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003"
+      ]
+    }
+  ]
+}

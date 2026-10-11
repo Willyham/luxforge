@@ -62,6 +62,82 @@ fn snapshot_path() -> PathBuf {
         .join("../../fixtures/modules/builtin-descriptors.json")
 }
 
+/// The committed snapshot of what a developer run serves beyond the built-in registry: the test
+/// modules' descriptors and the methods they generate, which a qualification corpus recipe driving
+/// the developer candidate producer is checked against.
+fn developer_snapshot_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/modules/developer-descriptors.json")
+}
+
+/// `module.list`'s developer-only modules and the methods they generate, as a JSON client reads
+/// them from an owner serving [`ModuleRegistry::developer`], pretty-printed with a trailing
+/// newline.
+fn published_developer() -> String {
+    let catalog = paths::temp_catalog("developer-descriptors");
+    let owner = Owner::start(&catalog, ModuleRegistry::developer(), "descriptor-snapshot")
+        .expect("an owner");
+    let client = owner.client();
+    let listed = owner
+        .call(client, "module.list", json!({}))
+        .expect("module.list");
+    let schema = owner
+        .call(client, "schema.list", json!({}))
+        .expect("schema.list");
+    owner.close().expect("the owner stops");
+    let _ = std::fs::remove_file(&catalog);
+    let modules: Vec<Value> = listed["modules"]
+        .as_array()
+        .expect("a module list")
+        .iter()
+        .filter(|module| module["developer"] == json!(true))
+        .cloned()
+        .collect();
+    let registry = ModuleRegistry::developer();
+    let mut names = Vec::new();
+    for descriptor in registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.developer)
+    {
+        names.extend(descriptor.actions.iter().map(|action| {
+            registry
+                .resolve_action(&action.id)
+                .expect("a registered action")
+                .method()
+        }));
+        names.extend(descriptor.queries.iter().map(|query| {
+            registry
+                .resolve_query(&query.id)
+                .expect("a registered query")
+                .method()
+        }));
+        names.extend(
+            descriptor
+                .tasks
+                .iter()
+                .map(|task| format!("{TASK_PREFIX}{}", task.id)),
+        );
+    }
+    let methods: Map<String, Value> = names
+        .into_iter()
+        .map(|name| {
+            let schema = schema["methods"]
+                .get(&name)
+                .unwrap_or_else(|| panic!("schema.list does not list {name}"))
+                .clone();
+            (name, schema)
+        })
+        .collect();
+    let snapshot = json!({
+        "module.list": {"modules": modules},
+        "schema.list": {"methods": methods},
+    });
+    let mut text = serde_json::to_string_pretty(&snapshot).expect("JSON");
+    text.push('\n');
+    text
+}
+
 /// `module.list` and the generated part of `schema.list`, as a JSON client reads them from an
 /// owner serving [`ModuleRegistry::builtin`], pretty-printed with a trailing newline.
 fn published() -> String {
@@ -132,10 +208,27 @@ fn published() -> String {
 
 #[test]
 fn the_built_in_descriptors_match_the_committed_snapshot() {
-    let path = snapshot_path();
-    let committed = std::fs::read_to_string(&path)
+    matches_snapshot(
+        &snapshot_path(),
+        &published(),
+        "generate_builtin_descriptor_snapshot",
+    );
+}
+
+#[test]
+fn the_developer_descriptors_match_the_committed_snapshot() {
+    matches_snapshot(
+        &developer_snapshot_path(),
+        &published_developer(),
+        "generate_developer_descriptor_snapshot",
+    );
+}
+
+/// `published` is the snapshot committed at `path`, or a failure naming the first difference and
+/// the `generator` that rewrites it.
+fn matches_snapshot(path: &std::path::Path, published: &str, generator: &str) {
+    let committed = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("{} is unreadable: {error}", path.display()));
-    let published = published();
     if committed == published {
         return;
     }
@@ -152,14 +245,14 @@ fn the_built_in_descriptors_match_the_committed_snapshot() {
             .join("\n")
     };
     panic!(
-        "the built-in registry no longer publishes {}: first difference at line {}\n\
+        "the registry no longer publishes {}: first difference at line {}\n\
          committed:\n{}\npublished:\n{}\n\
          If the change is intended, regenerate it with `cargo test -p luxforge-core --test \
-         modules -- --ignored generate_builtin_descriptor_snapshot` and review the diff.",
+         modules -- --ignored {generator}` and review the diff.",
         path.display(),
         line + 1,
         around(&committed),
-        around(&published),
+        around(published),
     );
 }
 
@@ -209,7 +302,7 @@ fn schema_list_names_developer_only_methods_only_in_developer_mode() {
         );
     }
     assert!(
-        generated.contains(&"edit.set-pixel".to_owned()),
+        generated.contains(&"edit.set-controls".to_owned()),
         "{generated:?}"
     );
     for method in &generated {
@@ -231,4 +324,11 @@ fn generate_builtin_descriptor_snapshot() {
     let path = snapshot_path();
     std::fs::create_dir_all(path.parent().expect("a directory")).expect("the fixture directory");
     std::fs::write(&path, published()).expect("the snapshot is written");
+}
+
+#[test]
+#[ignore = "writes the committed snapshot; run it only after an intended descriptor change"]
+fn generate_developer_descriptor_snapshot() {
+    let path = developer_snapshot_path();
+    std::fs::write(&path, published_developer()).expect("the snapshot is written");
 }

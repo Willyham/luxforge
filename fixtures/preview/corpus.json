@@ -583,6 +583,126 @@
         {"api": {"method": "edit.set-curve", "params": {"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}}},
         {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}}
       ]
+    },
+    {
+      "id": "repair-clone-spots",
+      "family": "repair-clone",
+      "class": "spatial",
+      "description": "Three Clone corrections with set sources: two spots, one hard-edged, and a short stroke; independent, so one group draws them in one set of passes.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.3, 0.4]], "radius": 0.02, "mode": "clone", "feather": 50, "opacity": 100, "source-x": 0.42, "source-y": 0.46}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.7, 0.6]], "radius": 0.015, "mode": "clone", "feather": 0, "opacity": 100, "source-x": 0.6, "source-y": 0.72}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.2, 0.75], [0.35, 0.8]], "radius": 0.01, "mode": "clone", "feather": 50, "opacity": 80, "source-x": 0.25, "source-y": 0.6}}}
+      ]
+    },
+    {
+      "id": "repair-clone-chain",
+      "family": "repair-clone",
+      "class": "spatial",
+      "description": "A Clone whose source is an earlier Clone's destination, and a third over both: chained groups, each sampling what the ones before it left.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.4, 0.4]], "radius": 0.025, "mode": "clone", "feather": 50, "opacity": 100, "source-x": 0.55, "source-y": 0.4}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.55, 0.55]], "radius": 0.025, "mode": "clone", "feather": 50, "opacity": 100, "source-x": 0.4, "source-y": 0.4}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.42, 0.42], [0.53, 0.53]], "radius": 0.012, "mode": "clone", "feather": 30, "opacity": 100, "source-x": 0.2, "source-y": 0.2}}}
+      ]
+    },
+    {
+      "id": "repair-heal-spots",
+      "family": "repair-heal",
+      "class": "spatial",
+      "description": "Heal corrections with set sources: a spot, a stroke healed from far across the frame and a spot at the frame's right edge.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.5, 0.5]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.62, "source-y": 0.48}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.15, 0.2], [0.3, 0.25], [0.45, 0.22]], "radius": 0.012, "mode": "heal", "feather": 30, "opacity": 90, "source-x": 0.6, "source-y": 0.8}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.985, 0.5]], "radius": 0.02, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.85, "source-y": 0.5}}}
+      ]
+    },
+    {
+      "id": "repair-heal-overlap-detail",
+      "family": "repair-heal",
+      "class": "spatial",
+      "description": "A Heal, a Clone over it and a Heal reading the Clone's output, then Detail at the study's moderate set: repair before Detail, in staged sweeps where the sources reach far.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.3, 0.4]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.36, "source-y": 0.32}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.31, 0.41]], "radius": 0.012, "mode": "clone", "feather": 0, "opacity": 60, "source-x": 0.6, "source-y": 0.7}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.33, 0.4]], "radius": 0.02, "mode": "heal", "feather": 20, "opacity": 100, "source-x": 0.33, "source-y": 0.2}}},
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
+      ]
+    },
+    {
+      "id": "repair-heal-perspective",
+      "family": "repair-heal",
+      "class": "spatial",
+      "description": "A Heal, a Clone stroke and a Heal by the frame's corner, then a straightened crop and a Perspective warp: the repair in content coordinates under nonlinear geometry.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.4, 0.45]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.55, "source-y": 0.5}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.2, 0.3], [0.35, 0.35]], "radius": 0.012, "mode": "clone", "feather": 30, "opacity": 100, "source-x": 0.25, "source-y": 0.7}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.03, 0.9]], "radius": 0.02, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.2, "source-y": 0.9}}},
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "3:2", "angle": 4.0}}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}}
+      ]
+    },
+    {
+      "id": "repair-heal-lens-perspective",
+      "family": "repair-heal",
+      "class": "spatial",
+      "description": "The same corrections under the source's lens profile and a Perspective warp: the repair before a lens distortion and a homography.",
+      "sources": ["lens-zone-plate", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"section": {"module": "luxforge.lens", "expanded": true}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.4, 0.45]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.55, "source-y": 0.5}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.2, 0.3], [0.35, 0.35]], "radius": 0.012, "mode": "clone", "feather": 30, "opacity": 100, "source-x": 0.25, "source-y": 0.7}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.03, 0.9]], "radius": 0.02, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.2, "source-y": 0.9}}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}}
+      ]
+    },
+    {
+      "id": "repair-patch-layers",
+      "family": "repair-patch",
+      "class": "spatial",
+      "developer": true,
+      "description": "Two candidates of the developer producer accepted as frozen patches over a Clone, the second overlapping the first at opacity 70, and a Heal over both: a linear patch whose values pass both ends of the linear range and an 8-bit sRGB one, each with coverage stepping through 0, 1/4, 1/2, 3/4 and 1, at the same content pixels on every source.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.3, 0.4]], "radius": 0.02, "mode": "clone", "feather": 50, "opacity": 100, "source-x": 0.42, "source-y": 0.46}}},
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 1, "width": 640, "height": 480, "x": 400, "y": 300, "seed": 7, "colour": "linear"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 0, "opacity": 100}}},
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 2, "width": 512, "height": 384, "x": 700, "y": 500, "seed": 23, "colour": "srgb8"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 1, "opacity": 70}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.5, 0.55]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.62, "source-y": 0.48}}}
+      ]
+    },
+    {
+      "id": "repair-patch-large",
+      "family": "repair-patch",
+      "class": "spatial",
+      "developer": true,
+      "description": "One 2048 x 2048 frozen patch, the largest candidate the producer makes (64 MiB), at opacity 90 before Detail: 32 MiB of patch words in the GPU repair step, under its 64 MiB bound.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 1, "width": 2048, "height": 2048, "x": 1200, "y": 1000, "seed": 41, "colour": "linear"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 0, "opacity": 90}}},
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
+      ]
+    },
+    {
+      "id": "repair-patch-stale",
+      "family": "repair-patch",
+      "class": "spatial",
+      "developer": true,
+      "description": "A frozen patch over a Clone whose opacity then changes: the patch is stale (earlier-correction) and keeps rendering over what the Clone now leaves.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.3, 0.4]], "radius": 0.03, "mode": "clone", "feather": 50, "opacity": 100, "source-x": 0.42, "source-y": 0.46}}},
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 1, "width": 768, "height": 512, "x": 300, "y": 250, "seed": 59, "colour": "linear"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 0, "opacity": 100}}},
+        {"api": {"method": "edit.update-correction", "params": {"operation": "correction-1", "opacity": 40}}}
+      ]
     }
   ]
 }

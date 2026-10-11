@@ -271,6 +271,27 @@ fn path_without_firmlinks(file: &File) -> io::Result<PathBuf> {
     Ok(PathBuf::from(OsStr::from_bytes(c_field(&path))))
 }
 
+/// A file system's ID as `fsgetpath` takes it (`fsid_t`).
+#[repr(C)]
+struct FsId([i32; 2]);
+
+unsafe extern "C" {
+    /// `<sys/fsgetpath.h>`, macOS 10.13 and later: the path of the file `object` (its inode) on the
+    /// file system `fsid`, NUL-terminated in `buffer`, or -1.
+    fn fsgetpath(buffer: *mut c_char, size: usize, fsid: *mut FsId, object: u64) -> isize;
+}
+
+/// Where the file `inode` on the device `device` is now (`fsgetpath`), with firmlinks: a local
+/// volume's file system ID is its device number, as `stat` reports it.
+pub(crate) fn path_of(device: u64, inode: u64) -> Option<PathBuf> {
+    let mut fsid = FsId([device as libc::dev_t, 0]);
+    let mut path = [0 as c_char; libc::PATH_MAX as usize];
+    // SAFETY: `fsgetpath` writes at most `size` bytes, NUL-terminated, into the buffer, which has
+    // that many, and only reads the `fsid_t` it is given.
+    let written = unsafe { fsgetpath(path.as_mut_ptr(), path.len(), &raw mut fsid, inode) };
+    (written > 0).then(|| PathBuf::from(OsStr::from_bytes(c_field(&path))))
+}
+
 /// The identifier of the device's FSEvents history, if it keeps one.
 fn history(device: libc::dev_t) -> Option<[u8; 16]> {
     // SAFETY: takes a device number and returns a new CFUUID or null.

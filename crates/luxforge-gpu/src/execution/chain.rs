@@ -30,7 +30,7 @@
 //!   GPU-preview budget with the slot, beside each link's words, blocks and kept planes and the
 //!   pool, once ([`super::chain_charge`]).
 use super::{
-    Charged, Compiled, GpuStep, MAP_WORDS, STEP_WORDS, TexelMap,
+    Charged, Compiled, GpuFallback, GpuStep, MAP_WORDS, STEP_WORDS, TexelMap,
     blocks::{Update, WrittenBlocks},
     encode_pass_over,
     spatial::{Pool, Rect},
@@ -99,6 +99,8 @@ pub fn pack_words(texels: TexelMap, offset: (u32, u32), steps: &[GpuStep], words
     let header = MAP_WORDS + STEP_WORDS * steps.len();
     let (mut word, mut block) = (header, 0);
     for step in steps {
+        // A spatial step's resident blocks come before its base.
+        block += step.resident_len();
         words.extend([word as u32, block as u32]);
         words.extend(step.position().words());
         word += step.word_count();
@@ -106,6 +108,7 @@ pub fn pack_words(texels: TexelMap, offset: (u32, u32), steps: &[GpuStep], words
     }
     let mut block = 0;
     for step in steps {
+        block += step.resident_len();
         match step {
             GpuStep::Colour { program, .. } => words.extend_from_slice(&program.words),
             GpuStep::Masked(masked) => masked.pack_words(words, block),
@@ -248,10 +251,11 @@ impl LinkSlot {
         input: u64,
         (texels, size): (TexelMap, (u32, u32)),
         dirty: Option<Rect>,
-    ) -> (bool, u64, Option<Rect>) {
+        fill: Option<&super::fill::Fill<'_>>,
+    ) -> Result<(bool, u64, Option<Rect>), GpuFallback> {
         let key = written_key(input, words, self.written_blocks.key(), pipeline);
         if self.key == Some(key) {
-            return (false, 0, dirty.map(|_| Rect::whole((0, 0))));
+            return Ok((false, 0, dirty.map(|_| Rect::whole((0, 0)))));
         }
         // Only what the same pipeline last wrote is kept around a change.
         let dirty = dirty.filter(|_| self.key.is_some() && self.pipeline == Some(pipeline));
@@ -270,7 +274,8 @@ impl LinkSlot {
                 input,
                 (texels, size),
                 dirty,
-            );
+                fill,
+            )?;
             dispatched = ran;
             reached = dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
         }
@@ -289,7 +294,7 @@ impl LinkSlot {
         );
         self.key = Some(key);
         self.pipeline = Some(pipeline);
-        (true, dispatched, reached)
+        Ok((true, dispatched, reached))
     }
 
     /// The content key of what the intermediate holds.
@@ -316,6 +321,10 @@ mod tests {
             clamps: false,
             mask: None,
             halos: Vec::new(),
+            contained: false,
+            resident: Vec::new(),
+            resident_key: 0,
+            reads: None,
         }))
     }
 

@@ -12,10 +12,12 @@ Module secrets use the macOS Keychain, verified natively by an opt-in test on th
 
 A build on a newer SDK does not prove execution on the floor. Desktop results must name the actual OS, architecture and backend. Linux ARM64 or Windows ARM emulation may supplement the x64 matrix, never replace it. The owner's Omarchy VM runs ARM64 Arch Linux (kernel 7.2.6) with Rust 1.94.0. Focused core job-monitoring tests pass there: bounded waits and cancellation, disconnect cleanup and response ordering, and progress/terminal publication. These are VM functional checks, not Linux desktop or GPU acceptance. Native minimize/hide visibility facts remain unsupported on Linux, so minimizing a normal editor window does not pause UI sampling there yet.
 
+The owner chose **macOS and Linux together** for initial [v0.1 distribution](../design/release-v0.1.md): Apple silicon macOS and the existing x86-64 Ubuntu 24.04 baseline. Versioned tag-build tarballs are implemented; hosted/native Linux execution, desktop integration and Wayland/X11/GPU qualification remain unclaimed. Paid Apple Developer Program membership is active; the owner reports completing signing setup with Keychain profile `luxforge-notarization`; identity/profile validation and signed-candidate qualification remain unrun. This selection does not broaden verified support to other architectures or distributions.
+
 ## Prerequisites
 
 - All hosts: Rust 1.94.0 with rustfmt and Clippy, plus Git. Tooling is Rust-only.
-- macOS: Xcode Command Line Tools, Metal-capable Apple Silicon and an unlocked graphical desktop for interaction checks. Bundles are unsigned and not notarized.
+- macOS: Xcode Command Line Tools, Metal-capable Apple Silicon and an unlocked graphical desktop for interaction checks. Development bundles are unsigned; tag builds can explicitly sign/notarize after hosted credentials are configured, with no real signing result claimed yet.
 - Windows: Visual Studio Build Tools with the C++ toolchain and Windows SDK, a DX12-capable driver and a desktop session. Inspect the artifact's runtime imports before calling packaging self-contained.
 - Linux: `build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev` to build; `libxkbcommon-x11-0` (not supplied by `libxkbcommon-dev`), a Vulkan driver and a working XDG desktop portal with a file chooser backend at runtime. Build on Ubuntu 24.04 itself to avoid raising the glibc baseline. Headless smoke additionally needs Xvfb and Mesa Vulkan drivers.
 

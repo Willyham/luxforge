@@ -145,6 +145,7 @@ impl Hold {
                         artifacts: false,
                         single: false,
                         sources: Vec::new(),
+                        operations: None,
                         maskable: false,
                     }],
                     availability: Availability::Available,

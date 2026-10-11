@@ -303,7 +303,7 @@ fn attempted(root: u64, what: impl Fn(&WatchEvent) -> bool) -> bool {
 fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     let dir = folder("watch-overflow");
     let id = 90_001;
-    // The channel starts full, and nothing reads it until the watcher has had a change refused.
+    // The channel starts full, and nothing reads it until the watcher owes an overflow rescan.
     let (sender, receiver) = sync_channel::<Probe>(1);
     let filler = WatchEvent::Volume(VolumeEvent::Unmounted {
         mount_point: PathBuf::from("/nowhere"),
@@ -311,13 +311,23 @@ fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     sender.send(Probe(filler)).unwrap();
     let mut events = Events::new(receiver);
     let mut watcher = Watcher::start(sender).unwrap();
-    // The change replays, so it is the root's first event, and it is refused; the watcher, which
-    // never waits on the channel, owes the root a rescan instead, and withholds what follows.
+    // FSEvents can deliver the write during replay or after HistoryDone. If CaughtUp is refused
+    // first, the change is folded into that debt without a send attempt. In either case a retry
+    // of the overflow rescan proves the root was owed while the channel was still full; the
+    // write's own report may come later still, live (below).
     let cursor = current_cursor(&dir);
     fs::write(dir.join("lost.jpg"), b"l").unwrap();
     watcher.add_root(root(id, &dir, cursor)).unwrap();
-    wait_until("the change was refused", || {
-        attempted(id, |event| matches!(event, WatchEvent::Changed { .. }))
+    wait_until("the overflow rescan was retried", || {
+        attempted(id, |event| {
+            matches!(
+                event,
+                WatchEvent::Rescan {
+                    reason: RescanReason::Overflow,
+                    ..
+                }
+            )
+        })
     });
     // Once there is room, the retry sends the rescan, then the caught-up it was owed after it. A
     // channel of one can fill again between the two, which only owes the root another rescan.
@@ -345,8 +355,20 @@ fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     let seen = events.until("the next change", id, |seen| {
         changed(seen).contains(&dir.join("next.jpg"))
     });
-    // The refused change was covered by the rescan, never sent on its own.
-    assert!(!changed(&seen).contains(&dir.join("lost.jpg")), "{seen:?}");
+    // The refused change was covered by the rescan, never sent while the root was owed: nothing
+    // but a rescan comes before the caught-up. `fseventsd` can number the write's event after the
+    // replay ended when it lags behind under load, and that report then arrives live once nothing
+    // is owed, after the caught-up, as any later change does.
+    let paid = seen
+        .iter()
+        .position(|event| matches!(event, WatchEvent::CaughtUp { .. }))
+        .expect("the caught-up was seen above");
+    assert!(
+        seen[..paid]
+            .iter()
+            .all(|event| matches!(event, WatchEvent::Rescan { .. })),
+        "{seen:?}"
+    );
 }
 
 #[test]

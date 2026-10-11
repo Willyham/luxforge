@@ -1078,7 +1078,7 @@ impl Shape {
             EffectStage::Color | EffectStage::Finish => Some(Self::Color),
             EffectStage::Restoration | EffectStage::Spatial => Some(Self::Spatial),
             EffectStage::Geometry => Some(Self::Geometry),
-            EffectStage::Source | EffectStage::Pixel => None,
+            EffectStage::Source | EffectStage::Repair => None,
         }
     }
 
@@ -2192,8 +2192,8 @@ mod tests {
                 "field level is listed 2 times in the groups, not once",
             ),
             (
-                |spec| spec.effect.stage = EffectStage::Pixel,
-                "a field patch cannot own a pixel effect",
+                |spec| spec.effect.stage = EffectStage::Repair,
+                "a field patch cannot own a repair effect",
             ),
         ];
         for (change, expected) in cases {

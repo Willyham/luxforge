@@ -257,16 +257,10 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
     // The answers that decide the stack shapes, by name.
     let expected = [
         (
-            "replacements on either side of a colour run",
+            "colour behind an exact orientation",
             1,
             false,
-            "pixel-stage",
-        ),
-        (
-            "a replacement behind an exact orientation",
-            1,
-            false,
-            "pixel-stage",
+            "boundary-stage",
         ),
         // Every colour unit of Basic, the mixer and the vignette has an enabled program.
         ("Basic and the colour mixer", 0, false, "plan"),
@@ -332,8 +326,6 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
         ),
         ("a positional unit over the whole tail", 0, false, "plan"),
         ("a positional unit over the whole tail", 3, false, "plan"),
-        ("two resamples", 3, true, "pixel-stage"),
-        ("an upscale", 0, false, "pixel-stage"),
     ];
     for (name, boundary, qualifying, code) in expected {
         assert_eq!(

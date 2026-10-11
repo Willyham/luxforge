@@ -448,8 +448,8 @@ pub(super) fn compile(
 mod tests {
     use super::*;
     use crate::{
-        ActionControl, CROP_EFFECT, CropPayload, GroupControl, LayerId, ModuleRegistry,
-        PIXEL_EFFECT, VIGNETTE_EFFECT,
+        ActionControl, BASIC_EFFECT, CROP_EFFECT, CropPayload, GroupControl, LayerId,
+        ModuleRegistry, VIGNETTE_EFFECT,
         modules::{ParameterKind, StageQuestions, check_parameters},
     };
     use crate::{Stage, ToolModule};
@@ -789,7 +789,7 @@ mod tests {
         for (case, effect, format, kind) in [
             (
                 "wrong effect",
-                PIXEL_EFFECT,
+                BASIC_EFFECT,
                 EFFECT_FORMAT,
                 ErrorKind::Incompatible,
             ),
@@ -845,12 +845,12 @@ mod tests {
         let neutral_crop = Layer::crop(CropPayload::NEUTRAL);
         for (case, layers) in [
             ("an empty stack", vec![]),
-            ("a pixel layer", vec![other_layer(PIXEL_EFFECT)]),
+            ("a colour layer", vec![other_layer(BASIC_EFFECT)]),
             // A neutral crop selects the whole turned stage, so only the orientation changes.
             ("a neutral crop layer", vec![neutral_crop.clone()]),
             (
-                "an orientation layer behind a pixel layer",
-                vec![existing.clone(), other_layer(PIXEL_EFFECT)],
+                "an orientation layer behind a colour layer",
+                vec![existing.clone(), other_layer(BASIC_EFFECT)],
             ),
         ] {
             for transform in ACTIONS {
@@ -869,8 +869,8 @@ mod tests {
         for (case, layers) in [
             ("the last layer", vec![existing.clone()]),
             (
-                "after a pixel layer",
-                vec![other_layer(PIXEL_EFFECT), existing.clone()],
+                "after a colour layer",
+                vec![other_layer(BASIC_EFFECT), existing.clone()],
             ),
             (
                 "ahead of a finish layer",

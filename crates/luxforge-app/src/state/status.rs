@@ -128,7 +128,6 @@ const CLASSES: [Class; 7] = [
     },
     Class {
         codes: &[
-            "pixel-stage",
             "boundary-stage",
             "spatial-unit",
             "spatial-chain",
@@ -462,8 +461,52 @@ pub(crate) struct StatusBarModel {
     /// and the reason lasts ([`CpuReason::notice`]). The muted phrase after `render`, with its
     /// tooltip. `None` while a GPU frame is on screen, and when the gesture's settle ends.
     pub(crate) fallback: Option<Fallback>,
+    /// The displayed entry's stale frozen patches ([`stale_notice`]): `1 patch stale`, with a
+    /// tooltip naming each and why. `None` when none is stale.
+    pub(crate) stale: Option<Fallback>,
     /// The zoom mode, its effective percentage and the display scale: `Fit · 18% · 2×`.
     pub(crate) view: String,
+}
+
+/// What the status bar says while the displayed entry holds stale frozen patches
+/// (`docs/design/corrections.md`, "Input identity"): `2 patches stale`, and on hover each patch by
+/// name with what changed since it was generated, that it still renders and that export asks
+/// before including it. The rows of `recipe.describe`'s repair layer, the same an agent reads.
+pub(crate) fn stale_notice(recipe: Option<&luxforge_core::RecipeDescription>) -> Option<Fallback> {
+    let stale: Vec<&luxforge_core::StaleCorrection> = recipe?
+        .layers
+        .iter()
+        .flat_map(|layer| layer.stale.iter())
+        .collect();
+    if stale.is_empty() {
+        return None;
+    }
+    let phrase = match stale.len() {
+        1 => "1 patch stale".to_owned(),
+        count => format!("{count} patches stale"),
+    };
+    let mut lines: Vec<String> = stale
+        .iter()
+        .map(|patch| {
+            let changed: Vec<&str> = patch
+                .reasons
+                .iter()
+                .map(|reason| super::corrections::stale_phrase(reason.as_str()))
+                .collect();
+            format!(
+                "{}: {} since it was generated.",
+                patch.name,
+                changed.join(", ")
+            )
+        })
+        .collect();
+    lines.push(
+        "A stale patch still renders as it was accepted; export asks before including it.".into(),
+    );
+    Some(Fallback {
+        phrase,
+        tooltip: lines.join("\n"),
+    })
 }
 
 /// "1 agent connected", "2 agents connected" or "No agents connected"; the desktop is not one of
@@ -544,6 +587,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
                 .or_else(|| inputs.cpu_reason.as_ref().and_then(CpuReason::notice))
                 .or_else(|| inputs.rest_compiling.then(rest_compiling_notice))
         },
+        stale: stale_notice(inputs.document.recipe.as_ref()),
         // The display's own scale: the interface size is a choice of its own, not the display's.
         view: view_text(
             &inputs.session.preview.view.zoom,
@@ -751,7 +795,6 @@ mod tests {
     #[test]
     fn the_stacks_class_names_the_layer_its_reason_names() {
         let codes = [
-            "pixel-stage",
             "boundary-stage",
             "spatial-unit",
             "spatial-chain",
@@ -980,5 +1023,53 @@ mod tests {
             mask_gesture(&brush, Some(false)),
             "Mask mode \u{b7} Face \u{b7} Brush 1 \u{b7} press to paint \u{b7} each stroke is one entry"
         );
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::stale_notice;
+    use serde_json::json;
+
+    /// The displayed entry's stale frozen patches, read from `recipe.describe`'s repair row: a
+    /// count, and on hover each patch with what changed; nothing when none is stale.
+    #[test]
+    fn the_status_bar_says_which_patches_are_stale_and_why() {
+        let recipe = |stale: serde_json::Value| -> luxforge_core::RecipeDescription {
+            let mut layer = json!({"id": "layer-1", "effect": "luxforge.corrections.repair",
+                "module": "luxforge.corrections", "title": "Corrections", "summary": "3 corrections",
+                "values": {}, "available": true, "mask": null, "artifacts": [], "neutral": false,
+                "input_stage": null, "input_orientation": null});
+            if !stale.is_null() {
+                layer["stale"] = stale;
+            }
+            layer["id"] = json!(luxforge_core::LayerId::new());
+            serde_json::from_value(
+                json!({"entry_id": luxforge_core::EntryId::new(), "layers": [layer]}),
+            )
+            .expect("a description")
+        };
+        assert_eq!(stale_notice(None), None);
+        assert_eq!(stale_notice(Some(&recipe(serde_json::Value::Null))), None);
+        let one = stale_notice(Some(&recipe(json!([
+            {"operation": "correction-3", "name": "Patch 3", "reasons": ["earlier-correction"]}
+        ]))))
+        .expect("a notice");
+        assert_eq!(one.phrase, "1 patch stale");
+        assert_eq!(
+            one.tooltip,
+            "Patch 3: a correction below it changed since it was generated.\n\
+             A stale patch still renders as it was accepted; export asks before including it."
+        );
+        let two = stale_notice(Some(&recipe(json!([
+            {"operation": "correction-3", "name": "Patch 3", "reasons": ["development"]},
+            {"operation": "correction-5", "name": "Patch 5", "reasons": ["source", "dimensions"]}
+        ]))))
+        .expect("a notice");
+        assert_eq!(two.phrase, "2 patches stale");
+        assert!(two.tooltip.starts_with(
+            "Patch 3: the RAW development changed since it was generated.\n\
+             Patch 5: the original changed, the photograph's dimensions changed since it was generated."
+        ));
     }
 }

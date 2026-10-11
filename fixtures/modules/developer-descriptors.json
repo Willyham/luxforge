@@ -1,0 +1,1218 @@
+{
+  "module.list": {
+    "modules": [
+      {
+        "actions": [
+          {
+            "id": "set-controls",
+            "notes": "One field patch for every generated control",
+            "parameters": [
+              {
+                "default": 0.0,
+                "fine_step": 0.01,
+                "kind": "number",
+                "max": 10.0,
+                "min": -10.0,
+                "name": "amount",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": 2,
+                "required": false,
+                "soft_max": 5.0,
+                "soft_min": -5.0,
+                "step": 0.1,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 50.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "coordinate",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 20,
+                "min": 0,
+                "name": "count",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": null,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": false,
+                "kind": "boolean",
+                "name": "enabled",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": "one",
+                "kind": "enum",
+                "name": "mode",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "options": [
+                  "one",
+                  "two",
+                  "three"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": "one",
+                "kind": "enum",
+                "name": "mode-chips",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "options": [
+                  "one",
+                  "two",
+                  "three",
+                  "four",
+                  "five"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": "one",
+                "kind": "enum",
+                "name": "mode-menu",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "options": [
+                  "one",
+                  "two",
+                  "three",
+                  "four",
+                  "five"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": [
+                  64,
+                  128,
+                  192
+                ],
+                "kind": "color",
+                "name": "rgb",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": [
+                  0,
+                  0,
+                  0
+                ],
+                "kind": "color",
+                "name": "rgb-fields",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.5,
+                    0.5
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ],
+                "kind": "curve",
+                "monotone": true,
+                "name": "master",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "points_max": 8,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": 0.01,
+                "unit": null
+              },
+              {
+                "default": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.5,
+                    0.5
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ],
+                "kind": "curve",
+                "monotone": false,
+                "name": "red",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "points_max": 8,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": 0.01,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 360.0,
+                "min": 0.0,
+                "name": "wheel-hue",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": "deg"
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "wheel-saturation",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "wheel-luminance",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              }
+            ],
+            "patch": true,
+            "title": "Set Controls"
+          },
+          {
+            "id": "reset-controls",
+            "notes": "Clear all proof control values",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Controls"
+          },
+          {
+            "id": "select-controls-choice",
+            "notes": "Set Count through an eligible query row",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 32,
+                "name": "key",
+                "notes": "",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": true,
+                "kind": "boolean",
+                "name": "show-disabled",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Select controls choice"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": false,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-controls",
+                "kind": "number",
+                "label": "Amount",
+                "parameter": "amount",
+                "rail": "temperature"
+              },
+              {
+                "action": "set-controls",
+                "kind": "number",
+                "label": "Coordinate",
+                "parameter": "coordinate",
+                "style": "field"
+              },
+              {
+                "action": "set-controls",
+                "kind": "number",
+                "label": "Count",
+                "parameter": "count",
+                "style": "stepper"
+              },
+              {
+                "action": "set-controls",
+                "kind": "toggle",
+                "label": "Enabled",
+                "parameter": "enabled"
+              },
+              {
+                "action": "set-controls",
+                "kind": "choice",
+                "label": "Mode",
+                "parameter": "mode",
+                "style": "segmented"
+              },
+              {
+                "action": "set-controls",
+                "kind": "choice",
+                "label": "Mode chips",
+                "parameter": "mode-chips",
+                "style": "chips"
+              },
+              {
+                "action": "set-controls",
+                "kind": "choice",
+                "label": "Mode menu",
+                "parameter": "mode-menu",
+                "style": "menu"
+              },
+              {
+                "action": "set-controls",
+                "kind": "color",
+                "label": "Colour",
+                "parameter": "rgb",
+                "style": "picker"
+              },
+              {
+                "action": "set-controls",
+                "kind": "color",
+                "label": "RGB fields",
+                "parameter": "rgb-fields"
+              },
+              {
+                "controls": [
+                  {
+                    "controls": [
+                      {
+                        "action": "set-controls",
+                        "hue": "wheel-hue",
+                        "kind": "wheel",
+                        "label": "Wheel",
+                        "luminance": "wheel-luminance",
+                        "saturation": "wheel-saturation"
+                      }
+                    ],
+                    "id": "compact",
+                    "kind": "view",
+                    "label": "Compact"
+                  },
+                  {
+                    "controls": [
+                      {
+                        "action": "set-controls",
+                        "hue": "wheel-hue",
+                        "kind": "wheel",
+                        "label": "Wheel",
+                        "luminance": "wheel-luminance",
+                        "saturation": "wheel-saturation",
+                        "style": "large"
+                      },
+                      {
+                        "action": "set-controls",
+                        "kind": "number",
+                        "label": "Hue",
+                        "parameter": "wheel-hue",
+                        "rail": "hue"
+                      },
+                      {
+                        "action": "set-controls",
+                        "kind": "number",
+                        "label": "Saturation",
+                        "parameter": "wheel-saturation"
+                      }
+                    ],
+                    "id": "large",
+                    "kind": "view",
+                    "label": "Large"
+                  }
+                ],
+                "id": "colour-wheel",
+                "kind": "group",
+                "label": "Colour wheel",
+                "layout": "tabs",
+                "reset": {
+                  "action": "set-controls",
+                  "preset": {
+                    "wheel-hue": 0.0,
+                    "wheel-luminance": 0.0,
+                    "wheel-saturation": 0.0
+                  }
+                }
+              },
+              {
+                "action": "set-controls",
+                "background": "histogram",
+                "channels": [
+                  {
+                    "label": "Master",
+                    "parameter": "master"
+                  },
+                  {
+                    "label": "Red",
+                    "parameter": "red"
+                  }
+                ],
+                "kind": "curve",
+                "label": "Curve",
+                "sample_query": "sample-controls-curve"
+              },
+              {
+                "action": "set-controls",
+                "kind": "action",
+                "label": "Enable",
+                "preset": {
+                  "enabled": true
+                }
+              },
+              {
+                "action": "set-controls",
+                "kind": "action",
+                "label": "Mode two",
+                "preset": {
+                  "mode": "two"
+                },
+                "style": "primary"
+              },
+              {
+                "action": "set-controls",
+                "icon": "reset",
+                "kind": "action",
+                "label": "Reset amount",
+                "preset": {
+                  "amount": 0.0
+                },
+                "style": "icon"
+              },
+              {
+                "action": "select-controls-choice",
+                "key": "key",
+                "kind": "query-choice",
+                "label": "Query choice",
+                "page": "page",
+                "query": "controls-choices",
+                "shared": [
+                  "show-disabled"
+                ],
+                "text": "text"
+              }
+            ],
+            "kind": "group",
+            "label": "Control vocabulary",
+            "reset": {
+              "action": "set-controls",
+              "preset": {
+                "amount": 0.0,
+                "coordinate": 50.0,
+                "count": 0,
+                "enabled": false,
+                "master": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.5,
+                    0.5
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ],
+                "mode": "one",
+                "mode-chips": "one",
+                "mode-menu": "one",
+                "red": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.5,
+                    0.5
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ],
+                "rgb": [
+                  64,
+                  128,
+                  192
+                ],
+                "rgb-fields": [
+                  0,
+                  0,
+                  0
+                ],
+                "wheel-hue": 0.0,
+                "wheel-luminance": 0.0,
+                "wheel-saturation": 0.0
+              }
+            }
+          }
+        ],
+        "developer": true,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.controls.identity",
+            "order": 0,
+            "single": true,
+            "stage": "color"
+          }
+        ],
+        "hint": "Developer control vocabulary",
+        "id": "luxforge.controls",
+        "layout": "stacked",
+        "queries": [
+          {
+            "id": "sample-controls-curve",
+            "notes": "257 linearly interpolated fractions from the one submitted channel",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "curve",
+                "monotone": true,
+                "name": "master",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "points_max": 8,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": 0.01,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "curve",
+                "monotone": false,
+                "name": "red",
+                "notes": "Developer control parity fixture; values never alter pixels",
+                "points_max": 8,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": 0.01,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "title": "Sample controls curve"
+          },
+          {
+            "id": "controls-choices",
+            "notes": "Search the developer proof choices",
+            "parameters": [
+              {
+                "default": "",
+                "kind": "string",
+                "max_length": 64,
+                "name": "text",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 99,
+                "min": 0,
+                "name": "page",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": true,
+                "kind": "boolean",
+                "name": "show-disabled",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "title": "Controls choices"
+          }
+        ],
+        "reset": {
+          "action": "reset-controls",
+          "preset": {}
+        },
+        "title": "Controls"
+      },
+      {
+        "actions": [],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": false,
+        "controls": [],
+        "developer": true,
+        "effects": [],
+        "hint": "Deterministic candidate patches for the candidate seam",
+        "id": "luxforge.candidates",
+        "layout": "stacked",
+        "queries": [],
+        "reset": null,
+        "tasks": [
+          {
+            "asset": true,
+            "id": "generate-proof-patches",
+            "notes": "Publishes count deterministic candidate patches of width × height content pixels at x, y of this photograph, each with a preview of at most 64 pixels a side, labelled Patch with the seed in its provenance; each is reserved before it is made, so a candidate over its bound is refused resource-limit and a fifth ends the job resource-limit with four live. Read them with job.read and job.read-candidate.",
+            "parameters": [
+              {
+                "default": 1,
+                "kind": "integer",
+                "max": 8,
+                "min": 1,
+                "name": "count",
+                "notes": "how many candidates to publish",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 16,
+                "kind": "integer",
+                "max": 4096,
+                "min": 1,
+                "name": "width",
+                "notes": "each patch's width in content pixels",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 16,
+                "kind": "integer",
+                "max": 4096,
+                "min": 1,
+                "name": "height",
+                "notes": "each patch's height in content pixels",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 65535,
+                "min": 0,
+                "name": "x",
+                "notes": "the patch's left edge in content pixels",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 65535,
+                "min": 0,
+                "name": "y",
+                "notes": "the patch's top edge in content pixels",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 1000000,
+                "min": 0,
+                "name": "seed",
+                "notes": "offsets every code; candidate n adds 11 n",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": "linear",
+                "kind": "enum",
+                "name": "colour",
+                "notes": "linear: values code / 255 × 1.5 − 0.25 in linear light; srgb8: the codes as 8-bit sRGB",
+                "options": [
+                  "linear",
+                  "srgb8"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "profile": false,
+            "title": "Generate proof patches",
+            "uses": []
+          }
+        ],
+        "title": "Candidates proof"
+      }
+    ]
+  },
+  "schema.list": {
+    "methods": {
+      "edit.reset-controls": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Clear all proof control values",
+        "optional": {},
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "revision_of": "asset"
+      },
+      "edit.select-controls-choice": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Set Count through an eligible query row",
+        "optional": {
+          "show-disabled": ""
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 32,
+            "name": "key",
+            "notes": "",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": true,
+            "kind": "boolean",
+            "name": "show-disabled",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "key"
+        ],
+        "revision_of": "asset"
+      },
+      "edit.set-controls": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "One field patch for every generated control",
+        "optional": {
+          "amount": "Developer control parity fixture; values never alter pixels",
+          "coordinate": "Developer control parity fixture; values never alter pixels",
+          "count": "Developer control parity fixture; values never alter pixels",
+          "enabled": "Developer control parity fixture; values never alter pixels",
+          "master": "Developer control parity fixture; values never alter pixels",
+          "mode": "Developer control parity fixture; values never alter pixels",
+          "mode-chips": "Developer control parity fixture; values never alter pixels",
+          "mode-menu": "Developer control parity fixture; values never alter pixels",
+          "red": "Developer control parity fixture; values never alter pixels",
+          "rgb": "Developer control parity fixture; values never alter pixels",
+          "rgb-fields": "Developer control parity fixture; values never alter pixels",
+          "wheel-hue": "Developer control parity fixture; values never alter pixels",
+          "wheel-luminance": "Developer control parity fixture; values never alter pixels",
+          "wheel-saturation": "Developer control parity fixture; values never alter pixels"
+        },
+        "parameters": [
+          {
+            "default": 0.0,
+            "fine_step": 0.01,
+            "kind": "number",
+            "max": 10.0,
+            "min": -10.0,
+            "name": "amount",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": 2,
+            "required": false,
+            "soft_max": 5.0,
+            "soft_min": -5.0,
+            "step": 0.1,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 50.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "coordinate",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 20,
+            "min": 0,
+            "name": "count",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": null,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": false,
+            "kind": "boolean",
+            "name": "enabled",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": "one",
+            "kind": "enum",
+            "name": "mode",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "options": [
+              "one",
+              "two",
+              "three"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": "one",
+            "kind": "enum",
+            "name": "mode-chips",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "options": [
+              "one",
+              "two",
+              "three",
+              "four",
+              "five"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": "one",
+            "kind": "enum",
+            "name": "mode-menu",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "options": [
+              "one",
+              "two",
+              "three",
+              "four",
+              "five"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": [
+              64,
+              128,
+              192
+            ],
+            "kind": "color",
+            "name": "rgb",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": [
+              0,
+              0,
+              0
+            ],
+            "kind": "color",
+            "name": "rgb-fields",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": [
+              [
+                0.0,
+                0.0
+              ],
+              [
+                0.5,
+                0.5
+              ],
+              [
+                1.0,
+                1.0
+              ]
+            ],
+            "kind": "curve",
+            "monotone": true,
+            "name": "master",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "points_max": 8,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": 0.01,
+            "unit": null
+          },
+          {
+            "default": [
+              [
+                0.0,
+                0.0
+              ],
+              [
+                0.5,
+                0.5
+              ],
+              [
+                1.0,
+                1.0
+              ]
+            ],
+            "kind": "curve",
+            "monotone": false,
+            "name": "red",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "points_max": 8,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": 0.01,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 360.0,
+            "min": 0.0,
+            "name": "wheel-hue",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": "deg"
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "wheel-saturation",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": -100.0,
+            "name": "wheel-luminance",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "revision_of": "asset"
+      },
+      "query.controls-choices": {
+        "mutates": false,
+        "notes": "Search the developer proof choices",
+        "optional": {
+          "entry_id": "entry to ask about; default the session's selection",
+          "page": "",
+          "show-disabled": "",
+          "text": ""
+        },
+        "parameters": [
+          {
+            "default": "",
+            "kind": "string",
+            "max_length": 64,
+            "name": "text",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 99,
+            "min": 0,
+            "name": "page",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": true,
+            "kind": "boolean",
+            "name": "show-disabled",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
+        ]
+      },
+      "query.sample-controls-curve": {
+        "mutates": false,
+        "notes": "257 linearly interpolated fractions from the one submitted channel",
+        "optional": {
+          "entry_id": "entry to ask about; default the session's selection",
+          "master": "Developer control parity fixture; values never alter pixels",
+          "red": "Developer control parity fixture; values never alter pixels"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "curve",
+            "monotone": true,
+            "name": "master",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "points_max": 8,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": 0.01,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "curve",
+            "monotone": false,
+            "name": "red",
+            "notes": "Developer control parity fixture; values never alter pixels",
+            "points_max": 8,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": 0.01,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
+        ]
+      },
+      "task.generate-proof-patches": {
+        "mutates": true,
+        "mutation": "request",
+        "notes": "Publishes count deterministic candidate patches of width × height content pixels at x, y of this photograph, each with a preview of at most 64 pixels a side, labelled Patch with the seed in its provenance; each is reserved before it is made, so a candidate over its bound is refused resource-limit and a fifth ends the job resource-limit with four live. Read them with job.read and job.read-candidate. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "optional": {
+          "colour": "linear: values code / 255 × 1.5 − 0.25 in linear light; srgb8: the codes as 8-bit sRGB",
+          "count": "how many candidates to publish",
+          "height": "each patch's height in content pixels",
+          "seed": "offsets every code; candidate n adds 11 n",
+          "width": "each patch's width in content pixels",
+          "x": "the patch's left edge in content pixels",
+          "y": "the patch's top edge in content pixels"
+        },
+        "parameters": [
+          {
+            "default": 1,
+            "kind": "integer",
+            "max": 8,
+            "min": 1,
+            "name": "count",
+            "notes": "how many candidates to publish",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 16,
+            "kind": "integer",
+            "max": 4096,
+            "min": 1,
+            "name": "width",
+            "notes": "each patch's width in content pixels",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 16,
+            "kind": "integer",
+            "max": 4096,
+            "min": 1,
+            "name": "height",
+            "notes": "each patch's height in content pixels",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 65535,
+            "min": 0,
+            "name": "x",
+            "notes": "the patch's left edge in content pixels",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 65535,
+            "min": 0,
+            "name": "y",
+            "notes": "the patch's top edge in content pixels",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 1000000,
+            "min": 0,
+            "name": "seed",
+            "notes": "offsets every code; candidate n adds 11 n",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": "linear",
+            "kind": "enum",
+            "name": "colour",
+            "notes": "linear: values code / 255 × 1.5 − 0.25 in linear light; srgb8: the codes as 8-bit sRGB",
+            "options": [
+              "linear",
+              "srgb8"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "mutation",
+          "asset_id"
+        ]
+      }
+    }
+  }
+}

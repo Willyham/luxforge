@@ -293,6 +293,10 @@ pub(crate) fn current_cursor(_path: &Path) -> Option<Resume> {
     None
 }
 
+pub(crate) fn path_of(_device: u64, _inode: u64) -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Open `folder` for overlapped change reads, sharing it fully so nothing else is kept from it.
 fn open(folder: &Path) -> io::Result<Owned> {
     let wide: Vec<u16> = folder.as_os_str().encode_wide().chain([0]).collect();

@@ -20,6 +20,7 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 mod procfs;
+pub mod system_info;
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod unsupported;
 #[cfg(windows)]
@@ -147,6 +148,24 @@ impl Sampler {
             logical_cpus: self.logical_cpus,
             memory,
             gpu: self.platform.gpu(),
+        }
+    }
+
+    /// [`Self::read`], except that GPU allocations are read only from a device an earlier
+    /// [`Self::read`] opened, and are otherwise unavailable with the reason. For a background
+    /// consumer that must not be the one to open the device: on macOS, a process whose sampler has
+    /// opened the system's Metal device takes about 200 ms longer to quit, measured on the M4.
+    pub fn read_opening_nothing(&mut self) -> Counters {
+        let (cpu_time_ns, memory) = self.platform.cpu_and_memory();
+        #[cfg(target_os = "macos")]
+        let gpu = self.platform.gpu_opening_nothing();
+        #[cfg(not(target_os = "macos"))]
+        let gpu = self.platform.gpu();
+        Counters {
+            cpu_time_ns,
+            logical_cpus: self.logical_cpus,
+            memory,
+            gpu,
         }
     }
 }

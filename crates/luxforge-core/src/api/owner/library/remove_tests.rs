@@ -297,6 +297,28 @@ impl Harness {
         );
     }
 
+    /// Add one Clone correction along `points` of `asset`, sampled from `source`.
+    fn correct(&self, asset: &Value, points: Value, source: [f64; 2], request_id: &str) {
+        let revision = self.revision(asset);
+        self.prepared(
+            "edit.add-correction",
+            json!({
+                "asset_id": asset,
+                "mutation": mutation_json(revision, request_id),
+                "points": points,
+                "radius": 0.02,
+                "mode": "clone",
+                "source-x": source[0],
+                "source-y": source[1],
+            }),
+        );
+    }
+
+    /// What `query.corrections` answers for `asset`'s current entry.
+    fn corrections(&self, asset: &Value) -> Value {
+        self.ok("query.corrections", json!({"asset_id": asset}))
+    }
+
     /// Tint `asset` with `artifact` through the proof module.
     fn tint(&self, asset: &Value, artifact: &ArtifactId, request_id: &str) {
         let revision = self.revision(asset);
@@ -1094,4 +1116,146 @@ fn remove_no_other_path_deletes_an_entry() {
         harness.entries(edited).is_empty(),
         "emptying Removed deletes them"
     );
+}
+
+/// A corrected photograph keeps its corrections through Remove, Put back and the undo of a
+/// removal, and cannot be sent back. Emptying Removed then deletes only the correction strokes no
+/// surviving entry names: a stroke a remaining photograph's correction shares and the mask strokes
+/// beside them stay, read back whole by the survivor, whatever stroke type and photograph named
+/// them. No original is touched.
+#[test]
+fn remove_and_empty_keep_correction_strokes_every_surviving_entry_names() {
+    let harness = Harness::new("corrections");
+    let paths = harness.photos(2);
+    let assets = harness.develop("develop", &paths);
+    let originals: Vec<_> = paths.iter().map(|path| untouched(path)).collect();
+    let (removed, survivor) = (&assets[0], &assets[1]);
+    harness.correct(removed, json!([[0.2, 0.2]]), [0.4, 0.2], "own");
+    let own: BTreeSet<String> = harness
+        .strings("SELECT id FROM strokes")
+        .into_iter()
+        .collect();
+    assert_eq!(own.len(), 1);
+    let shared_path = json!([[0.6, 0.6], [0.7, 0.62]]);
+    harness.correct(removed, shared_path.clone(), [0.6, 0.3], "shared-removed");
+    harness.correct(survivor, shared_path, [0.3, 0.6], "shared-survivor");
+    let mask_path = json!([[0.1, 0.8], [0.3, 0.85]]);
+    harness.paint(removed, mask_path.clone(), "mask-removed");
+    harness.paint(survivor, mask_path, "mask-survivor");
+    let all: BTreeSet<String> = harness
+        .strings("SELECT id FROM strokes")
+        .into_iter()
+        .collect();
+    assert_eq!(
+        all.len(),
+        3,
+        "a shared stroke is stored once, whichever photograph names it"
+    );
+    let listed = harness.corrections(removed);
+    let survivor_listed = harness.corrections(survivor);
+    let entries = harness.entries(removed);
+
+    // Sending a corrected photograph back is refused; Remove, its undo, redo and Put back keep
+    // every entry and correction.
+    let refused = harness.refused("asset.send-back", targets(&[removed], "send-back"));
+    assert_eq!(refused.code, "conflict", "{}", refused.message);
+    harness.ok("asset.remove", targets(&[removed], "remove-1"));
+    harness.ok("library.undo", json!({"mutation": envelope("undo-remove")}));
+    harness.ok("library.redo", json!({"mutation": envelope("redo-remove")}));
+    harness.ok("asset.restore", targets(&[removed], "put-back"));
+    assert_eq!(harness.entries(removed), entries);
+    assert_eq!(harness.corrections(removed), listed);
+
+    harness.ok("asset.remove", targets(&[removed], "remove-2"));
+    let harness = harness.restart();
+    harness.empty("empty");
+    let left: BTreeSet<String> = harness
+        .strings("SELECT id FROM strokes")
+        .into_iter()
+        .collect();
+    assert_eq!(
+        left,
+        all.difference(&own).cloned().collect(),
+        "only the removed photograph's own correction stroke is deleted"
+    );
+    assert_eq!(harness.corrections(survivor), survivor_listed);
+    let after: Vec<_> = paths.iter().map(|path| untouched(path)).collect();
+    assert_eq!(after, originals, "no original was touched");
+}
+
+/// Frozen patches through Remove, Put back and Empty Removed: a removed photograph keeps its
+/// patches and their artifacts, Put back brings them back as they were, and emptying Removed
+/// collects only the patch artifact no remaining photograph names; the patch another photograph
+/// shares — the same bytes, published once — stays, and that photograph still renders with it.
+#[test]
+fn remove_put_back_and_empty_keep_shared_patch_artifacts_and_collect_the_rest() {
+    let harness = Harness::new("patches");
+    let paths = harness.photos(2);
+    let assets = harness.develop("develop", &paths);
+    let (k0, k1) = (&assets[0], &assets[1]);
+    // The producer's patch depends on its seed and place, not on the photograph: seed 5 makes the
+    // same bytes on both, which they share; seed 9 makes k0's own.
+    let patch = |asset: &Value, seed: u64| {
+        let started = harness.prepared(
+            "task.generate-proof-patches",
+            json!({"asset_id": asset, "count": 1, "width": 8, "height": 6, "x": 2, "y": 2,
+                   "seed": seed, "mutation": envelope(&format!("generate-{asset}-{seed}"))}),
+        );
+        assert_eq!(harness.settle(&started["job_id"])["status"], "ready");
+        let revision = harness.ok("asset.state", json!({"asset_id": asset}))["revision"].clone();
+        let accepted = harness.prepared(
+            "edit.accept-correction-patch",
+            json!({"asset_id": asset, "job_id": started["job_id"], "candidate": 0,
+                   "mutation": mutation_json(revision.as_u64().unwrap(), &format!("accept-{asset}-{seed}"))}),
+        );
+        assert_eq!(accepted["outcome"], "applied", "{accepted}");
+    };
+    patch(k0, 5);
+    patch(k0, 9);
+    patch(k1, 5);
+    let artifacts = |harness: &Harness, asset: &Value| -> Vec<String> {
+        harness.prepared("query.corrections", json!({"asset_id": asset}))["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["artifact"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (shared, own) = match artifacts(&harness, k0).as_slice() {
+        [shared, own] => (shared.clone(), own.clone()),
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(shared, own);
+    assert_eq!(
+        artifacts(&harness, k1),
+        std::slice::from_ref(&shared),
+        "the same bytes are one artifact"
+    );
+    let root = harness.dir.join("catalog.artifacts");
+    let file = |id: &str| object_path(&root, &ArtifactId::parse(id).unwrap());
+    // Restarted, nothing published before is live, so only references keep an artifact.
+    let harness = harness.restart();
+
+    // Removed, k0 keeps its patches and their files; put back, it lists and renders them.
+    harness.ok("asset.remove", targets(&[k0], "remove-1"));
+    assert!(file(&shared).exists() && file(&own).exists());
+    harness.ok("asset.restore", targets(&[k0], "restore-1"));
+    assert_eq!(artifacts(&harness, k0), [shared.clone(), own.clone()]);
+    harness.prepared("render.sample", json!({"asset_id": k0, "x": 4, "y": 4}));
+
+    // Removed again and emptied: k0's own patch artifact goes, the shared one stays with k1.
+    harness.ok("asset.remove", targets(&[k0], "remove-2"));
+    let emptied = harness.empty("empty-1");
+    assert_eq!(emptied["deleted"], 1, "{emptied}");
+    assert_eq!(
+        harness.strings("SELECT id FROM artifacts"),
+        std::slice::from_ref(&shared),
+        "only the shared patch is left"
+    );
+    luxforge_testbase::wait_for("k0's own patch file to be collected", || {
+        (!file(&own).exists()).then_some(())
+    });
+    assert!(file(&shared).exists());
+    assert_eq!(artifacts(&harness, k1), [shared]);
+    harness.prepared("render.sample", json!({"asset_id": k1, "x": 4, "y": 4}));
 }

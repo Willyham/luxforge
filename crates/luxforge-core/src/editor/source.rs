@@ -1792,10 +1792,11 @@ fn file_identity(_: &Metadata, canonical: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ModuleRegistry;
     use crate::editor::{
         AnalysisSelection, MutationOutcome,
-        test_support::{fixture, mutation, synthetic_raw_metadata, temp},
+        test_support::{
+            SAMPLE_ACTION, SampleModule, fixture, mutation, synthetic_raw_metadata, temp,
+        },
     };
     use crate::{Draft, PreviewSource, render::testing::render};
     use serde_json::Map;
@@ -2247,8 +2248,7 @@ mod tests {
     fn a_raw_draft_preview_approximates_and_every_strict_path_refuses() {
         let path = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("fixture path"));
         let catalog = temp("raw-approximate.sqlite");
-        let mut service =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
+        let mut service = EditorService::open_with(&catalog, SampleModule::registry()).unwrap();
         let state = service.import(&path).unwrap();
         let asset = state.asset.id.clone();
         let is_required = |error: Error| error.kind == ErrorKind::PreparationRequired;
@@ -2359,15 +2359,14 @@ mod tests {
                 .analysis_plan(&asset, AnalysisSelection::Current)
                 .unwrap_err()
         ));
-        // A plan that samples a pixel reads it from the stage context, which is strict too: a
-        // pixel replacement compares the pixel it would replace.
+        // A plan that samples a pixel reads it from the stage context, which is strict too.
         assert!(is_required(
             service
                 .apply_action(
                     &asset,
-                    mutation(result.revision, "pixel"),
-                    "set-pixel",
-                    json!({"x": 10, "y": 10, "rgb": [1, 2, 3]}),
+                    mutation(result.revision, "sample"),
+                    SAMPLE_ACTION,
+                    json!({}),
                 )
                 .unwrap_err()
         ));

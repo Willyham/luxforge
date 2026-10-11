@@ -404,19 +404,29 @@ fn a_turned_original_renders_upright_tiers() {
     }
 }
 
-/// A pixel-stage stack — a pixel replacement — is rendered exactly once and area-averaged to each
-/// tier like any other.
+/// A pixel-stage stack, which no proxy can rescale, is rendered exactly once and area-averaged to
+/// each tier like any other.
 #[test]
 fn a_pixel_stage_stack_is_rendered_exactly_and_area_averaged() {
     let path = generated_jpeg("rendered-ineligible", 1200, 800);
+    let mut registry = ModuleRegistry::developer();
+    registry
+        .register(crate::modules::StageModule::shared(
+            "test.pixel",
+            crate::modules::REPAIR_STAGE_EFFECT,
+            "set-test-pixel",
+            crate::EffectStage::Repair,
+            0,
+        ))
+        .unwrap();
     let mut service = EditorService::open_with(
         &paths::temp_catalog("rendered-ineligible"),
-        Arc::new(ModuleRegistry::developer()),
+        Arc::new(registry),
     )
     .unwrap();
     let asset = service.import(&path).unwrap().asset.id;
     service
-        .apply_pixel(&asset, mutation(0, "pixel"), 600, 400, [255, 0, 255])
+        .apply_action(&asset, mutation(0, "pixel"), "set-test-pixel", json!({}))
         .unwrap();
     let exact = service.render_current(&asset).unwrap();
     let request = plan_render(&service, &asset, None, &BOTH).unwrap();

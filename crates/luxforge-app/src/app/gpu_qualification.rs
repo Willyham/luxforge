@@ -323,10 +323,55 @@ fn apply_suggestion(
     Ok(())
 }
 
+/// The job a `task.*` call started, once it has ended: its identity, or why it did not end ready.
+/// A task settles before the next step, as an evidence run's does, so the job a later step names
+/// ([`luxforge_evidence::JobReference`]) has its candidates.
+fn finished_job(
+    owner: &luxforge_core::OwnerHandle,
+    client: luxforge_core::ClientId,
+    method: &str,
+    answer: &Value,
+) -> Result<Value, String> {
+    use luxforge_testkit::client::call;
+    let job = answer["job_id"].clone();
+    if !job.is_string() {
+        return Err(format!("{method} answered no job: {answer}"));
+    }
+    let record =
+        luxforge_testbase::try_wait_for(&format!("{method}'s job to end"), || {
+            match call(owner, client, "job.read", json!({"job_id": job})) {
+                Ok(record) if matches!(record["status"].as_str(), Some("queued" | "running")) => {
+                    None
+                }
+                read => Some(read),
+            }
+        })??;
+    if record["status"] != "ready" {
+        return Err(format!(
+            "{method}'s job ended {}: {record}",
+            record["status"]
+        ));
+    }
+    Ok(job)
+}
+
+/// Whether `steps` call a method only a developer run serves: a test module's task, such as the
+/// frozen-patch family's candidate producer. Such a cell's catalog serves what `--developer` does.
+pub(crate) fn needs_developer(steps: &[Value]) -> bool {
+    let ordinary = luxforge_core::schemas(&luxforge_core::ModuleRegistry::builtin());
+    steps.iter().any(|step| {
+        step["api"]["method"]
+            .as_str()
+            .is_some_and(|method| ordinary["methods"].get(method).is_none())
+    })
+}
+
 /// `steps`, the corpus recipe's evidence-script steps, applied through the API to `asset`, a mask
 /// or component named by name resolved to its identity. A `section` step only opens a panel and
 /// changes no recipe, so it is passed over; a query choice's Apply selects the suggestion its query
-/// offers ([`apply_suggestion`]).
+/// offers ([`apply_suggestion`]). A `task.*` step is sent with a request envelope and settles once
+/// its job has ended ready; a later step's `job_id` written `{"started_by": "task.…"}` is that
+/// job's identity.
 pub(crate) fn apply_steps(
     owner: &luxforge_core::OwnerHandle,
     client: luxforge_core::ClientId,
@@ -335,6 +380,7 @@ pub(crate) fn apply_steps(
 ) -> Result<(), String> {
     use luxforge_testkit::client::{call, mutation, request_id, revision};
     let id = json!(asset.as_str());
+    let mut jobs: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
     for step in steps {
         if step.get("section").is_some() {
             continue;
@@ -346,20 +392,36 @@ pub(crate) fn apply_steps(
         let Some(api) = step.get("api") else {
             return Err(format!("{step} is not an API step"));
         };
+        let method = api["method"].as_str().expect("a method");
         let mut params = api["params"].clone();
         resolve_names(owner, client, &id, &mut params)?;
+        if let Some(reference) = params
+            .as_object()
+            .map(luxforge_evidence::JobReference::of)
+            .transpose()?
+            .flatten()
+        {
+            params["job_id"] = jobs
+                .get(&reference.started_by)
+                .cloned()
+                .ok_or_else(|| format!("no earlier step called {}", reference.started_by))?;
+        }
         params["asset_id"] = id.clone();
-        params["mutation"] = mutation(
-            revision(owner, client, &id)?,
-            &request_id("corpus"),
-            "agent",
-        );
-        call(
-            owner,
-            client,
-            api["method"].as_str().expect("a method"),
-            params,
-        )?;
+        let task = method.starts_with(luxforge_evidence::TASK_METHOD_PREFIX);
+        params["mutation"] = if task {
+            json!({"request_id": request_id("corpus"), "actor": "agent"})
+        } else {
+            mutation(
+                revision(owner, client, &id)?,
+                &request_id("corpus"),
+                "agent",
+            )
+        };
+        let answer = call(owner, client, method, params)?;
+        if task {
+            let job = finished_job(owner, client, method, &answer)?;
+            jobs.insert(method.to_owned(), job);
+        }
     }
     Ok(())
 }
@@ -399,8 +461,16 @@ impl Opened {
                 .map_err(|error| error.to_string())
             })
             .transpose()?;
+        // A recipe driving a test module's task, the frozen-patch family's candidate producer,
+        // is served what a `--developer` run serves; every other cell the product's modules.
+        let registry = if needs_developer(steps) {
+            luxforge_core::ModuleRegistry::developer()
+        } else {
+            luxforge_core::ModuleRegistry::builtin()
+        };
         let (owner, join) =
-            luxforge_core::OwnerHandle::start(catalog).map_err(|error| error.to_string())?;
+            luxforge_core::OwnerHandle::start_with(catalog, std::sync::Arc::new(registry))
+                .map_err(|error| error.to_string())?;
         let client = owner.register();
         let asset = match derived {
             Some(asset) => {

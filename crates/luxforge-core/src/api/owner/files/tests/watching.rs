@@ -177,6 +177,84 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     }
 }
 
+/// A rename keeps its row when its report comes after an earlier report of its old path and past
+/// that path's wait, as FSEvents delivers a burst seconds late while `fseventsd` catches up: the
+/// late report of the file's creation finds its path gone, and before the row goes the file is
+/// found by identity at its new path, which carries it. The rename's own report, later still, then
+/// changes nothing. The folder is on a network volume, so nothing but what the test reports, in its
+/// order, reaches the lane.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
+    let fixture = Fixture::new("watch-late-rename");
+    let owner = fixture.owner();
+    let client = owner.register();
+    let share = fixture.dir.join("share");
+    let photos = share.join("photos");
+    let staging = fixture.dir.join("staging");
+    let camera = camera_jpeg();
+    for name in ["a.jpg", "b.jpg"] {
+        put(&photos.join(name), &camera);
+    }
+    let mut mount = crate::index::volumes::tests::mount_at(&share, "Share", 3, false);
+    mount.local = false;
+    tell(
+        owner,
+        FilesMessage::Mounts(MountSource::Fixed(Arc::new(Mutex::new(vec![mount])))),
+    );
+    let added = ok(
+        owner,
+        client,
+        "index.add-folder",
+        json!({"path": photos, "mutation": envelope("add")}),
+    );
+    assert_eq!(finished(owner, client, &added["job_id"])["status"], "ready");
+    assert_eq!(folder(owner, client, &photos)["watching"], false);
+    let ids = read_rows(&fixture, &photos);
+    assert_eq!(ids.len(), 2);
+    let before = reads(owner, &photos);
+    let (old, new) = (photos.join("b.jpg"), photos.join("renamed.jpg"));
+    let report = |paths: Vec<PathBuf>| {
+        tell(
+            owner,
+            FilesMessage::Inject(WatchEvent::Changed {
+                root: 1,
+                paths,
+                cursor: None,
+            }),
+        );
+    };
+
+    std::fs::rename(&old, &new).unwrap();
+    // The late report of the old path's creation, alone: its path is gone, and waits.
+    report(vec![old.clone()]);
+    let rows = wait_for("the old path's wait to end", || {
+        let rows = read_rows(&fixture, &photos);
+        (!rows.contains_key(&old)).then_some(rows)
+    });
+    assert_eq!(
+        rows.get(&new),
+        Some(&ids[&old]),
+        "the file found at its new path carries its row"
+    );
+
+    // The rename's own report, then a new file, whose row says the report before it was applied.
+    report(vec![old.clone(), new.clone()]);
+    arrive(&staging, &photos.join("c.jpg"), &camera);
+    report(vec![photos.join("c.jpg")]);
+    let rows = wait_for("the new file's row", || {
+        let rows = read_rows(&fixture, &photos);
+        rows.contains_key(&photos.join("c.jpg")).then_some(rows)
+    });
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[&new], ids[&old], "the rename's report changes nothing");
+    assert_eq!(
+        reads(owner, &photos) - before,
+        1,
+        "c.jpg is read; renamed.jpg is carried unread"
+    );
+}
+
 /// Hard links added to an indexed folder of links to a few files, reported in one change, are each
 /// their own row, read once, and a link renamed keeps its row unread: nothing else moves. (The new
 /// links are of other files than the renamed one: a new link of a file one of whose links is gone

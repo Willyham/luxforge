@@ -604,7 +604,8 @@ pub(crate) fn spatial_step(
             entry: Cow::Borrowed(spatial.program.entry),
             source: Cow::Borrowed(spatial.program.source),
             words: spatial.words.clone(),
-            block: Arc::from([]),
+            // A repair step's operation table; every other step's words hold all it reads.
+            block: spatial.block.clone().unwrap_or_else(|| Arc::from([])),
         },
         planes: spatial
             .planes
@@ -645,6 +646,23 @@ pub(crate) fn spatial_step(
         clamps: spatial.clamps,
         mask,
         halos: spatial.halos.clone(),
+        contained: spatial.repair.is_some(),
+        // A repair step's frozen patches, the same allocations every tick.
+        resident: spatial.resident.blocks.clone(),
+        resident_key: spatial.resident.key,
+        // A repair step's read set, which the surface fills before its passes.
+        reads: spatial
+            .repair
+            .as_ref()
+            .and_then(|repair| repair.atlas.as_ref())
+            .map(|atlas| luxforge_gpu::ReadAtlas {
+                plane: index(atlas.plane),
+                rects: atlas
+                    .rects
+                    .iter()
+                    .map(|(rect, at)| ([rect.x0, rect.y0, rect.width, rect.height], *at))
+                    .collect(),
+            }),
     })))
 }
 

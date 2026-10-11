@@ -37,6 +37,7 @@ step_from! {
     PaletteStep => Palette,
     PresetCreateStep => PresetCreate,
     CopySettingsStep => CopySettings,
+    UsageStep => Usage,
     CapabilityStep => Capability,
     MaskStep => Mask,
     ExportStep => Export,
@@ -44,6 +45,7 @@ step_from! {
     MissingStep => Missing,
     LoupeStep => Loupe,
     GridScrollStep => GridScroll,
+    CorrectionStep => Correction,
 }
 
 impl Step {

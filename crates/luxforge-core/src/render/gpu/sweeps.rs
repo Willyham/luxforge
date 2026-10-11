@@ -150,8 +150,12 @@ pub struct GpuSweep {
 }
 
 /// What one spatial operation carries into a window: its summed halo and the larger of its
-/// anchor's leads, in pixels of its stage.
+/// anchor's leads, in pixels of its stage. A repair carries nothing: it holds its read set in an
+/// atlas of its own ([`super::repair::GpuReadAtlas`]), so its sources grow no window.
 fn reach(spatial: &super::GpuSpatial) -> u32 {
+    if spatial.repair.is_some() {
+        return 0;
+    }
     let lead = anchor_of(std::slice::from_ref(spatial)).lead;
     spatial.halos.iter().sum::<u32>() + lead.0.max(lead.1)
 }
@@ -257,7 +261,7 @@ fn plan_ranges(request: &SweepRequest, ranges: Vec<Range<usize>>) -> GpuStaging 
         .segments
         .iter()
         .enumerate()
-        .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial(_))))
+        .filter(|(_, segment)| segment.entry.as_ref().is_some_and(Entry::materializes))
         .map(|(index, _)| index)
         .collect();
     if entries.len() != plan.spatial.len() {
@@ -476,7 +480,7 @@ pub(crate) fn plan_light_sweeps(request: &SweepRequest) -> Result<Vec<GpuLightSw
         .segments
         .iter()
         .enumerate()
-        .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial(_))))
+        .filter(|(_, segment)| segment.entry.as_ref().is_some_and(Entry::materializes))
         .map(|(index, _)| index)
         .collect();
     if entries.len() != plan.spatial.len() {

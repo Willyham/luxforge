@@ -20,6 +20,29 @@ struct Shared {
     sampler: Sampler,
     /// The origin of `monotonic_ns`: the first use of the counters in this process.
     epoch: Instant,
+    /// The newest read of the counters by anyone, so a second consumer within a moment of the
+    /// first reuses it rather than repeating the system calls ([`reading`]).
+    latest: Option<Reading>,
+}
+
+impl Shared {
+    /// Nanoseconds since the epoch, on the monotonic clock `Instant` reads.
+    fn now_ns(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// Read the counters now and remember the reading for the next consumer. `open` lets the read
+    /// open the GPU device GPU allocations are read from ([`Sampler::read_opening_nothing`]).
+    fn read_now(&mut self, open: bool) -> (u64, Counters) {
+        let monotonic_ns = self.now_ns();
+        let counters = if open {
+            self.sampler.read()
+        } else {
+            self.sampler.read_opening_nothing()
+        };
+        self.latest = Some(Reading::of(monotonic_ns, &counters));
+        (monotonic_ns, counters)
+    }
 }
 
 static SHARED: OnceLock<Mutex<Shared>> = OnceLock::new();
@@ -30,6 +53,7 @@ fn shared() -> MutexGuard<'static, Shared> {
             Mutex::new(Shared {
                 sampler: Sampler::new(),
                 epoch: Instant::now(),
+                latest: None,
             })
         })
         .lock()
@@ -123,14 +147,7 @@ pub struct BudgetReport {
 
 /// Read every counter now, and the budgets of `context`.
 pub fn read(context: &RenderContext) -> ResourceReport {
-    let (monotonic_ns, counters) = {
-        let mut shared = shared();
-        let since = shared.epoch.elapsed();
-        (
-            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX),
-            shared.sampler.read(),
-        )
-    };
+    let (monotonic_ns, counters) = shared().read_now(true);
     let scratch = context.scratch();
     let spatial = context.spatial();
     report(
@@ -149,6 +166,73 @@ pub fn read(context: &RenderContext) -> ResourceReport {
             },
         },
     )
+}
+
+/// The counters a statistics sample is computed from: the cumulative or level values of one read,
+/// each `None` where the platform cannot give it (never a zero standing in), with the memory kind
+/// the platform's own monitor shows. [`ResourceReport`] is the same read with its reasons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reading {
+    /// Nanoseconds on the monotonic clock of the report's `monotonic_ns`, taken immediately before
+    /// the counters. Only a difference between two readings means anything.
+    pub monotonic_ns: u64,
+    pub cpu_time_ns: Option<u64>,
+    pub memory_kind: MemoryKind,
+    pub memory_bytes: Option<u64>,
+    pub gpu_time_ns: Option<u64>,
+    pub gpu_allocated_bytes: Option<u64>,
+}
+
+impl Reading {
+    fn of(monotonic_ns: u64, counters: &Counters) -> Self {
+        Self {
+            monotonic_ns,
+            cpu_time_ns: counters.cpu_time_ns.ok(),
+            memory_kind: counters.memory.kind,
+            memory_bytes: counters.memory.bytes.ok(),
+            gpu_time_ns: counters.gpu.time_ns.ok(),
+            gpu_allocated_bytes: counters.gpu.allocated_bytes.ok(),
+        }
+    }
+
+    /// Whether this reading was taken at most `max_age_ns` before `now_ns`.
+    fn fresh(&self, now_ns: u64, max_age_ns: u64) -> bool {
+        now_ns
+            .checked_sub(self.monotonic_ns)
+            .is_some_and(|age| age <= max_age_ns)
+    }
+}
+
+/// A [`Reading`] and whether it was already there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fetched {
+    pub reading: Reading,
+    /// The reading is a fresh one another consumer (the Performance panel's `resources.read`, or an
+    /// earlier call here) took, and this call made no system call.
+    pub reused: bool,
+}
+
+/// The counters now, or, when the newest read by any consumer is at most `max_age` old, that read.
+/// The freshness check and the read are one critical section, so two consumers arriving together
+/// share one read. A consumer with its own cadence (the statistics sampler) calls this on a worker;
+/// it adds no timer and does not wake the Performance panel. Its own read never opens the GPU device
+/// GPU allocations come from, so they are in it only once the Performance panel's [`read`] has
+/// opened that device: a process whose sampler opened it quits about 200 ms later on macOS.
+pub fn reading(max_age: std::time::Duration) -> Fetched {
+    let mut shared = shared();
+    let now_ns = shared.now_ns();
+    let max_age_ns = u64::try_from(max_age.as_nanos()).unwrap_or(u64::MAX);
+    if let Some(latest) = shared.latest.filter(|r| r.fresh(now_ns, max_age_ns)) {
+        return Fetched {
+            reading: latest,
+            reused: true,
+        };
+    }
+    let (monotonic_ns, counters) = shared.read_now(false);
+    Fetched {
+        reading: Reading::of(monotonic_ns, &counters),
+        reused: false,
+    }
 }
 
 /// This process's CPU time so far, in nanoseconds, from the counter [`read`] reports, or `None`
@@ -334,6 +418,38 @@ mod tests {
         }
         let later = serde_json::to_value(read(&crate::RenderContext::new())).unwrap();
         assert!(later["monotonic_ns"].as_u64() > report["monotonic_ns"].as_u64());
+    }
+
+    /// A fresh reading is shared, an older one is not, and what `read` takes is what a later
+    /// consumer reuses.
+    #[test]
+    fn a_fresh_reading_is_reused_and_a_stale_one_is_not() {
+        let sample = |monotonic_ns| Reading {
+            monotonic_ns,
+            cpu_time_ns: Some(1),
+            memory_kind: MemoryKind::Footprint,
+            memory_bytes: Some(2),
+            gpu_time_ns: None,
+            gpu_allocated_bytes: None,
+        };
+        assert!(sample(1_000).fresh(1_000, 0));
+        assert!(sample(1_000).fresh(3_000, 2_000));
+        assert!(!sample(1_000).fresh(3_001, 2_000));
+        assert!(
+            !sample(5_000).fresh(1_000, u64::MAX),
+            "a reading from the future is not fresh"
+        );
+
+        let taken = read(&crate::RenderContext::new());
+        let shared = reading(std::time::Duration::from_secs(3600));
+        assert!(
+            shared.reused,
+            "an hour-old allowance reuses the panel's read"
+        );
+        assert!(shared.reading.monotonic_ns >= taken.monotonic_ns);
+        let fresh = reading(std::time::Duration::ZERO);
+        assert!(!fresh.reused, "no allowance means a read");
+        assert!(fresh.reading.monotonic_ns > shared.reading.monotonic_ns);
     }
 
     /// Unavailable counters are omitted with their reasons, each in its own object, and an object

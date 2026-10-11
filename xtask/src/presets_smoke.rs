@@ -83,6 +83,23 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(0)
             .status_starts("Imported \u{201c}Soft Film\u{201d}: "),
         Step::new("document", script::Step::preset_import(DOCUMENT)).commits(0),
+        Step::new(
+            "hover",
+            script::Step::PresetHover(Some(PresetPick {
+                name: "Soft film".into(),
+                group: Some("Synthetic".into()),
+            })),
+        )
+        .commits(0),
+        Step::new("hover-left", script::Step::PresetHover(None)).commits(0),
+        Step::new(
+            "hover-click",
+            script::Step::PresetHover(Some(PresetPick {
+                name: "Soft film".into(),
+                group: Some("Synthetic".into()),
+            })),
+        )
+        .commits(0),
         // 5: the document's preset, whose name differs from the XMP's only in case: one entry.
         Step::new(
             "soft-film",
@@ -93,11 +110,40 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .commits(1)
         .label("Preset: Soft film"),
+        Step::new(
+            "amount-half",
+            script::Step::PresetAmount {
+                value: 50.0,
+                release: true,
+            },
+        )
+        .commits(1)
+        .label("Preset: Soft film"),
+        Step::new(
+            "amount-reset",
+            script::Step::PresetAmount {
+                value: 100.0,
+                release: true,
+            },
+        )
+        .commits(1)
+        .label("Preset: Soft film"),
         // 6: the XMP's preset over it, by its exact name alone. It sets every field the first
         // did, so auto-collapse, on by default, replaces the first's entry with its own.
         Step::new("soft-film-xmp", script::Step::preset("Soft Film"))
             .commits(1)
             .label("Preset: Soft Film"),
+        // The first Presence/curve combination can still be compiling while the application
+        // holds its previous picture. Compare pixels only once its handed programs are ready.
+        Step::new(
+            "soft-film-xmp-settled",
+            script::Step::GpuWarmed {
+                quiet_ms: 250,
+                ms: 10_000,
+            },
+        )
+        .commits(0)
+        .no_draft(),
         // 7: undo steps over the collapsed run to the Original.
         Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
@@ -427,6 +473,50 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     ];
     expect_rows(at("document")?, "The document import", &both)?;
     let before_apply = patches_of("document")?;
+    for name in ["hover", "hover-left", "hover-click"] {
+        ensure(
+            at(name)?.entry()? == at("document")?.entry()? && layers(at(name)?)?.is_empty(),
+            "Hover changed the committed entry or recipe",
+        )?;
+    }
+    checks.compare(
+        at("hover")?,
+        "Hover changes the displayed photograph",
+        change(&patches_of("hover")?, &before_apply),
+        0.0,
+        Tolerance::Above(CHANGED),
+    )?;
+    checks.compare(
+        at("hover-left")?,
+        "Leaving hover restores the photograph",
+        change(&patches_of("hover-left")?, &before_apply),
+        0.0,
+        Tolerance::Under(SAME),
+    )?;
+    ensure(
+        presets(at("hover-left")?)["amount"] == json!(100.0),
+        "Hover leave changed Amount",
+    )?;
+    let half = luxforge_core::settings_at_amount(
+        &luxforge_core::ModuleRegistry::builtin().descriptors(),
+        &document,
+        50.0,
+    )?;
+    expect_layers(
+        at("amount-half")?,
+        "Amount at 50%",
+        &registry.applied(&BTreeMap::new(), &half)?,
+    )?;
+    expect_layers(
+        at("amount-reset")?,
+        "Amount returned to 100%",
+        &registry.applied(&BTreeMap::new(), &document)?,
+    )?;
+    ensure(
+        presets(at("amount-half")?)["amount"] == json!(50.0)
+            && presets(at("amount-half")?)["amount_enabled"] == json!(true),
+        "Amount was not retained after commit",
+    )?;
 
     // The document's preset applied from its row: exactly its settings, a brighter photograph.
     let soft_frame = at("soft-film")?;
@@ -442,10 +532,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
 
     // The XMP's preset over it: its fields merged over the stack.
-    let merged_frame = at("soft-film-xmp")?;
+    let merged_frame = at("soft-film-xmp-settled")?;
     let merged = registry.applied(&soft, &xmp)?;
     expect_layers(merged_frame, "Soft Film applied over it", &merged)?;
-    let merged_patches = patches_of("soft-film-xmp")?;
+    let merged_patches = patches_of("soft-film-xmp-settled")?;
     checks.compare(
         merged_frame,
         "Soft Film over Soft film changes the photograph (mean change)",

@@ -1130,12 +1130,13 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
         effects: vec![EffectDescriptor {
             id: "test.sketch.effect".into(),
             format: EFFECT_FORMAT,
-            stage: EffectStage::Pixel,
+            stage: EffectStage::Repair,
             order: 0,
             maskable: false,
             artifacts: false,
             single: false,
             sources: Vec::new(),
+            operations: None,
         }],
         actions: vec![ActionDescriptor {
             id: "set-sketch".into(),
@@ -1145,6 +1146,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             preset: true,
             analysis: None,
             shortcut: None,
+            accepts_candidate: false,
             parameters: vec![
                 parameter("weight", None),
                 parameter("size", Some(json!(1.0))),

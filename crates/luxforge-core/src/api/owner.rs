@@ -46,11 +46,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod accept;
+#[cfg(test)]
+mod accept_tests;
 #[cfg(test)]
 mod artifact_tests;
 mod catalog;
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod corrections_tests;
 #[cfg(test)]
 mod derived_source_tests;
 pub(super) mod export;
@@ -58,6 +63,7 @@ pub(super) mod export;
 mod export_tests;
 // The catalog's owner-side homes, one file each: the index, preview and library lanes and
 // browse views ([`catalog`]).
+pub(super) mod candidates;
 pub(super) mod files;
 #[cfg(test)]
 mod first_open_tests;
@@ -77,6 +83,12 @@ mod requests;
 #[cfg(test)]
 mod theme_tests;
 pub(super) mod themes;
+pub(super) mod usage;
+pub(crate) mod usage_events;
+#[cfg(test)]
+mod usage_events_tests;
+#[cfg(test)]
+mod usage_tests;
 pub(super) mod views;
 
 /// The catalog owner's thread's name, which reads no pixel (performance rule 5): a read reaching
@@ -521,6 +533,8 @@ enum SourceTaskKind {
     Prepare(SourceWork),
     /// Remove the object files the owner's collection left unrecorded, and stale staged files.
     Collect(Collection),
+    /// Publish a pinned candidate as an artifact for the accept a call waits on ([`accept`]).
+    Accept(Box<accept::AcceptWork>),
 }
 
 impl SourceTaskKind {
@@ -538,6 +552,7 @@ impl SourceTaskKind {
                 (JobKind::Artifacts, Some(asset_id.clone()))
             }
             Self::Collect(_) => (JobKind::Collect, None),
+            Self::Accept(work) => (JobKind::Artifacts, Some(work.asset_id().clone())),
         }
     }
 }
@@ -545,6 +560,7 @@ impl SourceTaskKind {
 enum SourceResult {
     Prepared(Box<Prepared>),
     Collected(Collected),
+    Accepted(Box<accept::Published>),
 }
 
 struct SourceTask {
@@ -889,6 +905,13 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
             asset_id: None,
             job_id: Some(task.id.to_string()),
         },
+        SourceTaskKind::Accept(work) => ActivitySpec {
+            kind: "artifacts.publish",
+            label: "Publishing patch",
+            detail: accept::activity_detail(work),
+            asset_id: Some(work.asset_id().clone()),
+            job_id: Some(task.id.to_string()),
+        },
     }
 }
 
@@ -912,6 +935,9 @@ fn run_source_task(
         SourceTaskKind::Collect(collection) => {
             artifacts::collect_files(&collection, cancel).map(SourceResult::Collected)
         }
+        SourceTaskKind::Accept(work) => work
+            .run(cancel)
+            .map(|published| SourceResult::Accepted(Box::new(published))),
     }
 }
 
@@ -1050,6 +1076,9 @@ pub struct OwnerHandle {
     next_client: Arc<AtomicU64>,
     activity: Arc<ActivityBoard>,
     render: crate::RenderContext,
+    /// The host's usage statistics collector ([`HostConfig::usage`]), which the desktop's
+    /// GUI-local producers record into beside the owner's own.
+    usage: Arc<crate::usage::Collector>,
 }
 
 impl OwnerHandle {
@@ -1172,7 +1201,11 @@ impl OwnerHandle {
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
         let completions = sender.clone();
+        let usage = host.usage.clone();
         let host = CapabilityHost::new(host);
+        // Every usage producer records into the host's one collector.
+        service.usage = crate::usage::produce::Producer::new(host.usage().clone());
+        jobs.set_usage(host.usage().clone());
         let owner_activity = activity.clone();
         // The index, preview and library lanes post their workers' results through the same
         // channel.
@@ -1202,6 +1235,7 @@ impl OwnerHandle {
                 next_client: Arc::new(AtomicU64::new(1)),
                 activity,
                 render,
+                usage,
             },
             join,
         ))
@@ -1212,6 +1246,12 @@ impl OwnerHandle {
     /// the owner's own work without passing through the owner.
     pub fn activity(&self) -> Arc<ActivityBoard> {
         self.activity.clone()
+    }
+
+    /// The process-wide usage statistics collector the owner's producers record into, which a
+    /// host's own GUI-local producers share ([`HostConfig::usage`]).
+    pub fn usage(&self) -> &Arc<crate::usage::Collector> {
+        &self.usage
     }
 
     /// The render context every evaluation this owner plans reads, so a render the desktop runs
@@ -1515,7 +1555,11 @@ fn owner_loop(
     // the person chose, or by default when the preferences cannot be read: the desktop reports
     // that failure when it reads them itself.
     let mut service = service;
-    let preferences = host.preferences.read().unwrap_or_default();
+    let preferences = host.preferences.read();
+    // The process's one launch read of the stored usage statistics consent; a later owner of the
+    // same process, for another catalog, changes nothing.
+    host.usage_consent().start(preferences.as_ref());
+    let preferences = preferences.unwrap_or_default();
     service.set_auto_collapse(preferences.auto_collapse_history());
     service.set_auto_lens_profile(preferences.auto_lens_profile());
     service.set_raw_look(preferences.raw_look());
@@ -1569,6 +1613,9 @@ fn owner_loop(
         job_waits: Vec::with_capacity(MAX_JOB_WAITERS),
         job_monitor_stats: JobMonitorStats::default(),
         deferred: None,
+        accept_parking: None,
+        parked_accepts: HashMap::new(),
+        call_parks: true,
         catalog,
         #[cfg(test)]
         fault: None,
@@ -1905,6 +1952,13 @@ pub(super) struct Owner {
     /// call [`Owner::call`] parks with its reply until they answer ([`files::defer`]). Empty
     /// between calls.
     deferred: Option<files::Deferred>,
+    /// Set by an accept that queued its candidate's publication: the call [`Owner::call`] parks
+    /// until that job completes ([`accept`]). Empty between calls.
+    accept_parking: Option<accept::PendingAccept>,
+    /// The accepts waiting on their publication, by job.
+    parked_accepts: HashMap<JobId, accept::ParkedAccept>,
+    /// Whether the call being answered may wait ([`OwnerCall::parks`]).
+    call_parks: bool,
     /// The catalog's owner-side state, one field per lane and one for browse views, each in its own
     /// file.
     catalog: catalog::CatalogLanes,
@@ -1963,6 +2017,7 @@ impl Owner {
         if replay == Replay::First && call.request.method == "draft.reapply" {
             before.pixel_memo.clear();
         }
+        self.call_parks = call.parks;
         let (result, deferred) =
             self.pixel_pass(Some(client), before.pixel_memo.clone(), |owner| {
                 owner.answer(client, &mut call.request)
@@ -2027,6 +2082,13 @@ impl Owner {
             });
             return;
         }
+        // So is an accept waiting for its candidate's publication.
+        if let Some(pending) = self.accept_parking.take()
+            && result.is_ok()
+        {
+            self.park_accept(call, pending);
+            return;
+        }
         // So is a call waiting for the index lane to read the disk for it.
         if let Some(deferred) = self.deferred.take()
             && result.is_ok()
@@ -2052,10 +2114,13 @@ impl Owner {
             Ok(Planned::Query(plan)) if plan.analysis() => {
                 self.submit_analysis_query(client, &call.request.method, plan, deliver);
             }
-            Ok(Planned::Query(plan)) => self.tiles.submit(crate::tiles::TileCall::caller(
+            // A query that reads a grid or a region reads it here and hands what it computes from
+            // it to the analysis worker, as Corrections' automatic source search does; one that
+            // reads points answers on the tile service.
+            Ok(Planned::Query(plan)) => self.tiles.submit(crate::tiles::TileCall::caller_steps(
                 client,
                 crate::Cancel::new(),
-                move |reads, cancel| plan.evaluate(reads, cancel),
+                move |reads, cancel| plan.evaluate_steps(reads, cancel),
                 deliver,
             )),
             Ok(Planned::Value(value)) => deliver(Ok(value)),
@@ -2086,11 +2151,15 @@ impl Owner {
             Retries::Catalog | Retries::None => None,
         };
         if let Some(key) = &key
-            && let Some(first) = self.requests.answered(key)?
+            && let Some(mut first) = self.requests.answered(key)?
         {
+            usage::deduplicated(self, &request.method, &mut first);
             return Ok(Planned::Value(first));
         }
         let origin = Origin::new(&request.method, &request.id);
+        // Whether a standing answer records its usage interaction: one atomic load while off.
+        let usage = self.service.usage.on();
+        let announced_before = self.announced.len();
         #[cfg(test)]
         if let Some(fault) = &self.fault {
             fault(&request.method);
@@ -2098,6 +2167,22 @@ impl Owner {
         // A selection the index's revision alone left stale is the selection still.
         if request.params["targets"]["kind"] == "selection" {
             views::freshen_selection(self, client)?;
+        }
+        // An action that accepts a candidate pins and publishes it before it commits ([`accept`]).
+        if let methods::Method::Action(action_id) = &method
+            && self
+                .service
+                .registry()
+                .resolve_action(action_id)
+                .is_some_and(|action| action.descriptor().accepts_candidate)
+        {
+            let call = Call {
+                client,
+                request,
+                origin,
+            };
+            let parks = self.call_parks;
+            return accept::begin(self, &call, action_id, parks).map(Planned::Value);
         }
         let result = match method.route() {
             Route::Owner(handler) => {
@@ -2152,6 +2237,14 @@ impl Owner {
             return result;
         }
         let result = result.map_err(|error| self.prepare(client, error));
+        // A call that waits for the index lane is answered, and recorded, when it is answered.
+        if let Some(generation) = usage
+            && result.is_ok()
+            && self.deferred.is_none()
+        {
+            let changed = self.announced.len() > announced_before;
+            self.usage_answered(generation, &request.method, &request.params, changed);
+        }
         match (result, key) {
             // A call waiting for the index lane records its first answer when it is answered;
             // one waiting for a survey is answered again, as if just asked, which records it.
@@ -2547,6 +2640,7 @@ impl Owner {
         self.latest_preparation.remove(&client);
         self.tiles.disconnect(client);
         self.drop_parked_reads(client);
+        self.drop_parked_accepts(client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
@@ -2559,6 +2653,14 @@ impl Owner {
 
     /// A source job finished on the worker: adopt what it prepared for the clients still waiting.
     fn source_complete(&mut self, id: &JobId, result: Result<SourceResult, Error>) {
+        // An accept's publication answers the call parked on it, whoever still wants the job.
+        if self.parked_accepts.contains_key(id) || matches!(result, Ok(SourceResult::Accepted(_))) {
+            let outcome = self.accept_published(id, result);
+            self.jobs.finish(id, outcome.map(Output::Value));
+            self.sources.complete(id);
+            self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
+            return;
+        }
         let interested = self.jobs.wanted(id);
         #[cfg(test)]
         let result = result.inspect(|_| {
@@ -2579,6 +2681,7 @@ impl Owner {
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
                     .map_err(|error| Error::internal(error.to_string())),
+                SourceResult::Accepted(_) => Err(Error::internal("an accept no call waits on")),
             })
         } else {
             Err(Error::conflict("source job cancelled"))
@@ -2642,6 +2745,9 @@ impl Owner {
     /// only the worker knows.
     fn read_job(&self, job_id: &JobId, client: ClientId) -> Result<Value, Error> {
         let mut record = self.jobs.read_for(job_id, client)?;
+        if record.kind == JobKind::Task {
+            record.candidates = Some(self.service.candidates().read_job(job_id));
+        }
         if record.kind == JobKind::Analysis && !record.status.is_finished() {
             record.status = if self.queue.is_pending(job_id) {
                 JobStatus::Queued
@@ -2775,9 +2881,17 @@ pub(super) fn job_cancel(
                 waiter.client == client && waiter.job.as_ref() == Some(job_id)
             });
         }
-        Family::Capability => owner
-            .host
-            .cancel(&mut owner.jobs, job_id, &mut owner.announced)?,
+        Family::Capability => {
+            owner
+                .host
+                .cancel(&mut owner.jobs, job_id, &mut owner.announced)?;
+            // A task's candidates go with its cancel, whether it is still running or finished.
+            let candidates = owner.service.candidates();
+            if kind == JobKind::Task {
+                candidates.cancel(job_id);
+            }
+            candidates.retain(|job_id| owner.jobs.kind(job_id).is_some());
+        }
         Family::Export => {
             owner.jobs.cancel(job_id, export::CANCELLED);
         }
@@ -2829,6 +2943,7 @@ pub(super) fn job_adopt(
         (_, _, Some(error)) => return Err(error.clone()),
         _ => return Err(Error::validation("this job is not a preparation")),
     };
+    owner.usage_adopted(&state);
     let session = owner.sessions.entry(call.client).or_default();
     session.preview.return_current();
     session.touch();
@@ -3245,23 +3360,23 @@ mod tests {
         .expect("an encodable report")
     }
 
-    fn pixel_edit(
+    fn exposure_edit(
         owner: &OwnerHandle,
         client: ClientId,
         asset: &Value,
         revision: u64,
         request: &str,
-        rgb: [u8; 3],
+        exposure: f64,
     ) -> Value {
         ok(
             owner,
             client,
             request,
-            "edit.set-pixel",
+            "edit.set-basic",
             json!({
                 "asset_id": asset,
                 "mutation": {"expected_revision": revision, "request_id": request, "actor": "test"},
-                "x": 0, "y": 0, "rgb": rgb,
+                "exposure": exposure,
             }),
         )
     }
@@ -4423,7 +4538,7 @@ mod tests {
                 client,
                 ApiRequest {
                     id: "pixel".into(),
-                    method: "edit.set-pixel".into(),
+                    method: "edit.set-basic".into(),
                     params: json!({}),
                     token: None,
                 },
@@ -4431,7 +4546,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             missing.error.expect("no provider, no method").message,
-            "unknown method edit.set-pixel"
+            "unknown method edit.set-basic"
         );
         owner.stop();
         join.join().unwrap();
@@ -4488,8 +4603,8 @@ mod tests {
         let edited = call(
             viewer,
             "a",
-            "edit.set-pixel",
-            json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"a","actor":"viewer"},"x":0,"y":0,"rgb":[1,2,3]}),
+            "edit.set-basic",
+            json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"a","actor":"viewer"},"exposure": 0.5}),
         );
         // Selecting the current entry is the live state, not a historical preview.
         let latest = call(
@@ -4519,8 +4634,8 @@ mod tests {
         call(
             agent,
             "b",
-            "edit.set-pixel",
-            json!({"asset_id":asset,"mutation":{"expected_revision":1,"request_id":"b","actor":"agent"},"x":0,"y":0,"rgb":[9,8,7]}),
+            "edit.set-basic",
+            json!({"asset_id":asset,"mutation":{"expected_revision":1,"request_id":"b","actor":"agent"},"exposure":-0.5}),
         );
         let preview = call(
             viewer,
@@ -4537,7 +4652,11 @@ mod tests {
             "render.sample",
             json!({"asset_id":asset,"x":0,"y":0}),
         );
-        assert_eq!(current["rgba"], json!([9, 8, 7, 255]));
+        assert_ne!(
+            current["rgba"], baseline,
+            "the agent's later edit is the current composition"
+        );
+        assert_ne!(current["rgba"], preview["rgba"]);
         // Disconnecting forgets the session; a fresh registration starts from default.
         call(
             viewer,
@@ -4620,7 +4739,6 @@ mod tests {
                 job.evaluation.recipe(),
             )
             .expect("a drafted frame");
-        assert_eq!(rendered.pixel(0, 0), Some([200, 0, 0, 255]));
 
         // The stored stack is untouched, and a truncated job still applies to what is rendered.
         let stored = owner
@@ -4806,7 +4924,7 @@ mod tests {
         );
 
         // The agent commits while the viewer holds a report of the original entry.
-        pixel_edit(&owner, agent, &asset, 0, "edit", [255, 255, 255]);
+        exposure_edit(&owner, agent, &asset, 0, "edit", 1.0);
 
         // Asking for that historical entry answers from its own immutable stack: same identity,
         // same counts, still named by the original entry rather than the new current one.
@@ -4841,7 +4959,7 @@ mod tests {
         assert_eq!(settled_current["status"], json!("ready"));
         assert_ne!(
             settled_current["result"], reference,
-            "one replaced pixel moves the counts"
+            "an exposure edit moves the counts"
         );
         assert_eq!(
             settled_current["result"],
@@ -4934,7 +5052,7 @@ mod tests {
             client,
             "begin",
             "draft.begin",
-            json!({"asset_id": asset, "action": "set-pixel"}),
+            json!({"asset_id": asset, "action": "set-basic"}),
         );
         let draft_id = begun["draft_id"].clone();
         let draft = ok(
@@ -4942,7 +5060,7 @@ mod tests {
             client,
             "set",
             "draft.set",
-            json!({"draft_id": draft_id, "fields": {"x": 0, "y": 0, "rgb": [255, 255, 255]}}),
+            json!({"draft_id": draft_id, "fields": {"exposure": 1.0}}),
         );
         assert_eq!(draft["draft_revision"], json!(1));
 
@@ -4959,7 +5077,7 @@ mod tests {
         assert_eq!(settled_draft["status"], json!("ready"));
         assert_ne!(
             settled_draft["result"], baseline,
-            "the drafted white pixel moves the counts"
+            "the drafted exposure moves the counts"
         );
         assert_eq!(
             settled_draft["result"],
@@ -4969,15 +5087,6 @@ mod tests {
                     .draft(crate::DraftId::parse(draft_id.as_str().unwrap()).unwrap()),
             )
         );
-        // Exactly one pixel changed: the red channel's population moves by one at two codes.
-        let moved: u64 = settled_draft["result"]["r"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(baseline["r"].as_array().unwrap())
-            .map(|(after, before)| after.as_u64().unwrap().abs_diff(before.as_u64().unwrap()))
-            .sum();
-        assert_eq!(moved, 2, "one pixel left one bin and joined another");
 
         // A draft belongs to one session.
         assert_eq!(
@@ -5056,13 +5165,13 @@ mod tests {
         );
         let mut entries = Vec::new();
         for (index, channel) in [10u8, 20, 30, 40, 50, 60, 70].into_iter().enumerate() {
-            let edited = pixel_edit(
+            let edited = exposure_edit(
                 &owner,
                 viewer,
                 &asset,
                 index as u64 + 1,
                 &format!("edit-{channel}"),
-                [channel, channel, channel],
+                f64::from(channel) / 100.0,
             );
             entries.push(edited["current_entry_id"].clone());
         }
@@ -5226,19 +5335,19 @@ mod tests {
             let client = owner.register();
             let imported = import_asset(&owner, client, &fixture());
             asset = imported["asset"]["id"].clone();
-            pixel_edit(&owner, client, &asset, 0, "edit", [1, 2, 3]);
+            exposure_edit(&owner, client, &asset, 0, "edit", 0.1);
             owner.stop();
             join.join().unwrap();
         }
-        // The same catalog reopened with the pixel provider registered as unavailable.
+        // The same catalog reopened with the Basic provider registered as unavailable.
         let mut registry = ModuleRegistry::new();
         registry
             .register(crate::modules::TestModule::shared(
-                "luxforge.pixel",
-                crate::PIXEL_EFFECT,
-                "set-pixel",
+                "luxforge.basic",
+                crate::BASIC_EFFECT,
+                "set-basic",
                 crate::Availability::Unavailable {
-                    reason: "test: the pixel provider is not installed".into(),
+                    reason: "test: the Basic provider is not installed".into(),
                 },
             ))
             .unwrap();
@@ -6221,11 +6330,11 @@ mod tests {
             &owner,
             client,
             "first",
-            "edit.set-pixel",
+            "edit.set-basic",
             json!({
                 "asset_id": asset,
                 "mutation": {"expected_revision": 0, "request_id": "first", "actor": "test"},
-                "x": 0, "y": 0, "rgb": [1, 2, 3],
+                "exposure": 0.5,
             }),
         );
         let applied = first.result.expect("the first attempt applies");
@@ -6239,7 +6348,7 @@ mod tests {
         assert_eq!(
             events_after(&owner, client, before),
             (
-                vec![("edit.set-pixel".to_owned(), "first".to_owned())],
+                vec![("edit.set-basic".to_owned(), "first".to_owned())],
                 before + 1
             )
         );
@@ -6248,11 +6357,11 @@ mod tests {
             &owner,
             client,
             "first",
-            "edit.set-pixel",
+            "edit.set-basic",
             json!({
                 "asset_id": asset,
                 "mutation": {"expected_revision": 0, "request_id": "first", "actor": "test"},
-                "x": 0, "y": 0, "rgb": [1, 2, 3],
+                "exposure": 0.5,
             }),
         );
         let retried = retry.result.expect("the retry answers");
@@ -6263,7 +6372,7 @@ mod tests {
         assert_eq!(
             events_after(&owner, client, before),
             (
-                vec![("edit.set-pixel".to_owned(), "first".to_owned())],
+                vec![("edit.set-basic".to_owned(), "first".to_owned())],
                 before + 1
             ),
             "the log holds the first attempt's event alone"
@@ -6328,7 +6437,7 @@ mod tests {
         );
         let (_, before) = events_after(&owner, desktop, 0);
 
-        pixel_edit(&owner, agent, &second, 0, "agent-edit", [1, 2, 3]);
+        exposure_edit(&owner, agent, &second, 0, "agent-edit", 0.1);
         let undo = |client: ClientId, asset: &Value, revision: u64, request: &str| {
             ok(
                 &owner,
@@ -6377,7 +6486,7 @@ mod tests {
         assert_eq!(
             subjects(before),
             [
-                ("edit.set-pixel".to_owned(), second.clone(), json!(1)),
+                ("edit.set-basic".to_owned(), second.clone(), json!(1)),
                 ("history.undo".to_owned(), second.clone(), json!(2)),
                 ("draft.commit".to_owned(), first.clone(), json!(1)),
                 ("version.create".to_owned(), first.clone(), Value::Null),
@@ -6399,7 +6508,7 @@ mod tests {
         assert!(!log.since(0).gap, "an empty log and a fresh cursor");
         assert!(log.since(1).gap, "a cursor ahead of an empty log");
         for request in ["a", "b", "c"] {
-            log.record(&Origin::new("edit.set-pixel", request));
+            log.record(&Origin::new("edit.set-basic", request));
         }
         assert!(!log.since(0).gap && log.since(0).events.len() == 3);
         assert!(!log.since(2).gap && log.since(2).events.len() == 1);
@@ -6648,7 +6757,7 @@ mod tests {
         std::fs::remove_file(exported).unwrap();
 
         // history, a revisioned family: the catalog's request table answers its retry.
-        pixel_edit(&owner, client, &asset, 0, "edit-1", [1, 2, 3]);
+        exposure_edit(&owner, client, &asset, 0, "edit-1", 0.1);
         let undo = json!({
             "asset_id": asset,
             "mutation": {"expected_revision": 1, "request_id": "undo-1", "actor": "test"},
@@ -6772,6 +6881,7 @@ mod tests {
                     IdentityKind::Collection => {
                         crate::catalog_types::CollectionId::new().to_string()
                     }
+                    IdentityKind::Correction => "correction-7".to_owned(),
                 };
                 (json!(valid), json!("x"))
             }
@@ -6972,7 +7082,7 @@ mod tests {
         let catalog = temp("malformed.sqlite");
         let _ = std::fs::remove_file(&catalog);
         let registry = Arc::new(ModuleRegistry::developer());
-        let malformed = json!({"x": 0, "y": 0, "rgb": [1, 2]});
+        let malformed = json!({"exposure": "bright"});
         let (asset, direct) = {
             let mut service = EditorService::open_with(&catalog, Arc::clone(&registry)).unwrap();
             let asset = service.import(&fixture()).unwrap().asset.id;
@@ -6980,10 +7090,10 @@ mod tests {
                 .apply_action(
                     &asset,
                     crate::editor::mutation(0, "malformed"),
-                    "set-pixel",
+                    "set-basic",
                     malformed.clone(),
                 )
-                .expect_err("an rgb of two channels is refused");
+                .expect_err("an exposure that is not a number is refused");
             (asset, direct)
         };
         let (owner, join) = OwnerHandle::start_with(&catalog, registry).unwrap();
@@ -6991,7 +7101,7 @@ mod tests {
         let mut params = malformed;
         params["asset_id"] = json!(asset);
         params["mutation"] = crate::editor::mutation_json(0, "malformed");
-        let failure = failure(&owner, client, "malformed", "edit.set-pixel", params);
+        let failure = failure(&owner, client, "malformed", "edit.set-basic", params);
         assert_eq!(
             serde_json::to_value(failure).unwrap(),
             json!({"code": direct.kind.code(), "message": direct.detail})
@@ -7100,69 +7210,11 @@ mod tests {
         }
     }
 
-    /// Exercise the delivered Pixel planner at a stored later position. Its declared placement
-    /// is changed only in this test registry: normal Pixel still inserts before restoration.
-    struct TailPixel {
-        pixel: crate::modules::PixelModule,
-        descriptor: crate::ModuleDescriptor,
-    }
-    impl TailPixel {
-        fn registry() -> Arc<ModuleRegistry> {
-            use crate::ToolModule;
-            let pixel = crate::modules::PixelModule::new();
-            let mut descriptor = pixel.descriptor().clone();
-            descriptor.effects[0].stage = crate::EffectStage::Finish;
-            let mut registry = ModuleRegistry::builtin();
-            registry
-                .register(Arc::new(Self { pixel, descriptor }))
-                .unwrap();
-            Arc::new(registry)
-        }
-    }
-    impl crate::ToolModule for TailPixel {
-        fn descriptor(&self) -> &crate::ModuleDescriptor {
-            &self.descriptor
-        }
-        fn parse(
-            &self,
-            id: &str,
-            parameters: &serde_json::Map<String, Value>,
-        ) -> Result<crate::ActionInput, Error> {
-            self.pixel.parse(id, parameters)
-        }
-        fn plan(
-            &self,
-            input: &crate::ActionInput,
-            stage: &crate::StageContext<'_>,
-        ) -> Result<crate::ActionPlan, Error> {
-            self.pixel.plan(input, stage)
-        }
-        fn validate_payload(&self, id: &str, format: u32, value: &Value) -> Result<(), Error> {
-            self.pixel.validate_payload(id, format, value)
-        }
-        fn describe(
-            &self,
-            id: &str,
-            format: u32,
-            value: &Value,
-        ) -> Result<crate::LayerReport, Error> {
-            self.pixel.describe(id, format, value)
-        }
-        fn compile(
-            &self,
-            id: &str,
-            format: u32,
-            value: &Value,
-            at: crate::CompileStage,
-        ) -> Result<crate::Processing, Error> {
-            self.pixel.compile(id, format, value, at)
-        }
-    }
-
     #[test]
-    fn restoration_pixel_set_plans_off_owner_and_preserves_its_stored_later_position() {
+    fn a_sampling_plan_runs_off_owner_and_keeps_its_stored_later_position() {
         let catalog = temp("detail-tail-pixel.sqlite");
-        let (owner, join) = OwnerHandle::start_with(&catalog, TailPixel::registry()).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, crate::editor::SampleModule::registry()).unwrap();
         let client = owner.register();
         let state = import_asset(&owner, client, &fixture());
         let asset = state["asset"]["id"].clone();
@@ -7188,10 +7240,10 @@ mod tests {
         let applied = ok(
             &owner,
             client,
-            "tail-pixel",
-            "edit.set-pixel",
-            json!({"asset_id":asset,"x":10,"y":10,"rgb":[1,2,3],
-            "mutation":crate::editor::mutation_json(1,"tail-pixel")}),
+            "tail-sample",
+            "edit.test-sample",
+            json!({"asset_id":asset,"x":10,"y":10,
+            "mutation":crate::editor::mutation_json(1,"tail-sample")}),
         );
         assert_eq!(applied["outcome"], json!("applied"));
         assert_eq!(owner_tiles.load(Ordering::Relaxed), 0);
@@ -7209,8 +7261,8 @@ mod tests {
         );
         let layers = &state["current_entry"]["snapshot"]["recipe"]["layers"];
         assert_eq!(layers[0]["effect_id"], crate::DETAIL_EFFECT);
-        assert_eq!(layers[1]["effect_id"], crate::PIXEL_EFFECT);
-        assert_eq!(layers[1]["payload"]["rgb"], json!([1, 2, 3]));
+        assert_eq!(layers[1]["effect_id"], crate::editor::SAMPLE_EFFECT);
+        let recorded = &layers[1]["payload"]["rgb"];
         let sampled = ok(
             &owner,
             client,
@@ -7218,7 +7270,11 @@ mod tests {
             "render.sample",
             json!({"asset_id":asset,"x":10,"y":10}),
         );
-        assert_eq!(sampled["rgba"], json!([1, 2, 3, 255]));
+        assert_eq!(
+            sampled["rgba"],
+            json!([recorded[0], recorded[1], recorded[2], 255]),
+            "the identity layer leaves the pixel it recorded"
+        );
         assert_eq!(
             sampled["renderer"],
             json!({"record": "reference", "reason": null})
@@ -7234,7 +7290,8 @@ mod tests {
     #[test]
     fn restoration_tile_queue_counts_parked_reads_and_disconnect_cancels_the_running_call() {
         let catalog = temp("detail-parked-queue.sqlite");
-        let (owner, join) = OwnerHandle::start_with(&catalog, TailPixel::registry()).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, crate::editor::SampleModule::registry()).unwrap();
         let editor = owner.register();
         let state = import_asset(&owner, editor, &fixture());
         let asset = state["asset"]["id"].clone();
@@ -7261,8 +7318,8 @@ mod tests {
                             client,
                             ApiRequest {
                                 id: format!("pixel-{client:?}"),
-                                method: "edit.set-pixel".into(),
-                                params: json!({"asset_id":asset,"x":10,"y":10,"rgb":[1,2,3],
+                                method: "edit.test-sample".into(),
+                                params: json!({"asset_id":asset,"x":10,"y":10,
                         "mutation":crate::editor::mutation_json(1,&format!("pixel-{client:?}"))}),
                                 token: None,
                             },
@@ -7291,8 +7348,8 @@ mod tests {
                 &owner,
                 editor,
                 "full",
-                "edit.set-pixel",
-                json!({"asset_id":asset,"x":11,"y":10,"rgb":[1,2,3],
+                "edit.test-sample",
+                json!({"asset_id":asset,"x":11,"y":10,
                 "mutation":crate::editor::mutation_json(1,"full")}),
             );
             assert_eq!(refused.code, "resource-limit");
@@ -9010,14 +9067,14 @@ mod tests {
 
     /// Every pixel read leaves the owner's thread (performance rule 5), pointwise stacks included:
     /// on a stack of colour layers alone and on one behind Detail, `render.sample`, the neutral
-    /// picker, `mask.sample-input`, a colour-limited stroke's seed and `edit.set-pixel` are each
+    /// picker, `mask.sample-input`, a colour-limited stroke's seed and `edit.test-sample` are each
     /// read by the tile service on its own thread, while the owner, on its thread named for it,
     /// evaluates no tile; a drafted stroke's later ticks and its commit reuse its seed.
     #[test]
     fn every_pixel_read_leaves_the_owner_thread() {
         for detail in [false, true] {
             let catalog = temp(&format!("every-read-off-owner-{detail}.sqlite"));
-            let registry = Arc::new(ModuleRegistry::developer());
+            let registry = crate::editor::SampleModule::registry();
             let (owner, join) = OwnerHandle::start_with(&catalog, registry).unwrap();
             let client = owner.register();
             let state = import_asset(&owner, client, &fixture());
@@ -9153,12 +9210,12 @@ mod tests {
                 &owner,
                 client,
                 "pixel",
-                "edit.set-pixel",
-                json!({"asset_id":asset,"x":10,"y":10,"rgb":[1,2,3],
+                "edit.test-sample",
+                json!({"asset_id":asset,"x":10,"y":10,
                 "mutation":crate::editor::mutation_json(revision,"pixel")}),
             );
             assert_eq!(pixel["outcome"], json!("applied"));
-            read("edit.set-pixel", 5);
+            read("edit.test-sample", 5);
 
             owner.fault(None);
             owner.hold_tiles(None);
