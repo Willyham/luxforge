@@ -377,7 +377,7 @@ Move the pointer over the photograph and the three output codes under it appear 
 
 ### Tone curve
 
-The Tone curve follows Basic in the tools panel, collapsed until you open it. It reshapes the photograph's tones with one curve drawn over the histogram: the horizontal axis is a tone of the picture, from black on the left to white on the right, on the histogram's own scale, and the vertical axis is the tone it becomes. A new curve is the diagonal from black to white, which changes nothing. Raise a point to brighten the tones around it and lower it to darken them; an S, its lower points pulled down and its upper points pushed up, adds contrast. Points are added, selected, dragged, removed and typed as on [every curve](#edit-and-inspect); with a point selected, the arrow keys nudge it by 0.01, Shift by 0.1 and Option by 0.001. The curve holds 2 to 16 points.
+The Tone curve follows Presence in the tools panel, collapsed until you open it. It reshapes the photograph's tones with one curve drawn over the histogram: the horizontal axis is a tone of the picture, from black on the left to white on the right, on the histogram's own scale, and the vertical axis is the tone it becomes. A new curve is the diagonal from black to white, which changes nothing. Raise a point to brighten the tones around it and lower it to darken them; an S, its lower points pulled down and its upper points pushed up, adds contrast. Points are added, selected, dragged, removed and typed as on [every curve](#edit-and-inspect); with a point selected, the arrow keys nudge it by 0.01, Shift by 0.1 and Option by 0.001. The curve holds 2 to 16 points.
 
 The curve passes through every point and only rises or stays level between them, never overshooting, so two tones never swap places: a dragged point stays between its neighbours' heights, and a typed value that would make the curve fall is refused. Tones beyond the first or last point take that point's output, so raising the first point lifts the black, a faded matte look, and lowering the last dims the white.
 
@@ -399,7 +399,7 @@ The API uses `edit.set-detail {asset_id, sharpening?, radius?, sharpen-detail?, 
 
 ### Presence
 
-Presence is the section under the Tone curve, collapsed until you open it, with three sliders that each run −100 to +100 in whole steps. They act on a neighbourhood of every pixel rather than on the pixel alone, which is what separates them from Basic's Contrast.
+Presence is the section under Basic, collapsed until you open it, with three sliders that each run −100 to +100 in whole steps. They act on a neighbourhood of every pixel rather than on the pixel alone, which is what separates them from Basic's Contrast.
 
 **Texture** raises or lowers medium-scale detail: fabric weave, foliage, skin texture. Positive values strengthen it and negative values soften it while broad shading stays where it was. **Clarity** does the same for broad local contrast, the difference between a region and its surroundings, so a flat scene gains depth and a harsh one calms down; it works on brightness only, so colours keep their hue and saturation, and its gain is compressed near black and white so it cannot create a new clipped highlight or crushed shadow. **Dehaze** estimates the atmospheric veil in the photograph, the brightest low-contrast light the haze adds, and removes a fraction of it at positive values or adds a uniform veil at negative ones. It changes colour as well as brightness, because haze is a coloured veil, and it can only remove what the estimate finds: a veil that varies quickly across the frame is partly left in place.
 
@@ -407,7 +407,7 @@ Whatever order you touch them in, they run in a fixed one: Dehaze, then Texture,
 
 ### Colour mixer
 
-The Colour mixer is the section after Presence, collapsed until you open it. Its two tabs, **HSL** and **Grading**, are two views of one layer: both always apply to the picture, and choosing a tab only changes what you see. HSL is selected first.
+The Colour mixer is the section after Detail, collapsed until you open it. Its two tabs, **HSL** and **Grading**, are two views of one layer: both always apply to the picture, and choosing a tab only changes what you see. HSL is selected first.
 
 HSL adjusts eight colour ranges separately: red, orange, yellow, green, aqua, blue, purple and magenta, in that order around the wheel, each with a **Hue**, **Saturation** and **Luminance** slider from −100 to +100 in whole steps. The three properties are three tabs over the same eight ranges, Hue selected first; a dot on a tab marks a property you have changed, so edits on a hidden tab stay visible, and the reset at the right of the tabs resets the visible property. Choosing a tab adds nothing to history.
 

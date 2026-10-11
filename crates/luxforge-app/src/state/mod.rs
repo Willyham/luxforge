@@ -3436,7 +3436,7 @@ mod tests {
         assert_eq!(scene.modules, modules);
     }
 
-    /// The Tone curve section, directly after Basic, is the headerless single-curve case: its one
+    /// The Tone curve section, directly after Presence, is the headerless single-curve case: its one
     /// group draws its curve straight under the band, with no label line of its own (the band
     /// names it), the add-and-remove hint shown, the Points list closed and room for sixteen
     /// points.
@@ -3455,9 +3455,16 @@ mod tests {
             .position(|id| *id == "luxforge.basic")
             .expect("Basic");
         assert_eq!(
-            order.get(basic + 1),
-            Some(&"luxforge.curve"),
-            "the Tone curve follows Basic: {order:?}"
+            order.get(basic..basic + 4),
+            Some(
+                &[
+                    "luxforge.basic",
+                    "luxforge.presence",
+                    "luxforge.curve",
+                    "luxforge.detail"
+                ][..]
+            ),
+            "Basic, Presence, the Tone curve and Detail lead the adjustments: {order:?}"
         );
         let drawn = section(&workspace, "luxforge.curve");
         let [ControlModel::Curve(curve)] = drawn.controls.as_slice() else {
