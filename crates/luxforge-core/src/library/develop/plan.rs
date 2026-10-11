@@ -8,13 +8,16 @@
 //! among its own files and a burst or bracket its own frames: a later Develop from the same event
 //! finds the folder this one made, and a bracket's developed frames record the moment they share.
 //! A file the index does not list is an undated frame of its folder.
-use super::frames::{self, Frames, unlisted_item};
+use super::{
+    filing::{Destination, made_from},
+    frames::{self, Frames, unlisted_item},
+};
 use crate::{
     Error,
     catalog_types::{
-        CatalogFolderId, DevelopInto, DevelopPlan, EventId, EventSpan, FolderChoice, FolderValue,
-        Grouping, LocalDay, MAX_LIBRARY_NAME, MomentId, NoProbe, PlannedEvent, RemovablePicks,
-        Thresholds, ViewItem, Volume, VolumeId,
+        CatalogFolderId, DevelopInto, DevelopPlan, EventId, EventSpan, FolderChoice, Grouping,
+        LocalDay, MAX_LIBRARY_NAME, MomentId, NoProbe, PlannedEvent, RemovablePicks, Thresholds,
+        ViewItem, Volume, VolumeId,
     },
     editor::library_rows,
     index::volume_of,
@@ -29,9 +32,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+/// The place a dated event with no place and no user-named folder is proposed for.
+pub(crate) const UNKNOWN_PLACE: &str = "Unknown place";
 
 /// What developing some files would do, per event.
 #[derive(Debug)]
@@ -69,10 +71,14 @@ pub(crate) struct PlanEvent {
     pub span: Option<EventSpan>,
     /// Its files: a range of [`Plan::files`].
     pub files: Range<usize>,
-    /// An existing folder made from it, or a new one named after it.
+    /// An existing folder made from it, or its place.
     pub proposal: FolderChoice,
     /// The proposed existing folder's name.
     pub folder_name: Option<String>,
+    /// The distinct camera-local days of its files, ascending.
+    pub days: Vec<LocalDay>,
+    /// How many of its files have no capture time the index knows.
+    pub undated: u32,
 }
 
 impl Plan {
@@ -114,6 +120,8 @@ impl Plan {
                     count: event.files.len() as u32,
                     folder: event.proposal.clone(),
                     folder_name: event.folder_name.clone(),
+                    days: event.days.clone(),
+                    undated: event.undated,
                     removable,
                 }
             })
@@ -213,7 +221,6 @@ pub(crate) fn plan(
         volumes,
         folders: HashMap::new(),
     };
-    let mut taken = top_level_names(catalog)?;
     let mut plan = Plan {
         files: Vec::with_capacity(files.len()),
         events: Vec::new(),
@@ -224,7 +231,7 @@ pub(crate) fn plan(
         if plan.events.last().is_none_or(|last| last.id != group.id) {
             let start = plan.files.len();
             let first_folder = frames.tables.folder_path(group.folders[0]).clone();
-            let (proposal, folder_name) = propose(catalog, group, &first_folder, &mut taken)?;
+            let (proposal, folder_name) = propose(catalog, group, &first_folder, &frames)?;
             plan.events.push(PlanEvent {
                 id: group.id.clone(),
                 name: group.name.clone(),
@@ -239,7 +246,18 @@ pub(crate) fn plan(
                 files: start..start,
                 proposal,
                 folder_name,
+                days: Vec::new(),
+                undated: 0,
             });
+        }
+        let event = plan.events.last_mut().expect("its event");
+        match frames.frames[frame_of[&items[file]]].local_day {
+            Some(day) => {
+                if let Err(at) = event.days.binary_search(&day) {
+                    event.days.insert(at, day);
+                }
+            }
+            None => event.undated += 1,
         }
         let named = named[file].take().expect("each file is planned once");
         let planned = resolver.file(index, &indexed, named, plan.events.len() - 1)?;
@@ -250,17 +268,16 @@ pub(crate) fn plan(
     Ok(plan)
 }
 
-/// The folder a Develop proposes for `event`: the newest catalog folder made from it — whose
-/// stored key is its identity, else whose stored span overlaps its span — or, for an Undated
-/// event, which has no span, the folder the newest photograph developed from its folder on disk is
-/// in; otherwise a
-/// new top-level folder named after it, unique among the top-level folders and the plan's other
-/// new ones.
+/// The folder a Develop proposes for `event`. A dated event: the newest catalog folder made from
+/// it — whose stored key is its identity, else whose stored span overlaps its span — with day
+/// folders in it; otherwise its place ([`place_name`]). An Undated event, which has no span: the
+/// folder the newest photograph developed from its folder on disk is in; otherwise a place named
+/// after that folder.
 fn propose(
     catalog: &Connection,
     event: &crate::catalog_types::EventGroup,
     folder: &Path,
-    taken: &mut Vec<String>,
+    frames: &Frames,
 ) -> Result<(FolderChoice, Option<String>), Error> {
     let existing: Option<(String, String)> = match event.start_ms.zip(event.end_ms) {
         Some((start, end)) => {
@@ -302,72 +319,59 @@ fn propose(
         return Ok((
             FolderChoice::Existing {
                 folder_id: CatalogFolderId::parse(id)?,
+                days: !event.undated(),
             },
             Some(name),
         ));
     }
-    let name = unique(&folder_name(event, folder), taken);
-    taken.push(name.clone());
     Ok((
-        FolderChoice::New {
-            name,
-            parent_id: None,
+        FolderChoice::Place {
+            name: place_name(event, folder, frames),
         },
         None,
     ))
 }
 
-/// The name a new folder made from `event` is proposed with: its place with the month and year of
-/// its first day ("Konstanz · Sep 2026"), or else the event's own name ("Lake · 14 Sep", "16 Sep ·
-/// LEICA Q3"), as a catalog name keeps it. An Undated event's folder is named after the folder on
-/// disk its files are in ("From Anna"), as a single opened file's has always been.
-pub(crate) fn folder_name(event: &crate::catalog_types::EventGroup, disk_folder: &Path) -> String {
-    let name = match (&event.place, event.first_day) {
-        (Some(place), Some(day)) => format!("{place} · {}", month_and_year(day)),
-        _ if event.undated() => disk_folder.file_name().map_or_else(
-            || event.name.clone(),
-            |name| name.to_string_lossy().into_owned(),
-        ),
-        _ => event.name.clone(),
+/// The place a Develop files `event` under when no earlier Develop made its folder: its place
+/// ("Konstanz"), else the user-named folder on disk that names it ("Lake"), else "Unknown place".
+/// An Undated event's place is the name of the folder on disk its files are in ("From Anna"). As a
+/// catalog name keeps it.
+pub(crate) fn place_name(
+    event: &crate::catalog_types::EventGroup,
+    disk_folder: &Path,
+    frames: &Frames,
+) -> String {
+    let named_by_folder = || {
+        event
+            .folders
+            .iter()
+            .any(|&folder| {
+                organize::user_folder_name(frames.tables.folder_path(folder)).as_deref()
+                    == Some(event.label.as_str())
+            })
+            .then(|| event.label.clone())
     };
+    let name = if event.undated() {
+        disk_folder
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    } else {
+        event.place.clone().or_else(named_by_folder)
+    };
+    name.and_then(|name| catalog_name(&name))
+        .unwrap_or_else(|| UNKNOWN_PLACE.to_owned())
+}
+
+/// `name` as a catalog name keeps it: control characters as spaces, trimmed, at most
+/// [`MAX_LIBRARY_NAME`] characters; none when nothing is left.
+fn catalog_name(name: &str) -> Option<String> {
     let name: String = name
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let name: String = name.trim().chars().take(MAX_LIBRARY_NAME).collect();
-    match name.trim() {
-        "" => "Developed".to_owned(),
-        name => name.to_owned(),
-    }
-}
-
-/// "Sep 2026".
-fn month_and_year(day: LocalDay) -> String {
-    let (year, month, _) = day.ymd();
-    format!("{} {year}", MONTHS[month as usize - 1])
-}
-
-/// `name`, or `name 2`, `name 3`… when a name in `taken` is already it, ignoring case.
-fn unique(name: &str, taken: &[String]) -> String {
-    let free = |candidate: &str| !taken.iter().any(|name| tree::same_name(name, candidate));
-    if free(name) {
-        return name.to_owned();
-    }
-    (2..)
-        .map(|n| {
-            let suffix = format!(" {n}");
-            let keep = MAX_LIBRARY_NAME - suffix.chars().count();
-            format!("{}{suffix}", name.chars().take(keep).collect::<String>())
-        })
-        .find(|candidate| free(candidate))
-        .expect("some suffix is free")
-}
-
-fn top_level_names(catalog: &Connection) -> Result<Vec<String>, Error> {
-    Ok(catalog
-        .prepare_cached("SELECT name FROM catalog_folders WHERE parent_id IS NULL")?
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?)
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 /// Every burst's and bracket's identity by the items of its frames, over `frames` grouped as a
@@ -552,11 +556,14 @@ impl Resolver<'_> {
 }
 
 /// Where each event of `plan` goes: its own `into` entry (by `event_id`), else the entry that
-/// names no event, else the plan's proposal. An existing folder must be in the catalog; a new
-/// folder's name follows a folder's rules and must be free among its siblings, and events given
-/// the same new folder (the same name, ignoring case, under the same parent) share it. A new
-/// folder records the span of the events it is made from, and their identity when it is made
-/// from one. Answers the folders and, per event, the index of its folder among them.
+/// names no event, else the plan's proposal. An existing folder must be in the catalog; a place's
+/// and a new folder's name follow a folder's rules, and a new folder's name must be free among its
+/// siblings. Events given the same existing folder with the same `days`, or the same new folder
+/// (the same name, ignoring case, under the same parent) share it, and a new folder records the
+/// span of the events it is made from, and their identity when it is made from one. Each event
+/// given a place has its own destination, recording its span and identity for the place folder
+/// its first batch may make; events of one place share their folders as they are found by name.
+/// Answers the destinations and, per event, the index of its destination among them.
 pub(crate) fn destinations(
     catalog: &Connection,
     plan: &Plan,
@@ -586,7 +593,7 @@ pub(crate) fn destinations(
             }
         }
     }
-    let mut folders: Vec<Destination> = Vec::new();
+    let mut destinations: Vec<Destination> = Vec::new();
     let mut of_event = Vec::with_capacity(plan.events.len());
     for event in &plan.events {
         let choice = by_event
@@ -595,88 +602,60 @@ pub(crate) fn destinations(
             .or(default)
             .unwrap_or(&event.proposal);
         let at = match choice {
-            FolderChoice::Existing { folder_id } => {
+            FolderChoice::Existing { folder_id, days } => {
                 folders::folder(catalog, folder_id)?;
-                match folders
-                    .iter()
-                    .position(|known| matches!(known, Destination::Existing(id) if id == folder_id))
-                {
-                    Some(at) => at,
-                    None => {
-                        folders.push(Destination::Existing(folder_id.clone()));
-                        folders.len() - 1
-                    }
-                }
+                let known = destinations.iter().position(|known| {
+                    matches!(known, Destination::Existing { folder_id: id, days: with }
+                        if id == folder_id && with == days)
+                });
+                known.unwrap_or_else(|| {
+                    destinations.push(Destination::Existing {
+                        folder_id: folder_id.clone(),
+                        days: *days,
+                    });
+                    destinations.len() - 1
+                })
+            }
+            // Each event its own: its folders are found by name as its photographs are filed, so
+            // events of one place share them, and a place folder records the event that made it.
+            FolderChoice::Place { name } => {
+                destinations.push(Destination::Place {
+                    name: tree::checked_name(name)?,
+                    event: made_from(std::slice::from_ref(&event.span)),
+                });
+                destinations.len() - 1
             }
             FolderChoice::New { name, parent_id } => {
                 let name = tree::checked_name(name)?;
-                let shared = folders.iter().position(|known| match known {
+                let shared = destinations.iter().position(|known| match known {
                     Destination::New { folder, .. } => {
                         folder.parent_id == *parent_id && tree::same_name(&folder.name, &name)
                     }
-                    Destination::Existing(_) => false,
+                    _ => false,
                 });
                 match shared {
                     Some(at) => at,
                     None => {
                         let (folder, _) =
                             folders::create(catalog, &name, parent_id.as_ref(), now_ms)?;
-                        folders.push(Destination::New {
+                        destinations.push(Destination::New {
                             folder,
                             events: Vec::new(),
                         });
-                        folders.len() - 1
+                        destinations.len() - 1
                     }
                 }
             }
         };
-        if let Destination::New { events, .. } = &mut folders[at] {
+        if let Destination::New { events, .. } = &mut destinations[at] {
             events.push(event.span.clone());
         }
         of_event.push(at);
     }
-    for destination in &mut folders {
+    for destination in &mut destinations {
         if let Destination::New { folder, events } = destination {
             folder.event = made_from(events);
         }
     }
-    Ok((folders, of_event))
-}
-
-/// The catalog folder a Develop brings an event's photographs into.
-#[derive(Clone, Debug)]
-pub(crate) enum Destination {
-    Existing(CatalogFolderId),
-    /// A folder the Develop makes, as its first batch into it commits, with the spans of the
-    /// events it is made from (none for an Undated one).
-    New {
-        folder: FolderValue,
-        events: Vec<Option<EventSpan>>,
-    },
-}
-
-impl Destination {
-    pub(crate) fn id(&self) -> &CatalogFolderId {
-        match self {
-            Self::Existing(id) => id,
-            Self::New { folder, .. } => &folder.id,
-        }
-    }
-}
-
-/// The span a new folder records: every dated event's it is made from, with the event's identity
-/// when it is made from exactly one event.
-fn made_from(events: &[Option<EventSpan>]) -> Option<EventSpan> {
-    let dated: Vec<&EventSpan> = events.iter().flatten().collect();
-    let start_ms = dated.iter().map(|span| span.start_ms).min()?;
-    let end_ms = dated.iter().map(|span| span.end_ms).max()?;
-    let event_id = match (events.len(), dated.as_slice()) {
-        (1, [only]) => only.event_id.clone(),
-        _ => None,
-    };
-    Some(EventSpan {
-        start_ms,
-        end_ms,
-        event_id,
-    })
+    Ok((destinations, of_event))
 }
