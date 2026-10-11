@@ -28,6 +28,7 @@
 //! report counts them, and the release still redevelops the mosaic before the committed frame.
 //!
 //! [design]: ../../../docs/design/basic-and-histogram.md
+use crate::usage_receiver::{UsageMode, UsageSetup};
 use crate::{
     scenario::{
         Launch, Launched, Run,
@@ -40,7 +41,6 @@ use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
     Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
-use crate::usage_receiver::{UsageMode, UsageSetup};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
@@ -3207,7 +3207,9 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             // Last: for an opted-in launch, its one attempt has ended and `usage.read` says so; an
             // opted-out launch waits for collection to read off, so every mode runs the same steps
             // and captures the same frames.
-            steps.push(script::Step::Usage(script::UsageStep::Await(usage_await(mode))));
+            steps.push(script::Step::Usage(script::UsageStep::Await(usage_await(
+                mode,
+            ))));
             // Then every mode alike: a fixed window, so each launch outlives the release's picture
             // at rest and the opted-out launch's peak memory compares with the opted-in ones'.
             steps.push(script::Step::Observe(script::IdleStep {
@@ -3819,7 +3821,11 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         let report = usage_report(setup, &events, &usage, last)?;
         if let Some(close) = report["close_after_shutdown_ms"].as_f64() {
             if let Some(rows) = result["rows"].as_array_mut() {
-                rows.push(stats::scalar("close_after_shutdown_event", "ms", Some(close)));
+                rows.push(stats::scalar(
+                    "close_after_shutdown_event",
+                    "ms",
+                    Some(close),
+                ));
             }
         }
         write_json(&out.join("usage-receiver.json"), &setup.record())?;
@@ -3867,7 +3873,12 @@ const USAGE_TAIL_MS: u64 = 6_000;
 /// mode). An opted-in run must have attempted a request (its script's last step waits for
 /// `usage.read` to say so), the fast receiver must have accepted it, and an opted-out run sent
 /// none.
-fn usage_report(setup: &UsageSetup, events: &[Value], watched: &Value, last: &Value) -> Result<Value> {
+fn usage_report(
+    setup: &UsageSetup,
+    events: &[Value],
+    watched: &Value,
+    last: &Value,
+) -> Result<Value> {
     let requests = setup.requests();
     let diagnostics = last["state"]["usage"]["diagnostics"].clone();
     let attempts = diagnostics["attempts"].as_u64();

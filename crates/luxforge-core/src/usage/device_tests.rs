@@ -633,12 +633,18 @@ fn usage_this_macs_profile_matches_what_the_system_reports_without_its_strings()
         assert_eq!(cpu.tier, tier, "{brand}");
     }
 
-    let gib = sysctl("hw.memsize").parse::<u64>().unwrap().div_ceil(1 << 30);
+    let gib = sysctl("hw.memsize")
+        .parse::<u64>()
+        .unwrap()
+        .div_ceil(1 << 30);
     match profile.memory() {
         MemoryBand::Over1024 => assert!(gib > 1024),
         band => {
             let upper = u64::from(band.upper_gib().unwrap());
-            assert!(gib <= upper && (upper == 8 || gib > upper / 2), "{gib} GiB in {band:?}");
+            assert!(
+                gib <= upper && (upper == 8 || gib > upper / 2),
+                "{gib} GiB in {band:?}"
+            );
         }
     }
 

@@ -604,7 +604,10 @@ fn edited(name: &str, source: &Path, collecting: bool) -> Outputs {
     if collecting {
         harness.start();
     }
-    let ext = source.extension().and_then(|ext| ext.to_str()).unwrap_or("jpg");
+    let ext = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("jpg");
     let photo = harness.dir.join(format!("original.{ext}"));
     fs::copy(source, &photo).unwrap();
     let original_before = sha256_hex(&photo);

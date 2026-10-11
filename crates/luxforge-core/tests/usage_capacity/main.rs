@@ -120,10 +120,8 @@ impl Transport for Counted {
         _: &mut dyn io::Write,
     ) -> Result<TransportResponse, Error> {
         options.control.checkpoint()?;
-        let at = u64::try_from(
-            luxforge_core::usage::Clock::monotonic(&*self.clock).as_millis(),
-        )
-        .unwrap();
+        let at = u64::try_from(luxforge_core::usage::Clock::monotonic(&*self.clock).as_millis())
+            .unwrap();
         if self.requests.fetch_add(1, Ordering::SeqCst) > 0 {
             let gap = at - self.last_ms.load(Ordering::SeqCst);
             self.shortest_gap_ms.fetch_min(gap, Ordering::SeqCst);
@@ -354,7 +352,10 @@ fn slow_usage_statistics_storage_stays_within_256_kib_however_long_and_hard_it_r
         (59..=61).contains(&flooded),
         "{flooded} requests in an hour's flood: one a minute"
     );
-    assert!(resumed >= 30, "{resumed} requests in the half hour back online");
+    assert!(
+        resumed >= 30,
+        "{resumed} requests in the half hour back online"
+    );
     assert!(
         (6..=9).contains(&offline_attempts),
         "{offline_attempts} attempts in a day offline"

@@ -286,22 +286,34 @@ fn slow_usage_a_loopback_capture_shows_a_request_a_minute_at_most_and_no_hourly_
          at {} s",
         captured.len(),
         typical.len(),
-        typical.iter().map(|request| request.wire_bytes).sum::<usize>(),
-        flood.iter().map(|request| request.wire_bytes).sum::<usize>(),
+        typical
+            .iter()
+            .map(|request| request.wire_bytes)
+            .sum::<usize>(),
+        flood
+            .iter()
+            .map(|request| request.wire_bytes)
+            .sum::<usize>(),
         failing.len(),
         failing
             .iter()
             .map(|request| request.at - failing_start)
             .collect::<Vec<_>>(),
         recovered.len(),
-        recovered.first().map_or(0, |request| request.at - failing_start),
+        recovered
+            .first()
+            .map_or(0, |request| request.at - failing_start),
     );
 
     // Never nearer than a minute and never over 64 KiB in its body. While every request was
     // accepted, every window was sent: no `batch_seq` gap. (During the failures, windows that
     // expire in a cooldown are dropped, which is a gap.)
     assert!(shortest >= 60, "two requests {shortest} s apart");
-    assert!(captured.iter().all(|request| request.body_bytes <= 64 * 1024));
+    assert!(
+        captured
+            .iter()
+            .all(|request| request.body_bytes <= 64 * 1024)
+    );
     let accepted = captured.len() - failing.len() - recovered.len();
     for pair in captured[..accepted].windows(2) {
         assert_eq!(pair[1].batch_seq, pair[0].batch_seq + 1, "{pair:?}");
