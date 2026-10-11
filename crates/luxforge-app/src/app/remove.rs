@@ -825,14 +825,11 @@ impl Editor {
                     .remove
                     .job(job_id)
                     .map_or(0, |job| job.candidates.len());
-                self.status.text = format!(
-                    "{count} {} \u{b7} choose one and Accept",
-                    if count == 1 {
-                        "candidate"
-                    } else {
-                        "candidates"
-                    }
-                );
+                self.status.text = if count == 1 {
+                    "1 candidate \u{b7} Accept it, or Regenerate for another".to_owned()
+                } else {
+                    format!("{count} candidates \u{b7} choose one and Accept")
+                };
             }
             JobStatus::Failed => {
                 let text = error.unwrap_or_else(|| "The generation failed".into());

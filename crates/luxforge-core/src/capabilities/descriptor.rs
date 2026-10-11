@@ -1925,6 +1925,41 @@ mod tests {
             ),
             (
                 |d| {
+                    if let CapabilityKind::LocalRuntime { with, .. } = runtime(d) {
+                        *with = vec!["palette".into()];
+                    }
+                },
+                "capability fill names resource palette twice",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { with, .. } = runtime(d) {
+                        *with = vec!["missing".into()];
+                    }
+                },
+                "capability fill opens its model with undeclared resource missing",
+            ),
+            (
+                |d| {
+                    let mut other = d.resources[0].clone();
+                    other.id = "other".into();
+                    d.resources.push(other);
+                    if let CapabilityKind::LocalRuntime { with, .. } = runtime(d) {
+                        *with = vec!["other".into()];
+                    }
+                },
+                "capability fill opens its model with resource other, which no download-artifact capability installs",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { with, .. } = runtime(d) {
+                        *with = (0..=MAX_COMPANIONS).map(|n| format!("r{n}")).collect();
+                    }
+                },
+                "capability fill opens its model with 5 resources; at most 4",
+            ),
+            (
+                |d| {
                     d.tasks[0].asset = false;
                     d.tasks[0].profile = false;
                     d.tasks[0].uses = vec!["fill".into()];

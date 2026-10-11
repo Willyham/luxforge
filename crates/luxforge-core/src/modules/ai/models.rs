@@ -296,7 +296,10 @@ pub(crate) const FAKE_MODEL: GenerativeModel = GenerativeModel {
     side: 512,
     steps: 8,
     text_encoder: Some(FAKE_TEXT_ENCODER),
-    prompt_runtime: None,
+    prompt_runtime: Some(PromptRuntime {
+        id: "run-fake-generator-replace",
+        resident_bytes: 128 * 1024 * 1024,
+    }),
 };
 
 /// Where Hugging Face redirects a pinned download (its CDN and Xet bridges), and where GitHub

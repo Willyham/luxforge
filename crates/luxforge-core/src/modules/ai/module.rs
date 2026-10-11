@@ -206,6 +206,9 @@ impl AiModule {
                 title: "AI editing".into(),
                 hint: Some("Generative fill over the Corrections band's brush".into()),
                 developer: false,
+                // Its section holds the model cards, which the Models tab also lists: it starts
+                // collapsed, so a launch reads nothing for it until it is opened.
+                collapsed: true,
                 tasks: vec![task],
                 capabilities,
                 resources,
