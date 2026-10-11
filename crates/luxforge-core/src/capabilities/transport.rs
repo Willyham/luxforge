@@ -80,7 +80,15 @@ pub struct SendOptions<'a> {
     /// Called after each piece of the final response body reaches the sink, with the bytes
     /// written so far and the declared length, if there is one.
     pub progress: &'a mut dyn FnMut(u64, Option<u64>),
+    /// Called once with the final response's status and header fields (lowercased names), after
+    /// they pass the transport's checks and before any of its body reaches the sink, so a caller
+    /// can judge the answer before taking its body: a resumed download checks that the server
+    /// sent the range it asked for. An error stops the request with that error.
+    pub head: Option<&'a mut HeadCheck<'a>>,
 }
+
+/// What [`SendOptions::head`] calls.
+pub type HeadCheck<'a> = dyn FnMut(u16, &[(String, String)]) -> Result<(), Error> + 'a;
 
 /// The final response's head. Any status other than a redirect is returned as data, for the caller
 /// to judge.
@@ -183,6 +191,7 @@ mod tests {
                         redirects: RedirectPolicy::default(),
                         control,
                         progress: &mut |_, _| {},
+                        head: None,
                     },
                     &mut sink,
                 )

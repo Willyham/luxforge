@@ -11,7 +11,10 @@ use crate::{
         descriptor::{CapabilityKind, ResourceDescriptor},
         endpoint::{EndpointClass, parse_endpoint},
         grants::{DownloadScope, GrantScope},
-        resources::{self as transfer, InstallJob, InstallSource, ResourceRow, ResourceState},
+        resources::{
+            self as transfer, InstallJob, InstallSource, Requirements, ResourceFileRow,
+            ResourceRow, ResourceState,
+        },
     },
     jobs::{JobControl, JobKind, JobRecord, JobStatus, Jobs, NewJob, Work},
 };
@@ -66,12 +69,24 @@ impl CapabilityHost {
                     id: resource.id.clone(),
                     title: resource.title.clone(),
                     version: resource.version.clone(),
-                    bytes: resource.bytes,
+                    bytes: resource.total_bytes(),
                     sha256: resource.sha256.clone(),
                     license: resource.license.clone(),
                     provenance: resource.provenance.clone(),
                     url: resource.url.clone(),
+                    files: resource
+                        .pinned_files()
+                        .map(|file| ResourceFileRow {
+                            name: file.name.to_owned(),
+                            bytes: file.bytes,
+                        })
+                        .collect(),
+                    tradeoff: resource.tradeoff.clone(),
+                    use_restriction: resource.use_restriction.clone(),
+                    requirements: Requirements::of(descriptor, resource),
+                    fits: self.fits(resource),
                     state: ResourceState::NotInstalled,
+                    staged_bytes: None,
                     path: None,
                     installed_ms: None,
                     job_id: None,
@@ -99,6 +114,12 @@ impl CapabilityHost {
                     row.job_id = Some(job.job_id);
                     row.error = job.error;
                 }
+                if row.state != ResourceState::Installed {
+                    row.staged_bytes = self
+                        .resources
+                        .as_ref()
+                        .and_then(|store| store.staged_bytes(&descriptor.id, resource));
+                }
                 row
             })
             .collect()
@@ -123,7 +144,48 @@ impl CapabilityHost {
             "module_id": descriptor.id,
             "resources": self.resource_rows(jobs, descriptor),
             "storage": storage,
+            "machine": self.machine(),
         }))
+    }
+
+    /// What `module.resource.list` and `module.status` say of this machine: its memory, when the
+    /// host can tell.
+    pub(super) fn machine(&self) -> Value {
+        json!({"memory_bytes": self.config.machine_memory_bytes})
+    }
+
+    /// Whether this machine meets `resource`'s memory minimum: `None` when it declares none or the
+    /// host cannot tell.
+    fn fits(&self, resource: &ResourceDescriptor) -> Option<bool> {
+        let minimum = resource.min_memory_bytes?;
+        let memory = self.config.machine_memory_bytes?;
+        Some(memory >= minimum)
+    }
+
+    /// Refuse, by name, an install on a machine with less memory than the resource requires.
+    fn check_machine(&self, resource: &ResourceDescriptor) -> Result<(), Error> {
+        let (Some(minimum), Some(memory)) =
+            (resource.min_memory_bytes, self.config.machine_memory_bytes)
+        else {
+            return Ok(());
+        };
+        if memory >= minimum {
+            return Ok(());
+        }
+        Err(Error::resource_limit(format!(
+            "{} needs a machine with at least {} of memory; this machine has {}",
+            resource.title,
+            gib(minimum),
+            gib(memory)
+        ))
+        .with_data(json!({
+            "requirements": [{
+                "kind": "memory",
+                "id": resource.id,
+                "required_bytes": minimum,
+                "machine_bytes": memory,
+            }]
+        })))
     }
 
     /// `module.resource.install`: from the pinned URL under a `download-artifact` grant. Consent,
@@ -158,6 +220,9 @@ impl CapabilityHost {
             return Ok(answer(ResourceState::Installing, Some(&job)));
         }
         let InstallSource::Download {} = request.source.unwrap_or(InstallSource::Download {});
+        // A machine below the minimum is refused before any consent is asked: nothing it could
+        // allow would let the model run.
+        self.check_machine(resource)?;
         let capability = descriptor
             .capabilities
             .iter()
@@ -189,7 +254,6 @@ impl CapabilityHost {
         let control = JobControl::new();
         let job = InstallJob {
             store: store.clone(),
-            job_id: job_id.clone(),
             module_id: descriptor.id.clone(),
             resource: resource.clone(),
             transport: self.transport.clone(),
@@ -257,7 +321,9 @@ impl CapabilityHost {
         if let Some(job) = jobs.live(JobKind::Remove, &descriptor.id, Some(&resource.id)) {
             return Ok(answer(Some(&job), state));
         }
+        // An interrupted transfer is removed with the resource, so Remove discards it too.
         if !store.version_dir(&descriptor.id, resource).exists()
+            && !store.staging_dir(&descriptor.id, resource).exists()
             && state != ResourceState::Installing
         {
             return Ok(answer(None, ResourceState::NotInstalled));
@@ -297,4 +363,14 @@ fn declared_resource<'a>(
             descriptor.id
         ))
     })
+}
+
+/// A byte count in gibibytes as a person reads memory: whole, or with one decimal under ten.
+pub(crate) fn gib(bytes: u64) -> String {
+    let value = bytes as f64 / (1u64 << 30) as f64;
+    if value < 10.0 && value.fract() != 0.0 {
+        format!("{value:.1} GB")
+    } else {
+        format!("{value:.0} GB")
+    }
 }

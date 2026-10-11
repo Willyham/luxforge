@@ -19,6 +19,8 @@ pub mod host;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+mod model_resource_tests;
+#[cfg(test)]
 mod proof_tests;
 pub mod read;
 #[cfg(test)]

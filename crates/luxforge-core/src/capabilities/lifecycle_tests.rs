@@ -910,7 +910,7 @@ fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
 }
 
 #[test]
-fn a_download_cancelled_mid_transfer_stops_promptly_and_leaves_nothing() {
+fn a_download_cancelled_mid_transfer_stops_promptly_and_installs_nothing() {
     let (transport, release) = stalling();
     let fixture = Fixture::new("cancel-download", &transport);
     let owner = fixture.start();
@@ -937,11 +937,21 @@ fn a_download_cancelled_mid_transfer_stops_promptly_and_leaves_nothing() {
         cancelled["error"],
         json!({"code": "cancelled", "message": "the job was cancelled"})
     );
-    fixture.assert_clean("palette", "cancelled");
-    assert_eq!(
-        owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["resources"][0]["state"],
-        json!("not-installed")
+    // Nothing is installed; the four bytes staged are kept for the next install to resume, and
+    // the resource reads not installed with them.
+    let version = fixture.version_dir("palette");
+    assert!(!version.exists(), "nothing is installed");
+    let row = &owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["resources"][0];
+    assert_eq!(row["state"], json!("not-installed"));
+    assert_eq!(row["staged_bytes"], json!(4));
+    // Remove discards the partial transfer with the resource.
+    let removed = owner.ok(
+        REMOVE,
+        json!({"module_id": MODULE, "resource_id": "palette"}),
     );
+    let removed = owner.finished(&removed["job_id"]);
+    assert_eq!(removed["result"]["discarded_partial"], json!(true));
+    fixture.assert_clean("palette", "cancelled, then removed");
     owner.stop();
 }
 
@@ -1069,7 +1079,8 @@ fn removing_a_resource_deletes_only_the_resource() {
     assert_eq!(removed["status"], json!("ready"));
     assert_eq!(
         removed["result"],
-        json!({"resource_id": "palette", "version": "1.0.0", "removed": true})
+        json!({"resource_id": "palette", "version": "1.0.0", "removed": true,
+               "discarded_partial": false})
     );
     assert!(!fixture.version_dir("palette").exists());
     assert!(
