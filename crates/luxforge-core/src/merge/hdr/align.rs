@@ -14,19 +14,24 @@
 //! 1. **Pyramid.** The proxy is halved by `[1 3 3 1]²/64` weighted means of its usable pixels
 //!    (a 2 × 2 box under a binomial, against aliasing; a coarse pixel is usable when at least
 //!    three of its 2 × 2 block are) until the longer side is at most [`COARSE_SIDE`], at most
-//!    [`MAX_PYRAMID_LEVELS`] levels. The search reads the coarsest level smoothed once more by
+//!    [`MAX_PYRAMID_LEVELS`] levels. The search reads a level smoothed once more by
 //!    `[1 2 1]²/16`.
-//! 2. **Search.** On the coarsest level, the zero-mean normalized correlation of the two images'
-//!    ranks (each usable value's rank among its frame's usable values) over their shared usable
-//!    pixels, at every whole-pixel translation within [`SEARCH_FRACTION`] of the level, then at
-//!    every whole-degree rotation within [`SEARCH_ROTATION_DEG`] around the best translation.
-//!    Ranks ignore the exposure offset and any monotone response, and bound what a moving subject
-//!    far darker or brighter than the scene can pull the match by its share of the area. The best
-//!    match must correlate by [`MIN_CORRELATION`]; another local peak [`DISTINCT_PEAK_PX`] away
-//!    within [`DISTINCT_PEAK_MARGIN`] of it is an ambiguous match (a repeated pattern). The
-//!    reference's log-luminance structure tensor, over its usable pixels and again over those the
-//!    match shares, must have [`MIN_TEXTURE`] in its weaker direction.
-//! 3. **Refinement.** From coarse to fine, Gauss-Newton on the rotation, translation and a
+//! 2. **Search.** On the coarsest level on which each frame has [`MIN_SEARCH_PIXELS`] usable
+//!    pixels (a wide bracket's extreme exposure, usable on a few percent of the frame, on a finer
+//!    one), the zero-mean normalized correlation of the two images' ranks (each usable value's
+//!    rank among its frame's usable values) over their shared usable pixels, at least a quarter of
+//!    the smaller frame's usable pixels there, at every whole-pixel translation within
+//!    [`SEARCH_FRACTION`] of the level, then at every whole-degree rotation within
+//!    [`SEARCH_ROTATION_DEG`] around the best translation. Ranks ignore the exposure offset and
+//!    any monotone response, and bound what a moving subject far darker or brighter than the scene
+//!    can pull the match by its share of the area. The best match must correlate by
+//!    [`MIN_CORRELATION`]; another local peak [`DISTINCT_PEAK_PX`] coarse pixels away within
+//!    [`DISTINCT_PEAK_MARGIN`] of it is an ambiguous match (a repeated pattern). The reference's
+//!    log-luminance structure tensor, over its usable pixels on the coarsest level and again over
+//!    those the match shares on the searched one, must have [`MIN_TEXTURE`] in its weaker
+//!    direction. A frame with fewer than [`MIN_SUPPORT`] usable proxy pixels is not searched.
+//! 3. **Refinement.** From the searched level to the proxy, Gauss-Newton on the rotation,
+//!    translation and a
 //!    log-brightness offset `β`, minimizing the Huber-weighted (`k = 1.345 σ`, `σ` the robust
 //!    deviation, at least [`MIN_SIGMA_EV`]) residual `L_input(q) − L_reference(p) − β` over at most
 //!    [`MAX_REGISTRATION_SAMPLES`] grid samples a level, bilinear in the input, for at most
@@ -35,7 +40,9 @@
 //!    [`MIN_INLIER_FRACTION`] of them within [`INLIER_EV`] of the fit, a predicted one-sigma
 //!    position error of at most [`MAX_UNCERTAINTY_PX`] proxy pixels, and a motion within
 //!    [`MAX_ROTATION_DEG`] and [`MAX_SHIFT_FRACTION`] of each side. Otherwise a typed
-//!    [`Refusal`].
+//!    [`Refusal`]. An accepted fit that moves no frame corner further than [`SNAP_SIGMAS`] of its
+//!    predicted error, nor than [`SNAP_LIMIT_PX`], is recorded as the identity, with how far it
+//!    was: a still frame is copied exactly and costs the coverage nothing.
 //! 5. **Chaining.** An input the reference cannot fix (typically a wide bracket's extreme
 //!    exposure, which shares only a narrow band of usable range with it) is fitted to an already
 //!    aligned input instead, the one furthest from the reference in measured brightness first,
@@ -49,8 +56,11 @@
 //! than in place ([`Refusal::FramingMismatch`]).
 //!
 //! Every level is bounded by the proxy (at most 1 Mi pixels); the scratch of one pair's two
-//! pyramids and the input's gradients is at most about 24 bytes a proxy pixel (24 MiB), released
-//! before the next input. `cancel` is checked before each input, level and iteration.
+//! pyramids and the input's gradients is at most about 24 bytes a proxy pixel (24 MiB), and a
+//! search on a finer level than the coarsest adds both frames' smoothed and ranked copies of it,
+//! at most 20 bytes a proxy pixel more on the proxy itself, all released before the next input. A
+//! search visits the smaller frame's usable pixels at every shift. `cancel` is checked before each
+//! input, level and iteration.
 
 use super::exposure::median_of_sorted;
 use super::frame::{FrameMetadata, MAX_INPUTS, MIN_INPUTS, Refusal};
@@ -64,8 +74,12 @@ pub const COARSE_SIDE: usize = 64;
 pub const MIN_LEVEL_SIDE: usize = 16;
 /// The most pyramid levels, the proxy included.
 pub const MAX_PYRAMID_LEVELS: usize = 6;
-/// The search's translation range, as a fraction of the coarsest level's sides.
+/// The search's translation range, as a fraction of the searched level's sides.
 pub const SEARCH_FRACTION: f64 = 0.25;
+/// The search runs on the coarsest level on which each frame of the pair has at least this many
+/// usable pixels: a wide bracket's extreme exposure, usable over a few percent of the frame, is
+/// searched on a finer level than the rest.
+pub const MIN_SEARCH_PIXELS: usize = 256;
 /// The search's rotation range, in whole degrees either way.
 pub const SEARCH_ROTATION_DEG: i32 = 4;
 /// The search's best match must correlate at least this well.
@@ -95,6 +109,15 @@ pub const MAX_UNCERTAINTY_PX: f64 = 0.1;
 pub const MAX_ROTATION_DEG: f64 = 3.0;
 /// The largest translation it corrects, as a fraction of the frame's width or height.
 pub const MAX_SHIFT_FRACTION: f64 = 0.08;
+/// A fit that moves no frame corner by more than this many of its own predicted one-sigma
+/// position errors...
+pub const SNAP_SIGMAS: f64 = 3.0;
+/// ...and by no more than this, in full-resolution pixels, is the identity: a still frame is
+/// copied, not resampled, and costs the coverage nothing. The registration's strictest declared
+/// accuracy, so the identity is never further from a fit than the fit is trusted to be; a fit
+/// as precise as a well-exposed frame's (a few thousandths of a pixel) snaps only within a few
+/// hundredths.
+pub const SNAP_LIMIT_PX: f64 = 0.1;
 /// With alignment off, a displacement of at least this many coarse pixels...
 pub const FRAMING_TOLERANCE_PX: i32 = 2;
 /// ...that correlates better than in place by at least this refuses the request.
@@ -313,7 +336,9 @@ pub enum AlignmentEvidence {
     /// shared usable samples on the proxy, the fraction agreeing within [`INLIER_EV`], the robust
     /// residual deviation and measured log-brightness offset from the reference in EV, the
     /// predicted one-sigma position error in full-resolution pixels, and a confidence in
-    /// `[0, 1]`, all of the last fitted pair.
+    /// `[0, 1]`, all of the last fitted pair; and, when that pair's fit was within its own
+    /// uncertainty of no motion and so recorded as the identity, the furthest it moved a frame
+    /// corner (`snapped_px`, see [`SNAP_SIGMAS`]).
     Fitted {
         via: Option<usize>,
         correlation: f64,
@@ -323,6 +348,7 @@ pub enum AlignmentEvidence {
         brightness_ev: f64,
         uncertainty_px: f64,
         confidence: f64,
+        snapped_px: Option<f64>,
     },
     /// Alignment off: the best whole-pixel displacement the framing check found, in
     /// full-resolution pixels, and its correlation and the in-place correlation (absent where
@@ -528,6 +554,10 @@ struct Level {
 }
 
 impl Level {
+    fn usable_count(&self) -> usize {
+        self.usable.iter().filter(|&&usable| usable).count()
+    }
+
     #[inline]
     fn at(&self, x: usize, y: usize) -> Option<f32> {
         let i = y * self.width + x;
@@ -724,6 +754,8 @@ struct Pyramid {
     levels: Vec<Level>,
     coarse: Level,
     ranks: Level,
+    /// Each level's usable pixels.
+    usable: Vec<usize>,
 }
 
 impl Pyramid {
@@ -755,6 +787,7 @@ impl Pyramid {
         }
         let coarse = levels.last().expect("a base level").smoothed();
         let ranks = coarse.ranked();
+        let usable = levels.iter().map(Level::usable_count).collect();
         if gradients {
             levels = levels.into_iter().map(Level::with_gradient).collect();
         }
@@ -762,33 +795,94 @@ impl Pyramid {
             levels,
             coarse,
             ranks,
+            usable,
+        })
+    }
+
+    /// Level `index` smoothed, and its ranks, as the search reads it: the coarsest's are kept,
+    /// another's made when asked for.
+    fn search_view(&self, index: usize) -> Option<(Level, Level)> {
+        (index + 1 < self.levels.len()).then(|| {
+            let smoothed = self.levels[index].smoothed();
+            let ranks = smoothed.ranked();
+            (smoothed, ranks)
         })
     }
 }
 
+/// The level a pair is searched on: the coarsest on which each frame has at least
+/// [`MIN_SEARCH_PIXELS`] usable pixels. `None` when a frame has fewer even on the proxy, or fewer
+/// than the [`MIN_SUPPORT`] samples an accepted fit needs there: no fit could be accepted.
+fn search_level(reference: &Pyramid, pyramid: &Pyramid) -> Option<usize> {
+    let usable = |index: usize| reference.usable[index].min(pyramid.usable[index]);
+    if (usable(0) as u64) < MIN_SUPPORT {
+        return None;
+    }
+    (0..reference.levels.len().min(pyramid.levels.len()))
+        .rev()
+        .find(|&index| usable(index) >= MIN_SEARCH_PIXELS)
+}
+
 /// The zero-mean normalized correlation of the reference and the input moved by a whole
-/// `(dx, dy)` coarse pixels, over the pixels both recorded usably; `None` below `min_overlap`.
+/// `(dx, dy)` level pixels, over the pixels both recorded usably; `None` below `min_overlap`.
+/// It visits `sparse`, the usable pixels of the frame with fewer, and so the shared pixels in the
+/// reference's row order either way.
 fn correlate_shift(
     reference: &Level,
     input: &Level,
+    sparse: &Sparse,
     dx: i32,
     dy: i32,
     min_overlap: usize,
 ) -> Option<f64> {
     let mut stats = Moments::default();
     let (w, h) = (reference.width as i32, reference.height as i32);
-    for y in 0.max(-dy)..h.min(h - dy) {
-        for x in 0.max(-dx)..w.min(w - dx) {
-            let (Some(a), Some(b)) = (
-                reference.at(x as usize, y as usize),
-                input.at((x + dx) as usize, (y + dy) as usize),
-            ) else {
-                continue;
-            };
-            stats.add(f64::from(a), f64::from(b));
+    // Reference pixel `p` pairs with input pixel `p + d`.
+    let (other, d) = if sparse.of_input {
+        (reference, (-dx, -dy))
+    } else {
+        (input, (dx, dy))
+    };
+    for &(x, y, value) in &sparse.pixels {
+        let (u, v) = (x as i32 + d.0, y as i32 + d.1);
+        if u < 0 || v < 0 || u >= w || v >= h {
+            continue;
         }
+        let Some(paired) = other.at(u as usize, v as usize) else {
+            continue;
+        };
+        let (a, b) = if sparse.of_input {
+            (paired, value)
+        } else {
+            (value, paired)
+        };
+        stats.add(f64::from(a), f64::from(b));
     }
     stats.correlation(min_overlap)
+}
+
+/// The usable pixels and values of whichever of a pair's equally sized levels has fewer, row by
+/// row: what each shift's correlation visits, so a search costs its shifts times the smaller
+/// frame's usable pixels.
+struct Sparse {
+    of_input: bool,
+    pixels: Vec<(u32, u32, f32)>,
+}
+
+impl Sparse {
+    fn new(reference: &Level, input: &Level) -> Self {
+        let of_input = input.usable_count() < reference.usable_count();
+        let level = if of_input { input } else { reference };
+        let mut pixels = Vec::with_capacity(level.usable_count());
+        for y in 0..level.height {
+            for x in 0..level.width {
+                if let Some(value) = level.at(x, y) {
+                    pixels.push((x as u32, y as u32, value));
+                }
+            }
+        }
+        Self { of_input, pixels }
+    }
 }
 
 /// The correlation of the reference with the input under `affine`, bilinear in the input.
@@ -857,16 +951,23 @@ struct Surface {
 }
 
 impl Surface {
-    fn new(reference: &Level, input: &Level) -> Self {
+    fn new(reference: &Level, input: &Level, min_overlap: usize) -> Self {
         let radius = (
             (reference.width as f64 * SEARCH_FRACTION).ceil() as i32,
             (reference.height as f64 * SEARCH_FRACTION).ceil() as i32,
         );
-        let min_overlap = min_overlap(reference);
+        let sparse = Sparse::new(reference, input);
         let mut scores = Vec::with_capacity(((2 * radius.0 + 1) * (2 * radius.1 + 1)) as usize);
         for dy in -radius.1..=radius.1 {
             for dx in -radius.0..=radius.0 {
-                scores.push(correlate_shift(reference, input, dx, dy, min_overlap));
+                scores.push(correlate_shift(
+                    reference,
+                    input,
+                    &sparse,
+                    dx,
+                    dy,
+                    min_overlap,
+                ));
             }
         }
         Self { radius, scores }
@@ -895,12 +996,12 @@ impl Surface {
         best
     }
 
-    /// The best local maximum at least [`DISTINCT_PEAK_PX`] from `peak`.
-    fn rival(&self, peak: (i32, i32)) -> Option<f64> {
+    /// The best local maximum at least `distance` from `peak`.
+    fn rival(&self, peak: (i32, i32), distance: i32) -> Option<f64> {
         let mut rival: Option<f64> = None;
         for dy in -self.radius.1..=self.radius.1 {
             for dx in -self.radius.0..=self.radius.0 {
-                if (dx - peak.0).abs().max((dy - peak.1).abs()) < DISTINCT_PEAK_PX {
+                if (dx - peak.0).abs().max((dy - peak.1).abs()) < distance {
                     continue;
                 }
                 let Some(score) = self.at(dx, dy) else {
@@ -921,9 +1022,18 @@ impl Surface {
     }
 }
 
-/// The fewest shared pixels one coarse correlation counts: a quarter of the level, at least 64.
-fn min_overlap(level: &Level) -> usize {
+/// The fewest shared pixels the framing check's coarse correlation counts: a quarter of the
+/// level, at least 64.
+fn framing_overlap(level: &Level) -> usize {
     (level.width * level.height / 4).max(64)
+}
+
+/// The fewest shared pixels one search correlation on `level` counts: a quarter of the usable
+/// pixels of the frame with fewer there, at least 64. For two frames usable everywhere that is a
+/// quarter of the level; for a wide bracket's extreme exposure, a quarter of what it recorded,
+/// which its neighbour may share all of.
+fn search_overlap(reference: &Pyramid, pyramid: &Pyramid, level: usize) -> usize {
+    (reference.usable[level].min(pyramid.usable[level]) / 4).max(64)
 }
 
 /// Alignment off: the input must not be visibly displaced.
@@ -932,7 +1042,11 @@ fn framing(
     reference: &Pyramid,
     pyramid: &Pyramid,
 ) -> Result<AlignmentEvidence, Refusal> {
-    let surface = Surface::new(&reference.ranks, &pyramid.ranks);
+    let surface = Surface::new(
+        &reference.ranks,
+        &pyramid.ranks,
+        framing_overlap(&reference.ranks),
+    );
     let coarse_reference = &reference.coarse;
     let in_place = surface.at(0, 0);
     let best = surface.best();
@@ -1016,10 +1130,29 @@ fn fit(
     height: u32,
     cancel: &Cancel,
 ) -> Result<InputAlignment, Failure> {
-    let (coarse_reference, coarse) = (&reference.coarse, &pyramid.coarse);
-    texture(input, coarse_reference, None)?;
+    texture(input, &reference.coarse, None, 1.0)?;
+    // The search's level: the coarsest, unless a frame records too little of it.
+    let Some(search) = search_level(reference, pyramid) else {
+        let samples = reference.usable[0].min(pyramid.usable[0]) as u64;
+        return Err(Refusal::AlignmentSupport { input, samples }.into());
+    };
+    let (reference_view, view) = (reference.search_view(search), pyramid.search_view(search));
+    let ((search_reference, reference_ranks), (searched, ranks)) = (
+        reference_view
+            .as_ref()
+            .map_or((&reference.coarse, &reference.ranks), |(level, ranks)| {
+                (level, ranks)
+            }),
+        view.as_ref()
+            .map_or((&pyramid.coarse, &pyramid.ranks), |(level, ranks)| {
+                (level, ranks)
+            }),
+    );
+    // Coarse pixels a pixel of the searched level is, for the thresholds stated in them.
+    let per_coarse = reference.coarse.scale / search_reference.scale;
     // Search on ranks: translation, then rotation around the best translation.
-    let surface = Surface::new(&reference.ranks, &pyramid.ranks);
+    let overlap = search_overlap(reference, pyramid, search);
+    let surface = Surface::new(reference_ranks, ranks, overlap);
     let Some(((dx, dy), translation_score)) = surface.best() else {
         return Err(Refusal::AlignmentSupport { input, samples: 0 }.into());
     };
@@ -1031,7 +1164,8 @@ fn fit(
         }
         .into());
     }
-    if let Some(rival) = surface.rival((dx, dy))
+    let distinct = (f64::from(DISTINCT_PEAK_PX) * per_coarse).round() as i32;
+    if let Some(rival) = surface.rival((dx, dy), distinct)
         && rival >= translation_score - DISTINCT_PEAK_MARGIN
     {
         return Err(Refusal::AmbiguousAlignment {
@@ -1042,8 +1176,7 @@ fn fit(
         .into());
     }
     cancel.check()?;
-    let scale = coarse_reference.scale;
-    let overlap = min_overlap(coarse_reference);
+    let scale = search_reference.scale;
     let mut start = Parameters {
         rotation: 0.0,
         shift: (scale * f64::from(dx), scale * f64::from(dy)),
@@ -1063,8 +1196,7 @@ fn fit(
                     brightness: 0.0,
                 };
                 let affine = candidate.transform(width, height).affine();
-                if let Some(score) =
-                    correlate_affine(&reference.ranks, &pyramid.ranks, &affine, overlap)
+                if let Some(score) = correlate_affine(reference_ranks, ranks, &affine, overlap)
                     && score > correlation
                 {
                     correlation = score;
@@ -1074,16 +1206,26 @@ fn fit(
         }
     }
     let affine = start.transform(width, height).affine();
-    texture(input, coarse_reference, Some((coarse, &affine)))?;
-    // Refinement, coarse to fine.
+    texture(
+        input,
+        search_reference,
+        Some((searched, &affine)),
+        per_coarse,
+    )?;
+    // Refinement, from the searched level to the finest.
     let mut parameters = start;
-    parameters.brightness = brightness_offset(coarse_reference, coarse, &start, width, height)
+    parameters.brightness = brightness_offset(search_reference, searched, &start, width, height)
         .ok_or(Refusal::AlignmentSupport { input, samples: 0 })?;
+    drop((reference_view, view));
     let limit = (
         2.0 * MAX_SHIFT_FRACTION * f64::from(width),
         2.0 * MAX_SHIFT_FRACTION * f64::from(height),
     );
-    for (reference_level, level) in reference.levels.iter().zip(&pyramid.levels).rev() {
+    for (reference_level, level) in reference.levels[..=search]
+        .iter()
+        .zip(&pyramid.levels[..=search])
+        .rev()
+    {
         cancel.check()?;
         let mut sigma = MIN_SIGMA_EV.max(robust_sigma(
             &mut normal(
@@ -1175,6 +1317,16 @@ fn fit(
     let confidence = (1.0 - uncertainty / MAX_UNCERTAINTY_PX)
         .min((inlier_fraction - MIN_INLIER_FRACTION) / (1.0 - MIN_INLIER_FRACTION))
         .clamp(0.0, 1.0);
+    // A fit no further from no motion than its own uncertainty, and a small bound, is a still
+    // frame's: the identity, copied exactly, rather than a resample a hundredth of a pixel away.
+    let uncertainty_px = uncertainty * base.scale;
+    let identity = RigidTransform::identity(width, height);
+    let moved = transform.corner_distance(&identity, width, height);
+    let (transform, snapped_px) = if moved <= SNAP_LIMIT_PX.min(SNAP_SIGMAS * uncertainty_px) {
+        (identity, Some(moved))
+    } else {
+        (transform, None)
+    };
     Ok(InputAlignment {
         transform,
         evidence: AlignmentEvidence::Fitted {
@@ -1184,8 +1336,9 @@ fn fit(
             inlier_fraction,
             residual_ev,
             brightness_ev: parameters.brightness,
-            uncertainty_px: uncertainty * base.scale,
+            uncertainty_px,
             confidence,
+            snapped_px,
         },
     })
 }
@@ -1211,12 +1364,14 @@ fn severe(
 }
 
 /// Refuse a scene whose reference has too little structure in some direction, over its usable
-/// pixels or only those `shared` with the input under a motion, on the coarsest level where noise
-/// has averaged away.
+/// pixels on the coarsest level, where noise has averaged away, or only over those `shared` with
+/// the input under a motion on the searched level. Gradients are per coarse pixel: a pixel of
+/// `reference`'s level is `per_coarse` of them.
 fn texture(
     input: usize,
     reference: &Level,
     shared: Option<(&Level, &Affine)>,
+    per_coarse: f64,
 ) -> Result<(), Refusal> {
     let (mut xx, mut xy, mut yy, mut n) = (0.0_f64, 0.0_f64, 0.0_f64, 0_usize);
     let w = reference.width;
@@ -1236,8 +1391,8 @@ fn texture(
                     continue;
                 }
             }
-            let gx = f64::from(right - left) / 2.0;
-            let gy = f64::from(down - up) / 2.0;
+            let gx = f64::from(right - left) / 2.0 * per_coarse;
+            let gy = f64::from(down - up) / 2.0 * per_coarse;
             xx += gx * gx;
             xy += gx * gy;
             yy += gy * gy;

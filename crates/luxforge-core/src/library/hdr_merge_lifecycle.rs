@@ -180,6 +180,7 @@ impl Bench {
                                     brightness_ev: offsets[at],
                                     uncertainty_px: 0.05,
                                     confidence: 0.9,
+                                    snapped_px: Some(0.01),
                                 }
                             },
                         })
