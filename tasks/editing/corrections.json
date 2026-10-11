@@ -141,7 +141,7 @@
     {
       "id": "TASK-003",
       "description": "Add the narrow repair stage and bounded regional processing primitive.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -274,7 +274,7 @@
     {
       "id": "TASK-004",
       "description": "Extend the existing brush capture with a declared Corrections interaction, validated operation identities and shared draft bindings.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
