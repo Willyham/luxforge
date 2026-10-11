@@ -1,0 +1,163 @@
+name: Release builds
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (v0.1, v0.1.2, or a SemVer prerelease)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      revision: ${{ steps.tag.outputs.revision }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal
+      - name: Validate and normalize tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          SIGN_MACOS: ${{ vars.LUXFORGE_SIGN_MACOS }}
+        run: |
+          set -euo pipefail
+          case "$SIGN_MACOS" in ''|true|false) ;; *) echo 'LUXFORGE_SIGN_MACOS must be true, false, or unset' >&2; exit 1 ;; esac
+          cargo xtask release-tag --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  build:
+    needs: identity
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.identity.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+      - name: Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
+      - name: Native compiler cache identity
+        id: compiler
+        shell: bash
+        run: |
+          { cc --version; c++ --version; if [[ "$RUNNER_OS" == macOS ]]; then xcrun --show-sdk-version; fi; } > "$RUNNER_TEMP/luxforge-compiler.txt"
+          echo "key=$(git hash-object "$RUNNER_TEMP/luxforge-compiler.txt")" >> "$GITHUB_OUTPUT"
+      - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          key: release-${{ matrix.os }}-${{ steps.compiler.outputs.key }}
+      - name: Quick checks
+        run: cargo xtask check --quick
+      - name: Build versioned package
+        env:
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+        run: cargo xtask release-build --tag "$RELEASE_TAG" --build-number "$GITHUB_RUN_NUMBER" --output artifacts/release
+      # This step receives Apple secrets only after the credential-free build/checks finish.
+      # The local Mac's Keychain is never read or exported by this workflow.
+      - name: Sign, notarize and staple macOS candidate
+        if: runner.os == 'macOS' && vars.LUXFORGE_SIGN_MACOS == 'true'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            if [[ -z "${!name}" ]]; then echo "Missing signing secret: $name" >&2; exit 1; fi
+          done
+          signing_keychain="$RUNNER_TEMP/luxforge-signing.keychain-db"
+          certificate_path="$RUNNER_TEMP/luxforge-certificate.p12"
+          cleanup() { security delete-keychain "$signing_keychain" >/dev/null 2>&1 || true; rm -f "$certificate_path"; }
+          trap cleanup EXIT
+          keychain_password="$(openssl rand -base64 32)"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$signing_keychain"
+          security set-keychain-settings -lut 3600 "$signing_keychain"
+          security unlock-keychain -p "$keychain_password" "$signing_keychain"
+          security import "$certificate_path" -P "$MACOS_CERTIFICATE_PASSWORD" -t cert -f pkcs12 -k "$signing_keychain" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$keychain_password" "$signing_keychain" >/dev/null
+          security list-keychains -d user -s "$signing_keychain"
+          xcrun notarytool store-credentials luxforge-notarization --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --keychain "$signing_keychain"
+          cargo xtask release-sign --output artifacts/release --identity "$MACOS_SIGNING_IDENTITY" --keychain-profile luxforge-notarization --keychain "$signing_keychain"
+      - name: Remove temporary signing credentials
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/luxforge-signing.keychain-db" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/luxforge-certificate.p12"
+      - name: Retain finalized build candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            artifacts/release/luxforge-*.zip
+            artifacts/release/luxforge-*.tar.gz
+            artifacts/release/target.json
+          if-no-files-found: error
+          retention-days: 30
+  publish:
+    needs: [identity, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.identity.outputs.revision }}
+          persist-credentials: false
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts/downloads
+      - name: Verify and assemble both build candidates
+        env:
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+        run: cargo xtask release-assemble --tag "$RELEASE_TAG" --input artifacts/downloads --output dist
+      - name: Upload all assets and automatically publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          RELEASE_REVISION: ${{ needs.identity.outputs.revision }}
+        run: |
+          set -euo pipefail
+          verify_tag() {
+            local remote_revision
+            remote_revision="$(gh api "repos/$GH_REPO/commits/refs/tags/$RELEASE_TAG" --jq .sha)"
+            if [[ "$remote_revision" != "$RELEASE_REVISION" ]]; then echo 'Release tag moved during the build; refusing publication' >&2; return 1; fi
+          }
+          verify_tag
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --prerelease --title "Luxforge $RELEASE_VERSION" --notes-file dist/release-notes.md
+          verify_tag
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease

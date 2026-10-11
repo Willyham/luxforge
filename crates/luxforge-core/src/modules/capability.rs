@@ -19,8 +19,9 @@ pub trait CapabilityModule: ToolModule {
     /// the verified bytes of every artifact the layer lists, in the layer's order. The host calls
     /// this instead of `compile` only for a layer whose `artifacts` list is not empty, which only an
     /// effect declaring `artifacts: true` may have. The bytes are immutable and already checked
-    /// against their hash; the module decides what they mean and refuses what it cannot use. The
-    /// default ignores them.
+    /// against their hash; the module decides what they mean and refuses what it cannot use.
+    /// `strokes` are the recipe's resolved strokes, as [`ToolModule::compile_with_strokes`]
+    /// receives them. The default ignores both.
     fn compile_bound(
         &self,
         effect_id: &str,
@@ -28,8 +29,9 @@ pub trait CapabilityModule: ToolModule {
         payload: &Value,
         at: crate::CompileStage,
         artifacts: &[Arc<PreparedArtifact>],
+        strokes: &crate::path::StrokeTable,
     ) -> Result<Processing, Error> {
-        let _ = artifacts;
+        let _ = (artifacts, strokes);
         self.compile(effect_id, format, payload, at)
     }
     /// Check that a staged resource's bytes are the format the module declares, before the host

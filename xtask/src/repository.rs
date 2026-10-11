@@ -678,7 +678,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // One field-patch semantics: the field-patch module builds every patch action from its spec,
     // the RAW module's `set-raw` keeps its own white-balance merge, and the RAW look's `set-look`
     // resolves a look into stored knots, chroma and knee no action sets, which a field patch's
-    // payload cannot hold. A module that wants a patch declares a `field_patch::Spec` instead of
+    // payload cannot hold; Corrections' `update-correction` patches one operation of its ordered
+    // list, addressed by its correction identity, which a layer's field patch cannot address. A
+    // module that wants a patch declares a `field_patch::Spec` instead of
     // hand-writing merge and canonical form. The tokens are a patch action's declaration in Rust
     // and in a JSON descriptor.
     SourceRule {
@@ -690,12 +692,14 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/modules/field_patch.rs",
             "crates/luxforge-core/src/modules/raw.rs",
             "crates/luxforge-core/src/modules/look/mod.rs",
+            "crates/luxforge-core/src/modules/corrections/module.rs",
         ],
         mode: Match::Whole,
         tests: false,
         once: false,
-        reason: "only the field-patch module, the RAW module and the RAW look declare a patch \
-                 action; declare a field-patch Spec instead of a second patch implementation",
+        reason: "only the field-patch module, the RAW module, the RAW look and Corrections' \
+                 operation update declare a patch action; declare a field-patch Spec instead of a \
+                 second patch implementation",
     },
     // One job table: every job kind (source, analysis, capability and export) is one record in
     // one table with one retention, and the catalog owner creates that table once.
@@ -1093,9 +1097,11 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The test kit's process threads and the test base's server threads.
             "crates/luxforge-testkit/src/process.rs",
             "crates/luxforge-testbase/src/server.rs",
-            // `verify`'s component pool, and `check`'s steps and test binaries.
+            // `verify`'s component pool, `check`'s steps and test binaries, and `grade-align`'s
+            // scoped render pool, one thread per core over a round's variants.
             "xtask/src/verify.rs",
             "xtask/src/check.rs",
+            "xtask/src/grade_align.rs",
             // `usage-measure`'s contending producers and the window detacher beside them.
             "xtask/src/usage_measure.rs",
         ],
@@ -1159,7 +1165,6 @@ const SOURCE_RULES: &[SourceRule] = &[
         name: "registry-assembly",
         tokens: &[
             "register_unavailable(",
-            "PixelModule::new(",
             "ControlsModule::new(",
             "CapabilitiesProofModule::new(",
         ],
@@ -3631,11 +3636,11 @@ fn frame() {}
             &[
                 (
                     "crates/luxforge-core/src/modules/registry/mod.rs",
-                    "Arc::new(PixelModule::new()),\nregistry.register_unavailable(module, r)\n",
+                    "Arc::new(ControlsModule::new()),\nregistry.register_unavailable(module, r)\n",
                 ),
                 (
                     "crates/luxforge-cli/src/json.rs",
-                    "let r = ModuleRegistry::assemble(&options)?;\nlet p = MyPixelModule::new();\n\
+                    "let r = ModuleRegistry::assemble(&options)?;\nlet p = MyControlsModule::new();\n\
                      #[cfg(test)]\nmod tests {\n    fn t() { ControlsModule::new(); }\n}\n",
                 ),
             ],
@@ -3656,7 +3661,7 @@ fn frame() {}
                 ),
                 (
                     "crates/luxforge-core/src/editor.rs",
-                    "let pixel = Arc::new(PixelModule::new());\n",
+                    "let controls = Arc::new(ControlsModule::new());\n",
                 ),
                 (
                     "xtask/src/controls_smoke.rs",

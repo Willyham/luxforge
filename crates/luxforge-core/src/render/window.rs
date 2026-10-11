@@ -12,8 +12,7 @@
 //!   pixel of the window it holds at once, so it needs no tile grid, and a global estimate is the
 //!   whole stage's, computed by the plan's light link, so no estimate bears on a window.
 //!
-//! A segment whose output is cut and that writes point replacements cannot be cut, and a rectangle
-//! that maps outside a stage cannot be planned; both are named ([`RegionFallback`]).
+//! A rectangle that maps outside a stage cannot be planned, and is named ([`RegionFallback`]).
 
 use super::{Compiled, Segment};
 use crate::modules::{Region, Stage};
@@ -23,7 +22,6 @@ use crate::modules::{Region, Stage};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RegionFallback {
     Empty,
-    PointReplacement,
     UnplannableGeometry,
 }
 
@@ -31,7 +29,6 @@ impl RegionFallback {
     pub(crate) fn reason(self) -> &'static str {
         match self {
             Self::Empty => "the requested viewport lies outside the output stage",
-            Self::PointReplacement => "a point replacement cannot yet be cut to a viewport",
             Self::UnplannableGeometry => "the viewport cannot be mapped safely through the stack",
         }
     }
@@ -84,9 +81,6 @@ impl WindowPlan {
             if needed.is_empty() {
                 return Err(RegionFallback::UnplannableGeometry);
             }
-            if needed != Region::whole(segment.stage()) && segment.has_pixels {
-                return Err(RegionFallback::PointReplacement);
-            }
             let input = input_stage(segments, index, source);
             let read = segment.geometry.unmap_region(needed);
             if read.x1() > input.width || read.y1() > input.height {
@@ -131,9 +125,6 @@ impl WindowPlan {
             let segment = &segments[index];
             if needed.is_empty() {
                 return Err(RegionFallback::UnplannableGeometry);
-            }
-            if needed != Region::whole(segment.stage()) && segment.has_pixels {
-                return Err(RegionFallback::PointReplacement);
             }
             let input = input_stage(segments, index, source);
             let read = segment.geometry.unmap_region(needed);

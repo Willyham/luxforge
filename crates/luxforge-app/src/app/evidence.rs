@@ -3,6 +3,7 @@
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
+mod corrections;
 mod develop;
 mod grid;
 mod long_work;
@@ -111,6 +112,9 @@ pub(crate) struct Evidence {
     /// A paced stroke step's positions still to send, one per tick of its own gated timer. `None`
     /// when no paced stroke is running, which is also when its timer does not exist.
     pub(crate) paced_stroke: Option<PacedStroke>,
+    /// A paced Corrections press or handle drag's positions still to send, one per tick of its own
+    /// gated timer.
+    pub(crate) paced_correction: Option<corrections::PacedCorrection>,
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
@@ -224,6 +228,7 @@ impl Evidence {
             had_errors: false,
             paced_slider: None,
             paced_stroke: None,
+            paced_correction: None,
             second_click: None,
             tools_scroll: None,
             capability_wait: None,
@@ -556,6 +561,9 @@ pub(crate) enum Settle {
     UsageNotice,
     /// The usage statistics consent's read, or its last outstanding write, answered.
     Usage,
+    /// The Corrections workspace has finished what a step started: its draft ended or was refused,
+    /// its request answered, and its list and pins describe the entry on screen.
+    Corrections,
 }
 
 impl Settle {
@@ -595,6 +603,7 @@ impl Settle {
             Self::DevelopAhead => "develop_ahead",
             Self::UsageNotice => "usage_notice",
             Self::Usage => "usage",
+            Self::Corrections => "corrections",
         }
     }
 
@@ -962,6 +971,7 @@ impl Editor {
             EvidenceMessage::IdleDeadline => return self.idle_deadline(),
             EvidenceMessage::PacedSliderTick => return self.slider_paced_tick(),
             EvidenceMessage::PacedStrokeTick => return self.stroke_paced_tick(),
+            EvidenceMessage::PacedCorrectionTick => return self.correction_paced_tick(),
             EvidenceMessage::DoubleClickSecond => return self.double_click_second(),
             EvidenceMessage::Capture => {
                 if self.evidence.as_ref().is_some_and(Evidence::suspended) {
@@ -1353,6 +1363,7 @@ impl Editor {
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
+            Step::Correction(step) => self.correction_step(step),
             Step::Export(step) => self.export_step(step),
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
@@ -2702,34 +2713,26 @@ impl Editor {
             constrain_saturation: command,
             fine: option,
         };
-        let Some(saturation) = crate::app::controls::wheel_of(&self.modules, action, hue)
-            .map(|wheel| wheel.saturation.clone())
-        else {
+        // The handle where the panel draws it: the wheel's own model, read as its view reads it.
+        let inputs = self.inputs();
+        let Some((hue_degrees, radius)) = self.workspace.tools.all().find_map(|section| {
+            let controls = crate::state::tools::controls_of(section, &inputs);
+            walk(&controls).find_map(|control| match control {
+                crate::state::tools::ControlModel::Wheel(wheel)
+                    if wheel.action == action && wheel.hue.parameter == hue =>
+                {
+                    Some((wheel.hue.value, wheel.radius()))
+                }
+                _ => None,
+            })
+        }) else {
             return Vec::new();
-        };
-        let value = |editor: &Self, parameter: &str| {
-            editor
-                .control_field_value(action, parameter)
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0)
-        };
-        let max = crate::state::fields::declared(&self.modules, action, &saturation)
-            .and_then(crate::state::number::NumberSpec::of)
-            .map_or(1.0, |spec| spec.max);
-        let radius = if max > 0.0 {
-            (value(self, &saturation) / max).clamp(0.0, 1.0)
-        } else {
-            0.0
         };
         let Some(first) = positions.first() else {
             return Vec::new();
         };
-        let mut grab = luxforge_ui::Grab::new(
-            value(self, hue) as f32,
-            radius as f32,
-            *first,
-            modifiers.fine,
-        );
+        let mut grab =
+            luxforge_ui::Grab::new(hue_degrees as f32, radius as f32, *first, modifiers.fine);
         positions
             .iter()
             .map(|position| {
@@ -3445,7 +3448,7 @@ impl Editor {
     /// captured at once.
     fn tab_step(&mut self, step: TabStep) -> Task<Message> {
         let Some(views) = crate::state::tools::module_of(&self.modules, &step.module)
-            .and_then(|module| module.views_at(&step.group))
+            .and_then(|module| module.views_at(step.group.as_deref()))
             .map(|views| views.into_iter().map(str::to_owned).collect::<Vec<_>>())
         else {
             return self.fail_step("the module declares no such tab row");
@@ -3456,7 +3459,7 @@ impl Editor {
         let shown = self
             .session
             .workspace
-            .view(&step.module, &step.group)
+            .view(&step.module, step.group.as_deref())
             .and_then(|chosen| views.iter().position(|offered| offered == chosen))
             .unwrap_or(0);
         let task = self.update(Message::Control(ControlMessage::SelectView {
@@ -4303,17 +4306,25 @@ impl Editor {
                 Err(reason) => return self.fail_step(reason),
             }
         } else {
-            let pressed = if key == luxforge_evidence::KEY_ESCAPE {
-                Key::Named(Named::Escape)
-            } else {
-                Key::Character(key.to_lowercase().into())
+            let (modifiers, name) = match key.split_once('+') {
+                Some(("Option", rest)) => (Modifiers::ALT, rest),
+                Some(("Shift", rest)) if !rest.is_empty() => (Modifiers::SHIFT, rest),
+                _ => (Modifiers::empty(), key.as_str()),
+            };
+            let pressed = match name {
+                luxforge_evidence::KEY_ESCAPE => Key::Named(Named::Escape),
+                "Backspace" => Key::Named(Named::Backspace),
+                "Return" => Key::Named(Named::Enter),
+                "ArrowUp" => Key::Named(Named::ArrowUp),
+                "ArrowDown" => Key::Named(Named::ArrowDown),
+                other => Key::Character(other.to_lowercase().into()),
             };
             iced::Event::Keyboard(KeyEvent::KeyPressed {
                 key: pressed.clone(),
                 modified_key: pressed,
                 physical_key: Physical::Unidentified(NativeCode::Unidentified),
                 location: Location::Standard,
-                modifiers: Modifiers::empty(),
+                modifiers,
                 text: None,
                 repeat: false,
             })
@@ -4339,11 +4350,28 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
+            // Entering the Corrections mode waits for its list and pins as well as the session.
+            Some(Message::View(ViewMessage::SetMode(mode)))
+                if mode != self.session.workspace.mode
+                    && crate::state::corrections::is_brush_mode(&self.modules, &mode) =>
+            {
+                self.await_step(Settle::Corrections);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(Message::View(ViewMessage::SetMode(mode)))
                 if mode != self.session.workspace.mode =>
             {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
+            }
+            // A Corrections key waits for what it started.
+            Some(Message::Corrections(_)) | Some(Message::Draft(_))
+                if self.corrections_active() =>
+            {
+                self.await_step(Settle::Corrections);
+                let task = self.dispatch(Message::Key(event, status));
+                self.settle_corrections();
+                task
             }
             // A Select key waits for what it asked the owner for; a refused switch has nothing to
             // wait for and is captured with its reason.
@@ -5696,6 +5724,8 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                     .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
             );
         }
+        // A paced Corrections press or handle drag's own timer, gated the same way.
+        subscriptions.extend(corrections::subscription(evidence));
         // A loupe `arrows` step's presses after its first, gated the same way.
         subscriptions.extend(loupe::subscription(evidence));
         // A `grid_scroll` step's frame clock, gated the same way.
@@ -5710,6 +5740,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 /// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
+    editor.settle_corrections();
     editor.settle_capability();
     editor.settle_agent_host();
     let arrows = editor.loupe_arrows_when_warm();
@@ -6277,6 +6308,7 @@ mod tests {
             had_errors: false,
             paced_slider: None,
             paced_stroke: None,
+            paced_correction: None,
             second_click: None,
             tools_scroll: None,
             capability_wait: None,

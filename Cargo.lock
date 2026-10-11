@@ -5146,7 +5146,9 @@ version = "0.0.0"
 dependencies = [
  "percent-encoding",
  "regex",
+ "semver",
  "serde_json",
+ "sha2",
  "tempfile",
  "time",
 ]

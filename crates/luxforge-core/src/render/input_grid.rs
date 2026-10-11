@@ -85,37 +85,26 @@ impl MaskInputGrid for GridInput {
             return Ok(None);
         }
         let segment = &self.suffix.segments[0];
-        let Some(resolved) = segment.resolve(x, y) else {
+        if segment.resolve(x, y).is_none() {
             return Ok(None);
-        };
-        let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
+        }
         macro_rules! suffix {
             ($domain:ty, $pixel:expr) => {{
                 let mut pixel = $pixel;
-                if let Some((_, rgb)) = resolved.replacement {
-                    pixel = <$domain>::replace(pixel, rgb);
-                }
                 if self.mode == super::MaskInputMode::ColourRun {
                     return super::pipeline::colour_input::<$domain>(
                         pixel,
-                        color_runs(segment).filter(|run| run.start >= after),
+                        color_runs(segment),
                         x,
                         y,
-                        self.grid.key.wide && !segment.has_pixels,
                     )
                     .map(Some);
                 }
                 if segment.has_color {
-                    pixel = <$domain>::colour(
-                        pixel,
-                        color_runs(segment).filter(|run| run.start >= after),
-                        x,
-                        y,
-                        self.grid.key.wide && !segment.has_pixels,
-                    )?;
+                    pixel =
+                        <$domain>::colour(pixel, color_runs(segment), x, y, self.grid.key.wide)?;
                 }
-                let pixel =
-                    <$domain>::finish_width(pixel, self.grid.key.wide && !segment.has_pixels)?;
+                let pixel = <$domain>::finish_width(pixel, self.grid.key.wide)?;
                 Ok(Some(<$domain>::linear(pixel)))
             }};
         }
@@ -126,7 +115,8 @@ impl MaskInputGrid for GridInput {
     }
 }
 
-/// The leading restoration run is the only spatial prefix a value-based overlay may materialize.
+/// The leading repair and restoration run is the only spatial prefix a value-based overlay may
+/// materialize.
 /// A later spatial or geometry boundary retains the existing explicit refusal.
 pub(crate) fn grid_input(
     registry: &ModuleRegistry,
@@ -146,19 +136,22 @@ pub(crate) fn grid_input(
     let mode = super::MaskInputMode::for_layer(registry, recipe, layer);
     cancel.check()?;
     let prefix = crate::editor::prefix(&recipe.layers, layer)?;
+    // The materialized leading run is `source?`, `repair?`, `restoration*`: a repair layer makes
+    // the prefix spatial even without a restoration layer, and the split falls after the last
+    // repair or restoration layer (`docs/design/corrections.md`, "Reference mask-input grid").
     let mut split = 0;
-    let mut restoration = false;
+    let mut spatial = false;
     for (index, held) in prefix.iter().enumerate() {
         match registry.effect_stage(&held.effect_id) {
-            Some(EffectStage::Source | EffectStage::Pixel) if !restoration => {}
-            Some(EffectStage::Restoration) => {
-                restoration = true;
+            Some(EffectStage::Source) if !spatial => {}
+            Some(EffectStage::Repair | EffectStage::Restoration) => {
+                spatial = true;
                 split = index + 1;
             }
             _ => break,
         }
     }
-    if !restoration {
+    if !spatial {
         return Ok(None);
     }
     let count = u64::from(cells.0) * u64::from(cells.1);
@@ -325,12 +318,12 @@ fn build<D: PixelDomain, P: Copy>(
     let segments = compiled.segments.len();
     let last = segments - 1;
     let segment = &compiled.segments[last];
-    if !matches!(&segment.entry, Some(Entry::Spatial(_))) {
+    if !segment.entry.as_ref().is_some_and(Entry::materializes) {
         return Err(Error::internal(
-            "an input grid prefix must end at a restoration boundary",
+            "an input grid prefix must end at a repair or restoration boundary",
         ));
     }
-    if segment.writes_pixels() {
+    if segment.has_color {
         return Err(Error::internal("an input grid prefix has a pointwise tail"));
     }
     let evaluation = Evaluation::framed(
@@ -486,6 +479,96 @@ mod tests {
                     );
                 }
                 assert_eq!(cache.cells(), cells.0 as usize * cells.1 as usize);
+            }
+        }
+    }
+
+    /// A repair layer makes the leading run spatial on its own: the grid of a layer after it is the
+    /// repaired frame, read at each cell, with the pointwise suffix per cell, on both domains.
+    #[test]
+    fn a_repair_prefix_input_grid_equals_the_exact_prefix() {
+        use crate::render::repair_tests::{Op, recipe as stack, repair_layer, repair_registry};
+        let registry = repair_registry();
+        let jpeg = source();
+        let stage = crate::Stage {
+            width: jpeg.width,
+            height: jpeg.height,
+        };
+        let (w, h) = (f64::from(stage.width), f64::from(stage.height));
+        let ops = vec![
+            Op::new(
+                1,
+                crate::modules::RepairKind::Heal,
+                stage,
+                &[[0.3 * w, 0.4 * h]],
+                6.0,
+                [14.0, 3.0],
+            ),
+            Op::new(
+                2,
+                crate::modules::RepairKind::Clone,
+                stage,
+                &[[0.7 * w, 0.6 * h]],
+                5.0,
+                [-20.0, -9.0],
+            ),
+        ];
+        let recipe = stack(vec![
+            repair_layer(&ops),
+            Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.7})),
+        ]);
+        let context = RenderContext::new();
+        let mut planes = Vec::new();
+        for channel in 0..3 {
+            planes.extend(
+                (0..jpeg.width * jpeg.height)
+                    .map(|i| f32::from(jpeg.rgba[i as usize * 4 + channel]) / 255.0 - 0.05),
+            );
+        }
+        let raw = LinearImage::with_fingerprint(jpeg.width, jpeg.height, planes, "repair-grid-raw")
+            .unwrap();
+        for source in [
+            RenderSource::Byte(&jpeg),
+            RenderSource::Linear {
+                image: &raw,
+                settings: LinearSettings::default(),
+            },
+        ] {
+            let reference = exact(&registry, source, &recipe, &context);
+            let cells = (24, 16);
+            let transform = identity(jpeg.width, jpeg.height);
+            let region = Region {
+                x0: 0,
+                y0: 0,
+                width: jpeg.width,
+                height: jpeg.height,
+            };
+            let mut cache = InputGridCache::default();
+            let grid = grid_input(
+                &registry,
+                source,
+                &recipe,
+                GridRequest {
+                    layer: 2,
+                    transform: &transform,
+                    region,
+                    cells,
+                },
+                &Cancel::never(),
+                &context,
+                &mut cache,
+            )
+            .unwrap()
+            .expect("a repair prefix is materialized");
+            for cell in 0..cells.0 as usize * cells.1 as usize {
+                let (x, y) = coordinate(&transform, region, cells, cell)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    grid.linear_cell(cell, x, y).unwrap(),
+                    reference.linear(x, y).unwrap(),
+                    "cell {cell}"
+                );
             }
         }
     }
@@ -728,7 +811,9 @@ mod tests {
         let mut keys = Vec::new();
         for wide in [true, false] {
             if !wide {
-                recipe.layers.push(Layer::pixel(0, 0, [12, 34, 56]));
+                // A neutral Basic layer compiles to no colour, so the restoration segment holds
+                // none and its input is handed over at eight bits.
+                recipe.layers[1].payload = json!({"exposure": 0.0});
             }
             let compiled = registry.compile(jpeg.width, jpeg.height, &recipe).unwrap();
             assert_eq!(compiled.prefix_spatial_input_wide(&compiled), wide);

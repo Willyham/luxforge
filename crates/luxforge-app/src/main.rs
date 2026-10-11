@@ -7,6 +7,7 @@
 mod adapters;
 mod app;
 mod browser;
+mod brush;
 mod coalesce;
 mod crop_draft;
 mod diagnostics;
@@ -376,6 +377,10 @@ fn arguments() -> Result<Config, String> {
 }
 
 fn main() {
+    if luxforge_cli::version_requested(std::env::args_os().skip(1)) {
+        println!("luxforge {}", luxforge_cli::VERSION);
+        return;
+    }
     let config = arguments().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(2)

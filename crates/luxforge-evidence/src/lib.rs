@@ -17,10 +17,15 @@ use serde_json::{Map, Value};
 
 mod build;
 mod catalog;
+mod corrections;
 mod develop;
 mod missing;
 
 pub use catalog::{CatalogStep, FacetColumn};
+pub use corrections::{
+    CorrectionHandle, CorrectionStep, DragStep as CorrectionDrag, PressModifier, PressStep,
+    RowFieldStep,
+};
 pub use develop::{DevelopStep, SetStep};
 pub use missing::{MissingFilterStep, MissingStep};
 
@@ -36,6 +41,21 @@ pub const MAX_WAIT_MS: u64 = 10_000;
 pub const MAX_WARM_MS: u64 = 60_000;
 /// The one named key a `key` step presses; every other is a single letter or digit.
 pub const KEY_ESCAPE: &str = "Escape";
+/// The other keys a `key` step may name: the Corrections workspace's (`⌫`, `/`, the arrows and
+/// `⌥` with them, the brackets and `⇧` with them) and Return.
+pub const NAMED_KEYS: [&str; 11] = [
+    "Backspace",
+    "Return",
+    "ArrowUp",
+    "ArrowDown",
+    "Option+ArrowUp",
+    "Option+ArrowDown",
+    "/",
+    "[",
+    "]",
+    "Shift+[",
+    "Shift+]",
+];
 
 /// The Settings sheet's tabs, as a `settings` step and a frame's state name them, in the rail's
 /// order.
@@ -282,6 +302,9 @@ pub enum Step {
     /// One gesture on developing picks — Develop N's confirmation, `D` — or on Develop's
     /// development set.
     Develop(DevelopStep),
+    /// One gesture on the Corrections workspace: a press on the photograph, a handle drag or a
+    /// band control.
+    Correction(CorrectionStep),
 }
 
 impl Step {
@@ -473,6 +496,7 @@ impl Step {
                     && characters.next().is_none();
                 if single
                     || key == KEY_ESCAPE
+                    || NAMED_KEYS.contains(&key.as_str())
                     || is_chord(key)
                     || matches!(key.as_str(), "\\" | "|")
                 {
@@ -493,6 +517,7 @@ impl Step {
             Self::GridScroll(step) => step.validate(),
             Self::Catalog(step) => step.validate(),
             Self::Develop(step) => step.validate(),
+            Self::Correction(step) => step.validate(),
         }
     }
 }
@@ -1261,14 +1286,14 @@ pub struct GroupStep {
     pub expanded: bool,
 }
 
-/// The view a tab row shows, as its tab row selects it: the row of `module` at the label path
-/// `group` (empty for the module's own tabs), its `index`th view.
+/// The view a tab row shows, as its tab row selects it: the row of `module`'s group of id `group`
+/// (absent for the module's own tabs), its `index`th view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TabStep {
     pub module: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub group: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub index: usize,
 }
 

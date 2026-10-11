@@ -297,6 +297,28 @@ impl Harness {
         );
     }
 
+    /// Add one Clone correction along `points` of `asset`, sampled from `source`.
+    fn correct(&self, asset: &Value, points: Value, source: [f64; 2], request_id: &str) {
+        let revision = self.revision(asset);
+        self.prepared(
+            "edit.add-correction",
+            json!({
+                "asset_id": asset,
+                "mutation": mutation_json(revision, request_id),
+                "points": points,
+                "radius": 0.02,
+                "mode": "clone",
+                "source-x": source[0],
+                "source-y": source[1],
+            }),
+        );
+    }
+
+    /// What `query.corrections` answers for `asset`'s current entry.
+    fn corrections(&self, asset: &Value) -> Value {
+        self.ok("query.corrections", json!({"asset_id": asset}))
+    }
+
     /// Tint `asset` with `artifact` through the proof module.
     fn tint(&self, asset: &Value, artifact: &ArtifactId, request_id: &str) {
         let revision = self.revision(asset);
@@ -1094,4 +1116,69 @@ fn remove_no_other_path_deletes_an_entry() {
         harness.entries(edited).is_empty(),
         "emptying Removed deletes them"
     );
+}
+
+/// A corrected photograph keeps its corrections through Remove, Put back and the undo of a
+/// removal, and cannot be sent back. Emptying Removed then deletes only the correction strokes no
+/// surviving entry names: a stroke a remaining photograph's correction shares and the mask strokes
+/// beside them stay, read back whole by the survivor, whatever stroke type and photograph named
+/// them. No original is touched.
+#[test]
+fn remove_and_empty_keep_correction_strokes_every_surviving_entry_names() {
+    let harness = Harness::new("corrections");
+    let paths = harness.photos(2);
+    let assets = harness.develop("develop", &paths);
+    let originals: Vec<_> = paths.iter().map(|path| untouched(path)).collect();
+    let (removed, survivor) = (&assets[0], &assets[1]);
+    harness.correct(removed, json!([[0.2, 0.2]]), [0.4, 0.2], "own");
+    let own: BTreeSet<String> = harness
+        .strings("SELECT id FROM strokes")
+        .into_iter()
+        .collect();
+    assert_eq!(own.len(), 1);
+    let shared_path = json!([[0.6, 0.6], [0.7, 0.62]]);
+    harness.correct(removed, shared_path.clone(), [0.6, 0.3], "shared-removed");
+    harness.correct(survivor, shared_path, [0.3, 0.6], "shared-survivor");
+    let mask_path = json!([[0.1, 0.8], [0.3, 0.85]]);
+    harness.paint(removed, mask_path.clone(), "mask-removed");
+    harness.paint(survivor, mask_path, "mask-survivor");
+    let all: BTreeSet<String> = harness
+        .strings("SELECT id FROM strokes")
+        .into_iter()
+        .collect();
+    assert_eq!(
+        all.len(),
+        3,
+        "a shared stroke is stored once, whichever photograph names it"
+    );
+    let listed = harness.corrections(removed);
+    let survivor_listed = harness.corrections(survivor);
+    let entries = harness.entries(removed);
+
+    // Sending a corrected photograph back is refused; Remove, its undo, redo and Put back keep
+    // every entry and correction.
+    let refused = harness.refused("asset.send-back", targets(&[removed], "send-back"));
+    assert_eq!(refused.code, "conflict", "{}", refused.message);
+    harness.ok("asset.remove", targets(&[removed], "remove-1"));
+    harness.ok("library.undo", json!({"mutation": envelope("undo-remove")}));
+    harness.ok("library.redo", json!({"mutation": envelope("redo-remove")}));
+    harness.ok("asset.restore", targets(&[removed], "put-back"));
+    assert_eq!(harness.entries(removed), entries);
+    assert_eq!(harness.corrections(removed), listed);
+
+    harness.ok("asset.remove", targets(&[removed], "remove-2"));
+    let harness = harness.restart();
+    harness.empty("empty");
+    let left: BTreeSet<String> = harness
+        .strings("SELECT id FROM strokes")
+        .into_iter()
+        .collect();
+    assert_eq!(
+        left,
+        all.difference(&own).cloned().collect(),
+        "only the removed photograph's own correction stroke is deleted"
+    );
+    assert_eq!(harness.corrections(survivor), survivor_listed);
+    let after: Vec<_> = paths.iter().map(|path| untouched(path)).collect();
+    assert_eq!(after, originals, "no original was touched");
 }

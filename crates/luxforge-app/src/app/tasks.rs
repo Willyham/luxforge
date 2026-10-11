@@ -1856,6 +1856,30 @@ pub(crate) fn transform_task(
     )
 }
 
+/// [`transform_task`] answered as `answer` says: the Corrections workspace's pins ask for the map
+/// of the entry on screen through the same `render.transform`, answered to their own seam.
+pub(crate) fn transform_task_to(
+    owner: OwnerHandle,
+    client: ClientId,
+    gesture: GestureId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    answer: fn(GestureId, Result<MappingDescriptor, String>) -> Message,
+) -> Task<Message> {
+    owner_task(
+        move || {
+            let (transform, _) = call(
+                &owner,
+                client,
+                "render.transform",
+                json!({"asset_id":asset_id,"entry_id":entry_id}),
+            )?;
+            parse::<MappingDescriptor>(transform)
+        },
+        move |result| answer(gesture, result),
+    )
+}
+
 pub(crate) fn session_task(
     owner: OwnerHandle,
     client: ClientId,

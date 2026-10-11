@@ -24,7 +24,7 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 }
 
 /// Where an effect acts, and so where the host puts a new layer. The stages run in this order:
-/// a source effect prepares the content stage at index zero; pixel and colour effects address that
+/// a source effect prepares the content stage at index zero; repair and colour effects address that
 /// content stage and join the stack before everything that follows; a spatial effect reads a
 /// bounded neighbourhood of the content stage, so it follows the pointwise work; a geometry effect
 /// changes the stage and extends the geometry tail; and a finish effect is evaluated last, in the
@@ -35,7 +35,10 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 pub enum EffectStage {
     Source,
     Geometry,
-    Pixel,
+    /// Clone and Heal over the developed source, in content coordinates, before restoration and
+    /// colour: compiled into [`crate::Processing::Repair`]. A repair layer belongs to the leading
+    /// run, after a source layer and before everything else.
+    Repair,
     /// Bounded pre-tone restoration in content coordinates.
     Restoration,
     /// Pointwise colour over the whole stage, compiled into [`crate::Processing::Color`].
@@ -53,7 +56,7 @@ impl EffectStage {
         match self {
             Self::Source => "source",
             Self::Geometry => "geometry",
-            Self::Pixel => "pixel",
+            Self::Repair => "repair",
             Self::Restoration => "restoration",
             Self::Color => "color",
             Self::Spatial => "spatial",
@@ -112,7 +115,29 @@ pub struct EffectDescriptor {
     /// apply, and admission refuses a layer on a kind its effect does not list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceTag>,
+    /// The effect's one layer holds an ordered list of at most `max` operations, in the top-level
+    /// [`OPERATIONS_FIELD`] array of its payload, that the module mints and addresses by
+    /// `identity`, as Corrections' repair layer holds its corrections. It is how the host admits
+    /// that identity into the module's own action and query declarations, how `draft.begin`
+    /// refuses a new operation at the limit, and how a client learns the limit. Registration
+    /// accepts it only on a `single` effect, with `max` in `1..=`[`MAX_OPERATIONS`] and the one
+    /// module-addressable identity, `correction`. Serialized only when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operations: Option<EffectOperations>,
 }
+
+/// An effect's declared operation list ([`EffectDescriptor::operations`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectOperations {
+    pub identity: IdentityKind,
+    pub max: u32,
+}
+
+/// The largest operation list an effect may declare.
+pub const MAX_OPERATIONS: u32 = 1000;
+/// The payload field an effect declaring [`EffectDescriptor::operations`] holds its list in.
+pub const OPERATIONS_FIELD: &str = "operations";
 
 impl EffectDescriptor {
     /// An effect of `stage` at the current payload format ([`crate::EFFECT_FORMAT`]) and order
@@ -128,6 +153,7 @@ impl EffectDescriptor {
             artifacts: false,
             single: false,
             sources: Vec::new(),
+            operations: None,
         }
     }
 
@@ -258,6 +284,14 @@ pub enum IdentityKind {
     CatalogFolder,
     /// A collection, smart collection or collection group, `collection-…`.
     Collection,
+    /// One correction of a module's own ordered operation list, `correction-<n>`
+    /// ([`crate::CorrectionId`]). The one identity a **module** action or query may declare
+    /// ([`ParameterKind::module_identity`]), and only when one of the module's effects declares an
+    /// operation list addressed by it ([`EffectDescriptor::operations`]): the list is the module's
+    /// own state, so the module resolves the identity against its layer and refuses one the layer
+    /// does not hold. A draft of such an action is begun on that correction (`draft.begin`'s
+    /// `operation`), as a mask gesture is begun on its mask.
+    Correction,
 }
 
 impl IdentityKind {
@@ -274,6 +308,7 @@ impl IdentityKind {
             Self::Stroke => "a stroke",
             Self::CatalogFolder => "a catalog folder",
             Self::Collection => "a collection",
+            Self::Correction => "a correction",
         }
     }
 
@@ -293,6 +328,7 @@ impl IdentityKind {
             Self::Stroke => crate::path::StrokeId::parse(text).is_ok(),
             Self::CatalogFolder => crate::catalog_types::CatalogFolderId::is_valid(text),
             Self::Collection => crate::catalog_types::CollectionId::is_valid(text),
+            Self::Correction => crate::CorrectionId::is_valid(text),
         }
     }
 }
@@ -336,6 +372,21 @@ impl ParameterKind {
     /// query or task, and a module setting, refuse it.
     pub(crate) fn host_only(&self) -> bool {
         matches!(self, Self::Identity { .. } | Self::Text { .. } | Self::Json)
+    }
+
+    /// Whether a module's action or query may declare this host-only kind after all: the identity
+    /// of one correction of the module's own ordered list ([`IdentityKind::Correction`]), which the
+    /// module mints, stores and resolves itself, admitted where one of its effects declares that
+    /// list ([`EffectDescriptor::operations`]). Every other identity names a host object, and a
+    /// `text` or `json` value would reach the module unchecked, so those stay the host's alone; a
+    /// task or a module setting declares none of them.
+    pub(crate) fn module_identity(&self) -> Option<IdentityKind> {
+        match self {
+            Self::Identity {
+                of: of @ IdentityKind::Correction,
+            } => Some(*of),
+            _ => None,
+        }
     }
 
     /// Whether this parameter names an object rather than setting a value, which is what keeps a
@@ -792,6 +843,16 @@ pub struct ActionDescriptor {
     /// command of its own ([`super::chord::HOST_CHORDS`]). A query declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcut: Option<super::chord::Chord>,
+    /// The action accepts one candidate a task job published ([job
+    /// candidates](../../../../../docs/design/module-capabilities.md#job-candidates)): the catalog
+    /// owner pins the candidate its `job_id` and `candidate` parameters name, publishes it as an
+    /// artifact on a worker and only then plans the action, which reads the published candidate
+    /// through [`crate::StageQuestions::accepting`]. Registration admits it only on a module with
+    /// an effect that declares `artifacts`, requires both parameters (`job_id` an identity of a
+    /// job, `candidate` an integer within `0..=3`) and `preset: false`; such an action is never
+    /// drafted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepts_candidate: bool,
     pub parameters: Vec<ParameterDescriptor>,
 }
 
@@ -821,6 +882,7 @@ impl ActionDescriptor {
             preset: true,
             analysis: None,
             shortcut: None,
+            accepts_candidate: false,
             parameters: Vec::new(),
         }
     }
@@ -854,6 +916,7 @@ impl ActionDescriptor {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Control {
     Group(GroupControl),
+    View(ViewControl),
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
@@ -872,6 +935,12 @@ pub enum Control {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroupControl {
+    /// The group's identity, a lowercase hyphenated name (`grading`) unique among the module's
+    /// groups. A group that declares `layout: tabs` and a group that is one tab of a tab row
+    /// declare one, since a session's view selection names a row and its tab by it
+    /// (`workspace.set`'s `views`); any other group may. Listed only when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub label: String,
     pub controls: Vec<Control>,
     /// The action that returns this group to its neutral values, shown on the group header.
@@ -879,19 +948,14 @@ pub struct GroupControl {
     pub reset: Option<ResetAction>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub collapsed: bool,
-    /// How a client arranges this group's child groups: stacked (the default), or `tabs`, one
-    /// segmented row showing one child group at a time, exactly as a module's `layout: tabs`
-    /// arranges its top-level groups. Groups nest, so a tab can hold tabs of its own. A hint: it
-    /// changes what a client draws, never what the host accepts. Serialized only when it is
-    /// `tabs`. Which child a client shows is its session's view state (`workspace.set`'s `views`).
+    /// How a client arranges this group's children: stacked (the default), or `tabs`, one
+    /// segmented row showing one child at a time, exactly as a module's `layout: tabs` arranges
+    /// its top-level groups. A tab is a child group or a [`ViewControl`]. Groups nest, so a tab
+    /// can hold tabs of its own. A hint: it changes what a client draws, never what the host
+    /// accepts. Serialized only when it is `tabs`. Which child a client shows is its session's
+    /// view state (`workspace.set`'s `views`).
     #[serde(default, skip_serializing_if = "is_default")]
     pub layout: ModuleLayout,
-    /// A presentation-only view: a child of a `tabs` group whose controls show fields the
-    /// enclosing groups own, so the same field may be drawn in more than one view. A view is no
-    /// scope of its own: it declares no reset and no variants, and a client gathering capture or
-    /// reset groups attributes its fields to the group that holds it. Serialized only when true.
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub view: bool,
     /// The group's values usually belong to the one photograph they were set on, as its white
     /// balance does, so a client carrying settings from one photograph to others (a preset's
     /// create form, Copy settings) leaves the group out unless asked (`preset.groups`'
@@ -906,14 +970,17 @@ pub struct GroupControl {
 }
 
 impl GroupControl {
-    /// Arrange this group's child groups as declared ([`GroupControl::layout`]).
-    pub fn group_layout(self, layout: ModuleLayout) -> Self {
-        Self { layout, ..self }
+    /// The group's identity ([`GroupControl::id`]).
+    pub fn id(self, id: impl Into<String>) -> Self {
+        Self {
+            id: Some(id.into()),
+            ..self
+        }
     }
 
-    /// Mark this group a presentation-only view ([`GroupControl::view`]).
-    pub fn as_view(self) -> Self {
-        Self { view: true, ..self }
+    /// Arrange this group's children as declared ([`GroupControl::layout`]).
+    pub fn group_layout(self, layout: ModuleLayout) -> Self {
+        Self { layout, ..self }
     }
 
     /// The action the group header's reset runs.
@@ -922,10 +989,6 @@ impl GroupControl {
             reset: Some(reset),
             ..self
         }
-    }
-
-    pub(crate) fn collapsed(self, collapsed: bool) -> Self {
-        Self { collapsed, ..self }
     }
 
     /// The group's values usually belong to one photograph ([`Self::per_photo`]).
@@ -938,6 +1001,20 @@ impl GroupControl {
         self.variants.push(variant);
         self
     }
+}
+
+/// A presentation-only tab of a tab row: what one tab shows of fields the enclosing groups own,
+/// so the same field may be drawn in more than one view. A view is no scope of its own — it has
+/// no reset, variants, layout or collapse state, and a client gathering capture or reset groups
+/// attributes its fields to the group that holds it — and it is only ever a tab, a child of a
+/// group or module that declares `layout: tabs`. `id` is a lowercase hyphenated name, distinct
+/// among its row's tabs, by which a session selects it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewControl {
+    pub id: String,
+    pub label: String,
+    pub controls: Vec<Control>,
 }
 
 /// One integer or number parameter, drawn as a slider, a field or a stepper.
@@ -1133,8 +1210,11 @@ pub enum WheelStyle {
 /// request of its own and a client that draws no wheel edits the same fields by name. At the
 /// centre a client keeps the last hue rather than computing an angle that does not exist.
 ///
-/// `reset`, when declared, is an action of this module with fixed parameters, validated like a
-/// group's; on the wheel's own action it names only the wheel's fields.
+/// Resetting the wheel is one patch of its bound parameters to their declared defaults
+/// ([`ModuleDescriptor::wheel_reset`]), as a number control without a `reset` returns its field
+/// to its default. A wheel may be drawn more than once — compact in one view, large in another —
+/// and every copy that binds the same `hue` of the same `action` is the same wheel: it binds the
+/// same saturation and luminance under the same label, and only its `style` differs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WheelControl {
@@ -1146,8 +1226,6 @@ pub struct WheelControl {
     pub label: String,
     #[serde(default, skip_serializing_if = "is_default")]
     pub style: WheelStyle,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reset: Option<ResetAction>,
 }
 
 impl WheelControl {
@@ -1163,14 +1241,6 @@ impl WheelControl {
         Self { style, ..self }
     }
 
-    /// What resetting the wheel runs.
-    pub fn wheel_reset(self, reset: ResetAction) -> Self {
-        Self {
-            reset: Some(reset),
-            ..self
-        }
-    }
-
     /// The bound parameters: hue, saturation and, when declared, luminance.
     pub fn parameters(&self) -> impl Iterator<Item = &str> {
         [
@@ -1181,6 +1251,24 @@ impl WheelControl {
         .into_iter()
         .flatten()
         .map(String::as_str)
+    }
+
+    /// Whether `other` draws the same wheel as this one: the same fields of the same action under
+    /// the same label, in whatever style.
+    pub(crate) fn same_wheel(&self, other: &Self) -> bool {
+        (
+            &self.action,
+            &self.hue,
+            &self.saturation,
+            &self.luminance,
+            &self.label,
+        ) == (
+            &other.action,
+            &other.hue,
+            &other.saturation,
+            &other.luminance,
+            &other.label,
+        )
     }
 }
 
@@ -1299,6 +1387,7 @@ macro_rules! control_kinds {
 
 control_kinds!(
     Group(GroupControl),
+    View(ViewControl),
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
@@ -1354,8 +1443,7 @@ impl Control {
     }
 
     /// A compact `wheel` control over the `hue` and `saturation` parameters of `action`, without a
-    /// luminance rail or a reset. Chain [`WheelControl::luminance`], [`WheelControl::wheel_style`]
-    /// and [`WheelControl::wheel_reset`].
+    /// luminance rail. Chain [`WheelControl::luminance`] and [`WheelControl::wheel_style`].
     pub fn wheel(
         action: impl Into<String>,
         hue: impl Into<String>,
@@ -1369,7 +1457,6 @@ impl Control {
             luminance: None,
             label: label.into(),
             style: WheelStyle::Compact,
-            reset: None,
         }
     }
 
@@ -1440,14 +1527,27 @@ impl Control {
 
     pub fn group(label: impl Into<String>, controls: Vec<Control>) -> GroupControl {
         GroupControl {
+            id: None,
             label: label.into(),
             controls,
             reset: None,
             collapsed: false,
             layout: ModuleLayout::Stacked,
-            view: false,
             per_photo: false,
             variants: Vec::new(),
+        }
+    }
+
+    /// A presentation-only tab of a tab row ([`ViewControl`]).
+    pub fn view(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        controls: Vec<Control>,
+    ) -> ViewControl {
+        ViewControl {
+            id: id.into(),
+            label: label.into(),
+            controls,
         }
     }
 
@@ -1483,10 +1583,29 @@ impl Control {
         }
     }
 
+    /// The controls a group or a view holds, in their order; empty for every other kind.
+    pub fn children(&self) -> &[Control] {
+        match self {
+            Self::Group(GroupControl { controls, .. })
+            | Self::View(ViewControl { controls, .. }) => controls,
+            _ => &[],
+        }
+    }
+
+    /// The identity a tab row selects this control by: a view's id, or a group's declared id.
+    pub fn tab_id(&self) -> Option<&str> {
+        match self {
+            Self::Group(group) => group.id.as_deref(),
+            Self::View(view) => Some(&view.id),
+            _ => None,
+        }
+    }
+
     /// The control kind as it is serialized, for a refusal that names a shape.
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::Group(_) => "group",
+            Self::View(_) => "view",
             Self::Number(_) => "number",
             Self::Toggle(_) => "toggle",
             Self::Choice(_) => "choice",
@@ -1504,7 +1623,8 @@ impl Control {
 }
 
 /// How a module lets the canvas drive its action. A point pick commits only when it declares
-/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply.
+/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply; a
+/// brush mask commits one painted path per gesture.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CanvasInteraction {
@@ -1583,6 +1703,70 @@ pub enum CanvasInteraction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<String>,
     },
+    /// The host's one brush paints a bounded path on the photograph for the module's own action:
+    /// every press on the photograph that no handle catches adds one path, captured on the shared
+    /// path grid ([`crate::path`]) in content-stage coordinates through the core's geometry map and
+    /// drafted through `action` as one draft and one history entry. It is the declared form of the
+    /// mask brush's capture, so the desktop's one capture serves both (`docs/design/masking.md`,
+    /// "One brush system"; `docs/design/corrections.md`, "The brush-mask interaction").
+    ///
+    /// The names bind the gesture to parameters of `action`: `points`, a `points` parameter that
+    /// receives the path; `radius`, a `number` the path is captured at; and, when declared,
+    /// `feather` and `opacity` (each a `number` or an `integer`) and `mode` (an `enum`), the brush
+    /// settings a client fills. The mask brush's flow and colour limit are not part of this
+    /// vocabulary. `source`, when declared, binds the absolute source position of the path's first
+    /// point and the query that ranks automatic sources; `edit`, when declared, the field patch pins
+    /// and handles draft through, its correction identity parameter and the query that lists the
+    /// drawable operations. [`ModuleDescriptor::validate`] checks every binding; a client knows no
+    /// field by name.
+    BrushMask {
+        action: String,
+        points: String,
+        radius: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feather: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opacity: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<BrushSource>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edit: Option<BrushEdit>,
+        /// The mode's name in the canvas mode strip.
+        title: String,
+        /// One uppercase ASCII letter that selects the mode, unique across the registry.
+        shortcut: Option<String>,
+        /// The mode's icon in a client's mode strip; see [`CanvasInteraction::icon`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+    },
+}
+
+/// A brush's source binding ([`CanvasInteraction::BrushMask`]): `x` and `y`, two `number`
+/// parameters of the brush's action (and of its edit, when one is declared) that receive the
+/// absolute position the path's first point samples from, in the path's normalized content
+/// coordinates; and `query`, the module query that ranks automatic sources. A gesture that sets no
+/// source sends neither coordinate, so the module chooses one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrushSource {
+    pub x: String,
+    pub y: String,
+    pub query: String,
+}
+
+/// A brush's edit binding ([`CanvasInteraction::BrushMask`]): `action`, the field patch a pin,
+/// source or size-handle drag drafts through, begun on one operation; `operation`, that action's
+/// required identity parameter, of the identity an effect of the module declares its operation
+/// list by ([`EffectDescriptor::operations`]); and `list`, the module query that lists the drawable
+/// operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrushEdit {
+    pub action: String,
+    pub operation: String,
+    pub list: String,
 }
 
 impl CanvasInteraction {
@@ -1591,7 +1775,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { title, .. }
             | Self::SampleApply { title, .. }
-            | Self::CropFrame { title, .. } => title,
+            | Self::CropFrame { title, .. }
+            | Self::BrushMask { title, .. } => title,
         }
     }
 
@@ -1600,7 +1785,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { shortcut, .. }
             | Self::SampleApply { shortcut, .. }
-            | Self::CropFrame { shortcut, .. } => shortcut.as_deref(),
+            | Self::CropFrame { shortcut, .. }
+            | Self::BrushMask { shortcut, .. } => shortcut.as_deref(),
         }
     }
 
@@ -1611,7 +1797,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { icon, .. }
             | Self::SampleApply { icon, .. }
-            | Self::CropFrame { icon, .. } => icon.as_deref(),
+            | Self::CropFrame { icon, .. }
+            | Self::BrushMask { icon, .. } => icon.as_deref(),
         }
     }
 }
@@ -1628,8 +1815,9 @@ pub enum ModuleLayout {
     Stacked,
     /// The groups render as one segmented row, one group visible at a time, for groups that are
     /// parallel views of the same controls, such as the colour mixer's Hue, Saturation and
-    /// Luminance over the same eight ranges. Which group a client shows is its session's view
-    /// state ([`crate::ViewSelection`]): selecting one changes no recipe, history or frame.
+    /// Luminance over the same eight ranges. Every tab declares an id, and which one a client
+    /// shows is its session's view state ([`crate::ViewSelection`]): selecting one changes no
+    /// recipe, history or frame.
     Tabs,
 }
 
@@ -1727,42 +1915,45 @@ impl ModuleDescriptor {
         matches!(self.availability, Availability::Available)
     }
 
-    /// The group a path of group labels reaches from the module's top level, each label naming
-    /// the first group of that label at its level. Registration makes that first group the one a
-    /// tabbed group's path names ([`Self::validate`]), so a view identity is never ambiguous.
-    pub fn group_at(&self, path: &[impl AsRef<str>]) -> Option<&GroupControl> {
-        let mut controls = &self.controls[..];
-        let mut found = None;
-        for label in path {
-            let group = controls.iter().find_map(|control| match control {
-                Control::Group(group) if group.label == label.as_ref() => Some(group),
-                _ => None,
-            })?;
-            controls = &group.controls;
-            found = Some(group);
+    /// The group of this module whose declared id is `id`, at any depth. Registration keeps group
+    /// ids unique within a module ([`Self::validate`]), so there is at most one. `O(controls)`.
+    pub fn group(&self, id: &str) -> Option<&GroupControl> {
+        fn find<'d>(controls: &'d [Control], id: &str) -> Option<&'d GroupControl> {
+            controls.iter().find_map(|control| match control {
+                Control::Group(group) if group.id.as_deref() == Some(id) => Some(group),
+                control => find(control.children(), id),
+            })
         }
-        found
+        find(&self.controls, id)
     }
 
-    /// The views of the tabbed controls a label path names, in their declared order: the empty
-    /// path names the module's own top-level tabs (`layout: tabs`), and any other path the nested
-    /// group it reaches ([`Self::group_at`]), which must declare `layout: tabs`. `None` when the
-    /// path names no tabbed controls. A view is one child group, named by its label.
-    pub fn views_at(&self, path: &[impl AsRef<str>]) -> Option<Vec<&str>> {
-        let (controls, layout) = if path.is_empty() {
-            (&self.controls[..], self.layout)
-        } else {
-            let group = self.group_at(path)?;
-            (&group.controls[..], group.layout)
+    /// The ids of a tab row's tabs, in their declared order: `None` names the module's own
+    /// top-level row (`layout: tabs`), and `Some(id)` the group of that id ([`Self::group`]),
+    /// which must declare `layout: tabs`. `None` when it names no tab row. A tab is a child group
+    /// or a view ([`Control::tab_id`]); registration gives every tab an id.
+    pub fn views_at(&self, group: Option<&str>) -> Option<Vec<&str>> {
+        let (controls, layout) = match group {
+            None => (&self.controls[..], self.layout),
+            Some(id) => {
+                let group = self.group(id)?;
+                (&group.controls[..], group.layout)
+            }
         };
-        (layout == ModuleLayout::Tabs).then(|| {
-            controls
-                .iter()
-                .filter_map(|control| match control {
-                    Control::Group(group) => Some(group.label.as_str()),
-                    _ => None,
-                })
-                .collect()
+        (layout == ModuleLayout::Tabs)
+            .then(|| controls.iter().filter_map(Control::tab_id).collect())
+    }
+
+    /// What resetting `wheel` runs: one patch of its action setting each bound parameter to its
+    /// declared default, or `None` when this module does not declare the action or a default. The
+    /// one reset every copy of the wheel shares, so no copy repeats it.
+    pub fn wheel_reset(&self, wheel: &WheelControl) -> Option<ResetAction> {
+        let action = self.action(&wheel.action)?;
+        Some(ResetAction {
+            action: wheel.action.clone(),
+            preset: wheel
+                .parameters()
+                .map(|name| Some((name.to_owned(), action.parameter(name)?.default.clone()?)))
+                .collect::<Option<_>>()?,
         })
     }
 

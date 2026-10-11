@@ -42,6 +42,7 @@ mod segmented;
 mod slider;
 mod slider_guard;
 mod sparkline;
+mod steady_scroll;
 mod stepper;
 mod sub_group_header;
 mod swatch_slots;
@@ -105,9 +106,9 @@ pub use inline_notice::inline_notice;
 pub use job_row::{JobRowModel, job_row};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use mask_row::{
-    ComponentRowMessages, ComponentRowModel, DropEdge, MaskRowMessages, MaskRowModel,
-    RenameMessages, StrokeRowModel, component_note, component_row, drop_feedback, mask_row,
-    rename_input_id, stroke_row,
+    ComponentRowMessages, ComponentRowModel, CorrectionRowMessages, CorrectionRowModel, DropEdge,
+    MaskRowMessages, MaskRowModel, RenameMessages, StrokeRowModel, component_note, component_row,
+    correction_row, drop_feedback, mask_row, rename_input_id, stroke_row,
 };
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
@@ -123,10 +124,13 @@ pub use overlay_control::{OverlayControlModel, OverlayMode, OverlayTint, overlay
 pub use popover::popover;
 pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
 pub use readout_card::readout_card;
-pub use section_header::{SectionHeaderModel, band_header, module_section};
-pub use segmented::{SegmentedModel, chevron_segment, segment, segment_track, segmented};
+pub use section_header::{SectionHeaderModel, band_header, band_header_with_reset, module_section};
+pub use segmented::{
+    SegmentedModel, chevron_segment, segment, segment_track, segmented, segmented_fill,
+};
 pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::SparklineModel;
+pub use steady_scroll::steady_bottom;
 pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper};
 pub use sub_group_header::{
     GroupRuleModel, SubGroupHeaderModel, group_rule, sub_group_header,

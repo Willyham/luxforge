@@ -135,17 +135,8 @@ pub(super) fn cases() -> Vec<Case> {
     vec![
         Case::new("no layer: the source rows", Vec::new()),
         Case::new(
-            "replacements on either side of a colour run",
-            vec![
-                Layer::pixel(3, 4, [250, 10, 20]),
-                basic.clone(),
-                Layer::pixel(5, 6, [1, 200, 30]),
-                Layer::pixel(3, 4, [9, 9, 240]),
-            ],
-        ),
-        Case::new(
-            "a replacement behind an exact orientation",
-            vec![Layer::pixel(2, 2, [40, 50, 60]), turned.clone()],
+            "colour behind an exact orientation",
+            vec![basic.clone(), turned.clone()],
         ),
         Case::new("Basic and the colour mixer", vec![full_basic, mixer]),
         Case::new(
@@ -153,21 +144,12 @@ pub(super) fn cases() -> Vec<Case> {
             vec![basic.clone(), crop.clone(), vignette.clone()],
         ),
         Case::new(
-            "a replacement after an orientation and a resample",
-            vec![
-                basic.clone(),
-                turned.clone(),
-                crop.clone(),
-                Layer::pixel(7, 3, [255, 0, 128]),
-            ],
+            "colour, an orientation and a resample",
+            vec![basic.clone(), turned.clone(), crop.clone()],
         ),
         Case::new(
-            "a replacement before a steep crop",
-            vec![
-                basic.clone(),
-                Layer::pixel(9, 8, [200, 100, 50]),
-                steep.clone(),
-            ],
+            "colour before a steep crop",
+            vec![basic.clone(), steep.clone()],
         ),
         Case::new(
             "colour after a spatial operation's frame",
@@ -217,19 +199,10 @@ pub(super) fn cases() -> Vec<Case> {
         // Two resamples: a point query blends four recursively evaluated blends.
         Case::new(
             "two resamples",
-            vec![
-                turn(Transform::MirrorHorizontal),
-                steep,
-                scale_layer(1.5),
-                Layer::pixel(0, 0, [7, 8, 253]),
-            ],
+            vec![turn(Transform::MirrorHorizontal), steep, scale_layer(1.5)],
         )
         .byte_only(),
-        Case::new(
-            "an upscale",
-            vec![scale_layer(2.0), Layer::pixel(5, 5, [254, 9, 10])],
-        )
-        .byte_only(),
+        Case::new("an upscale", vec![scale_layer(2.0)]).byte_only(),
     ]
 }
 

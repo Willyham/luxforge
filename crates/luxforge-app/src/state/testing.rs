@@ -159,7 +159,9 @@ pub(crate) fn tabs_descriptor() -> ModuleDescriptor {
             .notes("test")
     };
     let group = |label: &str, name: &str| -> Control {
-        Control::group(label, vec![Control::number(SET, name, label).into()]).into()
+        Control::group(label, vec![Control::number(SET, name, label).into()])
+            .id(name)
+            .into()
     };
     let descriptor = ModuleDescriptor {
         id: "fixture.tabs".into(),
@@ -267,6 +269,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             artifacts: false,
             single: false,
             sources: Vec::new(),
+            operations: None,
         }],
         actions: vec![
             ActionDescriptor {
@@ -277,6 +280,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Crop".into(),
                 notes: "test".into(),
                 patch: false,
+                accepts_candidate: false,
                 parameters: crop,
             },
             ActionDescriptor {
@@ -287,6 +291,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Fit crop".into(),
                 notes: "test".into(),
                 patch: false,
+                accepts_candidate: false,
                 parameters: fit,
             },
             ActionDescriptor {
@@ -297,6 +302,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Reset crop".into(),
                 notes: "test".into(),
                 patch: false,
+                accepts_candidate: false,
                 parameters: Vec::new(),
             },
         ],
@@ -306,7 +312,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             reset: None,
             collapsed: false,
             layout: luxforge_core::ModuleLayout::Stacked,
-            view: false,
+            id: None,
             per_photo: false,
             controls: vec![Control::Action(luxforge_core::ActionControl {
                 action: "crop-reset".into(),
@@ -443,14 +449,88 @@ pub(crate) fn raw_entry(
     entry
 }
 
+/// The fixture module a point request is tested with, and its action.
+pub(crate) const POINT_MODULE: &str = "test.point";
+pub(crate) const POINT_ACTION: &str = "set-point";
+
+/// A descriptor no registry serves, declaring what no linked module does: a canvas pick that only
+/// fills coordinates, and one non-patch action of two integer coordinates and a colour, drawn as
+/// number fields, a colour field, a picker and a button. The generic parts of the tools panel —
+/// field text, a pick that fills rather than commits, an action that sends its whole parameter
+/// list — are tested against it.
+pub(crate) fn point_module() -> ModuleDescriptor {
+    use luxforge_core::{
+        ActionDescriptor, Availability, CanvasInteraction, ColorStyle, Control, NumberStyle,
+        ParameterDescriptor,
+    };
+    ModuleDescriptor {
+        id: POINT_MODULE.into(),
+        title: "Point".into(),
+        hint: Some("One point".into()),
+        actions: vec![ActionDescriptor {
+            parameters: vec![
+                ParameterDescriptor::integer("x", 0, 16383)
+                    .required(true)
+                    .unit("px")
+                    .notes("x in the content stage"),
+                ParameterDescriptor::integer("y", 0, 16383)
+                    .required(true)
+                    .unit("px")
+                    .notes("y in the content stage"),
+                ParameterDescriptor::color("rgb")
+                    .required(true)
+                    .notes("three 8-bit sRGB channels"),
+            ],
+            ..ActionDescriptor::new(POINT_ACTION, "Set point", "sends one point and a colour")
+        }],
+        controls: vec![
+            Control::group(
+                "Point",
+                vec![
+                    Control::number(POINT_ACTION, "x", "X")
+                        .number_style(NumberStyle::Field)
+                        .into(),
+                    Control::number(POINT_ACTION, "y", "Y")
+                        .number_style(NumberStyle::Field)
+                        .into(),
+                    Control::color_field(POINT_ACTION, "rgb", "RGB")
+                        .color_style(ColorStyle::Fields)
+                        .into(),
+                    Control::picker("Pick point").into(),
+                    Control::action(POINT_ACTION, "Apply point").into(),
+                ],
+            )
+            .into(),
+        ],
+        canvas: Some(CanvasInteraction::PointPick {
+            action: POINT_ACTION.into(),
+            x: "x".into(),
+            y: "y".into(),
+            title: "Pick point".into(),
+            shortcut: None,
+            icon: None,
+            // The pick fills the coordinates; the person submits the colour with them.
+            commit: false,
+        }),
+        developer: true,
+        collapsed: false,
+        layout: luxforge_core::ModuleLayout::Stacked,
+        availability: Availability::Available,
+        ..ModuleDescriptor::default()
+    }
+}
+
 /// The descriptors a developer run of the desktop, as a debug build is, would fetch through
-/// `module.list`: every linked module, the pixel and controls proofs included.
+/// `module.list`: every linked module, the controls proof included, and the [`point_module`]
+/// fixture, which no registry serves.
 pub(crate) fn descriptors() -> Vec<ModuleDescriptor> {
-    luxforge_core::ModuleRegistry::developer()
+    let mut modules: Vec<ModuleDescriptor> = luxforge_core::ModuleRegistry::developer()
         .descriptors()
         .into_iter()
         .cloned()
-        .collect()
+        .collect();
+    modules.push(point_module());
+    modules
 }
 
 /// One `preset.list` row: a Luxforge preset when `report` is `None`, an imported one otherwise,

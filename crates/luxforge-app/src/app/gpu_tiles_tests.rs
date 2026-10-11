@@ -123,6 +123,99 @@ pub(super) fn recipe(layers: Vec<Layer>, masked: Vec<(usize, luxforge_core::Comp
     recipe
 }
 
+/// The built-in modules and the test repair-stage module, whose payload is the repair table: the
+/// registry every family is planned and read through.
+pub(super) fn registry() -> ModuleRegistry {
+    let mut registry = ModuleRegistry::builtin();
+    registry
+        .register(luxforge_core::qualification::repair::RepairTestModule::shared())
+        .expect("the test repair module");
+    registry
+}
+
+/// Clone and Heal operations over the [`WIDTH`] × [`HEIGHT`] stage: independent spots, a Heal
+/// from far across the frame, a Clone over a Heal's output and a source past the edge.
+pub(super) fn corrections() -> Layer {
+    use super::gpu_repair_plan_tests::{op, repair};
+    let size = (WIDTH, HEIGHT);
+    repair(vec![
+        op(1, true, size, &[[90.0, 60.0]], 9.0, [40.0, 12.0], 50, 100),
+        op(
+            2,
+            false,
+            size,
+            &[[250.0, 170.0]],
+            7.0,
+            [-60.0, -30.0],
+            30,
+            100,
+        ),
+        op(
+            3,
+            true,
+            size,
+            &[[60.0, 190.0], [120.0, 200.0]],
+            6.0,
+            [230.0, -150.0],
+            40,
+            90,
+        ),
+        op(4, false, size, &[[95.0, 62.0]], 6.0, [0.0, 50.0], 0, 80),
+        op(5, true, size, &[[355.0, 120.0]], 8.0, [20.0, 0.0], 50, 100),
+    ])
+}
+
+/// Frozen patches over the [`WIDTH`] × [`HEIGHT`] stage (`docs/design/corrections.md`, "Frozen
+/// patches"): a Clone, two overlapping patches — coverage stepping through 0 to 1, values past
+/// both ends of the linear range, the second at opacity 60 — and a Heal sampling the patches'
+/// output, then `after`: the patch composite alone, chained and read by a later operation.
+pub(super) fn patches(after: Vec<Layer>) -> Recipe {
+    use luxforge_core::qualification::corrections::{QualBrush, QualPatch, QualStep, repair_stack};
+    let (w, h) = (f64::from(WIDTH), f64::from(HEIGHT));
+    let ramp = |seed: u32| -> Box<dyn Fn(u32, u32) -> ([f32; 3], f32)> {
+        Box::new(move |x, y| {
+            let value = |channel: u32| {
+                ((x * 7 + y * 3 + channel * 61 + seed) % 256) as f32 / 255.0 * 1.5 - 0.25
+            };
+            (
+                [value(0), value(1), value(2)],
+                ((x + y + seed) % 5) as f32 / 4.0,
+            )
+        })
+    };
+    repair_stack(
+        vec![
+            QualStep::Brush(QualBrush {
+                heal: false,
+                points: vec![[90.0 / w, 60.0 / h]],
+                radius: 9.0 / h,
+                source: [130.0 / w, 72.0 / h],
+                feather: 50,
+                opacity: 100,
+            }),
+            QualStep::Patch(QualPatch {
+                rect: [80, 50, 60, 40],
+                opacity: 100,
+                pixel: ramp(3),
+            }),
+            QualStep::Patch(QualPatch {
+                rect: [120, 70, 50, 37],
+                opacity: 60,
+                pixel: ramp(11),
+            }),
+            QualStep::Brush(QualBrush {
+                heal: true,
+                points: vec![[260.0 / w, 150.0 / h]],
+                radius: 10.0 / h,
+                source: [125.0 / w, 80.0 / h],
+                feather: 40,
+                opacity: 100,
+            }),
+        ],
+        after,
+    )
+}
+
 /// The families a tile is drawn through: every kind of step a plan holds, a link before the last
 /// among them.
 pub(super) fn families() -> Vec<(&'static str, Recipe)> {
@@ -158,6 +251,37 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
     let presence = |values| Layer::new(PRESENCE_EFFECT, values);
     vec![
         ("a colour stack", recipe(colour, Vec::new())),
+        (
+            "Clone and Heal",
+            recipe(vec![corrections(), basic.clone()], Vec::new()),
+        ),
+        (
+            "a hundred Clone and Heal corrections",
+            recipe(
+                vec![super::gpu_repair_plan_tests::repair(
+                    super::gpu_repair_plan_tests::hundred((WIDTH, HEIGHT), 4),
+                )],
+                Vec::new(),
+            ),
+        ),
+        (
+            "frozen patches among Clone and Heal",
+            patches(vec![basic.clone()]),
+        ),
+        (
+            "frozen patches before Detail",
+            patches(vec![Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0}))]),
+        ),
+        (
+            "Clone and Heal before Detail",
+            recipe(
+                vec![
+                    corrections(),
+                    Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0})),
+                ],
+                Vec::new(),
+            ),
+        ),
         (
             "a masked stack",
             recipe(
@@ -261,7 +385,7 @@ struct Case {
 /// each tile's rectangle, anchored to the plan, every global estimate read from the store the
 /// exact render filled. `O(cases × tiles)` CPU work: each tile's window is the CPU's own.
 fn cases() -> Vec<Case> {
-    let registry = ModuleRegistry::builtin();
+    let registry = registry();
     let stage = Stage {
         width: WIDTH,
         height: HEIGHT,
@@ -546,7 +670,7 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_
     };
     let runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
-    let registry = ModuleRegistry::builtin();
+    let registry = registry();
     let stage = Stage {
         width: 9504,
         height: 6336,

@@ -10,6 +10,7 @@ pub(crate) mod action;
 pub(crate) mod capability;
 pub(crate) mod control;
 pub(crate) mod copy_settings;
+pub(crate) mod corrections;
 pub(crate) mod crop;
 pub(crate) mod develop;
 pub(crate) mod draft;
@@ -58,6 +59,7 @@ pub(crate) enum Message {
     Crop(crop::CropMessage),
     /// One Masks-panel change.
     Mask(mask::MaskMessage),
+    Corrections(corrections::CorrectionMessage),
     /// One decision about, or owner answer for, the open slider or mask gesture's core draft.
     Draft(draft::DraftMessage),
     /// One Presets-section change.

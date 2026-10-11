@@ -128,7 +128,6 @@ const CLASSES: [Class; 7] = [
     },
     Class {
         codes: &[
-            "pixel-stage",
             "boundary-stage",
             "spatial-unit",
             "spatial-chain",
@@ -741,7 +740,6 @@ mod tests {
     #[test]
     fn the_stacks_class_names_the_layer_its_reason_names() {
         let codes = [
-            "pixel-stage",
             "boundary-stage",
             "spatial-unit",
             "spatial-chain",

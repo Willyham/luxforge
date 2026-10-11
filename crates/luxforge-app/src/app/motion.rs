@@ -305,7 +305,6 @@ mod tests {
         );
         for code in [
             "boundary-stage",
-            "pixel-stage",
             "budget-exceeded",
             "boundary-size",
             "no-adapter",
