@@ -1,0 +1,33 @@
+# Bundled diffusion native source
+
+This crate builds stable-diffusion.cpp and its ggml from the source files in `vendor/` at compile time, with the `cc` crate only: no CMake, Python, network access or second build system. It is part of the object removal probe's evaluation of generative fill (TASK-005), not of the editor. The vendored trees are pristine subsets of the upstream trees. `build.rs` stages one patched file, `src/pipeline/diffusion_engine.cpp`, into Cargo's `OUT_DIR` by exact-anchor replacement (each anchor must match exactly once, so an upstream change fails the build) and compiles that copy in place of the vendored one.
+
+| Component | Exact upstream | Bundled files | Licence / notices |
+| --- | --- | --- | --- |
+| stable-diffusion.cpp | [leejet/stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) tag `master-956-1b0ba10`, commit `1b0ba10893f4e2e0656103011fc1c4645a02a734` | `vendor/stable-diffusion.cpp-1b0ba108`: `LICENSE`, `include/stable-diffusion.h`, every file under `src/` except the generated tokenizer tables `src/tokenizers/vocab/*.hpp` (139 MB), and the `thirdparty/` files listed below | MIT; retain `LICENSE` and file headers |
+| ggml | [leejet/ggml](https://github.com/leejet/ggml) commit `d25b121ce1d6ae0c7e62ad080460d9fc1e46dd93` (the submodule stable-diffusion.cpp pins at that commit; ggml version 0.25.3) | `vendor/ggml-d25b121c`: `LICENSE`, `include/`, `src/*.c`, `*.cpp`, `*.h`, `ggml-version.h.in`, `src/ggml-cpu/` (top level, `amx/`, `arch/arm/`), `src/ggml-metal/` (sources and `kernels/`) | MIT; retain `LICENSE` and file headers |
+| nlohmann/json | `thirdparty/json.hpp` as stable-diffusion.cpp bundles it | header | MIT (SPDX header) |
+| kuba--/zip and miniz | `thirdparty/zip.c`, `zip.h`, `miniz.h` | sources | zip: Unlicense (statement in `zip.c`); miniz: MIT-style (header) |
+| darts-clone | `thirdparty/darts.h`, `LICENSE.darts_clone.txt` | header | BSD-2-Clause |
+| Oniguruma | `thirdparty/oniguruma/` (version in its README) | sources, `COPYING` | BSD-2-Clause |
+| utf8proc | `thirdparty/utf8proc/` (version in its README) | sources, `LICENSE.md` | MIT, with Unicode data licence |
+
+The vendored subset leaves out the examples, tests, server, WebP/WebM, stb, httplib, CMake files, ggml's other backends (CUDA, Vulkan, SYCL and the rest), ggml-cpu's `llamafile` kernels and other architectures, and the generated tokenizer tables. For an independent integrity check of a vendored directory, list every file under it, relative to it with `/` separators and sorted by that path, as JSON objects `{"path": …, "sha256": …}` holding each file's lowercase hex SHA-256; serialize that array with Python's `json.dumps(entries,sort_keys=True,separators=(',',':'))` and take the SHA-256 of the UTF-8 text. SHA-256 of those serialized inventories: stable-diffusion.cpp `4abe7b4d87f75582dd19ed2d1b0f1510acb47a11491f5bb14387e4a3f86811ba` (232 files, 10,046,160 bytes); ggml `85ac37990ebdcbb7007eabbf2a7d151946568be76b1707d2bd776b3dfc784c79` (113 files, 4,310,289 bytes). These inventories are provenance evidence, not a completed manual licence or native security audit.
+
+## Build
+
+`build.rs` compiles six static libraries with `-O3`, no debug information and `NDEBUG`, as C11 or C++17: ggml's C sources, ggml's C++ sources (with the Metal backend's C++ on macOS), the Metal backend's Objective-C (without ARC, as upstream builds it), the embedded Metal kernels, the third-party C, and stable-diffusion.cpp (upstream's source glob, less the patched engine and `src/tokenizers/vocab/vocab.cpp`, plus the staged engine and `native/vocab.cpp` and `native/shim.cpp`). On Apple silicon it targets `-mcpu=apple-m1`, the M-series baseline, so the library runs on every M-series Mac rather than only the one that built it. Defines: `GGML_MAX_NAME=160`, `GGML_SCHED_MAX_COPIES=4`, `GGML_USE_CPU`, `_XOPEN_SOURCE=600`, and on macOS `GGML_USE_METAL`, `GGML_METAL_EMBED_LIBRARY`, `_DARWIN_C_SOURCE`, `GGML_USE_ACCELERATE`, `ACCELERATE_NEW_LAPACK` and `ACCELERATE_LAPACK_ILP64`. It links Foundation, Metal, MetalKit and Accelerate. `ggml-version.h` is generated from the pinned version and commit; Oniguruma's CMake-generated `config.h` is replaced by the hand-written [`native/oniguruma-config.h`](native/oniguruma-config.h) for LP64 targets.
+
+Upstream's `GGML_METAL_EMBED_LIBRARY` CMake step concatenates the Metal kernel sources into one string and assembles it into the binary. `build.rs` does the same per kernel: it inlines each kernel's `#include`d headers, writes the text to `OUT_DIR` and assembles a `.s` file whose `.incbin` holds it. The Metal framework compiles the kernels at first use and caches the result per user (16.4 s the first time on the M4 Pro, 15 ms afterwards). Linux and Windows builds compile the CPU backend only; neither is verified.
+
+## Local change
+
+[`native/vocab.cpp`](native/vocab.cpp) replaces upstream's `vocab.cpp`, which compiles the 139 MB of generated tables into the library. A text encoder is given its tokenizer as a file (a Hugging Face `tokenizer.json`); without one, a context opened with a text encoder fails explicitly. A context opened without a text encoder still constructs its conditioner and a tokenizer it never uses, so for that context the tables are a one-merge stub.
+
+The staged `diffusion_engine.cpp` changes three places, declared in [`native/luxforge_condition_hook.h`](native/luxforge_condition_hook.h) and defined in [`native/shim.cpp`](native/shim.cpp):
+
+- it includes the hook header;
+- `StableDiffusionGGML::get_learned_condition` first asks the shim for a supplied conditioning for the prompt and returns it without running the text encoder; otherwise it runs the encoder as upstream does and reports the result to the shim, which keeps it so it can be saved. A context opened without a text encoder refuses any prompt that has no supplied conditioning;
+- for a context opened without a text encoder, the encoder's weights (`text_encoders.`) are added to the tensors the model metadata check ignores, so the absent file is not required. They are never loaded.
+
+The shim's C ABI is private to this crate: it opens and closes a context, generates one image from borrowed RGB and mask buffers with an optional LoRA and reference image, cancels between steps, and saves or supplies a conditioning as a file (`LFSDCOND`, version 1: the `c_crossattn` and `c_vector` tensors with their shapes; any other field is refused). It catches C++ exceptions and returns the last error message.

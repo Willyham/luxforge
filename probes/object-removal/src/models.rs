@@ -106,6 +106,105 @@ pub fn directory(explicit: Option<PathBuf>) -> PathBuf {
     crate::paths::models_directory(explicit)
 }
 
+// The generative candidates (TASK-005), in their own ignored directory
+// (`private/models/generative/`, `--gen-models` or `LUXFORGE_GENERATIVE_MODELS`). Each is pinned
+// at the publisher's commit named in its source; the README's generative section lists them with
+// their licences.
+
+/// Moebius's denoiser (hustvl/Moebius `ft_places2`), ONNX by simonw/Moebius-ONNX at
+/// `5bf1ef5d`, fp32, 512² static.
+pub const MOEBIUS_UNET: Model = Model {
+    id: "moebius-unet",
+    file: "moebius-unet.onnx",
+    bytes: 906_698_976,
+    sha256: "e3f90f52f72378339b990459fadb29a68d3c7b5c6851545ba42774f489160b08",
+};
+/// Moebius's VAE encoder (hustvl/PixelHacker `vae/`), same export.
+pub const MOEBIUS_VAE_ENCODER: Model = Model {
+    id: "moebius-vae-encoder",
+    file: "moebius-vae-encoder.onnx",
+    bytes: 136_757_093,
+    sha256: "b8b81d41e757222a0707665ba9d826703987855e5bed056036b90b988968042f",
+};
+/// Moebius's VAE decoder, same export.
+pub const MOEBIUS_VAE_DECODER: Model = Model {
+    id: "moebius-vae-decoder",
+    file: "moebius-vae-decoder.onnx",
+    bytes: 198_078_671,
+    sha256: "d90ef0b7f6c8c8b7234459c8b449d70be0033bf1576c842e8b9991baf3934280",
+};
+/// FLUX.2 klein 4B's transformer, GGUF Q4_0 by leejet/FLUX.2-klein-4B-GGUF at `3b1f5a9d`.
+pub const KLEIN_Q4: Model = Model {
+    id: "klein-4b-q4_0",
+    file: "flux-2-klein-4b-Q4_0.gguf",
+    bytes: 2_460_378_560,
+    sha256: "d1023499ef3f2f82ff7c50e6778495195c1b6cc34835741778868428111f9ff4",
+};
+/// FLUX.2 klein 4B's transformer, GGUF Q8_0, same repository and commit.
+pub const KLEIN_Q8: Model = Model {
+    id: "klein-4b-q8_0",
+    file: "flux-2-klein-4b-Q8_0.gguf",
+    bytes: 4_300_629_440,
+    sha256: "0bba6951258ec8f92d51114a8fa13e66828297bfff58a738f52729b3ef66fa28",
+};
+/// FLUX.2 klein 4B's VAE (black-forest-labs/FLUX.2-klein-4B `vae/` at `e7b7dc27`), bf16.
+pub const KLEIN_VAE: Model = Model {
+    id: "klein-4b-vae",
+    file: "flux2-klein-4b-vae.safetensors",
+    bytes: 168_120_878,
+    sha256: "ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04",
+};
+/// Qwen3-4B, klein's text encoder, GGUF Q4_K_M by unsloth/Qwen3-4B-GGUF at `22c9fc8a`.
+pub const QWEN3_Q4: Model = Model {
+    id: "qwen3-4b-q4_k_m",
+    file: "Qwen3-4B-Q4_K_M.gguf",
+    bytes: 2_497_281_312,
+    sha256: "f6f851777709861056efcdad3af01da38b31223a3ba26e61a4f8bf3a2195813a",
+};
+/// Qwen3-4B, GGUF Q8_0, same repository and commit.
+pub const QWEN3_Q8: Model = Model {
+    id: "qwen3-4b-q8_0",
+    file: "Qwen3-4B-Q8_0.gguf",
+    bytes: 4_280_405_792,
+    sha256: "eed555233267a33c7e8ee31682762cc7751b3f6d224039086e0e846f05fffa5d",
+};
+/// The Qwen3 tokenizer (black-forest-labs/FLUX.2-klein-4B `tokenizer/tokenizer.json` at
+/// `e7b7dc27`), which the text encoder needs: this build bundles no vocabulary tables.
+pub const QWEN3_TOKENIZER: Model = Model {
+    id: "qwen3-tokenizer",
+    file: "qwen3-tokenizer.json",
+    bytes: 11_422_654,
+    sha256: "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+};
+/// fal's object-removal LoRA for klein 4B (fal/flux-2-klein-4B-object-remove-lora at `0e3f5879`,
+/// the ComfyUI conversion).
+pub const KLEIN_REMOVE_LORA: Model = Model {
+    id: "klein-remove-lora",
+    file: "klein-object-remove-lora-comfy.safetensors",
+    bytes: 76_038_936,
+    sha256: "dc197de62e174863f83fc4052465603f4389de7c3a78e17f3d41a1f6f11488ec",
+};
+
+/// Every generative pin; `removal-probe models --generative` verifies those present.
+pub const GENERATIVE: &[&Model] = &[
+    &MOEBIUS_UNET,
+    &MOEBIUS_VAE_ENCODER,
+    &MOEBIUS_VAE_DECODER,
+    &KLEIN_Q4,
+    &KLEIN_Q8,
+    &KLEIN_VAE,
+    &QWEN3_Q4,
+    &QWEN3_Q8,
+    &QWEN3_TOKENIZER,
+    &KLEIN_REMOVE_LORA,
+];
+
+/// The generative models' directory: `--gen-models`, else `LUXFORGE_GENERATIVE_MODELS`, else
+/// the checkout's ignored `private/models/generative/`.
+pub fn generative_directory(explicit: Option<PathBuf>) -> PathBuf {
+    crate::paths::generative_directory(explicit)
+}
+
 pub fn sha256(path: &Path) -> Result<String, String> {
     let mut f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut h = Sha256::new();
@@ -220,5 +319,22 @@ mod tests {
         files.sort_unstable();
         files.dedup();
         assert_eq!(files.len(), ALL.len() + OPTIONAL.len());
+        for m in GENERATIVE {
+            assert_eq!(m.sha256.len(), 64, "{}", m.file);
+            assert!(
+                m.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{}",
+                m.file
+            );
+            assert!(m.bytes > 0, "{}", m.file);
+        }
+        let mut generative: Vec<_> = GENERATIVE.iter().map(|m| (m.file, m.sha256)).collect();
+        generative.sort_unstable();
+        generative.dedup_by(|a, b| a.0 == b.0 || a.1 == b.1);
+        assert_eq!(
+            generative.len(),
+            GENERATIVE.len(),
+            "a generative file or digest repeats"
+        );
     }
 }

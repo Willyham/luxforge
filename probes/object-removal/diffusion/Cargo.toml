@@ -1,0 +1,18 @@
+[package]
+name = "luxforge-removal-diffusion"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+description = "The harness's generative runtime: stable-diffusion.cpp and ggml built from vendored, pinned sources with the cc crate, behind a minimal C ABI."
+links = "luxforge_sdcpp"
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+cc = { version = "=1.5.1", features = ["parallel"] }
+
+[lints.rust]
+# The C ABI is the crate's whole purpose; every unsafe block is in src/lib.rs.
+unsafe_op_in_unsafe_fn = "deny"
