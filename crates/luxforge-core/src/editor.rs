@@ -33,6 +33,9 @@ mod artifact_tests;
 mod catalog;
 mod catalog_rows;
 mod collapse;
+pub(crate) mod derived_source;
+#[cfg(test)]
+mod derived_source_tests;
 mod describe;
 mod entries;
 mod evaluate;
@@ -80,14 +83,23 @@ pub(crate) use source::{
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SourceKind {
     Jpeg,
-    Raw { metadata: RawInterpretation },
+    Raw {
+        metadata: RawInterpretation,
+    },
+    /// Float pixels the host made and stored under the catalog's artifact root, an HDR merge's
+    /// result (`docs/design/hdr-merge.md#durable-derived-source`): linear sRGB/D65 planes with
+    /// headroom, no mosaic and no sensor interpretation of their own.
+    Derived {
+        interpretation: crate::DerivedInterpretation,
+    },
 }
 
 impl SourceKind {
-    /// Source-stage colour capability, shared by API admission and the panel.
+    /// Source-stage colour capability, shared by API admission and the panel. A derived source's
+    /// colour is fixed when it is made; further white balance is a relative RGB edit, as on a JPEG.
     pub fn white_balance_available(&self) -> bool {
         match self {
-            Self::Jpeg => true,
+            Self::Jpeg | Self::Derived { .. } => true,
             Self::Raw { metadata } => metadata.layout != luxforge_raw::RawLayout::Monochrome,
         }
     }
@@ -97,6 +109,15 @@ impl SourceKind {
         match self {
             Self::Jpeg => SourceTag::Jpeg,
             Self::Raw { .. } => SourceTag::Raw,
+            Self::Derived { .. } => SourceTag::Derived,
+        }
+    }
+
+    /// The stored source a derived photograph reads, if this is one.
+    pub fn derived(&self) -> Option<&crate::DerivedInterpretation> {
+        match self {
+            Self::Derived { interpretation } => Some(interpretation),
+            Self::Jpeg | Self::Raw { .. } => None,
         }
     }
 }
@@ -108,10 +129,14 @@ impl SourceKind {
 pub enum SourceTag {
     Jpeg,
     Raw,
+    Derived,
 }
 
 impl SourceTag {
-    /// Every source kind, in the order the tags are documented.
+    /// Every kind of original file, in the order the tags are documented: what the index lists,
+    /// a browse filter offers and a module's declared `sources` are listed against. A derived
+    /// source is not a file kind and is not listed here; which modules apply to it is declared with
+    /// its editing support.
     pub const ALL: [Self; 2] = [Self::Jpeg, Self::Raw];
 
     /// The kind as a sentence names it: `a JPEG photo`, `a RAW photo`.
@@ -119,6 +144,7 @@ impl SourceTag {
         match self {
             Self::Jpeg => "JPEG",
             Self::Raw => "RAW",
+            Self::Derived => "derived",
         }
     }
 
@@ -128,11 +154,17 @@ impl SourceTag {
         match self {
             Self::Jpeg => "jpeg",
             Self::Raw => "raw",
+            Self::Derived => "derived",
         }
     }
 
+    /// Every tag, a derived source's included, in declaration order: what a stored tag is read as,
+    /// and what a tag's discriminant indexes.
+    pub(crate) const EVERY: [Self; 3] = [Self::Jpeg, Self::Raw, Self::Derived];
+
+    /// The tag `value` names, a derived source's included.
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|tag| tag.as_str() == value)
+        Self::EVERY.into_iter().find(|tag| tag.as_str() == value)
     }
 }
 
@@ -655,6 +687,8 @@ pub struct EditorService {
     checked_manifest: RefCell<Option<SourceSignature>>,
     /// Artifacts published while this service is open, which no collection removes.
     live_artifacts: LiveArtifacts,
+    /// Derived source objects published while this service is open, which no collection removes.
+    live_sources: crate::artifacts::derived_source::LiveSources,
     /// Where this catalog's index lives: `<catalog stem>.index` beside the catalog file.
     index_dir: PathBuf,
     /// The index database, opened on first use ([`Self::index`]) rather than with the catalog, so
@@ -735,6 +769,7 @@ impl EditorService {
             prepared_artifacts: RefCell::new(PreparedArtifacts::new(PREPARED_ARTIFACT_BYTES)),
             checked_manifest: RefCell::new(None),
             live_artifacts: LiveArtifacts::default(),
+            live_sources: Default::default(),
             index_dir,
             index: RefCell::new(None),
             auto_collapse: false,

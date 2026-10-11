@@ -80,7 +80,7 @@ impl SourceKind {
     /// decoding or developing another one.
     pub fn uses_original_development(&self, recipe: &crate::Recipe) -> Result<bool, Error> {
         match self {
-            Self::Jpeg => Ok(true),
+            Self::Jpeg | Self::Derived { .. } => Ok(true),
             Self::Raw { metadata } => Ok(raw_gains(metadata, recipe)? == metadata.as_shot_gains),
         }
     }
@@ -188,6 +188,10 @@ impl FilePreparation {
                 metadata: metadata.0.as_ref().clone(),
                 gains: raw_gains(metadata, recipe)?,
             }),
+            // A derived source has no original file to decode.
+            SourceKind::Derived { .. } => {
+                return Err(crate::artifacts::derived_source::unsupported("preparation"));
+            }
         };
         Ok(Self {
             asset_id: asset.id.clone(),
@@ -1122,7 +1126,7 @@ pub(crate) fn original_recipe(
             )?;
             Some(metadata)
         }
-        SourceKind::Jpeg => None,
+        SourceKind::Jpeg | SourceKind::Derived { .. } => None,
     };
     let context = crate::OriginalContext {
         source: source.tag(),
@@ -1212,6 +1216,9 @@ impl EditorService {
         asset: &AssetRecord,
         recipe: &crate::Recipe,
     ) -> Result<PreparedSource, Error> {
+        if asset.source.derived().is_some() {
+            return Err(crate::artifacts::derived_source::unsupported("preparation"));
+        }
         let signature = self.original_signature(asset)?;
         let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
         let max_source_bytes = if raw_source {
@@ -1304,6 +1311,12 @@ fn validate_lens_optics(
         let ledger = match &asset.source {
             SourceKind::Jpeg => crate::SourceOptics::jpeg_ledger(),
             SourceKind::Raw { metadata } => luxforge_raw::optical_ledger(metadata),
+            // Its corrections were fixed when it was made; their ledger comes with its editing.
+            SourceKind::Derived { .. } => {
+                return Err(crate::artifacts::derived_source::unsupported(
+                    "a lens profile",
+                ));
+            }
         };
         if ledger.distortion.status == OpticalStatus::Applied {
             return Err(Error::incompatible(format!(
@@ -1528,7 +1541,7 @@ fn development_gains(
     recipe: &crate::Recipe,
 ) -> Result<Option<[f32; 3]>, Error> {
     match &asset.source {
-        SourceKind::Jpeg => Ok(None),
+        SourceKind::Jpeg | SourceKind::Derived { .. } => Ok(None),
         SourceKind::Raw { metadata } => raw_gains(metadata, recipe).map(Some),
     }
 }
@@ -2135,7 +2148,7 @@ mod tests {
         };
         let metadata = match &state.asset.source {
             SourceKind::Raw { metadata } => metadata.clone(),
-            SourceKind::Jpeg => panic!("a RAW asset"),
+            SourceKind::Jpeg | SourceKind::Derived { .. } => panic!("a RAW asset"),
         };
         // A temperature drafted from As shot keeps the camera's as-shot tint.
         let [_, as_shot_tint] =

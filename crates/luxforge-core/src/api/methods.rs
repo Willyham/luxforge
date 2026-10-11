@@ -893,7 +893,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "artifact.collect",
         owner::Collect,
         owner::artifact_collect,
-        "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary}",
+        "removes the rows of artifacts no entry references and no task of this process published, and of derived sources no photograph holds and no writer of this process published, then queues a source job that removes their files, object and source files without a row and staged files older than an hour; nothing an entry or a photograph's source references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary, source_rows, source_objects}",
         retries: Owner,
     ),
     // The catalog's methods. Each is declared once in `catalog_types::api` (its parameter struct,

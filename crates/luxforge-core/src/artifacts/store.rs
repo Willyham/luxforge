@@ -4,6 +4,7 @@
 //! catalog owner only stats files and reads the small manifest.
 use super::{
     ArtifactId, ArtifactMeta, ArtifactRecord, LiveArtifacts, MAX_ARTIFACT_BYTES, PreparedArtifact,
+    derived_source::{self, LiveSources},
     lock,
 };
 use crate::{
@@ -245,7 +246,7 @@ impl ArtifactWriter {
 
     /// Make the root usable: claim it when it has no manifest yet, refuse it when its manifest
     /// names another catalog, and make sure its object and staging directories exist.
-    fn prepare_root(&self) -> Result<(), Error> {
+    pub(super) fn prepare_root(&self) -> Result<(), Error> {
         match root_state(&self.root, &self.catalog_id)? {
             RootState::Ready => {}
             RootState::Foreign(detail) => return Err(Error::incompatible(detail)),
@@ -268,7 +269,7 @@ impl ArtifactWriter {
             Ok(mut entries) => entries.next().is_some(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(error) => return Err(file_error("cannot read artifact directory", error.kind())),
-        };
+        } || derived_source::holds_objects(&self.root)?;
         if occupied {
             return Err(Error::incompatible(format!(
                 "artifact directory {} holds objects but no manifest",
@@ -380,9 +381,9 @@ pub(crate) fn read_verified(
     })
 }
 
-/// One collection the catalog owner planned: how many rows it already removed and every artifact
-/// the catalog still records. Any other object file is garbage unless it is live: published while
-/// the service is open.
+/// One collection the catalog owner planned: how many rows it already removed, every artifact the
+/// catalog still records and every derived source object it still retains. Any other object file
+/// is garbage unless it is live: published while the service is open.
 #[derive(Debug)]
 pub(crate) struct Collection {
     pub(crate) root: PathBuf,
@@ -390,6 +391,11 @@ pub(crate) struct Collection {
     pub(crate) keep: HashSet<ArtifactId>,
     pub(crate) live: LiveArtifacts,
     pub(crate) rows: usize,
+    /// The SHA-256 of every source manifest and chunk the catalog's derived sources name.
+    pub(crate) keep_sources: HashSet<String>,
+    pub(crate) live_sources: LiveSources,
+    /// The derived source rows the owner already removed.
+    pub(crate) source_rows: usize,
 }
 
 /// What a collection removed.
@@ -398,11 +404,14 @@ pub(crate) struct Collected {
     pub(crate) rows: usize,
     pub(crate) objects: usize,
     pub(crate) temporary: usize,
+    pub(crate) source_rows: usize,
+    pub(crate) source_objects: usize,
 }
 
-/// Remove the object files the catalog no longer records and that are not live, and staged files
-/// older than an hour. A root whose manifest does not name this catalog is left
-/// untouched, and a name that is not an artifact hash is never removed.
+/// Remove the object files the catalog no longer records and that are not live, the derived source
+/// objects it no longer retains and that are not live, and staged files older than an hour. A root
+/// whose manifest does not name this catalog is left untouched, and a name that is not a hash is
+/// never removed.
 pub(crate) fn collect_files(
     collection: &Collection,
     cancel: &AtomicBool,
@@ -412,6 +421,8 @@ pub(crate) fn collect_files(
         rows: collection.rows,
         objects: 0,
         temporary: 0,
+        source_rows: collection.source_rows,
+        source_objects: 0,
     };
     match root_state(root, &collection.catalog_id)? {
         RootState::Absent => return Ok(collected),
@@ -452,6 +463,12 @@ pub(crate) fn collect_files(
             Err(error) => return Err(file_error("cannot remove artifact", error.kind())),
         }
     }
+    collected.source_objects = derived_source::collect_source_objects(
+        root,
+        &collection.keep_sources,
+        &collection.live_sources,
+        cancel,
+    )?;
     let now = SystemTime::now();
     for entry in listing(&root.join(TEMPORARY))?.into_iter().flatten() {
         cancelled(cancel)?;
@@ -723,6 +740,9 @@ mod tests {
             keep: HashSet::from([kept.id.clone()]),
             live,
             rows: 2,
+            keep_sources: HashSet::new(),
+            live_sources: LiveSources::default(),
+            source_rows: 0,
         };
         let never = AtomicBool::new(false);
         assert_eq!(
@@ -730,7 +750,9 @@ mod tests {
             Collected {
                 rows: 2,
                 objects: 1,
-                temporary: 1
+                temporary: 1,
+                source_rows: 0,
+                source_objects: 0,
             }
         );
         assert!(object_path(&root, &kept.id).exists(), "recorded");

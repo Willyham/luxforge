@@ -1,0 +1,338 @@
+//! The catalog side of derived sources (`docs/design/hdr-merge.md#durable-derived-source`): the
+//! rows that record each published source and its chunks, the asset-source references that retain
+//! a source for the photograph holding it, and the retention closure every collection keeps.
+//!
+//! A source becomes visible in one owner transaction ([`link_asset_source`]) after a worker made
+//! its objects durable (`crate::artifacts::derived_source`). The owner stats the objects and
+//! writes rows; it never reads or hashes a payload. What retains a source is a photograph's
+//! asset-source reference — whatever the photograph's visibility, Removed or hidden, and with its
+//! whole immutable history — or its publication by a writer of this process; recipe and layer
+//! artifact references are separate and never involved. Only emptying Removed deletes an
+//! asset-source reference, and only then can a collection remove the source's objects.
+// The HDR merge's publication and the derived source's preparation (`tasks/library/hdr-merge.json`
+// TASK-004 to TASK-006) compose these; until they do, only the tests link and read a source.
+#![cfg_attr(not(test), allow(dead_code))]
+use super::{EditorService, decode, now_ms, write};
+use crate::{
+    AssetId, Error, SourceKind,
+    artifacts::derived_source::{
+        DerivedSourceId, DerivedSourceRead, DerivedSourceWriter, LiveSources, PublishedSource,
+        object_length,
+    },
+};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use std::{collections::HashSet, path::Path};
+
+/// Check, by stat alone, that every object of `published` is a file of its own under `root` with
+/// the length the writer recorded: a missing one is `source-unavailable: derived source <id> is
+/// missing`, another length `... is corrupt`.
+fn stat_objects(root: &Path, published: &PublishedSource) -> Result<(), Error> {
+    let id = &published.id;
+    let objects = std::iter::once((id.sha256(), published.manifest_bytes)).chain(
+        published
+            .chunks
+            .iter()
+            .map(|chunk| (chunk.sha256.as_str(), chunk.bytes)),
+    );
+    for (sha256, bytes) in objects {
+        match object_length(root, sha256)? {
+            None => {
+                return Err(Error::source_unavailable(format!(
+                    "derived source {id} is missing"
+                )));
+            }
+            Some(length) if length != bytes => {
+                return Err(Error::source_unavailable(format!(
+                    "derived source {id} is corrupt"
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Record `published` and its manifest-chunk references in the caller's transaction, after checking
+/// the record's bounds and, by stat, that its objects are durable under `root`. Recording the same
+/// source again changes nothing; a row of the same identity with another shape is `incompatible`
+/// and left as it is. Rolled back with the caller's transaction.
+pub(crate) fn record_source(
+    tx: &Transaction<'_>,
+    root: &Path,
+    published: &PublishedSource,
+) -> Result<(), Error> {
+    published.validate()?;
+    stat_objects(root, published)?;
+    let id = published.id.as_str();
+    let colour = serde_json::to_value(published.colour)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| Error::internal("cannot encode a derived source colour"))?;
+    let shape = (
+        published.manifest_bytes as i64,
+        i64::from(published.width),
+        i64::from(published.height),
+        colour,
+        published.chunks.len() as i64,
+    );
+    let recorded: Option<(i64, i64, i64, String, i64)> = tx
+        .prepare_cached(
+            "SELECT manifest_bytes,width,height,colour,chunk_count FROM derived_sources WHERE id=?1",
+        )?
+        .query_row([id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })
+        .optional()?;
+    if let Some(recorded) = recorded {
+        if recorded != shape {
+            return Err(Error::incompatible(format!(
+                "derived source {id} is recorded with another shape; it is kept unchanged"
+            )));
+        }
+        return Ok(());
+    }
+    tx.prepare_cached(
+        "INSERT INTO derived_sources (id,manifest_bytes,width,height,colour,chunk_count,created_ms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+    )?
+    .execute(params![
+        id,
+        shape.0,
+        shape.1,
+        shape.2,
+        shape.3,
+        shape.4,
+        now_ms()
+    ])?;
+    let mut chunk = tx.prepare_cached(
+        "INSERT INTO derived_source_chunks (source_id,ordinal,sha256,bytes) VALUES (?1,?2,?3,?4)",
+    )?;
+    for (ordinal, published) in published.chunks.iter().enumerate() {
+        chunk.execute(params![
+            id,
+            ordinal as i64,
+            published.sha256,
+            published.bytes as i64
+        ])?;
+    }
+    Ok(())
+}
+
+/// Make `source`, already recorded ([`record_source`]), the source of the photograph `asset_id` in
+/// the caller's transaction. The photograph must be a derived one whose interpretation names
+/// exactly this source; attaching the source it already holds changes nothing, and a photograph's
+/// source is never replaced (`conflict`). The reference is permanent: only emptying Removed
+/// deletes it, with the photograph.
+pub(crate) fn attach_source(
+    tx: &Transaction<'_>,
+    asset_id: &AssetId,
+    source: &DerivedSourceId,
+) -> Result<(), Error> {
+    let stored: Option<String> = tx
+        .prepare_cached("SELECT source_json FROM assets WHERE id=?1")?
+        .query_row([asset_id.as_str()], |row| row.get(0))
+        .optional()?;
+    let stored = stored.ok_or_else(|| Error::validation("unknown asset"))?;
+    let kind: SourceKind = decode("stored source interpretation", stored)?;
+    match kind.derived() {
+        Some(interpretation) if &interpretation.source_id == source => {}
+        Some(interpretation) => {
+            return Err(Error::validation(format!(
+                "asset {asset_id} is derived from {}, not {source}",
+                interpretation.source_id
+            )));
+        }
+        None => {
+            return Err(Error::validation(format!(
+                "asset {asset_id} is not a derived photograph"
+            )));
+        }
+    }
+    let held: Option<String> = tx
+        .prepare_cached("SELECT source_id FROM asset_sources WHERE asset_id=?1")?
+        .query_row([asset_id.as_str()], |row| row.get(0))
+        .optional()?;
+    match held {
+        Some(held) if held == source.as_str() => Ok(()),
+        Some(held) => Err(Error::conflict(format!(
+            "asset {asset_id} already holds derived source {held}; a source is never replaced"
+        ))),
+        None => {
+            let recorded: bool = tx
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM derived_sources WHERE id=?1)")?
+                .query_row([source.as_str()], |row| row.get(0))?;
+            if !recorded {
+                return Err(Error::validation(format!(
+                    "derived source {source} is not recorded in this catalog"
+                )));
+            }
+            tx.prepare_cached("INSERT INTO asset_sources (asset_id,source_id) VALUES (?1,?2)")?
+                .execute(params![asset_id.as_str(), source.as_str()])?;
+            Ok(())
+        }
+    }
+}
+
+/// [`record_source`] then [`attach_source`]: the source references of one publication, written in
+/// the caller's transaction beside the photograph's own rows — its asset row, Original and
+/// whatever else the publication makes visible — so a failure anywhere leaves no visible source.
+/// The asset row must already be written in this transaction. Stat and SQL only.
+pub(crate) fn link_asset_source(
+    tx: &Transaction<'_>,
+    root: &Path,
+    asset_id: &AssetId,
+    published: &PublishedSource,
+) -> Result<(), Error> {
+    record_source(tx, root, published)?;
+    attach_source(tx, asset_id, &published.id)
+}
+
+/// The SHA-256 of every source object the catalog retains: each recorded source's manifest and
+/// every chunk it names. What a collection keeps.
+pub(super) fn retained_source_objects(connection: &Connection) -> Result<HashSet<String>, Error> {
+    let mut keep = HashSet::new();
+    let mut sources = connection.prepare_cached("SELECT id FROM derived_sources")?;
+    for id in sources.query_map([], |row| row.get::<_, String>(0))? {
+        keep.insert(DerivedSourceId::parse(id?)?.sha256().to_owned());
+    }
+    let mut chunks =
+        connection.prepare_cached("SELECT DISTINCT sha256 FROM derived_source_chunks")?;
+    for sha256 in chunks.query_map([], |row| row.get::<_, String>(0))? {
+        keep.insert(sha256?);
+    }
+    Ok(keep)
+}
+
+/// Delete, in the caller's transaction, each of `candidates` that no photograph holds and no writer
+/// of this process published, with its chunk rows, and answer which went.
+pub(crate) fn release_sources(
+    tx: &Transaction<'_>,
+    live: &LiveSources,
+    candidates: impl IntoIterator<Item = DerivedSourceId>,
+) -> Result<Vec<DerivedSourceId>, Error> {
+    let mut held =
+        tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM asset_sources WHERE source_id=?1)")?;
+    let mut chunks = tx.prepare_cached("DELETE FROM derived_source_chunks WHERE source_id=?1")?;
+    let mut source = tx.prepare_cached("DELETE FROM derived_sources WHERE id=?1")?;
+    let mut released = Vec::new();
+    for candidate in candidates {
+        if live.holds(&candidate) || held.query_row([candidate.as_str()], |row| row.get(0))? {
+            continue;
+        }
+        chunks.execute([candidate.as_str()])?;
+        if source.execute([candidate.as_str()])? > 0 {
+            released.push(candidate);
+        }
+    }
+    Ok(released)
+}
+
+/// Every recorded source, in identity order.
+fn recorded_sources(connection: &Connection) -> Result<Vec<DerivedSourceId>, Error> {
+    let mut statement = connection.prepare_cached("SELECT id FROM derived_sources ORDER BY id")?;
+    statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .map(|id| DerivedSourceId::parse(id?))
+        .collect()
+}
+
+/// The sources the photographs `ids` (a JSON array) hold, each once: what emptying Removed may
+/// release once their references are gone.
+pub(crate) fn held_by(connection: &Connection, ids: &str) -> Result<Vec<DerivedSourceId>, Error> {
+    connection
+        .prepare_cached(
+            "SELECT DISTINCT source_id FROM asset_sources
+             WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY source_id",
+        )?
+        .query_map([ids], |row| row.get::<_, String>(0))?
+        .map(|id| DerivedSourceId::parse(id?))
+        .collect()
+}
+
+/// A collection's part for derived sources, in the caller's transaction: release every recorded
+/// source no photograph holds and no writer of this process published, and answer how many went
+/// and every object the catalog still retains.
+pub(super) fn plan_source_collection(
+    tx: &Transaction<'_>,
+    live: &LiveSources,
+) -> Result<(usize, HashSet<String>), Error> {
+    let released = release_sources(tx, live, recorded_sources(tx)?)?;
+    Ok((released.len(), retained_source_objects(tx)?))
+}
+
+impl EditorService {
+    /// A writer that publishes derived sources into this catalog's artifact root from any thread.
+    /// No I/O: the root is created by its first publish.
+    pub(crate) fn derived_source_writer(&self) -> DerivedSourceWriter {
+        DerivedSourceWriter::new(
+            self.artifact_root.clone(),
+            self.catalog_id.clone(),
+            self.live_sources.clone(),
+        )
+    }
+
+    /// [`link_asset_source`] in a transaction of its own, for a caller that has nothing else to
+    /// write with it.
+    pub(crate) fn link_derived_source(
+        &mut self,
+        asset_id: &AssetId,
+        published: &PublishedSource,
+    ) -> Result<(), Error> {
+        let root = self.artifact_root.clone();
+        write(&mut self.connection, |tx| {
+            link_asset_source(tx, &root, asset_id, published)
+        })
+    }
+
+    /// How a worker reads and verifies the source of the derived photograph `asset_id`: its
+    /// recorded identity and manifest length, after checking the root is this catalog's and, by
+    /// stat, that every recorded object is present with its recorded length. Stat and SQL only;
+    /// a missing object is `source-unavailable` naming the source, and a photograph that is not
+    /// derived is `validation`.
+    pub(crate) fn derived_source_read(
+        &self,
+        asset_id: &AssetId,
+    ) -> Result<DerivedSourceRead, Error> {
+        let row: Option<(String, i64)> = self
+            .connection
+            .prepare_cached(
+                "SELECT s.id, s.manifest_bytes FROM asset_sources a
+                 JOIN derived_sources s ON s.id = a.source_id WHERE a.asset_id=?1",
+            )?
+            .query_row([asset_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
+        let (id, manifest_bytes) = row.ok_or_else(|| {
+            Error::validation(format!("asset {asset_id} holds no derived source"))
+        })?;
+        let id = DerivedSourceId::parse(id)?;
+        self.check_root()?;
+        let mut objects = vec![(id.sha256().to_owned(), manifest_bytes)];
+        let mut statement = self.connection.prepare_cached(
+            "SELECT sha256, bytes FROM derived_source_chunks WHERE source_id=?1 ORDER BY ordinal",
+        )?;
+        for chunk in statement.query_map([id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))? {
+            objects.push(chunk?);
+        }
+        for (sha256, bytes) in objects {
+            match object_length(&self.artifact_root, &sha256)? {
+                None => {
+                    return Err(Error::source_unavailable(format!(
+                        "derived source {id} is missing"
+                    )));
+                }
+                Some(length) if length != bytes as u64 => {
+                    return Err(Error::source_unavailable(format!(
+                        "derived source {id} is corrupt"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(DerivedSourceRead {
+            root: self.artifact_root.clone(),
+            catalog_id: self.catalog_id.clone(),
+            id,
+            manifest_bytes: manifest_bytes as u64,
+        })
+    }
+}

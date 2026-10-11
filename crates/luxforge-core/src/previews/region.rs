@@ -236,6 +236,9 @@ pub(crate) fn embedded_region(
     match request.kind {
         SourceTag::Jpeg => jpeg_region(opened, request, cancel).map(EmbeddedRegion::Region),
         SourceTag::Raw => embedded_raw(&opened.file, request, cancel),
+        SourceTag::Derived => Err(crate::artifacts::derived_source::unsupported(
+            "a camera preview",
+        )),
     }
 }
 
@@ -334,6 +337,9 @@ fn region_in(
     let opened = open(&request.path, &request.signature)?;
     match request.kind {
         SourceTag::Jpeg => jpeg_region(opened, request, cancel),
+        SourceTag::Derived => Err(crate::artifacts::derived_source::unsupported(
+            "a camera preview",
+        )),
         SourceTag::Raw => {
             if let Some(frame) = developments.kept(&request.path, &opened.signature) {
                 return developed_cut(&frame, request, cancel);

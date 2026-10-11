@@ -440,7 +440,13 @@ fn artifact_collect_through_the_api_answers_once_the_open_has_already_swept_ever
     assert_eq!(done["status"], "ready", "{done}");
     assert_eq!(
         done["result"],
-        json!({"rows": 0, "objects": 0, "temporary": 0})
+        json!({
+            "rows": 0,
+            "objects": 0,
+            "temporary": 0,
+            "source_rows": 0,
+            "source_objects": 0
+        })
     );
     assert!(object_path(&root, &kept).exists());
     assert_eq!(

@@ -75,7 +75,10 @@ pub use api::{
     Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
     WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
-pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
+pub use artifacts::{
+    ArtifactId, ArtifactTable, DerivedColour, DerivedInterpretation, DerivedSourceId,
+    PreparedArtifact, ReferenceCrop,
+};
 pub use cancel::{Cancel, ProgressCounts};
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;

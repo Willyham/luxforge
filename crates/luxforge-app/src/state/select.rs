@@ -2310,6 +2310,7 @@ fn kind_value(tag: SourceTag) -> &'static str {
     match tag {
         SourceTag::Jpeg => "jpeg",
         SourceTag::Raw => "raw",
+        SourceTag::Derived => "derived",
     }
 }
 

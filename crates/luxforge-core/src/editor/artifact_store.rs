@@ -386,7 +386,7 @@ impl EditorService {
 
     /// The root must exist and its manifest must name this catalog. An unchanged manifest costs one
     /// stat; a changed one is read again (at most 4 KiB).
-    fn check_root(&self) -> Result<(), Error> {
+    pub(super) fn check_root(&self) -> Result<(), Error> {
         let manifest = self.artifact_root.join(MANIFEST);
         let signature = manifest
             .metadata()
@@ -486,23 +486,22 @@ impl EditorService {
     }
 
     /// Plan `artifact.collect`: remove, in one transaction, the rows no entry references and no
-    /// task of this process published, forget their verified bytes, and hand the source job the
-    /// artifacts the catalog still records, so it removes every other object file. A referenced
-    /// row is never removed; the foreign keys refuse it even if this query were wrong.
+    /// task of this process published, and the derived sources no photograph holds and no writer
+    /// of this process published, forget the removed artifacts' verified bytes, and hand the
+    /// source job the artifacts and source objects the catalog still records, so it removes every
+    /// other object file. A referenced row is never removed; the foreign keys refuse it even if
+    /// this query were wrong.
     pub(crate) fn plan_collection(&mut self) -> Result<Collection, Error> {
         let live = &self.live_artifacts;
-        let (removed, keep) = write(&mut self.connection, |tx| {
+        let live_sources = &self.live_sources;
+        let (removed, keep, (source_rows, keep_sources)) = write(&mut self.connection, |tx| {
             let removed = collection_candidates(tx, live)?;
             for id in &removed {
                 tx.execute("DELETE FROM artifacts WHERE id=?1", [id.as_str()])?;
             }
-            let mut statement = tx.prepare("SELECT id FROM artifacts")?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut keep = HashSet::new();
-            for row in rows {
-                keep.insert(ArtifactId::parse(row?)?);
-            }
-            Ok((removed, keep))
+            let keep = recorded_artifact_ids(tx)?;
+            let sources = super::derived_source::plan_source_collection(tx, live_sources)?;
+            Ok((removed, keep, sources))
         })?;
         let mut cache = self.prepared_artifacts.borrow_mut();
         for id in &removed {
@@ -514,6 +513,20 @@ impl EditorService {
             keep,
             live: self.live_artifacts.clone(),
             rows: removed.len(),
+            keep_sources,
+            live_sources: self.live_sources.clone(),
+            source_rows,
         })
     }
+}
+
+/// Every artifact the catalog records: what a collection keeps.
+pub(super) fn recorded_artifact_ids(connection: &Connection) -> Result<HashSet<ArtifactId>, Error> {
+    let mut statement = connection.prepare_cached("SELECT id FROM artifacts")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut keep = HashSet::new();
+    for row in rows {
+        keep.insert(ArtifactId::parse(row?)?);
+    }
+    Ok(keep)
 }

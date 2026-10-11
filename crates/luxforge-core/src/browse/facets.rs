@@ -116,7 +116,7 @@ pub(crate) fn facets(
                 }
                 Facet::Lens => (Some(names.lenses[key as usize].clone()), None),
                 Facet::Kind => {
-                    let kind = crate::SourceTag::ALL[key as usize];
+                    let kind = crate::SourceTag::EVERY[key as usize];
                     (
                         Some(kind.as_str().to_owned()),
                         Some(kind.label().to_owned()),

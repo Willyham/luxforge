@@ -393,10 +393,8 @@ fn source(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<(i64, CameraSource
             folder: PathBuf::from(folder),
             name,
             volume_id: VolumeId::parse(volume)?,
-            kind: match kind.as_str() {
-                "raw" => SourceTag::Raw,
-                _ => SourceTag::Jpeg,
-            },
+            kind: SourceTag::parse(&kind)
+                .ok_or_else(|| Error::incompatible(format!("photograph: unknown kind {kind}")))?,
             file_identity: identity,
             byte_len: u64::try_from(len)
                 .map_err(|_| Error::catalog("an asset records a negative length"))?,
