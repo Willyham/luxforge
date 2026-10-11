@@ -60,7 +60,7 @@ jobs:
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
       - name: Native compiler cache identity
         id: compiler
         shell: bash
