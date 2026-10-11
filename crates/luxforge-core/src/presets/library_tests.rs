@@ -93,7 +93,7 @@ fn a_fresh_catalog_is_marked_with_the_current_format_and_starts_with_an_empty_li
     // tables, each entry's history row in its own columns, each request's whole answer, each
     // asset's source kind in its own column, the catalog of developed picks, the entries
     // auto-collapse hid, the derived sources and the development sets.
-    assert_eq!(marker, 15);
+    assert_eq!(marker, 14);
     assert!(service.presets().expect("a listing").is_empty());
     drop(service);
     let reopened = EditorService::open(&path).expect("a current-format catalog reopens");
