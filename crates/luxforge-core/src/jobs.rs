@@ -293,6 +293,10 @@ pub struct JobRecord {
     /// The request that started the job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    /// A task job's candidates (`crate::CandidateRead`), in number order, every one it published
+    /// with its state; present for every task job, and for no other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<Vec<crate::CandidateRead>>,
 }
 
 impl JobRecord {
@@ -456,6 +460,12 @@ impl JobControl {
             let mut partial = self.partial.lock().expect("job partial answer");
             update(partial.get_or_insert(Value::Null));
         }
+        self.changes.changed();
+    }
+
+    /// Something `job.read` answers for this job beside its record changed, as a task job's
+    /// candidates do when one is published, released or accepted: a held `job.wait` answers.
+    pub(crate) fn changed(&self) {
         self.changes.changed();
     }
 
@@ -1177,6 +1187,7 @@ impl Jobs {
                 first_open: Vec::new(),
                 error: None,
                 request_id: None,
+                candidates: None,
             },
             control,
         );
@@ -1214,6 +1225,7 @@ impl Jobs {
                 error: None,
                 first_open: Vec::new(),
                 request_id: None,
+                candidates: None,
             },
             control,
         );
@@ -1482,6 +1494,7 @@ impl Jobs {
                 error: None,
                 first_open: Vec::new(),
                 request_id: None,
+                candidates: None,
             },
             control,
         );

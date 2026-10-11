@@ -232,7 +232,7 @@ impl Render<'_> {
         let window = match (first, &cut.segments[first].entry) {
             (0, _) | (_, None) => source_window,
             (_, Some(Entry::Resample(entry))) => entry.window(),
-            (_, Some(Entry::Spatial(_))) => {
+            (_, Some(Entry::Spatial(_) | Entry::Repair(_))) => {
                 let previous = &cut.segments[first - 1];
                 Region {
                     x0: previous.output_origin.0,
@@ -363,9 +363,6 @@ fn stand_in(
             "a GPU preview boundary reads outside the frame its segment receives",
         ));
     }
-    let has_pixels = operations
-        .iter()
-        .any(|operation| matches!(operation, Processing::PointReplace { .. }));
     let has_color = operations
         .iter()
         .any(|operation| matches!(operation, Processing::Color(_)));
@@ -375,7 +372,6 @@ fn stand_in(
         geometry,
         width: held.width,
         height: held.height,
-        has_pixels,
         has_color,
         output_origin: (held.x0, held.y0),
     })

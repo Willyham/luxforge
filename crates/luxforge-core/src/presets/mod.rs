@@ -32,7 +32,7 @@ use library::{IMPORTED_PRESET_GROUP, MAX_PRESETS};
 pub use library::{PresetRecord, PresetSummary, USER_PRESET_GROUP};
 #[cfg(test)]
 use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
-pub use report::{ImportReport, MappedSetting, ReportCounts, ReportedSetting};
+pub use report::{DerivedSettings, ImportReport, MappedSetting, ReportCounts, ReportedSetting};
 #[cfg(test)]
 use xmp::{MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
 

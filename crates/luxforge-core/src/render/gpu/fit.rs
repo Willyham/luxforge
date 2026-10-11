@@ -6,7 +6,7 @@
 //! by the area average this plan's coverage names ([`ProxyPlan::coverage`]).
 use super::preview::output_window;
 use crate::{
-    EffectStage, Error, ModuleRegistry, ProxyBounds, ProxyPlan, ProxyWindow, Recipe,
+    Error, ModuleRegistry, ProxyBounds, ProxyPlan, ProxyWindow, Recipe,
     mask_field::MaskSampling,
     modules::{Region, Stage},
     render::Compiled,
@@ -56,15 +56,14 @@ pub(crate) struct ReducedStage {
     pub(crate) compiled: Compiled,
 }
 
-/// Whether every layer of `recipe` scales with the stage it is compiled against: a pixel-stage
-/// layer addresses content pixels, which no reduced stage has, and a layer whose stage is unknown
-/// cannot be judged. `O(layers)`.
+/// Whether every layer of `recipe` scales with the stage it is compiled against: a layer whose
+/// stage is unknown cannot be judged. Every declared stage scales; a repair layer's geometry is in
+/// normalized content coordinates, so it binds to a reduced stage as a mask does. `O(layers)`.
 fn scalable(registry: &ModuleRegistry, recipe: &Recipe) -> bool {
-    recipe.layers.iter().all(|layer| {
-        registry
-            .effect_stage(&layer.effect_id)
-            .is_some_and(|stage| stage != EffectStage::Pixel)
-    })
+    recipe
+        .layers
+        .iter()
+        .all(|layer| registry.effect_stage(&layer.effect_id).is_some())
 }
 
 /// The reduced stage `recipe`, over a `source`-sized source whose full-resolution output stage is
@@ -114,9 +113,14 @@ pub(crate) fn reduced_stage(
 
 /// `plan`'s window grown to start at a multiple of `anchor`, so each texel the boundary holds is
 /// the whole reduced stage's, bit for bit, whatever window holds it ([`super::GpuPlan::anchor`]).
-pub(crate) fn anchored_plan(plan: ProxyPlan, anchor: super::GpuAnchor) -> ProxyPlan {
+pub(crate) fn anchored_plan(
+    compiled: &crate::render::Compiled,
+    plan: ProxyPlan,
+    anchor: super::GpuAnchor,
+) -> ProxyPlan {
     let window = plan.window.map(|window| {
-        let region = super::anchored(
+        let region = super::plan::anchored_over(
+            compiled,
             Region {
                 x0: window.x,
                 y0: window.y,

@@ -381,6 +381,13 @@ impl CapabilityHost {
         let Some(done) = jobs.complete(job_id, result) else {
             return;
         };
+        // A finished task publishes no more candidates; a cancelled one's are released. A job the
+        // table forgot to make room for this one takes its candidates with it.
+        let candidates = service.candidates();
+        if done.record.kind == JobKind::Task {
+            candidates.finished(job_id, done.record.status == JobStatus::Cancelled);
+        }
+        candidates.retain(|job_id| jobs.kind(job_id).is_some());
         if done.record.status == JobStatus::Ready
             && let Some(origin) = &done.origin
         {

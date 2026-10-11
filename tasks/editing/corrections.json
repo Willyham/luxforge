@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Freeze the remaining Corrections contract against the current module, catalog, geometry and GPU-first interfaces, preserving settled owner decisions.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The owner has already decided the repair stage relative to source/colour, deletion of PointReplace, stale patches kept rendering and provider-profile consent. Do not reopen these or restore the old fail-on-stale, licence gate or two-provider rollout.",
@@ -81,7 +81,7 @@
     {
       "id": "TASK-002",
       "description": "Select and freeze the Clone and Heal numerical contract against independent references.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Clone/Heal are useful offline even if AI delivery is delayed. Study the exact CPU reference in the current byte/linear domains and a solver that the GPU implementation can reproduce within the declared tolerance.",
@@ -141,7 +141,7 @@
     {
       "id": "TASK-003",
       "description": "Add the narrow repair stage and bounded regional processing primitive.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -274,7 +274,7 @@
     {
       "id": "TASK-004",
       "description": "Extend the existing brush capture with a declared Corrections interaction, validated operation identities and shared draft bindings.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"

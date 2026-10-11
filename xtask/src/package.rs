@@ -126,7 +126,7 @@ const LENS_FILES: &[&str] = &[
     "ATTRIBUTION.md",
 ];
 
-fn lens_resources(root: &Path, destination: &Path) -> Result {
+pub(crate) fn lens_resources(root: &Path, destination: &Path) -> Result {
     fs::create_dir_all(destination)?;
     for name in LENS_FILES {
         let source = root.join("crates/luxforge-core/data/lensfun").join(name);
@@ -289,7 +289,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     println!("Inventory: {} configured packages", packages.len());
     Ok(())
 }
-fn archive(directory: &Path, destination: &Path) -> Result {
+pub(crate) fn archive(directory: &Path, destination: &Path) -> Result {
     if destination.extension().is_some_and(|e| e == "zip") {
         let mut zip = zip::ZipWriter::new(fs::File::create(destination)?);
         for path in files(directory)? {
@@ -298,7 +298,12 @@ fn archive(directory: &Path, destination: &Path) -> Result {
                 .to_str()
                 .ok_or("Archive path encoding")?
                 .replace('\\', "/");
-            let mode = if path.file_name().is_some_and(|s| s == "luxforge") {
+            let mode = if path.file_name().is_some_and(|s| {
+                matches!(
+                    s.to_str(),
+                    Some("luxforge" | "luxforge-json" | "luxforge-ctl")
+                )
+            }) {
                 0o755
             } else {
                 0o644

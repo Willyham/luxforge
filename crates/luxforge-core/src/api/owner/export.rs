@@ -62,6 +62,7 @@ host_params! {
         keep_metadata: Option<bool> = boolean().default(false).notes("write the original's supported EXIF fields"),
         pixels_per_inch: Option<u16> = integer(1, 65535).notes("the JFIF header's density, which sizes the file in viewers such as Preview and in print; default none, a unitless 1:1 aspect ratio"),
         reference: Option<bool> = boolean().default(false).notes("render through the reference renderer, the CPU render every GPU output is measured against, rather than the GPU; the result's renderer then names the reference with the reason requested"),
+        acknowledge_stale: Option<crate::StaleAcknowledgement> = json("{entry_id, operations: [correction-…]}: export the entry's stale frozen patches as they render; required, naming exactly the frozen entry and its stale corrections, when it has any (export.plan lists them), and ignored when it has none"),
     }
 }
 
@@ -93,6 +94,10 @@ pub(in crate::api) fn plan(
         _ => None,
     };
     let identity = target.evaluation.identity()?;
+    // The frozen patches the planned entry would export stale, which an export must acknowledge.
+    let (_, stale) = owner
+        .service
+        .export_stale(&params.asset_id, Some(&identity.entry_id))?;
     Ok(json!({
         "asset_id": identity.asset_id,
         "entry_id": identity.entry_id,
@@ -101,6 +106,7 @@ pub(in crate::api) fn plan(
         "height": identity.height,
         // A name that is not UTF-8 is not suggested rather than suggested wrongly.
         "suggested": suggested.as_deref().and_then(|path| path.to_str()),
+        "stale": stale,
     }))
 }
 
@@ -116,9 +122,23 @@ pub(in crate::api) fn jpeg(
     params: ExportJpeg,
 ) -> Result<Value, Error> {
     let destination = Destination::check(&params.destination)?;
+    // Stale frozen patches are written only as acknowledged, refused before any job or
+    // preparation; an omitted entry is the current one now, so a commit since the plan makes an
+    // old acknowledgement name another entry.
+    let (entry_id, stale) = owner
+        .service
+        .export_stale(&params.asset_id, params.entry_id.as_ref())?;
+    let acknowledged = crate::editor::acknowledged(
+        &entry_id,
+        stale,
+        params
+            .acknowledge_stale
+            .as_ref()
+            .map(|ack| (&ack.entry_id, ack.operations.as_slice())),
+    )?;
     let plan = owner
         .service
-        .export_plan(&params.asset_id, params.entry_id.as_ref())?;
+        .export_plan(&params.asset_id, Some(&entry_id))?;
     let keep_metadata = params.keep_metadata.unwrap_or(false);
     let pixels_per_inch = params.pixels_per_inch;
     let reference = params.reference.unwrap_or(false);
@@ -127,6 +147,7 @@ pub(in crate::api) fn jpeg(
     let identity = plan.identity.clone();
     let job = ExportJob {
         plan,
+        acknowledged: acknowledged.clone(),
         destination: destination.clone(),
         keep_metadata,
         pixels_per_inch,
@@ -180,6 +201,7 @@ pub(in crate::api) fn jpeg(
         "keep_metadata": keep_metadata,
         "pixels_per_inch": pixels_per_inch,
         "reference": reference,
+        "acknowledged_stale": acknowledged,
     }))
 }
 
@@ -197,6 +219,8 @@ pub(super) fn finished(owner: &mut Owner, job_id: &JobId, result: Result<Value, 
 /// Everything one export needs on the lane, frozen when it was accepted.
 struct ExportJob {
     plan: ExportPlan,
+    /// The stale frozen patches the export was accepted to write, which its result echoes.
+    acknowledged: Vec<crate::StaleCorrection>,
     destination: Destination,
     keep_metadata: bool,
     pixels_per_inch: Option<u16>,
@@ -223,6 +247,7 @@ impl ExportJob {
     fn run(self) -> Result<Value, Error> {
         let Self {
             plan,
+            acknowledged,
             destination,
             keep_metadata,
             pixels_per_inch,
@@ -254,7 +279,11 @@ impl ExportJob {
             &phase,
             &mut |fraction| control.set_progress(Some(fraction), ENCODING),
         )
-        .map(|written| written.result)
+        .map(|written| {
+            let mut result = written.result;
+            result["acknowledged_stale"] = json!(acknowledged);
+            result
+        })
     }
 }
 

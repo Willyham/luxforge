@@ -15,14 +15,20 @@ Decided on 2026-10-05 for the planned [visibility and monitoring](design/visibil
 - A fast, non-destructive desktop editor for professional and prosumer collections on macOS, Windows and Linux.
 - The owner's M4 MacBook Pro (M4 Pro, 14 CPU and 20 GPU cores, 48 GB unified memory, macOS 26.5.2) is the first target and the reference machine.
 - Engineering baselines: macOS 14+ arm64, Windows 11 24H2+ x64, Ubuntu 24.04 x64 with GNOME Wayland and X11. These are intended targets, not verified support; see [platforms](engineering/platforms.md).
-- Unsigned development packages only. No signing, stores, auto-update or public release yet.
+- Development packages stay unsigned. Tag-build candidates have optional explicit signing/notarization; stores, auto-update and a public release remain absent.
 - Project code is GPL-3.0-or-later. Dependencies and extensions should be open source and license-compatible; no proprietary hosted service is a development prerequisite. The manual license, native and asset review is deferred and is not a passing result.
-- Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported; no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No release-version planning, cloud or accounts, marketplace or generalized processing graph.
+- Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported; no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No public compatibility framework, cloud or accounts, marketplace or generalized processing graph.
 - Initial RAW targets are the original Nikon Z6 and the Fujifilm X100VI; implementation is requested, with the supplied DJI Air 2S DNG added for qualification. Benchmark established decoders before proposing a custom one.
 - RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. The development itself is neutral and selects no Adobe matching; new RAW photos start from a Luxforge look on top of it, with camera-preview matching as a setting ([RAW looks](#raw-looks)). See the [initial RAW design](design/initial-raw.md).
 - Lightroom Library and Develop are familiarity references; their sliders' responses are followed ([Lightroom alignment](#lightroom-alignment)). Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
 - All development tooling is Rust (`cargo xtask`); no second toolchain.
 
+## Initial release preparation
+
+The owner requested preparation for a v0.1 release on 2026-10-08. The [design](design/release-v0.1.md), [task plan](../tasks/project/release-v0-1.json) and [release notes draft](releases/v0.1.md) prepare a reviewable result; local build rehearsals do not establish a qualified public release, and implementation has not pushed a tag or published a release. The owner chose macOS and Linux together: Apple silicon macOS plus the existing x86-64 Ubuntu 24.04 baseline. Both platform qualification gates precede a qualified joint release; automated pre-release builds report those gates as open. The owner's paid Apple Developer Program membership is active, verified read-only on 2026-10-09. The owner reports completing signing setup with the local notarization Keychain profile `luxforge-notarization`; identity/profile validation remains part of the final candidate gate; credential creation or acceptance of further agreements is not authorized by preparation. Platform-independent identity, complete source/notices and distribution advisory review can be prepared independently. The owner explicitly chose automatic GitHub pre-release publication on release-tag pushes; current-format-only data rules continue.
+
+
+The owner also requested implemented tag-triggered binary builds. Short `v0.1` normalizes to `0.1.0`; release tags supply the compiled application version without editing the workspace version/lockfile. The [tag workflow](design/tag-release-builds.md) builds macOS and Linux, optionally signs/notarizes macOS when hosted credentials are configured, and automatically publishes a GitHub pre-release after both builds and all asset uploads succeed. Assets are staged in a temporary draft before publication; a failed upload leaves it unpublished. Publication does not establish a release-ready verdict; source/policy/native/install gates remain open. The owner-requested `cargo xtask release TAG` requires clean synchronized main, runs quick checks, rechecks state and pushes one annotated tag; `--dry-run` checks Git state without mutation. No real release invocation or private credential export/upload is performed during implementation.
 ## Editing and storage
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
@@ -497,6 +503,8 @@ Decided by the owner on 2026-10-09, accepting the [Corrections workspace](design
 - **100 corrections per photograph**, replacing the initial engineering ceiling of eight.
 
 An interim implementation built on a branch before this design is set aside, not merged; Corrections is implemented again from the [task plan](../tasks/editing/corrections.json).
+
+**Heal quality (owner, 2026-10-11).** After a blinded review of 16 corpus cases, the owner accepted Heal as delivered, with its failure classes documented in the user guide (seams across continuing lines, large repairs repeating their source, objects whose surroundings hold the object). The frozen automatic-source candidate set stands; the proposed clearing-distance candidates are not adopted, since the review found no difference between them ([numerics](design/corrections-numerics.md#the-corpus-review-task-012)).
 
 ## Open product questions
 
