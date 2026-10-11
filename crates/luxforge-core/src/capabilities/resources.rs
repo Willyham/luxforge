@@ -228,16 +228,19 @@ impl Requirements {
         module: &crate::ModuleDescriptor,
         resource: &ResourceDescriptor,
     ) -> Option<Self> {
-        let runtime = module.capabilities.iter().find_map(|capability| match &capability.kind {
-            super::descriptor::CapabilityKind::LocalRuntime {
-                resource: held,
-                model,
-                resident_bytes,
-                backends,
-                precision,
-            } if *held == resource.id => Some((*model, *resident_bytes, backends, *precision)),
-            _ => None,
-        });
+        let runtime = module
+            .capabilities
+            .iter()
+            .find_map(|capability| match &capability.kind {
+                super::descriptor::CapabilityKind::LocalRuntime {
+                    resource: held,
+                    model,
+                    resident_bytes,
+                    backends,
+                    precision,
+                } if *held == resource.id => Some((*model, *resident_bytes, backends, *precision)),
+                _ => None,
+            });
         if runtime.is_none() && resource.min_memory_bytes.is_none() {
             return None;
         }
@@ -354,15 +357,18 @@ impl ResourceStore {
 
     /// The bytes an interrupted transfer of the resource's current pins has staged, when it has
     /// staged any: a small read and a stat a file.
-    pub(crate) fn staged_bytes(&self, module_id: &str, resource: &ResourceDescriptor) -> Option<u64> {
+    pub(crate) fn staged_bytes(
+        &self,
+        module_id: &str,
+        resource: &ResourceDescriptor,
+    ) -> Option<u64> {
         let dir = self.staging_dir(module_id, resource);
         let partial = PartialMarker::document(&dir).read().ok().flatten()?;
         let staged = resource
             .pinned_files()
             .filter(|file| partial.files.contains(&FilePin::of(*file)))
             .map(|file| {
-                fs::metadata(dir.join(file.name))
-                    .map_or(0, |meta| meta.len().min(file.bytes))
+                fs::metadata(dir.join(file.name)).map_or(0, |meta| meta.len().min(file.bytes))
             })
             .sum::<u64>();
         (staged > 0).then_some(staged)
@@ -716,7 +722,8 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
                     .iter()
                     .any(|pin| pin.name == name && held.files.contains(pin)));
         if !kept {
-            remove_path(&entry.path()).map_err(|error| write_failure(&entry.path(), error.kind()))?;
+            remove_path(&entry.path())
+                .map_err(|error| write_failure(&entry.path(), error.kind()))?;
         }
     }
     partial.write(&PartialMarker {
@@ -795,9 +802,7 @@ fn fetch(
     if offset < file.bytes {
         download(job, file, &mut staged, path, offset, before, total)?;
     }
-    let (length, sha256) = staged
-        .finish()
-        .map_err(|kind| write_failure(path, kind))?;
+    let (length, sha256) = staged.finish().map_err(|kind| write_failure(path, kind))?;
     job.control.checkpoint()?;
     if length != file.bytes {
         return Err(Error::validation(format!(
@@ -948,11 +953,7 @@ fn publish(job: &InstallJob, staging: &Path) -> Result<(), Error> {
         url: resource.url.clone(),
         sha256: resource.sha256.clone(),
         bytes: resource.bytes,
-        files: resource
-            .pinned_files()
-            .skip(1)
-            .map(FilePin::of)
-            .collect(),
+        files: resource.pinned_files().skip(1).map(FilePin::of).collect(),
         license: resource.license.clone(),
         provenance: resource.provenance.clone(),
         actor: job.actor.clone(),
@@ -1000,7 +1001,8 @@ pub(crate) fn remove(
     }
     let staging = store.staging_dir(module_id, resource);
     let staged = staging.exists();
-    remove_path(&staging).map_err(|error| atomic_file::file_error(staging.display(), error.kind()))?;
+    remove_path(&staging)
+        .map_err(|error| atomic_file::file_error(staging.display(), error.kind()))?;
     prune_empty(store, &staging);
     Ok(json!({
         "resource_id": resource.id,

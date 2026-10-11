@@ -187,7 +187,11 @@ mod tests {
         assert!(download.storage.as_deref().unwrap().ends_with("v"));
         assert_eq!(download.cost, AdapterCost::Free);
         assert_eq!(
-            (&download.tradeoff, &download.use_restriction, &download.requirements),
+            (
+                &download.tradeoff,
+                &download.use_restriction,
+                &download.requirements
+            ),
             (&None, &None, &None),
             "a resource that is no model says nothing of one"
         );

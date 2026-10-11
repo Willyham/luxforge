@@ -71,7 +71,9 @@ impl Server {
                 .find(|(name, _)| name == "range")
                 .map(|(_, value)| value.clone());
             let mut serving = held.lock().unwrap();
-            serving.seen.push((exchange.path().to_owned(), range.clone()));
+            serving
+                .seen
+                .push((exchange.path().to_owned(), range.clone()));
             let path = exchange.path();
             let pinned: &[u8] = match path {
                 "/segmenter/encoder.onnx" | "/large/encoder.onnx" => ENCODER,
@@ -285,10 +287,7 @@ fn a_resource_of_several_files_installs_together_with_its_labels_and_is_removed_
     let owner = fixture.start();
     // The consent asked before the download states both files' size together, where they go,
     // the trade-off, the use restriction and what the model needs, and no training-data note.
-    let refused = owner.fail(
-        INSTALL,
-        json!({"module_id": MODULE, "resource_id": MODEL}),
-    );
+    let refused = owner.fail(INSTALL, json!({"module_id": MODULE, "resource_id": MODEL}));
     assert_eq!(refused.code, "consent-required");
     let disclosure = &refused.data.as_ref().unwrap()["consent"]["disclosure"];
     let total = (ENCODER.len() + DECODER.len()) as u64;
@@ -435,7 +434,10 @@ fn an_interrupted_transfer_resumes_from_its_offset_and_is_hashed_whole() {
     assert!(!fixture.version_dir(MODEL).exists());
     let staging = fixture.staging_dir(MODEL);
     assert_eq!(fs::read(staging.join(MODEL)).unwrap(), ENCODER);
-    assert_eq!(fs::read(staging.join("decoder.onnx")).unwrap(), &DECODER[..20]);
+    assert_eq!(
+        fs::read(staging.join("decoder.onnx")).unwrap(),
+        &DECODER[..20]
+    );
     assert!(staging.join(PARTIAL_FILE).is_file());
     let partial = row(&owner, MODEL);
     assert_eq!(partial["state"], json!("failed"));
@@ -461,7 +463,10 @@ fn an_interrupted_transfer_resumes_from_its_offset_and_is_hashed_whole() {
     );
     let version = fixture.version_dir(MODEL);
     assert_eq!(fs::read(version.join("decoder.onnx")).unwrap(), DECODER);
-    assert!(!version.join(PARTIAL_FILE).exists(), "the staging record is not installed");
+    assert!(
+        !version.join(PARTIAL_FILE).exists(),
+        "the staging record is not installed"
+    );
     assert!(!fixture.resources().join(STAGING_DIR).exists());
     assert_eq!(row(&owner, MODEL)["state"], json!("installed"));
     owner.stop();
@@ -612,10 +617,7 @@ fn a_machine_below_a_models_minimum_sees_its_requirement_and_cannot_install_it()
     let owner = fixture.start();
     let large = row(&owner, LARGE);
     assert_eq!(large["fits"], json!(false));
-    assert_eq!(
-        large["requirements"],
-        json!({"min_memory_bytes": 64 * GIB})
-    );
+    assert_eq!(large["requirements"], json!({"min_memory_bytes": 64 * GIB}));
     assert_eq!(row(&owner, MODEL)["fits"], json!(true));
     // Refused by name before consent is asked or anything is sent; a grant changes nothing.
     for granted in [false, true] {
@@ -647,7 +649,10 @@ fn a_machine_below_a_models_minimum_sees_its_requirement_and_cannot_install_it()
         owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["machine"],
         json!({"memory_bytes": null})
     );
-    assert_eq!(owner.status(MODULE)["machine"], json!({"memory_bytes": null}));
+    assert_eq!(
+        owner.status(MODULE)["machine"],
+        json!({"memory_bytes": null})
+    );
     owner.stop();
 }
 
