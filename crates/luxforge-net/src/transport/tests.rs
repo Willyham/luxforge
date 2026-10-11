@@ -284,6 +284,7 @@ fn send_with(
             },
             control,
             progress: &mut progress,
+            head: None,
         },
         &mut body,
     );
@@ -1282,4 +1283,73 @@ fn a_non_ascii_endpoint_host_is_refused_and_its_punycode_form_resolves() {
     );
     assert_eq!(*names.0.lock().unwrap(), ["xn--bcher-kva.example"]);
     assert_eq!(routes.attempts().len(), 1);
+}
+
+/// A check of the final status and headers, as `SendOptions::head` takes it.
+type HeadCheck<'a> = &'a mut dyn FnMut(u16, &[(String, String)]) -> Result<(), Error>;
+
+/// Send `request` with a head check, returning its result and what reached the body sink.
+fn send_checked(
+    transport: &HttpTransport,
+    request: &TransportRequest,
+    check: HeadCheck<'_>,
+) -> (Result<TransportResponse, Error>, Vec<u8>) {
+    let control = JobControl::new();
+    let mut progress = |_, _| {};
+    let mut body = Vec::new();
+    let result = transport.send(
+        request,
+        SendOptions {
+            max_request_bytes: 1 << 20,
+            max_response_bytes: 1 << 20,
+            connect_timeout: Duration::from_secs(5),
+            read_timeout: Duration::from_secs(5),
+            total_timeout: Duration::from_secs(10),
+            redirects: RedirectPolicy {
+                max: 0,
+                origins: &[],
+            },
+            control: &control,
+            progress: &mut progress,
+            head: Some(check),
+        },
+        &mut body,
+    );
+    (result, body)
+}
+
+#[test]
+fn a_ranged_get_passes_its_partial_answer_through_and_checks_the_head_before_the_body() {
+    let partial =
+        b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 6-10/11\r\nContent-Length: 5\r\n\r\nworld"
+            .to_vec();
+    let server = TestServer::canned(vec![partial.clone(), partial]).unwrap();
+    let transport = loopback();
+    let mut ranged = request(Method::Get, &server.url("/model.onnx"));
+    ranged.headers = vec![("Range".into(), "bytes=6-".into())];
+
+    // The resource store reads the status and Content-Range before any byte is kept.
+    let mut seen = Vec::new();
+    let (result, body) = send_checked(&transport, &ranged, &mut |status, headers| {
+        let range = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-range"))
+            .map(|(_, value)| value.clone());
+        seen.push((status, range));
+        Ok(())
+    });
+    let response = result.unwrap();
+    assert_eq!(response.status, 206);
+    assert_eq!(response.header("content-range"), Some("bytes 6-10/11"));
+    assert_eq!(body, b"world");
+    assert_eq!(seen, vec![(206, Some("bytes 6-10/11".to_string()))]);
+    let sent = requests(&server);
+    assert!(sent[0].contains("\r\nrange: bytes=6-\r\n"), "{sent:?}");
+
+    // A head the store refuses stops the request with nothing written.
+    let (result, body) = send_checked(&transport, &ranged, &mut |_, _| {
+        Err(Error::validation("the range does not match"))
+    });
+    assert_eq!(result.unwrap_err().kind.code(), "validation");
+    assert!(body.is_empty());
 }

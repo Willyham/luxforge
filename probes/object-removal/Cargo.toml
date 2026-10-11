@@ -23,6 +23,8 @@ tract-core = "=0.23.8"
 # The removal-lab window only: the wgpu renderer, a canvas for pointer gestures and overlays, image
 # handles without iced's own codecs (the probe decodes), and tokio as the executor, as the editor has.
 iced = { version = "=0.14.0", default-features = false, features = ["wgpu", "canvas", "image-without-codecs", "tokio"] }
+# The generative runtime: stable-diffusion.cpp and ggml from vendored, pinned sources (diffusion/).
+luxforge-removal-diffusion = { path = "diffusion" }
 
 [lints.rust]
 unsafe_code = "forbid"

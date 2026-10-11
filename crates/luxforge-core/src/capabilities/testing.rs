@@ -199,6 +199,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             license: "CC0-1.0".into(),
             provenance: "Generated for tests".into(),
             redirect_origins: vec!["https://cdn.example.com".into()],
+            ..ResourceDescriptor::default()
         }],
         tasks: vec![TaskDescriptor {
             id: TASK.into(),
@@ -245,7 +246,7 @@ pub(crate) fn lifecycle_descriptor(palette_url: &str, swatch_url: &str) -> Modul
         format: "rgb-gains".into(),
         license: "CC0-1.0".into(),
         provenance: "Generated for tests".into(),
-        redirect_origins: Vec::new(),
+        ..ResourceDescriptor::default()
     });
     descriptor.capabilities.push(CapabilityDescriptor {
         id: "swatches".into(),
@@ -341,6 +342,7 @@ impl Exchange {
 
 enum Piece {
     Status(u16),
+    Header(String, String),
     Bytes(Vec<u8>),
     Failed(Error),
 }
@@ -353,6 +355,13 @@ pub(crate) struct Answer(mpsc::Sender<Piece>);
 impl Answer {
     pub(crate) fn status(&self, status: u16) {
         let _ = self.0.send(Piece::Status(status));
+    }
+
+    /// One header field, after the status and before the body; its name is lowercased.
+    pub(crate) fn header(&self, name: &str, value: &str) {
+        let _ = self
+            .0
+            .send(Piece::Header(name.to_ascii_lowercase(), value.to_owned()));
     }
 
     pub(crate) fn bytes(&self, bytes: &[u8]) {
@@ -419,6 +428,7 @@ impl Transport for MemoryTransport {
             max_response_bytes,
             control,
             progress,
+            mut head,
             ..
         } = options;
         control.checkpoint()?;
@@ -458,11 +468,24 @@ impl Transport for MemoryTransport {
             Some(Piece::Status(status)) => status,
             _ => return Err(Error::file_access("the exchange answered no status")),
         };
+        let mut headers = Vec::new();
         let mut received = 0;
+        let mut body = false;
         while let Some(piece) = next()? {
-            let Piece::Bytes(bytes) = piece else {
-                return Err(Error::file_access("the exchange answered twice"));
+            let bytes = match piece {
+                Piece::Header(name, value) if !body => {
+                    headers.push((name, value));
+                    continue;
+                }
+                Piece::Bytes(bytes) => bytes,
+                _ => return Err(Error::file_access("the exchange answered out of order")),
             };
+            if !body {
+                body = true;
+                if let Some(check) = head.as_deref_mut() {
+                    check(status, &headers)?;
+                }
+            }
             if bytes.len() as u64 > max_response_bytes - received {
                 return Err(Error::resource_limit(format!(
                     "the response is larger than {max_response_bytes} bytes"
@@ -474,10 +497,13 @@ impl Transport for MemoryTransport {
             received += bytes.len() as u64;
             progress(received, None);
         }
+        if !body && let Some(check) = &mut head {
+            check(status, &headers)?;
+        }
         control.checkpoint()?;
         Ok(TransportResponse {
             status,
-            headers: Vec::new(),
+            headers,
             final_url: request.endpoint.url.clone(),
             received,
         })
@@ -497,6 +523,7 @@ pub(crate) fn proof_endpoint(api_key: &str) -> ProofEndpoint {
             wrong_palette: crate::palette_bytes([1.0, 1.0, 1.0]).to_vec(),
             grid_bytes: super::data::SAMPLE_GRID_BYTES,
             grid_samples: super::data::SAMPLE_GRID_SAMPLES,
+            models: crate::proof_model_files(),
         },
     )
 }

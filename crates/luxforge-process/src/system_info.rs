@@ -294,6 +294,13 @@ pub fn probe() -> SystemFacts {
     normalize(platform::FAMILY, platform::read())
 }
 
+/// The machine's installed memory in bytes, exact rather than banded: what the capability host
+/// holds a model's machine minimum against. One system call or file read; `None` where the platform
+/// does not give it. Never sent anywhere: the statistics profile carries only [`MemoryBand`].
+pub fn installed_memory_bytes() -> Option<u64> {
+    platform::memory().filter(|bytes| *bytes > 0)
+}
+
 /// What a platform reader collected, before anything is parsed. Private: strings stop here.
 #[derive(Default)]
 pub(crate) struct Raw {

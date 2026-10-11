@@ -17,6 +17,15 @@ pub fn models_directory(explicit: Option<PathBuf>) -> PathBuf {
     chosen(explicit, "LUXFORGE_REMOVAL_MODELS", MODELS_RELATIVE)
 }
 
+/// The generative candidates' weights, relative to a checkout's root.
+pub const GENERATIVE_RELATIVE: &str = "private/models/generative";
+
+/// The generative models' directory: `--gen-models`, else `LUXFORGE_GENERATIVE_MODELS`, else
+/// [`GENERATIVE_RELATIVE`].
+pub fn generative_directory(explicit: Option<PathBuf>) -> PathBuf {
+    chosen(explicit, "LUXFORGE_GENERATIVE_MODELS", GENERATIVE_RELATIVE)
+}
+
 /// The private corpus directory: `--corpus`, else `LUXFORGE_REMOVAL_CORPUS`, else
 /// [`CORPUS_RELATIVE`].
 pub fn corpus_directory(explicit: Option<PathBuf>) -> PathBuf {

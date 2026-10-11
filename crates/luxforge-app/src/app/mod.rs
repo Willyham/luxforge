@@ -167,6 +167,8 @@ pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
 // Consumed by the usage statistics supervisor, which a later task adds.
+#[cfg(test)]
+mod models_tests;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]

@@ -380,11 +380,13 @@ fn usage_an_ineligible_launch_shows_neither_the_notice_nor_the_privacy_tab() {
 #[test]
 fn usage_settings_lists_privacy_last_in_an_eligible_launch_and_keeps_the_other_tabs() {
     let (mut editor, root) = eligible();
-    for tab in SettingsTab::ALL {
+    // No module of this launch holds a model, so the Models tab is not listed.
+    let shown: Vec<SettingsTab> = SettingsTab::shown(true, false).collect();
+    for tab in shown.iter().copied() {
         let _ = editor.update(Message::Settings(SettingsMessage::Open(tab)));
         assert_eq!(editor.settings.open, Some(tab));
     }
-    assert_eq!(editor.workspace.settings.tabs, SettingsTab::ALL);
+    assert_eq!(editor.workspace.settings.tabs, shown);
     assert_eq!(
         editor.settings_summary()["tabs"],
         json!(["general", "appearance", "experiments", "privacy"])

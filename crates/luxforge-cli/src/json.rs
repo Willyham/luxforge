@@ -113,6 +113,7 @@ fn run() -> Result<(), (String, String)> {
             developer,
             Arc::new(HttpTransport::system()),
         ),
+        machine_memory_bytes: luxforge_core::capabilities::host::installed_memory_bytes(),
         // ONNX Runtime, compiling under the data root; a developer run also serves the
         // deterministic fake, as the `fake` backend. Nothing starts until a model opens.
         inference: Some(luxforge_onnx::host_runtime(

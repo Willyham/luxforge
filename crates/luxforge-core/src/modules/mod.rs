@@ -18,6 +18,7 @@ mod field_patch;
 pub(crate) mod lens;
 mod look;
 mod mixer;
+mod models_proof;
 mod perspective;
 mod presence;
 mod presets;
@@ -141,6 +142,11 @@ pub use look::LOOK_EFFECT;
 pub(crate) use look::LookModule;
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
+pub(crate) use models_proof::ModelsProofModule;
+pub use models_proof::{
+    MODELS_PROOF_MODULE, PROOF_DECODER_PATH, PROOF_ENCODER_PATH, PROOF_MODEL_RESOURCE,
+    PROOF_MODEL_RESTRICTION, PROOF_MODEL_TRADEOFF, proof_model_files,
+};
 pub use perspective::PERSPECTIVE_EFFECT;
 pub(crate) use perspective::PerspectiveModule;
 pub use presence::PRESENCE_EFFECT;

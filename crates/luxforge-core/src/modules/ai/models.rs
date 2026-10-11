@@ -57,6 +57,10 @@ impl ModelFile {
             license: "GPL-3.0-or-later".into(),
             provenance: self.provenance.into(),
             redirect_origins: Vec::new(),
+            files: Vec::new(),
+            tradeoff: None,
+            use_restriction: None,
+            min_memory_bytes: None,
         }
     }
 

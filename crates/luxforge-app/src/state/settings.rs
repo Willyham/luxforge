@@ -1,6 +1,7 @@
 //! The Settings sheet: which tab is open, the flags as `flags.list` last answered them, the flag
 //! writes waiting and the number fields' text, and the model its tabs, General, Appearance,
-//! Experiments and, in a launch eligible for usage statistics, Privacy, are drawn from. The sheet is this desktop's own view state, like the gallery page; the preferences
+//! Models when a registered module holds a model, Experiments and, in a launch eligible for usage
+//! statistics, Privacy, are drawn from. The sheet is this desktop's own view state, like the gallery page; the preferences
 //! and flags are the host's, read and written through `preferences.read`, `preferences.set`,
 //! `flags.list` and `flags.set` as any client does
 //! ([design](../../../../docs/design/settings-and-flags.md)). The preferences the General tab shows
@@ -8,11 +9,16 @@
 //! themes the Appearance tab lists by the theme library ([`super::themes`]).
 use super::{
     ViewState,
+    capabilities::CapabilityStore,
+    models::{self, ModelsModel},
     preferences::{GeneralRow, PreferenceWriter, general_rows},
     themes::{AppearanceModel, Themes, appearance},
     usage::{PrivacyModel, Usage, privacy},
 };
-use luxforge_core::flags::{Applies, FlagList, ListedFlag};
+use luxforge_core::{
+    ModuleDescriptor,
+    flags::{Applies, FlagList, ListedFlag},
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -21,25 +27,31 @@ use std::collections::{BTreeMap, VecDeque};
 pub(crate) enum SettingsTab {
     General,
     Appearance,
+    /// The models registered modules hold, only when one does.
+    Models,
     Experiments,
     /// Usage statistics, only in a launch eligible for them.
     Privacy,
 }
 
 impl SettingsTab {
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::General,
         Self::Appearance,
+        Self::Models,
         Self::Experiments,
         Self::Privacy,
     ];
 
-    /// The tabs the rail lists, in its order: Privacy only in a launch eligible for usage
-    /// statistics, since an ineligible one has nothing it could change.
-    pub(crate) fn shown(usage_eligible: bool) -> impl Iterator<Item = Self> {
-        Self::ALL
-            .into_iter()
-            .filter(move |tab| *tab != Self::Privacy || usage_eligible)
+    /// The tabs the rail lists, in its order: Models only when a registered module holds a model,
+    /// and Privacy only in a launch eligible for usage statistics, since otherwise neither has
+    /// anything to show or change.
+    pub(crate) fn shown(usage_eligible: bool, models: bool) -> impl Iterator<Item = Self> {
+        Self::ALL.into_iter().filter(move |tab| match tab {
+            Self::Privacy => usage_eligible,
+            Self::Models => models,
+            _ => true,
+        })
     }
 
     /// The name an evidence step and a frame's state use.
@@ -47,6 +59,7 @@ impl SettingsTab {
         match self {
             Self::General => "general",
             Self::Appearance => "appearance",
+            Self::Models => "models",
             Self::Experiments => "experiments",
             Self::Privacy => "privacy",
         }
@@ -61,6 +74,7 @@ impl SettingsTab {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Models => "Models",
             Self::Experiments => "Experiments",
             Self::Privacy => "Privacy",
         }
@@ -160,16 +174,26 @@ pub(crate) struct SettingsModel {
     pub(crate) tabs: Vec<SettingsTab>,
     /// The Privacy tab, in a launch eligible for usage statistics.
     pub(crate) privacy: Option<PrivacyModel>,
+    /// The Models tab, while it is open.
+    pub(crate) models: Option<ModelsModel>,
 }
 
-/// The sheet for this state, the preferences the writer shows and the theme library. Closed, it is
-/// empty, so a closed sheet costs a message nothing.
+/// The modules and capability statuses the Models tab is drawn from.
+#[derive(Clone, Copy)]
+pub(crate) struct ModelInputs<'a> {
+    pub(crate) modules: &'a [ModuleDescriptor],
+    pub(crate) capabilities: &'a CapabilityStore,
+}
+
+/// The sheet for this state, the preferences the writer shows, the theme library and the models.
+/// Closed, it is empty, so a closed sheet costs a message nothing.
 pub(crate) fn derive(
     settings: &Settings,
     preferences: &PreferenceWriter,
     themes: &Themes,
     view_state: &ViewState,
     usage: &Usage,
+    models: ModelInputs<'_>,
 ) -> SettingsModel {
     let Some(open) = settings.open else {
         return SettingsModel::default();
@@ -199,8 +223,19 @@ pub(crate) fn derive(
             view_state.menu.as_ref(),
             view_state.picker_open,
         ),
-        tabs: SettingsTab::shown(usage.eligible).collect(),
+        tabs: SettingsTab::shown(
+            usage.eligible,
+            models::model_modules(models.modules).next().is_some(),
+        )
+        .collect(),
         privacy: usage.eligible.then(|| privacy(usage)),
+        models: (open == SettingsTab::Models).then(|| {
+            models::derive(
+                models.modules,
+                models.capabilities,
+                view_state.menu.as_ref(),
+            )
+        }),
     }
 }
 
@@ -334,6 +369,16 @@ mod tests {
         ViewState::new((1440.0, 900.0))
     }
 
+    static NO_CAPABILITIES: std::sync::LazyLock<CapabilityStore> =
+        std::sync::LazyLock::new(CapabilityStore::default);
+
+    fn no_models() -> ModelInputs<'static> {
+        ModelInputs {
+            modules: &[],
+            capabilities: &NO_CAPABILITIES,
+        }
+    }
+
     fn open() -> Settings {
         Settings {
             open: Some(SettingsTab::Experiments),
@@ -350,7 +395,8 @@ mod tests {
                 &PreferenceWriter::default(),
                 &Themes::default(),
                 &view(),
-                &Usage::default()
+                &Usage::default(),
+                no_models()
             ),
             SettingsModel::default()
         );
@@ -363,6 +409,7 @@ mod tests {
             &Themes::default(),
             &view(),
             &Usage::default(),
+            no_models(),
         );
         assert!(unread.loading && unread.rows.is_empty());
     }
@@ -375,6 +422,7 @@ mod tests {
             &Themes::default(),
             &view(),
             &Usage::default(),
+            no_models(),
         );
         assert_eq!(model.unrecognized, ["gone"]);
         let [developer, choice, number] = model.rows.as_slice() else {
@@ -418,7 +466,8 @@ mod tests {
                 &PreferenceWriter::default(),
                 &Themes::default(),
                 &view(),
-                &Usage::default()
+                &Usage::default(),
+                no_models()
             )
             .rows[0]
                 .notes,
@@ -431,7 +480,8 @@ mod tests {
                 &PreferenceWriter::default(),
                 &Themes::default(),
                 &view(),
-                &Usage::default()
+                &Usage::default(),
+                no_models()
             )
             .rows[0]
                 .notes,
@@ -450,6 +500,7 @@ mod tests {
             &Themes::default(),
             &view(),
             &Usage::default(),
+            no_models(),
         );
         assert!(matches!(
             &model.rows[2].control,
@@ -480,7 +531,7 @@ mod tests {
             .number_text
             .insert("proof.number".into(), "33".into());
         assert!(matches!(
-            &derive(&settings, &PreferenceWriter::default(), &Themes::default(), &view(), &Usage::default()).rows[2].control,
+            &derive(&settings, &PreferenceWriter::default(), &Themes::default(), &view(), &Usage::default(), no_models()).rows[2].control,
             FlagControl::Number { text, invalid: true, .. } if text == "33"
         ));
     }
@@ -497,6 +548,7 @@ mod tests {
             &Themes::default(),
             &view(),
             &Usage::default(),
+            no_models(),
         );
         assert_eq!(
             ineligible.tabs,
@@ -516,6 +568,7 @@ mod tests {
                 eligible: true,
                 ..Usage::default()
             },
+            no_models(),
         );
         assert_eq!(eligible.tabs.last(), Some(&SettingsTab::Privacy));
         assert!(eligible.privacy.is_some_and(|privacy| privacy.loading));
