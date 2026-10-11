@@ -127,11 +127,12 @@ pub use modules::{
     PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
     RangeControl, RawModule, RawPayload, Region, RegistryOptions, RepairInput, RepairTable,
     Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin,
-    SpatialOperation, Stage, StageContext, StageQuestions, StaleCorrection, StaleReason,
+    SourceFit, SpatialOperation, Stage, StageContext, StageQuestions, StaleCorrection, StaleReason,
     TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, ViewControl, WheelControl, WheelStyle,
     WhiteBalanceMode, check_parameters, check_value, controls_module, current_effect_format,
-    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
-    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
+    fit_correction_source, gains_from_temperature_tint, guide_angle, insertion_index_among,
+    largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
+    temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
