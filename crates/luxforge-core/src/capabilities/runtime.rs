@@ -21,9 +21,12 @@
 //! is opened. A model a task holds is never released from under it: an unload empties the slot, and
 //! the task's own reference releases the model when the task ends.
 //!
-//! One thread, `luxforge-runtime-idle`, started when the first model becomes resident and ended
-//! when the set is empty, sleeps until the earliest idle deadline ([`RUNTIME_IDLE_UNLOAD`] after a
-//! model was last used, by default) and releases the models past it; it never polls.
+//! The catalog owner releases idle models on its own loop, with no thread of its own: it sleeps
+//! until the earliest idle deadline ([`Runtime::next_deadline`], [`RUNTIME_IDLE_UNLOAD`] after a
+//! model was last used, by default) beside its held waits' deadlines, and then releases the models
+//! past it ([`Runtime::release_idle`]). A model in use has no deadline of its own; while one is, the
+//! owner looks again once an idle interval at most, so a model a task finished with is released on
+//! time whether or not the owner heard the task end.
 use super::descriptor::ModelKind;
 use crate::{
     Cancel, Error,
@@ -33,7 +36,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -121,8 +124,6 @@ struct State {
     resident: BTreeMap<Key, Resident>,
     loading: BTreeMap<Key, Loading>,
     next_ticket: u64,
-    /// Whether the idle thread is running.
-    reaper: bool,
     stopped: bool,
 }
 
@@ -182,9 +183,6 @@ struct Shared {
     idle: Duration,
     budget: u64,
     state: Mutex<State>,
-    /// Signalled when the set changes: a model became resident or was released, a task released
-    /// one, or a load finished. The idle thread and a load waiting on another wait on it.
-    changed: Condvar,
 }
 
 impl Shared {
@@ -212,7 +210,6 @@ impl Runtime {
                 idle,
                 budget,
                 state: Mutex::new(State::default()),
-                changed: Condvar::new(),
             }),
         }
     }
@@ -234,8 +231,6 @@ impl Runtime {
         {
             Some(resident) => {
                 resident.last_used = Instant::now();
-                drop(state);
-                self.shared.changed.notify_all();
                 true
             }
             None => false,
@@ -268,31 +263,26 @@ impl Runtime {
     /// runtime and kept in its slot. Called on the module lane only, never the owner: opening may
     /// take seconds. `cancel` is checked before the open and by the runtime during it; a load that
     /// an unload, a memory signal or a stop overtook answers its model to its caller without
-    /// keeping it.
+    /// keeping it. The one module lane opens one model at a time, so a second open of a model
+    /// being opened is refused `not-ready` rather than waited for.
     pub(crate) fn acquire(&self, request: &LoadRequest, cancel: &Cancel) -> Result<Loaded, Error> {
         let runtime = self.configured()?.clone();
         let key = request.key();
         let (ticket, released) = {
             let mut state = self.shared.lock();
-            loop {
-                cancel.check()?;
-                if state.stopped {
-                    return Err(Error::not_ready("the catalog owner is stopping"));
-                }
-                if let Some(resident) = state.resident.get_mut(&key) {
-                    resident.last_used = Instant::now();
-                    return Ok(resident.loaded.clone());
-                }
-                if !state.loading.contains_key(&key) {
-                    break;
-                }
-                // Another lane is opening the same model; it answers soon, or is cancelled.
-                state = self
-                    .shared
-                    .changed
-                    .wait_timeout(state, Duration::from_millis(50))
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0;
+            cancel.check()?;
+            if state.stopped {
+                return Err(Error::not_ready("the catalog owner is stopping"));
+            }
+            if let Some(resident) = state.resident.get_mut(&key) {
+                resident.last_used = Instant::now();
+                return Ok(resident.loaded.clone());
+            }
+            if state.loading.contains_key(&key) {
+                return Err(Error::not_ready(format!(
+                    "model {} is already being loaded; retry once it is",
+                    request.resource_id
+                )));
             }
             let released = state.make_room(request.resident_bytes, self.shared.budget)?;
             let ticket = state.next_ticket;
@@ -317,7 +307,7 @@ impl Runtime {
                 .open_generator(&request.file, &request.options, cancel)
                 .map(|generator| Loaded::Generator(Arc::from(generator))),
         };
-        let start_reaper = {
+        {
             let mut state = self.shared.lock();
             let ours = state
                 .loading
@@ -326,30 +316,22 @@ impl Runtime {
             if ours {
                 state.loading.remove(&key);
             }
-            let keep = ours && !state.stopped;
-            let start = match &opened {
-                Ok(loaded) if keep => {
-                    state.resident.insert(
-                        key,
-                        Resident {
-                            capability_id: request.capability_id.clone(),
-                            model: request.model,
-                            loaded: loaded.clone(),
-                            resident_bytes: request.resident_bytes,
-                            loaded_ms: now_ms(),
-                            last_used: Instant::now(),
-                        },
-                    );
-                    !std::mem::replace(&mut state.reaper, true)
-                }
-                _ => false,
-            };
-            drop(state);
-            self.shared.changed.notify_all();
-            start
-        };
-        if start_reaper {
-            self.start_reaper();
+            if let Ok(loaded) = &opened
+                && ours
+                && !state.stopped
+            {
+                state.resident.insert(
+                    key,
+                    Resident {
+                        capability_id: request.capability_id.clone(),
+                        model: request.model,
+                        loaded: loaded.clone(),
+                        resident_bytes: request.resident_bytes,
+                        loaded_ms: now_ms(),
+                        last_used: Instant::now(),
+                    },
+                );
+            }
         }
         opened
     }
@@ -384,7 +366,6 @@ impl Runtime {
             (released, names)
         };
         drop(released);
-        self.shared.changed.notify_all();
         names
     }
 
@@ -399,7 +380,6 @@ impl Runtime {
         };
         let (models, count) = released;
         drop(models);
-        self.shared.changed.notify_all();
         count
     }
 
@@ -412,7 +392,6 @@ impl Runtime {
             std::mem::take(&mut state.resident)
         };
         drop(models);
-        self.shared.changed.notify_all();
     }
 
     /// `module.status`'s `runtime`: each of `module_id`'s resident and loading models.
@@ -459,58 +438,45 @@ impl Runtime {
         json!({"held_bytes": state.held_bytes(), "budget_bytes": self.shared.budget})
     }
 
-    fn start_reaper(&self) {
-        let shared = self.shared.clone();
-        let started = std::thread::Builder::new()
-            .name("luxforge-runtime-idle".into())
-            .spawn(move || reap(&shared));
-        if started.is_err() {
-            // Without the thread nothing is released for idleness; an unload, a memory signal or
-            // the owner stopping still release every model. The next load tries again.
-            self.shared.lock().reaper = false;
-        }
-    }
-}
-
-/// The idle thread: sleep until the earliest idle deadline, release the models past it, and end
-/// once nothing is resident or the owner has stopped.
-fn reap(shared: &Shared) {
-    let mut state = shared.lock();
-    loop {
-        if state.stopped || state.resident.is_empty() {
-            state.reaper = false;
-            return;
-        }
+    /// When the owner should next call [`Self::release_idle`]: the earliest idle deadline of a
+    /// resident model, or an idle interval from now while one is in use; `None` with nothing
+    /// resident, so an owner with no model sleeps on a plain receive. `O(models)`.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        let state = self.shared.lock();
         let now = Instant::now();
-        let mut expired = Vec::new();
-        let mut next = now + shared.idle;
-        for (key, resident) in &state.resident {
-            if resident.loaded.in_use() {
-                // A task holds it: it is used now. Its task's end touches it and wakes this.
-                continue;
-            }
-            let deadline = resident.last_used + shared.idle;
-            if deadline <= now {
-                expired.push(key.clone());
-            } else {
-                next = next.min(deadline);
-            }
-        }
-        if !expired.is_empty() {
-            let released: Vec<Resident> = expired
+        state
+            .resident
+            .values()
+            .map(|resident| {
+                if resident.loaded.in_use() {
+                    now + self.shared.idle
+                } else {
+                    resident.last_used + self.shared.idle
+                }
+            })
+            .min()
+    }
+
+    /// Release every model no task holds that has gone unused for the idle interval; answers how
+    /// many. Called by the owner on its loop; the models are dropped outside the lock.
+    pub(crate) fn release_idle(&self) -> usize {
+        let released: Vec<Resident> = {
+            let mut state = self.shared.lock();
+            let now = Instant::now();
+            let expired: Vec<Key> = state
+                .resident
+                .iter()
+                .filter(|(_, resident)| {
+                    !resident.loaded.in_use() && resident.last_used + self.shared.idle <= now
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            expired
                 .iter()
                 .filter_map(|key| state.resident.remove(key))
-                .collect();
-            drop(state);
-            drop(released);
-            state = shared.lock();
-            continue;
-        }
-        state = shared
-            .changed
-            .wait_timeout(state, next.saturating_duration_since(now))
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
+                .collect()
+        };
+        released.len()
     }
 }
 

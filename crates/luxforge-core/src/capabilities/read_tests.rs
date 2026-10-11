@@ -491,7 +491,7 @@ fn a_read_past_the_pixel_bound_is_refused_and_a_task_without_reads_cannot_open_o
         })
         .unwrap_err();
     assert_eq!(refused.kind, crate::ErrorKind::ResourceLimit, "{refused:?}");
-    assert!(2049 * 2048 > MAX_MODULE_READ_PIXELS);
+    const { assert!(2049 * 2048 > MAX_MODULE_READ_PIXELS) };
     assert_eq!(granted.reads.open(), 1);
     drop(reader);
     assert_eq!(granted.reads.open(), 0);
