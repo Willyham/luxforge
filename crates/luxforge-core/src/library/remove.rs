@@ -6,12 +6,16 @@
 //!   and putting it back clears it. Nothing else about it changes — its edits, history, versions,
 //!   collections and catalog folder stay as they were — and nothing on disk does. Every source but
 //!   Removed, and every count, leaves a removed photograph out. The journal undoes and redoes
-//!   either like any other change.
+//!   either like any other change. A merge's result is removed and put back the same way, its
+//!   merge's `merge-stack` item in the same change ([`merge::lifecycle`]): Remove deactivates the
+//!   stack, so its originals show again, and Put back activates it, refused when another active
+//!   stack claims an input. Remove merge is this Remove.
 //! - **Emptying Removed** (`catalog.empty-removed`, [`empty`]) is the one destructive catalog
 //!   operation: in one transaction it deletes every removed photograph's catalog record — entries,
 //!   state, requests, versions, capture row, collection memberships, artifact references, a derived
-//!   photograph's source reference and asset row — and the strokes, artifact rows and derived
-//!   sources nothing left in the catalog names. It is the only path that releases a derived
+//!   photograph's source reference and asset row, and the merge it is the result of with its
+//!   provenance and stack — and the strokes, artifact rows and derived sources nothing left in the
+//!   catalog names. Bracket originals are files, and are never touched. It is the only path that releases a derived
 //!   source a photograph held. It is not a library
 //!   change, since nothing it deletes can be restored, and it leaves the journal as it is: an undo
 //!   or redo that names a deleted photograph finds its value gone and is refused. Beside sending an
@@ -20,11 +24,12 @@
 use crate::{
     AssetId, Error,
     artifacts::{ArtifactId, DerivedSourceId, LiveArtifacts, derived_source::LiveSources},
-    catalog_types::{AssetRemovalValue, AssetRowId, LibraryChangeRow, LibraryItem},
+    catalog_types::{AssetRemovalValue, AssetRowId, LibraryChangeRow, LibraryItem, MergeState},
     editor::{derived_source, library_rows},
     library::{
         folders::counted,
         journal::Desired,
+        merge,
         tree::{self, Planned},
     },
     path::STROKES_FIELD,
@@ -32,41 +37,69 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 
-/// Remove `assets` from the catalog as of `now_ms`: one `asset-removal` item each. A photograph
-/// already removed keeps when it was removed, and so changes nothing.
-pub(crate) fn remove(assets: Vec<(AssetId, AssetRowId)>, now_ms: i64) -> Result<Planned, Error> {
+/// Remove `assets` from the catalog as of `now_ms`: one `asset-removal` item each, and for a merge's
+/// result its merge's lifecycle items ([`merge::lifecycle`]). A photograph already removed keeps
+/// when it was removed, and so changes nothing. One read for the merges among them.
+pub(crate) fn remove(
+    connection: &Connection,
+    assets: Vec<(AssetId, AssetRowId)>,
+    now_ms: i64,
+) -> Result<Planned, Error> {
     let removed = serde_json::to_value(AssetRemovalValue { removed_ms: now_ms })
         .map_err(|error| Error::internal(format!("cannot encode a removal: {error}")))?;
-    let changes = assets
-        .into_iter()
-        .map(|(asset_id, _)| {
-            (
-                LibraryItem::AssetRemoval { asset_id },
-                Desired::UnlessPresent(removed.clone()),
-            )
-        })
-        .collect();
+    let changes = with_merges(connection, assets, MergeState::Removed, |asset_id| {
+        (
+            LibraryItem::AssetRemoval { asset_id },
+            Desired::UnlessPresent(removed.clone()),
+        )
+    })?;
     Ok(Planned::counted(changes, |connection, rows| {
         format!("Removed {}", photographs(connection, rows))
     }))
 }
 
-/// Put `assets` back: their `asset-removal` items go absent. One that is not removed changes
-/// nothing.
-pub(crate) fn restore(assets: Vec<(AssetId, AssetRowId)>) -> Planned {
-    let changes = assets
-        .into_iter()
-        .map(|(asset_id, _)| (LibraryItem::AssetRemoval { asset_id }, Desired::Value(None)))
-        .collect();
-    Planned::counted(changes, |connection, rows| {
+/// Put `assets` back: their `asset-removal` items go absent, and a merge's result's stack is active
+/// again ([`merge::lifecycle`]). One that is not removed changes nothing.
+pub(crate) fn restore(
+    connection: &Connection,
+    assets: Vec<(AssetId, AssetRowId)>,
+) -> Result<Planned, Error> {
+    let changes = with_merges(connection, assets, MergeState::Active, |asset_id| {
+        (LibraryItem::AssetRemoval { asset_id }, Desired::Value(None))
+    })?;
+    Ok(Planned::counted(changes, |connection, rows| {
         format!("Put back {}", photographs(connection, rows))
-    })
+    }))
 }
 
-/// The photographs a change's rows name, as its label says them: "DSC_0412.NEF" or
+/// Each photograph's `asset-removal` change, followed, for a merge's result, by what its merge's
+/// lifecycle moves with it to `state`.
+fn with_merges(
+    connection: &Connection,
+    assets: Vec<(AssetId, AssetRowId)>,
+    state: MergeState,
+    removal: impl Fn(AssetId) -> (LibraryItem, Desired),
+) -> Result<Vec<(LibraryItem, Desired)>, Error> {
+    let ids: Vec<AssetId> = assets.iter().map(|(asset, _)| asset.clone()).collect();
+    let merges = merge::merges_of(connection, &ids)?;
+    let mut changes = Vec::with_capacity(assets.len() + merges.len());
+    for asset_id in ids {
+        let lifecycle = merge::lifecycle(merges.get(&asset_id), state)?;
+        changes.push(removal(asset_id));
+        changes.extend(lifecycle);
+    }
+    Ok(changes)
+}
+
+/// The photographs a change's `asset-removal` rows name, as its label says them: "DSC_0412.NEF" or
 /// "5 photographs".
 fn photographs(connection: &Connection, rows: &[LibraryChangeRow]) -> String {
-    tree::photographs(connection, rows, |count| {
+    let removals: Vec<LibraryChangeRow> = rows
+        .iter()
+        .filter(|row| matches!(row.item, LibraryItem::AssetRemoval { .. }))
+        .cloned()
+        .collect();
+    tree::photographs(connection, &removals, |count| {
         counted(count, "photograph", "photographs")
     })
 }
@@ -82,20 +115,26 @@ pub(crate) struct Emptied {
     /// The derived sources only these photographs held, none of them published by this process:
     /// their objects are left for a collection to remove.
     pub sources: Vec<DerivedSourceId>,
+    /// How many of the photographs were saved merges' results, deleted with their provenance.
+    pub merges: usize,
     /// The removed photographs past the bound, still in Removed for a later emptying.
     pub remaining: u64,
 }
 
 /// The triggers that stand in the way of deleting a photograph's records, which [`empty`] lifts
 /// inside its own transaction only: the artifact references' and the asset-source references'
-/// permanence and the collapsed entries' — an entry auto-collapse hid is part of its photograph's
-/// record and goes with it, as the reference to a derived photograph's source does. An
+/// permanence, the merges' and the collapsed entries' — an entry auto-collapse hid is part of its
+/// photograph's record and goes with it, as the reference to a derived photograph's source and the
+/// merge whose result it is do. An
 /// entry's and a stroke's immutability refuse an update, not a deletion, and the journal, whose
 /// rows are the other permanent ones, is left as it is.
 pub(crate) const LIFTED_TRIGGERS: &[&str] = &[
     "artifact_refs_are_permanent",
     "asset_sources_are_permanent",
     "collapsed_entries_are_permanent",
+    "merges_are_permanent",
+    "merge_inputs_are_permanent",
+    "merge_stacks_are_permanent",
 ];
 
 /// Empty Removed in the caller's transaction, at most `limit` photographs, earliest removed first:
@@ -127,6 +166,11 @@ pub(crate) fn empty(
     let mut strokes = stored_strokes(tx, &ids)?;
     let referenced = referenced_artifacts(tx, &ids)?;
     let held = derived_source::held_by(tx, &ids)?;
+    let merges: i64 = tx
+        .prepare_cached(
+            "SELECT count(*) FROM merges WHERE result_asset_id IN (SELECT value FROM json_each(?1))",
+        )?
+        .query_row([&ids], |row| row.get(0))?;
     lifted(tx, LIFTED_TRIGGERS, |tx| {
         library_rows::delete_photographs(tx, &assets)
     })?;
@@ -153,6 +197,7 @@ pub(crate) fn empty(
         assets,
         artifacts,
         sources,
+        merges: merges as usize,
         remaining,
     })
 }

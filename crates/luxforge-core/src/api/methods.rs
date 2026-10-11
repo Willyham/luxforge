@@ -1175,14 +1175,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "asset.remove",
         crate::catalog_types::api::AssetTargets,
         owner::library::remove::asset_remove,
-        "moves the photographs targets names to Removed as one library change of asset-removal items (labelled Removed <file> or Removed N photographs), answering {outcome, change?, items, deduplicated}: each keeps its edits, history, versions, collections and catalog folder, and leaves every browse source but removed and every count; a photograph already removed keeps when it was removed, and none to remove is a no-op; library.undo puts them back; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
+        "moves the photographs targets names to Removed as one library change of asset-removal items (labelled Removed <file> or Removed N photographs), answering {outcome, change?, items, deduplicated}: each keeps its edits, history, versions, collections and catalog folder, and leaves every browse source but removed and every count; a photograph already removed keeps when it was removed, and none to remove is a no-op; a merge's result is removed with its stack deactivated (its merge-stack item removed, in the same change), its originals untouched; library.undo puts them back; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
         retries: Owner,
     ),
     owner!(
         "asset.restore",
         crate::catalog_types::api::AssetTargets,
         owner::library::remove::asset_restore,
-        "puts the removed photographs targets names back as one library change (labelled Put back <file> or Put back N photographs), answering {outcome, change?, items, deduplicated}: each returns to its catalog folder, collections and every view as it was; a photograph not removed is left out, and none to put back is a no-op; library.undo removes them again; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
+        "puts the removed photographs targets names back as one library change (labelled Put back <file> or Put back N photographs), answering {outcome, change?, items, deduplicated}: each returns to its catalog folder, collections and every view as it was; a photograph not removed is left out, and none to put back is a no-op; a merge's result comes back with its stack active again, and the whole change is conflict, naming the stack, when another active stack now claims one of its inputs; library.undo removes them again; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
         retries: Owner,
     ),
     owner!(

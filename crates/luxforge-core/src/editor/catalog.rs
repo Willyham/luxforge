@@ -13,8 +13,10 @@ use std::{
 
 /// Format 14 adds derived sources ([`DERIVED_SOURCE_SCHEMA`]): the rows recording each source an
 /// HDR merge stores under the artifact root, their manifest-chunk references and the asset-source
-/// reference that retains one for its photograph, and a `derived` source kind. Format 13 holds
-/// none of them and is refused like every other marker.
+/// reference that retains one for its photograph, and a `derived` source kind; and merges
+/// ([`MERGE_SCHEMA`]): each merge's immutable provenance and exact inputs, its result-led stack's
+/// state and the inputs an active stack claims, with the journal's `merge-stack` item. Format 13
+/// holds none of them and is refused like every other marker.
 ///
 /// Format 13 is the union of two changes made side by side as format 12. The catalog of developed
 /// picks (`docs/design/catalog.md`): the volumes picks and photographs live on, picks, indexed
@@ -250,6 +252,7 @@ impl EditorService {
                     SELECT RAISE(ABORT, 'artifact references are permanent');
                  END;
                  {DERIVED_SOURCE_SCHEMA}
+                 {MERGE_SCHEMA}
                  PRAGMA user_version={CATALOG_FORMAT};"
             ))?;
             tx.execute(
@@ -306,6 +309,67 @@ const DERIVED_SOURCE_SCHEMA: &str = "
     END;
     CREATE TRIGGER asset_sources_are_permanent BEFORE DELETE ON asset_sources BEGIN
         SELECT RAISE(ABORT, 'asset source references are permanent');
+    END;";
+
+/// Format 14's merges (`docs/design/hdr-merge.md`, "The stack and the originals"), apart from the
+/// index, so removing or rebuilding it changes none of them:
+///
+/// - `merges` records each merge once and for good: its kind (`hdr` only), its result photograph,
+///   the derived source that photograph holds, the exact-match key ([`MergeProvenance::match_key`])
+///   and the whole provenance document. `merge_inputs` is its stack's members, the exact inputs in
+///   the stack's order with the photograph each was, if any (no foreign key: emptying Removed may
+///   delete that photograph, and the provenance stays) and its EV offset. Neither row changes.
+/// - `merge_stacks` is the merge's state, `active`, `removed` or `undone`, which the journal's
+///   `merge-stack` item reads and writes; `stack_claims` holds each input path an active stack
+///   claims, one stack a path, so a second active stack over any input is refused by the schema
+///   as well as by name.
+/// - Only emptying Removed deletes a merge, with its result's whole record.
+///
+/// [`MergeProvenance::match_key`]: crate::catalog_types::MergeProvenance::match_key
+const MERGE_SCHEMA: &str = "
+    CREATE TABLE merges (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('hdr')),
+        result_asset_id TEXT NOT NULL UNIQUE REFERENCES assets(id),
+        source_id TEXT NOT NULL REFERENCES derived_sources(id),
+        match_key TEXT NOT NULL,
+        provenance_json TEXT NOT NULL,
+        created_ms INTEGER NOT NULL
+    );
+    CREATE INDEX merges_by_match ON merges(match_key);
+    CREATE TABLE merge_inputs (
+        merge_id TEXT NOT NULL REFERENCES merges(id),
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        path TEXT NOT NULL,
+        asset_id TEXT,
+        offset_ev REAL NOT NULL,
+        PRIMARY KEY (merge_id, ordinal)
+    ) WITHOUT ROWID;
+    CREATE INDEX merge_inputs_by_path ON merge_inputs(path);
+    CREATE INDEX merge_inputs_by_asset ON merge_inputs(asset_id) WHERE asset_id IS NOT NULL;
+    CREATE TABLE merge_stacks (
+        merge_id TEXT PRIMARY KEY REFERENCES merges(id),
+        state TEXT NOT NULL CHECK (state IN ('active', 'removed', 'undone'))
+    ) WITHOUT ROWID;
+    CREATE TABLE stack_claims (
+        path TEXT PRIMARY KEY,
+        merge_id TEXT NOT NULL REFERENCES merges(id)
+    ) WITHOUT ROWID;
+    CREATE INDEX stack_claims_by_merge ON stack_claims(merge_id);
+    CREATE TRIGGER merges_are_immutable BEFORE UPDATE ON merges BEGIN
+        SELECT RAISE(ABORT, 'merge provenance is immutable');
+    END;
+    CREATE TRIGGER merges_are_permanent BEFORE DELETE ON merges BEGIN
+        SELECT RAISE(ABORT, 'merges are permanent');
+    END;
+    CREATE TRIGGER merge_inputs_are_immutable BEFORE UPDATE ON merge_inputs BEGIN
+        SELECT RAISE(ABORT, 'merge provenance is immutable');
+    END;
+    CREATE TRIGGER merge_inputs_are_permanent BEFORE DELETE ON merge_inputs BEGIN
+        SELECT RAISE(ABORT, 'merges are permanent');
+    END;
+    CREATE TRIGGER merge_stacks_are_permanent BEFORE DELETE ON merge_stacks BEGIN
+        SELECT RAISE(ABORT, 'merges are permanent');
     END;";
 
 /// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
@@ -507,7 +571,7 @@ const LIBRARY_SCHEMA: &str = "
         ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
         item_kind TEXT NOT NULL CHECK (item_kind IN ('pick', 'asset-folder', 'asset-removal',
             'asset-source', 'catalog-folder', 'collection', 'membership', 'indexed-folder',
-            'developed-asset')),
+            'developed-asset', 'merge-stack')),
         item_key TEXT NOT NULL,
         before_json TEXT,
         after_json TEXT,
@@ -1036,7 +1100,8 @@ mod tests {
     }
 
     /// An empty database initializes as format 14 with every table, index and trigger of the
-    /// design's storage, the catalog's, auto-collapse's and the derived sources' alike, and makes no
+    /// design's storage, the catalog's, auto-collapse's, the derived sources' and the merges' alike,
+    /// and makes no
     /// index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
@@ -1068,9 +1133,13 @@ mod tests {
                 "indexed_folders",
                 "library_change_rows",
                 "library_changes",
+                "merge_inputs",
+                "merge_stacks",
+                "merges",
                 "picks",
                 "presets",
                 "requests",
+                "stack_claims",
                 "strokes",
                 "versions",
                 "volumes",
@@ -1106,8 +1175,12 @@ mod tests {
                 "library_changes_by_request",
                 "library_changes_redone",
                 "library_changes_undone",
+                "merge_inputs_by_asset",
+                "merge_inputs_by_path",
+                "merges_by_match",
                 "picks_by_identity",
                 "picks_by_volume",
+                "stack_claims_by_merge",
             ]
         );
         assert_eq!(
@@ -1128,6 +1201,11 @@ mod tests {
                 "library_changes_are_immutable",
                 "library_changes_are_permanent",
                 "members_join_plain_collections",
+                "merge_inputs_are_immutable",
+                "merge_inputs_are_permanent",
+                "merge_stacks_are_permanent",
+                "merges_are_immutable",
+                "merges_are_permanent",
                 "strokes_are_immutable",
             ]
         );

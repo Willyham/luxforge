@@ -13,7 +13,7 @@ use crate::{
     catalog_types::{
         AssetFolderValue, AssetRemovalValue, AssetSourceValue, CatalogFolder, Collection,
         CollectionValue, DevelopedAssetValue, FolderValue, IndexedFolder, LibraryItem,
-        MembershipValue, Pick,
+        MembershipValue, MergeStackValue, Pick,
     },
     editor::library_rows as rows,
 };
@@ -56,6 +56,9 @@ pub(crate) fn read(connection: &Connection, item: &LibraryItem) -> Result<Option
                     path: source.locator,
                 })
             })
+            .transpose(),
+        LibraryItem::MergeStack { merge_id } => super::merge::state(connection, merge_id)?
+            .map(|state| value(MergeStackValue { state }))
             .transpose(),
     }
 }
@@ -151,6 +154,12 @@ pub(crate) fn write(
                 .with_data(json!({"items": [item], "count": 1})))
             }
         },
+        // A merge is created with its result by publication (`Desired::Written`) and deleted only
+        // by emptying Removed; the journal moves it between its states.
+        LibraryItem::MergeStack { merge_id } => {
+            let MergeStackValue { state } = typed(item, required(item, to)?)?;
+            super::merge::set_state(tx, item, merge_id, state)
+        }
     }
 }
 
@@ -159,8 +168,7 @@ pub(crate) fn write(
 /// refusal does. Its file is untouched.
 fn send_back(tx: &Transaction<'_>, item: &LibraryItem, asset: &AssetId) -> Result<(), Error> {
     if let Some(why) = rows::kept_by(tx, asset)? {
-        let name = rows::asset_source(tx, asset)?
-            .map_or_else(|| asset.to_string(), |source| file_name(&source.locator));
+        let name = rows::file_name(tx, asset)?.unwrap_or_else(|| asset.to_string());
         return Err(Error::conflict(format!(
             "{name} {why}: it leaves the catalog only by being removed"
         ))
