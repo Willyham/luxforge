@@ -333,6 +333,7 @@ fn organized(prints: Vec<Fingerprint>) -> Option<Moment> {
         let file = FileId(at as i64 + 1);
         fingerprints.insert(file, (PreviewOrigin::Embedded, print));
         frames.push(FrameFacts {
+            merged: false,
             item: ViewItem::File(file),
             folder: tables.folder("/card/DCIM/100MEDIA".into()),
             name: format!("DJI_{:04}.JPG", at + 1).into(),
@@ -772,6 +773,7 @@ fn bracket_preview_a_metadata_only_view_reads_no_fingerprints() {
     };
     let day = LocalDay::from_ymd(2026, 9, 12).unwrap();
     let frame = |tables: &mut FrameTables, id: i64, ms: i64, bias: f32| FrameFacts {
+        merged: false,
         item: ViewItem::File(FileId(id)),
         folder: tables.folder("/card/DCIM/100NZ8_1".into()),
         name: format!("DSC_{id:04}.NEF").into(),
@@ -1008,6 +1010,7 @@ fn bracket_preview_the_generated_image_folders() {
             ids.push(file);
             let capture = metadata.capture.as_ref();
             frames.push(FrameFacts {
+                merged: false,
                 item: ViewItem::File(file),
                 folder: tables.folder(path.parent().unwrap().to_path_buf()),
                 name: path.file_name().unwrap().to_string_lossy().into(),

@@ -616,6 +616,7 @@ pub(super) fn file_row(
     let place = names.place(place.as_deref());
     Ok(FileRow {
         fact: FrameFacts {
+            merged: false,
             item: ViewItem::File(FileId(id)),
             folder,
             name,
@@ -934,6 +935,7 @@ fn append_photos(
             decided: false,
         });
         candidates.facts.push(FrameFacts {
+            merged: kind == SourceTag::Derived,
             item,
             folder,
             name,

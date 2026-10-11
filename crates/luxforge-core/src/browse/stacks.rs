@@ -351,6 +351,7 @@ pub(super) fn arrange(
                     let item = ViewItem::Input(StackInputKey::new(stack.result, input.ordinal));
                     if let Some(fact) = every.get(&leader) {
                         children.push(FrameFacts {
+                            merged: false,
                             item,
                             ..fact.clone()
                         });
