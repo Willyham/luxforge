@@ -459,7 +459,21 @@ fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
     assert_eq!(plan["needs_fit"], false, "{plan}");
     assert_eq!(plan["reference"], 0, "{plan}");
 
-    // Select groups the frames as one bracket, from their metadata.
+    // Once merged, the folder shows the result alone, its three frames collapsed beneath it.
+    let view = merging.ok(
+        "browse.view",
+        json!({"source": {"kind": "folder", "path": merging.folder}}),
+    );
+    assert_eq!(
+        (&view["count"], &view["stacks"], &view["collapsed"]),
+        (&json!(1), &json!(1), &json!(3)),
+        "{view}"
+    );
+    // Expanded, Select groups the frames as one bracket, from their metadata.
+    merging.ok(
+        "stack.set-expanded",
+        json!({"merge_id": result["merge_id"], "expansion": "expanded"}),
+    );
     let view = merging.ok(
         "browse.view",
         json!({"source": {"kind": "folder", "path": merging.folder}}),

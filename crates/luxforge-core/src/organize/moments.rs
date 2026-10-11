@@ -121,6 +121,9 @@ impl<'a> Finder<'a> {
 
 /// Whether two consecutive frames of one body are one run.
 fn linked(a: &FrameFacts, b: &FrameFacts, thresholds: &Thresholds) -> bool {
+    if a.merged || b.merged {
+        return false;
+    }
     let (Some(a_ms), Some(b_ms)) = (a.instant_ms, b.instant_ms) else {
         return false;
     };

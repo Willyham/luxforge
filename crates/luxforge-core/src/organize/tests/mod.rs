@@ -97,6 +97,7 @@ impl Frames {
         let id = self.frames.len() as i64 + 1;
         let item = ViewItem::File(FileId(id));
         self.frames.push(FrameFacts {
+            merged: false,
             item,
             folder: self.tables.folder(shot.folder.into()),
             name: format!("F{id:05}.JPG").into(),
