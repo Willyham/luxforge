@@ -707,7 +707,7 @@
     {
       "id": "TASK-010",
       "description": "Qualify native responsiveness, storage/traffic bounds and source preservation after working client delivery.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-008"
       ],
@@ -777,7 +777,7 @@
     {
       "id": "TASK-011",
       "description": "Verify actual client-to-reference-backend privacy and protocol behavior, and prepare the production activation handoff.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-008",
         "TASK-009"
