@@ -17,7 +17,11 @@
 //! still hashed at the end, so a resumed file that does not match its pin is refused and its
 //! staging discarded. A verification failure, a refusal, a full disk or a revoked grant discards
 //! the staging; staging no current declaration names is removed by the next install, and a
-//! removal discards a resource's partial transfer with it. Downloaded bytes are never executed or
+//! removal discards a resource's partial transfer with it. For a model a `local-runtime`
+//! capability holds, the inference runtime prepares the installed files before the marker is
+//! written, the files it derives in the version directory are recorded there and removed with it,
+//! and a removal asks the runtime to forget what it keeps of each file elsewhere (its Core ML
+//! compile cache). Downloaded bytes are never executed or
 //! deserialized by the host; the hash proves they are the pinned bytes, not that they are safe or
 //! licensed for reuse. See `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
@@ -985,7 +989,7 @@ fn prepare(job: &InstallJob, target: &Path) -> Result<Prepared, Error> {
         target.join(&resource.id),
     );
     job.control.set_progress(Some(1.0), "preparing the model");
-    match runtime.prepare_for(&model, backends, &job.control.render_cancel()) {
+    match runtime.prepare_for(&model, backends, job.control.render_cancel()) {
         Ok(paths) => Ok(Prepared {
             derived: paths
                 .iter()

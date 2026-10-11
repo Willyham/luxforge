@@ -119,7 +119,7 @@ fn held(module: &ModuleDescriptor) -> Vec<&ResourceDescriptor> {
 /// Memory as the tab names it: whole gigabytes when it is a whole number of them.
 pub(crate) fn memory_text(bytes: u64) -> String {
     const GIB: u64 = 1 << 30;
-    if bytes >= GIB && bytes % GIB == 0 {
+    if bytes >= GIB && bytes.is_multiple_of(GIB) {
         format!("{} GB", bytes / GIB)
     } else {
         human_bytes(bytes)
