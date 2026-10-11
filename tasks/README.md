@@ -43,6 +43,7 @@ Selection, catalog sources and library operations.
 
 | Plan | Purpose |
 | --- | --- |
+| [Develop from catalog folders](library/develop-from-folders.json) ([design](../docs/design/develop-from-folders.md)) | Decided and authorized 2026-10-11, in progress: the catalog folder chosen in Select is what Develop holds (the development set removed, catalog format 15), Develop N files picks under Year › Place › Day folders, Select lists the real folder tree, and Merge HDR replaces Pick merged and Import merged |
 | [Panorama merges and the merge preview](library/panorama-merge.json) ([design](../docs/design/panorama-merge.md)) | Decided, not authorized: a merge preview that opens first for HDR and panoramas, panorama stitching as a second merge kind over the HDR boundary (kind-tagged provenance and commands, a shared merge lane with band-read spools, catalog format 15), derived sources up to 65,000 pixels a side and 512 MP through tiled preparation, rendering and export, merge-only RAW and JPEG frame development, rotation-model registration, projection, photometric fit, seams, blending and Boundary Warp, the job and commands, Select's panorama menu, sheet and stack, and a background journey first; natural-panorama quality and photo-sized measurement last |
 
 ### Editing tools (`editing/`)
