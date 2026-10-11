@@ -19,7 +19,7 @@
 //!    and its moving regions found.
 //! 3. **Merging.** The result is written chunk by chunk ([`DerivedSourceWriter::write_with`]): for
 //!    each 1024 × 1024 chunk of the coverage, every input's bounded source window is read back
-//!    from its spool, resampled into reference coordinates ([`resample_rect`]), and fused with
+//!    from its spool in contiguous bands of whole rows, resampled into reference coordinates ([`resample_rect`]), and fused with
 //!    the chunk's motion selection ([`fuse_rect`]) straight into the writer's chunk buffer.
 //! 4. **Saving.** The writer stages, hashes, syncs and renames every chunk and the manifest; the
 //!    inputs' signatures are checked once more, and the owner's publication follows.
@@ -27,7 +27,9 @@
 //! **Bounds.** Scratch is accounted explicitly ([`Accounting`]) against [`SCRATCH_LIMIT`] (256
 //! MiB), by phase: the analysis phase holds the proxies, their aligned copies, the fit samples and
 //! the motion map; the merging phase the motion map and one chunk's worth of every input's aligned
-//! samples, one source window, the chunk's motion selection and the writer's chunk and encoding.
+//! samples, one source window and the band buffer it is read back through (at most 8 MiB, or one
+//! frame row: [`READ_BAND_BYTES`]), the chunk's motion selection and the writer's chunk and
+//! encoding.
 //! A bracket whose phase would exceed the limit is refused with `resource-limit` before the
 //! allocation. Beside it the job holds one admitted development (the RAW mosaic and its float
 //! planes), which it does not take from the source worker's plane gate: the merge never waits on
@@ -78,6 +80,11 @@ pub(crate) const SPOOL_PIXEL: u64 = 14;
 const RESULT_PIXEL: u64 = 12;
 /// Rows a development is spooled and reduced in at a time.
 const BAND_ROWS: u32 = 16;
+/// The most bytes one spool read takes: a window is read back in bands of whole rows, each band
+/// one contiguous span from its first row's first window pixel to its last row's last, so the
+/// columns outside the window between its rows are read and skipped rather than sought past. A
+/// band holds as many rows as fit (at least one, whose span is at most a frame row).
+const READ_BAND_BYTES: u64 = 8 * MIB;
 
 /// The HDR provider this build carries: its module and the algorithm version every result it
 /// writes records, and a rerun must match.
@@ -837,7 +844,7 @@ impl JobSpec {
         let chunk_pixels = grid
             .first()
             .map_or(0, |chunk| u64::from(chunk.width) * u64::from(chunk.height));
-        let held = chunk_bytes(n, chunk_pixels, window_pixels);
+        let held = chunk_bytes(n, chunk_pixels, window_pixels, width);
         accounting.take(held, "one chunk of every input")?;
         report(control, Stage::Merging(0), accounting);
         let mut files = Vec::with_capacity(n);
@@ -931,11 +938,38 @@ fn band_bytes(width: u32) -> u64 {
     u64::from(width) * u64::from(BAND_ROWS) * (12 + 2 + SPOOL_PIXEL)
 }
 
-/// What the merging phase holds: every input's aligned chunk, one source window, the chunk's
-/// motion selection and the writer's chunk samples and encoding.
-fn chunk_bytes(inputs: usize, chunk_pixels: u64, window_pixels: u64) -> u64 {
+/// The bytes of a spool span covering `rows` rows of a `window`-pixel-wide window in a
+/// `width`-pixel-wide frame: from the first row's first window pixel to the last row's last.
+fn band_span(width: u32, window: u32, rows: u32) -> u64 {
+    (u64::from(rows.max(1) - 1) * u64::from(width) + u64::from(window)) * SPOOL_PIXEL
+}
+
+/// The rows of `bounds` one read takes in a `width`-pixel-wide frame: as many as keep the span
+/// within `limit`, at least one, at most the window's.
+fn band_rows(width: u32, bounds: PixelRect, limit: u64) -> usize {
+    let row = u64::from(width) * SPOOL_PIXEL;
+    let first = u64::from(bounds.width) * SPOOL_PIXEL;
+    let rows = if limit <= first || row == 0 {
+        1
+    } else {
+        1 + (limit - first) / row
+    };
+    rows.min(u64::from(bounds.height).max(1)) as usize
+}
+
+/// The most the window's band buffer holds when reading a `width`-pixel-wide frame:
+/// [`READ_BAND_BYTES`], or one frame row when that is larger.
+fn read_band_bytes(width: u32) -> u64 {
+    READ_BAND_BYTES.max(u64::from(width) * SPOOL_PIXEL)
+}
+
+/// What the merging phase holds: every input's aligned chunk, one source window and the band
+/// buffer it is read through from a `width`-pixel-wide spool, the chunk's motion selection and the
+/// writer's chunk samples and encoding.
+fn chunk_bytes(inputs: usize, chunk_pixels: u64, window_pixels: u64, width: u32) -> u64 {
     inputs as u64 * chunk_pixels * SPOOL_PIXEL
-        + window_pixels * (SPOOL_PIXEL + SPOOL_PIXEL)
+        + window_pixels * SPOOL_PIXEL
+        + read_band_bytes(width)
         + chunk_pixels * 5
         + chunk_pixels * 2 * RESULT_PIXEL
 }
@@ -973,22 +1007,34 @@ fn fusion_fits(
         ..*accounting
     };
     probe.take(
-        chunk_bytes(inputs, chunk, window) + AnalysisProxy::bytes_for(width, height) as u64,
+        chunk_bytes(inputs, chunk, window, width) + AnalysisProxy::bytes_for(width, height) as u64,
         "merging the bracket",
     )
 }
 
-/// The one source window buffer: an input's window read back from its spool into planes.
+/// The one source window buffer: an input's window read back from its spool into planes, through
+/// one bounded band buffer.
 #[derive(Default)]
 struct Window {
     rgb: [Vec<f32>; 3],
     levels: Vec<SensorLevel>,
-    row: Vec<u8>,
+    band: Vec<u8>,
 }
 
 impl Window {
-    /// Read `bounds` of a `width`-pixel-wide spooled frame from `file`.
+    /// Read `bounds` of a `width`-pixel-wide spooled frame from `file`: see [`READ_BAND_BYTES`].
     fn read(&mut self, file: &mut File, width: u32, bounds: PixelRect) -> Result<(), Error> {
+        self.read_in_bands(file, width, bounds, READ_BAND_BYTES)
+    }
+
+    /// [`Self::read`] with at most `limit` bytes a band (and at least one row's span).
+    fn read_in_bands(
+        &mut self,
+        file: &mut File,
+        width: u32,
+        bounds: PixelRect,
+        limit: u64,
+    ) -> Result<(), Error> {
         let (w, h) = (bounds.width as usize, bounds.height as usize);
         for plane in &mut self.rgb {
             plane.clear();
@@ -996,24 +1042,34 @@ impl Window {
         }
         self.levels.clear();
         self.levels.resize(w * h, SensorLevel(0));
-        self.row.resize(w * SPOOL_PIXEL as usize, 0);
-        for y in 0..h {
+        let pixel = SPOOL_PIXEL as usize;
+        let rows = band_rows(width, bounds, limit);
+        let mut y = 0;
+        while y < h {
+            let k = rows.min(h - y);
+            let span = band_span(width, bounds.width, k as u32) as usize;
             let offset = ((u64::from(bounds.y) + y as u64) * u64::from(width)
                 + u64::from(bounds.x))
                 * SPOOL_PIXEL;
+            self.band.resize(span, 0);
             file.seek(SeekFrom::Start(offset))
-                .and_then(|_| file.read_exact(&mut self.row))
+                .and_then(|_| file.read_exact(&mut self.band[..span]))
                 .map_err(|error| spool_error(error.kind()))?;
-            for (x, pixel) in self.row.chunks_exact(SPOOL_PIXEL as usize).enumerate() {
-                let i = y * w + x;
-                let sample = |at: usize| {
-                    f32::from_le_bytes([pixel[at], pixel[at + 1], pixel[at + 2], pixel[at + 3]])
-                };
-                self.rgb[0][i] = sample(0);
-                self.rgb[1][i] = sample(4);
-                self.rgb[2][i] = sample(8);
-                self.levels[i] = SensorLevel(u16::from_le_bytes([pixel[12], pixel[13]]));
+            for row in 0..k {
+                let start = row * width as usize * pixel;
+                let bytes = &self.band[start..start + w * pixel];
+                for (x, pixel) in bytes.chunks_exact(pixel).enumerate() {
+                    let i = (y + row) * w + x;
+                    let sample = |at: usize| {
+                        f32::from_le_bytes([pixel[at], pixel[at + 1], pixel[at + 2], pixel[at + 3]])
+                    };
+                    self.rgb[0][i] = sample(0);
+                    self.rgb[1][i] = sample(4);
+                    self.rgb[2][i] = sample(8);
+                    self.levels[i] = SensorLevel(u16::from_le_bytes([pixel[12], pixel[13]]));
+                }
             }
+            y += k;
         }
         Ok(())
     }
@@ -1109,4 +1165,248 @@ pub(crate) fn sweep_orphans(root: &Path, keep: &Path) -> usize {
         }
     }
     removed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Cancel,
+        merge::hdr::{
+            ExposureOrigin, FusionParameters, MetadataSource, ReferenceOrigin, ResolvedExposure,
+            RigidTransform,
+        },
+    };
+    use luxforge_testbase::paths::temp_dir;
+
+    /// A deterministic spooled frame: every pixel's samples (signed, some above one) and level
+    /// distinct, so a misplaced byte shows.
+    fn spool_frame(path: &Path, width: u32, height: u32, seed: u32) {
+        let mut bytes = Vec::with_capacity((width * height) as usize * SPOOL_PIXEL as usize);
+        let mut state = 0x9e37_79b9_u32 ^ seed;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        for y in 0..height {
+            for x in 0..width {
+                let base = (x as f32 + 0.5) / width as f32 + (y as f32) / height as f32;
+                for c in 0..3 {
+                    let noise = (next() % 1000) as f32 / 4000.0 - 0.05;
+                    let value = base * (0.4 + 0.3 * c as f32) + noise;
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                let level = (next() % 40_000) as u16;
+                bytes.extend_from_slice(&level.to_le_bytes());
+            }
+        }
+        fs::write(path, bytes).expect("spool written");
+    }
+
+    /// The read the banded one replaced: one seek and one read a window row.
+    fn read_by_rows(file: &mut File, width: u32, bounds: PixelRect) -> Window {
+        let (w, h) = (bounds.width as usize, bounds.height as usize);
+        let mut window = Window {
+            rgb: [vec![0.0; w * h], vec![0.0; w * h], vec![0.0; w * h]],
+            levels: vec![SensorLevel(0); w * h],
+            band: Vec::new(),
+        };
+        let mut row = vec![0_u8; w * SPOOL_PIXEL as usize];
+        for y in 0..h {
+            let offset = ((u64::from(bounds.y) + y as u64) * u64::from(width)
+                + u64::from(bounds.x))
+                * SPOOL_PIXEL;
+            file.seek(SeekFrom::Start(offset)).unwrap();
+            file.read_exact(&mut row).unwrap();
+            for (x, pixel) in row.chunks_exact(SPOOL_PIXEL as usize).enumerate() {
+                let i = y * w + x;
+                for (c, plane) in window.rgb.iter_mut().enumerate() {
+                    let at = 4 * c;
+                    plane[i] = f32::from_le_bytes([
+                        pixel[at],
+                        pixel[at + 1],
+                        pixel[at + 2],
+                        pixel[at + 3],
+                    ]);
+                }
+                window.levels[i] = SensorLevel(u16::from_le_bytes([pixel[12], pixel[13]]));
+            }
+        }
+        window
+    }
+
+    fn same_bits(a: &Window, b: &Window) -> bool {
+        a.levels == b.levels
+            && (0..3).all(|c| {
+                a.rgb[c].len() == b.rgb[c].len()
+                    && a.rgb[c]
+                        .iter()
+                        .zip(&b.rgb[c])
+                        .all(|(x, y)| x.to_bits() == y.to_bits())
+            })
+    }
+
+    fn rect(x: u32, y: u32, width: u32, height: u32) -> PixelRect {
+        PixelRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn hdr_merge_spool_band_reads_equal_row_reads_bit_for_bit() {
+        let directory = temp_dir("hdr-merge-spool-bands");
+        let path = directory.join(spool_name(0));
+        let (width, height) = (97_u32, 61_u32);
+        spool_frame(&path, width, height, 1);
+        let mut file = File::open(&path).unwrap();
+        let windows = [
+            rect(0, 0, width, height),
+            rect(13, 7, 40, 33),
+            rect(96, 60, 1, 1),
+            rect(0, 59, width, 2),
+            rect(50, 0, 47, 61),
+        ];
+        let row = u64::from(width) * SPOOL_PIXEL;
+        // One row a band (a limit under a window row), a few rows, exactly whole rows, just under
+        // whole rows, and the production bound.
+        let limits = [1, 3 * row + 5, 10 * row, 7 * row - 1, READ_BAND_BYTES];
+        let mut window = Window::default();
+        for bounds in windows {
+            let expected = read_by_rows(&mut file, width, bounds);
+            for limit in limits {
+                window
+                    .read_in_bands(&mut file, width, bounds, limit)
+                    .expect("band read");
+                assert!(
+                    same_bits(&window, &expected),
+                    "{bounds:?} at {limit} bytes a band"
+                );
+                let rows = band_rows(width, bounds, limit);
+                assert!(rows >= 1 && rows <= bounds.height as usize);
+                assert!(
+                    window.band.len() as u64 <= limit.max(u64::from(bounds.width) * SPOOL_PIXEL),
+                    "the band buffer stays within its bound"
+                );
+            }
+        }
+        // A window running past the spool is an error, not a short read.
+        assert!(
+            window
+                .read(&mut file, width, rect(0, 60, width, 2))
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn hdr_merge_spool_band_reads_fuse_bit_identically() {
+        let directory = temp_dir("hdr-merge-spool-fusion");
+        let (width, height) = (180_u32, 120_u32);
+        let transforms = [
+            RigidTransform::identity(width, height),
+            RigidTransform::new(width, height, 1.5_f64.to_radians(), 2.25, -1.5),
+        ];
+        let mut files = Vec::new();
+        for input in 0..2 {
+            let path = directory.join(spool_name(input));
+            spool_frame(&path, width, height, input as u32 + 7);
+            files.push(File::open(&path).unwrap());
+        }
+        let exposures = ResolvedExposures {
+            reference: 0,
+            reference_origin: ReferenceOrigin::Requested,
+            inputs: [0.0_f64, -2.0]
+                .into_iter()
+                .enumerate()
+                .map(|(i, offset_ev)| ResolvedExposure {
+                    offset_ev,
+                    scale: (-offset_ev).exp2(),
+                    origin: if i == 0 {
+                        ExposureOrigin::Reference
+                    } else {
+                        ExposureOrigin::Metadata {
+                            source: MetadataSource::Settings,
+                        }
+                    },
+                })
+                .collect(),
+        };
+        let chunk = rect(20, 15, 120, 80);
+        let cancel = Cancel::never();
+        let mut fused = Vec::new();
+        for banded in [false, true] {
+            let mut aligned = [AlignedRect::default(), AlignedRect::default()];
+            for (input, file) in files.iter_mut().enumerate() {
+                let bounds = source_window(&transforms[input], chunk, width, height).unwrap();
+                let window = if banded {
+                    let mut window = Window::default();
+                    // A small bound, so the window takes several bands.
+                    let limit = 9 * u64::from(width) * SPOOL_PIXEL;
+                    window.read_in_bands(file, width, bounds, limit).unwrap();
+                    window
+                } else {
+                    read_by_rows(file, width, bounds)
+                };
+                resample_rect(
+                    &transforms[input],
+                    &window.source(bounds),
+                    width,
+                    height,
+                    chunk,
+                    &mut aligned[input],
+                    &cancel,
+                )
+                .unwrap();
+            }
+            let pixels = chunk.pixels() as usize;
+            let (mut red, mut green, mut blue) =
+                (vec![0.0_f32; pixels], vec![0.0; pixels], vec![0.0; pixels]);
+            let views: Vec<FrameRect<'_>> = aligned.iter().map(AlignedRect::view).collect();
+            let diagnostics = fuse_rect(
+                &exposures,
+                &FusionParameters::default(),
+                &views,
+                None,
+                &mut FusedRect {
+                    width: chunk.width as usize,
+                    height: chunk.height as usize,
+                    stride: chunk.width as usize,
+                    rgb: [&mut red, &mut green, &mut blue],
+                    limits: None,
+                },
+            )
+            .unwrap();
+            let bits: Vec<u32> = [red, green, blue]
+                .iter()
+                .flatten()
+                .map(|value| value.to_bits())
+                .collect();
+            fused.push((bits, diagnostics));
+        }
+        assert_eq!(fused[0], fused[1]);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn hdr_merge_spool_band_buffer_is_accounted() {
+        // The band buffer is the bound, or one frame row past it, and the chunk counts it.
+        assert_eq!(read_band_bytes(6048), READ_BAND_BYTES);
+        assert_eq!(read_band_bytes(1 << 20), (1 << 20) * SPOOL_PIXEL);
+        let without = chunk_bytes(9, 1 << 20, 1080 * 1080, 1) - read_band_bytes(1);
+        assert_eq!(
+            chunk_bytes(9, 1 << 20, 1080 * 1080, 6048),
+            without + READ_BAND_BYTES
+        );
+        // A 6048-pixel frame reads a 1080-pixel window 99 rows a band.
+        let bounds = rect(100, 0, 1080, 1080);
+        let rows = band_rows(6048, bounds, READ_BAND_BYTES);
+        assert_eq!(rows, 99);
+        assert!(band_span(6048, 1080, rows as u32) <= READ_BAND_BYTES);
+        assert!(band_span(6048, 1080, rows as u32 + 1) > READ_BAND_BYTES);
+    }
 }
