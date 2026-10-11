@@ -5,7 +5,9 @@ use super::{
     Byte, Evaluation, PixelDomain, RenderContext, SpatialEntry,
     linear::{LinearRows, LinearScratch, TAP_BLOCK_PIXELS},
     map::WarpStep,
-    nearest_index, resample_frame,
+    nearest_index,
+    repair_entry::RepairEntry,
+    resample_frame,
     spatial::Tiling,
     window::RegionFallback,
 };
@@ -32,6 +34,10 @@ pub(crate) enum Entry {
     Resample(ResampleEntry),
     /// A neighbourhood boundary at the same dimensions as the stage it receives.
     Spatial(SpatialEntry),
+    /// The repair stage's Clone and Heal operations, at the same dimensions as the stage it
+    /// receives, each reading a bounded region of it that may lie anywhere
+    /// ([`RepairEntry::reads`]).
+    Repair(RepairEntry),
 }
 
 /// A resample boundary: the resample, over the whole stages it was compiled against.
@@ -93,6 +99,25 @@ impl Entry {
         Self::Spatial(SpatialEntry::new(operation))
     }
 
+    /// A repair boundary over the stage it receives.
+    pub(crate) fn repair(table: crate::modules::RepairTable, stage: Stage) -> Self {
+        Self::Repair(RepairEntry::new(table, stage))
+    }
+
+    /// Whether this boundary writes a frame of the stage it receives that a read through it is
+    /// answered from: a spatial operation or a repair. A resample's pixels are pulled.
+    pub(crate) fn materializes(&self) -> bool {
+        matches!(self, Self::Spatial(_) | Self::Repair(_))
+    }
+
+    /// The repair this boundary runs, if it is one.
+    pub(crate) fn repair_entry(&self) -> Option<&RepairEntry> {
+        match self {
+            Self::Repair(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
     pub(crate) fn spatial_tagged(operation: SpatialOperation, stage: crate::EffectStage) -> Self {
         let mut entry = SpatialEntry::new(operation);
         entry.stage = stage;
@@ -106,7 +131,7 @@ impl Entry {
                 width: entry.resample.output_width,
                 height: entry.resample.output_height,
             },
-            Self::Spatial(_) => received,
+            Self::Spatial(_) | Self::Repair(_) => received,
         }
     }
 
@@ -115,7 +140,7 @@ impl Entry {
     pub(crate) fn held(&self, received: Stage) -> Region {
         match self {
             Self::Resample(entry) => entry.window(),
-            Self::Spatial(_) => Region::whole(received),
+            Self::Spatial(_) | Self::Repair(_) => Region::whole(received),
         }
     }
 
@@ -127,6 +152,7 @@ impl Entry {
         match self {
             Self::Resample(entry) => entry.reads(window, received),
             Self::Spatial(entry) => Some(entry.halo_reads(window, received)),
+            Self::Repair(entry) => Some(entry.read_bounds(window)),
         }
     }
 
@@ -136,7 +162,9 @@ impl Entry {
     /// to, and a spatial operation's halo with no tile grid ([`SpatialEntry::halo_reads`]). A
     /// global estimate is never prepared from the window: the GPU computes the whole stage's from
     /// the source by its light link, so an estimate behind an earlier spatial layer cuts like any
-    /// other.
+    /// other. A repair reads `read` alone: its step holds its read set itself, every rectangle its
+    /// operations read cut from the source into an atlas of its own
+    /// ([`super::gpu::repair`](mod@super::gpu::repair)), so no window grows to hold a far source.
     pub(crate) fn plan_gpu_window(
         &self,
         read: Region,
@@ -147,6 +175,7 @@ impl Entry {
                 .reads(read, received)
                 .ok_or(RegionFallback::UnplannableGeometry),
             Self::Spatial(entry) => Ok(entry.halo_reads(read, received)),
+            Self::Repair(_) => Ok(read),
         }
     }
 
@@ -162,7 +191,7 @@ impl Entry {
                     nearest_index(v, received.height),
                 )
             }
-            Self::Spatial(_) => (x, y),
+            Self::Spatial(_) | Self::Repair(_) => (x, y),
         }
     }
 
@@ -188,7 +217,7 @@ impl Entry {
     ) -> Result<D::Pixel, Error> {
         match self {
             Self::Resample(entry) => evaluation.resample_pixel(index, entry, x, y),
-            Self::Spatial(_) => evaluation.spatial_entry_pixel(index, x, y),
+            Self::Spatial(_) | Self::Repair(_) => evaluation.spatial_entry_pixel(index, x, y),
         }
     }
 
@@ -204,6 +233,7 @@ impl Entry {
         match self {
             Self::Resample(_) => Ok(None),
             Self::Spatial(entry) => evaluation.spatial_frame(index, entry, cancel).map(Some),
+            Self::Repair(entry) => evaluation.repair_frame(index, entry, cancel).map(Some),
         }
     }
 
@@ -216,7 +246,7 @@ impl Entry {
         index: usize,
     ) -> Result<Vec<Option<crate::modules::Global>>, Error> {
         match self {
-            Self::Resample(_) => Ok(Vec::new()),
+            Self::Resample(_) | Self::Repair(_) => Ok(Vec::new()),
             Self::Spatial(entry) => evaluation.spatial_globals(index, entry),
         }
     }
@@ -257,6 +287,9 @@ impl Entry {
             Self::Spatial(entry) => super::byte::spatial_frame(
                 domain, entry, input, received, tiling, cancel, context, wide,
             ),
+            Self::Repair(entry) => {
+                super::byte::repair_frame(domain, entry, input, received, cancel, context, wide)
+            }
         }
     }
 
@@ -265,7 +298,7 @@ impl Entry {
     pub(super) fn linear_scratch(&self) -> usize {
         match self {
             Self::Resample(_) => TAP_BLOCK_PIXELS as usize * std::mem::size_of::<[f64; 3]>(),
-            Self::Spatial(_) => 0,
+            Self::Spatial(_) | Self::Repair(_) => 0,
         }
     }
 
@@ -282,7 +315,7 @@ impl Entry {
     ) -> Result<(), Error> {
         match self {
             Self::Resample(entry) => rows.load_resampled(entry, scratch, y0, chunk),
-            Self::Spatial(_) => rows.load_pulled(scratch, y0, chunk),
+            Self::Spatial(_) | Self::Repair(_) => rows.load_pulled(scratch, y0, chunk),
         }
     }
 
@@ -291,15 +324,16 @@ impl Entry {
     pub(crate) fn blends(&self) -> bool {
         match self {
             Self::Resample(_) => true,
-            Self::Spatial(_) => false,
+            Self::Spatial(_) | Self::Repair(_) => false,
         }
     }
 
     /// The spatial operation this boundary runs, whose whole frame a read through it is
     /// answered from; `None` for a resample, which a point query pulls through.
+    #[cfg(test)]
     pub(crate) fn spatial_operation(&self) -> Option<&SpatialOperation> {
         match self {
-            Self::Resample(_) => None,
+            Self::Resample(_) | Self::Repair(_) => None,
             Self::Spatial(entry) => Some(&entry.operation),
         }
     }
@@ -316,7 +350,6 @@ pub(crate) struct Segment {
     pub(crate) geometry: ExactGeometry,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) has_pixels: bool,
     pub(crate) has_color: bool,
     /// The segment output's first pixel in its original uncut output stage. Pointwise finish
     /// units read these original coordinates even when a GPU boundary's reference keeps only a
@@ -340,7 +373,6 @@ impl Segment {
             geometry: ExactGeometry::identity(width, height),
             width,
             height,
-            has_pixels: false,
             has_color: false,
             output_origin: (0, 0),
         }
@@ -354,12 +386,6 @@ impl Segment {
         self.width = output.width;
         self.height = output.height;
         self.geometry = ExactGeometry::identity(output.width, output.height);
-    }
-
-    /// Whether this pass writes anything into its frame. An identity pass that does not shares the
-    /// source allocation instead of copying it.
-    pub(super) fn writes_pixels(&self) -> bool {
-        self.has_pixels || self.has_color
     }
 }
 
@@ -454,7 +480,7 @@ impl Compiled {
         prefix
             .segments
             .iter()
-            .rposition(|segment| matches!(&segment.entry, Some(Entry::Spatial(_))))
+            .rposition(|segment| segment.entry.as_ref().is_some_and(Entry::materializes))
             .and_then(|index| {
                 super::byte::byte_frame_widths(self)
                     .get(index)
@@ -491,123 +517,23 @@ impl Compiled {
         self.spatial_before(self.segments.len())
     }
 
-    /// Whether a segment entered through a spatial operation ([`Entry::spatial_operation`]) comes
+    /// Whether a segment entered through a spatial operation or a repair ([`Entry::materializes`]) comes
     /// before segment `index`, so that the stage `index` reads comes through that operation's
     /// whole frame rather than from the source alone.
     pub(crate) fn spatial_before(&self, index: usize) -> bool {
-        self.segments[..index].iter().any(|segment| {
-            segment
-                .entry
-                .as_ref()
-                .is_some_and(|entry| entry.spatial_operation().is_some())
-        })
+        self.segments[..index]
+            .iter()
+            .any(|segment| segment.entry.as_ref().is_some_and(Entry::materializes))
     }
-}
-
-/// Where one segment-output pixel comes from: the input-frame pixel it reads and the replacement
-/// that wins there, with that replacement's position in the operation list. The position decides
-/// which colour runs still reach the pixel: a replacement overwrites everything the runs before it
-/// produced, and only the runs after it process the replaced value.
-pub(super) struct Resolved {
-    pub(super) replacement: Option<(usize, [u8; 3])>,
-    pub(super) input_x: u32,
-    pub(super) input_y: u32,
 }
 
 impl Segment {
-    /// Where output pixel `(x, y)` comes from, or `None` outside the output stage. A segment
-    /// without point replacements has none to find, so it answers straight from the unmap; one
-    /// with them walks its operations backwards, composing the geometry each replacement is
-    /// carried through, as [`mapped_replacements`] does.
-    pub(super) fn resolve(&self, x: u32, y: u32) -> Option<Resolved> {
+    /// The input-frame pixel output pixel `(x, y)` reads through the segment's exact geometry, or
+    /// `None` outside the output stage.
+    pub(super) fn resolve(&self, x: u32, y: u32) -> Option<(u32, u32)> {
         if x >= self.width || y >= self.height {
             return None;
         }
-        let (input_x, input_y) = self.geometry.unmap(x, y);
-        if !self.has_pixels {
-            return Some(Resolved {
-                replacement: None,
-                input_x,
-                input_y,
-            });
-        }
-        self.replacement_at(x, y, input_x, input_y)
+        Some(self.geometry.unmap(x, y))
     }
-
-    /// The walk [`Self::resolve`] takes for a segment with replacements: every operation's
-    /// geometry composed backwards from the output, and the last replacement that lands on
-    /// `(x, y)`, if any.
-    fn replacement_at(&self, x: u32, y: u32, input_x: u32, input_y: u32) -> Option<Resolved> {
-        let mut suffix = ExactGeometry::identity(self.width, self.height);
-        for (index, operation) in self.operations.iter().enumerate().rev() {
-            match operation {
-                Processing::ExactGeometry(step) => suffix = step.then(suffix),
-                Processing::PointReplace {
-                    x: pixel_x,
-                    y: pixel_y,
-                    rgb,
-                } if suffix.map(*pixel_x, *pixel_y) == Some((x, y)) => {
-                    return Some(Resolved {
-                        replacement: Some((index, *rgb)),
-                        input_x,
-                        input_y,
-                    });
-                }
-                // A point replacement mapping outside this stage was cropped away.
-                Processing::PointReplace { .. } => {}
-                // Colour is applied to the resolved value, not to the coordinate walk, and a
-                // resample or spatial operation is the next segment's entry, never one of its
-                // operations.
-                Processing::Color(_)
-                | Processing::Spatial(_)
-                | Processing::Resample(_)
-                | Processing::Warp(_) => {}
-            }
-        }
-        Some(Resolved {
-            replacement: None,
-            input_x,
-            input_y,
-        })
-    }
-
-    /// [`Self::resolve`] by the full composition whatever the segment holds: the reference the
-    /// shortcut for a segment without replacements is held to.
-    #[cfg(test)]
-    pub(super) fn resolve_composed(&self, x: u32, y: u32) -> Option<Resolved> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        let (input_x, input_y) = self.geometry.unmap(x, y);
-        self.replacement_at(x, y, input_x, input_y)
-    }
-}
-
-/// Where each of one segment's point replacements lands in its output frame, in stack order, with
-/// its position in the operation list. One backward walk accumulates the suffix geometry that
-/// carries each replacement; a replacement a later crop discards is simply absent. The result is
-/// bounded by the layer count and reads no pixels.
-pub(super) fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
-    let mut suffix = ExactGeometry::identity(segment.width, segment.height);
-    let mut mapped = Vec::new();
-    for (index, operation) in segment.operations.iter().enumerate().rev() {
-        match operation {
-            Processing::ExactGeometry(step) => suffix = step.then(suffix),
-            Processing::PointReplace {
-                x: pixel_x,
-                y: pixel_y,
-                rgb,
-            } => {
-                if let Some((x, y)) = suffix.map(*pixel_x, *pixel_y) {
-                    mapped.push((index, x, y, *rgb));
-                }
-            }
-            Processing::Color(_)
-            | Processing::Spatial(_)
-            | Processing::Resample(_)
-            | Processing::Warp(_) => {}
-        }
-    }
-    mapped.reverse();
-    mapped
 }

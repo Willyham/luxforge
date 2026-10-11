@@ -19,6 +19,14 @@
 //! An evidence run bypasses only the dialog: its `export` step names the file, written into the
 //! run's evidence directory, and the rest of the chain is the same, except that its folder is
 //! never remembered.
+//!
+//! An entry holding stale frozen patches (`docs/design/corrections.md`, "Input identity") is
+//! refused `conflict` with `data.code` `stale-unacknowledged` until an export acknowledges exactly
+//! them. The desktop never acknowledges on its own: it holds the choice and says on the canvas
+//! which patches are stale and why, and **Export anyway** sends `export.jpeg` again, as a request
+//! of its own, with `acknowledge_stale` naming that entry and exactly those patches; **Cancel**
+//! lets it go. A commit between the two makes the owner refuse the old acknowledgement, which is
+//! held and offered again in the same way.
 use crate::app::{
     Editor,
     gesture::Starting,
@@ -39,7 +47,7 @@ use std::path::{Path, PathBuf};
 const PREPARATION_RETRIES: usize = 4;
 
 /// What the plan answered and where the export goes: everything `export.jpeg` needs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ExportChoice {
     pub(crate) asset_id: AssetId,
     pub(crate) entry_id: EntryId,
@@ -52,12 +60,58 @@ pub(crate) struct ExportChoice {
     pub(crate) reference: bool,
     /// `export.plan`'s answer, reported when the choice is taken up.
     pub(crate) plan: Value,
+    /// The exact acknowledgement of the entry's stale patches, `{entry_id, operations}`, sent only
+    /// by Export anyway, the person's answer to the refusal that named them.
+    pub(crate) acknowledge_stale: Option<Value>,
 }
 
-/// The one export this window runs, from its plan to its last read.
+/// An export refused for its entry's stale frozen patches, held until the person answers: the
+/// choice, and the entry and patches the refusal named, which Export anyway acknowledges exactly.
+#[derive(Clone, Debug)]
+pub(crate) struct HeldStale {
+    pub(crate) choice: Box<ExportChoice>,
+    pub(crate) entry_id: Value,
+    pub(crate) stale: Vec<luxforge_core::StaleCorrection>,
+    /// The folder the save dialog chose, remembered once the export it ends in succeeds.
+    pub(crate) folder: Option<PathBuf>,
+}
+
+impl HeldStale {
+    /// The `acknowledge_stale` Export anyway sends: the refused entry and its stale patches.
+    pub(crate) fn acknowledgement(&self) -> Value {
+        json!({
+            "entry_id": self.entry_id,
+            "operations": self.stale.iter().map(|patch| &patch.operation).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// The held export a refusal with `data` leaves, when `data` names stale patches.
+pub(crate) fn held_stale(
+    choice: ExportChoice,
+    data: Option<&Value>,
+    folder: Option<PathBuf>,
+) -> Option<HeldStale> {
+    let data = data?;
+    if data["code"] != "stale-unacknowledged" {
+        return None;
+    }
+    let stale: Vec<luxforge_core::StaleCorrection> =
+        serde_json::from_value(data["stale"].clone()).ok()?;
+    (!stale.is_empty() && data["entry_id"].is_string()).then(|| HeldStale {
+        choice: Box::new(choice),
+        entry_id: data["entry_id"].clone(),
+        stale,
+        folder,
+    })
+}
+
+/// The one export this window runs, from its plan to its last read, and an export held for its
+/// stale patches until the person answers.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Exporting {
     pub(crate) run: Option<ExportRun>,
+    pub(crate) held: Option<HeldStale>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +128,8 @@ pub(crate) struct ExportRun {
     /// The folder the save dialog chose, stored as the remembered export folder once the export
     /// succeeds. `None` for a destination given any other way.
     pub(crate) folder: Option<PathBuf>,
+    /// What `export.jpeg` was sent, kept so a refusal for stale patches can hold it.
+    pub(crate) choice: Option<Box<ExportChoice>>,
 }
 
 impl Exporting {
@@ -104,6 +160,14 @@ impl Editor {
                 self.export_start(keep_metadata, reference, None)
             }
             ExportMessage::Chosen(result) => self.export_chosen(result),
+            ExportMessage::Anyway => self.export_anyway(),
+            ExportMessage::Dismiss => {
+                if self.export.held.take().is_some() {
+                    self.status.text = "Export cancelled".into();
+                    self.event("export_stale_dismissed", || json!({}));
+                }
+                Task::none()
+            }
             ExportMessage::Queued(result) => self.export_queued(result),
             ExportMessage::Read { job_id, result } => self.export_read(job_id, result),
         }
@@ -126,6 +190,9 @@ impl Editor {
         }
         if self.export.active() {
             return Some("An export is already running".into());
+        }
+        if self.export.held.is_some() {
+            return Some("Answer the stale patches notice first".into());
         }
         if let Some(reason) = self.gesture_refusal(Starting::Export) {
             return Some(reason);
@@ -186,6 +253,7 @@ impl Editor {
             job_id: None,
             dialog: destination.is_none(),
             folder: None,
+            choice: None,
         });
         let pixels_per_inch = screen_pixels_per_inch(self.view_state.system_scale_factor);
         self.event(
@@ -220,6 +288,7 @@ impl Editor {
                     if run.dialog {
                         run.folder = super::remembered::export_folder(&choice.destination);
                     }
+                    run.choice = Some(choice.clone());
                     self.outcome(Outcome::ExportPlanned(&choice.plan));
                 }
                 send_task(self.owner.clone(), self.client, *choice)
@@ -259,6 +328,26 @@ impl Editor {
             }
             Err(error) => {
                 let reason = error.to_string();
+                let held = (error.code == ErrorKind::Conflict.code())
+                    .then(|| {
+                        let run = self.export.run.as_ref()?;
+                        held_stale(
+                            (**run.choice.as_ref()?).clone(),
+                            error.data.as_ref(),
+                            run.folder.clone(),
+                        )
+                    })
+                    .flatten();
+                if let Some(held) = held {
+                    let status = stale_text(&file, held.stale.len());
+                    self.event(
+                        "export_stale_held",
+                        || json!({"entry_id": held.entry_id, "stale": held.stale}),
+                    );
+                    self.export.held = Some(held);
+                    self.export_finished(status, Some(&reason), None);
+                    return Task::none();
+                }
                 let status = if error.code == ErrorKind::Conflict.code() {
                     refused_text(&file)
                 } else {
@@ -328,6 +417,38 @@ impl Editor {
         Task::none()
     }
 
+    /// Export anyway: send the held export again, as a request of its own, acknowledging exactly
+    /// the entry and the stale patches its refusal named. Nothing is acknowledged without this
+    /// press, and a press acknowledges only what the notice showed.
+    fn export_anyway(&mut self) -> Task<Message> {
+        let Some(held) = self.export.held.take() else {
+            return Task::none();
+        };
+        if let Some(refusal) = self.export_refusal() {
+            self.status.text = refusal;
+            self.export.held = Some(held);
+            return Task::none();
+        }
+        let mut choice = *held.choice.clone();
+        choice.acknowledge_stale = Some(held.acknowledgement());
+        let file = file_name(&choice.destination);
+        self.status.text = format!("Exporting {file}\u{2026}");
+        self.export.run = Some(ExportRun {
+            keep_metadata: choice.keep_metadata,
+            reference: choice.reference,
+            file_name: Some(file),
+            job_id: None,
+            dialog: held.folder.is_some(),
+            folder: held.folder.clone(),
+            choice: Some(Box::new(choice.clone())),
+        });
+        self.event(
+            "export_anyway",
+            || json!({"acknowledge_stale": choice.acknowledge_stale}),
+        );
+        send_task(self.owner.clone(), self.client, choice)
+    }
+
     /// The export ended, one way or another: say so, forget it, and report it with the job's last
     /// record and what the GPU tile worker has done and holds. `failure` marks an export that was
     /// refused or failed.
@@ -373,6 +494,12 @@ impl Editor {
                 "reference": run.reference,
                 "file_name": run.file_name,
                 "job_id": run.job_id,
+                "acknowledge_stale": run.choice.as_ref().and_then(|choice| choice.acknowledge_stale.clone()),
+            })),
+            "held_stale": self.export.held.as_ref().map(|held| json!({
+                "file_name": file_name(&held.choice.destination),
+                "entry_id": held.entry_id,
+                "stale": held.stale,
             })),
         })
     }
@@ -451,6 +578,16 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
+/// What the status bar says while an export waits for its stale patches to be acknowledged.
+pub(crate) fn stale_text(file: &str, count: usize) -> String {
+    let patches = if count == 1 {
+        "1 frozen patch is".to_owned()
+    } else {
+        format!("{count} frozen patches are")
+    };
+    format!("Not exported yet: {patches} stale in {file}; Export anyway or Cancel")
+}
+
 /// What the status bar says when the destination already exists.
 pub(crate) fn refused_text(file: &str) -> String {
     format!("Not exported: {file} already exists; Luxforge never replaces a file")
@@ -502,6 +639,7 @@ fn plan_task(
                     pixels_per_inch,
                     reference,
                     plan,
+                    acknowledge_stale: None,
                 })))
             },
             |result| Message::Export(ExportMessage::Chosen(result)),
@@ -549,6 +687,9 @@ pub(crate) fn export_params(choice: &ExportChoice) -> Value {
     });
     if choice.reference {
         params["reference"] = json!(true);
+    }
+    if let Some(acknowledgement) = &choice.acknowledge_stale {
+        params["acknowledge_stale"] = acknowledgement.clone();
     }
     params
 }

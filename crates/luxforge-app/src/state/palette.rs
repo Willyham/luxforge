@@ -306,6 +306,14 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             PaletteAction::Settings(crate::state::settings::SettingsTab::Experiments),
         ),
     ]);
+    // Privacy only where the sheet lists it: a launch eligible for usage statistics.
+    if inputs.usage.eligible {
+        entries.push((
+            "Settings \u{b7} Privacy".to_owned(),
+            "usage.read \u{b7} usage.set".to_owned(),
+            PaletteAction::Settings(crate::state::settings::SettingsTab::Privacy),
+        ));
+    }
     // One entry per theme the library lists, which chooses it as its row does.
     entries.extend(crate::state::themes::palette_entries(inputs.themes));
     entries

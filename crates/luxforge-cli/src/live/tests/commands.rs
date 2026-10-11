@@ -142,7 +142,7 @@ fn luxforge_ctl_commands_answer_help_and_version_without_a_session() {
     let ran = ctl_with(&["--version"], "");
     assert_eq!(
         (ran.status, ran.stdout.trim()),
-        (0, concat!("luxforge-ctl ", env!("CARGO_PKG_VERSION")))
+        (0, format!("luxforge-ctl {}", crate::VERSION).as_str())
     );
 }
 

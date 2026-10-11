@@ -152,6 +152,12 @@ impl PresetsModule {
                 effects: Vec::new(),
                 actions: vec![ActionDescriptor {
                     parameters: vec![
+                        ParameterDescriptor::number("amount", 0.0, 200.0)
+                            .default(serde_json::json!(100.0))
+                            .unit("%")
+                            .step(1.0)
+                            .precision(0)
+                            .notes("Preset strength: omitted or 100 preserves the set; numbers scale from their module defaults and clamp to bounds, identity curves blend y from x. Unsupported fields and analysis steps require 100. Unnamed fields keep their values."),
                         ParameterDescriptor::settings(PRESET_SETTINGS)
                             .required(true)
                             .notes(
@@ -244,6 +250,13 @@ impl ToolModule for PresetsModule {
             return Err(Error::validation("preset settings name no action"));
         }
         crate::presets::validate_composite(context.registry, settings)?;
+        let amount = input
+            .parameters
+            .get("amount")
+            .and_then(Value::as_f64)
+            .unwrap_or(100.0);
+        let settings =
+            crate::settings_at_amount(&context.registry.descriptors(), settings, amount)?;
         settings
             .iter()
             .map(|(action_id, fields)| {
@@ -336,12 +349,13 @@ mod tests {
         assert_eq!(
             parameters.iter().map(shape).collect::<Vec<_>>(),
             vec![
+                json!({"name": "amount", "kind": "number", "required": false, "default": 100.0}),
                 json!({"name": "settings", "kind": "settings", "required": true, "default": null}),
                 json!({"name": "origin", "kind": "settings-origin", "required": true, "default": null}),
             ]
         );
         assert!(
-            parameters[0]["notes"]
+            parameters[1]["notes"]
                 .as_str()
                 .unwrap()
                 .contains("{\"auto-tone\": {}}"),
@@ -401,7 +415,12 @@ mod tests {
             let checked = check_parameters(action, &sent).expect("a valid request");
             let parsed = module.parse(APPLY_SETTINGS, &checked).expect("parsed");
             assert_eq!(parsed.action_id, APPLY_SETTINGS);
-            assert_eq!(parsed.parameters, fields(sent), "stored as sent");
+            let mut expected = fields(sent);
+            expected.insert("amount".into(), json!(100.0));
+            assert_eq!(
+                parsed.parameters, expected,
+                "stored with the default Amount"
+            );
             assert_eq!(module.label(action, &parsed), label);
         }
         for (case, origin, fragment) in [

@@ -536,6 +536,7 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
             "width": 480,
             "height": 320,
             "suggested": suggested,
+            "stale": [],
         })
     );
     // A taken name is counted past, and the plan never wrote anything.
@@ -573,7 +574,7 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
         read["result"],
         json!({
             "path": destination, "bytes": bytes, "width": 480, "height": 320, "metadata": [],
-            "renderer": reference_renderer(),
+            "renderer": reference_renderer(), "acknowledged_stale": [],
         })
     );
     assert!(read.get("error").is_none());
@@ -1061,22 +1062,22 @@ fn an_unavailable_provider_refuses_the_export_and_writes_nothing() {
     let state = harness.import("unavailable.jpg");
     let asset = state["asset"]["id"].clone();
     harness.ok(
-        "edit.set-pixel",
+        "edit.set-basic",
         json!({
             "asset_id": asset,
             "mutation": {"expected_revision": 0, "request_id": "pixel", "actor": "test"},
-            "x": 0, "y": 0, "rgb": [1, 2, 3],
+            "exposure": 0.5,
         }),
     );
     let out = destinations(&harness);
     let mut registry = ModuleRegistry::new();
     registry
         .register(crate::modules::TestModule::shared(
-            "luxforge.pixel",
-            crate::PIXEL_EFFECT,
-            "set-pixel",
+            "luxforge.basic",
+            crate::BASIC_EFFECT,
+            "set-basic",
             crate::Availability::Unavailable {
-                reason: "test: the pixel provider is not installed".into(),
+                reason: "test: the Basic provider is not installed".into(),
             },
         ))
         .unwrap();
@@ -1676,6 +1677,7 @@ fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
         json!({
             "path": out.join("gpu.jpg"), "bytes": bytes, "width": 480, "height": 320,
             "metadata": [], "renderer": {"record": "gpu", "reason": null},
+            "acknowledged_stale": [],
         })
     );
     let kept = harness.export(json!({

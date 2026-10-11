@@ -1,8 +1,8 @@
 //! The status bar: a plain sentence of what last happened and the one control that makes it usable
 //! elsewhere, then the run's own facts at the trailing edge — who else is
 //! connected, what kind of frame the renderer put on screen and how long it took, why a gesture is
-//! drawn on the slower CPU path while a reason for it lasts, and what the current zoom comes to on
-//! this display.
+//! drawn on the slower CPU path while a reason for it lasts, whether the displayed entry holds
+//! stale frozen patches, and what the current zoom comes to on this display.
 use crate::{
     app::message::{Message, view::ViewMessage},
     state::{long_work::LongWorkModel, status::StatusBarModel},
@@ -70,7 +70,7 @@ pub(crate) fn status_bar<'a>(
     };
     // Why the gesture is drawn on the CPU, a muted phrase right after the render slot with its
     // sentence on hover; nothing is drawn on the photograph.
-    let notice: Option<Element<'a, Message>> = model.fallback.as_ref().map(|notice| {
+    let noticed = |notice: &'a crate::state::status::Fallback| -> Element<'a, Message> {
         tooltip(
             text(notice.phrase.clone())
                 .size(theme::SIZE_CAPTION)
@@ -87,7 +87,10 @@ pub(crate) fn status_bar<'a>(
             tooltip::Position::Top,
         )
         .into()
-    });
+    };
+    let notice = model.fallback.as_ref().map(noticed);
+    // The displayed entry's stale frozen patches, said for as long as it holds them.
+    let stale = model.stale.as_ref().map(noticed);
     // Long-running work's busiest job leads the facts while any job runs.
     let mut facts = row![]
         .spacing(theme::STATUS_FACT_SPACING)
@@ -103,6 +106,7 @@ pub(crate) fn status_bar<'a>(
         )
         .push(fact(&model.render))
         .extend(notice)
+        .extend(stale)
         .push(fact(&model.view));
     // A shrinking container lays the sentence out at its own width, where a filling one would give
     // it the whole slot and push Copy to the slot's far end.

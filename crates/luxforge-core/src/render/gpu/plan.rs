@@ -157,9 +157,6 @@ impl GpuAnswer {
 /// order is the one answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GpuFallback {
-    /// A pixel-stage layer is in the stack: its payload addresses content pixels, which no proxy
-    /// stage has and no program replaces.
-    PixelStage { layer: usize },
     /// The boundary layer is a source or geometry effect: its draft changes the content stage or
     /// the geometry itself, which a plan from its input cannot hold.
     BoundaryStage { layer: usize, stage: EffectStage },
@@ -182,6 +179,9 @@ pub enum GpuFallback {
     /// or the export cannot be drawn in staged sweeps, or the read draws one tile: the reference
     /// draws it rather than a light with those layers left out. `why` says which.
     LightStage { layer: usize, why: String },
+    /// Layer `layer` is a repair (Corrections) layer the GPU plan cannot draw, for the reason
+    /// `why`: the reference draws the frame with every operation, never without them.
+    Repair { layer: usize, why: String },
     /// The draft changes no layer of the stack yet, and drafts no layer of its own: there is
     /// nothing for a plan to start from, and its frame is the entry's.
     Unchanged,
@@ -194,7 +194,6 @@ impl GpuFallback {
     /// A stable kebab-case name for the reason, for session state and evidence.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::PixelStage { .. } => "pixel-stage",
             Self::BoundaryStage { .. } => "boundary-stage",
             Self::SpatialUnit { .. } => "spatial-unit",
             Self::SpatialChain { .. } => "spatial-chain",
@@ -202,6 +201,7 @@ impl GpuFallback {
             Self::NoProgram { .. } => "no-program",
             Self::DisabledProgram { .. } => "disabled-program",
             Self::LightStage { .. } => "light-stage",
+            Self::Repair { .. } => "repair",
             Self::Unchanged => "unchanged",
             Self::Unplannable(_) => "unplannable",
         }
@@ -210,14 +210,14 @@ impl GpuFallback {
     /// The layer the reason names; `None` for [`Self::Unchanged`], which names none.
     pub fn layer(&self) -> Option<usize> {
         match self {
-            Self::PixelStage { layer }
-            | Self::BoundaryStage { layer, .. }
+            Self::BoundaryStage { layer, .. }
             | Self::SpatialUnit { layer }
             | Self::SpatialChain { layer }
             | Self::BetweenResamples { layer }
             | Self::NoProgram { layer, .. }
             | Self::DisabledProgram { layer, .. }
-            | Self::LightStage { layer, .. } => Some(*layer),
+            | Self::LightStage { layer, .. }
+            | Self::Repair { layer, .. } => Some(*layer),
             Self::Unchanged | Self::Unplannable(_) => None,
         }
     }
@@ -226,7 +226,6 @@ impl GpuFallback {
 impl std::fmt::Display for GpuFallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PixelStage { layer } => write!(f, "layer {layer} is a pixel-stage layer"),
             Self::BoundaryStage { layer, stage } => write!(
                 f,
                 "layer {layer} is a {} effect, whose draft the plan cannot start from",
@@ -255,6 +254,10 @@ impl std::fmt::Display for GpuFallback {
                 f,
                 "layer {layer} reads a light behind a spatial layer, which only staged sweeps \
                  compute: {why}"
+            ),
+            Self::Repair { layer, why } => write!(
+                f,
+                "layer {layer} is a Corrections layer the GPU plan cannot draw: {why}"
             ),
             Self::Unchanged => write!(f, "the draft changes no layer yet"),
             Self::Unplannable(reason) => {
@@ -800,18 +803,6 @@ impl Compiled {
                 Error::internal(format!("layer {boundary} has no compiled position"))
             })?,
         };
-        // A stack-level reason first: a pixel-stage layer anywhere.
-        for (index, segment) in self.segments.iter().enumerate() {
-            if let Some(operation) = segment
-                .operations
-                .iter()
-                .position(|operation| matches!(operation, Processing::PointReplace { .. }))
-            {
-                return Ok(Err(GpuFallback::PixelStage {
-                    layer: self.layer_at(index, operation),
-                }));
-            }
-        }
         if let (false, Some(stage @ (EffectStage::Source | EffectStage::Geometry))) =
             (planning.source, stage)
         {
@@ -873,10 +864,9 @@ impl Compiled {
                         Err(fallback) => return Ok(Err(fallback)),
                     }
                 }
-                // Refused above; a spatial operation, resample or warp is an entry, never an
-                // operation.
-                Processing::PointReplace { .. }
-                | Processing::Spatial(_)
+                // A spatial operation, repair, resample or warp is an entry, never an operation.
+                Processing::Spatial(_)
+                | Processing::Repair(_)
                 | Processing::Resample(_)
                 | Processing::Warp(_) => {}
             }
@@ -889,7 +879,7 @@ impl Compiled {
         // has no pass.
         let mut spatial: Vec<GpuSpatial> = Vec::new();
         let mut index = first + 1;
-        while let Some(Some(Entry::Spatial(entry))) =
+        while let Some(Some(entry @ (Entry::Spatial(_) | Entry::Repair(_)))) =
             self.segments.get(index).map(|next| &next.entry)
         {
             let layer = self.entry_layer(index);
@@ -923,7 +913,12 @@ impl Compiled {
                     }
                 }
             }
-            match plan_spatial(layer, entry, received, planning)? {
+            let planned = match entry {
+                Entry::Spatial(entry) => plan_spatial(layer, entry, received, planning)?,
+                Entry::Repair(entry) => super::repair::admit(layer, entry, received, planning),
+                Entry::Resample(_) => unreachable!("the loop takes spatial and repair entries"),
+            };
+            match planned {
                 Ok(planned) => {
                     // Each operation is a link of its own on the surface, which binds only its
                     // own applies' planes.
@@ -981,8 +976,8 @@ impl Compiled {
                         Ok(operation) => step.after.push(operation),
                         Err(fallback) => return Ok(Err(fallback)),
                     },
-                    Processing::PointReplace { .. }
-                    | Processing::Spatial(_)
+                    Processing::Spatial(_)
+                    | Processing::Repair(_)
                     | Processing::Resample(_)
                     | Processing::Warp(_) => {}
                 }
@@ -1002,7 +997,7 @@ impl Compiled {
                 continue;
             }
             if index > content_end
-                && let Some(Entry::Spatial(_)) = &segment.entry
+                && let Some(Entry::Spatial(_) | Entry::Repair(_)) = &segment.entry
             {
                 return Ok(Err(GpuFallback::SpatialUnit {
                     layer: self.entry_layer(index),

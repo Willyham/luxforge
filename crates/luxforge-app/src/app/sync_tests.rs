@@ -320,6 +320,7 @@ fn nothing_new() -> tasks::SyncResult {
         preferences: false,
         themes: false,
         development_set: None,
+        usage: false,
         own: Vec::new(),
     }
 }

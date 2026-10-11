@@ -351,22 +351,25 @@ fn a_draft_that_changes_nothing_names_it() {
 /// A plan, and a reason that names no layer, carry none.
 #[test]
 fn a_fallback_carries_its_layers_label_from_the_stack_it_was_planned_over() {
-    let pixel = Layer::pixel(0, 0, [9, 9, 9]);
-    let (job, draft) = draft_job_with(
-        ModuleRegistry::developer(),
-        RenderContext::new(),
-        source(),
+    // A spatial layer behind an exact step the plan cannot hold names itself: the fallback is the
+    // Presence layer's, and the label is the one the recipe list gives that layer.
+    let turn = Layer::orientation(crate::Orientation {
+        mirror: false,
+        turns: 1,
+    });
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30.0}));
+    let (job, draft) = draft_job(
         "set-basic",
-        recipe(vec![pixel.clone()]),
-        recipe(vec![pixel]),
+        vec![basic(json!({})), turn.clone(), presence.clone()],
+        vec![basic(json!({"exposure": 0.3})), turn, presence],
         1,
     );
     let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
-    let Some(crate::GpuFallback::PixelStage { layer }) = preview.answer.fallback() else {
-        panic!("a pixel-stage reason, not {:?}", preview.answer);
+    let Some(crate::GpuFallback::SpatialUnit { layer }) = preview.answer.fallback() else {
+        panic!("a spatial-unit reason, not {:?}", preview.answer);
     };
-    assert_eq!(*layer, 0, "the neutral Basic layer is inserted after it");
-    assert_eq!(preview.layer.as_deref(), Some("Pixel"));
+    assert_eq!(*layer, 2, "the Presence layer follows the exact step");
+    assert_eq!(preview.layer.as_deref(), Some("Presence"));
     let (job, draft) = draft_job(
         "set-basic",
         vec![basic(json!({}))],

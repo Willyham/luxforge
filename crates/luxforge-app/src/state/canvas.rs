@@ -124,6 +124,8 @@ pub(crate) struct DraftBar {
     /// The gesture commits each stroke on release, so the bar ends it with Done — put the brush
     /// down — rather than with an Apply that would have nothing left to commit.
     pub(crate) done: bool,
+    /// The gesture commits on release, so the bar offers only Cancel.
+    pub(crate) cancel_only: bool,
 }
 
 /// What an open mask gesture is about, in the words the draft bar and the status line both use.
@@ -202,6 +204,11 @@ pub(crate) enum NoticeAction {
     /// Locate original…: point the open photograph at a file the person chooses (`source.locate`),
     /// then open it again from that file.
     LocateOriginal,
+    /// Export anyway: send the export held for its stale frozen patches again, acknowledging
+    /// exactly the entry and patches the notice names.
+    ExportAnyway,
+    /// Let the export held for its stale frozen patches go.
+    DismissExport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -313,28 +320,48 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             enabled: editable,
         },
     ];
+    // A declared brush workspace follows Mask, as the Corrections design places it, then the crop
+    // frames in registry order.
+    let shown = |module: &&ModuleDescriptor| {
+        module.is_available()
+            && applies(module, inputs.document.state.as_ref())
+            && (!module.developer || inputs.developer)
+    };
     modes.extend(
         inputs
             .modules
             .iter()
-            .filter(|module| {
-                module.is_available() && applies(module, inputs.document.state.as_ref())
-            })
-            .filter(|module| !module.developer || inputs.developer)
-            .filter_map(|module| match module.canvas.as_ref() {
-                Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
+            .filter(shown)
+            .filter(|module| super::corrections::is_brush_mode(inputs.modules, &module.id))
+            .filter_map(|module| {
+                let canvas = module.canvas.as_ref()?;
+                Some(ModeEntry {
                     id: module.id.clone(),
                     label: canvas.title().to_owned(),
                     icon: canvas.icon().map(str::to_owned),
                     shortcut: canvas.shortcut().map(str::to_owned),
                     selected: inputs.session.workspace.mode == module.id,
                     enabled: editable,
-                }),
-                Some(CanvasInteraction::PointPick { .. })
-                | Some(CanvasInteraction::SampleApply { .. })
-                | None => None,
+                })
             }),
     );
+    modes.extend(inputs.modules.iter().filter(shown).filter_map(|module| {
+        match module.canvas.as_ref() {
+            Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
+                id: module.id.clone(),
+                label: canvas.title().to_owned(),
+                icon: canvas.icon().map(str::to_owned),
+                shortcut: canvas.shortcut().map(str::to_owned),
+                selected: inputs.session.workspace.mode == module.id,
+                enabled: editable,
+            }),
+            // A declared brush is listed above, after Mask.
+            Some(CanvasInteraction::PointPick { .. })
+            | Some(CanvasInteraction::SampleApply { .. })
+            | Some(CanvasInteraction::BrushMask { .. })
+            | None => None,
+        }
+    }));
     let photo = photo_view(inputs, drafting);
     CanvasModel {
         photo: photo.clone(),
@@ -414,6 +441,29 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
     if let Some(draft) = inputs.mask_draft {
         return Some(mask_draft_bar(inputs, draft));
     }
+    // A correction's bar names it in the accent and says what the gesture does; its release
+    // commits, so it offers only Cancel.
+    if let Some(draft) = &inputs.correction_draft {
+        let subject = [draft.verb.as_str(), draft.source.as_str()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ");
+        return Some(DraftBar {
+            crop_ratios: Vec::new(),
+            crop_enabled: false,
+            title: draft.name.clone(),
+            subject: Some(subject),
+            kind: None,
+            icon: None,
+            readout: "release commits one entry".into(),
+            can_apply: false,
+            conflicted: inputs.gesture_conflicted,
+            apply_reason: None,
+            done: false,
+            cancel_only: true,
+        });
+    }
     let (title, readout) = match inputs.draft {
         Some(draft) => (
             inputs
@@ -451,6 +501,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         conflicted: inputs.gesture_conflicted,
         apply_reason: inputs.apply_refusal.clone(),
         done: false,
+        cancel_only: false,
     })
 }
 
@@ -473,6 +524,7 @@ fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
         conflicted: inputs.gesture_conflicted,
         apply_reason: inputs.apply_refusal.clone().filter(|_| !done),
         done,
+        cancel_only: false,
     }
 }
 
@@ -508,6 +560,36 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             ],
         });
     }
+    // The Corrections workspace's two notices: an add waiting for a source keeps its stroke and is
+    // finished with `⌥`-click or cancelled; a press at the limit was refused before any draft.
+    if super::corrections::is_brush_mode(inputs.modules, &inputs.session.workspace.mode) {
+        match &inputs.corrections.notice {
+            Some(super::corrections::CorrectionNotice::NoSource { reason }) => {
+                notices.push(Notice {
+                    tone: NoticeTone::Warning,
+                    icon: NoticeIcon::Spark,
+                    title: "No automatic source fits".into(),
+                    body: super::corrections::notice_detail(reason),
+                    actions: vec![("Cancel".into(), NoticeAction::DiscardGesture)],
+                });
+            }
+            Some(super::corrections::CorrectionNotice::Limit { text, code }) => {
+                notices.push(Notice {
+                    tone: NoticeTone::Neutral,
+                    icon: NoticeIcon::Triangle,
+                    title: text.clone(),
+                    body: code.clone(),
+                    actions: Vec::new(),
+                });
+            }
+            None => {}
+        }
+    }
+    // An export refused for its entry's stale frozen patches waits here for the person's answer:
+    // nothing is acknowledged without Export anyway, which acknowledges what this card names.
+    if let Some(stale) = inputs.export_held {
+        notices.push(stale_export_notice(stale));
+    }
     if inputs.draft.is_some() && !super::at_current(inputs.document.state.as_ref(), inputs.session)
     {
         notices.push(Notice {
@@ -526,6 +608,41 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         ));
     }
     notices
+}
+
+/// The card an export held for its stale frozen patches shows: each patch by name with what
+/// changed since it was generated, and the two answers.
+pub(crate) fn stale_export_notice(stale: &[luxforge_core::StaleCorrection]) -> Notice {
+    let mut lines: Vec<String> = stale
+        .iter()
+        .map(|patch| {
+            let changed: Vec<&str> = patch
+                .reasons
+                .iter()
+                .map(|reason| super::corrections::stale_phrase(reason.as_str()))
+                .collect();
+            format!(
+                "{}: {} since it was generated.",
+                patch.name,
+                changed.join(", ")
+            )
+        })
+        .collect();
+    lines.push("Export anyway writes them as they were accepted.".into());
+    Notice {
+        tone: NoticeTone::Warning,
+        icon: NoticeIcon::Triangle,
+        title: if stale.len() == 1 {
+            "1 stale patch in this export".into()
+        } else {
+            format!("{} stale patches in this export", stale.len())
+        },
+        body: lines.join("\n"),
+        actions: vec![
+            ("Export anyway".into(), NoticeAction::ExportAnyway),
+            ("Cancel".into(), NoticeAction::DismissExport),
+        ],
+    }
 }
 
 /// The notice one failed preview produces, when its kind is one the workspace explains. What the

@@ -1050,6 +1050,7 @@ impl EditorService {
             keep_sources,
             live_sources,
             source_rows: emptied.sources.len(),
+            candidates: self.candidates.clone(),
         });
         Ok((emptied, collection))
     }
@@ -1638,15 +1639,13 @@ mod tests {
     /// Commits enough to read back: an import, three edits, an undo and a version.
     fn committed(service: &mut EditorService) -> AssetId {
         let asset = service.import(&fixture()).unwrap().asset.id;
-        for (revision, rgb) in [[1, 2, 3], [4, 5, 6], [7, 8, 9]].into_iter().enumerate() {
+        for (revision, exposure) in [0.1, 0.4, 0.7].into_iter().enumerate() {
             let revision = revision as u64;
             service
-                .apply_pixel(
+                .apply_exposure(
                     &asset,
                     mutation(revision, &format!("edit-{revision}")),
-                    0,
-                    0,
-                    rgb,
+                    exposure,
                 )
                 .unwrap();
         }

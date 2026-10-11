@@ -19,97 +19,11 @@
 //! a press, a drag and a sweep do to it, what a typed number may be and what its figure looks like —
 //! is that kind's [`editor::ShapeEditor`], in its own module beside this one, and the draft never asks which
 //! kind it holds.
-use luxforge_core::{ComponentId, ComponentMode, GeometryMap, MaskId, mask::commands::GeometryOp};
+use luxforge_core::{ComponentId, ComponentMode, MaskId, mask::commands::GeometryOp};
 use serde_json::{Map, Value, json};
 
-/// One host map retained by the gesture and evaluated locally for every pointer move.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ContentMap {
-    geometry: std::sync::Arc<GeometryMap>,
-    identity: Option<luxforge_core::MappingDescriptor>,
-}
-impl ContentMap {
-    pub(crate) fn new(geometry: &GeometryMap) -> Option<Self> {
-        (geometry.content.width > 0
-            && geometry.content.height > 0
-            && geometry.output.width > 0
-            && geometry.output.height > 0)
-            .then(|| Self {
-                geometry: std::sync::Arc::new(geometry.clone()),
-                identity: None,
-            })
-    }
-    pub(crate) fn from_descriptor(descriptor: luxforge_core::MappingDescriptor) -> Option<Self> {
-        let mut map = Self::new(&descriptor.geometry)?;
-        map.identity = Some(descriptor);
-        Some(map)
-    }
-    #[cfg(test)]
-    pub(crate) fn from_affine(
-        content: (u32, u32),
-        output: (u32, u32),
-        forward: [f64; 6],
-        inverse: [f64; 6],
-    ) -> Option<Self> {
-        Self::new(&GeometryMap::affine(
-            luxforge_core::StageSize {
-                width: content.0,
-                height: content.1,
-            },
-            luxforge_core::StageSize {
-                width: output.0,
-                height: output.1,
-            },
-            forward,
-            inverse,
-        ))
-    }
-    pub(crate) fn output(&self) -> (f64, f64) {
-        (
-            self.geometry.output.width as f64,
-            self.geometry.output.height as f64,
-        )
-    }
-    pub(crate) fn aspect(&self) -> f64 {
-        self.geometry.content.width as f64 / self.geometry.content.height as f64
-    }
-    pub(crate) fn to_output(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        self.geometry
-            .to_output(
-                x * self.geometry.content.width as f64,
-                y * self.geometry.content.height as f64,
-            )
-            .ok()
-    }
-    pub(crate) fn to_content(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let (x, y) = self.geometry.to_content(x, y).ok()?;
-        Some((
-            x / self.geometry.content.width as f64,
-            y / self.geometry.content.height as f64,
-        ))
-    }
-    /// Output-pixel tolerance through the core's local Jacobian at this pointer.
-    pub(crate) fn tolerance_at(&self, x: f64, y: f64, output_pixels: f64) -> Option<f64> {
-        self.geometry.local_scale_at(x, y).ok().map(|scale| {
-            output_pixels * scale
-                / self
-                    .geometry
-                    .content
-                    .width
-                    .min(self.geometry.content.height) as f64
-        })
-    }
-    pub(crate) fn domain(&self) -> (f64, f64) {
-        (1.0, 1.0)
-    }
-    pub(crate) fn visible(&self, x: f64, y: f64) -> bool {
-        let (w, h) = self.output();
-        x >= 0.0 && y >= 0.0 && x <= w && y <= h
-    }
-    pub(crate) fn summary(&self) -> Value {
-        json!({"mapping_sha256":self.geometry.sha256(),"identity":self.identity.as_ref().map(|d|json!({"entry_id":d.entry_id,"snapshot_id":d.snapshot_id,"source_fingerprint":d.source_fingerprint,"draft":d.draft})),"mapping":self.geometry.mapping})
-    }
-}
+/// The one map every brush and handle is placed through, shared with every painted consumer.
+pub(crate) use crate::brush::ContentMap;
 
 /// This build's drawn kinds and their editors: one [`editor::ShapeEditor`] per kind, reached through the kind
 /// table in [`editor`].
@@ -123,7 +37,7 @@ pub(crate) use editor::{
     DrawnShape, Grip, MaskHandle, Pen, drawable, kind_letter, paintable, painted_kind,
 };
 #[cfg(test)]
-pub(crate) use {brush::counts as brush_counts, linear::NEUTRAL, radial::NEUTRAL_RADIAL};
+pub(crate) use {crate::brush::counts as brush_counts, linear::NEUTRAL, radial::NEUTRAL_RADIAL};
 
 /// The drawn kinds' tokens, for the tests that name one. Product code asks the drawn-kind table
 /// instead ([`drawable`], [`paintable`], [`painted_kind`]).

@@ -408,6 +408,14 @@ impl GpuTiles {
         true
     }
 
+    /// The adapter the runner's device is on, once it is opened, and the backend and name of the
+    /// adapter the worker was told to open on. Reads the worker's recorded state under its lock:
+    /// no device is created or queried.
+    pub(crate) fn adapters(&self) -> (Option<Adapter>, Option<(String, String)>) {
+        let state = self.shared.lock();
+        (state.figures.adapter.clone(), state.adapter.clone())
+    }
+
     /// What the worker has done and holds, as of the last call or tile it drew.
     pub(crate) fn figures(&self) -> TileWorkerFigures {
         let state = self.shared.lock();

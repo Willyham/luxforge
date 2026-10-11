@@ -237,6 +237,7 @@ impl Editor {
                             sync.flags,
                             sync.preferences,
                             sync.themes,
+                            sync.usage,
                         );
                         let set = match sync.development_set {
                             Some(revision) => self.development_set_changed(revision),

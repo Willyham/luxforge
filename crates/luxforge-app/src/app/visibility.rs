@@ -246,6 +246,7 @@ pub(super) fn subscription(_: &Editor) -> Subscription<Message> {
 
 pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> Task<Message> {
     editor.visibility_evidence_settle();
+    editor.usage_presented();
     Task::none()
 }
 

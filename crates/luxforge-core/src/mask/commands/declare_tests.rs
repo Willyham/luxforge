@@ -741,6 +741,7 @@ impl crate::ToolModule for Colliding {
                     preset: true,
                     analysis: None,
                     shortcut: None,
+                    accepts_candidate: false,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),

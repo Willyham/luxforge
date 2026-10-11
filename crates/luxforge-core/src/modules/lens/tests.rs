@@ -644,6 +644,7 @@ fn fixed_camera_profile_history_uses_the_record_name_without_focal() {
                 action_id: SELECT.into(),
                 parameters: Map::new()
             },
+            &[],
             &[layer],
             "fallback"
         ),

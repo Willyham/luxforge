@@ -29,6 +29,9 @@ fn whole(old: &[u32], steps: &[GpuStep]) -> (Vec<u32>, Vec<Range<usize>>, bool) 
             }
             GpuStep::Geometry(tail) => new.extend_from_slice(tail.block()),
             GpuStep::Spatial(spatial) => {
+                for resident in &spatial.resident {
+                    new.extend_from_slice(resident);
+                }
                 new.extend_from_slice(&spatial.program.block);
                 for component in spatial.mask.iter().flat_map(|mask| &mask.components) {
                     new.extend_from_slice(&component.program.block);
@@ -103,6 +106,10 @@ fn spatial(block: &Arc<[u32]>, components: &[&Arc<[u32]>]) -> GpuStep {
         clamps: false,
         mask: (!components.is_empty()).then(|| mask(components)),
         halos: Vec::new(),
+        contained: false,
+        resident: Vec::new(),
+        resident_key: 0,
+        reads: None,
     }))
 }
 
@@ -426,4 +433,62 @@ fn a_buffers_key_follows_its_blocks_contents() {
     assert_ne!(named, written_key(1, &[1, 3], key, 4));
     assert_ne!(named, written_key(1, &[1, 2], key + 1, 4));
     assert_ne!(named, written_key(1, &[1, 2], key, 5));
+}
+
+/// A spatial step's resident blocks — a repair step's frozen patches — pack before its program's
+/// block, whose base the header records past them; a tick that hands them again at the same place
+/// with a program block of another length writes only the program's chunks, never theirs, and
+/// a link's keys take their key rather than their words.
+#[test]
+fn resident_blocks_pack_before_the_program_and_are_not_written_again() {
+    let patch: Arc<[u32]> = (0..(CHUNK as u32 * 8)).collect();
+    let resident = |table: &Arc<[u32]>| {
+        let GpuStep::Spatial(mut step) = spatial(table, &[]) else {
+            unreachable!()
+        };
+        step.resident = vec![Arc::clone(&patch)];
+        step.resident_key = 7;
+        GpuStep::Spatial(step)
+    };
+    let first = block([1, 2, 3]);
+    let steps = vec![colour(&block([9])), resident(&first)];
+    let mut words = Vec::new();
+    super::super::chain::pack_words(super::super::TexelMap::IDENTITY, (0, 0), &steps, &mut words);
+    let header = super::super::MAP_WORDS;
+    let step = super::super::STEP_WORDS;
+    assert_eq!(words[header + 1], 0, "the colour step's base");
+    assert_eq!(
+        words[header + step + 1] as usize,
+        1 + patch.len(),
+        "the repair program's base is past its resident block"
+    );
+    let mut written = WrittenBlocks::default();
+    let old = written.words().to_vec();
+    tick(&mut written, &old, &steps, "first");
+    // A longer table: the patch stays where it was and only the table's chunk is written.
+    let longer = block([1, 2, 3, 4, 5]);
+    let held = written.words().to_vec();
+    let update = tick(
+        &mut written,
+        &held,
+        &[colour(&block([9])), resident(&longer)],
+        "longer",
+    );
+    assert!(
+        update
+            .ranges
+            .iter()
+            .all(|range| range.start >= 1 + patch.len() - (1 + patch.len()) % CHUNK)
+    );
+    let others = longer.len() as u64 + 1;
+    assert!(
+        update.compared <= others,
+        "the patch is not compared: {}",
+        update.compared
+    );
+    assert!(
+        update.copied <= others,
+        "the patch is not copied: {}",
+        update.copied
+    );
 }

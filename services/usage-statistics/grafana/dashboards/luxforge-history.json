@@ -1,0 +1,372 @@
+{
+  "uid": "luxforge-history",
+  "title": "Luxforge installation and image history",
+  "description": "One installation across its sessions, and one image across those sessions, for performance debugging.",
+  "tags": [
+    "luxforge",
+    "usage-statistics"
+  ],
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 0,
+  "refresh": "",
+  "timezone": "utc",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "type": "query",
+        "name": "installation",
+        "label": "Installation",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "luxforge-clickhouse"
+        },
+        "query": {
+          "editorType": "sql",
+          "rawSql": "SELECT concat(substring(toString(installation_id), 1, 8), ' | ', toString(count()), ' sessions | last ', toString(max(session_start)), ' UTC') AS __text,\n       toString(installation_id) AS __value\nFROM luxforge.session_summary GROUP BY installation_id ORDER BY max(session_start) DESC LIMIT 300",
+          "format": 1,
+          "queryType": "table",
+          "refId": "variable"
+        },
+        "definition": "SELECT concat(substring(toString(installation_id), 1, 8), ' | ', toString(count()), ' sessions | last ', toString(max(session_start)), ' UTC') AS __text,\n       toString(installation_id) AS __value\nFROM luxforge.session_summary GROUP BY installation_id ORDER BY max(session_start) DESC LIMIT 300",
+        "refresh": 2,
+        "sort": 0,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "current": {}
+      },
+      {
+        "type": "query",
+        "name": "image",
+        "label": "Image",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "luxforge-clickhouse"
+        },
+        "query": {
+          "editorType": "sql",
+          "rawSql": "SELECT image AS __value, concat(image, ' | ', toString(count()), ' events') AS __text\nFROM luxforge.events_unique WHERE installation_id = toUUID('${installation}') AND image IS NOT NULL\nGROUP BY image ORDER BY max(received_at) DESC LIMIT 500",
+          "format": 1,
+          "queryType": "table",
+          "refId": "variable"
+        },
+        "definition": "SELECT image AS __value, concat(image, ' | ', toString(count()), ' events') AS __text\nFROM luxforge.events_unique WHERE installation_id = toUUID('${installation}') AND image IS NOT NULL\nGROUP BY image ORDER BY max(received_at) DESC LIMIT 500",
+        "refresh": 2,
+        "sort": 0,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Usage",
+      "type": "link",
+      "url": "/d/luxforge-usage",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Performance",
+      "type": "link",
+      "url": "/d/luxforge-performance",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Paths",
+      "type": "link",
+      "url": "/d/luxforge-paths",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Session timeline",
+      "type": "link",
+      "url": "/d/luxforge-session",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Installation and image history",
+      "type": "link",
+      "url": "/d/luxforge-history",
+      "icon": "dashboard"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Read this first",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**How to read this dashboard.** Reporting is **opt-in**, so every number describes only the installations whose owners chose to share, not everyone who uses Luxforge, and those people may differ from the rest. Delivery is **best-effort**: batches and events can be lost (the loss panels count the gaps that are visible), and the **end of a session is never seen**: nothing after the last received batch exists here. A **session** is one app launch; an **installation** is one random ID kept by one install. Neither is a person or a physical device: one person can have several installations, an installation can be reset, and the ID is not an account. Image IDs are meaningful only inside one installation. Sparse cohorts can identify an installation and do not prove anonymity. Rows expire 90 days after receipt.\n\nImage IDs are keyed per installation: the same photograph on two installations has two unrelated IDs, and there is no photo lookup or account join. The Image variable lists only the images the selected installation reported."
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Sessions of this installation",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT session_start AS \"session start\", release, os, cpu, gpu, memory_gib_band AS \"memory GiB band\", renderer, renderer_fallback AS \"renderer fallback\",\n       events AS \"events\", missing_events AS \"events missing\", dropped AS \"dropped (reported)\", round(active_ms / 60000, 1) AS \"active minutes\",\n       toString(session_id) AS session\nFROM luxforge.session_summary WHERE installation_id = toUUID('${installation}') ORDER BY session_start",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Preview settle time per session (p50 and p95)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT s.session_start AS time, quantileExactInclusive(0.5)(e.duration_ms) AS p50, quantileExactInclusive(0.95)(e.duration_ms) AS p95\nFROM luxforge.events_unique AS e INNER JOIN luxforge.session_summary AS s ON s.session_id = e.session_id\nWHERE e.installation_id = toUUID('${installation}') AND e.name = 'preview.settled' GROUP BY e.session_id, s.session_start ORDER BY time",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "points",
+            "pointSize": 7,
+            "lineWidth": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Process samples of this installation",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT wall_time AS time, cpu_percent AS \"CPU %\", memory_mib AS \"memory MiB\"\nFROM luxforge.event_timeline WHERE installation_id = toUUID('${installation}') AND name = 'process.sample' ORDER BY time",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "points",
+            "pointSize": 7,
+            "lineWidth": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Operations of this installation",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT operation, outcome, count() AS operations, round(quantileExactInclusive(0.5)(duration_ms)) AS \"p50 ms\",\n       round(quantileExactInclusive(0.95)(duration_ms)) AS \"p95 ms\", max(duration_ms) AS \"max ms\"\nFROM luxforge.events_unique WHERE installation_id = toUUID('${installation}') AND name = 'operation.end'\nGROUP BY operation, outcome ORDER BY operation, outcome",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Timing of the selected image",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT name, ifNull(operation, '') AS operation, ifNull(renderer, '') AS renderer, ifNull(outcome, '') AS outcome, count() AS events,\n       round(quantileExactInclusive(0.5)(duration_ms)) AS \"p50 ms\", round(quantileExactInclusive(0.95)(duration_ms)) AS \"p95 ms\", max(duration_ms) AS \"max ms\"\nFROM luxforge.events_unique WHERE installation_id = toUUID('${installation}') AND image = '${image}' AND duration_ms IS NOT NULL\nGROUP BY name, operation, renderer, outcome ORDER BY name, operation, renderer, outcome",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "History of the selected image across sessions",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT wall_time AS \"wall time\", substring(toString(session_id), 1, 8) AS session, seq, label, duration_ms AS \"duration ms\", count,\n       missing_before AS \"missing before\"\nFROM luxforge.event_timeline WHERE installation_id = toUUID('${installation}') AND image = '${image}'\nORDER BY session_start, seq",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}

@@ -11,6 +11,8 @@ mod catalog_probes;
 mod conformance;
 mod controls_smoke;
 mod copy_settings_smoke;
+mod corrections_raw_smoke;
+mod corrections_smoke;
 mod crop_smoke;
 mod curve_acceptance;
 mod curve_smoke;
@@ -65,6 +67,8 @@ mod raw;
 mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
+mod release_build;
+mod release_sign;
 mod resolve_missing_smoke;
 mod scenario;
 mod select_catalog_smoke;
@@ -73,6 +77,10 @@ mod settings_smoke;
 mod smoke;
 mod stats;
 mod theme_smoke;
+mod usage_backend_smoke;
+mod usage_measure;
+mod usage_receiver;
+mod usage_smoke;
 mod verify;
 mod viewport_smoke;
 mod vignette_smoke;
@@ -176,6 +184,37 @@ fn main_result() -> Result {
     let op = args.next().unwrap_or_else(|| "help".into());
     let mut a = Args(args.collect());
     match op.to_str().ok_or("Invalid command")? {
+        "release" => xtask_cli::release::run(&root, &mut a)?,
+        "release-tag" => xtask_cli::release_tag::run(&mut a)?,
+        "release-build" => {
+            let tag = a.value("--tag")?.ok_or("Required: --tag")?;
+            let number = a
+                .value("--build-number")?
+                .ok_or("Required: --build-number")?;
+            let out = absolute(&root, &a.path("--output")?);
+            let allow_dirty = a.flag("--allow-dirty");
+            a.done()?;
+            release_build::build(
+                &root,
+                &out,
+                tag.to_str().ok_or("Tag encoding")?,
+                number.to_str().ok_or("Build number encoding")?,
+                allow_dirty,
+            )?;
+        }
+        "release-sign" => release_sign::run(&root, &mut a)?,
+        "release-assemble" => {
+            let tag = a.value("--tag")?.ok_or("Required: --tag")?;
+            let input = absolute(&root, &a.path("--input")?);
+            let out = absolute(&root, &a.path("--output")?);
+            a.done()?;
+            xtask_cli::release_artifacts::assemble(
+                &root,
+                &input,
+                &out,
+                tag.to_str().ok_or("Tag encoding")?,
+            )?;
+        }
         "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
         "develop" => {
             let debug = a.flag("--debug");
@@ -496,22 +535,24 @@ fn main_result() -> Result {
                 Some("commit") => editor_latency::Mode::Commit,
                 Some("burst") => editor_latency::Mode::Burst,
                 Some("paint") => editor_latency::Mode::Paint,
+                Some("corrections") => editor_latency::Mode::Corrections,
                 Some("hover") => editor_latency::Mode::Hover,
                 Some("crop-start") => editor_latency::Mode::CropStart,
                 Some(other) => {
                     return Err(format!(
-                        "--mode is drag, commit, burst, paint, hover or crop-start, not {other}"
+                        "--mode is drag, commit, burst, paint, corrections, hover or crop-start, not {other}"
                     )
                     .into());
                 }
             };
-            // A paint run's samples are the stroke's positions, and it paints hundreds by default.
+            // A paint run's samples are the stroke's positions, and it paints hundreds by default;
+            // a corrections run's are each of its two gestures' positions.
             let samples = samples(
                 &mut a,
-                if mode == editor_latency::Mode::Paint {
-                    editor_latency::PAINT_POSITIONS
-                } else {
-                    30
+                match mode {
+                    editor_latency::Mode::Paint => editor_latency::PAINT_POSITIONS,
+                    editor_latency::Mode::Corrections => editor_latency::CORRECTION_POSITIONS,
+                    _ => 30,
                 },
             )?;
             if mask_overlay
@@ -528,6 +569,10 @@ fn main_result() -> Result {
             let parameter = a
                 .value("--parameter")?
                 .map(|v| v.to_string_lossy().into_owned());
+            let usage = a
+                .value("--usage")?
+                .map(|value| usage_receiver::UsageMode::parse(&value.to_string_lossy()))
+                .transpose()?;
             a.done()?;
             let _gate = launch::TimingGate::acquire()?;
             editor_latency::run(
@@ -559,6 +604,7 @@ fn main_result() -> Result {
                     masks,
                     mask_presence,
                     window,
+                    usage,
                 },
             )?;
         }
@@ -673,6 +719,44 @@ fn main_result() -> Result {
                     }
                 )?
             );
+        }
+        "usage-measure" => {
+            let out = absolute(&root, &a.path("--output")?);
+            let bin = a
+                .value("--binary")?
+                .map(|path| absolute(&root, Path::new(&path)))
+                .map_or_else(|| binary(&root), Ok)?;
+            let samples = samples(&mut a, 30)?;
+            let repeats = a
+                .value("--repeats")?
+                .map(|value| value.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(3);
+            let mut sources = Vec::new();
+            while let Some(source) = a.value("--source")? {
+                sources.push(absolute(&root, Path::new(&source)));
+            }
+            let only = a.value("--only")?.map(|value| {
+                value
+                    .to_string_lossy()
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            });
+            a.done()?;
+            // Timing runs never overlap, whether they were started by `verify` or by hand.
+            let _gate = launch::TimingGate::acquire()?;
+            usage_measure::run(
+                &root,
+                &out,
+                &bin,
+                usage_measure::Options {
+                    sources,
+                    samples,
+                    repeats,
+                    only,
+                },
+            )?;
         }
         "catalog-measure" => {
             let out = absolute(&root, &a.path("--output")?);

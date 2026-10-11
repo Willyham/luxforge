@@ -445,7 +445,8 @@ fn artifact_collect_through_the_api_answers_once_the_open_has_already_swept_ever
             "objects": 0,
             "temporary": 0,
             "source_rows": 0,
-            "source_objects": 0
+            "source_objects": 0,
+            "candidates": 0
         })
     );
     assert!(object_path(&root, &kept).exists());

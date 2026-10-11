@@ -8,7 +8,7 @@
 //! The parameter names are read from the action's descriptor by kind. Which groups exist, their
 //! defaults and which an analysis step overwrites are the core's ([`luxforge_core::settings_groups`]),
 //! so no module-specific rule lives here.
-use crate::state::{Inputs, control_tree::walk, palette::PaletteAction};
+use crate::state::{Inputs, control_tree::walk, palette::PaletteAction, tools::ValueEdit};
 use luxforge_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterKind, PresetSummary, ReportCounts,
     SettingsGroup, SettingsGroups, SettingsOrigin, USER_PRESET_GROUP,
@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// the listing `preset.list` answered, replaced whole by every newer answer.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PresetLibrary {
+    pub(crate) interaction: PresetInteraction,
     /// Every preset, in the order `preset.list` returned them, or `None` before the first answer.
     pub(crate) presets: Option<Vec<PresetSummary>>,
     /// Why the last listing failed, until a newer one succeeds.
@@ -29,6 +30,40 @@ pub(crate) struct PresetLibrary {
     pub(crate) sequence: u64,
     /// One of this desktop's own library requests is in flight. They run one at a time.
     pub(crate) pending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PresetInteraction {
+    pub(crate) amount: f64,
+    pub(crate) hovered: Option<String>,
+    pub(crate) editing: ValueEdit,
+    pub(crate) invalid: Option<String>,
+}
+
+impl Default for PresetInteraction {
+    fn default() -> Self {
+        Self {
+            amount: 100.0,
+            hovered: None,
+            editing: ValueEdit::None,
+            invalid: None,
+        }
+    }
+}
+
+/// The selected preset is provenance in the displayed current entry, never a sticky photo-wide
+/// flag. An intervening edit, navigation, deletion or library settings change clears it naturally.
+pub(crate) fn selected_preset<'a>(
+    library: &'a PresetLibrary,
+    entry: &luxforge_core::HistoryEntry,
+) -> Option<&'a PresetSummary> {
+    if entry.action_id != "apply-settings" || entry.parameters["origin"]["kind"] != "preset" {
+        return None;
+    }
+    let id = entry.parameters["origin"]["preset_id"].as_str()?;
+    library
+        .find(id)
+        .filter(|preset| entry.parameters["settings"] == Value::Object(preset.settings.clone()))
 }
 
 impl PresetLibrary {
@@ -158,7 +193,7 @@ pub(crate) fn presets_control(modules: &[ModuleDescriptor]) -> Option<(&ModuleDe
 
 /// The fields a `presets` control's action carries for one library preset, under the names its
 /// descriptor declares: the `settings` parameter and the `settings-origin` one, the preset's name and
-/// library identity. Registration guarantees exactly those two.
+/// library identity. Amount is optional and is added by the section model when supported.
 pub(crate) fn apply_fields(
     action: &ActionDescriptor,
     preset: &PresetSummary,
@@ -208,6 +243,8 @@ fn unavailable_reason(preset: &PresetSummary) -> Option<String> {
 /// One preset row.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PresetRow {
+    pub(crate) selected: bool,
+    pub(crate) preview_unavailable: Option<String>,
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) group: String,
@@ -267,6 +304,13 @@ pub(crate) struct PresetFormModel {
 /// The whole Presets section body.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PresetsModel {
+    pub(crate) amount: f64,
+    pub(crate) amount_enabled: bool,
+    pub(crate) amount_reason: Option<String>,
+    pub(crate) amount_edit: ValueEdit,
+    pub(crate) amount_invalid: Option<String>,
+    pub(crate) amount_dragging: bool,
+    pub(crate) selected: Option<String>,
     /// The action a row submits.
     pub(crate) action: String,
     pub(crate) groups: Vec<PresetGroupModel>,
@@ -299,6 +343,10 @@ impl PresetsModel {
             "can_manage": self.can_manage,
             "can_import": self.can_import,
             "apply_disabled": self.apply_disabled,
+            "amount": self.amount,
+            "amount_enabled": self.amount_enabled,
+            "amount_reason": self.amount_reason,
+            "selected": self.selected,
             "rows": self.rows().map(|row| json!({
                 "id": row.id,
                 "name": row.name,
@@ -307,6 +355,8 @@ impl PresetsModel {
                 "counts": row.counts,
                 "unavailable": row.unavailable,
                 "enabled": row.enabled,
+                "selected": row.selected,
+                "preview_unavailable": row.preview_unavailable,
             })).collect::<Vec<_>>(),
             "form": {
                 "analysis": self.form.analysis.iter().filter(|step| step.checked).map(|step| &step.id).collect::<Vec<_>>(),
@@ -335,6 +385,22 @@ pub(crate) fn presets_model(
     let can_manage = !inputs.mask_tool_owns_controls();
     let library = inputs.presets;
     let declared = crate::state::tools::declared_action(inputs.modules, action);
+    let selected = inputs
+        .document
+        .state
+        .as_ref()
+        .and_then(|state| selected_preset(library, &state.current_entry));
+    let amount_target = library
+        .interaction
+        .hovered
+        .as_deref()
+        .and_then(|id| library.find(id))
+        .or(selected);
+    let amount_reason = amount_target
+        .and_then(|preset| {
+            luxforge_core::settings_at_amount(inputs.modules, &preset.settings, 0.0).err()
+        })
+        .map(|error| error.detail);
     // One draft per client: a preset is a commit, so it waits for an open gesture or crop draft to
     // finish rather than displacing it.
     let apply_disabled = match (enabled, reason) {
@@ -345,8 +411,22 @@ pub(crate) fn presets_model(
     let mut groups: Vec<PresetGroupModel> = Vec::new();
     for preset in library.presets.as_deref().unwrap_or_default() {
         let unavailable = unavailable_reason(preset);
-        let apply = declared.and_then(|declared| apply_fields(declared, preset));
+        let supports_amount =
+            luxforge_core::settings_at_amount(inputs.modules, &preset.settings, 0.0).is_ok();
+        let mut apply = declared.and_then(|declared| apply_fields(declared, preset));
+        if supports_amount
+            && library.interaction.amount != 100.0
+            && let Some(fields) = &mut apply
+        {
+            fields.insert("amount".into(), json!(library.interaction.amount));
+        }
         let row = PresetRow {
+            selected: selected.is_some_and(|selected| selected.id == preset.id),
+            preview_unavailable: (!luxforge_core::settings_can_preview(
+                inputs.modules,
+                &preset.settings,
+            ))
+            .then(|| "Hover preview unavailable: this preset contains analysis steps".into()),
             id: preset.id.as_str().to_owned(),
             name: preset.name.clone(),
             group: preset.group.clone(),
@@ -409,6 +489,23 @@ pub(crate) fn presets_model(
         && !form.group.trim().is_empty()
         && (analysis.iter().any(|step| step.checked) || checks.iter().any(|check| check.checked));
     PresetsModel {
+        amount: library.interaction.amount,
+        amount_enabled: enabled
+            && !inputs.gesture_conflicted
+            && !library.presets.as_deref().unwrap_or_default().is_empty()
+            && amount_reason.is_none()
+            && (inputs.gesture.is_none()
+                || inputs
+                    .dragging
+                    .is_some_and(|(a, p)| a == action && p == "amount")
+                || library.interaction.hovered.is_some()),
+        amount_reason,
+        amount_edit: library.interaction.editing.clone(),
+        amount_invalid: library.interaction.invalid.clone(),
+        amount_dragging: inputs
+            .dragging
+            .is_some_and(|(a, p)| a == action && p == "amount"),
+        selected: selected.map(|p| p.id.as_str().to_owned()),
         action: action.to_owned(),
         empty: library.presets.as_ref().is_some_and(Vec::is_empty),
         loading: !library.ready(),
@@ -452,7 +549,13 @@ pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, Palet
         .iter()
         .filter(|preset| preset.unavailable.is_empty())
         .filter_map(|preset| {
-            let fields = apply_fields(declared, preset)?;
+            let mut fields = apply_fields(declared, preset)?;
+            let amount = inputs.presets.interaction.amount;
+            if amount != 100.0
+                && luxforge_core::settings_at_amount(inputs.modules, &preset.settings, 0.0).is_ok()
+            {
+                fields.insert("amount".into(), json!(amount));
+            }
             Some((
                 format!("Apply preset: {}", preset.name),
                 format!("edit.{action} \u{00b7} {}", preset.group),
@@ -501,7 +604,7 @@ mod tests {
                 "Colour mixer \u{00b7} Grading",
                 "Vignette \u{00b7} Vignette",
             ],
-            "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
+            "RAW, transforms and crop declare no field patch; Perspective's patch is not presettable"
         );
         assert_eq!(ordinary.groups[1].id, "luxforge.basic/tone");
     }

@@ -429,6 +429,9 @@ pub(crate) enum CatalogAction {
     Empty,
     /// The confirmation's own button: the removal or the emptying it names.
     Confirmed,
+    /// The batch export report's Export anyway: export again, into the same folder, the
+    /// photographs it left out for stale frozen patches, acknowledging exactly those patches.
+    ExportAnyway,
     /// Open the last batch's report, or close it.
     Report(bool),
 }
@@ -1137,6 +1140,9 @@ pub(crate) struct CatalogSheet {
     pub(crate) sections: Vec<SheetSection>,
     /// The confirming button's label; none for a report, which only closes.
     pub(crate) confirm: Option<String>,
+    /// A batch export report's Export anyway, labelled with how many photographs it would export,
+    /// while it left some out for stale frozen patches.
+    pub(crate) anyway: Option<String>,
 }
 
 /// The filter bar's Empty Removed… over Removed.
@@ -1289,6 +1295,7 @@ pub(crate) fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<C
                         .to_owned()
                 },
                 sections: Vec::new(),
+                anyway: None,
                 confirm: Some(if count == 1 {
                     "Remove".to_owned()
                 } else {
@@ -1312,6 +1319,7 @@ pub(crate) fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<C
                     if count == 1 { "its" } else { "their" },
                 ),
                 sections: Vec::new(),
+                anyway: None,
                 confirm: Some(format!("Delete {}", photographs(count))),
             });
         }
@@ -1342,7 +1350,11 @@ pub(crate) fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<C
                 .map(|skip| {
                     (
                         batch.name(&skip.asset_id),
-                        skip_text(&skip.code, &skip.reason),
+                        if skip.stale.is_empty() {
+                            skip_text(&skip.code, &skip.reason)
+                        } else {
+                            stale_skip_text(&skip.stale)
+                        },
                     )
                 })
                 .collect(),
@@ -1413,13 +1425,89 @@ pub(crate) fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<C
             )
         }
     };
+    let stale = stale_skips(report).count() as u32;
     Some(CatalogSheet {
         kind,
         title,
         note,
         sections,
         confirm: None,
+        anyway: (matches!(batch.kind, BatchKind::Export { .. }) && stale > 0)
+            .then(|| format!("Export anyway \u{b7} {}", photographs(stale))),
     })
+}
+
+/// The photographs a batch export left out because they hold stale frozen patches no request
+/// acknowledged, each with the entry and patches the owner named.
+fn stale_skips(
+    report: &BatchReport,
+) -> impl Iterator<Item = &luxforge_core::catalog_types::BatchSkip> {
+    report
+        .skipped
+        .iter()
+        .filter(|skip| skip.code == STALE_UNACKNOWLEDGED && skip.entry_id.is_some())
+}
+
+/// The code a photograph left out for unacknowledged stale frozen patches is skipped with.
+const STALE_UNACKNOWLEDGED: &str = "stale-unacknowledged";
+
+/// The batch export report's Export anyway, as `batch.export`'s parameters and the photographs it
+/// names: the ones the ended export left out for stale frozen patches, into its folder, each
+/// acknowledged exactly — the entry and patches the owner named — and nothing else. `None` when
+/// the last batch is not an export that left any out so.
+pub(crate) fn export_anyway_params(
+    catalog: &CatalogState,
+    mutation: &MutationRequest,
+) -> Option<(PathBuf, Value, BTreeMap<AssetId, String>)> {
+    let (batch, report) = report_of(catalog)?;
+    let BatchKind::Export { folder } = &batch.kind else {
+        return None;
+    };
+    let stale: Vec<_> = stale_skips(report).collect();
+    if stale.is_empty() {
+        return None;
+    }
+    let acknowledgements: Vec<Value> = stale
+        .iter()
+        .map(|skip| {
+            json!({
+                "asset_id": skip.asset_id,
+                "entry_id": skip.entry_id,
+                "operations": skip.stale.iter().map(|patch| &patch.operation).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let names = stale
+        .iter()
+        .map(|skip| (skip.asset_id.clone(), batch.name(&skip.asset_id)))
+        .collect();
+    Some((
+        folder.clone(),
+        json!({
+            "targets": {"kind": "assets", "asset_ids": stale.iter().map(|skip| &skip.asset_id).collect::<Vec<_>>()},
+            "destination": folder,
+            "acknowledge_stale": acknowledgements,
+            "mutation": mutation,
+        }),
+        names,
+    ))
+}
+
+/// Why a photograph was left out for stale frozen patches: each patch and what changed since it
+/// was generated.
+fn stale_skip_text(stale: &[luxforge_core::StaleCorrection]) -> String {
+    let patches: Vec<String> = stale
+        .iter()
+        .map(|patch| {
+            let changed: Vec<&str> = patch
+                .reasons
+                .iter()
+                .map(|reason| super::corrections::stale_phrase(reason.as_str()))
+                .collect();
+            format!("{}: {}", patch.name, changed.join(", "))
+        })
+        .collect();
+    format!("stale \u{b7} {}", patches.join("; "))
 }
 
 /// Why a photograph was left out: the owner's words, with its code when they do not say it.

@@ -654,13 +654,10 @@ mod tests {
         );
     }
 
-    /// The descriptors a developer run of the desktop would fetch through `module.list`.
+    /// The descriptors a developer run of the desktop would fetch through `module.list`, and the
+    /// point fixture no registry serves.
     fn descriptors() -> Vec<ModuleDescriptor> {
-        luxforge_core::ModuleRegistry::developer()
-            .descriptors()
-            .into_iter()
-            .cloned()
-            .collect()
+        crate::state::testing::descriptors()
     }
 
     fn parameter_of<'a>(
@@ -711,7 +708,8 @@ mod tests {
     fn fields_are_seeded_from_declared_defaults_and_limits() {
         let modules = descriptors();
         let fields = Fields::seeded(&modules);
-        let (action, x, y) = point_pick(&modules).expect("the pixel module declares a canvas pick");
+        let (action, x, y) =
+            point_pick(&modules).expect("the point fixture declares a canvas pick");
         assert_eq!(
             fields.get(action, x),
             Some("0"),
@@ -723,7 +721,7 @@ mod tests {
             .parameters
             .iter()
             .find(|parameter| matches!(parameter.kind, ParameterKind::Color))
-            .expect("the pixel action declares a color");
+            .expect("the point action declares a color");
         assert_eq!(fields.get(action, &color.name), Some("0,0,0"));
         // The host's own mask controls are seeded from the same declarations through the same
         // walk, so a gradient endpoint and a mask's amount are fields exactly as a module's are.
@@ -853,9 +851,9 @@ mod tests {
                 "set-mixer.yellow-saturation",
                 "set-perspective.horizontal",
                 "set-perspective.vertical",
-                "set-pixel.rgb",
-                "set-pixel.x",
-                "set-pixel.y",
+                "set-point.rgb",
+                "set-point.x",
+                "set-point.y",
                 "set-presence.clarity",
                 "set-presence.dehaze",
                 "set-presence.texture",
@@ -1139,6 +1137,8 @@ mod tests {
         let patch = modules
             .iter()
             .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
+            // A section's slider: Corrections' operation edit is a patch with no control.
+            .filter(|module| !module.controls.is_empty())
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");
@@ -1205,6 +1205,8 @@ mod tests {
         let patch = modules
             .iter()
             .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
+            // A section's slider: Corrections' operation edit is a patch with no control.
+            .filter(|module| !module.controls.is_empty())
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");
