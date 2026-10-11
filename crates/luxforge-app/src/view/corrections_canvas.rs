@@ -25,7 +25,9 @@ use crate::{
 use iced::{
     Color, Point, Rectangle, Renderer, Size, keyboard,
     mouse::{self, Cursor},
-    widget::canvas::{self, Action, Event, Frame, Geometry, LineDash, Path, Stroke},
+    widget::canvas::{
+        self, Action, Event, Fill, Frame, Geometry, LineDash, Path, Stroke, Style, fill,
+    },
 };
 use luxforge_ui::{Theme, theme};
 
@@ -213,18 +215,23 @@ fn joined(outline: &Outline) -> Path {
     })
 }
 
-/// The same outline closed and filled.
-fn filled(outline: &Outline) -> Path {
+/// An outline's loops, each closed, as one path to fill: the loops never cross, so the area they
+/// bound, holes left open, fills once.
+fn filled(loops: &[Outline]) -> Path {
     Path::new(|builder| {
-        let mut first = true;
-        for (a, b) in &outline.segments {
-            if first {
-                builder.move_to(*a);
-                first = false;
+        for outline in loops {
+            let mut first = true;
+            for (a, b) in &outline.segments {
+                if first {
+                    builder.move_to(*a);
+                    first = false;
+                }
+                builder.line_to(*b);
             }
-            builder.line_to(*b);
+            if !first {
+                builder.close();
+            }
         }
-        builder.close();
     })
 }
 
@@ -549,10 +556,20 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         // The gesture in progress: a faint footprint while its source waits for the release, or
         // its live outline and source.
         if let (true, Some(live)) = (self.data.painting, &self.live) {
-            let outline = brush_overlay::outline(&self.placement, live);
+            let loops = brush_overlay::outline_loops(&self.placement, live);
             if self.data.automatic {
-                frame.fill(&filled(&outline), FOOTPRINT);
+                frame.fill(
+                    &filled(&loops),
+                    Fill {
+                        style: Style::Solid(FOOTPRINT),
+                        rule: fill::Rule::EvenOdd,
+                    },
+                );
             }
+            let outline = Outline {
+                segments: loops.into_iter().flat_map(|one| one.segments).collect(),
+                approximate: false,
+            };
             stroke_outline(
                 &mut frame,
                 &joined(&outline),
