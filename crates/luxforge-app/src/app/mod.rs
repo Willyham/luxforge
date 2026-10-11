@@ -1040,6 +1040,7 @@ impl Editor {
         let inputs = self.inputs();
         workspace.derive(&inputs);
         workspace.copy_settings = self.copy_model();
+        workspace.canvas.covered = workspace.covers_canvas();
         for entry in &mut workspace.palette.entries {
             if let state::palette::PaletteAction::Host(command) = entry.action {
                 entry.refusal = command.refusal(&workspace.copy_settings);

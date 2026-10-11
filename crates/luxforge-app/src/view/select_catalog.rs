@@ -751,7 +751,8 @@ pub(crate) fn photo_menu<'a>(
                 .height(Length::Fill)
         )
         .on_press(close())
-        .on_right_press(close()),
+        .on_right_press(close())
+        .interaction(iced::mouse::Interaction::Idle),
         container(content).padding(Padding {
             top: y,
             right: 0.0,
@@ -833,7 +834,8 @@ pub(crate) fn sheet(model: &CatalogSheet) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .height(Length::Fill)
         )
-        .on_press(close()),
+        .on_press(close())
+        .interaction(iced::mouse::Interaction::Idle),
         container(sheet).center(Length::Fill),
     ]
     .width(Length::Fill)

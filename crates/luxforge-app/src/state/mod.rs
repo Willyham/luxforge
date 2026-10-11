@@ -522,6 +522,20 @@ impl Workspace {
         self.usage_notice = usage::notice(inputs.usage);
     }
 
+    /// Whether something is open over the canvas: the palette, the Settings sheet, a menu (a
+    /// popover's or a context menu's) or one of copy settings' chooser, menu, confirmation and
+    /// report. A press on the photograph then closes it rather than painting, so the canvas draws
+    /// no brush cursor and leaves the pointer to the system ([`canvas::CanvasModel::covered`]).
+    pub(crate) fn covers_canvas(&self) -> bool {
+        self.palette.open
+            || self.settings.open.is_some()
+            || self.tools.menu.is_some()
+            || self.copy_settings.menu.is_some()
+            || self.copy_settings.report.is_some()
+            || self.copy_settings.state.confirm.is_some()
+            || self.copy_settings.state.chooser.is_some()
+    }
+
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
     /// label it shows and whether it reads selected. A captured frame carries it so the rendered
     /// button can be checked against what the model said it should be. `sections` are the tools
@@ -4424,5 +4438,27 @@ mod tests {
         scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
         scene.mask_panel.selected_mask = Some(luxforge_core::MaskId::new());
         assert!(action(&scene).reason.unwrap().contains("global Basic"));
+    }
+}
+
+#[cfg(test)]
+mod covered_tests {
+    use super::*;
+
+    /// The palette, the Settings sheet and a menu cover the canvas, so a brush under them draws no
+    /// cursor of its own; nothing open leaves the canvas uncovered.
+    #[test]
+    fn an_open_palette_sheet_or_menu_covers_the_canvas() {
+        let base = Workspace::default();
+        assert!(!base.covers_canvas());
+        let mut palette = base.clone();
+        palette.palette.open = true;
+        assert!(palette.covers_canvas());
+        let mut settings = base.clone();
+        settings.settings.open = Some(settings::SettingsTab::General);
+        assert!(settings.covers_canvas());
+        let mut menu = base.clone();
+        menu.tools.menu = Some(MenuTarget::Export);
+        assert!(menu.covers_canvas());
     }
 }

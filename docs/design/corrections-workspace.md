@@ -38,7 +38,7 @@ The mode is left with `Q`, another mode, or Escape once Escape has nothing else 
 
 ### Adding
 
-The brush is always in hand. The cursor is the brush's outer circle with a dashed inner circle at the feather's start and a `+` at its centre.
+The brush is always in hand. The cursor is the brush's outer circle with a dashed inner circle at the feather's start and a `+` at its centre. It is drawn only over the canvas with nothing open over it: over the palette, the Settings sheet or a menu, and anywhere while one of them is open, the pointer is the system's arrow and no brush is drawn, as for the mask brush.
 
 - **Click** (the pointer moves less than 3 pt before release): adds a **spot**, a one-point path at the current size.
 - **Drag**: paints a **stroke**. Capture uses the shared path grid. Release commits one entry, and Escape while the button is down discards the stroke.

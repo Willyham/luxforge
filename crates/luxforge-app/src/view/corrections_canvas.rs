@@ -11,6 +11,7 @@
 //! and they are never themed: the accent marks only the selected pin, a set source and the gesture
 //! being drafted. Pins and handles keep their point size at every zoom.
 use super::{
+    brush_cursor::brush_cursor,
     brush_overlay::{self, Traces},
     mask_canvas::Placement,
     warped_path::Outline,
@@ -151,6 +152,8 @@ pub(crate) struct CorrectionsCanvas<'a> {
     /// is drawn as `live` instead.
     live: Option<HeldOperation>,
     edited: Option<String>,
+    /// Something is open over the canvas, so the brush draws no cursor of its own.
+    covered: bool,
 }
 
 impl<'a> CorrectionsCanvas<'a> {
@@ -170,7 +173,14 @@ impl<'a> CorrectionsCanvas<'a> {
             placement,
             live,
             edited,
+            covered: false,
         }
+    }
+
+    /// Whether something is open over the canvas ([`brush_cursor`]).
+    pub(crate) fn covered(mut self, covered: bool) -> Self {
+        self.covered = covered;
+        self
     }
 }
 
@@ -625,8 +635,8 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             }
         }
         // The brush cursor, over the photograph and away from a pin or handle, while nothing is
-        // held down on one.
-        if let Some(point) = cursor.position_in(bounds)
+        // held down on one and nothing is open over the canvas.
+        if let Some(point) = brush_cursor(cursor, bounds, self.covered)
             && let Some((x, y)) = self.placement.content_point(point)
             && (!shown
                 || state.pressed
@@ -644,7 +654,8 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> mouse::Interaction {
-        let Some(point) = cursor.position_in(bounds) else {
+        // Off the canvas, or under a menu, sheet or the palette: the system's own pointer.
+        let Some(point) = brush_cursor(cursor, bounds, self.covered) else {
             return mouse::Interaction::None;
         };
         if self.data.waiting {

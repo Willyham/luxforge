@@ -790,7 +790,8 @@ fn plain<'a>(
                                         scale_factor: model.scale_factor,
                                     },
                                 )
-                                .with_handles(mask_handles),
+                                .with_handles(mask_handles)
+                                .covered(model.covered),
                             )
                             .width(Length::Fill)
                             .height(Length::Fill),
@@ -816,14 +817,17 @@ fn plain<'a>(
                         Some((data, view, rect)) => stack([
                             photo,
                             iced::widget::container(
-                                canvas(CorrectionsCanvas::new(
-                                    data,
-                                    Placement {
-                                        map: data.map.clone(),
-                                        view,
-                                        scale_factor: model.scale_factor,
-                                    },
-                                ))
+                                canvas(
+                                    CorrectionsCanvas::new(
+                                        data,
+                                        Placement {
+                                            map: data.map.clone(),
+                                            view,
+                                            scale_factor: model.scale_factor,
+                                        },
+                                    )
+                                    .covered(model.covered),
+                                )
                                 .width(Length::Fill)
                                 .height(Length::Fill),
                             )
@@ -939,7 +943,8 @@ fn plain<'a>(
                                     scale_factor: model.scale_factor,
                                 },
                             )
-                            .with_handles(mask_handles),
+                            .with_handles(mask_handles)
+                            .covered(model.covered),
                         )
                         .width(box_width)
                         .height(box_height)
@@ -949,14 +954,17 @@ fn plain<'a>(
                     None => match corrections.zip(CanvasView::percent(value, model.scale_factor)) {
                         Some((data, view)) => stack([
                             photo,
-                            canvas(CorrectionsCanvas::new(
-                                data,
-                                Placement {
-                                    map: data.map.clone(),
-                                    view,
-                                    scale_factor: model.scale_factor,
-                                },
-                            ))
+                            canvas(
+                                CorrectionsCanvas::new(
+                                    data,
+                                    Placement {
+                                        map: data.map.clone(),
+                                        view,
+                                        scale_factor: model.scale_factor,
+                                    },
+                                )
+                                .covered(model.covered),
+                            )
                             .width(box_width)
                             .height(box_height)
                             .into(),
