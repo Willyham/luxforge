@@ -7,8 +7,8 @@
 //! most [`MAX_LIBRARY_BATCH`] items, never split silently. Library changes sit beside each
 //! photograph's history, never inside it.
 use super::{
-    CatalogFolderId, CollectionId, EventId, FileId, FileSignature, LibraryChangeSeq, ViewQuery,
-    VolumeId,
+    CatalogFolderId, CollectionId, EventId, FileId, FileSignature, LibraryChangeSeq, MergeId,
+    ViewQuery, VolumeId,
 };
 use crate::{AssetId, Error, JobId, MutationOutcome};
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,7 @@ pub struct LibraryChange {
 /// | `membership` | `collection-…/asset-…` | [`MembershipValue`] `{added_ms}` |
 /// | `indexed-folder` | the folder's path | the [`IndexedFolder`](super::IndexedFolder) |
 /// | `developed-asset` | the asset | [`DevelopedAssetValue`] `{path}` of the file it was developed from; a Develop's undo sends it back |
+/// | `merge-stack` | the merge | [`MergeStackValue`](super::MergeStackValue) `{state}`: `active`, `removed` or `undone`; `null` once Empty Removed deleted it |
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LibraryItem {
@@ -155,11 +156,14 @@ pub enum LibraryItem {
     DevelopedAsset {
         asset_id: AssetId,
     },
+    MergeStack {
+        merge_id: MergeId,
+    },
 }
 
 impl LibraryItem {
     /// Every `item_kind` the journal stores, in the order the table documents them.
-    pub const KINDS: [&'static str; 9] = [
+    pub const KINDS: [&'static str; 10] = [
         "pick",
         "asset-folder",
         "asset-removal",
@@ -169,6 +173,7 @@ impl LibraryItem {
         "membership",
         "indexed-folder",
         "developed-asset",
+        "merge-stack",
     ];
 
     /// The row's `item_kind`.
@@ -183,6 +188,7 @@ impl LibraryItem {
             Self::Membership { .. } => "membership",
             Self::IndexedFolder { .. } => "indexed-folder",
             Self::DevelopedAsset { .. } => "developed-asset",
+            Self::MergeStack { .. } => "merge-stack",
         }
     }
 
@@ -200,6 +206,7 @@ impl LibraryItem {
                 collection_id,
                 asset_id,
             } => format!("{collection_id}/{asset_id}"),
+            Self::MergeStack { merge_id } => merge_id.to_string(),
         }
     }
 
@@ -226,6 +233,9 @@ impl LibraryItem {
             },
             "collection" => Self::Collection {
                 collection_id: CollectionId::parse(key)?,
+            },
+            "merge-stack" => Self::MergeStack {
+                merge_id: MergeId::parse(key)?,
             },
             "membership" => {
                 let (collection, asset) = key
@@ -941,6 +951,9 @@ mod tests {
                 path: "/Users/a/Pictures".into(),
             },
             LibraryItem::DevelopedAsset { asset_id: asset },
+            LibraryItem::MergeStack {
+                merge_id: MergeId::new(),
+            },
         ];
         for (item, kind) in items.iter().zip(LibraryItem::KINDS) {
             assert_eq!(item.kind(), kind);
