@@ -175,6 +175,7 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
         identity.push_str(match state.asset.source {
             SourceKind::Jpeg => " \u{b7} JPEG",
             SourceKind::Raw { .. } => " \u{b7} RAW",
+            SourceKind::Derived { .. } => " \u{b7} Derived",
         });
     }
     Some(identity)

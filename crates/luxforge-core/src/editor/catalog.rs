@@ -11,6 +11,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Format 14 adds derived sources ([`DERIVED_SOURCE_SCHEMA`]): the rows recording each source an
+/// HDR merge stores under the artifact root, their manifest-chunk references and the asset-source
+/// reference that retains one for its photograph, and a `derived` source kind. Format 13 holds
+/// none of them and is refused like every other marker.
+///
 /// Format 13 is the union of two changes made side by side as format 12. The catalog of developed
 /// picks (`docs/design/catalog.md`): the volumes picks and photographs live on, picks, indexed
 /// folders, catalog folders, each asset's catalog folder, source folder, volume, file name, develop
@@ -32,7 +37,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 13;
+pub(crate) const CATALOG_FORMAT: i64 = 14;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -244,6 +249,7 @@ impl EditorService {
                  CREATE TRIGGER artifact_refs_are_permanent BEFORE DELETE ON artifact_refs BEGIN
                     SELECT RAISE(ABORT, 'artifact references are permanent');
                  END;
+                 {DERIVED_SOURCE_SCHEMA}
                  PRAGMA user_version={CATALOG_FORMAT};"
             ))?;
             tx.execute(
@@ -254,6 +260,53 @@ impl EditorService {
         })
     }
 }
+
+/// Format 14's derived sources (`docs/design/hdr-merge.md#durable-derived-source`), apart from the
+/// derived artifacts and their entry references:
+///
+/// - `derived_sources` records each published source by its identity, the SHA-256 of its manifest,
+///   with the manifest's length, its dimensions, colour and chunk count; `derived_source_chunks`
+///   is the manifest-chunk references, each chunk's place, hash and length, so a collection knows
+///   every object a source retains without reading its manifest. Neither row ever changes.
+/// - `asset_sources` is the asset-source reference: the one source a derived photograph reads,
+///   never replaced and never deleted except with the photograph's whole record by emptying
+///   Removed. It is what retains a source, whatever the photograph's visibility.
+const DERIVED_SOURCE_SCHEMA: &str = "
+    CREATE TABLE derived_sources (
+        id TEXT PRIMARY KEY,
+        manifest_bytes INTEGER NOT NULL CHECK (manifest_bytes > 0),
+        width INTEGER NOT NULL CHECK (width > 0),
+        height INTEGER NOT NULL CHECK (height > 0),
+        colour TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL CHECK (chunk_count BETWEEN 1 AND 256),
+        created_ms INTEGER NOT NULL
+    );
+    CREATE TABLE derived_source_chunks (
+        source_id TEXT NOT NULL REFERENCES derived_sources(id),
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        sha256 TEXT NOT NULL,
+        bytes INTEGER NOT NULL CHECK (bytes > 0),
+        PRIMARY KEY (source_id, ordinal)
+    ) WITHOUT ROWID;
+    CREATE INDEX derived_source_chunks_by_hash ON derived_source_chunks(sha256);
+    CREATE TABLE asset_sources (
+        asset_id TEXT PRIMARY KEY REFERENCES assets(id),
+        source_id TEXT NOT NULL REFERENCES derived_sources(id)
+    ) WITHOUT ROWID;
+    CREATE INDEX asset_sources_by_source ON asset_sources(source_id);
+    CREATE TRIGGER derived_sources_are_immutable BEFORE UPDATE ON derived_sources BEGIN
+        SELECT RAISE(ABORT, 'derived sources are immutable');
+    END;
+    CREATE TRIGGER derived_source_chunks_are_immutable BEFORE UPDATE ON derived_source_chunks
+    BEGIN
+        SELECT RAISE(ABORT, 'derived sources are immutable');
+    END;
+    CREATE TRIGGER asset_sources_are_immutable BEFORE UPDATE ON asset_sources BEGIN
+        SELECT RAISE(ABORT, 'a photograph keeps its derived source');
+    END;
+    CREATE TRIGGER asset_sources_are_permanent BEFORE DELETE ON asset_sources BEGIN
+        SELECT RAISE(ABORT, 'asset source references are permanent');
+    END;";
 
 /// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
 /// catalog columns and capture rows, collections, picks, indexed folders and the library journal
@@ -308,7 +361,7 @@ const LIBRARY_SCHEMA: &str = "
         width INTEGER NOT NULL,
         height INTEGER NOT NULL,
         source_json TEXT NOT NULL,
-        source_kind TEXT NOT NULL CHECK (source_kind IN ('jpeg', 'raw')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('jpeg', 'raw', 'derived')),
         catalog_folder_id TEXT NOT NULL REFERENCES catalog_folders(id),
         source_folder TEXT NOT NULL,
         volume_id TEXT NOT NULL REFERENCES volumes(id),
@@ -850,13 +903,13 @@ impl EditorService {
     }
 
     /// Empty Removed (`catalog.empty-removed`): at most `limit` removed photographs' records, with
-    /// the strokes and artifact rows nothing left names, deleted in one catalog transaction
-    /// ([`crate::library::remove::empty`]). Once it commits, each deleted photograph is forgotten —
-    /// its cached head and entries and its prepared source — as is each deleted artifact's
-    /// verified bytes. Answers what it deleted and, when it deleted an artifact row, the collection
-    /// that removes those artifacts' files on the source worker, as `artifact.collect` plans one:
-    /// every artifact the catalog still records, and every one published while this service is
-    /// open, is kept.
+    /// the strokes, artifact rows and derived sources nothing left names, deleted in one catalog
+    /// transaction ([`crate::library::remove::empty`]). Once it commits, each deleted photograph is
+    /// forgotten — its cached head and entries and its prepared source — as is each deleted
+    /// artifact's verified bytes. Answers what it deleted and, when it deleted an artifact or
+    /// source row, the collection that removes those objects on the source worker, as
+    /// `artifact.collect` plans one: every artifact and source object the catalog still records,
+    /// and every one published while this service is open, is kept.
     pub(crate) fn empty_removed(
         &mut self,
         limit: usize,
@@ -868,18 +921,16 @@ impl EditorService {
         Error,
     > {
         let live = self.live_artifacts.clone();
+        let live_sources = self.live_sources.clone();
         let (emptied, keep) = write(&mut self.connection, |tx| {
-            let emptied = crate::library::remove::empty(tx, &live, limit)?;
-            let keep = if emptied.artifacts.is_empty() {
+            let emptied = crate::library::remove::empty(tx, &live, &live_sources, limit)?;
+            let keep = if emptied.artifacts.is_empty() && emptied.sources.is_empty() {
                 None
             } else {
-                let mut statement = tx.prepare_cached("SELECT id FROM artifacts")?;
-                let ids = statement.query_map([], |row| row.get::<_, String>(0))?;
-                let mut keep = std::collections::HashSet::new();
-                for id in ids {
-                    keep.insert(crate::artifacts::ArtifactId::parse(id?)?);
-                }
-                Some(keep)
+                Some((
+                    artifact_store::recorded_artifact_ids(tx)?,
+                    super::derived_source::retained_source_objects(tx)?,
+                ))
             };
             Ok((emptied, keep))
         })?;
@@ -891,12 +942,15 @@ impl EditorService {
             prepared.remove(artifact);
         }
         drop(prepared);
-        let collection = keep.map(|keep| crate::artifacts::Collection {
+        let collection = keep.map(|(keep, keep_sources)| crate::artifacts::Collection {
             root: self.artifact_root.clone(),
             catalog_id: self.catalog_id.clone(),
             keep,
             live,
             rows: emptied.artifacts.len(),
+            keep_sources,
+            live_sources,
+            source_rows: emptied.sources.len(),
         });
         Ok((emptied, collection))
     }
@@ -981,24 +1035,25 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 13 with every table, index and trigger of the
-    /// design's storage, the catalog's and auto-collapse's both, and makes no index directory until
-    /// the index is first used.
+    /// An empty database initializes as format 14 with every table, index and trigger of the
+    /// design's storage, the catalog's, auto-collapse's and the derived sources' alike, and makes no
+    /// index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-13.sqlite");
+        let catalog = temp("format-14.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 13);
-        assert_eq!(CATALOG_FORMAT, 13);
+        assert_eq!(format, 14);
+        assert_eq!(CATALOG_FORMAT, 14);
         assert_eq!(
             schema_names(connection, "table"),
             [
                 "artifact_refs",
                 "artifacts",
+                "asset_sources",
                 "asset_state",
                 "assets",
                 "capture",
@@ -1007,6 +1062,8 @@ mod tests {
                 "collapsed_entries",
                 "collection_members",
                 "collections",
+                "derived_source_chunks",
+                "derived_sources",
                 "entries",
                 "indexed_folders",
                 "library_change_rows",
@@ -1023,6 +1080,7 @@ mod tests {
             schema_names(connection, "index"),
             [
                 "artifact_refs_by_artifact",
+                "asset_sources_by_source",
                 "assets_by_availability",
                 "assets_by_developed",
                 "assets_by_file_name",
@@ -1042,6 +1100,7 @@ mod tests {
                 "collection_members_by_asset",
                 "collection_names",
                 "collections_by_parent",
+                "derived_source_chunks_by_hash",
                 "library_change_rows_by_item",
                 "library_changes_by_client",
                 "library_changes_by_request",
@@ -1055,10 +1114,14 @@ mod tests {
             schema_names(connection, "trigger"),
             [
                 "artifact_refs_are_permanent",
+                "asset_sources_are_immutable",
+                "asset_sources_are_permanent",
                 "collapsed_entries_are_permanent",
                 "collections_keep_their_kind",
                 "collections_move_into_groups",
                 "collections_nest_in_groups",
+                "derived_source_chunks_are_immutable",
+                "derived_sources_are_immutable",
                 "entries_are_immutable",
                 "library_change_rows_are_immutable",
                 "library_change_rows_are_permanent",
@@ -1083,13 +1146,13 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Format 12 — the catalog of developed picks without the collapsed-entry table, or the
-    /// collapsed-entry table without the catalog's tables — format 11, every earlier marker and a
-    /// future one are refused by name and left exactly as they are, with no artifact or index
-    /// directory made for them.
+    /// Format 13 — without the derived sources — format 12 — the catalog of developed picks
+    /// without the collapsed-entry table, or the collapsed-entry table without the catalog's tables
+    /// — format 11, every earlier marker and a future one are refused by name and left exactly as
+    /// they are, with no artifact or index directory made for them.
     #[test]
-    fn catalog_format_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
-        for marker in [0, 11, 12, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
+    fn catalog_format_thirteen_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
+        for marker in [0, 11, 12, 13, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();

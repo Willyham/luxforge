@@ -9,17 +9,19 @@
 //!   either like any other change.
 //! - **Emptying Removed** (`catalog.empty-removed`, [`empty`]) is the one destructive catalog
 //!   operation: in one transaction it deletes every removed photograph's catalog record — entries,
-//!   state, requests, versions, capture row, collection memberships, artifact references and asset
-//!   row — and the strokes and artifact rows nothing left in the catalog names. It is not a library
+//!   state, requests, versions, capture row, collection memberships, artifact references, a derived
+//!   photograph's source reference and asset row — and the strokes, artifact rows and derived
+//!   sources nothing left in the catalog names. It is the only path that releases a derived
+//!   source a photograph held. It is not a library
 //!   change, since nothing it deletes can be restored, and it leaves the journal as it is: an undo
 //!   or redo that names a deleted photograph finds its value gone and is refused. Beside sending an
 //!   unedited photograph back, which deletes a record holding only its Original entry (P9), it is
 //!   the only path that deletes a history entry.
 use crate::{
     AssetId, Error,
-    artifacts::{ArtifactId, LiveArtifacts},
+    artifacts::{ArtifactId, DerivedSourceId, LiveArtifacts, derived_source::LiveSources},
     catalog_types::{AssetRemovalValue, AssetRowId, LibraryChangeRow, LibraryItem},
-    editor::library_rows,
+    editor::{derived_source, library_rows},
     library::{
         folders::counted,
         journal::Desired,
@@ -77,24 +79,31 @@ pub(crate) struct Emptied {
     /// The artifact rows only their entries referenced, none of them published by this process:
     /// their files are left for a collection to remove.
     pub artifacts: Vec<ArtifactId>,
+    /// The derived sources only these photographs held, none of them published by this process:
+    /// their objects are left for a collection to remove.
+    pub sources: Vec<DerivedSourceId>,
     /// The removed photographs past the bound, still in Removed for a later emptying.
     pub remaining: u64,
 }
 
 /// The triggers that stand in the way of deleting a photograph's records, which [`empty`] lifts
-/// inside its own transaction only: the artifact references' permanence and the collapsed
-/// entries' — an entry auto-collapse hid is part of its photograph's record and goes with it. An
+/// inside its own transaction only: the artifact references' and the asset-source references'
+/// permanence and the collapsed entries' — an entry auto-collapse hid is part of its photograph's
+/// record and goes with it, as the reference to a derived photograph's source does. An
 /// entry's and a stroke's immutability refuse an update, not a deletion, and the journal, whose
 /// rows are the other permanent ones, is left as it is.
 pub(crate) const LIFTED_TRIGGERS: &[&str] = &[
     "artifact_refs_are_permanent",
+    "asset_sources_are_permanent",
     "collapsed_entries_are_permanent",
 ];
 
 /// Empty Removed in the caller's transaction, at most `limit` photographs, earliest removed first:
 /// delete each one's catalog record, the entries auto-collapse hid with it, then every stroke its
 /// entries named that no remaining entry names, then every artifact row its entries referenced
-/// that no remaining entry references and no task of this process published (`live`). The
+/// that no remaining entry references and no task of this process published (`live`), then every
+/// derived source they held that no remaining photograph holds and no writer of this process
+/// published (`live_sources`). The
 /// [`LIFTED_TRIGGERS`] are lifted for the deletion and created again, from the SQL the catalog
 /// stored for them, before this answers; a failure anywhere rolls the whole transaction back, the
 /// triggers with it. Nothing on disk is touched and the journal is left as it is.
@@ -106,6 +115,7 @@ pub(crate) const LIFTED_TRIGGERS: &[&str] = &[
 pub(crate) fn empty(
     tx: &Transaction<'_>,
     live: &LiveArtifacts,
+    live_sources: &LiveSources,
     limit: usize,
 ) -> Result<Emptied, Error> {
     let (assets, removed) = removed_photographs(tx, limit)?;
@@ -116,6 +126,7 @@ pub(crate) fn empty(
         .map_err(|error| Error::internal(format!("cannot encode photographs: {error}")))?;
     let mut strokes = stored_strokes(tx, &ids)?;
     let referenced = referenced_artifacts(tx, &ids)?;
+    let held = derived_source::held_by(tx, &ids)?;
     lifted(tx, LIFTED_TRIGGERS, |tx| {
         library_rows::delete_photographs(tx, &assets)
     })?;
@@ -136,10 +147,12 @@ pub(crate) fn empty(
             artifacts.push(artifact);
         }
     }
+    let sources = derived_source::release_sources(tx, live_sources, held)?;
     let remaining = removed - assets.len() as u64;
     Ok(Emptied {
         assets,
         artifacts,
+        sources,
         remaining,
     })
 }

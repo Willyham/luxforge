@@ -165,6 +165,10 @@ impl FileImages {
         control.checkpoint()?;
         let file = File::open(&record.path).map_err(|error| unavailable(record, error.kind()))?;
         match record.kind {
+            // The index lists files, never a derived source.
+            SourceTag::Derived => Err(crate::artifacts::derived_source::unsupported(
+                "a camera preview",
+            )),
             SourceTag::Jpeg => {
                 let header = match &record.header {
                     HeaderState::Ok(header) => Some(header),

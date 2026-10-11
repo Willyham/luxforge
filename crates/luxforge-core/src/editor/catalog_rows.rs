@@ -619,10 +619,11 @@ pub(crate) mod library_rows {
     }
 
     /// Delete the whole catalog record of each of `assets` — its entries' artifact references,
-    /// versions, state row, request log, collapsed entries, collection memberships, capture row,
-    /// entries and asset row — one statement per table for them all, answering how many asset rows
-    /// went. Only emptying Removed calls it, with the artifact references' and collapsed entries'
-    /// permanence lifted for it (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
+    /// versions, state row, request log, derived source reference, collapsed entries, collection
+    /// memberships, capture row, entries and asset row — one statement per table for them all,
+    /// answering how many asset rows went. Only emptying Removed calls it, with the artifact and
+    /// asset-source references' and collapsed entries' permanence lifted for it
+    /// (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
     /// recorded of them.
     pub(crate) fn delete_photographs(
         tx: &Transaction<'_>,
@@ -639,7 +640,7 @@ pub(crate) mod library_rows {
             ))?
             .execute([&ids])?;
         }
-        for table in ["versions", "asset_state", "requests"] {
+        for table in ["versions", "asset_state", "requests", "asset_sources"] {
             tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id IN {THESE}"))?
                 .execute([&ids])?;
         }
