@@ -96,6 +96,10 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `collection.remove` | `interaction` collection-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `collection.rename` | `interaction` collection-rename | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `collection.update-smart` | `interaction` collection-smart-update | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
+| `development-set.add` | `interaction` development-set-add | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
+| `development-set.read` | Exempt (read) | Reads the development set. |
+| `development-set.remove` | `interaction` development-set-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
+| `development-set.replace` | Exempt (internal) | Session state: the photographs Develop steps through, set when Select opens photographs or a view in Develop; the desktop records `workspace.enter` at the switch. |
 | `disk.folders` | Exempt (read) | Lists folders on disk. |
 | `draft.begin` | Exempt (internal) | Starts a drag's draft; the gesture records once, at `draft.commit`. |
 | `draft.cancel` | Exempt (internal) | A cancelled drag records nothing. |
@@ -199,6 +203,12 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `mask.set-linear` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-luminance-range` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-radial` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
+| `merge.create` | `interaction` `hdr-merge` | When accepted, with no image; Pick merged's membership change is part of it. A refusal or a retry records nothing; the merge job's terminal outcome records no `operation.end` (open). |
+| `merge.inspect` | Exempt (read) | Reads a merge. |
+| `merge.plan` | Exempt (read) | Plans an HDR merge; its `merge.create` is the operation. |
+| `merge.remove` | `interaction` merge-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
+| `merge.rerun` | `interaction` `hdr-merge` | When accepted, as `merge.create`; the job's terminal outcome records no `operation.end` (open). |
+| `merge.restore` | `interaction` merge-restore | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `module.list` | Exempt (read) | Discovery. |
 | `module.permission.deny` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.permission.grant` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
@@ -257,6 +267,8 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `source.missing` | Exempt (read) | Lists missing originals. |
 | `source.prepare` | `operation.end` source-preparation | The job's terminal outcome (completed, cancelled, refused, failed) and duration from queueing, with the image when it prepared one; recorded only in the generation it was queued in. |
 | `source.relink` | `interaction` originals-relink | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
+| `stack.inspect` | Exempt (read) | Reads an HDR stack. |
+| `stack.set-expanded` | Exempt (internal) | How a view shows an HDR stack: session view state, as `view.set` and `workspace.set` are; changes no library item. |
 | `theme.delete` | `interaction` theme-delete | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `theme.export` | `interaction` `theme-export` | When it answers: the desktop writes the file it returns. |
 | `theme.import` | `interaction` theme-import | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |

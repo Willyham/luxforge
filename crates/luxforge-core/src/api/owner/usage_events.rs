@@ -49,6 +49,10 @@ pub(crate) fn host_feature(method: &str, params: &Value) -> Option<(Feature, Emi
         "history.undo" => (F::HistoryUndo, OnChange),
         "history.redo" => (F::HistoryRedo, OnChange),
         "history.restore" => (F::HistoryRestore, OnChange),
+        "development-set.add" => (F::DevelopmentSetAdd, OnChange),
+        "development-set.remove" => (F::DevelopmentSetRemove, OnChange),
+        "merge.remove" => (F::MergeRemove, OnChange),
+        "merge.restore" => (F::MergeRestore, OnChange),
         "index.add-folder" => (F::IndexedFolderAdd, OnChange),
         "index.remove-folder" => (F::IndexedFolderRemove, OnChange),
         "library.undo" => (F::LibraryUndo, OnChange),
@@ -73,6 +77,7 @@ pub(crate) fn host_feature(method: &str, params: &Value) -> Option<(Feature, Emi
         "batch.apply-settings" => (settings_feature(params), OnSuccess),
         "export.jpeg" => (F::Export, OnSuccess),
         "batch.export" => (F::ExportBatch, OnSuccess),
+        "merge.create" | "merge.rerun" => (F::HdrMerge, OnSuccess),
         "pick.develop" => (F::DevelopPicks, OnSuccess),
         "source.find" => (F::OriginalsFind, OnSuccess),
         // Writing a file the desktop saves: a deliberate operation the log does not announce.
