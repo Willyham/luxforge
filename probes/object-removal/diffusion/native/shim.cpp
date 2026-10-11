@@ -332,9 +332,14 @@ int32_t lf_sd_generate(sd_ctx_t* ctx, const lf_sd_request* request, uint8_t* out
         if (!mask.empty()) {
             params.mask_image = sd_image_t{request->width, request->height, 1, mask.data()};
         }
+        // The reference is encoded at its own size: by default stable-diffusion.cpp resizes it to
+        // the output's area (up to 1024²), which would undo a smaller reference.
+        std::string ref_args;
         if (!ref.empty()) {
             params.ref_images       = &ref_image;
             params.ref_images_count = 1;
+            ref_args = "vae_input_max_pixels=" + std::to_string(uint64_t(request->ref_width) * request->ref_height);
+            params.ref_image_args = ref_args.c_str();
         }
         params.width                                = static_cast<int>(request->width);
         params.height                               = static_cast<int>(request->height);
