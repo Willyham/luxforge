@@ -580,8 +580,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         owner_set(merged)? == vec![result.clone()],
         format!("merged: the owner's set is {}", merged["step"]["owner_set"]),
     )?;
+    // The board keeps finished work as recent only past its threshold and only the newest
+    // sixteen, so a quick merge may be gone already; no other merge may be there.
     ensure(
-        merge_jobs(merged) == BTreeSet::from([job.clone()]),
+        merge_jobs(merged).is_subset(&BTreeSet::from([job.clone()])),
         format!("merged: the board lists merges {:?}", merge_jobs(merged)),
     )?;
 
