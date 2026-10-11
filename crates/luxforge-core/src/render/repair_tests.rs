@@ -1088,6 +1088,18 @@ fn a_far_read_set_is_held_in_an_atlas_and_one_past_it_is_refused_by_name() {
     let repair = plan.spatial[0].repair.as_ref().expect("the repair step");
     let atlas = repair.atlas.as_ref().expect("the step reads its input");
     assert!(atlas.size.0 <= REPAIR_ATLAS_SIDE && atlas.size.1 <= REPAIR_ATLAS_SIDE);
+    // Its input and the one state its two chained groups leave, both atlas-sized.
+    assert_eq!((atlas.plane, atlas.planes), (0, 2));
+    let step = &plan.spatial[0];
+    for plane in &step.planes[..2] {
+        assert_eq!(
+            plane.size,
+            crate::render::gpu::GpuPlaneSize::Fixed {
+                width: atlas.size.0,
+                height: atlas.size.1
+            }
+        );
+    }
     let (x0, x1) = atlas
         .rects
         .iter()

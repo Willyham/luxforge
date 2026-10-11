@@ -79,9 +79,19 @@ pub(crate) fn admit(
             ),
         });
     }
+    // The Heal levels' planes: those after the read set's atlas-sized ones, which are charged with
+    // the step's planes on either device.
+    let held = step
+        .repair
+        .as_ref()
+        .and_then(|repair| repair.atlas.as_ref())
+        .map_or(0..0, |atlas| atlas.plane..atlas.plane + atlas.planes);
     let levels: u64 = step
         .planes
         .iter()
+        .enumerate()
+        .filter(|(index, _)| !held.contains(index))
+        .map(|(_, plane)| plane)
         .filter(|plane| matches!(plane.size, GpuPlaneSize::Fixed { .. }))
         .map(|plane| plane.extent((0, 0), (0, 0)))
         .map(|(width, height)| u64::from(width) * u64::from(height) * 16)
@@ -146,6 +156,10 @@ pub struct GpuRepairOperation {
 pub struct GpuReadAtlas {
     /// The step's plane that holds its input.
     pub plane: usize,
+    /// How many of the step's planes, from `plane` on, are atlas-sized: its input, then the states
+    /// its chained groups leave. Charged with the step's planes on either device, not with its
+    /// Heal levels ([`REPAIR_LEVEL_BYTES`]).
+    pub planes: usize,
     /// The atlas's texels across and down.
     pub size: (u32, u32),
     /// Each rectangle of the stage, with the atlas texel its first pixel is held at.
@@ -375,12 +389,13 @@ pub(crate) fn plan_repair(
         }],
         (true, rects) => rects,
     };
-    let atlas = if rects.is_empty() {
+    let mut atlas = if rects.is_empty() {
         None
     } else {
         let (size, placed) = pack(&rects)?;
         Some(GpuReadAtlas {
             plane: 0,
+            planes: 1,
             size,
             rects: rects.into_iter().zip(placed).collect(),
         })
@@ -411,10 +426,11 @@ pub(crate) fn plan_repair(
         (Some(_), 2) => vec![1],
         (Some(_), _) => vec![1, 2],
     };
-    if let Some(atlas) = &atlas {
+    if let Some(atlas) = atlas.as_mut() {
         for _ in &states {
             planes.push(atlas_plane(atlas));
         }
+        atlas.planes += states.len();
     }
     // The flags a pass reading plane `plane` at slot `slot` takes: 4, the plane is an atlas the
     // read table addresses; 16, it holds the step's input, which the table may clamp.
