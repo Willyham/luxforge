@@ -324,8 +324,7 @@ host_params! {
 }
 
 host_params! {
-    /// `merge.create`. The request's own fields; the development-set fields TASK-007 adds
-    /// (`add_to_development_set`, the target set's identity and revision) join them unchanged.
+    /// `merge.create`: Import merged (the default) or, with `add_to_development_set`, Pick merged.
     pub(crate) struct MergeCreate {
         kind: MergeKind = enumeration(["hdr"]),
         targets: Targets = json(MERGE_TARGETS),
@@ -336,6 +335,8 @@ host_params! {
         alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto"),
         deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto"),
         folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the folder merge.plan proposes"),
+        add_to_development_set: Option<bool> = boolean().default(false).notes("Pick merged: append the result to the current development set in the same library change that publishes it, or start a one-result set when there is none; false (Import merged) leaves the set as it is"),
+        set_id: Option<super::DevelopmentSetId> = name().notes("with add_to_development_set: the set the client believes is current, refused with conflict unless it is; ignored without it"),
     }
 }
 

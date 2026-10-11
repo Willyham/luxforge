@@ -393,23 +393,43 @@ pub(crate) fn published_by(
     connection: &Connection,
     request: Request<'_>,
 ) -> Result<Option<PublishedMerge>, Error> {
+    Ok(published_or_picked(connection, request)?.map(|(published, _)| published))
+}
+
+/// [`published_by`], and whether the request only added an existing merge's result to the
+/// development set (Pick merged of an exact match, which publishes nothing): its change holds that
+/// set member and no stack.
+pub(crate) fn published_or_picked(
+    connection: &Connection,
+    request: Request<'_>,
+) -> Result<Option<(PublishedMerge, bool)>, Error> {
     let Some(change) = journal::find(connection, request)? else {
         return Ok(None);
     };
     let detail = journal::inspect(connection, change.sequence.0)?;
-    let merge_id = detail
-        .rows
-        .iter()
-        .find_map(|row| match &row.item {
-            LibraryItem::MergeStack { merge_id } => Some(merge_id.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            Error::conflict(format!(
-                "request {} recorded a library change that published no merge",
-                request.request_id
-            ))
-        })?;
+    let stacked = detail.rows.iter().find_map(|row| match &row.item {
+        LibraryItem::MergeStack { merge_id } => Some(merge_id.clone()),
+        _ => None,
+    });
+    let (merge_id, picked) = match stacked {
+        Some(merge_id) => (merge_id, false),
+        None => {
+            let mut picked = None;
+            for row in &detail.rows {
+                if let LibraryItem::SetMember { asset_id, .. } = &row.item {
+                    picked = merge_of(connection, asset_id)?;
+                    break;
+                }
+            }
+            let merge_id = picked.ok_or_else(|| {
+                Error::conflict(format!(
+                    "request {} recorded a library change that published no merge",
+                    request.request_id
+                ))
+            })?;
+            (merge_id, true)
+        }
+    };
     let result: Option<String> = connection
         .prepare_cached("SELECT result_asset_id FROM merges WHERE id = ?1")?
         .query_row([merge_id.as_str()], |row| row.get(0))
@@ -419,11 +439,14 @@ pub(crate) fn published_by(
             "merge {merge_id}, which this request published, was deleted by emptying Removed"
         ))
     })?;
-    Ok(Some(PublishedMerge {
-        merge_id,
-        result: AssetId::parse(result)?,
-        outcome: Outcome::deduplicated(detail.change),
-    }))
+    Ok(Some((
+        PublishedMerge {
+            merge_id,
+            result: AssetId::parse(result)?,
+            outcome: Outcome::deduplicated(detail.change),
+        },
+        picked,
+    )))
 }
 
 /// A merge's state, or `None` when the catalog no longer has it.

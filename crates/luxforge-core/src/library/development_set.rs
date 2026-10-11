@@ -51,10 +51,6 @@ pub(crate) struct CurrentSet {
 /// The set a request was made against, captured when it was made: what a merge's publication
 /// appends its result to, or, with none, the one-result set it creates. A set replaced since is a
 /// named conflict at publication, never an insertion into another set.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "merge.create's publication calls it (TASK-006)")
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SetCapture {
     pub set_id: Option<DevelopmentSetId>,
@@ -103,10 +99,6 @@ fn bump(tx: &Transaction<'_>) -> Result<u64, Error> {
 }
 
 /// What a request is made against now: the current set and the revision.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "merge.create's publication calls it (TASK-006)")
-)]
 pub(crate) fn capture(connection: &Connection) -> Result<SetCapture, Error> {
     Ok(SetCapture {
         set_id: current(connection)?.map(|set| set.id),
@@ -311,10 +303,6 @@ pub(crate) fn removals(set: &CurrentSet, assets: &[AssetId]) -> Vec<(LibraryItem
 /// The merge's own undo removes exactly this member, and leaves every other member and every pick
 /// as it is. Call it from `EditorService::publish_merge`'s `extra`, or, for an existing result Pick
 /// merged reuses, as the items of its own library change.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "merge.create's publication calls it (TASK-006)")
-)]
 pub(crate) fn membership_for_publication(
     tx: &Transaction<'_>,
     capture: &SetCapture,
