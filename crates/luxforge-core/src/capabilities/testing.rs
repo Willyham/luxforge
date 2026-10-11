@@ -497,7 +497,7 @@ impl Transport for MemoryTransport {
             received += bytes.len() as u64;
             progress(received, None);
         }
-        if !body && let Some(check) = head.as_deref_mut() {
+        if !body && let Some(check) = &mut head {
             check(status, &headers)?;
         }
         control.checkpoint()?;

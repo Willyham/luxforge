@@ -1,8 +1,9 @@
 //! Model resources through the catalog owner, as a client drives them: a resource of several files
 //! installed whole or not at all and removed together; an interrupted transfer resumed from its
 //! offset with an HTTP `Range` request and hashed whole at the end, refused when the whole file
-//! misses its pin; a server that ignores the range; stale staging; the trade-off, use restriction
-//! and requirements a row and the disclosure carry; and the machine minimum. The transport answers
+//! misses its pin; a server that ignores the range, and range answers that do not continue the
+//! file; stale staging; the trade-off, use restriction and requirements a row and the disclosure
+//! carry; the machine minimum; and the runtime preparing an installed model and forgetting it. The transport answers
 //! in process and honours `Range` as a server does; `luxforge-net`'s tests send a range over a
 //! loopback socket.
 use super::{
@@ -49,6 +50,8 @@ struct Serving {
     cut: Option<(&'static str, usize)>,
     /// Answer a range request with the whole file, as a server without range support does.
     ignore_range: bool,
+    /// Answer a range request with this status and `Content-Range`, and the rest of the file.
+    range_answer: Option<(u16, Option<String>)>,
     /// Serve these bytes for a path in place of its pinned ones.
     replaced: BTreeMap<&'static str, Vec<u8>>,
     /// Every request's path and `Range` header, in order.
@@ -92,9 +95,17 @@ impl Server {
                 .and_then(|offset| offset.parse::<usize>().ok())
                 .filter(|_| !serving.ignore_range);
             let cut = serving.cut.take_if(|(at, _)| *at == path);
+            let scripted = serving.range_answer.clone().filter(|_| offset.is_some());
             drop(serving);
-            let rest = match offset {
-                Some(offset) => {
+            let rest = match (offset, scripted) {
+                (Some(offset), Some((status, content_range))) => {
+                    answer.status(status);
+                    if let Some(content_range) = content_range {
+                        answer.header("Content-Range", &content_range);
+                    }
+                    &body[offset..]
+                }
+                (Some(offset), None) => {
                     answer.status(206);
                     answer.header(
                         "Content-Range",
@@ -102,7 +113,7 @@ impl Server {
                     );
                     &body[offset..]
                 }
-                None => {
+                (None, _) => {
                     answer.status(200);
                     &body[..]
                 }
@@ -543,6 +554,66 @@ fn a_server_that_ignores_the_range_starts_the_file_again_in_the_same_request() {
         fs::read(fixture.version_dir(MODEL).join("decoder.onnx")).unwrap(),
         DECODER
     );
+    owner.stop();
+}
+
+#[test]
+fn a_range_answer_that_does_not_continue_the_file_is_refused_and_its_staging_discarded() {
+    let fixture = Fixture::new("model-range-refused");
+    let owner = fixture.start();
+    grant(&owner, "segmenter-download", MODEL);
+    let length = DECODER.len();
+    for (status, content_range, message) in [
+        (
+            206,
+            Some(format!("bytes 0-{}/{length}", length - 1)),
+            format!(
+                "https://models.example answered the range bytes 0-{}/{length} for decoder.onnx; resuming at byte 20 needs bytes 20-{}/{length}",
+                length - 1,
+                length - 1
+            ),
+        ),
+        (
+            206,
+            None,
+            format!(
+                "https://models.example answered the range none for decoder.onnx; resuming at byte 20 needs bytes 20-{}/{length}",
+                length - 1
+            ),
+        ),
+        (
+            416,
+            None,
+            "https://models.example cannot resume decoder.onnx at byte 20; its partial transfer is discarded"
+                .to_owned(),
+        ),
+    ] {
+        fixture.server.with(|serving| {
+            serving.range_answer = None;
+            serving.cut = Some(("/segmenter/decoder.onnx", 20));
+        });
+        assert_eq!(install(&owner, MODEL)["status"], json!("failed"));
+        assert_eq!(row(&owner, MODEL)["staged_bytes"], json!(ENCODER.len() + 20));
+        fixture.server.with(|serving| {
+            serving.range_answer = Some((status, content_range.clone()));
+        });
+        fixture.server.take();
+        let refused = install(&owner, MODEL);
+        assert_eq!(refused["status"], json!("failed"));
+        assert_eq!(
+            refused["error"],
+            json!({"code": "validation", "message": message}),
+            "{status} {content_range:?}"
+        );
+        assert_eq!(
+            fixture.server.take(),
+            [range("/segmenter/decoder.onnx", Some("bytes=20-"))]
+        );
+        // Nothing of the refused transfer is written or kept: the next install starts again.
+        assert!(!fixture.version_dir(MODEL).exists());
+        assert!(!fixture.resources().join(STAGING_DIR).exists());
+        assert!(row(&owner, MODEL).get("staged_bytes").is_none());
+    }
     owner.stop();
 }
 

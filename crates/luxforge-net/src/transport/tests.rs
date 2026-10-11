@@ -1285,11 +1285,14 @@ fn a_non_ascii_endpoint_host_is_refused_and_its_punycode_form_resolves() {
     assert_eq!(routes.attempts().len(), 1);
 }
 
+/// A check of the final status and headers, as `SendOptions::head` takes it.
+type HeadCheck<'a> = &'a mut dyn FnMut(u16, &[(String, String)]) -> Result<(), Error>;
+
 /// Send `request` with a head check, returning its result and what reached the body sink.
 fn send_checked(
     transport: &HttpTransport,
     request: &TransportRequest,
-    check: &mut dyn FnMut(u16, &[(String, String)]) -> Result<(), Error>,
+    check: HeadCheck<'_>,
 ) -> (Result<TransportResponse, Error>, Vec<u8>) {
     let control = JobControl::new();
     let mut progress = |_, _| {};
