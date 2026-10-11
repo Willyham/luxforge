@@ -11,13 +11,14 @@
 //! `LUXFORGE_TEST_CAMERAS=1`, without which the editor refuses it.
 //!
 //! The first launch, in [`first_plan`] order: `G`; the still bracket's folder, whose header offers
-//! Import merged and Pick merged; Pick merged, captured while its pending row shows the job's
-//! progress; the merge's end, one collapsed HDR tile, selected and in the Development set; `S`
-//! expanding the stack; an original clicked and picked with `P`; Develop, showing the result from
-//! its saved source; one Exposure edit; `merge.inspect` of the open result; back to Select, the
-//! result clicked and Remove merge (`⌫`); `Cmd+Z`, `Shift+Cmd+Z` and `Cmd+Z` again; then the
-//! handheld bracket's folder and Import merged, and its end. Each Select frame records the owner's
-//! own development set and every HDR merge job on its activity board beside the session.
+//! Pick all and Merge HDR; Merge HDR, captured while its pending row shows the job's progress; the
+//! merge's end, one collapsed HDR tile, selected, never shown picked, with Select still shown; `S`
+//! expanding the stack; an original clicked and picked with `P`; All photographs, the result
+//! clicked and double-clicked into Develop, showing it from its saved source with its catalog
+//! folder in the filmstrip; one Exposure edit; `merge.inspect` of the open result; back to Select
+//! and the still bracket's folder, the result clicked and Remove merge (`⌫`); `Cmd+Z`,
+//! `Shift+Cmd+Z` and `Cmd+Z` again; then the handheld bracket's folder and Merge HDR, and its end.
+//! Each Select frame records every HDR merge job on the owner's activity board beside the session.
 //!
 //! The catalog the first launch left is read (`hdr-merge-after-first.json`); the brackets' folder
 //! is renamed, so no original can be read; and the second launch, in [`second_plan`] order, opens
@@ -31,7 +32,7 @@ use crate::{
 };
 use luxforge_core::{ApiRequest, BASIC_EFFECT, ClientId, EditorService, OwnerHandle};
 use luxforge_evidence::{
-    self as script, CatalogStep, DevelopStep, LibraryKey, MergeMode, SelectStep, SelectWorkspace,
+    self as script, CatalogStep, DevelopStep, LibraryKey, SelectStep,
 };
 use luxforge_testkit::hdr_bracket::{BracketSpec, write_bracket};
 use std::collections::BTreeSet;
@@ -76,7 +77,7 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
     };
     let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
     let key = |name: &str, key: &str| Step::new(name, script::Step::key(key));
-    let merge = |name: &str, mode| select(name, SelectStep::Merge { position: 0, mode });
+    let merge = |name: &str| select(name, SelectStep::Merge { position: 0 });
     let click = |name: &str, position| {
         select(
             name,
@@ -91,12 +92,14 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
         Step::opened("opened"),
         key("select", "g"),
         select("still", SelectStep::Folder(folder(STILL)?)),
-        merge("merging", MergeMode::Pick),
+        merge("merging"),
         select("merged", SelectStep::Merged),
         key("expanded", "s"),
         click("original", 1),
         key("picked", "p").status_starts("Picked "),
-        select("develop", SelectStep::Switch(SelectWorkspace::Develop)),
+        select("all", SelectStep::Source("All photographs".into())),
+        click("photograph", 0),
+        Step::new("develop", script::Step::Develop(DevelopStep::Active)),
         Step::new(
             "edited",
             script::Step::call("edit.set-basic", json!({ "exposure": EXPOSURE })),
@@ -105,13 +108,14 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
         .payload(BASIC_EFFECT, json!({ "exposure": EXPOSURE })),
         Step::new("inspected", script::Step::call("merge.inspect", json!({}))),
         key("back", "g"),
+        select("again", SelectStep::Folder(folder(STILL)?)),
         click("result", 0),
         Step::new("removed", script::Step::Catalog(CatalogStep::DeleteKey)),
         select("restored", SelectStep::Library(LibraryKey::Undo)),
         select("redone", SelectStep::Library(LibraryKey::Redo)),
         select("undone", SelectStep::Library(LibraryKey::Undo)),
         select("handheld", SelectStep::Folder(folder(HANDHELD)?)),
-        merge("importing", MergeMode::Import),
+        merge("importing"),
         select("imported", SelectStep::Merged),
     ]))
 }
@@ -425,21 +429,6 @@ fn develop(frame: &Frame) -> &Value {
     &frame.state()["develop"]
 }
 
-/// The asset identities the owner's development set held when the frame was settled.
-fn owner_set(frame: &Frame) -> Result<Vec<Value>> {
-    let set = &frame["step"]["owner_set"];
-    ensure(
-        set.is_object() && set["error"].is_null(),
-        format!("The owner's development set was not read: {set}"),
-    )?;
-    Ok(set["members"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|member| member["asset_id"].clone())
-        .collect())
-}
-
 /// The HDR merge jobs the owner's activity board listed when the frame was settled.
 fn merge_jobs(frame: &Frame) -> BTreeSet<String> {
     frame["step"]["owner_merge_jobs"]
@@ -458,9 +447,9 @@ fn stacks(frame: &Frame) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// The one row leading a collapsed stack of the bracket, as the merge's result: its badge, its
-/// originals beneath it, and whether it is in the Development set.
-fn collapsed_leader(frame: &Frame, name: &str, result: &Value, in_set: bool) -> Result {
+/// The one row leading a collapsed stack of the bracket, as the merge's result: its badge and its
+/// originals beneath it, never shown picked.
+fn collapsed_leader(frame: &Frame, name: &str, result: &Value) -> Result {
     let rows = stacks(frame);
     ensure(
         rows.len() == 1 && select(frame)["count"] == 1,
@@ -476,7 +465,7 @@ fn collapsed_leader(frame: &Frame, name: &str, result: &Value, in_set: bool) -> 
             && row["exposures"] == FRAMES
             && row["collapsed"] == FRAMES
             && row["badge"] == json!(["HDR \u{b7} 3 exposures", "HDR \u{b7} 3", false])
-            && row["in_set"] == in_set,
+            && row["picked"] == false,
         format!("{name}: the result's cell is {row}"),
     )?;
     Ok(())
@@ -501,21 +490,21 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("The core plans the still bracket as {plan}"),
     )?;
 
-    // The bracket: its header offers both merges beside Pick all.
+    // The bracket: its header offers Merge HDR beside Pick all.
     let still = first.at("still")?;
     let actions = &select(still)["headers"]["actions"];
     ensure(
         actions
             == &json!([[
                 0,
-                [format!("Pick all {FRAMES}"), "Import merged", "Pick merged"]
+                [format!("Pick all {FRAMES}"), "Merge HDR"]
             ]])
             && select(still)["count"] == FRAMES
             && stacks(still).is_empty(),
         format!("still: the header offers {actions}"),
     )?;
 
-    // Pick merged: one pending row with the job's progress, nothing hidden yet.
+    // Merge HDR: one pending row with the job's progress, nothing hidden yet.
     let merging = first.at("merging")?;
     let pending = &select(merging)["merge"]["pending"];
     let job = pending["job_id"]
@@ -523,8 +512,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .ok_or_else(|| format!("merging: no pending merge: {}", select(merging)["merge"]))?
         .to_owned();
     ensure(
-        pending["mode"] == "Pick merged"
-            && pending["frames"] == FRAMES
+        pending["frames"] == FRAMES
             && pending["message"].is_string()
             && pending["failed"].is_null()
             && select(merging)["headers"]["pending"]
@@ -546,17 +534,17 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .ok_or_else(|| format!("merging: no merge.create was sent: {sent}"))?;
     ensure(
         create["params"]["kind"] == "hdr"
-            && create["params"]["add_to_development_set"] == true
+            && create["params"].get("add_to_development_set").is_none()
             && create["params"]["mutation"]["actor"] == "desktop",
-        format!("merging: Pick merged sent {create}"),
+        format!("merging: Merge HDR sent {create}"),
     )?;
     checks.note(
         merging,
-        "merging: Pick merged's pending row shows the job's progress",
+        "merging: Merge HDR's pending row shows the job's progress",
         json!({"pending": pending, "record": merging["step"]["merge_record"]}),
     );
 
-    // The result: one collapsed HDR tile, selected, active and in the Development set.
+    // The result: one collapsed HDR tile, selected and active, with Select still shown.
     let merged = first.at("merged")?;
     let answer = merge_answer(merged);
     let result = answer["result_asset_id"].clone();
@@ -571,18 +559,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             merged["step"]["merge_record"]
         ),
     )?;
-    collapsed_leader(merged, "merged", &result, true)?;
+    collapsed_leader(merged, "merged", &result)?;
     let info = &select(merged)["info"];
     ensure(
         info["kind"] == "one"
             && info["stack"]["title"] == "HDR \u{b7} 3 exposures"
-            && info["stack"]["in_set"] == true
-            && select(merged)["selection"]["active"] == 0,
+            && select(merged)["selection"]["active"] == 0
+            && select(merged)["shown"] == "select",
         format!("merged: the Info panel shows {info}"),
-    )?;
-    ensure(
-        owner_set(merged)? == vec![result.clone()],
-        format!("merged: the owner's set is {}", merged["step"]["owner_set"]),
     )?;
     // The board keeps finished work as recent only past its threshold and only the newest
     // sixteen, so a quick merge may be gone already; no other merge may be there.
@@ -625,7 +609,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("expanded: S sent {}", select(expanded)["merge"]["stack"]),
     )?;
 
-    // An original picked: an ordinary file pick, the result's membership unchanged.
+    // An original picked: an ordinary file pick.
     let picked = first.at("picked")?;
     ensure(
         library(picked)["method"] == "pick.set"
@@ -641,19 +625,26 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         original["role"] == "original" && original["picked"] == true,
         format!("picked: the original is {original}"),
     )?;
-    ensure(
-        owner_set(picked)? == vec![result.clone()],
-        format!("picked: the owner's set is {}", picked["step"]["owner_set"]),
-    )?;
 
-    // Develop: the result from its saved source, then one Exposure edit.
+    // Develop: the result double-clicked in All photographs, from its saved source, its catalog
+    // folder the Develop folder and in the filmstrip; then one Exposure edit.
     let opened = first.at("develop")?;
+    let strip = &develop(opened)["filmstrip"];
     ensure(
         develop(opened)["document"]["asset_id"] == result
             && develop(opened)["document"]["source"] == "derived"
             && develop(opened)["document"]["title"] == answer["file_name"]
             && select(opened)["shown"] == "develop",
         format!("develop: Develop shows {}", develop(opened)["document"]),
+    )?;
+    ensure(
+        develop(opened)["folder"].is_string()
+            && strip["folder"] == develop(opened)["folder"]
+            && strip["reading"] == false
+            && strip["assets"]
+                .as_array()
+                .is_some_and(|assets| assets.contains(&result)),
+        format!("develop: the filmstrip holds {strip}"),
     )?;
     let edited = first.at("edited")?;
     let before = crate::filmstrip_smoke::drawn_luminance(opened)?;
@@ -676,8 +667,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("inspected: merge.inspect answered {inspected}"),
     )?;
 
-    // Remove merge, then its undo, redo and undo again: the originals and the result in turn, the
-    // set following, and no merge run again.
+    // Remove merge, then its undo, redo and undo again: the originals and the result in turn, and
+    // no merge run again.
     let clicked = first.at("result")?;
     ensure(
         select(clicked)["selection"]["active"] == 0
@@ -694,13 +685,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "removed: ⌫ sent {}, the view holds {} items",
             library(removed),
             select(removed)["count"]
-        ),
-    )?;
-    ensure(
-        owner_set(removed)?.is_empty(),
-        format!(
-            "removed: the owner's set is {}",
-            removed["step"]["owner_set"]
         ),
     )?;
     for (name, shown) in [("restored", true), ("redone", false), ("undone", true)] {
@@ -721,17 +705,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 .find(|row| row["role"] == "leader")
                 .ok_or_else(|| format!("{name}: no result is shown: {rows:?}"))?;
             ensure(
-                leader["item"]["asset_id"] == result && leader["in_set"] == true,
+                leader["item"]["asset_id"] == result,
                 format!("{name}: the result's cell is {leader}"),
-            )?;
-            ensure(
-                owner_set(frame)? == vec![result.clone()],
-                format!("{name}: the owner's set is {}", frame["step"]["owner_set"]),
             )?;
         } else {
             ensure(
-                stacks(frame).is_empty() && owner_set(frame)?.is_empty(),
-                format!("{name}: the result is still shown or in the set"),
+                stacks(frame).is_empty(),
+                format!("{name}: the result is still shown"),
             )?;
         }
         ensure(
@@ -740,7 +720,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )?;
     }
 
-    // Import merged: a second result, in the catalog and not in the set.
+    // The handheld bracket's Merge HDR: a second result, in the catalog.
     let importing = first.at("importing")?;
     let import_job = select(importing)["merge"]["pending"]["job_id"]
         .as_str()
@@ -754,10 +734,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         })
         .ok_or("importing: no merge.create was sent")?;
     ensure(
-        import_create["params"]
-            .get("add_to_development_set")
-            .is_none(),
-        format!("importing: Import merged sent {import_create}"),
+        import_create["params"]["kind"] == "hdr",
+        format!("importing: Merge HDR sent {import_create}"),
     )?;
     let imported = first.at("imported")?;
     let import_answer = merge_answer(imported);
@@ -768,14 +746,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && second_result != result,
         format!("imported: the job answered {import_answer}"),
     )?;
-    collapsed_leader(imported, "imported", &second_result, false)?;
-    ensure(
-        owner_set(imported)? == vec![result.clone()],
-        format!(
-            "imported: the owner's set is {}",
-            imported["step"]["owner_set"]
-        ),
-    )?;
+    collapsed_leader(imported, "imported", &second_result)?;
     let jobs: BTreeSet<String> = first
         .names()
         .iter()
@@ -880,7 +851,7 @@ mod tests {
         let first = first_plan(&expected).unwrap();
         first.validate().unwrap();
         assert!(first.scripted());
-        assert_eq!(first.len(), 20);
+        assert_eq!(first.len(), 23);
         let second =
             second_plan(&json!({"reopen": {"folder": "Jun 2026", "position": 0}})).unwrap();
         second.validate().unwrap();
