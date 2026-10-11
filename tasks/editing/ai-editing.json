@@ -66,7 +66,7 @@
     {
       "id": "TASK-002",
       "description": "Bring the object removal prototype onto main as the AI harness and extend it with a corpus manifest and scoring.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The prototype is the probes/object-removal Cargo workspace on the claude/object-removal-research-d3374b branch (its own lockfile, outside the editor's workspace, ort 2.0.0-rc.13 with the Core ML provider and tract 0.23.8): runtime::Session over interchangeable backends including fixed-shape Core ML copies, pinned models verified by size and SHA-256, the stroke-to-decision rules, the guided-filter region refinement, the LaMa fill pipeline with grain and pyramid blending, the removal-probe commands (models, inspect, segment, fill, remove, bench, parity) and the removal-lab window with its scripted hidden-window mode. Its README holds the M4 measurements of 2026-09-28 and 29.",
@@ -225,7 +225,7 @@
     {
       "id": "TASK-005",
       "description": "Qualify the generative tier: build the runtime within the one-toolchain rule and run Moebius and FLUX.2 klein 4B on the M4, with the shipped prompt embedding, candidates, memory and quality against the prototype's Fast fill.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002"
       ],
