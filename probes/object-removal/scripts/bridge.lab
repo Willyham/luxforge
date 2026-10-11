@@ -1,0 +1,18 @@
+# removal-lab --script for z6-bridge.jpg (4024 × 6048 after EXIF rotation): hover the boy,
+# sweep the pointer at 120 Hz across him and across the bridge, click to remove him, undo, then
+# brush over him and save. Coordinates are source pixels.
+settle
+hover 1690,3550
+settle
+path 1500,3000 1900,4200 60 8
+settle
+path 400,2600 3600,5200 120 8
+settle
+click 1690,3550
+expect removals 1
+undo
+brush 80
+stroke 1650,3000 1700,3500 1720,4000
+expect decision one
+expect removals 2
+save
