@@ -456,6 +456,7 @@ impl CapabilityModule for CapabilitiesProofModule {
         payload: &Value,
         _: crate::CompileStage,
         artifacts: &[Arc<PreparedArtifact>],
+        _: &crate::path::StrokeTable,
     ) -> Result<Processing, Error> {
         let Some(named) = Self::payload(effect_id, format, payload)? else {
             return Err(Error::validation(
@@ -669,6 +670,7 @@ mod tests {
                 &payload,
                 crate::CompileStage::exact(STAGE),
                 std::slice::from_ref(&good),
+                &crate::path::StrokeTable::default(),
             )
             .unwrap()
         else {
@@ -701,6 +703,7 @@ mod tests {
                     &payload,
                     crate::CompileStage::exact(STAGE),
                     &bound,
+                    &crate::path::StrokeTable::default(),
                 )
                 .unwrap_err();
             assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);

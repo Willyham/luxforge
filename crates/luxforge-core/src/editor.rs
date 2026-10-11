@@ -33,6 +33,9 @@ mod artifact_tests;
 mod catalog;
 mod catalog_rows;
 mod collapse;
+mod corrections;
+pub use corrections::{BatchStaleAcknowledgement, StaleAcknowledgement};
+pub(crate) use corrections::{STALE_UNACKNOWLEDGED, acknowledged};
 mod describe;
 mod entries;
 mod evaluate;
@@ -47,7 +50,8 @@ mod test_support;
 pub(crate) use source::original_work;
 #[cfg(test)]
 pub(crate) use test_support::{
-    distinct_jpeg, mutation, mutation_json, recast_as_raw, synthetic_raw_metadata,
+    SAMPLE_EFFECT, SampleModule, distinct_jpeg, mutation, mutation_json, recast_as_raw,
+    synthetic_raw_metadata,
 };
 
 pub(crate) use catalog::{
@@ -68,6 +72,7 @@ pub(crate) use evaluate::PointPlan;
 pub(crate) use history::{MAX_HISTORY_PAGE, MAX_VERSION_NAME};
 pub use masks::MASK_FIELD;
 pub(crate) use masks::mask_target_parameter;
+pub use plan::operations_limit;
 pub(crate) use plan::{Prepared as PreparedAction, prefix};
 pub use source::RawInterpretation;
 pub(crate) use source::{
@@ -317,6 +322,12 @@ pub struct ActionResult {
     /// analyses nothing, answers without it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub analysis: BTreeMap<String, Value>,
+    /// What the action's module reports of the objects the request minted or addressed
+    /// ([`crate::ToolModule::answer`]), each field one top-level key of the answer: an added or
+    /// updated correction's `correction`. Stored with the request, so a deduplicated retry answers
+    /// the same object. Empty for every other action.
+    #[serde(flatten)]
+    pub answer: serde_json::Map<String, Value>,
 }
 
 /// One setting a composite action did not apply to a photo, and why: the step's action, the field
@@ -340,6 +351,7 @@ impl ActionResult {
             removed_layers: Vec::new(),
             skipped: Vec::new(),
             analysis: BTreeMap::new(),
+            answer: serde_json::Map::new(),
         }
     }
 }
@@ -547,6 +559,11 @@ pub struct LayerDescription {
     /// orientation layer whose payload cannot be read.
     #[serde(default)]
     pub input_orientation: Option<Orientation>,
+    /// The repair layer's stale frozen patches, each with its identity, name and reasons
+    /// (`source`, `dimensions`, `development`, `earlier-correction`): what was generated against
+    /// an input that has since changed. They keep rendering. Omitted when none is stale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<crate::StaleCorrection>,
 }
 
 /// One entry's ordered layers with their provider and summary. Reading only: no source, no render.
@@ -640,6 +657,12 @@ pub struct EditorService {
     /// (the open): the next preparation takes it ([`source::ReadOriginal`]).
     read_original: RefCell<Option<source::ReadOriginal>>,
     pub(crate) pixel_reads: RefCell<pixels::PixelReads>,
+    /// Whether the plan being made is a draft's preview ([`crate::StageQuestions::previewing`]):
+    /// set only while [`EditorService::draft_recipe`] plans one.
+    previewing: std::cell::Cell<bool>,
+    /// The candidate the catalog owner is committing through a candidate-accepting action, set
+    /// only for the length of that commit ([`EditorService::accept_candidate`]).
+    pub(crate) accepting: std::cell::RefCell<Option<std::sync::Arc<crate::AcceptedCandidate>>>,
     registry: Arc<ModuleRegistry>,
     /// The budgets every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
@@ -655,6 +678,9 @@ pub struct EditorService {
     checked_manifest: RefCell<Option<SourceSignature>>,
     /// Artifacts published while this service is open, which no collection removes.
     live_artifacts: LiveArtifacts,
+    /// The task jobs' candidate patches, held under `<artifact root>/tmp/candidates/` while this
+    /// service is open and removed when it closes.
+    candidates: Arc<crate::artifacts::candidates::Candidates>,
     /// Where this catalog's index lives: `<catalog stem>.index` beside the catalog file.
     index_dir: PathBuf,
     /// The index database, opened on first use ([`Self::index`]) rather than with the catalog, so
@@ -721,6 +747,13 @@ impl EditorService {
         // The roots follow the catalog file, so moving them together keeps them valid.
         let artifact_root = default_artifact_root(path);
         let index_dir = crate::index::index_dir(path);
+        let live_artifacts = LiveArtifacts::default();
+        let candidates =
+            crate::artifacts::candidates::Candidates::new(crate::artifacts::ArtifactWriter::new(
+                artifact_root.clone(),
+                catalog_id.clone(),
+                live_artifacts.clone(),
+            ));
         Ok(Self {
             connection,
             // Opening starts empty: nothing read before a reopen is trusted after it.
@@ -728,13 +761,16 @@ impl EditorService {
             source_cache: RefCell::new(None),
             read_original: RefCell::new(None),
             pixel_reads: RefCell::new(pixels::PixelReads::default()),
+            previewing: std::cell::Cell::new(false),
+            accepting: std::cell::RefCell::new(None),
             registry,
             render: RenderContext::new(),
             catalog_id,
             artifact_root,
             prepared_artifacts: RefCell::new(PreparedArtifacts::new(PREPARED_ARTIFACT_BYTES)),
             checked_manifest: RefCell::new(None),
-            live_artifacts: LiveArtifacts::default(),
+            live_artifacts,
+            candidates,
             index_dir,
             index: RefCell::new(None),
             auto_collapse: false,

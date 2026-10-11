@@ -390,6 +390,7 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
                 neutral: report.neutral,
                 input_stage: None,
                 input_orientation: None,
+                stale: Vec::new(),
             }
         })
         .collect();
@@ -457,6 +458,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         had_errors: false,
         paced_slider: None,
         paced_stroke: None,
+        paced_correction: None,
         second_click: None,
         tools_scroll: None,
         capability_wait: None,
@@ -781,6 +783,8 @@ pub(crate) fn patch_control(editor: &Editor) -> (String, String) {
         .modules
         .iter()
         .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
+        // A section's slider: Corrections' operation edit is a patch with no control.
+        .filter(|module| !module.controls.is_empty())
         .flat_map(|module| module.actions.iter())
         .find(|action| action.patch)
         .expect("a built-in declares a field patch");

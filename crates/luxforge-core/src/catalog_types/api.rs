@@ -317,6 +317,7 @@ host_params! {
         destination: PathBuf = path().notes("an existing folder; each file is named by the export's naming rule and nothing is replaced"),
         mutation: MutationRequest,
         keep_metadata: Option<bool> = boolean().default(false),
+        acknowledge_stale: Option<Vec<crate::BatchStaleAcknowledgement>> = json("[{asset_id, entry_id, operations: [correction-…]}], at most one a photograph: export these photographs' stale frozen patches as they render; a photograph with stale corrections and no exactly matching acknowledgement of its current entry is skipped stale-unacknowledged, with entry_id and stale in its skipped row"),
     }
 }
 

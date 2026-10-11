@@ -150,8 +150,13 @@ pub struct GpuSweep {
 }
 
 /// What one spatial operation carries into a window: its summed halo and the larger of its
-/// anchor's leads, in pixels of its stage.
+/// anchor's leads, in pixels of its stage. A repair carries how far its reads reach beyond its
+/// destinations, so one whose sources lie farther than [`SWEEP_SPLIT_REACH`] ends its sweep, as
+/// a staged-light reader starts one.
 fn reach(spatial: &super::GpuSpatial) -> u32 {
+    if let Some(repair) = &spatial.repair {
+        return repair.reach;
+    }
     let lead = anchor_of(std::slice::from_ref(spatial)).lead;
     spatial.halos.iter().sum::<u32>() + lead.0.max(lead.1)
 }
@@ -257,7 +262,7 @@ fn plan_ranges(request: &SweepRequest, ranges: Vec<Range<usize>>) -> GpuStaging 
         .segments
         .iter()
         .enumerate()
-        .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial(_))))
+        .filter(|(_, segment)| segment.entry.as_ref().is_some_and(Entry::materializes))
         .map(|(index, _)| index)
         .collect();
     if entries.len() != plan.spatial.len() {
@@ -299,7 +304,11 @@ fn plan_ranges(request: &SweepRequest, ranges: Vec<Range<usize>>) -> GpuStaging 
         let anchor = anchor_of(&plan.spatial[range.clone()]);
         let window_of = |rect: Region| {
             WindowPlan::gpu_window_between(compiled, source, from, end, rect)
-                .map(|window| anchored(window, anchor))
+                .map(|window| match from {
+                    // The first sweep reads the source and runs a repair link, if any.
+                    0 => super::plan::anchored_over(compiled, window, anchor),
+                    _ => anchored(window, anchor),
+                })
                 .map_err(|reason| {
                     Chained::Unplannable(format!(
                         "sweep {index}'s tile at ({}, {}): {}",
@@ -476,7 +485,7 @@ pub(crate) fn plan_light_sweeps(request: &SweepRequest) -> Result<Vec<GpuLightSw
         .segments
         .iter()
         .enumerate()
-        .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial(_))))
+        .filter(|(_, segment)| segment.entry.as_ref().is_some_and(Entry::materializes))
         .map(|(index, _)| index)
         .collect();
     if entries.len() != plan.spatial.len() {
@@ -517,7 +526,7 @@ pub(crate) fn plan_light_sweeps(request: &SweepRequest) -> Result<Vec<GpuLightSw
         let anchor = anchor_of(&plan.spatial[..at]);
         let window_of = |rect: Region| {
             WindowPlan::gpu_window_between(compiled, source, 0, end, rect)
-                .map(|window| anchored(window, anchor))
+                .map(|window| super::plan::anchored_over(compiled, window, anchor))
                 .map_err(|reason| {
                     Chained::Unplannable(format!(
                         "light {k}'s sweep tile at ({}, {}): {}",

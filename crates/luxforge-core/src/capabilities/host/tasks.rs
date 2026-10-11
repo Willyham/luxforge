@@ -14,6 +14,7 @@ use super::{
 use crate::{
     AssetId, Availability, EditorService, Error, JobId, ModuleDescriptor, MutationRequest,
     api::{Origin, params},
+    artifacts::candidates::CandidateSink,
     capabilities::{
         consent::{consent_required, remote_disclosure},
         context::{GrantedSend, ModuleContext, ProfileView, TaskOutcome},
@@ -309,6 +310,19 @@ impl CapabilityHost {
             control: JobControl::new(),
             outcome: Arc::new(TaskOutcome::default()),
         };
+        let job_id = JobId::new();
+        // A task that takes an asset may publish candidates generated against it as it is now.
+        let sink = match &asset_id {
+            Some(asset_id) => Some(CandidateSink {
+                store: service.candidates().clone(),
+                job_id: job_id.clone(),
+                module_id: module_id.to_owned(),
+                task_id: task_id.to_owned(),
+                basis: service.candidate_basis(asset_id)?,
+                control: run.control.clone(),
+            }),
+            None => None,
+        };
         let mut context =
             ModuleContext::new(module_id, self.config.secrets.clone(), run.control.clone())
                 .with_settings(
@@ -316,6 +330,9 @@ impl CapabilityHost {
                     secret_fields(descriptor),
                 )
                 .with_artifacts(service.artifact_writer()?, run.outcome.clone());
+        if let Some(sink) = sink {
+            context = context.with_candidates(sink);
+        }
         if let Some(profile) = profile {
             context = context.with_profile(
                 profile_view(descriptor, profile),
@@ -387,7 +404,7 @@ impl CapabilityHost {
         });
         let job = jobs.submit(
             NewJob {
-                job_id: JobId::new(),
+                job_id,
                 kind: JobKind::Task,
                 module_id: Some(module_id.to_owned()),
                 resource_id: None,

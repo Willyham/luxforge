@@ -224,6 +224,7 @@ fn compiled_units(
     match processing {
         Processing::Color(operation) => Ok(operation.len()),
         Processing::Spatial(operation) => Ok(operation.len()),
+        Processing::Repair(table) => Ok(table.len()),
         Processing::ExactGeometry(mapping) => Ok(usize::from(
             mapping
                 != ExactGeometry {
@@ -239,9 +240,6 @@ fn compiled_units(
         )),
         Processing::Warp(step) => Ok(usize::from(!step.is_identity())),
         Processing::Resample(_) => Ok(1),
-        other => Err(format!(
-            "{payload} compiled to {other:?}, which is not field-patch processing"
-        )),
     }
 }
 

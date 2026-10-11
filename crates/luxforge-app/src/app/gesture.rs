@@ -42,6 +42,8 @@ pub(crate) enum Kind {
     Slider(SliderGesture),
     Mask(MaskGesture),
     Crop(CropGesture),
+    /// A Corrections gesture: an add, a handle drag or a row slider of the declared brush.
+    Correction(Box<super::corrections::CorrectionGesture>),
 }
 
 /// A generated control's gesture: one declared field of one action, dragged.
@@ -99,6 +101,8 @@ pub(crate) enum Starting {
     MaskCommand,
     /// The crop draft: all three halves.
     Crop,
+    /// A Corrections gesture — a press that adds, a handle drag or a row slider: all three halves.
+    Correction,
     /// Another canvas mode: one draft only. A mode is the session's view state, which neither a
     /// historical preview nor a request in flight holds back.
     Mode,
@@ -153,9 +157,12 @@ impl Starting {
     /// The halves this start answers to, declared once per variant.
     pub(crate) const fn halves(self) -> Halves {
         let (one_draft, editable, busy) = match self {
-            Self::Mask | Self::MaskCommand | Self::Crop | Self::Pick | Self::Action => {
-                (true, true, true)
-            }
+            Self::Mask
+            | Self::MaskCommand
+            | Self::Crop
+            | Self::Correction
+            | Self::Pick
+            | Self::Action => (true, true, true),
             Self::Slider => (true, true, false),
             Self::Gallery | Self::History | Self::Compare => (true, false, true),
             Self::Mode | Self::Preset | Self::Refit | Self::Workspace | Self::Photograph => {
@@ -175,6 +182,7 @@ impl Starting {
             Self::Slider => "before editing a slider",
             Self::Mask | Self::MaskCommand => "before editing a mask",
             Self::Crop => "before cropping",
+            Self::Correction => "before adding or editing a correction",
             Self::Mode => "before entering this mode",
             Self::Pick => "before picking from the photograph",
             Self::Gallery => "before opening Components",
@@ -198,6 +206,7 @@ impl Kind {
             Self::Slider(slider) => Some(slider.action.clone()),
             Self::Mask(mask) => mask.shape.method().map(str::to_owned),
             Self::Crop(crop) => Some(crop.action.clone()),
+            Self::Correction(correction) => Some(correction.action()),
         }
     }
 
@@ -229,6 +238,7 @@ impl Kind {
                 })
                 .unwrap_or_default(),
             Self::Crop(_) => DraftTarget::new(),
+            Self::Correction(correction) => correction.target(),
         }
     }
 
@@ -238,6 +248,7 @@ impl Kind {
             Self::Slider(_) => "slider_draft",
             Self::Mask(_) => "mask_draft",
             Self::Crop(_) => "crop_draft",
+            Self::Correction(_) => "correction_draft",
         }
     }
 
@@ -247,6 +258,7 @@ impl Kind {
             Self::Slider(_) => "slider draft",
             Self::Mask(_) => "mask gesture",
             Self::Crop(_) => "crop draft",
+            Self::Correction(_) => "correction",
         }
     }
 
@@ -261,6 +273,15 @@ impl Kind {
     /// was painted, or too long once decimated — has no posted path and must never become an empty
     /// stroke. The refusal is left in `refused`. A slider and the crop frame offer theirs.
     pub(crate) fn build(&self, refused: &mut Option<luxforge_core::Error>) -> Option<Value> {
+        if let Self::Correction(correction) = self {
+            return match correction.fields() {
+                Ok(fields) => fields,
+                Err(error) => {
+                    *refused = Some(error);
+                    None
+                }
+            };
+        }
         let Self::Mask(mask) = self else {
             return None;
         };
@@ -278,6 +299,7 @@ impl Kind {
             Self::Slider(_) => {}
             Self::Mask(mask) => mask.shape.interrupt(),
             Self::Crop(crop) => crop.frame.interrupt(),
+            Self::Correction(_) => {}
         }
     }
 }
@@ -300,6 +322,13 @@ impl CoreGesture {
     pub(crate) fn crop(&self) -> Option<&CropGesture> {
         match &self.kind {
             Kind::Crop(crop) => Some(crop),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn correction(&self) -> Option<&super::corrections::CorrectionGesture> {
+        match &self.kind {
+            Kind::Correction(correction) => Some(correction),
             _ => None,
         }
     }
@@ -400,7 +429,9 @@ impl Editor {
                 return Some("Apply or Cancel the crop draft before leaving this mode".into());
             }
             // A mask gesture is finished by its release, or by Done for a brush; a crop by Apply.
-            (Kind::Mask(_), _) => format!("Finish or cancel the {}", gesture.kind.noun()),
+            (Kind::Mask(_) | Kind::Correction(_), _) => {
+                format!("Finish or cancel the {}", gesture.kind.noun())
+            }
             (kind, _) => format!("Apply or Cancel the {}", kind.noun()),
         };
         Some(format!("{held} {}", starting.clause()))
@@ -595,7 +626,7 @@ impl Editor {
             }
             Kind::Crop(_) if self.busy => Some(IN_FLIGHT.into()),
             Kind::Crop(crop) => crop.frame.output().err().map(|error| error.to_string()),
-            Kind::Slider(_) | Kind::Mask(_) => None,
+            Kind::Slider(_) | Kind::Mask(_) | Kind::Correction(_) => None,
         }
     }
 
@@ -726,6 +757,14 @@ impl Editor {
                 );
             }
             Kind::Crop(crop) => self.crop_discarded(crop, &gesture.draft),
+            Kind::Correction(correction) => {
+                self.status.text = format!("{} discarded", correction.name);
+                self.event(
+                    "correction_draft_cancelled",
+                    || json!({"name": correction.name, "action": correction.action()}),
+                );
+                self.correction_ended();
+            }
         }
         if self.document.state.is_none() {
             self.outcome(Outcome::NoNewFrame);
@@ -765,7 +804,9 @@ impl Editor {
                             json!({"label":slider.label,"revision":revision})
                         }
                         Some((Kind::Crop(crop), draft)) => crop.summary(draft),
-                        Some((Kind::Mask(_), _)) | None => json!({ "revision": revision }),
+                        Some((Kind::Mask(_) | Kind::Correction(_), _)) | None => {
+                            json!({ "revision": revision })
+                        }
                     }
                 });
                 self.changed_elsewhere(noun)
@@ -1020,6 +1061,33 @@ impl Editor {
                     detail
                 });
             }
+            Kind::Correction(correction) => {
+                // As a mask stroke's: an add's `positions` is how much of its path the frame
+                // carries; a handle or field edit has no path and records none.
+                let positions = match &correction.op {
+                    crate::app::corrections::CorrectionOp::Add { path, .. } => {
+                        Some(path.captured())
+                    }
+                    _ => None,
+                };
+                self.event("correction_draft_preview", || {
+                    let mut detail = json!({
+                        "generation":generation,
+                        "draft_revision":draft_revision,
+                        "positions":positions,
+                    });
+                    if let Some(requested_at) = requested_at {
+                        let legs = round_trip.legs_ms(requested_at);
+                        detail["round_trip_ms"] = json!({
+                            "executor_wait":legs[0],
+                            "draft_set":legs[1],
+                            "preview_job":legs[2],
+                            "return_to_queue":legs[3],
+                        });
+                    }
+                    detail
+                });
+            }
             Kind::Crop(_) => {}
         }
     }
@@ -1127,7 +1195,9 @@ impl Editor {
                 );
                 self.status.text = error.clone();
                 self.outcome(Outcome::DraftRefused);
-                return self.drive(Event::Committed(Err(error)));
+                let task = self.drive(Event::Committed(Err(error.clone())));
+                self.correction_commit_refused(&error);
+                return task;
             }
         };
         let Some(open) = self.gesture.take() else {
@@ -1164,6 +1234,20 @@ impl Editor {
                 self.refresh_mask_coverage()
             }
             (Kind::Crop(crop), outcome) => self.crop_committed(&crop, &open.draft, outcome),
+            (Kind::Correction(correction), Some(refresh)) => {
+                self.correction_committed(&correction, refresh)
+            }
+            (Kind::Correction(correction), None) => {
+                self.correction_ended();
+                self.status.text = format!("{} unchanged; nothing was committed", correction.name);
+                match self.reseed_committed() {
+                    Some(task) => task,
+                    None => {
+                        self.outcome(Outcome::NoNewFrame);
+                        Task::none()
+                    }
+                }
+            }
         }
     }
 

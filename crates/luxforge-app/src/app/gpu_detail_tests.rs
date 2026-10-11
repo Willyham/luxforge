@@ -259,6 +259,9 @@ fn run_step(
         clamps: false,
         mask: None,
         halos: Vec::new(),
+        contained: false,
+        resident: Vec::new(),
+        resident_key: 0,
     };
     let plan = GpuPlan {
         boundary: boundary(width, height, 1, values).expect("a boundary"),

@@ -33,6 +33,7 @@ fn one_query_identity_resolves_to_one_provider_across_the_registry() {
             preset: true,
             analysis: None,
             shortcut: None,
+            accepts_candidate: false,
             parameters: Vec::new(),
         }];
         TestModule::from_descriptor(descriptor)
@@ -221,10 +222,6 @@ fn built_in_modules_describe_their_stored_layers() {
             .expect("a stored payload")
             .summary
     };
-    assert_eq!(
-        described(&Layer::pixel(3, 4, [1, 2, 3])),
-        "Pixel 3, 4 → 1,2,3"
-    );
     // An orientation layer holds a composed state, so its row names the orientation it is in,
     // not the actions that reached it. All eight are named and the neutral one says so.
     let orientation = |mirror: bool, turns: u8| -> String {

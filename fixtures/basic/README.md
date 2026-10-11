@@ -100,17 +100,9 @@ independent implementations.
 
 ## Mixed-order composition cases: `mixed-order.json`
 
-A 4x3 buffer with distinct pixel values, prepared for later mixed-order proofs (no production
-evaluator for a mixed geometry/colour stack exists yet). Four cases, each an ordered pair of
-operations and the resulting `expected_rgba`:
+A 4x3 buffer with distinct pixel values and two cases, each an ordered pair of operations and
+the resulting `expected_rgba`:
 
-- `replace_then_expose`: a point replacement at `(1,1)` to `[10,20,30]` committed first, then
-  +1 EV exposure applied to the whole image. The replaced pixel is exposed like every other
-  pixel (its expected value equals `evaluate_pixel([10,20,30], [Exposure(1.0)])`, the same as the
-  other base pixel that already held `[10,20,30]`).
-- `expose_then_replace`: +1 EV exposure applied first, then the same point replacement committed
-  last. The replacement pixel keeps its exact literal `[10,20,30]`, untouched by the earlier
-  exposure, while every other pixel is exposed.
 - `mirror_then_expose` and `expose_then_mirror`: a horizontal mirror and +1 EV exposure in both
   orders. Both produce byte-identical `expected_rgba` (asserted by the generating script before
   the file was written), since exact geometry is a pure permutation of pixel positions and so

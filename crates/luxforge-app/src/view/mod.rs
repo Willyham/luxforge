@@ -7,11 +7,14 @@
 //! The two side panels collapse independently through the session's own workspace state; the canvas
 //! takes whatever remains. Every region is styled from [`luxforge_ui::theme`], never an ad hoc
 //! colour, and the window carries no outer padding: the canvas pads its photo itself.
+mod brush_overlay;
 pub(crate) mod canvas;
 pub(crate) mod canvas_view;
 mod capabilities;
 mod compare_canvas;
 pub(crate) mod copy_settings;
+pub(crate) mod corrections_canvas;
+pub(crate) mod corrections_panel;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 pub(crate) mod develop;
@@ -80,6 +83,8 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
     pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
     pub(crate) mask_handles: bool,
+    /// The Corrections workspace's pins, outlines, handles and gesture, while its mode is active.
+    pub(crate) corrections: Option<corrections_canvas::CanvasData<'a>>,
     pub(crate) draft: Option<&'a CropDraft>,
     /// A GPU plan the photograph is drawn from in place of its frame, which stays the surface's
     /// fallback: a whole frame's at Fit and below 100%, a region's at 100% or more. An open
@@ -169,6 +174,7 @@ pub(crate) fn workspace<'a>(
                 &model.histogram,
                 &model.masks,
                 model.canvas.mask_panel,
+                &model.corrections,
             ))
             .width(Length::Fixed(TOOLS_PANEL_WIDTH))
             .height(Length::Fill)

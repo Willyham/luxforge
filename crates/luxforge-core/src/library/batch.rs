@@ -72,6 +72,8 @@ pub(crate) fn skip(asset: &AssetId, code: &str, reason: impl Into<String>) -> Ba
         asset_id: asset.clone(),
         code: code.to_owned(),
         reason: reason.into(),
+        entry_id: None,
+        stale: Vec::new(),
     }
 }
 

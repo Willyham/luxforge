@@ -108,8 +108,8 @@ pub const TILES_IN_FLIGHT: usize = 2;
 /// How many compiled program sequences a tile runner keeps, ready and failed ones together, the
 /// least recently run evicted first: the photo surface's own bound ([`super::PIPELINE_CACHE`]),
 /// which holds every link of the largest plan a tile draws, a link for the colour steps before its
-/// first spatial step and one for each of up to 18 spatial steps, with room for both ends of each.
-pub const TILE_PIPELINE_CACHE: usize = 64;
+/// first spatial step and one for each of up to 19 spatial steps, with room for both ends of each.
+pub const TILE_PIPELINE_CACHE: usize = 65;
 
 /// How many lights a tile runner keeps, the least recently computed let go first: a stream's or a
 /// call's plan reads at most one for each estimating layer, and every tile of it reads the same.

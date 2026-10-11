@@ -115,9 +115,22 @@ impl EditorService {
                 (state.asset, state.current_entry)
             }
         };
-        Ok(self
+        let mut description = self
             .registry
-            .describe_recipe(asset.width, asset.height, &entry))
+            .describe_recipe(asset.width, asset.height, &entry);
+        // The repair layer's row says which frozen patches are stale; a stack that cannot say
+        // (an unavailable provider before it) describes the rest as ever.
+        let recipe = &entry.snapshot.recipe;
+        if let Ok(stale) = self.stale_corrections(&asset, recipe)
+            && !stale.is_empty()
+            && let Some(row) = description
+                .layers
+                .iter_mut()
+                .find(|row| row.effect == crate::modules::CORRECTIONS_EFFECT)
+        {
+            row.stale = stale;
+        }
+        Ok(description)
     }
 }
 
@@ -179,6 +192,7 @@ impl ModuleRegistry {
                 neutral: report.neutral,
                 input_stage,
                 input_orientation,
+                stale: Vec::new(),
             });
         }
         let output_stage = size(recipe.layers.len());
@@ -267,7 +281,7 @@ mod tests {
             )
             .unwrap();
         service
-            .apply_pixel(&asset, mutation(1, "pixel"), 1, 2, [4, 5, 6])
+            .apply_exposure(&asset, mutation(1, "exposure"), 0.4)
             .unwrap();
         // Two quarter turns after the crop: one orientation layer, ahead of the crop, whose row
         // names the orientation it holds rather than the two actions that reached it.
@@ -282,7 +296,7 @@ mod tests {
                 .unwrap();
         }
         let described = service.describe_entry(&asset, None).unwrap();
-        // The pixel layer is in the content stage, so it sits before the geometry tail however
+        // The Basic layer is in the content stage, so it sits before the geometry tail however
         // late it was committed, and the orientation goes ahead of the crop it carries.
         assert_eq!(
             described
@@ -297,9 +311,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (
-                    Some("luxforge.pixel"),
-                    Some("Pixel"),
-                    "Pixel 1, 2 → 4,5,6",
+                    Some("luxforge.basic"),
+                    Some("Basic"),
+                    "Exposure +0.40 EV",
                     true
                 ),
                 (

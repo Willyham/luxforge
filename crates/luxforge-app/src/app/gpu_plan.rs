@@ -604,7 +604,8 @@ pub(crate) fn spatial_step(
             entry: Cow::Borrowed(spatial.program.entry),
             source: Cow::Borrowed(spatial.program.source),
             words: spatial.words.clone(),
-            block: Arc::from([]),
+            // A repair step's operation table; every other step's words hold all it reads.
+            block: spatial.block.clone().unwrap_or_else(|| Arc::from([])),
         },
         planes: spatial
             .planes
@@ -645,6 +646,10 @@ pub(crate) fn spatial_step(
         clamps: spatial.clamps,
         mask,
         halos: spatial.halos.clone(),
+        contained: spatial.repair.is_some(),
+        // A repair step's frozen patches, the same allocations every tick.
+        resident: spatial.resident.blocks.clone(),
+        resident_key: spatial.resident.key,
     })))
 }
 

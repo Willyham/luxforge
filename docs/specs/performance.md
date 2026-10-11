@@ -349,7 +349,6 @@ Every harness command's default run is a functional run: it proves the journey a
 | S0 sampled peak RSS (empty / 24 / 60 MP) | 111 / 506 / 772 MiB; 965 MiB after sixteen 60 MP loads |
 | S0 idle CPU after settling | 0.033% of one core over 30 s |
 | Core import of a 24 / 60 MP JPEG | 55 / 118 ms |
-| Pixel edit after a rotate on 24 MP | 0.2 ms (sampling path) |
 | Core one transform on 24 MP after the module registry (p50 / p95, 20 samples) | 12.2 / 13.5 ms; 200 composed transforms 11.4 / 11.9 ms; registration of the built-in modules 0.18 ms and first render after open 0.05 ms on the 480×320 fixture (release acceptance run) |
 | Editor RSS after M1/M2 journey with a small fixture | about 101 MiB, 0.2% CPU idle |
 
@@ -3272,9 +3271,9 @@ boundary are pulled, never materialized, a bounded rectangle at a time with thei
 its rows: a spatial operation's input one row of its tile region at a time, and a straightened
 crop's taps one block of 64 output columns by the chunk's rows at a time, through the rectangle of
 at most 16,384 pixels those taps read, so each pixel before the resample is evaluated about once
-per block instead of once per tap. A segment with a point replacement is pulled pixel by pixel.
+per block instead of once per tap.
 Complete-buffer tests compare the rows with the point evaluator for Basic, Mixer and their combined
-recipe, a viewed source, a partial final chunk, replacements on either side of a colour run, colour
+recipe, a viewed source, a partial final chunk, colour
 after a straightened crop at 4 and -30 degrees and after Presence, masked colour and a masked
 Presence layer before a crop, on a stage narrower than one tap block and on one several blocks
 wide.
@@ -5590,6 +5589,43 @@ LUXFORGE_DRAG_BENCH_OUTPUT=/absolute/NEW_DIR cargo test --release --locked -p lu
 It writes `drag-ticks.json` (every tick, the adapter, the host and the environment) and `drag-ticks.md`; `LUXFORGE_DRAG_BENCH_TICKS`, `LUXFORGE_DRAG_BENCH_REFERENCE_TICKS` and `LUXFORGE_DRAG_BENCH_STACKS` (`basic`, `basic-curve-mixer`, `detail-presence`, `detail-presence-detail-drag`, `masked-presence-3`) measure less, and `LUXFORGE_GPU_ADAPTER=software` asks wgpu for the software adapter alone on a host that has a hardware one too.
 
 In the container: an image `FROM rust:1.94.0-trixie` adding `build-essential pkg-config cmake nasm clang libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools jq` (and, for the editor's own launches under Xvfb, `xvfb xauth libxkbcommon-x11-0 libxcursor1 libxi6 libxinerama1 libxrandr2`, without which it panics before its window opens), with `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`, `WGPU_BACKEND=vulkan`, `CARGO_TARGET_DIR=/target` and `CARGO_HOME=/cargo`; the worktree mounted read-only at `/src`, named volumes at `/target` and `/cargo` so the host's `target/` is untouched, and a writable directory for the output. Build with `cargo test --release --locked -p luxforge-app --bin luxforge --no-run`, copy the test executable out, and run it with `app::gpu_drag_bench::drag_tick_benchmark --ignored --exact --nocapture` and `LUXFORGE_DRAG_BENCH_OUTPUT`, once as it is and once with `docker run --cpuset-cpus 0-3`.
+
+## Corrections qualified on the M4
+
+The offline Clone/Heal workflow's native qualification ([Corrections](../design/corrections.md), TASK-012): the release gate over the repair families, the RAW journeys and the photographic review. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, 10 October 2026, on a host shared with other agents' builds (one-minute loads of 4 to 41), which bears on no figure here: every one is a pixel or a pass, not a time. Build `63898f0e` with the histogram scenario's fix uncommitted (`e26baa69`).
+
+### The repair families against the reference
+
+`verify --tier rendered --manifest` with the private three-source manifest ran the whole corpus through the gate: 341 stacks, every picture at rest within its class at every view, every sample, and every histogram and export but one stack's. The repair families are 36 stacks, 144 views at rest: Clone and Heal, spots and strokes, a chain whose sources are earlier destinations, an overlap before Detail, a stroke healed from across the frame, a spot at the frame's edge, and, added by this qualification, the same corrections under a straightened crop and a Perspective warp (the four generated JPEGs) and under the source's lens profile and a warp (the lens zone plate and the three RAWs). Mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / \|signed mean ΔL\*\|, the largest over the family's views at rest, against the spatial limits 1.0 / 2.5 / 5.0 / 0.5:
+
+| Family | Sources | Stacks | At rest within | Largest at rest | Histogram, sample, export within | Motion past a limit (not gated) | Largest in motion |
+| --- | --- | ---: | ---: | --- | --- | ---: | --- |
+| Clone | 4 JPEG | 8 | 32 of 32 | 0.000 / 0.026 / 0.00 / 0.000 | 8, 8, 8 of 8 | 4 of 32 | 0.04 / 18.8 / 0.0 / 0.00 |
+| Clone | 3 RAW | 6 | 24 of 24 | 0.017 / 0.206 / 0.59 / 0.000 | 6, 6, 6 of 6 | 12 of 24 | 1.47 / 6.19 / 6.05 / 0.17 |
+| Heal | 4 JPEG | 8 | 32 of 32 | 0.011 / 1.135 / 0.38 / 0.011 | 7, 8, 7 of 8; 1 gap each | 6 of 32 | 2.80 / 12.7 / 10.2 / 3.48 |
+| Heal | 3 RAW | 6 | 24 of 24 | 0.024 / 0.244 / 0.68 / 0.000 | 6, 6, 6 of 6 | 9 of 24 | 1.47 / 6.19 / 5.98 / 0.20 |
+| Heal under geometry | 4 JPEG, lens zone plate | 5 | 20 of 20 | 0.005 / 0.027 / 0.29 / 0.000 | 5, 5, 5 of 5 | 12 of 20 | 12.5 / 28.1 / 40.7 / 2.21 |
+| Heal under geometry | 3 RAW | 3 | 12 of 12 | 0.017 / 0.212 / 0.60 / 0.000 | 3, 3, 3 of 3 | 6 of 12 | 1.62 / 5.62 / 6.61 / 0.19 |
+
+- **The gap.** `repair-heal-spots` on the 60 MP JPEG: its stroke healed from across the frame needs a window wider than the device's 8,192-texel limit, so the tile worker cannot draw its tiles (`unplannable`) and the export is the reference's (`texture-limit`), as the [contract](../design/corrections.md#rendering-task-003) declares. Its picture at rest and samples are within the limits; its histogram and export are unmeasured on the GPU, and the gate is incomplete for that stack alone. Closing it needs a repair read set that a tile can hold as several textures rather than one bounding box.
+- **Motion.** A drag's frame at Fit, 33% and 50% evaluates the repair at the reduced stage, where offsets round to that stage's pixels and Heal solves on its pixels ([numerics](../design/corrections-numerics.md#reduced-stages)); the zone plate and the lens zone plate, whose chirp aliases at any reduction, carry the largest differences. Reported, not gated, as for every family.
+- **Exact references.** The CPU units are held bit for bit to the independent `f64` reference and the repair frame to it on JPEG bytes and RAW-precision values by the ordinary tests (`repair::`, `render::repair_tests`), which `check` ran in the same tier.
+
+### The RAW journeys
+
+`smoke --scenario raw-corrections` over each manifest source (`artifacts/qualify/raw-corrections-*-2` in the qualifying worktree), six background launches each, 64 checks, all passing on the Z6 NEF, the X100VI RAF and the Air 2S DNG: a Clone's destination reads its source's developed pixels within 12 codes; history preview, Restore and its undo, reopen and Locate show the photograph as they should; the overlay is placed by the core's `render.transform` through the lens profile (applied on the Z6 and Air 2S; the X100VI has none) and a Perspective warp; and each original keeps its hash. The GPU's exports against the reference export of the same entry, over every pixel, by the spatial limits:
+
+| Source | Corrections only | Under the lens profile and a warp |
+| --- | --- | --- |
+| Air 2S DNG, 5464 × 3640 | 0.196 / 2.26 / 2.44 / 0.000 | 0.200 / 2.23 / 2.37 / 0.000 |
+| Z6 NEF, 4024 × 6048 | 0.067 / 1.57 / 1.58 / 0.000 | 0.043 / 0.99 / 1.30 / 0.000 |
+| X100VI RAF, 7728 × 5152 | 0.001 / 0.39 / 0.00 / 0.000 | 0.004 / 0.51 / 0.00 / 0.000 |
+
+The run's own owner, with no GPU, exported the warped entry through `export.plan`, `batch.export` and `export.jpeg`, each read with `job.read`: the batch and single files are the same bytes, their pixels are the desktop's reference export's exactly, and the desktop's GPU export is within the same limits of them. The Air 2S's worst block, 2.26 of 2.5, is the closest any export comes to a limit.
+
+### Timing
+
+Interaction latency, render, sample and export times, memory and idle cost with a correction stack wait for a quiet host: `verify --tier full --manifest` runs `editor-latency --mode corrections` on the 24 and 60 MP JPEGs and each manifest RAW. Not measured yet; a skipped measurement is not a pass.
 
 ## Method
 

@@ -16,9 +16,8 @@ const BINARY: &str = env!("CARGO_BIN_EXE_luxforge-json");
 fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
     let catalog = paths::temp_catalog("json-cli");
     let fixture = paths::jpeg().canonicalize().unwrap();
-    // The pixel proof is a test module, served only with --developer.
     let mut child = Command::new(BINARY)
-        .args(["--catalog", catalog.to_str().unwrap(), "--developer"])
+        .args(["--catalog", catalog.to_str().unwrap()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -68,29 +67,36 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
         assert_eq!(ready["status"], "ready", "{ready}");
         asset
     };
-    writeln!(
-        input,
-        "{}",
-        json!({"id":"pixel","method":"edit.set-pixel","params":{"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"subprocess-pixel","actor":"subprocess-test"},"x":0,"y":0,"rgb":[12,34,56]}})
-    )
-    .unwrap();
-    writeln!(
-        input,
-        "{}",
-        json!({"id":"sample","method":"render.sample","params":{"asset_id":asset,"x":0,"y":0}})
-    )
-    .unwrap();
-    input.flush().unwrap();
-    for (id, expected) in [("pixel", None), ("sample", Some(json!([12, 34, 56, 255])))] {
+    let mut samples = Vec::new();
+    for (id, request) in [
+        (
+            "before",
+            json!({"id":"before","method":"render.sample","params":{"asset_id":asset,"x":0,"y":0}}),
+        ),
+        (
+            "edit",
+            json!({"id":"edit","method":"edit.set-basic","params":{"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"subprocess-edit","actor":"subprocess-test"},"exposure":0.5}}),
+        ),
+        (
+            "after",
+            json!({"id":"after","method":"render.sample","params":{"asset_id":asset,"x":0,"y":0}}),
+        ),
+    ] {
+        writeln!(input, "{request}").unwrap();
+        input.flush().unwrap();
         line.clear();
         output.read_line(&mut line).unwrap();
         let response: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(response["id"], id);
         assert!(response.get("error").is_none());
-        if let Some(pixel) = expected {
-            assert_eq!(response["result"]["rgba"], pixel);
+        if id != "edit" {
+            samples.push(response["result"]["rgba"].clone());
         }
     }
+    assert_ne!(
+        samples[0], samples[1],
+        "the committed edit changes the sampled pixel"
+    );
     assert!(paths::wal(&catalog).exists(), "the open catalog's log");
     drop(input);
     assert!(child.wait().unwrap().success());
@@ -229,9 +235,9 @@ fn test_modules_are_served_only_with_developer() {
     let (ordinary, ordinary_developer, _) = listed(&[]);
     assert!(ordinary_developer.is_empty(), "{ordinary_developer:?}");
     let (developer, developer_ids, generated) = listed(&["--developer"]);
-    assert_eq!(developer_ids, ["luxforge.pixel", "luxforge.controls"]);
+    assert_eq!(developer_ids, ["luxforge.controls", "luxforge.candidates"]);
     assert!(
-        generated.contains(&"edit.set-pixel".to_owned()),
+        generated.contains(&"edit.set-controls".to_owned()),
         "{generated:?}"
     );
     let mut added: Vec<String> = developer

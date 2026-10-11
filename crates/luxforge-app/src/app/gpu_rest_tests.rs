@@ -238,7 +238,7 @@ pub(super) fn committed(source: PreviewSource, recipe: Recipe) -> Evaluation {
         restore_target: None,
     };
     Evaluation::new(
-        Arc::new(ModuleRegistry::builtin()),
+        Arc::new(super::gpu_tiles_tests::registry()),
         RenderContext::new(),
         source,
         entry,
@@ -1309,6 +1309,19 @@ fn staged_families() -> Vec<(&'static str, Recipe)> {
     };
     let mask = radial_mask(1);
     vec![
+        (
+            // No Dehaze: a light behind the repair only staged sweeps compute, which the chained
+            // drawing this test compares with refuses.
+            "Clone and Heal, Presence, then Detail",
+            Recipe {
+                layers: vec![
+                    super::gpu_tiles_tests::corrections(),
+                    Layer::new(PRESENCE_EFFECT, json!({"texture": 35.0, "clarity": 30.0})),
+                    detail(),
+                ],
+                ..Recipe::default()
+            },
+        ),
         (
             "Detail after Presence",
             Recipe {

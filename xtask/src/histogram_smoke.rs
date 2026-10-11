@@ -4,9 +4,10 @@
 //! generator rather than guessed: four quadrant colours with no channel at an endpoint, a white
 //! centre line and arrow (every channel at 255), and a band of black dashes across the middle
 //! (every channel at 0). Nothing in it has one channel at 0 and another at 255, so the scenario
-//! commits one `edit.set-pixel` of `(0, 128, 255)` to make exactly one both-endpoint pixel — which
-//! is also the isolated-clipped-pixel case the contract asks the Fit overlay to survive. The pixel
-//! proof is a test module, so the scenario's one launch is a developer launch.
+//! commits one `edit.set-controls`, the developer controls proof, whose layer compiles to the
+//! identity and so changes no pixel: the history has an edit in it while the counts stay the
+//! fixture's own. The controls proof is a test module, so the scenario's one launch is a developer
+//! launch.
 //!
 //! Every count a frame reports is checked against `analysis::reduce` of an **independent**
 //! core render of the same fixture through the same recipe, so the plot is verified against the
@@ -15,21 +16,20 @@
 //! stack's tiles (`state.histogram.source` `gpu`, `docs/design/gpu-first.md`, stage 2) are held to
 //! the recorded tolerance, each counter within 0.1% of the output pixel count, and the report the
 //! owner's store holds for them, read back through `analysis.request`, is held to it bin by bin.
-//! The pixel the scenario sets is a pixel-stage layer the GPU does not draw, so that stack is the
-//! reference's; the Original's and a later exposure-only stack are the GPU's.
+//! The stack holding the identity layer and an exposure drag is the reference's or the GPU's as
+//! the run records; the Original's is the GPU's.
 //!
 //! The inspector is the plot with the triangles in its bottom corners and nothing else, with no
 //! caption. Nothing is read under the pointer; a pixel of the Original is read through the public
-//! `render.sample`, which the GPU's tile worker answers with the fixture's own codes, and the pixel
-//! the scenario sets is read back the same way, which the reference answers, naming the pixel
-//! stage no GPU program replaces.
+//! `render.sample`, which the GPU's tile worker answers with the fixture's own codes, and a pixel of
+//! the edited stack is read back the same way.
 use crate::{
     scenario::{Checked, Checks, Fixture, Frame, Plan, Run, Step, Tolerance, pixels, plan::only},
     *,
 };
 use luxforge_core::{
-    BASIC_EFFECT, CROP_EFFECT, Cancel, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, PIXEL_EFFECT,
-    RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
+    BASIC_EFFECT, CONTROLS_EFFECT, CROP_EFFECT, Cancel, EFFECT_FORMAT, Layer, LayerId,
+    ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
 };
 use luxforge_evidence::{self as script, PreviewStep, SliderStep, ViewStep, WorkspaceStep};
 
@@ -38,11 +38,8 @@ use luxforge_evidence::{self as script, PreviewStep, SliderStep, ViewStep, Works
 const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 const SOURCE: (u32, u32) = (480, 320);
 
-/// The content-stage pixel the scenario sets to a both-endpoint colour, in the middle of the gold
-/// quadrant and far from every other clipped pixel in the fixture, so its overlay cell is isolated.
-const BOTH_PIXEL: (u32, u32) = (360, 240);
-/// Its colour: one channel at 0 and one at 255, which is the both-endpoint class exactly.
-const BOTH_RGB: [u8; 3] = [0, 128, 255];
+/// The identity controls layer the scenario commits.
+const CONTROLS: (&str, f64) = ("amount", 1.5);
 
 /// The rule both triangles state on hover, as the contract words it; the counts follow it.
 const RULE: &str =
@@ -71,24 +68,19 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "original-sample",
             script::Step::call("render.sample", json!({"x":CLEAN[0].0,"y":CLEAN[0].1})),
         ),
-        // One both-endpoint pixel, committed through the ordinary edit path.
+        // One identity layer, committed through the ordinary edit path: an entry in the history
+        // that changes no pixel.
         Step::new(
-            "pixel",
-            script::Step::call(
-                "edit.set-pixel",
-                json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}),
-            ),
+            "controls",
+            script::Step::call("edit.set-controls", json!({CONTROLS.0: CONTROLS.1})),
         )
         .commits(1)
-        .label("Pixel 360, 240")
-        .payload(
-            PIXEL_EFFECT,
-            json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}),
-        ),
-        // The public point query over exactly that pixel; its answer is recorded with the step.
+        .label("Amount +1.50")
+        .payload(CONTROLS_EFFECT, json!({CONTROLS.0: CONTROLS.1})),
+        // The public point query over a pixel of that stack; its answer is recorded with the step.
         view(
             "sample",
-            script::Step::call("render.sample", json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1})),
+            script::Step::call("render.sample", json!({"x":CLEAN[1].0,"y":CLEAN[1].1})),
         ),
         // The shadow overlay alone.
         view(
@@ -123,10 +115,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         view("original", script::Step::Preview(PreviewStep::Sequence(0))),
         // Back to current, because a gesture is refused while a historical entry is shown.
         view("current", script::Step::Preview(PreviewStep::Current)),
-        // The drafted render's counts are the reference's: the stack holds the pixel proof, which
-        // no GPU program draws (`pixel-stage`), so each tick of a drag is a reference frame of the
-        // whole drafted stack, reduced into a report. On the GPU the plot shows the counts of the
-        // frame in motion, marked updating, which the GPU steps below hold.
+        // Where the reference draws the drafted render, its counts are an independent reduction of
+        // the drafted stack; where the GPU draws it, as it draws the identity layer, the plot shows
+        // the counts of the frame in motion, marked updating, as the GPU steps below hold.
         // An Exposure drag left open, so the photograph on screen is the drafted render.
         Step::new("drag", SliderStep::new("set-basic", "exposure", [0.5, 1.0]))
             .commits(0)
@@ -144,7 +135,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // The history undone to the Original, whose stack the GPU draws: its counts are the
         // GPU's.
         Step::new("undo-exposure", script::Step::api("history.undo")).commits(1),
-        Step::new("undo-pixel", script::Step::api("history.undo"))
+        Step::new("undo-controls", script::Step::api("history.undo"))
             .commits(1)
             .no_layer(BASIC_EFFECT),
         // An Exposure drag left open on the GPU: the plot shows the counts of the frame in motion,
@@ -549,6 +540,38 @@ fn map(rect: [u32; 4], (x, y): (u32, u32)) -> (u32, u32) {
     )
 }
 
+/// The clipping overlay `frame` was drawn with, by whichever renderer drew the photograph: the
+/// reference's overlay raster, one cell per source pixel and encoded with the photograph, or the
+/// GPU's clipping marks for exactly the flags asked. Answers what was drawn, for the record.
+fn overlay_drawn(frame: &Frame, shadows: bool, highlights: bool, what: &str) -> Result<Value> {
+    let overlay = &frame["state"]["histogram"]["overlay"];
+    if !overlay.is_null() {
+        ensure(
+            overlay["cells"] == json!([SOURCE.0, SOURCE.1]),
+            format!(
+                "{what}: the overlay grid is {}, expected one cell per source pixel",
+                overlay["cells"]
+            ),
+        )?;
+        ensure(
+            overlay["drawn"] == json!(true),
+            format!("{what}: the overlay was not drawn"),
+        )?;
+        return Ok(json!({"renderer": "reference", "overlay": overlay}));
+    }
+    let gpu = &frame["state"]["surface"]["gpu"];
+    let marks = &gpu["clipping_marks"];
+    ensure(
+        gpu["drawing_path"] == "gpu"
+            && marks["shadows"] == json!(shadows)
+            && marks["highlights"] == json!(highlights),
+        format!(
+            "{what}: neither an overlay raster nor the GPU's marks for shadows {shadows} and highlights {highlights}: {gpu}"
+        ),
+    )?;
+    Ok(json!({"renderer": "gpu", "clipping_marks": marks}))
+}
+
 /// How one captured pixel changed between two frames of the same photograph at the same zoom.
 ///
 /// The overlay is a translucent mask, so its composited colour depends on what is underneath, and
@@ -589,12 +612,6 @@ impl Delta {
 
     fn is_highlight_mask(self) -> bool {
         self.r - self.b >= 40 && self.r - self.g >= 40
-    }
-
-    /// The shadow mask turned into the both mask: only the red channel of the mask changed, so only
-    /// the red channel of the composite moves, and it moves up.
-    fn is_both_upgrade(self) -> bool {
-        self.r >= 60 && self.r - self.g >= 60 && self.r - self.b >= 40
     }
 }
 
@@ -687,7 +704,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let root = run.root();
     let opened = launch.at("opened")?;
     let original_sample = launch.at("original-sample")?;
-    let pixel = launch.at("pixel")?;
+    let controls = launch.at("controls")?;
     let sample = launch.at("sample")?;
     let shadows = launch.at("shadows")?;
     let both = launch.at("both")?;
@@ -700,13 +717,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let release = launch.at("release")?;
     let mut checks = Checks::new();
 
-    // The two recipes the run displays, rendered and reduced independently in this process.
+    // The recipes the run displays, rendered and reduced independently in this process. The
+    // identity layer changes no pixel, so the edited stack's counts are the fixture's own.
     let plain = reference(root, &Recipe::default())?;
     let edited = reference(
         root,
         &Recipe {
             format: RECIPE_FORMAT,
-            layers: vec![Layer::pixel(BOTH_PIXEL.0, BOTH_PIXEL.1, BOTH_RGB)],
+            layers: vec![Layer::new(CONTROLS_EFFECT, json!({CONTROLS.0: CONTROLS.1}))],
             masks: Vec::new(),
             ..Recipe::default()
         },
@@ -719,11 +737,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ),
     )?;
     ensure(
-        edited.both == plain.both + 1,
-        format!(
-            "Setting one both-endpoint pixel did not add exactly one: {} against {}",
-            edited.both, plain.both
-        ),
+        edited.both == plain.both
+            && edited.any_shadow == plain.any_shadow
+            && edited.any_highlight == plain.any_highlight,
+        "The identity layer changed the clipping counts",
     )?;
 
     // The default screen. The histogram is ready and its counts are the fixture's own.
@@ -753,40 +770,35 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"sample": answer}),
     );
 
-    // One both-endpoint pixel committed. The counts follow the new stack exactly. The plan holds
-    // that the step commits once; this holds which revision that is, a fresh catalog's first.
+    // One identity layer committed. The counts follow the new stack exactly. The plan holds that
+    // the step commits once; this holds which revision that is, a fresh catalog's first.
     ensure(
-        pixel["state"]["stack"]["revision"] == json!(1),
-        "edit.set-pixel did not commit revision 1",
+        controls["state"]["stack"]["revision"] == json!(1),
+        "edit.set-controls did not commit revision 1",
     )?;
-    let after = expect_counts(pixel, &edited, "after edit.set-pixel")?;
+    let after = expect_counts(controls, &edited, "after edit.set-controls")?;
     checks.note(
-        pixel,
-        "one both-endpoint pixel committed; the plot follows the new stack",
+        controls,
+        "one identity layer committed; the plot follows the new stack, whose counts are the fixture's own",
         after,
     );
 
-    // The public point query of that very pixel, in output codes, recorded with its step: the
-    // reference's, since no GPU program replaces a pixel, and saying so.
+    // The public point query of a pixel of that stack, in output codes, recorded with its step:
+    // the fixture's own codes, the identity layer leaving them as they were.
     let answer = &sample["step"]["result"];
+    let expected = original_byte(root, CLEAN[1])?;
     ensure(
-        answer["rgba"] == json!([BOTH_RGB[0], BOTH_RGB[1], BOTH_RGB[2], 255]),
-        format!("render.sample answered {answer}, expected the pixel just set"),
-    )?;
-    ensure(
-        answer["renderer"] == json!({"record": "reference", "reason": "pixel-stage"}),
-        format!(
-            "render.sample of the pixel proof is not the reference's for pixel-stage: {answer}"
-        ),
+        answer["rgba"] == json!(expected),
+        format!("render.sample answered {answer}, expected {expected:?}"),
     )?;
     // A point query reads one pixel and changes nothing on screen.
     ensure(
-        counters(sample) == counters(pixel),
+        counters(sample) == counters(controls),
         "Sampling changed the histogram",
     )?;
     checks.note(
         sample,
-        "render.sample of the pixel that was just set answers its three codes, read by the reference for pixel-stage; the histogram is unchanged",
+        "render.sample of a pixel of the edited stack answers the fixture's own codes; the histogram is unchanged",
         json!({"sample": answer}),
     );
 
@@ -798,15 +810,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
     // The shadow overlay alone, which the plan holds to its flags. Blue over the black dashes,
     // and nothing red anywhere.
-    let overlay = &shadows["state"]["histogram"]["overlay"];
-    ensure(
-        overlay["cells"] == json!([SOURCE.0, SOURCE.1]),
-        format!(
-            "The Fit overlay grid is {}, expected one cell per source pixel",
-            overlay["cells"]
-        ),
-    )?;
-    ensure(overlay["drawn"] == json!(true), "The overlay was not drawn")?;
+    let overlay = overlay_drawn(shadows, true, false, "The Fit shadow overlay")?;
     let (shadows_rect, shadows_image) = photo_rect(shadows)?;
     same_rect(shadows_rect, bare_rect, "the shadow overlay")?;
     let shadow_on_dash = window(shadows_image, bare, shadows_rect, DASH, bare_radius);
@@ -842,7 +846,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // The committed stack is untouched by a view flag: the plan holds the revision and the entry,
     // and this holds everything else the stack records, its layers included.
     ensure(
-        shadows["state"]["stack"] == pixel["state"]["stack"],
+        shadows["state"]["stack"] == controls["state"]["stack"],
         "Switching an overlay on changed the committed stack",
     )?;
     checks.note(
@@ -851,9 +855,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"overlay":overlay,"photo_rect":shadows_rect,"window_radius":bare_radius}),
     );
 
-    // Both overlays. Blue over the dashes, red over the white line, magenta where both hold at
-    // once. The fixture has no pixel at both endpoints of its own, so the magenta comes from the
-    // one pixel the scenario set; that is the isolated-pixel case a Fit overlay must keep.
+    // Both overlays. Blue over the dashes and red over the white line. The fixture has no pixel at
+    // both endpoints of its own, so no cell is magenta.
     let (both_rect, both_image) = photo_rect(both)?;
     same_rect(both_rect, bare_rect, "both overlays")?;
     ensure(
@@ -868,23 +871,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .any(|delta| delta.is_highlight_mask()),
         format!("No red overlay over the white centre line at source {LINE:?}"),
     )?;
-    // Magenta is measured against the shadow-only frame rather than the bare one: turning the
-    // highlight flag on changes that one cell from the shadow mask to the both mask, which adds
-    // red and nothing else, whatever the photograph underneath is.
-    let both_upgrade = window(
-        both_image,
-        shadows_image,
-        both_rect,
-        BOTH_PIXEL,
-        bare_radius,
-    );
-    ensure(
-        both_upgrade.iter().any(|delta| delta.is_both_upgrade()),
-        format!(
-            "The isolated both-endpoint pixel at source {BOTH_PIXEL:?} did not turn magenta; the largest change from the shadow-only frame was {}",
-            both_upgrade.iter().map(|d| d.largest()).max().unwrap_or(0)
-        ),
-    )?;
     untouched(
         both_image,
         bare,
@@ -895,12 +881,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     checks.note(
         both,
-        "both overlays: blue at code 0, red at code 255, magenta on the one pixel at both",
+        "both overlays: blue at code 0, red at code 255",
         json!({
-            "overlay": both["state"]["histogram"]["overlay"],
+            "overlay": overlay_drawn(both, true, true, "Both overlays")?,
             "photo_rect": both_rect,
             "window_radius": bare_radius,
-            "note": "the fixture's own quadrant colours reach neither endpoint, so the only magenta is the isolated pixel this scenario set",
+            "note": "the fixture's own quadrant colours reach neither endpoint, and no pixel is at both",
         }),
     );
 
@@ -908,13 +894,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // no overlay-off frame at 100% to difference against, so the two checks here are the ones
     // whose base colour is unambiguous on its own: the dash band is black and the centre line is
     // white, so a blue-dominant dash and a red-dominant line can only be the masks.
-    ensure(
-        percent["state"]["histogram"]["overlay"]["cells"] == json!([SOURCE.0, SOURCE.1]),
-        format!(
-            "The 100% overlay grid is {}",
-            percent["state"]["histogram"]["overlay"]["cells"]
-        ),
-    )?;
+    let percent_overlay = overlay_drawn(percent, true, true, "The 100% overlays")?;
     let (percent_rect, percent_image) = photo_rect(percent)?;
     let hundred_width = percent_rect[2] - percent_rect[0];
     ensure(
@@ -962,18 +942,18 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "At 100% the highlight overlay no longer lines up with the white centre line",
     )?;
     ensure(
-        counters(percent) == counters(pixel),
+        counters(percent) == counters(controls),
         "Zooming changed the histogram",
     )?;
     checks.note(
         percent,
         "100% with both overlays on: one cell per physical pixel, still aligned",
-        json!({"photo_rect":percent_rect,"physical_width":hundred_width,"overlay":percent["state"]["histogram"]["overlay"]}),
+        json!({"photo_rect":percent_rect,"physical_width":hundred_width,"overlay":percent_overlay}),
     );
 
     // Back to Fit, still no re-analysis.
     ensure(
-        counters(fit) == counters(pixel),
+        counters(fit) == counters(controls),
         "Returning to Fit changed the histogram",
     )?;
     checks.note(
@@ -990,7 +970,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let (off_rect, off_image) = photo_rect(off)?;
     same_rect(off_rect, bare_rect, "the overlays switched off")?;
-    let mut covered = vec![DASH, LINE, BOTH_PIXEL];
+    let mut covered = vec![DASH, LINE];
     covered.extend(CLEAN);
     untouched(
         off_image,
@@ -1001,7 +981,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "an overlay survived both flags being switched off",
     )?;
     ensure(
-        counters(off) == counters(pixel),
+        counters(off) == counters(controls),
         "Switching the overlays off changed the histogram",
     )?;
     checks.note(
@@ -1013,12 +993,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // The Original entry. The plot follows the displayed generation, not the newest stack.
     let original_counts = expect_counts(original, &plain, "previewing the Original")?;
     ensure(
-        counters(original) != counters(pixel),
-        "The Original's counts are indistinguishable from the edited stack's",
+        counters(original) == counters(controls),
+        "The identity layer changed the counts",
     )?;
     ensure(
         original["state"]["histogram"]["identity"]["entry"]
-            != pixel["state"]["histogram"]["identity"]["entry"],
+            != controls["state"]["histogram"]["identity"]["entry"],
         "The plot still names the entry the edited stack belongs to",
     )?;
     checks.note(
@@ -1030,7 +1010,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // Back to current. A gesture is refused while a historical entry is shown, so the run returns
     // first; the plot is the edited stack's again.
     ensure(
-        counters(current) == counters(pixel),
+        counters(current) == counters(controls),
         "Returning to current did not restore the edited stack's counts",
     )?;
     checks.note(
@@ -1047,26 +1027,55 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // and the drafted payload it records.
     let drafted = drag.draft();
     drag.displays_draft()?;
-    let drafted_report = reduction(root, &drafted_recipe(drag)?)?;
-    let drafted_detail = expect_counts(drag, &drafted_report, "the open gesture")?;
-    ensure(
-        drag["state"]["histogram"]["identity"]["draft_revision"] == drafted["draft_revision"],
-        format!(
-            "The plot names draft revision {} while the frame displays {}",
-            drag["state"]["histogram"]["identity"]["draft_revision"], drafted["draft_revision"]
-        ),
-    )?;
-    // The drafted exposure is +1 EV, so it clips highlights the committed stack does not: the
-    // counts are demonstrably the drafted population rather than the previous frame's relabelled.
-    ensure(
-        counters(drag) != counters(current),
-        "The drafted exposure left the counts identical to the committed frame's",
-    )?;
-    checks.note(
-        drag,
-        "an Exposure drag left open: the photograph is the drafted render and the plot is that render, its identity carrying the draft revision and its counts equal to an independent reduction of the drafted stack",
-        json!({"draft": drafted, "histogram": drafted_detail}),
-    );
+    let histogram = &drag["state"]["histogram"];
+    if histogram["status"] == json!("ready") && histogram["stale"] == json!(false) {
+        // Drawn by the reference: each tick is a reference frame of the whole drafted stack,
+        // reduced into a report.
+        let drafted_report = reduction(root, &drafted_recipe(drag)?)?;
+        let drafted_detail = expect_counts(drag, &drafted_report, "the open gesture")?;
+        ensure(
+            histogram["identity"]["draft_revision"] == drafted["draft_revision"],
+            format!(
+                "The plot names draft revision {} while the frame displays {}",
+                histogram["identity"]["draft_revision"], drafted["draft_revision"]
+            ),
+        )?;
+        // The drafted exposure is +1 EV, so it clips highlights the committed stack does not:
+        // the counts are demonstrably the drafted population rather than the previous frame's
+        // relabelled.
+        ensure(
+            counters(drag) != counters(current),
+            "The drafted exposure left the counts identical to the committed frame's",
+        )?;
+        checks.note(
+            drag,
+            "an Exposure drag left open: the photograph is the drafted render and the plot is that render, its identity carrying the draft revision and its counts equal to an independent reduction of the drafted stack",
+            json!({"draft": drafted, "histogram": drafted_detail}),
+        );
+    } else {
+        // Drawn by the GPU, as the identity layer and the exposure are: the plot is marked
+        // updating, and where the counts of the frame in motion are in they name a drafted
+        // revision no later than the frame's. The GPU steps below hold the same.
+        ensure(
+            histogram["stale"] == json!(true) || histogram["source"] != json!("motion"),
+            format!("The counts of the frame in motion are not marked updating: {histogram}"),
+        )?;
+        if histogram["source"] == json!("motion") {
+            ensure(
+                histogram["identity"]["draft_revision"].as_u64()
+                    <= drafted["draft_revision"].as_u64(),
+                format!(
+                    "The counts in motion name draft revision {} past the frame's {}",
+                    histogram["identity"]["draft_revision"], drafted["draft_revision"]
+                ),
+            )?;
+        }
+        checks.note(
+            drag,
+            "an Exposure drag left open, drawn on the GPU: the plot shows the frame in motion's counts, marked updating",
+            json!({"draft": drafted, "histogram": histogram}),
+        );
+    }
 
     // The gesture released, which the plan holds as one commit and no draft. The plot follows the
     // composed stack: an independent render and reduction of exactly the layers the frame says it
@@ -1079,13 +1088,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     checks.note(
         release,
-        "the gesture released: one commit, and the counts equal an independent reduction of the composed pixel-and-exposure stack",
+        "the gesture released: one commit, and the counts equal an independent reduction of the composed identity-and-exposure stack",
         released_detail,
     );
 
     // The GPU steps. Undone to the Original, whose empty stack the GPU draws at rest: its counts
     // are the GPU's, within the tolerance of the fixture's own.
-    let undone = launch.at("undo-pixel")?;
+    let undone = launch.at("undo-controls")?;
     let undone_counts = expect_counts(undone, &plain, "undone to the Original")?;
     ensure(
         gpu_counted(undone),
