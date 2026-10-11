@@ -47,7 +47,7 @@ def acceptable(body):
         return False
     if [e["seq"] for e in events] != sorted(e["seq"] for e in events):
         return False
-    if any(e.get("feature") not in (None, "zoom") for e in events):
+    if any(e.get("feature") not in (None, "zoom", "develop-picks", "export") for e in events):
         return False
     return "version_string" not in b["device"]["os"]
 
@@ -64,6 +64,7 @@ class Fake(http.server.ThreadingHTTPServer):
             context.load_cert_chain(*tls)
             self.socket = context.wrap_socket(self.socket, server_side=True)
         self.seen = {}
+        self.desktop = []
         self.lock = threading.Lock()
 
 
@@ -115,6 +116,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.answer(400, "bad request")
         b = json.loads(body)
         with self.server.lock:
+            if self.headers.get("User-Agent", "").startswith("Luxforge/"):
+                self.server.desktop.append([name.lower() for name in self.headers.keys()])
             n = self.server.seen[b["installation_id"]] = self.server.seen.get(b["installation_id"], 0) + 1
         if mode in ("good", "redirect") and n > 5:
             return self.answer(429, "too many requests", [("Retry-After", "20")])
@@ -129,23 +132,29 @@ def fake(mode, tls=None):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"{'https' if tls else 'http'}://{'localhost' if tls else '127.0.0.1'}:{server.server_address[1]}"
+        yield f"{'https' if tls else 'http'}://{'localhost' if tls else '127.0.0.1'}:{server.server_address[1]}", server
     finally:
         server.shutdown()
         server.server_close()
 
 
-def run_probe(mode, *flags, tls=None):
+def run_probe(mode, *flags, tls=None, seen=None):
     out, err = io.StringIO(), io.StringIO()
-    with fake(mode, tls) as url, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    with fake(mode, tls) as (url, server), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = probe.main([url, "--pause", "0", "--timeout", "5", *flags])
+        if seen is not None:
+            seen.extend(server.desktop)
     return rc, out.getvalue() + err.getvalue()
 
 
 class ProbeTests(unittest.TestCase):
     def test_good_endpoint_passes_and_a_skip_is_reported_not_counted(self):
-        rc, out = run_probe("good", "--check-id-limiter")
+        desktop = []
+        rc, out = run_probe("good", "--check-id-limiter", seen=desktop)
         self.assertEqual(rc, 0, out)
+        # The desktop-shaped batch carries exactly the desktop transport's header fields, in its order.
+        self.assertEqual(desktop, [["content-length", "host", "user-agent", "accept-encoding", "connection",
+                                    "content-type"]])
         self.assertNotIn("FAIL ", out)
         self.assertIn("SKIPPED (not a pass): TLS certificate", out)
         self.assertIn("the per-installation limiter admits a burst of 5", out)

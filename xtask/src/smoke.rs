@@ -17,9 +17,10 @@ use crate::{
     performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
     raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    select_smoke as select, settings_smoke as settings, theme_smoke as theme, usage_smoke as usage,
-    viewport_smoke as viewport, vignette_smoke as vignette, visibility_smoke as visibility,
-    workspace_smoke as workspace, zoom_smoke as zoom, *,
+    select_smoke as select, settings_smoke as settings, theme_smoke as theme,
+    usage_backend_smoke as usage_backend, usage_smoke as usage, viewport_smoke as viewport,
+    vignette_smoke as vignette, visibility_smoke as visibility, workspace_smoke as workspace,
+    zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -126,6 +127,9 @@ impl Scenario {
         !matches!(self.source, Source::Supplied { .. })
             && (![visibility::SCENARIO, histogram::HIDDEN_SCENARIO].contains(&self.name)
                 || cfg!(target_os = "macos"))
+            // It needs the reference stack, which `services/usage-statistics/test.sh --client`
+            // starts; no tier depends on Docker.
+            && self.name != usage_backend::SCENARIO
     }
 
     /// Whether `--source` may replace what it opens.
@@ -972,6 +976,36 @@ pub static SCENARIOS: &[Scenario] = &[
         note: Some(usage::NOTE),
         // The receiver and the live-session client run in this process beside the launches.
         own: Some(usage::run),
+    },
+    Scenario {
+        name: usage_backend::SCENARIO,
+        about: "Usage statistics from the real desktop into the local reference stack, through a relay to its ingress (run by services/usage-statistics/test.sh --client, which checks what was stored; not in rendered): a journey accepted, an ambiguous failure never resent, a window lost in the cooldown as a sequence gap, the same installation's next launch, the ingress's 429 Retry-After honoured, off and on rotating the installation and image IDs, and a misrouted 404 suspending sending",
+        launches: &[
+            LaunchSpec {
+                name: usage_backend::WORK,
+                plan: usage_backend::work_plan,
+                usage_receiver: Some("http://127.0.0.1:9/v1/usage/batches"),
+                ..APP
+            },
+            LaunchSpec {
+                name: usage_backend::AGAIN,
+                plan: usage_backend::again_plan,
+                usage_receiver: Some("http://127.0.0.1:9/v1/usage/batches"),
+                ..APP
+            },
+            LaunchSpec {
+                name: usage_backend::REJECTED,
+                plan: usage_backend::rejected_plan,
+                usage_receiver: Some("http://127.0.0.1:9/v1/usage/batch"),
+                ..APP
+            },
+        ],
+        verify: usage_backend::verify,
+        source: Source::Fixtures(&[usage_backend::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(usage_backend::NOTE),
+        // The relay to the stack's ingress runs in this process beside the launches.
+        own: Some(usage_backend::run),
     },
     Scenario {
         name: theme::SCENARIO,
@@ -2126,6 +2160,7 @@ mod tests {
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
         assert!(find("look").is_ok_and(|look| !look.rendered()));
+        assert!(find(usage_backend::SCENARIO).is_ok_and(|backend| !backend.rendered()));
         // The filmstrip takes a RAW source, and runs without one, its RAW steps pending.
         assert!(find("filmstrip").is_ok_and(|filmstrip| filmstrip.rendered()));
         assert_eq!(
