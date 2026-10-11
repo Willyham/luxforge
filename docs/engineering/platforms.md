@@ -16,9 +16,9 @@ The owner chose **macOS and Linux together** for initial [v0.1 distribution](../
 
 ## Prerequisites
 
-- All hosts: Rust 1.94.0 with rustfmt and Clippy, plus Git. Tooling is Rust-only.
+- All hosts: Rust 1.94.0 with rustfmt and Clippy, plus Git. Tooling is Rust-only. A build of the desktop or `luxforge-json` fetches the pinned prebuilt ONNX Runtime archive for its target once over HTTPS (see [ONNX Runtime](development.md#onnx-runtime)); an offline build needs it already in the cache.
 - macOS: Xcode Command Line Tools, Metal-capable Apple Silicon and an unlocked graphical desktop for interaction checks. Development bundles are unsigned; tag builds can explicitly sign/notarize after hosted credentials are configured, with no real signing result claimed yet.
 - Windows: Visual Studio Build Tools with the C++ toolchain and Windows SDK, a DX12-capable driver and a desktop session. Inspect the artifact's runtime imports before calling packaging self-contained.
-- Linux: `build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev` to build; `libxkbcommon-x11-0` (not supplied by `libxkbcommon-dev`), a Vulkan driver and a working XDG desktop portal with a file chooser backend at runtime. Build on Ubuntu 24.04 itself to avoid raising the glibc baseline. Headless smoke additionally needs Xvfb and Mesa Vulkan drivers.
+- Linux: `build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev` to build (`libssl-dev` for the TLS of the build script that fetches the pinned ONNX Runtime archive; nothing shipped links OpenSSL); `libxkbcommon-x11-0` (not supplied by `libxkbcommon-dev`), a Vulkan driver and a working XDG desktop portal with a file chooser backend at runtime. Build on Ubuntu 24.04 itself to avoid raising the glibc baseline. Headless smoke additionally needs Xvfb and Mesa Vulkan drivers.
 
 The `rfd` configuration uses the XDG portal rather than GTK bindings; an absent portal is a runtime file-picker failure, not proof of a working app. Software Vulkan supports functional CI and is labelled as such, never used as GPU performance evidence: every rendered run records the adapter that drew it, whose device type `Cpu` names a software rasterizer. A machine with no graphics adapter runs the reference renderer's tests and `luxforge-json`, but the editor cannot open its window there.

@@ -1,0 +1,42 @@
+[package]
+name = "luxforge-onnx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The host's local model runtime: ONNX Runtime behind the core's `InferenceRuntime` and `Session`
+# traits. Only the desktop and `luxforge-json` depend on it, and give it to the catalog owner
+# through `HostConfig::inference`, so `luxforge-core` and its test binaries link no runtime.
+[dependencies]
+luxforge-core = { path = "../luxforge-core" }
+half = { version = "=2.7.1", default-features = false, features = ["std"] }
+ort.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+# The Core ML execution provider on macOS, DirectML on Windows; every other target runs the CPU
+# provider alone. pyke's Windows archives are built with DirectML whatever is asked, and the
+# feature set also selects which archive the build fetches (`xtask/src/onnxruntime.rs`).
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { workspace = true, features = ["coreml"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { workspace = true, features = ["directml"] }
+
+# Hardware SHA-256 on aarch64, as every crate that names `sha2` asks (see `crates/luxforge-raw`).
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
+[dev-dependencies]
+luxforge-testbase = { path = "../luxforge-testbase" }
+
+# `unsafe` is allowed by name only in `src/ffi.rs`, on the calls the safe binding does not wrap:
+# ONNX Runtime's version string and the execution-provider assignment a session records, each
+# beside its `SAFETY:` comment. The crate denies it everywhere else, and the rest of the workspace
+# keeps its forbid(unsafe_code) policy.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

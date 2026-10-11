@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask", "xtask/cli"]
+members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask", "xtask/cli"]
 # Standalone packages with their own workspace and lockfile; no desktop build or check builds them.
 exclude = ["services/usage-ingest"]
 resolver = "3"
@@ -115,6 +115,16 @@ naga = { version = "=27.0.3", default-features = false }
 # and pinned to the version already in the lockfile; Cargo unifies it with Iced's own and no
 # feature is added.
 iced_wgpu = { version = "=0.14.0", default-features = false }
+# The local model runtime: ONNX Runtime through pyke's binding, linked statically, named only by
+# `luxforge-onnx` behind the core's inference port. `download-binaries` has `ort-sys`'s build
+# script fetch pyke's prebuilt ONNX Runtime 1.28.0 archive for the target from the table in its
+# own source (`build/download/dist.tsv`) and refuse it unless its SHA-256 matches; the lockfile's
+# checksum pins that table, and `cargo xtask check-repository` pins each archive a build may use
+# (`xtask/src/onnxruntime.rs`). `tls-native` is that download's TLS, the platform's own. `api-24`
+# for the execution-provider assignment a placement reports and the load canceller; `half` for
+# f16 tensors. No `ndarray`, `tracing` or `copy-dylibs`. Each platform's provider (`coreml`,
+# `directml`) is a feature `luxforge-onnx` adds under its own target.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-24", "half"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
