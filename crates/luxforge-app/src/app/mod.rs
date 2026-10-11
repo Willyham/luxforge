@@ -826,6 +826,8 @@ impl Editor {
         // The theme library, which the palette's theme entries and the Appearance tab list, off
         // the update loop: the first frame needs only the active theme, read above.
         let themes = editor.list_themes();
+        // The flags, for what a live flag gates outside the Settings sheet.
+        let flags = editor.read_flag_values(false);
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
                 Some(path) => editor.open_queued(path, initial_import),
@@ -851,6 +853,7 @@ impl Editor {
                 modules,
                 presets,
                 themes,
+                flags,
                 first,
             ]),
         )

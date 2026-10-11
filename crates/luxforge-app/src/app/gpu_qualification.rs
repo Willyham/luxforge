@@ -468,9 +468,17 @@ impl Opened {
         } else {
             luxforge_core::ModuleRegistry::builtin()
         };
-        let (owner, join) =
-            luxforge_core::OwnerHandle::start_with(catalog, std::sync::Arc::new(registry))
-                .map_err(|error| error.to_string())?;
+        // A cell's steps may build a range mask, an experiment the harness forces on so every
+        // kind the renderer evaluates is measured.
+        let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
+            catalog,
+            std::sync::Arc::new(registry),
+            luxforge_core::HostConfig {
+                launch_flags: crate::app::testing::range_masks_config().launch_flags,
+                ..luxforge_core::HostConfig::unconfigured()
+            },
+        )
+        .map_err(|error| error.to_string())?;
         let client = owner.register();
         let asset = match derived {
             Some(asset) => {

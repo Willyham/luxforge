@@ -497,8 +497,8 @@ impl Workspace {
         self.status = status::derive(inputs);
         // The panel draws sections unless Mask mode's list has no mask open to bind them to, or
         // the Corrections band stands in for them.
-        let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none())
-            && !self.corrections.active;
+        let sections_shown =
+            !(self.canvas.mask_panel && self.masks.selected.is_none()) && !self.corrections.active;
         self.palette = palette::derive(inputs, &self.tools, sections_shown);
         self.select = select::derive(inputs);
         self.long_work = long_work::derive(inputs);
