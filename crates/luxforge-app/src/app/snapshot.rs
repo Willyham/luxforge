@@ -279,6 +279,9 @@ impl Editor {
             "version": self.presentation.presenter.photo().map(luxforge_ui::Frame::version),
             "texture_writes": luxforge_ui::photo_surface::texture_writes(),
             "detail_updating":self.visible_detail_updating(),
+            // The comparison's loading bar, and whether the comparison is waiting at all.
+            "compare_loading": self.workspace.canvas.compare_loading,
+            "compare_pending": self.comparison_pending(),
             // The bar over the photograph and the worker reading behind it, so a capture shows
             // which generation's exact phase it follows and how far that phase had got.
             "render_bar": self.activity.render_bar.map(|bar| json!({

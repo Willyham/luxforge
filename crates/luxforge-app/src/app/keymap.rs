@@ -944,9 +944,20 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
             .with(sequence)
             .map(|(sequence, _)| Message::History(HistoryMessage::CompareHoldElapsed(sequence)))
     });
+    // One wake-up once a waiting comparison's loading delay has passed, only while it waits and
+    // its bar is not yet shown.
+    let loading = editor
+        .activity
+        .compare_loading
+        .due(Instant::now())
+        .then(|| {
+            iced::time::every(crate::state::canvas::COMPARE_LOADING_DELAY)
+                .map(|_| Message::History(HistoryMessage::CompareLoadingDue))
+        });
     Subscription::batch([
         iced::event::listen_with(raw_event),
         deadline.unwrap_or_else(Subscription::none),
+        loading.unwrap_or_else(Subscription::none),
     ])
 }
 

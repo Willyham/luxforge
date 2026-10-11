@@ -412,6 +412,9 @@ pub(crate) struct Inputs<'a> {
     /// A long render's progress, while it earns the bar over the photograph
     /// ([`canvas::render_bar`]).
     pub(crate) render_bar: Option<canvas::RenderBar>,
+    /// A comparison has waited past [`canvas::COMPARE_LOADING_DELAY`] for a picture it needs
+    /// ([`canvas::CompareLoading`]).
+    pub(crate) compare_loading: bool,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a luxforge_core::Error>,
     /// The report the desktop's own preview worker reduced for the displayed frame, with the
@@ -856,6 +859,7 @@ mod tests {
                 clients: Some(1),
                 rendering: false,
                 render_bar: None,
+                compare_loading: false,
                 render: Some(status::RenderTime {
                     ms: 41.0,
                     approximate: false,
@@ -3003,6 +3007,13 @@ mod tests {
         workspace.derive(&inputs);
         assert_eq!(workspace.status.render, "Rendering… 42%");
         assert_eq!(workspace.canvas.render_bar, Some(0.427));
+
+        // A comparison waiting past its delay draws the loading bar over the photograph.
+        assert!(!workspace.canvas.compare_loading);
+        inputs.compare_loading = true;
+        workspace.derive(&inputs);
+        assert!(workspace.canvas.compare_loading);
+        inputs.compare_loading = false;
 
         // A drafted RAW white balance approximated on the developed planes says it is
         // approximate beside its own time.
