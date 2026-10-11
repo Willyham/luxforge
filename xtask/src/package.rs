@@ -326,16 +326,16 @@ pub(crate) fn archive(directory: &Path, destination: &Path) -> Result {
     }
     Ok(())
 }
-/// The source revision a release build embeds for usage statistics' build identity
+/// The source revision a packaged or tag build embeds for usage statistics' build identity
 /// (`docs/design/usage-statistics.md#build-identity-and-activation`): the full revision of a clean
 /// tree, and none for a dirty one, whose build is then ineligible for production reporting.
-fn embedded_revision(revision: &str, dirty: bool) -> Option<&str> {
+pub(crate) fn embedded_revision(revision: &str, dirty: bool) -> Option<&str> {
     (!dirty).then_some(revision)
 }
 
 /// Set the core's compile-time source revision for `revision`, or remove any inherited value so a
 /// dirty tree's build embeds none.
-fn embed_revision(command: &mut std::process::Command, revision: Option<&str>) {
+pub(crate) fn embed_revision(command: &mut std::process::Command, revision: Option<&str>) {
     let variable = luxforge_core::usage::eligibility::SOURCE_REVISION_ENV;
     match revision {
         Some(revision) => command.env(variable, revision),
