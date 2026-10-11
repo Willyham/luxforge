@@ -100,6 +100,8 @@ pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
 #[cfg(test)]
 mod gpu_settle_tests;
+#[cfg(test)]
+mod hdr_merge_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;

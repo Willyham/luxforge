@@ -23,7 +23,7 @@ use crate::{
         },
         tasks::{call, owner_calls},
     },
-    state::select::{Block, Count, Dot, InfoModel, ReadSource, Shown, SourcePress},
+    state::select::{Block, Count, Dot, InfoModel, MomentAction, ReadSource, Shown, SourcePress},
 };
 use iced::Size;
 use luxforge_core::{
@@ -786,7 +786,7 @@ fn a_select_view_read_again_keeps_the_loupes_frame_until_its_rows_arrive() {
 /// Run everything the editor has asked the owner for — the reads showing Select or a change makes,
 /// a staleness check, an evaluation, a change's label and the rows near the screen — as their
 /// tasks would, until nothing is in flight.
-fn settle(editor: &mut Editor) {
+pub(super) fn settle(editor: &mut Editor) {
     for _ in 0..8 {
         answer_reads(editor);
         if editor.select.check.in_flight() {
@@ -815,7 +815,7 @@ fn settle(editor: &mut Editor) {
 /// fingerprints that move the index's revision and leave the view stale — and the view is current,
 /// read again through the wake as the desktop reads it, so the next gesture names the view the
 /// owner holds whatever the host's load.
-fn steady(editor: &mut Editor) {
+pub(super) fn steady(editor: &mut Editor) {
     luxforge_testbase::wait_for("the owner's work to end and the view to be current", || {
         let (board, _) = call(&editor.owner, editor.client, "activity.list", json!({})).unwrap();
         if !board["active"].as_array().is_some_and(Vec::is_empty) {
@@ -832,7 +832,7 @@ fn steady(editor: &mut Editor) {
 }
 
 /// A key pressed with no text field focused, through the editor's own key table.
-fn key(editor: &mut Editor, letter: &str, modifiers: iced::keyboard::Modifiers) {
+pub(super) fn key(editor: &mut Editor, letter: &str, modifiers: iced::keyboard::Modifiers) {
     use iced::keyboard::{
         Event as KeyEvent, Key, Location,
         key::{NativeCode, Physical},
@@ -851,7 +851,7 @@ fn key(editor: &mut Editor, letter: &str, modifiers: iced::keyboard::Modifiers) 
 }
 
 /// Click the cell showing view position `item`.
-fn click(editor: &mut Editor, item: u32) {
+pub(super) fn click(editor: &mut Editor, item: u32) {
     let layout = &editor.select.layout;
     let cell = layout.cell(layout.cell_of_item(item).unwrap());
     let press = GridPress {
@@ -866,7 +866,7 @@ fn click(editor: &mut Editor, item: u32) {
 
 /// The request the desktop last sent for a library gesture, with its request identity: what an
 /// independent JSON client writes for the same gesture, given that identity.
-fn sent(editor: &Editor, method: &str) -> (Value, Value) {
+pub(super) fn sent(editor: &Editor, method: &str) -> (Value, Value) {
     let library = editor.select.library.clone().expect("a library request");
     assert_eq!(library["method"], method, "{library}");
     let request_id = library["params"]["mutation"]["request_id"].clone();
@@ -875,7 +875,7 @@ fn sent(editor: &Editor, method: &str) -> (Value, Value) {
 }
 
 /// The journal's newest change, read through another client.
-fn newest_change(owner: &OwnerHandle, client: ClientId) -> Value {
+pub(super) fn newest_change(owner: &OwnerHandle, client: ClientId) -> Value {
     let (page, _) = call(owner, client, "library.journal", json!({"limit": 500})).unwrap();
     page["changes"]
         .as_array()
@@ -885,7 +885,7 @@ fn newest_change(owner: &OwnerHandle, client: ClientId) -> Value {
 }
 
 /// Whether the file at `path`'s name is picked, read through another client, and by whom.
-fn pick_of(owner: &OwnerHandle, client: ClientId, name: &str) -> Option<String> {
+pub(super) fn pick_of(owner: &OwnerHandle, client: ClientId, name: &str) -> Option<String> {
     let (page, _) = call(owner, client, "pick.list", json!({})).unwrap();
     page["picks"].as_array().and_then(|picks| {
         picks
@@ -1020,15 +1020,21 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
             Block::Moment {
                 index,
                 bracket,
-                action,
+                actions,
                 ..
-            } => Some((*index, *bracket, action.clone())),
+            } => Some((*index, *bracket, actions.clone())),
             _ => None,
         })
         .enumerate()
         .find(|(_, (_, bracket, _))| *bracket)
-        .map(|(number, (index, _, action))| {
-            assert_eq!(action.as_deref(), Some("Pick all 3"));
+        .map(|(number, (index, _, actions))| {
+            assert_eq!(
+                actions
+                    .iter()
+                    .map(|action| action.label())
+                    .collect::<Vec<_>>(),
+                ["Pick all 3", "Import merged", "Pick merged"]
+            );
             (
                 number as u32,
                 summary.groups.moments[index as usize].clone(),
@@ -1067,10 +1073,20 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
             .map(|moment| moment.picked)
     };
     assert_eq!(picked_bracket(&editor), Some(3));
-    assert!(editor.select.state.content.blocks.iter().any(|block| matches!(
-        block,
-        Block::Moment { bracket: true, picked: Some(picked), action: None, .. } if picked == "3 picked"
-    )));
+    assert!(
+        editor
+            .select
+            .state
+            .content
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                Block::Moment { bracket: true, picked: Some(picked), actions, .. }
+                    if picked == "3 picked"
+                        && actions.iter().all(|action| !matches!(action, MomentAction::PickAll(_)))
+            ))
+    );
 
     // An agent picks the last file; the wake reads it.
     let last = match editor.select.state.rows.row(11).unwrap().item {
