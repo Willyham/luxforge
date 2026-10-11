@@ -759,8 +759,8 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
-Its page chooser and Previous/Next controls browse nineteen pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 129 named widget states and the return to the unchanged editor via
+Its page chooser and Previous/Next controls browse twenty-one pages; Back to editor or Escape returns.
+The `gallery` smoke covers all 136 named widget states and the return to the unchanged editor via
 the same view message as the button; the page is desktop view state, so the session's workspace
 stays unchanged throughout.
 

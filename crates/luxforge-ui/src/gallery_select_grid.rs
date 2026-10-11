@@ -10,8 +10,9 @@
 use crate::Element;
 use crate::gallery_thumbnails::{SCENES, bracket, thumbnail};
 use crate::{
-    CellAvailability, CellView, GridBlock, GridCell, GridHeading, GridLayout, GridLineKind,
-    GridMetrics, HeaderAction, MomentHeader, MomentKind, caption, theme, thumbnail_grid,
+    CellAvailability, CellStack, CellView, GridBlock, GridCell, GridHeading, GridLayout,
+    GridLineKind, GridMetrics, HeaderAction, MenuEntry, MenuItem, MomentHeader, MomentKind,
+    PendingRow, caption, menu_list, theme, thumbnail_grid,
 };
 use iced::Length;
 use iced::widget::image::Handle;
@@ -20,6 +21,10 @@ use std::sync::LazyLock;
 
 /// The grid's width in a gallery card, which is about 684 pt wide at the 1440 pt capture.
 const WIDTH: f32 = 680.0;
+/// A narrow grid: the sources and Info panels open beside a small window, at the smallest cells.
+const NARROW: f32 = 330.0;
+/// The size slider's smallest cell.
+const SMALLEST_CELL: f32 = 96.0;
 /// The 10,000-file view's height.
 const TALL: f32 = 740.0;
 
@@ -486,7 +491,271 @@ fn catalog() -> Element<'static, ()> {
     })
 }
 
-/// The grid's states, in gallery order: two pages, each two columns.
+// -- HDR merges ------------------------------------------------------------------------------------
+
+/// A bracket's header with its merges: Pick all while not all are picked, Import merged and the
+/// primary Pick merged.
+fn bracket_with_merges(picked: Option<&str>) -> GridBlock {
+    GridBlock::Moment {
+        header: MomentHeader {
+            kind: MomentKind::Bracket,
+            title: "Bracket".into(),
+            detail: "3 exposures \u{b7} \u{2212}2 \u{b7} 0 \u{b7} +2 EV".into(),
+            evidence: Some("from metadata".into()),
+            picked: picked.map(Into::into),
+            actions: vec![
+                HeaderAction::new("Pick all 3"),
+                HeaderAction::new("Import merged"),
+                HeaderAction::primary("Pick merged"),
+            ],
+        },
+        frames: 3,
+        collapsed: false,
+    }
+}
+
+fn pending(
+    title: &str,
+    detail: &str,
+    progress: Option<f32>,
+    action: &str,
+    failed: bool,
+) -> GridBlock {
+    GridBlock::Pending(PendingRow {
+        title: title.into(),
+        detail: detail.into(),
+        progress,
+        action: Some(action.into()),
+        failed,
+    })
+}
+
+/// A bracket's frame: its exposure and its footer label.
+fn exposure(step: usize) -> CellView<'static> {
+    CellView {
+        image: Some(&EXPOSURES[step]),
+        label: Some(EXPOSURE_LABELS[step]),
+        ..CellView::default()
+    }
+}
+
+/// A result's badge: "HDR · 3 exposures", or "HDR · 3" in a narrow cell.
+fn badge(expanded: bool) -> Option<CellStack<'static>> {
+    Some(CellStack {
+        label: "HDR \u{b7} 3 exposures",
+        short: "HDR \u{b7} 3",
+        expanded,
+    })
+}
+
+/// The header's merges beside Pick all, over a bracket of files.
+static MERGE_HEADER: LazyLock<GridLayout> = LazyLock::new(|| {
+    GridLayout::new(
+        vec![bracket_with_merges(None), GridBlock::Singles(1)],
+        compact(GridMetrics::select(theme::CELL_SIZE.width)),
+        WIDTH,
+    )
+});
+
+fn merge_header() -> Element<'static, ()> {
+    whole(&MERGE_HEADER, |grid| match grid.item {
+        0..3 => CellView {
+            selected: grid.item == 1,
+            ..exposure(grid.item as usize)
+        },
+        _ => CellView {
+            image: Some(photo(9)),
+            ..CellView::default()
+        },
+    })
+}
+
+/// The merge running: its row before the bracket, whose frames stay until the result is
+/// published.
+static MERGE_PENDING: LazyLock<GridLayout> = LazyLock::new(|| {
+    GridLayout::new(
+        vec![
+            pending(
+                "Merging HDR \u{b7} 3 exposures",
+                "Reading 2 of 3",
+                Some(0.42),
+                "Cancel",
+                false,
+            ),
+            bracket_with_merges(None),
+        ],
+        compact(GridMetrics::select(theme::CELL_SIZE.width)),
+        WIDTH,
+    )
+});
+
+fn merge_pending() -> Element<'static, ()> {
+    whole(&MERGE_PENDING, |grid| exposure(grid.item as usize))
+}
+
+/// The result published: active, leading its collapsed stack with its badge and the Development
+/// set's check, between the frames before and after the bracket.
+static MERGE_RESULT: LazyLock<GridLayout> = LazyLock::new(|| {
+    GridLayout::new(
+        vec![
+            GridBlock::Day(heading(
+                "Saturday 12 September 2026",
+                "4 photographs \u{b7} 1 in the Development set",
+            )),
+            GridBlock::Singles(4),
+        ],
+        compact(GridMetrics::select(theme::CELL_SIZE.width)),
+        WIDTH,
+    )
+});
+
+fn merge_result() -> Element<'static, ()> {
+    whole(&MERGE_RESULT, |grid| match grid.item {
+        1 => CellView {
+            image: Some(&EXPOSURES[1]),
+            picked: true,
+            selected: true,
+            active: true,
+            stack: badge(false),
+            ..CellView::default()
+        },
+        item => CellView {
+            image: Some(photo([0, 0, 6, 9][item as usize % 4])),
+            ..CellView::default()
+        },
+    })
+}
+
+/// A merge that failed: its row names the input, with Dismiss; the frames are as they were.
+static MERGE_FAILED: LazyLock<GridLayout> = LazyLock::new(|| {
+    GridLayout::new(
+        vec![
+            pending(
+                "HDR merge failed \u{b7} 3 exposures",
+                "DSC_0002.NEF: the file changed since it was planned",
+                None,
+                "Dismiss",
+                true,
+            ),
+            bracket_with_merges(None),
+        ],
+        compact(GridMetrics::select(theme::CELL_SIZE.width)),
+        WIDTH,
+    )
+});
+
+fn merge_failed() -> Element<'static, ()> {
+    whole(&MERGE_FAILED, |grid| exposure(grid.item as usize))
+}
+
+/// Show all 3 originals under the Picked filter: the result open, its originals after it with
+/// their exposures, the one picked with its check and the two the filter left out labelled so.
+static MERGE_EXPANDED: LazyLock<GridLayout> = LazyLock::new(|| {
+    GridLayout::new(
+        vec![GridBlock::Singles(5)],
+        compact(GridMetrics::select(theme::CELL_SIZE.width)),
+        WIDTH,
+    )
+});
+
+fn merge_expanded() -> Element<'static, ()> {
+    whole(&MERGE_EXPANDED, |grid| match grid.item {
+        0 => CellView {
+            image: Some(&EXPOSURES[1]),
+            picked: true,
+            stack: badge(true),
+            ..CellView::default()
+        },
+        1..4 => {
+            let step = (grid.item - 1) as usize;
+            CellView {
+                picked: step == 0,
+                active: step == 0,
+                selected: step == 0,
+                note: (step != 0).then_some("Outside the filter"),
+                ..exposure(step)
+            }
+        }
+        _ => CellView {
+            image: Some(photo(3)),
+            picked: true,
+            ..CellView::default()
+        },
+    })
+}
+
+/// The smallest cells in a narrow grid: the header's actions give way from Pick all, the primary
+/// Pick merged last; the result's badge is short.
+static MERGE_NARROW: LazyLock<GridLayout> = LazyLock::new(|| {
+    GridLayout::new(
+        vec![
+            pending(
+                "Merging HDR \u{b7} 3 exposures",
+                "Aligning",
+                Some(0.7),
+                "Cancel",
+                false,
+            ),
+            bracket_with_merges(Some("1 picked")),
+            GridBlock::Singles(2),
+        ],
+        compact(GridMetrics::select(SMALLEST_CELL)),
+        NARROW,
+    )
+});
+
+fn merge_narrow() -> Element<'static, ()> {
+    container(
+        thumbnail_grid(&MERGE_NARROW, 0.0, |grid| match grid.item {
+            0..3 => CellView {
+                picked: grid.item == 0,
+                ..exposure(grid.item as usize)
+            },
+            3 => CellView {
+                image: Some(&EXPOSURES[1]),
+                picked: true,
+                stack: badge(false),
+                ..CellView::default()
+            },
+            _ => CellView {
+                image: Some(photo(6)),
+                ..CellView::default()
+            },
+        })
+        .width(Length::Fixed(NARROW))
+        .height(Length::Fixed(MERGE_NARROW.height())),
+    )
+    .style(theme::canvas_surface(theme::CANVAS))
+    .into()
+}
+
+/// The selection's merge menu: Pick merged and Import merged with their hints, and Merge options…
+/// with the frame count; beside it the same refused, the core's reason as each one's tooltip.
+fn merge_menu() -> Element<'static, ()> {
+    let item = |label: &str, trailing: Option<&str>, enabled: bool| {
+        MenuEntry::Item(MenuItem {
+            icon: None,
+            label: label.into(),
+            trailing: trailing.map(Into::into),
+            on_press: enabled.then_some(()),
+            reason: (!enabled).then(|| "These frames' exposures do not differ".to_owned()),
+        })
+    };
+    let entries = |enabled: bool| {
+        vec![
+            item("Pick merged", None, enabled),
+            MenuEntry::Hint("Merge HDR and add to Development set".into()),
+            item("Import merged", None, enabled),
+            MenuEntry::Hint("Merge HDR into the catalog only".into()),
+            item("Merge options\u{2026}", Some("3 frames"), true),
+        ]
+    };
+    iced::widget::row![menu_list(entries(true)), menu_list(entries(false))]
+        .spacing(theme::SPACING * 2.0)
+        .into()
+}
+
+/// The grid's states, in gallery order: four pages, each two columns.
 pub(crate) fn gallery_select_grid() -> Vec<Element<'static, ()>> {
     vec![
         cells(),
@@ -495,6 +764,13 @@ pub(crate) fn gallery_select_grid() -> Vec<Element<'static, ()>> {
         previews(),
         ten_thousand(),
         catalog(),
+        merge_header(),
+        merge_pending(),
+        merge_result(),
+        merge_failed(),
+        merge_expanded(),
+        merge_narrow(),
+        merge_menu(),
     ]
 }
 
@@ -522,7 +798,19 @@ mod tests {
 
     #[test]
     fn the_small_states_show_whole() {
-        for layout in [&*CELLS, &*WRAPPED, &*DAY, &*PREVIEWS, &*CATALOG] {
+        for layout in [
+            &*CELLS,
+            &*WRAPPED,
+            &*DAY,
+            &*PREVIEWS,
+            &*CATALOG,
+            &*MERGE_HEADER,
+            &*MERGE_PENDING,
+            &*MERGE_RESULT,
+            &*MERGE_FAILED,
+            &*MERGE_EXPANDED,
+            &*MERGE_NARROW,
+        ] {
             assert_eq!(layout.clamp_scroll(1.0e6, layout.height()), 0.0);
         }
         assert_eq!(CELLS.cell_count(), 9);

@@ -243,6 +243,23 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
             "Catalog cells · edited, selected, active, offline",
         ],
     ),
+    (
+        "Select grid · HDR merges",
+        &[
+            "Bracket header · Pick all 3, Import merged and the primary Pick merged",
+            "Pending merge · its row with progress and Cancel, the frames still shown",
+            "Merged result · active, HDR · 3 exposures, in the Development set",
+            "Failed merge · the row names its input, with Dismiss",
+        ],
+    ),
+    (
+        "Select grid · HDR stacks and the merge menu",
+        &[
+            "Show all originals · the open result, its originals' exposures, two outside the filter",
+            "Narrow grid · smallest cells, the actions giving way, the short badge",
+            "Merge menu · with hints, and refused in the core's words",
+        ],
+    ),
     // -- end Select: the thumbnail grid's pages.
     //
     // -- Select: chrome's pages.
@@ -327,7 +344,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 129);
+        assert_eq!(next - 1, 136);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }
