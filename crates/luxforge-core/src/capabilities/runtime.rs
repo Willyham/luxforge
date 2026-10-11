@@ -4,7 +4,7 @@
 //! # Shape
 //!
 //! One [`Runtime`] per catalog owner, shared by the capability host on the owner, the module lane
-//! that loads and uses models, and the owner's handle, which the desktop calls on a memory signal.
+//! that loads and uses models, and the owner's handle, which a host calls on a memory signal.
 //! A model is opened through the host's [`InferenceRuntime`] ([`crate::HostConfig::inference`]) by
 //! [`Runtime::acquire`], on the module lane only: by a `module.runtime.load` job, or by the first
 //! task that uses the capability. It then stays in its slot, keyed by module and resource, until
