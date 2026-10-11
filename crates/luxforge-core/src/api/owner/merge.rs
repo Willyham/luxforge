@@ -86,12 +86,12 @@ use std::{
 #[cfg(test)]
 #[path = "hdr_merge_end_to_end.rs"]
 mod hdr_merge_end_to_end;
-#[cfg(test)]
-#[path = "hdr_merge_job.rs"]
-mod hdr_merge_job;
 #[cfg(any(test, feature = "test-holds"))]
 #[path = "merge_frames.rs"]
 mod frames;
+#[cfg(test)]
+#[path = "hdr_merge_job.rs"]
+mod hdr_merge_job;
 #[cfg(any(test, feature = "test-holds"))]
 pub use frames::SyntheticFrame;
 

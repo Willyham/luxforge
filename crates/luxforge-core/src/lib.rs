@@ -66,6 +66,8 @@ pub mod tiles;
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
 // and this crate's integration tests name through the crate root, and every type a public item's
 pub use activity::ActivitySnapshot;
+#[cfg(any(test, feature = "test-holds"))]
+pub use api::SyntheticFrame;
 pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
     Envelope, EventWake, EventsResult, JobMonitorStats, LIVE_SESSIONS_DIR, LiveSessionEntry,
@@ -75,8 +77,6 @@ pub use api::{
     Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
     WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
-#[cfg(any(test, feature = "test-holds"))]
-pub use api::SyntheticFrame;
 pub use artifacts::{
     ArtifactId, ArtifactTable, DerivedColour, DerivedInterpretation, DerivedSourceId,
     PreparedArtifact, ReferenceCrop,
