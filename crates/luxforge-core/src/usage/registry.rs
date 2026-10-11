@@ -120,7 +120,7 @@ impl Tool {
 wire_enum! {
     /// A completed deliberate operation (`interaction`), across navigation, zoom, compare, clipping,
     /// information, history, versions, presets, copy/paste, masks, catalog organization, Locate,
-    /// preferences and export. Only shipped operations have a value; a continuous gesture is one
+    /// HDR merges, the development set, preferences and export. Only shipped operations have a value; a continuous gesture is one
     /// event at its completion. Adjustment commits are [`Tool`]s, not features.
     pub enum Feature {
         /// Select: a deliberate change of the view's source, filter, sort or grouping.
@@ -143,6 +143,10 @@ wire_enum! {
         CompareSlider => "compare-slider",
         /// Developing picks (`pick.develop`).
         DevelopPicks => "develop-picks",
+        /// Photographs added to the development set (`development-set.add`, Add to Develop).
+        DevelopmentSetAdd => "development-set-add",
+        /// Photographs taken out of the development set (`development-set.remove`).
+        DevelopmentSetRemove => "development-set-remove",
         /// An export of the displayed photograph started.
         Export => "export",
         /// A batch export of selected photographs started.
@@ -154,6 +158,8 @@ wire_enum! {
         FolderMerge => "folder-merge",
         FolderMove => "folder-move",
         FolderRename => "folder-rename",
+        /// An HDR merge started (`merge.create`) or a recorded one merged again (`merge.rerun`).
+        HdrMerge => "hdr-merge",
         /// A history entry previewed.
         HistoryPreview => "history-preview",
         HistoryRedo => "history-redo",
@@ -179,6 +185,10 @@ wire_enum! {
         MaskEdit => "mask-edit",
         MaskRename => "mask-rename",
         MaskReorder => "mask-reorder",
+        /// Remove merge: merged photographs moved to Removed with their stacks (`merge.remove`).
+        MergeRemove => "merge-remove",
+        /// Put back merge (`merge.restore`).
+        MergeRestore => "merge-restore",
         /// The previous or next photograph or frame.
         NavigatePhoto => "navigate-photo",
         /// Missing originals searched for (`source.find`).
