@@ -2175,6 +2175,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "luxforge-diffusion"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "image",
+ "luxforge-core",
+ "luxforge-testbase",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "luxforge-evidence"
 version = "0.0.0"
 dependencies = [

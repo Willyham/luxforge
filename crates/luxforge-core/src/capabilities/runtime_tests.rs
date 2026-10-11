@@ -69,6 +69,7 @@ fn local(resource: &str, model: ModelKind) -> CapabilityKind {
         resident_bytes: RESIDENT,
         backends: vec!["coreml".into(), "cpu".into()],
         precision: Precision::Fp32,
+        with: Vec::new(),
     }
 }
 

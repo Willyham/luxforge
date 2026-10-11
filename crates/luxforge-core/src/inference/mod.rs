@@ -116,10 +116,16 @@ pub struct Placement {
 /// A model file whose bytes the host verified: an installed resource, checked against its pinned
 /// length and SHA-256 when it was installed. The host builds one from the installed resource; a
 /// test or a qualification run that builds one vouches for the file itself.
+///
+/// A resource of several files is installed in one directory, so `path` (its own file) names the
+/// others' directory. A model opened with other installed resources (a generator with its text
+/// encoder, as a `local-runtime` capability's `with` declares them) carries them as its
+/// [`companions`](Self::companions), each verified as it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelFile {
     identity: ModelIdentity,
     path: PathBuf,
+    companions: Vec<ModelFile>,
 }
 
 impl ModelFile {
@@ -127,7 +133,13 @@ impl ModelFile {
         Self {
             identity,
             path: path.into(),
+            companions: Vec::new(),
         }
+    }
+
+    /// The same model, opened with `companions`, in the order its capability declares them.
+    pub fn with_companions(self, companions: Vec<ModelFile>) -> Self {
+        Self { companions, ..self }
     }
 
     pub fn identity(&self) -> &ModelIdentity {
@@ -136,6 +148,11 @@ impl ModelFile {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The other installed resources the model opens with.
+    pub fn companions(&self) -> &[ModelFile] {
+        &self.companions
     }
 }
 

@@ -261,6 +261,7 @@ impl Requirements {
                     resident_bytes,
                     backends,
                     precision,
+                    ..
                 } if *held == resource.id => Some((*model, *resident_bytes, backends, *precision)),
                 _ => None,
             });

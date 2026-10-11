@@ -188,6 +188,7 @@ fn descriptor() -> crate::ModuleDescriptor {
             resident_bytes: 512 << 20,
             backends: vec!["coreml".into(), "cpu".into()],
             precision: Precision::Fp32,
+            with: Vec::new(),
         },
         purpose: "Find objects.".into(),
     });
