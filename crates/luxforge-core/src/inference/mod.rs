@@ -187,6 +187,34 @@ pub trait InferenceRuntime: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// [`prepare`](Self::prepare) for a model that will be opened on one of `backends`, as a
+    /// `local-runtime` capability names them: what a host calls after installing it. A runtime that
+    /// serves several (a [`CompositeInference`]) asks only the members serving one of them, so a
+    /// model for the fake is never handed to ONNX Runtime. The default prepares when this runtime
+    /// offers one of `backends`, and answers nothing otherwise.
+    fn prepare_for(
+        &self,
+        model: &ModelFile,
+        backends: &[String],
+        cancel: &Cancel,
+    ) -> Result<Vec<PathBuf>, Error> {
+        let offered = self.backends();
+        if backends.iter().any(|backend| offered.contains(backend)) {
+            self.prepare(model, cancel)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Remove what this runtime keeps of the model whose SHA-256 is `sha256` outside the model's
+    /// own directory (`luxforge-onnx`'s Core ML compile cache), as a host does when it removes the
+    /// model, and answer how many entries went. A runtime that keeps nothing there answers none,
+    /// which is the default. Never fails: what cannot be removed is recompiled or pruned later.
+    fn forget(&self, sha256: &str) -> usize {
+        let _ = sha256;
+        0
+    }
+
     /// Open `model` as a tensor session on the first backend of `options` it offers.
     fn open_session(
         &self,

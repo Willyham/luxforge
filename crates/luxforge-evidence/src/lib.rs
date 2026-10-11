@@ -59,7 +59,7 @@ pub const NAMED_KEYS: [&str; 11] = [
 
 /// The Settings sheet's tabs, as a `settings` step and a frame's state name them, in the rail's
 /// order.
-pub const SETTINGS_TABS: [&str; 4] = ["general", "appearance", "experiments", "privacy"];
+pub const SETTINGS_TABS: [&str; 5] = ["general", "appearance", "models", "experiments", "privacy"];
 
 /// The longest gap a scripted double-click may leave between its release and its second press.
 /// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
@@ -1824,6 +1824,10 @@ pub enum CapabilityAction {
     Apply,
     /// Capture once every job the desktop tracks for the module has finished.
     Settle,
+    /// Press Remove on this resource's row of the Settings sheet's Models tab.
+    Remove(String),
+    /// Press Unload now on this model's row of the Models tab's loaded models.
+    Unload(String),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1840,6 +1844,16 @@ struct CapabilityWire {
     apply: Option<True>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     settle: Option<True>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remove: Option<ResourceWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unload: Option<ResourceWire>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceWire {
+    resource: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1856,7 +1870,7 @@ enum Consent {
 }
 
 /// The gesture keys of a capability step, of which a step takes exactly one.
-const CAPABILITY_GESTURES: &str = "task, consent, apply or settle";
+const CAPABILITY_GESTURES: &str = "task, consent, apply, settle, remove or unload";
 
 impl TryFrom<CapabilityWire> for CapabilityStep {
     type Error = String;
@@ -1868,6 +1882,10 @@ impl TryFrom<CapabilityWire> for CapabilityStep {
                 .map(|consent| CapabilityAction::Consent(matches!(consent, Consent::Allow))),
             wire.apply.map(|_| CapabilityAction::Apply),
             wire.settle.map(|_| CapabilityAction::Settle),
+            wire.remove
+                .map(|remove| CapabilityAction::Remove(remove.resource)),
+            wire.unload
+                .map(|unload| CapabilityAction::Unload(unload.resource)),
         ]
         .into_iter()
         .flatten();
@@ -1893,6 +1911,8 @@ impl From<CapabilityStep> for CapabilityWire {
             consent: None,
             apply: None,
             settle: None,
+            remove: None,
+            unload: None,
         };
         match step.action {
             CapabilityAction::Task(task) => wire.task = Some(TaskWire { task }),
@@ -1901,6 +1921,8 @@ impl From<CapabilityStep> for CapabilityWire {
             }
             CapabilityAction::Apply => wire.apply = Some(True),
             CapabilityAction::Settle => wire.settle = Some(True),
+            CapabilityAction::Remove(resource) => wire.remove = Some(ResourceWire { resource }),
+            CapabilityAction::Unload(resource) => wire.unload = Some(ResourceWire { resource }),
         }
         wire
     }
@@ -1911,6 +1933,8 @@ impl CapabilityStep {
         text(&self.module, "capability module")?;
         match &self.action {
             CapabilityAction::Task(task) => text(task, "capability task"),
+            CapabilityAction::Remove(resource) => text(resource, "capability remove resource"),
+            CapabilityAction::Unload(resource) => text(resource, "capability unload resource"),
             _ => Ok(()),
         }
     }

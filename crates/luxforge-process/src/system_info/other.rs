@@ -3,6 +3,10 @@ use super::{OsFamily, Raw};
 
 pub(super) const FAMILY: OsFamily = OsFamily::Other;
 
+pub(super) fn memory() -> Option<u64> {
+    None
+}
+
 pub(super) fn read() -> Raw {
     Raw::default()
 }

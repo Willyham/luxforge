@@ -324,6 +324,7 @@ impl ModuleContext {
                 redirects: RedirectPolicy::default(),
                 control,
                 progress: &mut |_, _| {},
+                head: None,
             },
             &mut response,
         );

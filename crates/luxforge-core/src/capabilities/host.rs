@@ -75,6 +75,10 @@ pub struct HostConfig {
     pub transport: Arc<dyn Transport>,
     /// The storage every module's installed resources may take together.
     pub resource_quota_bytes: u64,
+    /// This machine's physical memory, which a resource's `min_memory_bytes` is checked against:
+    /// the desktop and `luxforge-json` read it from the operating system, and tests set their
+    /// own. `None` when the host cannot tell, which checks no minimum.
+    pub machine_memory_bytes: Option<u64>,
     /// The local model runtime `local-runtime` capabilities load their models through
     /// ([`crate::inference`]): a native runtime crate's in the desktop and `luxforge-json`, the
     /// deterministic fake ([`crate::inference::fake::FakeInference`]) in developer runs and tests.
@@ -127,6 +131,7 @@ impl HostConfig {
                 "no network transport is configured",
             )),
             resource_quota_bytes: DEFAULT_RESOURCE_QUOTA_BYTES,
+            machine_memory_bytes: None,
             inference: None,
             runtime_idle: super::runtime::RUNTIME_IDLE_UNLOAD,
             runtime_budget_bytes: super::runtime::DEFAULT_RUNTIME_BUDGET_BYTES,
@@ -139,6 +144,13 @@ impl HostConfig {
     }
 }
 
+/// This machine's installed memory as the operating system reports it, for
+/// [`HostConfig::machine_memory_bytes`]: one system call or file read, `None` where the platform
+/// does not say.
+pub fn installed_memory_bytes() -> Option<u64> {
+    luxforge_process::system_info::installed_memory_bytes()
+}
+
 impl std::fmt::Debug for HostConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostConfig")
@@ -148,6 +160,7 @@ impl std::fmt::Debug for HostConfig {
             .field("secrets", &self.secrets.name())
             .field("transport", &self.transport)
             .field("resource_quota_bytes", &self.resource_quota_bytes)
+            .field("machine_memory_bytes", &self.machine_memory_bytes)
             .field("inference", &self.inference)
             .field("runtime_idle", &self.runtime_idle)
             .field("runtime_budget_bytes", &self.runtime_budget_bytes)
@@ -779,6 +792,18 @@ impl CapabilityHost {
             for (name, value) in fields {
                 status[name.as_str()] = value;
             }
+        }
+        // A module that declares a model or a machine minimum also says what this machine has.
+        if descriptor
+            .resources
+            .iter()
+            .any(|resource| resource.min_memory_bytes.is_some())
+            || descriptor
+                .capabilities
+                .iter()
+                .any(|capability| matches!(capability.kind, CapabilityKind::LocalRuntime { .. }))
+        {
+            status["machine"] = self.machine();
         }
         // A module that declares local-runtime also reports what it holds loaded, from the
         // resident set's own table: no model is opened or touched to answer.

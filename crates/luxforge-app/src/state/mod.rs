@@ -15,6 +15,7 @@ pub(crate) mod information;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod masks;
+pub(crate) mod models;
 pub(crate) mod number;
 pub(crate) mod palette;
 pub(crate) mod panel;
@@ -99,6 +100,16 @@ pub(crate) enum MenuTarget {
     /// A theme's row in the Settings sheet's Appearance tab, by its id: Export…, Copy import
     /// report and, for a stored theme, Delete.
     Theme(String),
+    /// A model's row in the Settings sheet's Models tab: Copy as JSON request for its Remove.
+    Model {
+        module_id: String,
+        resource_id: String,
+    },
+    /// A loaded model's row in the Models tab: Copy as JSON request for its Unload now.
+    Resident {
+        module_id: String,
+        resource_id: String,
+    },
     /// A correction's row in the Corrections band, by its operation: Heal, Clone, New automatic
     /// source, Move up, Move down and Delete.
     Correction(String),
@@ -512,6 +523,10 @@ impl Workspace {
             inputs.themes,
             inputs.view_state,
             inputs.usage,
+            settings::ModelInputs {
+                modules: inputs.modules,
+                capabilities: inputs.capabilities,
+            },
         );
         self.usage_notice = usage::notice(inputs.usage);
     }
