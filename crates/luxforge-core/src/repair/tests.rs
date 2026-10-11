@@ -581,6 +581,111 @@ fn ranked(stage: Stage, input: &[f32], op: &Op) -> Search {
     core
 }
 
+/// Spots and strokes in each corner of the frame, some hanging over it, as fractions of the stage.
+fn corner_paths() -> Vec<(Vec<[f64; 2]>, f64)> {
+    let mut paths = Vec::new();
+    for (x, y, dx, dy) in [
+        (0.0, 0.0, 1.0, 1.0),
+        (1.0, 0.0, -1.0, 1.0),
+        (0.0, 1.0, 1.0, -1.0),
+        (1.0, 1.0, -1.0, -1.0),
+    ] {
+        for inset in [0.0, 0.02, 0.06] {
+            let (px, py) = (x + dx * inset, y + dy * inset);
+            paths.push((vec![[px, py]], 0.03));
+            paths.push((vec![[px, py + dy * 0.1], [px + dx * 0.12, py]], 0.02));
+            paths.push((
+                vec![[px + dx * 0.2, py], [px, py], [px, py + dy * 0.15]],
+                0.025,
+            ));
+        }
+    }
+    paths
+}
+
+/// Every source the automatic search proposes lies inside the frame, at full resolution and on
+/// every stage size, for a destination in any corner: no covered destination pixel's source leaves
+/// the stage, and the source's whole footprint, the outline the overlay draws, is inside the frame.
+#[test]
+fn automatic_sources_in_the_corners_stay_inside_the_frame() {
+    for (width, height) in [
+        (480, 320),
+        (1001, 667),
+        (6000, 4000),
+        (4000, 6000),
+        (2999, 2999),
+    ] {
+        let stage = Stage { width, height };
+        let aspect = f64::from(width) / f64::from(height);
+        for (points, radius) in corner_paths() {
+            let points: Vec<[f64; 2]> = points
+                .iter()
+                .map(|[x, y]| [x, y].map(|v| path::steps_to_units(path::quantize(*v))))
+                .collect();
+            let plan = search::plan(&points, radius, stage);
+            let r = plan.r;
+            // A flat stage: every survivor is ranked, and only geometry decides where they lie.
+            let (x0, y0) = (plan.region.x0 / r, plan.region.y0 / r);
+            let (w, h) = (
+                plan.region.width.div_ceil(r),
+                plan.region.height.div_ceil(r),
+            );
+            let reduced = search::Reduced {
+                r,
+                x0: i64::from(x0),
+                y0: i64::from(y0),
+                width: i64::from(w),
+                height: i64::from(h),
+                values: vec![[0.4; 3]; (w * h) as usize],
+            };
+            let Search::Ranked(candidates) = search::rank(&plan, &reduced) else {
+                panic!("{width}x{height} {points:?}: a corner always has a source inward");
+            };
+            for candidate in candidates {
+                let offset = candidate.offset.map(path::quantize);
+                let op = RepairOp::new(Clone, &points, radius, 50.0, 100.0, offset, stage);
+                let [_, source] = op.reads();
+                let writes = op.writes();
+                let delta = super::delta(offset, stage);
+                let moved = [
+                    i64::from(writes.x0) + delta[0],
+                    i64::from(writes.y0) + delta[1],
+                    i64::from(writes.x1()) + delta[0],
+                    i64::from(writes.y1()) + delta[1],
+                ];
+                assert!(
+                    moved[0] >= 0
+                        && moved[1] >= 0
+                        && moved[2] <= i64::from(width)
+                        && moved[3] <= i64::from(height),
+                    "{width}x{height} {points:?} r {radius}: source {moved:?} ({source:?}) \
+                     leaves the stage"
+                );
+                // The drawn footprint: the path's box grown by the radius, moved.
+                let [dx, dy] = offset.map(path::steps_to_units);
+                let (pixel_x, pixel_y) = (1.0 / f64::from(width), 1.0 / f64::from(height));
+                for [x, y] in &points {
+                    for (u, v) in [
+                        (x - radius / aspect, y - radius),
+                        (x + radius / aspect, y + radius),
+                    ] {
+                        assert!(
+                            u + dx >= -pixel_x
+                                && u + dx <= 1.0 + pixel_x
+                                && v + dy >= -pixel_y
+                                && v + dy <= 1.0 + pixel_y,
+                            "{width}x{height} {points:?}: the drawn source reaches \
+                             ({}, {})",
+                            u + dx,
+                            v + dy
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn best(search: Search) -> search::Candidate {
     match search {
         Search::Ranked(ranked) => ranked[0],

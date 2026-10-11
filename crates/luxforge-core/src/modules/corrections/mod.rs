@@ -21,6 +21,7 @@ mod table;
 #[cfg(test)]
 mod tests;
 
+pub use geometry::{SourceFit, fit_correction_source};
 pub(crate) use input::source_identity;
 pub use input::{RepairInput, StaleReason};
 pub(crate) use module::CorrectionsModule;
