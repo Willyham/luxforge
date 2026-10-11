@@ -10,13 +10,13 @@ mod owner;
 mod transport;
 
 pub use methods::schemas;
+#[cfg(any(test, feature = "test-holds"))]
+pub use owner::SyntheticFrame;
 pub use owner::{
     ClientId, EventWake, JobMonitorStats, MAX_EVENT_WAIT_MS, OwnerHandle, PIXEL_READ_REQUIRED,
     PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,
 };
 pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
-#[cfg(any(test, feature = "test-holds"))]
-pub use owner::SyntheticFrame;
 
 pub use live_sessions::{LIVE_SESSIONS_DIR, LiveSessionEntry, RunningSession, running_sessions};
 pub use params::{Envelope, RevisionOf};
