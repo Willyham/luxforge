@@ -273,7 +273,7 @@ impl RenderedTier {
 /// How a render's source is prepared: an original file checked against its photograph, or a
 /// derived photograph's stored source.
 enum RenderTarget {
-    File(FilePreparation),
+    File(Box<FilePreparation>),
     Derived(DerivedSourceRead),
 }
 
@@ -377,7 +377,7 @@ pub(crate) fn plan_render(
     // render now, by the source's name.
     let target = match asset.source.derived() {
         Some(_) => RenderTarget::Derived(service.derived_source_read(asset_id)?),
-        None => RenderTarget::File(FilePreparation::for_recipe(&asset, recipe)?),
+        None => RenderTarget::File(Box::new(FilePreparation::for_recipe(&asset, recipe)?)),
     };
     Ok(RenderRequest {
         asset,
@@ -782,7 +782,7 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
     }
     cancel.check()?;
     let target = match &request.target {
-        RenderTarget::File(target) => target,
+        RenderTarget::File(target) => target.as_ref(),
         RenderTarget::Derived(read) => {
             // The stored source, verified chunk by chunk: a missing or damaged object is
             // `source-unavailable` naming the source and the chunk, and nothing is rendered.
