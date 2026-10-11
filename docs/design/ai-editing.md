@@ -353,6 +353,7 @@ Decided by the owner on 2026-10-05, recorded in [product decisions](../decisions
 | 14 | Sky replacement | **Accepted**: a deterministic layer over the Select Sky mask, with imported skies or a CC0 set |
 | 15 | Delivery order (2026-10-11) | **Generative fill first**: its workflow is built on the inference foundation with a brush selection and the qualification runs beside it, without waiting for the Fast tier, the analysis cache or Select |
 | 16 | Generative working size (2026-10-11) | **1024 px, one candidate at a time**: Generate makes one and Regenerate adds one; the budget is the measured time (about 2 minutes a candidate on the M4 Pro), measured on a quiet host |
+| 17 | Prompt-free conditioning (2026-10-11) | **A project release asset**: the 15.7 MB empty-scene conditioning is published by the owner as a pinned, hash-checked asset on the project's GitHub releases and installed with the model's weights |
 
 Recorded defaults the owner can revise: the prototype's move onto `main` as the AI harness (`probes/object-removal`, outside the editor's workspace, as the owner placed it); the plain-language labels for each model choice; the Remove letter `Q`; three candidates per Generate; a 10-minute idle unload; a 256 MiB analysis cache; the class vocabulary and presence rules; Background as inverted Subject; the Fast tier's 4× enlargement notice; a prompt limit of 256 characters; the `ai.generative` flag's existence until qualification; Poly Haven as the sky set's first candidate.
 
