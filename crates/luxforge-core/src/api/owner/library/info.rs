@@ -43,6 +43,8 @@ fn counts(service: &EditorService) -> Result<CatalogCounts, Error> {
              (SELECT count(*) FROM assets WHERE removed_ms IS NULL),
              (SELECT count(*) FROM assets WHERE removed_ms IS NULL AND developed_ms >= ?1),
              (SELECT count(*) FROM assets WHERE removed_ms IS NOT NULL),
+             (SELECT count(*) FROM merges m JOIN assets a ON a.id = m.result_asset_id
+                 WHERE a.removed_ms IS NOT NULL),
              (SELECT count(*) FROM assets
                  WHERE removed_ms IS NULL AND availability <> 'available'),
              (SELECT count(*) FROM catalog_folders),
@@ -57,12 +59,13 @@ fn counts(service: &EditorService) -> Result<CatalogCounts, Error> {
                 photographs: count(0)?,
                 recently_developed: count(1)?,
                 removed: count(2)?,
-                unavailable: count(3)?,
-                folders: count(4)?,
-                collections: count(5)?,
-                picks: count(6)?,
-                indexed_folders: count(7)?,
-                library_changes: count(8)?,
+                removed_merges: count(3)?,
+                unavailable: count(4)?,
+                folders: count(5)?,
+                collections: count(6)?,
+                picks: count(7)?,
+                indexed_folders: count(8)?,
+                library_changes: count(9)?,
             })
         })?)
 }

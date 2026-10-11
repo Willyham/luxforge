@@ -832,14 +832,16 @@ pub struct CollectionAnswer {
     pub deduplicated: bool,
 }
 
-/// What `catalog.empty-removed` answers: how many removed photographs' records it deleted, and how
-/// many removed photographs past its bound ([`MAX_LIBRARY_BATCH`] a call) are left for another
-/// call. It is not a library change: nothing it deletes can be restored.
+/// What `catalog.empty-removed` answers: how many removed photographs' records it deleted, how many
+/// of them were saved merges' results (their provenance and stacks deleted with them; never their
+/// originals), and how many removed photographs past its bound ([`MAX_LIBRARY_BATCH`] a call) are
+/// left for another call. It is not a library change: nothing it deletes can be restored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyRemovedAnswer {
     pub outcome: MutationOutcome,
     pub deleted: u32,
+    pub merges: u32,
     pub remaining: u32,
     pub deduplicated: bool,
 }
@@ -882,6 +884,9 @@ pub struct CatalogCounts {
     /// days, not removed: Recently developed.
     pub recently_developed: u64,
     pub removed: u64,
+    /// Removed photographs that are saved merges' results, undone or removed: what emptying
+    /// Removed would discard with no undo to restore them.
+    pub removed_merges: u64,
     /// Photographs not removed whose original was last seen offline, missing or changed.
     pub unavailable: u64,
     pub folders: u64,
