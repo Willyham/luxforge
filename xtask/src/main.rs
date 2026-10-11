@@ -34,6 +34,7 @@ mod gpu_qualification;
 mod grade_align;
 mod grade_performance;
 mod grading_smoke;
+mod hdr_merge_smoke;
 mod histogram_smoke;
 mod information_smoke;
 mod inspect_dng;
