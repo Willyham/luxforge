@@ -51,6 +51,8 @@ mod artifact_tests;
 mod catalog;
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod derived_source_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
@@ -523,6 +525,9 @@ impl SourceTaskKind {
     fn job(&self) -> (JobKind, Option<AssetId>) {
         match self {
             Self::Prepare(SourceWork::File { .. }) => (JobKind::Prepare, None),
+            Self::Prepare(SourceWork::Derived { asset_id, .. }) => {
+                (JobKind::Prepare, Some(asset_id.clone()))
+            }
             Self::Prepare(SourceWork::Develop(request)) => {
                 (JobKind::Develop, Some(request.asset_id.clone()))
             }
@@ -626,6 +631,18 @@ impl SourceQueue {
                     sensor,
                 )
             }
+            // A derived source is named by its identity, which names its content: two requests for
+            // one photograph's source are one read.
+            SourceWork::Derived { asset_id, read, .. } => (
+                SourceFlightKey {
+                    path: asset_id.as_str().into(),
+                    signature: None,
+                    expected_fingerprint: Some(read.id.to_string()),
+                    gains_bits: None,
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
             SourceWork::Develop(request) => {
                 let key = SourceFlightKey {
                     path: request.asset_id.as_str().into(),
@@ -754,8 +771,11 @@ impl SourceQueue {
         client: ClientId,
         state: EditorState,
     ) -> Result<JobId, Error> {
-        // The original must still be there with a readable signature, as for queued work.
-        EditorService::request_signature(&state.asset.locator)?;
+        // The original must still be there with a readable signature, as for queued work. A
+        // derived photograph has no file: the cache answered only while its source is stored.
+        if state.asset.source.derived().is_none() {
+            EditorService::request_signature(&state.asset.locator)?;
+        }
         let id = JobId::new();
         jobs.open_finished(
             Opened {
@@ -836,6 +856,13 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned()),
             asset_id: None,
+            job_id: Some(task.id.to_string()),
+        },
+        SourceTaskKind::Prepare(SourceWork::Derived { asset_id, .. }) => ActivitySpec {
+            kind: "source.prepare",
+            label: "Reading saved source",
+            detail: None,
+            asset_id: Some(asset_id.clone()),
             job_id: Some(task.id.to_string()),
         },
         SourceTaskKind::Prepare(SourceWork::Develop(request)) => ActivitySpec {

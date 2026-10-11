@@ -1074,3 +1074,85 @@ fn a_render_cancelled_inside_its_stream_answers_cancelled() {
     assert_eq!(finished.load(Ordering::SeqCst), 0, "no tier finished");
     assert_eq!(tiles.sent(), 0, "the stream ended before its first band");
 }
+
+/// A derived photograph (an HDR merge's result) has no original file and no camera preview: its
+/// tiers are rendered from its stored source, read and verified chunk by chunk off the editor's
+/// cache and never handed back, and they are the editor's own exact render, area-averaged for the
+/// grid. A damaged chunk fails the render by the source's name, and a source that has gone refuses
+/// the render when it is planned.
+#[test]
+fn a_derived_source_renders_both_tiers_from_its_stored_planes() {
+    use crate::artifacts::derived_source::{merged_planes, payload_work, source_object_path};
+    let path = copied_fixture("rendered-derived", "orientation-1.jpg");
+    let mut service = EditorService::open(&paths::temp_catalog("rendered-derived")).unwrap();
+    service.import(&path).unwrap();
+    let (width, height) = (1100, 300);
+    let asset = service
+        .publish_planes("merge.hdr", width, height, &merged_planes(width, height))
+        .unwrap();
+    service
+        .apply_action(
+            &asset,
+            mutation(0, "basic"),
+            "set-basic",
+            json!({"exposure": -1.0, "temperature": 20.0, "contrast": 20}),
+        )
+        .unwrap();
+    payload_work::take();
+    crate::editor::original_work::take();
+    let request = plan_render(&service, &asset, None, &BOTH).unwrap();
+    assert_eq!(payload_work::take(), 0, "planned from the catalog alone");
+    let tiers = rasters(&request);
+    assert_eq!(
+        payload_work::take(),
+        3,
+        "one read of the manifest and each chunk for both tiers"
+    );
+    assert_eq!(crate::editor::original_work::take(), (0, 0), "no file read");
+    let [(grid_key, grid), (_, large)] = &tiers[..] else {
+        panic!("two tiers");
+    };
+    assert_eq!(grid_key.tier, PreviewTier::Grid);
+    assert!(
+        service.render_current(&asset).is_err(),
+        "nothing was handed to the editor's cache"
+    );
+    service
+        .prepare(&service.entry_needs(&asset, None).unwrap())
+        .unwrap();
+    let exact = service.render_current(&asset).unwrap();
+    assert_eq!((large.width, large.height), (width, height));
+    assert!(
+        large.rgba == exact.rgba,
+        "the large tier is the exact render"
+    );
+    assert!(
+        grid.rgba == fit_reference(&service, &asset, PHOTO_GRID_SIDE).rgba,
+        "the grid tier is the exact render area-averaged"
+    );
+
+    let read = service.derived_source_read(&asset).unwrap();
+    let root = service.artifact_root().to_path_buf();
+    let manifest_path = source_object_path(&root, read.id.sha256());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let chunk = source_object_path(&root, manifest["chunks"][1]["sha256"].as_str().unwrap());
+    let whole = fs::read(&chunk).unwrap();
+    let mut damaged = whole.clone();
+    damaged[3] ^= 0x01;
+    fs::write(&chunk, &damaged).unwrap();
+    let refused = render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::SourceUnavailable);
+    assert_eq!(
+        refused.detail,
+        format!("derived source {} chunk 1 is corrupt", read.id)
+    );
+    fs::write(&chunk, &whole).unwrap();
+    fs::remove_file(&manifest_path).unwrap();
+    let refused = plan_render(&service, &asset, None, &BOTH).err().unwrap();
+    assert_eq!(refused.kind, ErrorKind::SourceUnavailable);
+    assert_eq!(
+        refused.detail,
+        format!("derived source {} is missing", read.id)
+    );
+}

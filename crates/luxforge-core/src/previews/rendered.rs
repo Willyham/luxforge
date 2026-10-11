@@ -24,9 +24,11 @@
 //! the original **off the editor's source cache and source worker**, on its own thread, through the
 //! one sanctioned reader, [`SourceWork::run`]: one bounded read of the file, its fingerprint checked
 //! against the asset's, decoded, and a RAW developed at the gains the entry's development layer asks
-//! for, exactly as the source worker develops it for `render_current`. The artifacts the owner did
-//! not keep ready are read and verified the same way. Nothing prepared is handed back to the
-//! service: the render owns its source, and it is gone when the render returns.
+//! for, exactly as the source worker develops it for `render_current`; or, for a derived
+//! photograph, which has no file and no camera preview, its stored source read and verified chunk by
+//! chunk. The artifacts the owner did not keep ready are read and verified the same way. Nothing
+//! prepared is handed back to the service: the render owns its source, and it is gone when the
+//! render returns.
 //!
 //! # Drawn by the tile service, reduced as it arrives
 //!
@@ -105,6 +107,7 @@ use crate::{
     AssetId, Cancel, EditorService, EntryId, Error, ErrorKind, Evaluation, HistoryEntry,
     LinearSettings, ModuleRegistry, PreparedArtifact, PreviewSource, ProxyBounds, ProxyPlan,
     Raster, Recipe, RenderContext, Renderer, RendererReason,
+    artifacts::derived_source::DerivedSourceRead,
     artifacts::{ArtifactId, ArtifactRead},
     catalog_types::{
         PHOTO_GRID_SIDE, PHOTO_LARGE_SIDE, PreviewInfo, PreviewItem, PreviewOrigin, PreviewTier,
@@ -267,6 +270,13 @@ impl RenderedTier {
     }
 }
 
+/// How a render's source is prepared: an original file checked against its photograph, or a
+/// derived photograph's stored source.
+enum RenderTarget {
+    File(FilePreparation),
+    Derived(DerivedSourceRead),
+}
+
 /// Everything one render needs, planned on the catalog owner by [`plan_render`]: the asset record
 /// (the original's path, identity, length and fingerprint), the entry (shared from the entry
 /// cache), how its original is prepared and verified, the artifacts it references — the bytes the
@@ -275,7 +285,7 @@ impl RenderedTier {
 pub(crate) struct RenderRequest {
     asset: AssetRecord,
     entry: Arc<HistoryEntry>,
-    target: FilePreparation,
+    target: RenderTarget,
     ready: Vec<Arc<PreparedArtifact>>,
     reads: Vec<ArtifactRead>,
     registry: Arc<ModuleRegistry>,
@@ -363,7 +373,12 @@ pub(crate) fn plan_render(
     let (ready, reads) = service
         .artifact_bindings(recipe)
         .map_err(|error| naming_edits(error, recipe, None))?;
-    let target = FilePreparation::for_recipe(&asset, recipe)?;
+    // A derived photograph's source is named by stat and SQL alone: a missing object refuses the
+    // render now, by the source's name.
+    let target = match asset.source.derived() {
+        Some(_) => RenderTarget::Derived(service.derived_source_read(asset_id)?),
+        None => RenderTarget::File(FilePreparation::for_recipe(&asset, recipe)?),
+    };
     Ok(RenderRequest {
         asset,
         entry,
@@ -539,7 +554,8 @@ fn render_with<T>(
         HistoryEntry::clone(&request.entry),
         recipe,
         None,
-    );
+    )
+    .of_kind(request.asset.source.tag());
     let keys = request.keys();
     let (rasters, renderer) = draw(evaluation, &keys, tiles, cancel)?;
     let renderer = RenderedBy::from(renderer);
@@ -765,6 +781,39 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
         }
     }
     cancel.check()?;
+    let target = match &request.target {
+        RenderTarget::File(target) => target,
+        RenderTarget::Derived(read) => {
+            // The stored source, verified chunk by chunk: a missing or damaged object is
+            // `source-unavailable` naming the source and the chunk, and nothing is rendered.
+            let work = SourceWork::Derived {
+                asset_id: asset.id.clone(),
+                read: Box::new(read.clone()),
+                first_open: None,
+            };
+            let Prepared::Derived(_, derived, _) = work
+                .run(&[], cancel.flag())
+                .map_err(|error| cancelled_or(cancel, error))?
+            else {
+                return Err(Error::internal(
+                    "a derived source's work prepared something else",
+                ));
+            };
+            let source = PreviewSource::Raw {
+                image: derived.linear,
+                // The stored planes as they are: no setting changes them.
+                settings: LinearSettings::default(),
+            };
+            if source.dimensions() != (asset.width, asset.height)
+                || source.fingerprint() != asset.fingerprint
+            {
+                return Err(Error::internal(
+                    "the prepared source is not the one the asset records",
+                ));
+            }
+            return Ok(PreparedRender { source, verified });
+        }
+    };
     // Missing, offline, or no longer the imported file by identity or length.
     original_signature(asset)?;
     let unavailable = |error: Error| {
@@ -783,7 +832,7 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
             _ => error,
         }
     };
-    let work = SourceWork::file(&asset.locator, request.target.clone()).map_err(unavailable)?;
+    let work = SourceWork::file(&asset.locator, target.clone()).map_err(unavailable)?;
     // The fingerprint is checked against the asset's inside the work, so another file's bytes are
     // `source-unavailable` before anything is rendered from them.
     let Prepared::File(file, _) = work.run(&[], cancel.flag()).map_err(unavailable)? else {
@@ -799,7 +848,7 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
         }) => {
             // The mosaic and the capture fields go before any frame is rendered.
             drop((sensor, capture));
-            if request.target.raw.as_ref().map(|raw| raw.gains) != Some(gains) {
+            if target.raw.as_ref().map(|raw| raw.gains) != Some(gains) {
                 return Err(Error::internal(
                     "the RAW was not developed at its entry's gains",
                 ));
@@ -810,6 +859,9 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
                 // settings every committed render uses.
                 settings: LinearSettings::default(),
             }
+        }
+        PreparedSource::Derived(_) => {
+            return Err(Error::internal("a file's work prepared a derived source"));
         }
     };
     if source.dimensions() != (asset.width, asset.height) || file.fingerprint != asset.fingerprint {

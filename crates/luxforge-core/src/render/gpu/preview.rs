@@ -57,7 +57,7 @@ use super::{
 };
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
-    ProxyBounds, ProxyIdentity, ProxyPlan, Recipe, SourceTag,
+    ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
     mask_field::MaskSampling,
     modules::{MAX_MASKED_SPATIAL_LAYERS, Region, Stage},
     render::{Compiled, spatial::prefix_hash, window::WindowPlan},
@@ -1848,11 +1848,9 @@ pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<G
     };
     const COLOUR: &[EffectStage] = &[EffectStage::Color, EffectStage::Finish];
     const SPATIAL: &[EffectStage] = &[EffectStage::Restoration, EffectStage::Spatial];
-    // A module that does not apply to the photo's kind (the look on a JPEG) is never dragged.
-    let kind = match evaluation.source() {
-        crate::PreviewSource::Raw { .. } => SourceTag::Raw,
-        crate::PreviewSource::Jpeg(_) => SourceTag::Jpeg,
-    };
+    // A module that does not apply to the photo's kind (the look on a JPEG or a derived photo) is
+    // never dragged.
+    let kind = evaluation.kind();
     // The first drag of each field-patch module of `stages` the stack does not hold unmasked: the
     // stack it is planned over, with the neutral layer its first commit would insert, and where.
     let firsts = |stages: &[EffectStage]| -> Vec<(Recipe, usize)> {

@@ -56,6 +56,23 @@ impl SourceOptics {
             ledger: Self::jpeg_ledger(),
         }
     }
+
+    /// A derived source's ledger: every correction its making applied is baked into its pixels, and
+    /// the host corrects nothing of it again, so each is reported applied
+    /// (`docs/design/hdr-merge.md#working-pixels-and-fusion`). No lens correction applies to a
+    /// derived photograph; this is what an inspection of its optics reports.
+    pub(crate) fn derived_ledger() -> OpticalLedger {
+        let baked = || OpticalEntry {
+            status: OpticalStatus::Applied,
+            provenance: "derived-source-baked".into(),
+        };
+        OpticalLedger {
+            distortion: baked(),
+            lateral_ca: baked(),
+            shading: baked(),
+            interpretation: "derived-linear".into(),
+        }
+    }
 }
 
 impl super::PreparedSource {
@@ -65,6 +82,10 @@ impl super::PreparedSource {
             Self::Raw(source) => SourceOptics {
                 identity: OpticalIdentity::from(source.capture.as_ref()),
                 ledger: luxforge_raw::optical_ledger(source.sensor.metadata()),
+            },
+            Self::Derived(source) => SourceOptics {
+                identity: OpticalIdentity::from(source.capture.as_ref()),
+                ledger: SourceOptics::derived_ledger(),
             },
         }
     }

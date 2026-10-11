@@ -239,6 +239,24 @@ pub mod qualification {
         crate::previews::rendered::qualification_tiers(service, asset_id, tiles)
     }
 
+    /// A derived photograph of `planes` (`width × height` linear-sRGB red values row by row, then
+    /// green, then blue, signed and with headroom as an HDR merge's result is) in the catalog at
+    /// `catalog`, created if it is new: stored and published as a merge publishes its result, with
+    /// no original file. It joins the folder of `anchor`, a file developed into the catalog first,
+    /// since a derived photograph joins an existing photograph's folder. Answers the derived
+    /// photograph; the catalog is closed again before this returns, for an owner to open.
+    pub fn publish_derived(
+        catalog: &std::path::Path,
+        anchor: &std::path::Path,
+        width: u32,
+        height: u32,
+        planes: &[f32],
+    ) -> Result<crate::AssetId, crate::Error> {
+        let mut service = crate::EditorService::open(catalog)?;
+        service.import(anchor)?;
+        service.publish_planes("synthetic-merge.hdr", width, height, planes)
+    }
+
     /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as
     /// a detected profile's Apply commits one: a lens warp for the GPU tests, with no lens index.
     pub fn lens_layer(k1: f64, stage: (u32, u32)) -> crate::Layer {

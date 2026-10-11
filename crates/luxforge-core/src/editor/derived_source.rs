@@ -9,12 +9,12 @@
 //! whole immutable history — or its publication by a writer of this process; recipe and layer
 //! artifact references are separate and never involved. Only emptying Removed deletes an
 //! asset-source reference, and only then can a collection remove the source's objects.
-// The HDR merge's publication and the derived source's preparation (`tasks/library/hdr-merge.json`
-// TASK-004 to TASK-006) compose these; until they do, only the tests link and read a source.
+// The HDR merge's publication (`tasks/library/hdr-merge.json` TASK-004 and TASK-006) composes the
+// writers; until it does, only the tests and the qualification harness publish a source.
 #![cfg_attr(not(test), allow(dead_code))]
-use super::{EditorService, decode, now_ms, write};
+use super::{AssetRecord, EditorService, SourceSignature, decode, now_ms, write};
 use crate::{
-    AssetId, Error, SourceKind,
+    AssetId, DerivedInterpretation, Error, SourceKind,
     artifacts::derived_source::{
         DerivedSourceId, DerivedSourceRead, DerivedSourceWriter, LiveSources, PublishedSource,
         object_length,
@@ -260,7 +260,60 @@ pub(super) fn plan_source_collection(
     Ok((released.len(), retained_source_objects(tx)?))
 }
 
+impl SourceSignature {
+    /// A derived source's signature: its identity, which names its content, and its payload's
+    /// length. Its objects are immutable and content-addressed, so the identity says of them what a
+    /// file's identity, length and times say of a file: a prepared source with this signature is
+    /// the stored one.
+    fn derived(interpretation: &DerivedInterpretation, byte_len: u64) -> Self {
+        Self {
+            byte_len,
+            modified: None,
+            file_identity: format!("derived:{}", interpretation.source_id),
+            change_marker: None,
+        }
+    }
+}
+
 impl EditorService {
+    /// The signature of the derived photograph `asset`'s source while its manifest is still
+    /// stored, as an original's is while its file is there: the artifact root checked as this
+    /// catalog's (one stat of its manifest once checked) and one stat of the source's manifest
+    /// object. A missing manifest is `source-unavailable: derived source <id> is missing`, another
+    /// length `... is corrupt`; a chunk is verified when the source is read. Stat and SQL only.
+    pub(super) fn derived_signature(
+        &self,
+        asset: &AssetRecord,
+        interpretation: &DerivedInterpretation,
+    ) -> Result<SourceSignature, Error> {
+        let id = &interpretation.source_id;
+        self.check_root()?;
+        let recorded: Option<i64> = self
+            .connection
+            .prepare_cached(
+                "SELECT s.manifest_bytes FROM asset_sources a
+                 JOIN derived_sources s ON s.id = a.source_id
+                 WHERE a.asset_id=?1 AND s.id=?2",
+            )?
+            .query_row(params![asset.id.as_str(), id.as_str()], |row| row.get(0))
+            .optional()?;
+        let recorded = recorded.ok_or_else(|| {
+            Error::source_unavailable(format!(
+                "derived source {id} is not recorded for photograph {}",
+                asset.id
+            ))
+        })?;
+        match object_length(&self.artifact_root, id.sha256())? {
+            None => Err(Error::source_unavailable(format!(
+                "derived source {id} is missing"
+            ))),
+            Some(length) if length != recorded as u64 => Err(Error::source_unavailable(format!(
+                "derived source {id} is corrupt"
+            ))),
+            Some(_) => Ok(SourceSignature::derived(interpretation, asset.byte_len)),
+        }
+    }
+
     /// A writer that publishes derived sources into this catalog's artifact root from any thread.
     /// No I/O: the root is created by its first publish.
     pub(crate) fn derived_source_writer(&self) -> DerivedSourceWriter {
@@ -282,6 +335,100 @@ impl EditorService {
         write(&mut self.connection, |tx| {
             link_asset_source(tx, &root, asset_id, published)
         })
+    }
+
+    /// A derived photograph of `published`, brought into the catalog as a merge's publication
+    /// brings one: its asset row of a derived source, capture row and Original — the stack
+    /// [`super::new_photograph`] builds for its kind — and state, then its source references, all in
+    /// one transaction, with `extra` last in it. It joins the catalog folder and volume of the
+    /// catalog's first photograph, which must exist. Named `name`. For the tests and the
+    /// qualification harness, which make derived photographs before the merge publishes any.
+    #[cfg(any(test, feature = "qualification"))]
+    pub(crate) fn publish_derived_with(
+        &mut self,
+        published: &PublishedSource,
+        name: &str,
+        extra: impl FnOnce(&Transaction<'_>) -> Result<(), Error>,
+    ) -> Result<AssetId, Error> {
+        use crate::catalog_types::{CatalogFolderId, FileAvailability, HeaderMetadata, VolumeId};
+        let (folder, volume): (String, String) = self
+            .connection
+            .query_row(
+                "SELECT catalog_folder_id, volume_id FROM assets ORDER BY row_id LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                Error::validation("a derived photograph joins an existing photograph's folder")
+            })?;
+        let (folder, volume) = (CatalogFolderId::parse(folder)?, VolumeId::parse(volume)?);
+        let asset_id = AssetId::new();
+        // A derived photograph's locator, identity and fingerprint name its source, never a file.
+        let identity = format!("derived:{asset_id}");
+        let record = AssetRecord {
+            id: asset_id.clone(),
+            source_root: std::path::PathBuf::new(),
+            locator: std::path::PathBuf::from(&identity),
+            fingerprint: published.id.to_string(),
+            file_identity: identity.clone(),
+            byte_len: published.payload_bytes(),
+            width: published.width,
+            height: published.height,
+            source: SourceKind::Derived {
+                interpretation: published.interpretation(),
+            },
+        };
+        let header = HeaderMetadata::default();
+        let now = now_ms();
+        let photograph = self.new_photograph(record, &header, now)?;
+        let root = self.artifact_root.clone();
+        write(&mut self.connection, |tx| {
+            super::insert_photograph(
+                tx,
+                &root,
+                &photograph.original,
+                &super::catalog_rows::NewAsset {
+                    record: &photograph.asset,
+                    canonical_locator: &identity,
+                    catalog_folder_id: &folder,
+                    source_folder: std::path::Path::new("derived"),
+                    volume_id: &volume,
+                    file_name: name,
+                    developed_ms: now,
+                    removed_ms: None,
+                    availability: FileAvailability::Available,
+                    checked_ms: now,
+                    develop_moment: None,
+                },
+                &header,
+                None,
+            )?;
+            link_asset_source(tx, &root, &asset_id, published)?;
+            extra(tx)
+        })?;
+        Ok(asset_id)
+    }
+
+    /// A derived photograph of `planes` (`width × height` red values row by row, then green, then
+    /// blue), written as a merge's worker writes its result and published by
+    /// [`Self::publish_derived_with`]. For the tests and the qualification harness.
+    #[cfg(any(test, feature = "qualification"))]
+    pub(crate) fn publish_planes(
+        &mut self,
+        name: &str,
+        width: u32,
+        height: u32,
+        planes: &[f32],
+    ) -> Result<AssetId, Error> {
+        let published = self.derived_source_writer().write_planes(
+            width,
+            height,
+            planes,
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
+        self.publish_derived_with(&published, name, |_| Ok(()))
     }
 
     /// How a worker reads and verifies the source of the derived photograph `asset_id`: its

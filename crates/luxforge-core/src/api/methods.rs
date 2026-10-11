@@ -1525,11 +1525,11 @@ fn method_schema(
 /// apply to every kind — as an effect's `sources` is — so a method of a module that applies
 /// everywhere is listed exactly as before kinds were declared.
 fn method_sources(descriptor: &crate::ModuleDescriptor) -> Option<Value> {
-    let kinds: Vec<crate::SourceTag> = crate::SourceTag::ALL
+    let kinds: Vec<crate::SourceTag> = crate::SourceTag::EVERY
         .into_iter()
         .filter(|kind| descriptor.applies_to(*kind))
         .collect();
-    (kinds.len() != crate::SourceTag::ALL.len()).then(|| json!(kinds))
+    (kinds.len() != crate::SourceTag::EVERY.len()).then(|| json!(kinds))
 }
 
 /// Mark each declared parameter of `action` that a control variant supersedes with `superseded:

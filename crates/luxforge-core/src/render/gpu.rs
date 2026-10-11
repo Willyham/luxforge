@@ -27,6 +27,8 @@ pub(crate) mod tiles;
 #[cfg(test)]
 mod canonical_tests;
 #[cfg(test)]
+mod derived_source_tests;
+#[cfg(test)]
 mod grid_tests;
 #[cfg(test)]
 mod interpret;

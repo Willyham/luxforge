@@ -35,6 +35,8 @@ mod catalog_rows;
 mod collapse;
 pub(crate) mod derived_source;
 #[cfg(test)]
+mod derived_source_editing_tests;
+#[cfg(test)]
 mod derived_source_tests;
 mod describe;
 mod entries;
@@ -471,10 +473,10 @@ pub(crate) struct ExportPlan {
 }
 
 /// What `export.plan` answers from: the entry's evaluation, which reads no source, and the
-/// original's path.
+/// original's path; a derived photograph has no original file, so none.
 pub(crate) struct ExportTarget {
     pub evaluation: Evaluation<()>,
-    pub original: PathBuf,
+    pub original: Option<PathBuf>,
 }
 
 /// One asset's current entry bound for point sampling on a worker, as the catalog owner found it
