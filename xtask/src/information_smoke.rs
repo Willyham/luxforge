@@ -117,7 +117,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             format!("information toggle changed photo {field}"),
         )?;
     }
-    // A real card must appear in the upper-left canvas, beyond the mode strip's changed icon.
+    // A real card must appear in the upper-left canvas, below the title bar and its changed toggle.
     let image_before = before.image()?;
     let image_after = after.image()?;
     let left = crate::scenario::frame::columns(after)?.ok_or("missing canvas columns")?[0];

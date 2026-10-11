@@ -33,8 +33,8 @@ use iced::{
 };
 use luxforge_ui::{
     ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
-    ModeEntry, NoticeCardModel, ToggleEntry, Tone, chip, draft_bar_with_controls, focus_control,
-    mode_strip, notice_card, theme,
+    ModeEntry, NoticeCardModel, Tone, chip, draft_bar_with_controls, focus_control, mode_strip,
+    notice_card, theme,
 };
 use luxforge_ui::{Element, Theme, Token};
 
@@ -146,7 +146,8 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
     }
 }
 
-/// The mode strip: the pointer, every declared canvas mode, then the view overlays.
+/// The mode strip: the pointer and every declared canvas mode. The view overlays' toggles are in
+/// the title bar, beside Clipping.
 fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
     let modes: Vec<ModeEntry> = model
         .modes
@@ -160,31 +161,13 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
             enabled: mode.enabled,
         })
         .collect();
-    let toggles = [
-        ToggleEntry {
-            label: "Thirds".into(),
-            icon: Some(Icon::Thirds),
-            shortcut: Some("O".into()),
-            on: model.thirds,
-        },
-        ToggleEntry {
-            label: "Information".into(),
-            icon: Some(Icon::Information),
-            shortcut: Some("I".into()),
-            on: model.information_on,
-        },
-    ];
     let ids: Vec<String> = model.modes.iter().map(|mode| mode.id.clone()).collect();
     let bar = mode_strip(
         &modes,
         move |index| Message::View(ViewMessage::SetMode(ids[index].clone())),
-        &toggles,
-        |index| {
-            Message::View(match index {
-                0 => ViewMessage::ToggleThirds,
-                _ => ViewMessage::ToggleInformation,
-            })
-        },
+        // No toggle group: Thirds and Information live in the title bar.
+        &[],
+        |_| Message::View(ViewMessage::ToggleThirds),
     );
     container(bar)
         .width(Length::Fill)
