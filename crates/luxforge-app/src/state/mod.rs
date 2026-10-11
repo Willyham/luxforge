@@ -4106,6 +4106,88 @@ mod tests {
         assert_eq!(shared(&offered[0]), shared(&offered[1]));
     }
 
+    /// A derived photograph (an HDR merge's result) is offered exactly what a JPEG is — the same
+    /// sections with the same controls, Basic's white balance the relative one, the same palette
+    /// entries, modes and shortcuts — and nothing of a RAW's: no development and no look.
+    #[test]
+    fn derived_source_photographs_are_offered_what_a_jpeg_is() {
+        let modules = descriptors();
+        let derived: luxforge_core::SourceKind = serde_json::from_value(json!({
+            "kind": "derived",
+            "interpretation": {
+                "source_id": format!("source-{}", "b".repeat(64)),
+                "width": 6048,
+                "height": 4024,
+                "colour": "linear-srgb-d65",
+            }
+        }))
+        .unwrap();
+        let offered = |source: Option<luxforge_core::SourceKind>| {
+            let mut scene = Scene::new(modules.clone()).opened(Vec::new());
+            scene.developer = true;
+            scene.palette.open = true;
+            if let Some(source) = source {
+                scene
+                    .document
+                    .state
+                    .as_mut()
+                    .expect("an asset")
+                    .asset
+                    .source = source;
+            }
+            let workspace = scene.derive();
+            let sections: Vec<(String, Vec<String>)> = workspace
+                .tools
+                .all()
+                .map(|section| {
+                    (
+                        section.module_id.clone(),
+                        crate::state::control_tree::walk(&section.controls)
+                            .map(|control| format!("{control:?}"))
+                            .collect(),
+                    )
+                })
+                .collect();
+            let palette: Vec<String> = workspace
+                .palette
+                .entries
+                .iter()
+                .map(|entry| format!("{:?}", entry.action))
+                .collect();
+            let modes: Vec<String> = workspace
+                .canvas
+                .modes
+                .iter()
+                .map(|mode| mode.id.clone())
+                .collect();
+            let shortcuts = format!(
+                "{:?}",
+                tools::mode_shortcuts(&scene.modules, scene.document.state.as_ref(), None)
+            );
+            (sections, palette, modes, shortcuts)
+        };
+        let jpeg = offered(None);
+        let on_derived = offered(Some(derived));
+        assert_eq!(
+            on_derived, jpeg,
+            "a derived photograph is offered a JPEG's tools"
+        );
+        let ids: Vec<&str> = on_derived.0.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"luxforge.basic"), "{ids:?}");
+        let raw = offered(Some(crate::state::testing::raw_source()));
+        assert_ne!(raw.0, on_derived.0, "a RAW is offered its own");
+        for module in &modules {
+            if !module.applies_to(luxforge_core::SourceTag::Jpeg) {
+                assert!(
+                    !module.applies_to(luxforge_core::SourceTag::Derived)
+                        && !ids.contains(&module.id.as_str()),
+                    "{} applies to RAW photos only",
+                    module.id
+                );
+            }
+        }
+    }
+
     /// One `mask.list` row for the displayed entry, with nothing bound to it yet.
     fn reported(
         id: &MaskId,
