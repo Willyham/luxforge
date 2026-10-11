@@ -248,6 +248,16 @@ fn apply(
     if let Some(skip) = batch::removed(&owner.service.connection, asset)? {
         return Ok(Applied::Skipped(skip));
     }
+    if let Some(running) = owner.host.locking_task(&owner.jobs, asset) {
+        return Ok(Applied::Skipped(batch::skip(
+            asset,
+            batch::LOCKED,
+            format!(
+                "{} is running on it as job {}; wait for it or cancel it",
+                running.method, running.job_id
+            ),
+        )));
+    }
     if let Some(session) = owner.sessions.get(&client) {
         if let Some(draft) = session
             .draft

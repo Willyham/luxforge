@@ -396,6 +396,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                     json!("developer"),
                     json!("proof.choice"),
                     json!("proof.number"),
+                    json!("ai.generative"),
                 ],
         format!("The palette opened another sheet: {}", settings(sheet)),
     )?;

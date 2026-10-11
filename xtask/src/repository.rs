@@ -1037,7 +1037,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // figures, not timings, and `luxforge-reference` may
     // depend on no workspace crate (`independent-references`), so they cannot reach
     // `Distribution`; they use the same nearest rank. Auto's production image solver also
-    // cannot depend on test tooling and needs an in-place selection within charged scratch.
+    // cannot depend on test tooling and needs an in-place selection within charged scratch, and so
+    // does the generative fill's robust grain estimate (a median absolute deviation over a ring's
+    // samples), whose test restates it by sorting as its independent reference.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -1055,6 +1057,8 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase/src/distribution.rs",
             "crates/luxforge-core/src/modules/basic/auto/solve.rs",
+            "crates/luxforge-core/src/modules/ai/fill/grain.rs",
+            "crates/luxforge-core/src/modules/ai/fill/tests.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
             "crates/luxforge-reference/src/grade_response.rs",

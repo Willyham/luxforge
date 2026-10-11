@@ -14,6 +14,11 @@ use std::{collections::BTreeMap, path::PathBuf};
 /// Developer mode: the desktop serves the test modules and shows the components gallery.
 pub const DEVELOPER: &str = "developer";
 
+/// The Generative fill tier's experiment: whether a fill may be generated with a generative model
+/// (`docs/design/ai-editing.md`). It gates whether the tier is offered, never how an accepted
+/// patch renders.
+pub const AI_GENERATIVE: &str = "ai.generative";
+
 /// When a flag's consumer reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -113,6 +118,17 @@ const FLAGS: &[FlagSpec] = &[FlagSpec {
     applies: Applies::Launch,
 }];
 
+/// Product flags whose feature only a developer run has yet, listed after the proof flags and only
+/// by a host that serves the test modules. The Generative tier's one model is the developer fake,
+/// so its flag is offered only where the tier is (`docs/design/ai-editing.md`).
+const DEVELOPER_FLAGS: &[FlagSpec] = &[FlagSpec {
+    id: AI_GENERATIVE,
+    title: "Generative fill",
+    description: "Offers the Generative fill tier in Remove when a generative model is installed; an accepted fill renders the same either way.",
+    kind: FlagKind::Toggle { default: false },
+    applies: Applies::Live,
+}];
+
 /// Test fixtures, listed only by a host that serves the test modules, as the proof modules are.
 /// They change nothing, so the choice and number controls have a real flag to render.
 const PROOF_FLAGS: &[FlagSpec] = &[
@@ -153,11 +169,15 @@ const PROOF_FLAGS: &[FlagSpec] = &[
     },
 ];
 
-/// The flags a host lists: every product flag, and the proof flags when it serves the test modules.
+/// The flags a host lists: every product flag, and the developer and proof flags when it serves
+/// the test modules.
 pub(crate) fn listed(developer: bool) -> impl Iterator<Item = &'static FlagSpec> {
-    FLAGS
-        .iter()
-        .chain(PROOF_FLAGS.iter().filter(move |_| developer))
+    FLAGS.iter().chain(
+        PROOF_FLAGS
+            .iter()
+            .chain(DEVELOPER_FLAGS)
+            .filter(move |_| developer),
+    )
 }
 
 /// The listed flag named `id`.
@@ -282,6 +302,20 @@ impl LaunchFlags {
     pub fn problem(&self) -> Option<&Error> {
         self.problem.as_ref()
     }
+}
+
+/// A live product toggle's value now, developer-listed or not: its stored value when that fits,
+/// otherwise its default; `false` for an identity no product toggle has. Reads the preferences file.
+pub(crate) fn toggle(store: &PreferenceStore, id: &str) -> Result<bool, Error> {
+    let Some(flag) = FLAGS
+        .iter()
+        .chain(DEVELOPER_FLAGS)
+        .find(|flag| flag.id == id && matches!(flag.kind, FlagKind::Toggle { .. }))
+    else {
+        return Ok(false);
+    };
+    let stored = store.read()?.flags;
+    Ok(effective(flag, stored.get(id)).0.as_bool().unwrap_or(false))
 }
 
 /// The flags a host lists, read from its store now, with what its launch resolved.
@@ -517,7 +551,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(false), ["developer"]);
-        assert_eq!(ids(true), ["developer", "proof.choice", "proof.number"]);
+        assert_eq!(
+            ids(true),
+            ["developer", "proof.choice", "proof.number", "ai.generative"]
+        );
     }
 
     #[test]
