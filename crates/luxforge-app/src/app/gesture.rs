@@ -741,6 +741,21 @@ impl Editor {
         }
         match &gesture.kind {
             Kind::Slider(slider) => {
+                if slider.action == "apply-settings" && slider.parameter == "amount" {
+                    self.presets.library.interaction.amount = self
+                        .document
+                        .state
+                        .as_ref()
+                        .map(|state| {
+                            state.current_entry.parameters["amount"]
+                                .as_f64()
+                                .unwrap_or(100.0)
+                        })
+                        .unwrap_or(100.0);
+                }
+                if slider.action == "apply-settings" {
+                    self.presets.library.interaction.hovered = None;
+                }
                 self.controls.dragging = None;
                 self.status.text = format!("{} draft discarded", slider.label);
                 self.event(

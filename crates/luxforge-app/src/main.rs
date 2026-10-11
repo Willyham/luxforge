@@ -83,6 +83,17 @@ struct Config {
     /// Why the live session could not be started or registered at launch (`app/lifecycle.rs`),
     /// which the status bar shows and the log records.
     live_problem: Option<String>,
+    /// This launch may show the usage statistics notice and the Settings sheet's Privacy tab:
+    /// the eligibility its host is started with ([`app::usage`]).
+    usage_eligible: bool,
+    /// `--usage-test-receiver`: explicit usage statistics test eligibility with this loopback
+    /// receiver, for an evidence run's isolated configuration. It never reaches the production
+    /// origin, and grants no consent.
+    usage_receiver: Option<luxforge_core::usage::TestReceiver>,
+    /// `--evidence-config`: an earlier evidence run's configuration directory (its `host/config`),
+    /// kept by this evidence run in place of a new one, so a scenario can follow what one launch
+    /// stored into the next, as the usage statistics notice's ask-once does. Evidence runs only.
+    evidence_config: Option<PathBuf>,
 }
 
 impl Config {
@@ -168,7 +179,10 @@ impl Config {
     /// `--data-root` or the platform's application directories. Resolving creates nothing.
     fn resolve_paths(&self) -> Option<Paths> {
         match &self.evidence {
-            Some(evidence) => Paths::resolve(Some(&evidence.join("host"))),
+            Some(evidence) => Paths::resolve(Some(&evidence.join("host"))).map(|paths| Paths {
+                config: self.evidence_config.clone().unwrap_or(paths.config),
+                ..paths
+            }),
             None => Paths::resolve(self.data_root.as_ref()),
         }
     }
@@ -210,6 +224,23 @@ fn arguments() -> Result<Config, String> {
                         .ok_or("--proof-endpoint requires a URL")?,
                 );
             }
+            Some("--usage-test-receiver") => {
+                let url = args
+                    .next()
+                    .and_then(|url| url.into_string().ok())
+                    .ok_or("--usage-test-receiver requires a URL")?;
+                config.usage_receiver = Some(
+                    luxforge_core::usage::TestReceiver::loopback(&url)
+                        .map_err(|error| format!("--usage-test-receiver: {}", error.detail))?,
+                );
+            }
+            Some("--evidence-config") => {
+                config.evidence_config = Some(
+                    args.next()
+                        .ok_or("--evidence-config requires a path")?
+                        .into(),
+                );
+            }
             Some("--hidden-window") => config.hidden = true,
             Some("--evidence-gpu-identity") => config.gpu_identity = true,
             Some("--no-gpu-render") => config.no_gpu_render = true,
@@ -249,7 +280,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--no-gpu-render] [--software-adapter] [--window-size WIDTH HEIGHT] [--hidden-window]\n       Luxforge --gpu-adapters\n--no-gpu-render refuses the GPU stage for this launch, as on a machine whose graphics adapter cannot run it: every frame is drawn by the reference renderer, and the session and the status bar say so. On a host whose only graphics adapter is a software one (lavapipe, WARP), the GPU stage is refused the same way until the software adapter is adopted; --software-adapter draws through it on that adapter for this launch, and the session and the status bar name it. --gpu-adapters prints the graphics adapters wgpu offers the renderer, one JSON object a line, and exits.\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
+                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--no-gpu-render] [--software-adapter] [--window-size WIDTH HEIGHT] [--hidden-window] [--usage-test-receiver URL] [--evidence-config DIRECTORY]\n       Luxforge --gpu-adapters\n--no-gpu-render refuses the GPU stage for this launch, as on a machine whose graphics adapter cannot run it: every frame is drawn by the reference renderer, and the session and the status bar say so. On a host whose only graphics adapter is a software one (lavapipe, WARP), the GPU stage is refused the same way until the software adapter is adopted; --software-adapter draws through it on that adapter for this launch, and the session and the status bar name it. --gpu-adapters prints the graphics adapters wgpu offers the renderer, one JSON object a line, and exits.\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\n--usage-test-receiver, in evidence mode only, gives the launch explicit usage statistics test eligibility with a loopback receiver (http on localhost, 127.0.0.0/8 or [::1] with a port): it shows the startup notice and Settings › Privacy, and sends nothing until someone opts in in that run's own isolated preferences; its statistics worker reports a fixed test release and runs on a clock evidence script steps can move forward.\n--evidence-config, in evidence mode only, keeps an earlier evidence run's host/config directory as this run's configuration, so what one launch stored, such as its usage statistics choice, is what the next one reads.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
                 );
                 std::process::exit(0)
             }
@@ -275,6 +306,22 @@ fn arguments() -> Result<Config, String> {
     // A test hook: an ordinary launch never draws through a forced GPU plan.
     if config.gpu_identity && config.evidence.is_none() {
         return Err("--evidence-gpu-identity requires --evidence-dir".into());
+    }
+    // Only an earlier evidence run's own configuration may be carried into another.
+    if let Some(dir) = &config.evidence_config {
+        if config.evidence.is_none() {
+            return Err("--evidence-config requires --evidence-dir".into());
+        }
+        if !dir.is_dir() || !dir.ends_with("host/config") {
+            return Err(
+                "--evidence-config names an earlier evidence run's existing host/config directory"
+                    .into(),
+            );
+        }
+    }
+    // Test eligibility belongs to an isolated configuration, which only an evidence run keeps.
+    if config.usage_receiver.is_some() && config.evidence.is_none() {
+        return Err("--usage-test-receiver requires --evidence-dir".into());
     }
     if let Some(path) = &config.evidence {
         if path.exists() {
@@ -330,6 +377,10 @@ fn arguments() -> Result<Config, String> {
 }
 
 fn main() {
+    if luxforge_cli::version_requested(std::env::args_os().skip(1)) {
+        println!("luxforge {}", luxforge_cli::VERSION);
+        return;
+    }
     let config = arguments().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(2)

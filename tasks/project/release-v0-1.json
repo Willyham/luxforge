@@ -1,0 +1,833 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "release-v0-1",
+  "title": "Prepare Luxforge v0.1.0 for distribution",
+  "objective": "Prepare macOS Apple silicon and Linux x86-64 downloads together, matching source, distribution policy, macOS signing/notarization, native qualification and one reviewable joint release packet without publishing it.",
+  "context_summary": "The owner requested preparation and chose macOS and Linux together on 2026-10-08. Targets are aarch64-apple-darwin and the existing x86_64-unknown-linux-gnu Ubuntu 24.04/glibc 2.39 baseline; Windows remains later scope. Both platform gates must pass before the joint release is ready. Paid Apple Developer Program membership is active, verified read-only on 2026-10-09. The owner reports completing signing setup with the local notarization Keychain profile luxforge-notarization; identity/private-key usability and profile authentication remain unverified until the final candidate task; preparation does not authorize credential creation or acceptance of further agreements. Operator setup is documented in the design. Routine code organization, icon, archive/desktop integration and manifest representation are delegated within the design. Current-format-only rules remain; no migrations, dist-profile dependency, stores/updater or feature-roadmap prerequisites. Use the roadmap high-tier model minimum and re-review current main. Signing credentials, complete owner RAW manifest, macOS floor machine, native x86-64 Linux GPU/Wayland/X11 machine and explicit foreground installation sessions are late qualification inputs, not dependencies of independent tooling. Preparation does not authorize creating or pushing a tag. The owner explicitly chose automatic pre-release publication when they push a release tag. Existing IDs are preserved; Linux and combined-release outputs are appended. The owner subsequently authorized tag-triggered build implementation: normalized tag versions override the developer workspace version without modifying source/lock. Versioned candidate packaging, optional signing, transport verification and automatic GitHub pre-release publication are delivered under the tag-build design; broad distribution acceptance remains incomplete.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Unify application and candidate identity for the editor, both CLIs and release metadata.",
+      "status": "in_progress",
+      "dependencies": [],
+      "extra_context": [
+        "Ordinary developer builds use workspace.package.version; release builds use the validated normalized tag as the shared compiled application version without rewriting manifests or lockfile. Keep format markers independent. A numeric macOS build number is owned by packaging metadata.",
+        "Add non-launching --version to luxforge and luxforge-json and reuse luxforge-ctl behavior. No catalog/data root or GUI launch is needed. Any service-visible addition uses the shared schema/command service.",
+        "Define candidate identity and the outside-bundle release.json contract for later tasks: full revision, version, build number, target, profile, toolchain/SDK/native compiler, lock hash, final artifacts and executable hashes, source identity, signing/notary and qualification statuses. Avoid self-referential hashes.",
+        "Release input validation refuses dirty tracked/untracked sources, mismatches, unsupported targets and reused outputs. Development packaging remains explicitly unsigned and may record a dirty tree.",
+        "Candidate validation admits only the two shipping targets; per-target build/executable/signing/evidence records share the same commit/version/lock. Linux Apple signing/notary fields are not applicable; macOS requirements cannot be bypassed by a Linux result.",
+        "Tag identity and all three --version paths are implemented. Complete any remaining final-distribution build-environment/source/qualification metadata; do not require a Cargo version bump for every release tag."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Workspace package identity",
+          "target": "Cargo.toml",
+          "relevance": "One application version and pinned dependencies"
+        },
+        {
+          "kind": "file",
+          "label": "Existing packaging metadata",
+          "target": "xtask/src/package.rs",
+          "relevance": "Current plist, build.json and hashes"
+        },
+        {
+          "kind": "file",
+          "label": "Editor startup",
+          "target": "crates/luxforge-app/src/main.rs",
+          "relevance": "Add version handling before application launch"
+        },
+        {
+          "kind": "file",
+          "label": "Headless startup",
+          "target": "crates/luxforge-cli/src/json.rs",
+          "relevance": "Add version handling without catalog ownership"
+        },
+        {
+          "kind": "file",
+          "label": "Live CLI version",
+          "target": "crates/luxforge-cli/src/live/command.rs",
+          "relevance": "Reuse current nonconnecting --version behavior"
+        }
+      ],
+      "acceptance_criteria": [
+        "All three --version responses and bundle/release metadata agree on the normalized release tag; developer builds use the workspace version, and --version creates no GUI, catalog or application data.",
+        "Candidate tests cover dirty input, target/version/tag mismatch, existing output and distinguishing pre-sign from final hashes.",
+        "Current recipes/catalogs are not rewritten merely because the application version changes; development packaging retains its stated behavior."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add focused startup/identity tests, inspect the locked workspace entries and compare all three release executables without launching an editor.",
+          "Run quick once at the finished change; apply the performance checklist to any crates changes."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli live::tests::commands",
+          "tools/cargo-cached test -p xtask package::tests"
+        ],
+        "expected_results": [
+          "Current recipes/catalogs are not rewritten merely because the application version changes; development packaging retains its stated behavior."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Assemble complete corresponding source and audit-ready notices with an offline rebuild check.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Reuse the existing inventory/native/font/theme/data/Lensfun notice collectors. Review runtime-used licences and native static linking, selected licences, patches and LGPL modification/relinking requirements; prepare a factual review artifact without claiming an audit from inventory.",
+        "Generate a source archive from an exact clean revision with vendored Rust crates, bundled native sources/patches, required compiled-in assets, licence texts and build/install/relink instructions. Preserve Cargo aliases/deployment configuration while adding offline source replacement.",
+        "Private originals, the licensed sample corpus, catalogs/secrets, caches, local paths and verification data are excluded. Explicitly document test-only omissions; do not omit any source needed to build the shipped product.",
+        "The source packer can be built independently of application-version changes and macOS selection; final archive naming uses the candidate identity. A GitHub repository auto-archive alone is insufficient."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Inventory and notice collectors",
+          "target": "xtask/src/package.rs",
+          "relevance": "Reuse current collectors and expose gaps"
+        },
+        {
+          "kind": "file",
+          "label": "Distribution review requirements",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Manual review is incomplete; native/assets and source requirements"
+        },
+        {
+          "kind": "file",
+          "label": "Native RAW provenance",
+          "target": "crates/luxforge-raw/THIRD_PARTY.md",
+          "relevance": "Bundled source, patches and licence selection"
+        },
+        {
+          "kind": "file",
+          "label": "Native JPEG provenance",
+          "target": "crates/luxforge-jpeg/THIRD_PARTY.md",
+          "relevance": "Bundled codec notices and source"
+        },
+        {
+          "kind": "file",
+          "label": "Cargo build configuration",
+          "target": ".cargo/config.toml",
+          "relevance": "Preserve existing settings when vendoring"
+        }
+      ],
+      "acceptance_criteria": [
+        "A complete source archive and notice review record identify the exact source revision and every shipped native/Rust/asset component, its notices and any unresolved distribution finding.",
+        "The extracted source archive builds editor and both CLIs offline on both respective build hosts without the original checkout or original Cargo source cache, with pinned toolchain/native prerequisites documented; a Linux container build is functional evidence only.",
+        "Review covers static LGPL modification/relinking, fonts, themes, GeoNames and Lensfun/RawSpeed data, includes applicable licence texts/attribution, and reports missing declarations explicitly.",
+        "Archive inspection confirms no private inputs, source-cache paths or credentials, and notices do not imply that unresolved findings have passed."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run collector/archive tests, inspect emitted licences and provenance against the configured shipping graph.",
+          "Extract to an isolated temporary directory, use a fresh Cargo home and an isolated target directory, and perform the offline build; record exact commands and source hashes.",
+          "Review exclusions against required build inputs and inspect the public metadata for private paths."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask package::tests"
+        ],
+        "expected_results": [
+          "Archive inspection confirms no private inputs, source-cache paths or credentials, and notices do not imply that unresolved findings have passed."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Produce a fresh distribution-specific advisory disposition for the frozen dependency graph.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The current paste reason says local S0 development only; ttf-parser explicitly says no distribution approval. Neither current suppression may be reused as evidence of distribution suitability.",
+        "Recheck primary upstream advisories/releases for the exact shipping graph. Remove an exception through a compatible pinned update where available, or record the current exposure and a narrowly bounded distribution disposition with review/expiry; do not replace the GUI stack or create a private fork solely for a maintenance advisory.",
+        "If a public-risk decision cannot be supported by the reviewed evidence or existing authorization, record that unresolved publication blocker in the disposition. Do not suppress the finding, extend expiry automatically or hold up source/packaging/verifier work.",
+        "Keep development audit enforcement and its existing advisory tracking consistent. This task produces evidence and policy; it is not an approval/request task.",
+        "Review may run alongside version/source preparation: record the reviewed input lock hash and shipping dependency graph. Final assembly verifies graph equality and binds the disposition to the frozen candidate lock hash; any dependency/source/feature change invalidates the disposition and needs a fresh review."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Enforced advisory exceptions",
+          "target": "xtask/src/policy.rs",
+          "relevance": "Exact package/version, reasons and expiry validation"
+        },
+        {
+          "kind": "file",
+          "label": "Advisory exposure and constraints",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Current development scope and distribution review requirement"
+        },
+        {
+          "kind": "file",
+          "label": "Dependency policy",
+          "target": "deny.toml",
+          "relevance": "Allowed licences, source and target constraints"
+        }
+      ],
+      "acceptance_criteria": [
+        "Distribution disposition names the reviewed input lock hash and shipping dependency graph/targets, exact affected versions, current primary evidence, exposure and expiry where an exception remains; final packet rebinding is allowed only after verifying the shipping graph is unchanged.",
+        "Current audit and exception tests pass; no permanent, broad or automatically extended suppression is introduced.",
+        "An unresolved finding remains visible and prevents release-ready status without blocking independent preparation; a development audit pass is not described as public-distribution clearance."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Inspect exact resolved target graph and current primary upstream evidence, run audit and policy tests, and update current policy documentation.",
+          "Run narrow affected build/render checks only if dependencies change, then quick at handoff."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask-cli policy::tests",
+          "tools/cargo-cached xtask audit"
+        ],
+        "expected_results": [
+          "An unresolved finding remains visible and prevents release-ready status without blocking independent preparation; a development audit pass is not described as public-distribution clearance."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Build the self-contained macOS release bundle and metadata-preserving ZIP.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Reuse existing release build and development packaging collectors; add an explicit release path, never alter development packaging into implicit signing/submission.",
+        "Ship one normal Luxforge.app with editor, signed-ready CLI helpers in Contents/Helpers, Lensfun resources, icon/source asset, licence/notices/help and build identity inside Resources. Copying the app must retain all required notices.",
+        "Inspect actual Mach-O deployment target/runtime imports against the intended macOS 14 floor; the build configuration alone is not floor evidence. No universal/Intel Mac build or DMG is required by the macOS contract.",
+        "Use existing Rust tooling plus system packaging tools where necessary to preserve permissions, bundle metadata and later stapling. Delegate routine icon/art and archive mechanics; no branding approval task.",
+        "An unsigned assembled candidate is a useful rehearsal output and must never be labelled release-ready.",
+        "Existing notice/resource collectors already provide the bundle inputs: the independent source/distribution review is a final readiness dependency, not a prerequisite of usable macOS packaging. Reconcile any review findings before final assembly."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Existing app/ZIP packager",
+          "target": "xtask/src/package.rs",
+          "relevance": "Editor-only payload, plist and archive modes need extension"
+        },
+        {
+          "kind": "file",
+          "label": "Target baseline",
+          "target": "docs/engineering/platforms.md",
+          "relevance": "macOS 14 arm64 is intended, not verified support"
+        },
+        {
+          "kind": "file",
+          "label": "External user data directories",
+          "target": "crates/luxforge-cli/src/paths.rs",
+          "relevance": "Install/uninstall must not remove catalogs/settings/logs"
+        }
+      ],
+      "acceptance_criteria": [
+        "A clean candidate yields the versioned proposed ZIP with all three executable payloads, current runtime resources, icon and notices inside the app; no checkout path is needed at runtime.",
+        "Extraction preserves executable modes and bundle metadata; tests cover spaces/non-ASCII paths, missing resources, unsupported host and reused output.",
+        "Plist version/build number, deployment metadata and candidate identity agree; development artifact remains clearly unsigned and source-preserving.",
+        "An extracted unsigned rehearsal runs supported isolated API/render checks without touching originals or normal user catalogs, with no signing or release-readiness claim."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add/extend package tests, inspect extracted plist/Mach-O/imports and compare resource payloads and modes.",
+          "Run narrow existing smoke/CLI journeys against the assembled candidate through the background harness; inspect correlated captures/state/logs where UI behavior changes."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask package::tests"
+        ],
+        "expected_results": [
+          "An extracted unsigned rehearsal runs supported isolated API/render checks without touching originals or normal user catalogs, with no signing or release-readiness claim."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Implement explicit Developer ID signing, notarization and stapling with credential-free failure tests.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Implement the settled macOS path. Tooling implementation uses fake command runners/fixtures and needs no credentials; real credential/service use belongs to the final candidate task.",
+        "Sign CLI helpers and nested executables first, app last, with hardened runtime and secure timestamp. Use only demonstrated entitlement needs; do not recursively sign an unknown payload.",
+        "Use an explicitly supplied named Keychain profile or supported notary API credentials; the owner reports configuring luxforge-notarization for the local release. Validate it and the selected Developer ID identity during final candidate signing; never export keys, log passwords or silently select the first identity. No pull-request job receives signing secrets.",
+        "Submit the metadata-preserving ZIP with notarytool, require Accepted, retain submission result, staple/validate the app, then rearchive and compute final hashes. Keep the signed payload immutable. ZIP files cannot be stapled.",
+        "Failure keeps diagnostics and cannot downgrade into an unsigned release-ready artifact. System commands are tool wrappers, not a second project toolchain."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Payload and archive implementation",
+          "target": "xtask/src/package.rs",
+          "relevance": "Signing order and final extraction must preserve the app"
+        },
+        {
+          "kind": "file",
+          "label": "Background wrapper",
+          "target": "xtask/src/launch.rs",
+          "relevance": "Never mutate the shipped bundle to make it a background app"
+        },
+        {
+          "kind": "url",
+          "label": "Apple notarization requirements",
+          "target": "https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution",
+          "relevance": "Developer ID, hardened runtime, timestamp and notarization"
+        },
+        {
+          "kind": "url",
+          "label": "Apple custom workflow",
+          "target": "https://developer.apple.com/documentation/security/customizing-the-notarization-workflow",
+          "relevance": "Submission, acceptance and app stapling for ZIP distribution"
+        }
+      ],
+      "acceptance_criteria": [
+        "Explicit signing/notary inputs and tooling do not affect ordinary development packaging and do not leak credentials.",
+        "Tests cover signing order, missing tools/identity, rejected or timed-out submissions, missing tickets, extraction/metadata errors and correct final rearchive/hash order.",
+        "Every failure produces non-ready status and retains actionable diagnostics; the implementation can be verified without credentials or an Apple-service submission."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Exercise a fake command runner with representative status/log outputs, enumerate the actual signed payload and inspect secret redaction.",
+          "Run a real candidate submission only in the final task when external inputs exist."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask release_sign"
+        ],
+        "expected_results": [
+          "Every failure produces non-ready status and retains actionable diagnostics; the implementation can be verified without credentials or an Apple-service submission."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Complete the release-ready packet verifier over tag-build candidates, without duplicating the publication workflow.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Implement candidate-contract validation without waiting for a signed artifact: use synthetic packet fixtures. Reuse existing JSON/hash/error tooling; no generalized release service or new product UI.",
+        "Ready requires matching candidate identity, final artifact hashes, source/notices review, distribution advisory disposition, signing/notary and complete required native/corpus/installation evidence. Model pending/failed/incomplete honestly; unsigned mode is rehearsal only.",
+        "Pin actions, minimize upload write permissions and prevent untrusted PR inputs from reaching credentials. Native reports bind executable identity even though the automated harness copies it into a different bundle.",
+        "Sanitize public metadata without altering private raw evidence. No private photographs, paths, coordinates or secrets in the packet; do not claim an action attestation for a local build.",
+        "A complete ready packet requires both platform artifacts and their native evidence; a qualified macOS or Linux payload alone never passes joint readiness. Hashes/source/policy apply to both targets; Apple signature/notary requirements apply only to macOS.",
+        "The tag-build workflow already builds and automatically publishes pre-release candidates after transport verification; it does not assert source/policy/native qualification. Extend readiness validation over those candidates without adding duplicate rebuild/upload/publication workflow."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Existing development CI",
+          "target": ".github/workflows/check.yml",
+          "relevance": "Reuse conventions; seven-day development artifacts are not release assets"
+        },
+        {
+          "kind": "file",
+          "label": "Existing metadata/hashes",
+          "target": "xtask/src/package.rs",
+          "relevance": "Reuse hash and inventory utilities"
+        },
+        {
+          "kind": "file",
+          "label": "Evidence/tier status semantics",
+          "target": "docs/engineering/development.md",
+          "relevance": "Skip/incomplete is not passed",
+          "locator": "Verification tiers"
+        },
+        {
+          "kind": "url",
+          "label": "GitHub pre-releases",
+          "target": "https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository",
+          "relevance": "Automatic pre-release delivery and persistent assets"
+        }
+      ],
+      "acceptance_criteria": [
+        "Packet verifier rejects missing/tampered assets for either target, common commit/version/lock mismatch, development-only review dispositions, invalid macOS signing/tickets and incomplete required native/corpus/install evidence for either platform; Linux Apple-notary fields are explicitly not applicable.",
+        "Sanitized public manifest is distinct from private evidence and excludes private data while retaining enough identity/status to assess the claimed scope."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Test ready/rehearsal/pending/failure fixtures and tampering/privacy cases using existing xtask test infrastructure.",
+          "Inspect workflow permissions, pinned actions, inputs, candidate matching, tag-build candidate versus final-ready validation, automatic pre-release publication after uploads, and failure preservation. Actual remote upload is unnecessary for tooling tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask-cli release_artifacts"
+        ],
+        "expected_results": [
+          "A published pre-release build candidate remains non-ready until all required final distribution gates pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Complete candidate installation/help/release documentation using actual built artifacts.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Use docs/releases/v0.1.md as the prepared draft and reconcile features/requirements with the frozen candidate. Keep unverified floor/quality/memory/native-platform limits explicit.",
+        "Describe extraction/copy to Applications, CLI helpers, external catalog/settings/artifact paths, manual updates, closed-owner backups, data-preserving uninstall and current-format refusal without migration promises.",
+        "Include issue-report steps with version/OS/adapter/recording mode, errors and sanitized logs; private originals/catalogs are optional, never requested as a default.",
+        "Update README/user guide/platform/status/development packaging docs when implemented behavior exists. Until publication use candidate instructions and do not invent public download links. No updater, stores or placeholder controls.",
+        "Prepare shared notes and macOS help from the built macOS payload; Linux packaging supplies its actual installed layout/runtime instructions and final Linux qualification reconciles them with the shared docs. No artificial dependency on Linux native hardware for documentation preparation."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Prepared release notes draft",
+          "target": "docs/releases/v0.1.md",
+          "relevance": "Features, limits, installation and fields requiring real values"
+        },
+        {
+          "kind": "file",
+          "label": "Current controls and scripting",
+          "target": "docs/user-guide.md",
+          "relevance": "Use supported behaviors, update install path only when available"
+        },
+        {
+          "kind": "file",
+          "label": "First-time user entry point",
+          "target": "README.md",
+          "relevance": "Source-build instructions versus verified candidate download"
+        },
+        {
+          "kind": "file",
+          "label": "Current implemented/qualified scope",
+          "target": "docs/features.md",
+          "relevance": "Separate implemented features from outstanding evidence"
+        }
+      ],
+      "acceptance_criteria": [
+        "Packaged help and repository candidate docs agree on actual version, payload, requirements, data locations, install/update/uninstall and issue reporting.",
+        "Every feature statement matches the candidate and its evidence; planned features, unverified floors and quality/memory limits are explicit.",
+        "Public fields contain real verified values before publication; missing links/evidence remain visible, and no unsupported compatibility or platform promise is introduced."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Inspect docs against extracted candidate and version metadata, verify local links and do a first-time-reader walkthrough.",
+          "Check raw support and export statements against current guide/status; no UI test is required for prose alone."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask check-repository"
+        ],
+        "expected_results": [
+          "Public fields contain real verified values before publication; missing links/evidence remain visible, and no unsupported compatibility or platform promise is introduced."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Qualify the frozen candidate on native M4 with full verification and the complete required GPU corpus.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-006",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "This is late qualification after feature integration, not a prerequisite of useful packaging/tooling. It requires the owner RAW manifest and native M4 adapter; missing inputs stay unrun while the other preparation is delivered.",
+        "Run full with --binary for the candidate and --manifest for the required sources; full includes rendered journeys, timing/hardening and the GPU gate. Do not repeat the complete gate separately when full already ran it successfully.",
+        "Cover recent Select/Locate, RAW looks, copy/paste and Auto tone through existing journeys; add only a focused missing release-critical path. Preserve accepted motion tolerance/reporting and do not restore closed controlled studies as blockers.",
+        "Use hidden background bundles and isolated catalogs/data roots. Record executable identity and the fact that the harness changes bundle identity; this evidence is not distributed-app Gatekeeper/Finder installation acceptance.",
+        "Inspect correlated capture/state/logs and source-preservation results. Report skips, partial corpus, unreliable timings and provisional misses truthfully; no total-memory or universal performance claim."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Full verification and gate invocation",
+          "target": "docs/engineering/development.md",
+          "relevance": "Existing full tier, manifest and candidate binary forwarding",
+          "locator": "Verification tiers"
+        },
+        {
+          "kind": "file",
+          "label": "Corpus GPU gate",
+          "target": "xtask/src/gpu_qualification.rs",
+          "relevance": "Required source/family/output scope and incompleteness"
+        },
+        {
+          "kind": "file",
+          "label": "Background launch and timing locks",
+          "target": "xtask/src/launch.rs",
+          "relevance": "No foreground activation; actual bundle-context limitations"
+        },
+        {
+          "kind": "file",
+          "label": "Accepted tolerance and measurement policy",
+          "target": "docs/specs/performance.md",
+          "relevance": "Preserve accepted motion scope and honest timing/memory claims"
+        }
+      ],
+      "acceptance_criteria": [
+        "Full summary and complete required GPU gate pass for the frozen candidate on native M4, with manifest/source identities and no skipped/incomplete required component.",
+        "Relevant rendered captures correlate with state/logs and original hashes remain unchanged; recent implemented features and recovery/export paths are covered.",
+        "Private raw evidence is retained separately from a sanitized scope summary bound to candidate/executable identity; provisional misses and unmeasured limits are not represented as support guarantees."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Confirm candidate identity, native adapter, complete manifest availability and quiet host before the end-of-feature verification.",
+          "Run full once against candidate, inspect summary/captures and add only a targeted missing journey or rerun a failed component; changes invalidate affected evidence."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier full --binary artifacts/v01-candidate/Luxforge.app/Contents/MacOS/luxforge --manifest \"${LUXFORGE_RELEASE_RAW_MANIFEST:?set the complete owner RAW manifest path}\" --output artifacts/v01-full"
+        ],
+        "expected_results": [
+          "Private raw evidence is retained separately from a sanitized scope summary bound to candidate/executable identity; provisional misses and unmeasured limits are not represented as support guarantees."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Finalize the signed/notarized macOS candidate and verify its clean installation for the joint release.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "External late inputs: Apple Developer identity/notary credentials, access to the advertised minimum-OS Apple silicon machine/account, explicit foreground test session and complete private qualification reports. Preparation must not enumerate/export credentials or activate the owner desktop.",
+        "Run signing/notarization/stapling tooling, then inspect the extracted final ZIP and final signed executable identity. Carry pre-sign rendered evidence only with recorded normalized code identity; a rebuilt or changed payload requires affected checks again.",
+        "Record normal quarantined downloaded-app installation, signature/ticket assessment including offline, file picker, JPEG/RAW open/edit/undo/reopen/export, CLI usage, updates/uninstall retaining user data and originals, on a separate supported Mac/clean account. Record actual OS/GPU; minimum-OS support remains open until tested.",
+        "Prepare the final macOS ZIP and its signing/install/native evidence, retaining the common source/policy identity. TASK-012 combines it with the independently qualified Linux payload; this macOS result alone is not a release-ready packet. Creating/pushing a tag stays outside this plan; the separate tag workflow automatically publishes pre-releases on owner-pushed tags.",
+        "No instruction to obtain approval is inserted. Missing inputs leave final readiness pending with named unrun checks; already completed independent tooling/docs remain deliverable."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "v0.1 distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Scope, deliverables, release boundaries and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Final candidate boundary",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Signing order, actual distributed bundle, clean install and publication rules",
+          "locator": "Qualification and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Release notes fields",
+          "target": "docs/releases/v0.1.md",
+          "relevance": "Replace candidate fields with verified facts and links"
+        },
+        {
+          "kind": "file",
+          "label": "Advertised floor and native scope",
+          "target": "docs/engineering/platforms.md",
+          "relevance": "Unverified macOS floor cannot become a support claim"
+        },
+        {
+          "kind": "url",
+          "label": "Apple distributed-product testing",
+          "target": "https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution",
+          "relevance": "Test the actual final archive and app, including separate-machine installation"
+        }
+      ],
+      "acceptance_criteria": [
+        "Extracted final ZIP has valid expected Developer ID signatures, hardened runtime, timestamp, accepted notarization and a validated app ticket; all final hashes match the packet.",
+        "Actual quarantined clean installation and oldest advertised OS are tested with named hardware/backend/build; editor/resources/CLIs work without the checkout and original/catalog preservation is recorded.",
+        "The macOS payload has matching complete source/distribution review and native/corpus/install evidence bound to the candidate. Missing Linux qualification is not represented as passed or joint-ready.",
+        "A complete reviewable macOS payload and evidence exist for final joint assembly; no public tag or release has been created or published."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run real signing/notary tooling with operator-provided credentials; inspect signature/ticket/final archive and correlate candidate/executable hashes.",
+          "Perform operator-authorized clean-install/floor checks and record state/logs/captures and original hashes. Rerun affected native checks if payload changes.",
+          "Verify final macOS artifact and metadata, sanitize its public evidence, and deliver it for joint assembly without publishing."
+        ],
+        "commands": [],
+        "expected_results": [
+          "A complete reviewable macOS payload and evidence exist for final joint assembly; no public tag or release has been created or published."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Build the relocatable Linux x86-64 release tarball with CLI helpers and user-level desktop integration.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Build x86_64-unknown-linux-gnu on Ubuntu 24.04/glibc 2.39; inspect actual ELF imports/symbol versions. Do not cross-build on a newer host and assume baseline compatibility. A container/hosted build is adequate for packaging preparation, not native GPU acceptance.",
+        "Package Luxforge/luxforge, luxforge-json, luxforge-ctl, adjacent runtime resources, icon/desktop-entry template, notices/licence/help and build identity in luxforge-0.1.0-linux-x86_64.tar.gz. Reuse existing collectors and resource lookup; source/distribution review is a final gate, not a packaging prerequisite.",
+        "Extraction/direct launch works without the checkout or source build tools. Provide explicit user-level desktop-entry/icon install/removal with paths quoted safely, including spaces/non-ASCII; no root, automatic PATH edit or vendor graphics driver bundling.",
+        "Document needed shared libraries, Vulkan driver and XDG portal/file-chooser backend. Unsupported secrets remain not-ready rather than plaintext. AppImage/Flatpak/Snap/package repositories, Linux ARM64 and Windows are outside initial scope.",
+        "Use ordinary correctness/resource-preservation checks during implementation; native Wayland/X11 hardware qualification follows in TASK-011. Keep existing development tarballs labelled development."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Joint release contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Settled platforms, payloads, external inputs and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Existing Linux package",
+          "target": "xtask/src/package.rs",
+          "relevance": "Extend editor-only tarball while preserving development behavior"
+        },
+        {
+          "kind": "file",
+          "label": "Resource lookup",
+          "target": "crates/luxforge-core/src/modules/lens/index.rs",
+          "relevance": "Payload must preserve installed lens resource discovery"
+        },
+        {
+          "kind": "file",
+          "label": "Linux baseline and runtime prerequisites",
+          "target": "docs/engineering/platforms.md",
+          "relevance": "Ubuntu 24.04, Vulkan, portal and native-evidence limits"
+        },
+        {
+          "kind": "file",
+          "label": "External user data",
+          "target": "crates/luxforge-cli/src/paths.rs",
+          "relevance": "Desktop integration/uninstall must preserve catalogs and originals"
+        }
+      ],
+      "acceptance_criteria": [
+        "A clean target build produces the versioned tarball with all three executables, required resources/notices/help and explicit user-level desktop integration.",
+        "Archive extraction preserves permissions and relocatable resource paths; tests cover missing payload, existing output, paths containing spaces/non-ASCII and no checkout-relative lookup.",
+        "ELF imports/glibc baseline and runtime requirements are recorded; direct/desktop launch and uninstall never require root or delete catalogs/originals.",
+        "Functional container/hosted packaging checks are labelled accurately, with no native Linux GPU/support claim until TASK-011 passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add focused package/resource/desktop integration tests and inspect extracted payload, permissions, desktop entry and ELF imports.",
+          "Build and run narrow functional smoke/CLI checks on baseline Linux; document actual prerequisites and retain original/data hashes."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask package::tests"
+        ],
+        "expected_results": [
+          "Functional container/hosted packaging checks are labelled accurately, with no native Linux GPU/support claim until TASK-011 passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Qualify the Linux candidate natively on x86-64 Ubuntu with hardware Vulkan, Wayland/X11 and clean installation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-007",
+        "TASK-010"
+      ],
+      "extra_context": [
+        "Late external inputs are native x86-64 Linux GPU hardware on the Ubuntu 24.04 baseline, Wayland/X11 sessions, complete RAW manifest and an authorized foreground install session. The owner ARM64 Omarchy VM and hosted lavapipe cannot substitute for this evidence.",
+        "Run the platform-appropriate rendered tier with --binary and complete --manifest, including the required GPU gate on hardware Vulkan. Reuse current no-adapter/lavapipe CI as functional evidence, resolve candidate failures and never describe the pending hosted software lane as passed.",
+        "Inspect state/logs/captures for current editor and library paths; verify native file chooser/XDG portal, index watching, Locate, RAW edits, mask/history/export, both CLIs and reference fallback. Test Wayland and X11, cold launch, desktop entry/icon and direct archive launch without checkout.",
+        "Test user-level install/update/uninstall on a clean account with preserved catalogs/settings/artifacts/original hashes and actual runtime prerequisites. Record adapter/driver/OS/target/build identity and advertised baseline execution. No universal distro/driver/performance claim.",
+        "Reconcile packaged Linux help and shared release notes with actual results. Keep private corpus/evidence separate from sanitized public summaries; any rebuild invalidates affected evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Joint release contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Settled platforms, payloads, external inputs and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Rendered and corpus verification",
+          "target": "docs/engineering/development.md",
+          "relevance": "Existing candidate binary/manifest forwarding and native scope"
+        },
+        {
+          "kind": "file",
+          "label": "Native GPU gate",
+          "target": "xtask/src/gpu_qualification.rs",
+          "relevance": "Complete required corpus/output checks and incomplete status"
+        },
+        {
+          "kind": "file",
+          "label": "Linux functional lanes",
+          "target": ".github/workflows/check.yml",
+          "relevance": "No-adapter/lavapipe are supplementary, not hardware GPU acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Shared notes and Linux instructions",
+          "target": "docs/releases/v0.1.md",
+          "relevance": "Reconcile final Linux installed behavior and limits"
+        }
+      ],
+      "acceptance_criteria": [
+        "The native Linux rendered tier and complete required GPU corpus pass against the frozen candidate on hardware Vulkan, with no incomplete required component.",
+        "Native Wayland/X11 file chooser, library/index, edit/reopen/export, resource/CLI and reference-fallback journeys have correlated evidence and unchanged original hashes.",
+        "Extracted tarball/desktop integration and clean install/update/uninstall pass on the advertised baseline; logs name actual OS/GPU/driver and preserve all user data.",
+        "A Linux platform payload/evidence summary exists for joint assembly; VM/software-adapter checks and missing native evidence are never labelled a pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Verify real target hardware, complete manifest and supported baseline; run rendered once against the packaged Linux candidate and inspect captures/state/logs.",
+          "Run targeted Wayland/X11 and clean-install journeys, resolve relevant failures, reconcile docs and record exact commands/artifact identities."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier rendered --binary artifacts/v01-linux-candidate/Luxforge/luxforge --manifest \"${LUXFORGE_RELEASE_RAW_MANIFEST:?set the complete owner RAW manifest path}\" --output artifacts/v01-linux-rendered"
+        ],
+        "expected_results": [
+          "A Linux platform payload/evidence summary exists for joint assembly; VM/software-adapter checks and missing native evidence are never labelled a pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Assemble and validate the complete two-platform release packet for review.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009",
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Consume final macOS and Linux payloads and evidence, complete matching source and finished distribution policy. Require a single commit/version/lock identity while retaining each target environment and executable hashes.",
+        "Produce both download files, matching source, release.json, final SHA256SUMS and completed release notes with both platforms requirements and evidence. No archive/bundle self-hashes; finalize metadata before checksums.",
+        "Use the readiness verifier: any missing platform, native/required corpus/install gate, source/policy disposition or macOS signature/ticket leaves the joint packet non-ready. Linux notarization is not applicable.",
+        "Deliver a reviewable local packet. The separate tag workflow publishes pre-release builds on owner-pushed tags; creating/pushing a tag or uploading this local qualification packet is outside this task. Do not replace either download after publication under the same version."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Joint release contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Settled platforms, payloads, external inputs and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Joint acceptance and publication boundary",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Both downloads must qualify before joint readiness"
+        },
+        {
+          "kind": "file",
+          "label": "Release fields",
+          "target": "docs/releases/v0.1.md",
+          "relevance": "Real download/source/checksum/evidence fields for both platforms"
+        }
+      ],
+      "acceptance_criteria": [
+        "Both platform downloads, complete corresponding source, final hashes/metadata and release notes agree on the frozen candidate and actual supported baselines.",
+        "Readiness validation passes only with complete macOS and Linux native/corpus/install evidence, source/policy dispositions and valid macOS signing/notarization; privacy inspection finds no private source data or credentials.",
+        "The complete local packet is reviewable and this preparation task has not created/pushed a tag or published its local packet."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Verify each final artifact, candidate identities, source/policy and per-platform evidence; test partial-platform rejection and final checksum consistency.",
+          "Inspect sanitized notes/metadata, retain private reports separately and deliver the local packet without publishing."
+        ],
+        "commands": [],
+        "expected_results": [
+          "The complete local packet is reviewable and this preparation task has not created/pushed a tag or published its local packet."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004",
+        "TASK-006",
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-008",
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-012"
+      ]
+    }
+  ]
+}

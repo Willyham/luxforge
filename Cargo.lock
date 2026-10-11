@@ -2100,6 +2100,7 @@ dependencies = [
 name = "luxforge-core"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.4.3",
  "half",
  "idna_adapter",
  "image",
@@ -2179,10 +2180,12 @@ name = "luxforge-net"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-process",
  "luxforge-testbase",
  "rustls",
  "rustls-platform-verifier",
  "security-framework",
+ "serde_json",
  "ureq",
  "ureq-proto",
  "url",
@@ -5143,7 +5146,9 @@ version = "0.0.0"
 dependencies = [
  "percent-encoding",
  "regex",
+ "semver",
  "serde_json",
+ "sha2",
  "tempfile",
  "time",
 ]

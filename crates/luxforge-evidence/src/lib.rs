@@ -59,7 +59,7 @@ pub const NAMED_KEYS: [&str; 11] = [
 
 /// The Settings sheet's tabs, as a `settings` step and a frame's state name them, in the rail's
 /// order.
-pub const SETTINGS_TABS: [&str; 3] = ["general", "appearance", "experiments"];
+pub const SETTINGS_TABS: [&str; 4] = ["general", "appearance", "experiments", "privacy"];
 
 /// The longest gap a scripted double-click may leave between its release and its second press.
 /// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
@@ -185,6 +185,13 @@ pub enum Step {
     },
     /// Click one library preset's row.
     Preset(PresetPick),
+    /// Hover a row, or leave the current hover with null; uses the actual row handlers.
+    PresetHover(Option<PresetPick>),
+    /// Move the Amount rail, optionally releasing to commit the drafted preset.
+    PresetAmount {
+        value: f64,
+        release: bool,
+    },
     /// Settings clipboard gestures through the desktop command paths.
     CopySettings(CopySettingsStep),
     /// Open the create form, type its name and group, set every checkbox and press Create.
@@ -194,6 +201,12 @@ pub enum Step {
     /// Import one file through the section's own import task, bypassing only the native dialog.
     /// The path is as the script wrote it, relative to the editor's working directory.
     PresetImport {
+        path: String,
+    },
+    /// Open one file as Open… does, bypassing only the native dialog, and capture once its
+    /// picture is on screen, as each `--open` is. The path is as the script wrote it, relative to
+    /// the editor's working directory.
+    Open {
         path: String,
     },
     /// Open or close the state panel's Performance section, as its heading does.
@@ -241,6 +254,9 @@ pub enum Step {
         #[serde(deserialize_with = "Option::deserialize")]
         value: Option<Value>,
     },
+    /// Usage statistics: the startup notice and the Settings sheet's Privacy tab. See
+    /// [`UsageStep`].
+    Usage(UsageStep),
     /// Change General rows of the Settings sheet as their own controls do, and wait for the
     /// desktop's preference writer to answer: each field a row shows, with a value its control
     /// offers — a boolean for a switch, an option's value for a choice. `{"preference":
@@ -435,6 +451,7 @@ impl Step {
             Self::ThemeImport { path } => text(path, "theme_import path"),
             Self::ThemeImportOmarchy { path } => text(path, "theme_import_omarchy path"),
             Self::Flag { id, .. } => text(id, "flag id"),
+            Self::Usage(step) => step.validate(),
             Self::Preference(fields) => {
                 if fields.is_empty() {
                     return Err("preference needs at least one field".into());
@@ -457,9 +474,19 @@ impl Step {
                 Ok(())
             }
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
+            Self::PresetHover(Some(pick)) => pick.validate(),
+            Self::PresetHover(None) => Ok(()),
+            Self::PresetAmount { value, .. } => {
+                if value.is_finite() && (0.0..=200.0).contains(value) {
+                    Ok(())
+                } else {
+                    Err("preset Amount must be finite and within 0..=200".into())
+                }
+            }
             Self::PresetCreate(step) => step.validate(),
             Self::CopySettings(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
+            Self::Open { path } => text(path, "open path"),
             Self::GpuWarmed { quiet_ms, ms } => {
                 if *quiet_ms <= MAX_WAIT_MS && (1..=MAX_WARM_MS).contains(ms) && quiet_ms <= ms {
                     Ok(())
@@ -1521,6 +1548,94 @@ pub enum CompareStep {
     Position(f32),
     Release,
     FocusLoss,
+}
+
+/// One usage statistics gesture, through the messages the notice and the Privacy tab send. Only a
+/// launch with explicit usage statistics test eligibility shows either.
+///
+/// - `"notice"` waits for the startup claim to settle — its notice on screen, or the claim's answer
+///   not to show it — and captures.
+/// - `{"answer": "share"}` or `{"answer": "decline"}` presses one of the notice's buttons; Share
+///   waits for `usage.set` to answer. The notice must be on screen.
+/// - `{"share": true}` turns the Privacy tab's switch on or off and waits for `usage.set`. The
+///   sheet must be open at Privacy.
+/// - `{"details": true}` opens or closes the Privacy tab's What is sent section.
+///
+/// Two more exist for a launch's statistics delivery, and only with a test receiver:
+///
+/// - `{"advance": 660}` moves the statistics worker's clock forward by that many seconds (at most
+///   [`MAX_USAGE_ADVANCE_S`]) and wakes it, so a window falls due without real waiting; event times
+///   stay real. It captures at once.
+/// - `{"await": {"accepted": 1}}` reads `usage.read` again every evidence tick until each condition
+///   it names holds, then captures: at least `attempts` batches handed to the transport, at least
+///   `accepted` accepted, collection `effective` or not, or, with `edited`, the open photograph at
+///   a newer revision than when the step began, which another client's edit brings through the
+///   event sync. It fails after `timeout_ms` (default and most [`MAX_USAGE_AWAIT_MS`]). This is
+///   how a script waits for what an outside client or the receiver does meanwhile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum UsageStep {
+    Notice,
+    Answer(NoticeAnswer),
+    Share(bool),
+    Details(bool),
+    Advance(u64),
+    Await(UsageAwait),
+}
+
+/// The longest one usage `advance` step may move the statistics clock: an hour.
+pub const MAX_USAGE_ADVANCE_S: u64 = 3_600;
+/// The longest one usage `await` step may wait.
+pub const MAX_USAGE_AWAIT_MS: u64 = 30_000;
+
+/// What a usage `await` step waits for; every condition it names must hold.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageAwait {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective: Option<bool>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub edited: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+impl UsageStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Advance(seconds) if !(1..=MAX_USAGE_ADVANCE_S).contains(seconds) => Err(format!(
+                "usage advance takes whole seconds from 1 to {MAX_USAGE_ADVANCE_S}"
+            )),
+            Self::Await(wait) => {
+                if wait.attempts.is_none()
+                    && wait.accepted.is_none()
+                    && wait.effective.is_none()
+                    && !wait.edited
+                {
+                    return Err("usage await needs at least one condition".into());
+                }
+                match wait.timeout_ms {
+                    Some(ms) if !(1..=MAX_USAGE_AWAIT_MS).contains(&ms) => Err(format!(
+                        "usage await timeout_ms takes an integer from 1 to {MAX_USAGE_AWAIT_MS}"
+                    )),
+                    _ => Ok(()),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// One of the usage statistics notice's two buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeAnswer {
+    Share,
+    Decline,
 }
 
 /// Open the command palette with this query, or open it, run the query and run its first match.

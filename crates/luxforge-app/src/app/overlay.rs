@@ -200,6 +200,7 @@ impl Editor {
     pub(super) fn overlay_update(&mut self, message: OverlayMessage) -> Task<Message> {
         match message {
             OverlayMessage::ToggleClipping(endpoint) => {
+                self.usage_interaction(luxforge_core::usage::Feature::ClippingOverlay, false);
                 // Per-client view state through the same `workspace.set` an API client calls. It
                 // is not an edit: no mutation envelope, no expected revision, no history entry, and
                 // the catalog is untouched.

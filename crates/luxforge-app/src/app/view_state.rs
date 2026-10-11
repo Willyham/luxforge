@@ -109,6 +109,7 @@ impl Editor {
             ViewMessage::Placed { report, on_main } => return self.window_placed(report, on_main),
             ViewMessage::ClosingFrame(report) => return self.closing_frame(report),
             ViewMessage::TogglePanel(panel) => {
+                self.usage_interaction(luxforge_core::usage::Feature::PanelToggle, false);
                 let open = match panel {
                     Panel::State => self.session.workspace.state_panel,
                     Panel::Tools => self.session.workspace.tools_panel,
@@ -125,6 +126,7 @@ impl Editor {
                 );
             }
             ViewMessage::ToggleInformation => {
+                self.usage_interaction(luxforge_core::usage::Feature::InformationPanel, false);
                 return workspace_task(
                     self.owner.clone(),
                     self.client,
@@ -160,6 +162,8 @@ impl Editor {
             // AppKit reports the pointer in the system's points; the layout is in logical pixels,
             // which are the interface size's multiple of them.
             ViewMessage::Pinch(input) => {
+                // A trackpad pinch reaches no raw event filter: it is a deliberate interaction.
+                super::usage_supervisor::interacted();
                 let scale = f64::from(self.view_state.interface_scale());
                 return self.pinch(luxforge_input::Pinch {
                     x: input.x / scale,
@@ -183,6 +187,7 @@ impl Editor {
             },
             ViewMessage::Panned(x, y) => return self.pan(x, y),
             ViewMessage::Fit => {
+                self.usage_interaction(luxforge_core::usage::Feature::Zoom, true);
                 self.view_state.zoom = "Fit".into();
                 self.view_state.zoom_editing = false;
                 return self.session_command("view.set", json!({"zoom":{"mode":"fit"}}));
@@ -210,6 +215,7 @@ impl Editor {
                     return Task::none();
                 };
                 self.view_state.zoom_editing = false;
+                self.usage_interaction(luxforge_core::usage::Feature::Zoom, true);
                 return self
                     .session_command("view.set", json!({"zoom":{"mode":"percent","value":value}}));
             }
@@ -270,6 +276,7 @@ impl Editor {
 
     /// Ask the session for a percentage zoom, as the 100% segment and a zoom stop do.
     fn zoom_to(&mut self, value: f32) -> Task<Message> {
+        self.usage_interaction(luxforge_core::usage::Feature::Zoom, true);
         self.view_state.zoom = title::percent_text(value).trim_end_matches('%').to_owned();
         self.view_state.zoom_editing = false;
         self.session_command("view.set", json!({"zoom":{"mode":"percent","value":value}}))

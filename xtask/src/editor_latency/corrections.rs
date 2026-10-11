@@ -628,6 +628,7 @@ mod tests {
             no_gpu_render: false,
             masks: 1,
             mask_presence: false,
+            usage: None,
             window: None,
         }
     }

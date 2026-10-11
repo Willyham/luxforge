@@ -286,13 +286,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preferences.read",
         NoParams,
         |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
-        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), raw_look (standard or neutral, default standard), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_folder (the absolute path of the folder export.plan suggests while it exists, or null for the original's folder), theme (the active theme's id, default luxforge.dark, which theme.list answers as active)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), raw_look (standard or neutral, default standard), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_folder (the absolute path of the folder export.plan suggests while it exists, or null for the original's folder), theme (the active theme's id, default luxforge.dark, which theme.list answers as active), usage_statistics (the protected usage statistics consent record, {prompt_shown, enabled, disclosure_version?, installation_id?}, {prompt_shown: false, enabled: false} when absent; never its image key; preferences.set cannot change or reset it, only usage.set and usage.prompt.claim write it)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     ),
     owner!(
         "preferences.set",
         owner::PreferencesSet,
         owner::preferences_set,
-        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether a photograph's first preparation commits a new RAW photo's detected lens profile as its first-open entry, applying to first preparations from now on and never changing a photograph whose head has moved; raw_look, standard or neutral, the look a new RAW photograph's Original starts from, applying to photographs created from now on and changing no saved recipe; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_folder, the absolute path of the folder export.plan suggests while it exists; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, raw_look, mask_overlay_colour, canvas_background, interface_size, catalog or theme is announced; no preference changes a rendered or exported byte; returns every preference as preferences.read does; needs a configured application preference directory"
+        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether a photograph's first preparation commits a new RAW photo's detected lens profile as its first-open entry, applying to first preparations from now on and never changing a photograph whose head has moved; raw_look, standard or neutral, the look a new RAW photograph's Original starts from, applying to photographs created from now on and changing no saved recipe; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_folder, the absolute path of the folder export.plan suggests while it exists; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, raw_look, mask_overlay_colour, canvas_background, interface_size, catalog or theme is announced; no preference changes a rendered or exported byte; the protected usage_statistics record is not a parameter: no value, null or reset here changes it, and only usage.set and usage.prompt.claim write it; returns every preference as preferences.read does; needs a configured application preference directory"
     ),
     owner!(
         "flags.list",
@@ -305,6 +305,29 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::FlagsSet,
         owner::flags_set,
         "store one feature flag's value outside the catalog, checked against its kind, or remove the stored value for a null or absent value so the flag follows its default; answers as flags.list does; a changed value is announced in the event log; leaves every other stored value, recognized or not, untouched; a launch flag takes effect at the next desktop launch; changes no recipe, history or render; needs a configured application preference directory"
+    ),
+    // Optional usage statistics consent: the protected `usage_statistics` record in
+    // `preferences.json` and the process-wide runtime ([`crate::usage::consent`]). None of these
+    // reads a catalog or a photograph or makes a network request.
+    owner!(
+        "usage.read",
+        NoParams,
+        owner::usage::read,
+        "{prompt_shown, enabled, effective, disclosure_version, destination, release, installation_id, session_id, reason, limits, diagnostics}: prompt_shown and enabled are the stored record (absent reads as false and false; null when the preferences cannot be read); effective says whether this process is collecting now; disclosure_version is the disclosure this build describes, which an enable must name; destination is where an eligible launch sends (the production endpoint, or a test host's loopback receiver); release is <version>+<first 12 hex characters of the embedded clean source revision>, or null for a build without one; installation_id is the stored random UUIDv4 while the stored choice is on, else null; session_id is null until the statistics worker starts a session; reason is null while effective, else one of choice (not opted in, opted out, or stopped in this process), launch-mode (a debug/developer, hidden, background, evidence, test or headless launch), build (no embedded clean source revision), inactive-destination (production reporting is switched off), unreadable-configuration (the preferences cannot be read or hold a record this build cannot use) or changed-disclosure (consent was given to another disclosure); limits is the delivery contract {window_events, batch_bytes, attempt_interval_s, flush_after_s, window_age_s}; diagnostics is the statistics worker's bounded local state {recorded, dropped (by producers, by the body limit or in windows discarded unsent), sent, attempts, accepted, delivery: {state: ready, cooldown or suspended, reason: null, failure or rate-limited for a cooldown, redirect, rejected, refused, unavailable, build or device for a suspension}}, all zero and ready until a worker reports; never the image key, buffered events, file contents or network error text; reads one small file, writes nothing, makes no network request and is not itself counted as usage"
+    ),
+    owner!(
+        "usage.prompt.claim",
+        owner::usage::UsageClaim,
+        owner::usage::claim,
+        "{show_prompt, state, deduplicated}: only a client with permission authority may, otherwise forbidden; in an eligible launch, atomically records prompt_shown: true with sharing off in preferences.json under the preferences lock before answering show_prompt: true to exactly one claimant, across processes sharing the configuration; a record already claimed, answered or enabled, an ineligible launch (which writes nothing) and a retried request answer show_prompt: false; state is usage.read's answer as it is now; a preferences file that cannot be read or written is an error and is kept unchanged; a claim that wrote is announced",
+        retries: Owner,
+    ),
+    owner!(
+        "usage.set",
+        owner::usage::UsageSet,
+        owner::usage::set,
+        "{outcome, state, deduplicated}: enabled true opts in, which needs permission authority (otherwise forbidden), disclosure_version equal to the current one usage.read answers, and an eligible launch (otherwise not-ready naming the reason); it is saved first and takes effect only once saved, creating a fresh random installation ID and image key unless the record already is consent to this disclosure (then a no-op that keeps them); enabled false opts out and any client may: collection in this process stops before the write is attempted, a saved opt-out removes the installation ID and image key, and a failed write leaves this process off and is an error whose data.state reports the stored record as it really is; disclosure_version is refused with false; either saved choice also records prompt_shown: true, so no automatic notice follows; outcome is applied or no-op; state is usage.read's answer as it is now, also for a retried request, which never applies again, so an enable a later opt-out revoked stays revoked; the actor or same-user socket access never grants consent; a change is announced",
+        retries: Owner,
     ),
     // The theme library, outside every catalog: `themes.json` beside the preferences. No theme
     // method reads or writes a catalog or changes a photograph.
@@ -1948,6 +1971,7 @@ pub(super) fn preference_values(preferences: &crate::preferences::Preferences) -
         "window": preferences.window,
         "export_folder": preferences.export_folder,
         "theme": preferences.theme(),
+        "usage_statistics": crate::usage::consent::public_record(preferences.usage_statistics.as_ref()),
     })
 }
 
@@ -5328,7 +5352,7 @@ mod tests {
         assert_eq!(entry["label"], json!("Preset: Warm"));
         assert_eq!(
             entry["parameters"],
-            json!({"settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
+            json!({"amount":100.0, "settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
         );
         let rows = described(&mut service, &mut session, &asset);
         assert_eq!(
@@ -6283,3 +6307,6 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 }
+#[cfg(test)]
+#[path = "usage_coverage_tests.rs"]
+mod usage_coverage_tests;

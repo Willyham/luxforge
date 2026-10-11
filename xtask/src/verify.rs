@@ -1449,6 +1449,9 @@ pub fn run(
                     "--locked",
                     "--package",
                     "luxforge-app",
+                    // `luxforge-ctl`, which the usage scenario runs against a live session.
+                    "--package",
+                    "luxforge-cli",
                     "--package",
                     "xtask",
                 ])

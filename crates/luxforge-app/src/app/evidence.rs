@@ -11,6 +11,7 @@ mod loupe;
 mod select;
 mod select_catalog;
 mod select_missing;
+mod usage;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -126,6 +127,8 @@ pub(crate) struct Evidence {
     /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
+    /// A running usage `await` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) usage_await: Option<usage::UsageAwaiting>,
     /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) warm_wait: Option<WarmWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
@@ -230,6 +233,7 @@ impl Evidence {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            usage_await: None,
             warm_wait: None,
             agent: None,
             agent_wait: None,
@@ -552,6 +556,11 @@ pub(crate) enum Settle {
     Develop,
     /// The large previews Develop decodes ahead of a move are decoded.
     DevelopAhead,
+    /// The usage statistics startup claim has settled: its notice is on screen, or the claim
+    /// answered not to show it.
+    UsageNotice,
+    /// The usage statistics consent's read, or its last outstanding write, answered.
+    Usage,
     /// The Corrections workspace has finished what a step started: its draft ended or was refused,
     /// its request answered, and its list and pins describe the entry on screen.
     Corrections,
@@ -592,6 +601,8 @@ impl Settle {
             Self::LongWork => "long_work",
             Self::Develop => "develop",
             Self::DevelopAhead => "develop_ahead",
+            Self::UsageNotice => "usage_notice",
+            Self::Usage => "usage",
             Self::Corrections => "corrections",
         }
     }
@@ -954,6 +965,7 @@ impl Editor {
                     std::process::exit(3);
                 }
                 self.wait_elapsed();
+                return self.usage_await_tick();
             }
             EvidenceMessage::ViewIdleDeadline => return self.view_idle_deadline(),
             EvidenceMessage::IdleDeadline => return self.idle_deadline(),
@@ -1216,6 +1228,8 @@ impl Editor {
             record
         };
         self.event("script_step", || record);
+        // A script step stands in for a person's deliberate operation.
+        super::usage_supervisor::interacted();
         match step {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Agent { method, params } => self.agent_step(method, params),
@@ -1314,6 +1328,64 @@ impl Editor {
                 interval_ms,
             } => self.canvas_hover_sweep_step(points, interval_ms),
             Step::Preset(pick) => self.preset_step(pick),
+            Step::PresetHover(pick) => {
+                let message = match pick {
+                    Some(pick) => {
+                        let row = match self.preset_row(&pick) {
+                            Ok(row) => row,
+                            Err(error) => return self.fail_step(error),
+                        };
+                        if !row.enabled || row.preview_unavailable.is_some() {
+                            return self.fail_step("the row cannot preview");
+                        }
+                        self.await_step(Settle::SliderDraft);
+                        PresetMessage::Hover(row.id)
+                    }
+                    None => {
+                        let Some(id) = self.presets.library.interaction.hovered.clone() else {
+                            return self.fail_step("no preset hover is open");
+                        };
+                        self.await_step(Settle::Preview);
+                        PresetMessage::Leave(id)
+                    }
+                };
+                let task = self.update(Message::Preset(message));
+                if self.core_gesture().is_some_and(|g| g.draft.drained())
+                    && self.gpu_draws_newest_tick()
+                    && !self.drag_frame_waiting()
+                {
+                    self.settle_step(Settle::SliderDraft, "gpu_tick");
+                }
+                task
+            }
+            Step::PresetAmount { value, release } => {
+                let Some(model) = self.presets_model_now() else {
+                    return self.fail_step("no presets section");
+                };
+                if !model.amount_enabled {
+                    return self.fail_step("the Amount slider is disabled");
+                }
+                self.await_step(if release {
+                    Settle::Preview
+                } else {
+                    Settle::SliderDraft
+                });
+                let moved = self.update(Message::Preset(PresetMessage::Amount(value)));
+                if release {
+                    let released = self.update(Message::Preset(PresetMessage::AmountReleased));
+                    Task::batch([moved, released])
+                } else {
+                    if self.core_gesture().is_some_and(|g| g.draft.drained())
+                        && self.gpu_draws_newest_tick()
+                        && !self.drag_frame_waiting()
+                    {
+                        self.settle_step(Settle::SliderDraft, "gpu_tick");
+                    } else if self.core_gesture().is_none() {
+                        self.capture_next_frame();
+                    }
+                    moved
+                }
+            }
             Step::CopySettings(step) => self.copy_settings_step(step),
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
@@ -1341,7 +1413,9 @@ impl Editor {
             Step::ThemeImportOmarchy { path } => self.theme_import_omarchy_step(path),
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
+            Step::Usage(step) => self.usage_step(step),
             Step::Wait { ms } => self.wait_step(ms),
+            Step::Open { path } => self.open_step(path),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
@@ -3509,6 +3583,18 @@ impl Editor {
         Task::none()
     }
 
+    /// Open a file as Open… does, with the script's path in place of the dialog's answer. The
+    /// request's end arms the capture, as each `--open`'s does.
+    fn open_step(&mut self, path: String) -> Task<Message> {
+        let Ok(path) = std::path::absolute(&path) else {
+            return self.fail_step(format!("{path} cannot be made absolute"));
+        };
+        if !path.is_file() {
+            return self.fail_step(format!("{} is not a file", path.display()));
+        }
+        self.open(path)
+    }
+
     fn warm_wait_step(&mut self, quiet_ms: u64, ms: u64) -> Task<Message> {
         if let Some(evidence) = &mut self.evidence {
             let started = Instant::now();
@@ -4572,6 +4658,17 @@ impl Editor {
             self.capture_next_frame();
             return Task::none();
         }
+        if tab == SettingsTab::Privacy {
+            if !self.usage.eligible {
+                return self.fail_step(
+                    "this launch has no Privacy tab: it was started without usage statistics \
+                     test eligibility",
+                );
+            }
+            // The tab shows the consent, which opening it reads again.
+            self.await_step(Settle::Usage);
+            return self.update(Message::Settings(SettingsMessage::Open(tab)));
+        }
         self.arm_settings_settle();
         self.update(Message::Settings(SettingsMessage::Open(tab)))
     }
@@ -4762,7 +4859,11 @@ impl Editor {
             action: presets.action,
             preset,
         }));
-        if !self.busy {
+        if !self.busy
+            && !self
+                .core_gesture()
+                .is_some_and(|gesture| gesture.draft.released())
+        {
             return self.fail_step(format!("the preset was not applied: {}", self.status.text));
         }
         task
@@ -5204,6 +5305,8 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
+            Outcome::UsageNotice => self.settle_step(Settle::UsageNotice, by),
+            Outcome::UsageAnswered => self.settle_step(Settle::Usage, by),
             // A theme chosen is drawn by a read and stored by a write, which answer in either
             // order: the step settles on whichever lands last.
             Outcome::PreferencesWritten | Outcome::ThemeDrawn => {
@@ -5339,6 +5442,9 @@ impl Editor {
         }
         let result = json!({"run_id":self.log.run_id,"status":"captured","had_input_errors":had_errors,"frames":frames,"script":script,"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"build_version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH});
         let state = self.snapshot();
+        // As an ordinary quit does, once the last state is read: statistics are cancelled and
+        // discarded, never sent on the way out or waited for.
+        super::usage_supervisor::shutdown();
         let log = self.log.diagnostics.take();
         self.live_server.take();
         self.owner.disconnect(self.client);
@@ -6277,6 +6383,7 @@ mod tests {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            usage_await: None,
             warm_wait: None,
             agent: None,
             agent_wait: None,
