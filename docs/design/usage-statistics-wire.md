@@ -4,7 +4,8 @@ The desktop encoder (`crates/luxforge-core/src/usage/`) and the standalone ingre
 (`services/usage-ingest/`) implement exactly this shape; both are implemented
 ([ingress README](../../services/usage-ingest/README.md)). The core also holds an independent strict
 decoder (`usage::decode_batch`) and synthetic valid and invalid batches in
-`crates/luxforge-core/tests/fixtures/usage/`, which both sides accept and refuse alike. The
+`crates/luxforge-core/tests/fixtures/usage/`, which both sides accept and refuse alike (the ingress's
+`tests/desktop.rs` reads them from the checkout). The
 [design](usage-statistics.md) is the behavioural contract; this file fixes the key names and ranges. Every object is closed: an unknown key rejects the whole batch.
 
 ## Envelope (all keys required unless marked optional)
@@ -63,7 +64,7 @@ fields its row allows (required unless marked optional).
 The `feature` and `tool` enums are the registry's, resolved against the shipped built-in modules
 and the design's interaction list and checked in as `crates/luxforge-core/src/usage/registry.json`
 (`{"tool": [...], "feature": [...]}`, kebab-case values, sorted). The ingress validates against its
-own copy, and the end-to-end check holds the two equal.
+own copy, which its `tests/desktop.rs` and the backend journey's check hold byte for byte equal to the desktop's.
 
 ## Responses
 

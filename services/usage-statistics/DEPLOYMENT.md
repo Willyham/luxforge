@@ -25,11 +25,17 @@ password, a client address or a real report in the repository, the record or a t
 ## 1. Fix what is being deployed
 
 - Deploy a commit whose `services/usage-statistics/test.sh` passed (the local stack test: configuration,
-  ingestion, queries, retention, pressure, authentication and privacy against real containers) and whose
-  `tools/cargo-cached test --manifest-path services/usage-ingest/Cargo.toml` passed. Note the commit.
-- The ingress and the desktop must agree on the event registry:
+  ingestion, queries, retention, pressure, authentication and privacy against real containers), whose
+  `services/usage-statistics/test.sh --client NEW_DIR` passed (the real desktop of that commit against
+  the same stack: what it sends is stored exactly, its negative fixtures are refused, its rows expire, and
+  no hop logs its identifiers or the machine's; see the [README](README.md#the-desktop-against-the-stack))
+  and whose `tools/cargo-cached test --manifest-path services/usage-ingest/Cargo.toml` passed. Note the
+  commit, and keep the client test's `client-test.json` with the record.
+- The ingress and the desktop must agree on the event registry and the wire format:
   `cmp services/usage-ingest/registry.json crates/luxforge-core/src/usage/registry.json` prints
-  nothing. The ingress validates against its own compiled-in copy.
+  nothing, and the ingress's `tests/desktop.rs` (part of its tests above) passes, which also runs every
+  synthetic batch the desktop's core accepts or refuses through the ingress. The ingress validates
+  against its own compiled-in copy.
 - Images are pinned by digest in `compose.yaml` and `grafana/Dockerfile`; deploy those pins. Raising one
   means rerunning `test.sh` first.
 - Create `.env` from `.env.example` on the host only, with a different strong random value for every
@@ -98,8 +104,13 @@ Whatever proxy or load balancer is used, it must:
   status. The only accepted request is `POST /v1/usage/batches` with `Content-Type: application/json`,
   a body of at most 65,536 bytes; the ingress refuses everything else, and the probe checks that it does;
 - not follow, issue or rewrite redirects for that route (the client treats any `3xx`, and any other `4xx`
-  such as a misrouted `404`, as a reason to stop sending until the next launch), not retry a failed `POST` upstream (batches are
-  sent once), not compress or cache, and not buffer a body to disk;
+  such as a misrouted `404`, as a reason to stop sending until the next launch; a `5xx` or `408` costs a
+  20-minute and growing cooldown), not retry a failed `POST` upstream (batches are sent once, and a batch
+  whose reply is lost is not sent again), not compress or cache, and not buffer a body to disk;
+- pass the desktop's request as it is: `Content-Length`, `Host`, `User-Agent: Luxforge/0.0.0`,
+  `Accept-Encoding: identity`, `Connection: close` and `Content-Type: application/json`, in that order, and
+  nothing else. Do not filter or challenge by User-Agent (no bot management); the probe sends one batch
+  exactly so;
 - apply a request-body limit no lower than 65,536 bytes plus headers and a timeout no shorter than the
   ingress's ([limits](#7-the-ingress-limits)), so the ingress's own limits are what a client sees;
 - write **no** access log, or one with no client address, header, path, user agent, body, request ID or
@@ -145,7 +156,7 @@ service refuses to start on a bad value and names the variable). Limits touch on
 | `LUXFORGE_INGEST_MAX_CONNECTIONS` | `128` | Connections in flight; more get a brief `429` or are closed |
 | `LUXFORGE_INGEST_REQUEST_TIMEOUT_SECS` | `10` | Longest a connection may live; the proxy's timeout must not be shorter |
 | `LUXFORGE_INGEST_GLOBAL_PER_SECOND`, `_GLOBAL_BURST` | `50`, `100` | Global admission for the route: one budget for **all** clients, since nothing is keyed by address. A flood can use it all and starve real clients; that is the accepted best-effort trade (and why the limit exists) |
-| `LUXFORGE_INGEST_ID_INTERVAL_SECS`, `_ID_BURST` | `20`, `5` | Per-installation limiter (one batch per interval, burst), in memory, keyed by the validated installation ID only. IDs can be forged, so it is not authentication. The desktop sends at most one batch a minute. `0` turns it off |
+| `LUXFORGE_INGEST_ID_INTERVAL_SECS`, `_ID_BURST` | `20`, `5` | Per-installation limiter (one batch per interval, burst), in memory, keyed by the validated installation ID only. IDs can be forged, so it is not authentication. The desktop sends at most one batch a minute, and raises any `Retry-After` to at least ten minutes, so a limited desktop loses that batch and sends nothing for ten minutes. `0` turns it off |
 | `LUXFORGE_INGEST_ID_TTL_SECS` | `900` | Limiter entry lifetime after the last request (capped at 900: 15 minutes) |
 | `LUXFORGE_INGEST_ID_MAX_ENTRIES` | `100000` | Limiter table size; full of live entries it stands aside rather than grow |
 | `LUXFORGE_INGEST_QUEUE_BATCHES`, `_QUEUE_BYTES` | `256`, `33554432` | Forwarding queue; full means `429`, never disk |
@@ -343,13 +354,16 @@ source, delete what it wrote, and redo this step from the top.
 installation and session IDs and release `0.0.0+000000000000`, which no real build carries. It reads no
 file and sends no real report. It never follows a redirect, reads at most 4 KiB of a reply and sends no
 header of its own beyond `Host`, `Content-Type`, `Content-Length` and `Accept-Encoding` (and
-`Transfer-Encoding` for the chunked test). It checks:
+`Transfer-Encoding` for the chunked test, and the desktop's `User-Agent` and `Connection` for its
+desktop-shaped batch). It checks:
 
 - over HTTPS: the certificate verifies for the host name against the default trust store and has at least
   14 days left; TLS 1.2 or later is negotiated; TLS 1.0 and 1.1 are refused (reported as skipped, not as a
   pass, when the probing Python cannot offer them);
-- a valid batch with every kind of event and a device profile, a minimal valid batch and one sent with
-  `charset=utf-8` are accepted (`202`, empty body);
+- a valid batch with every kind of event and a device profile, a minimal valid batch, one sent with
+  `charset=utf-8`, and one sent exactly as the desktop sends it (its six header fields in its order, with
+  `User-Agent: Luxforge/0.0.0`, a macOS profile with every optional Apple field and a Develop journey) are
+  accepted (`202`, empty body);
 - thirteen kinds of bad batch (empty, truncated, not JSON, an array, an unknown top-level or event key, a
   wrong schema number, an upper-case ID, a release without a revision, no events, events out of order, an
   unregistered feature, a free-form system string) are rejected with `400`;
@@ -416,9 +430,15 @@ exposure ([3](#3-network-layout)), terminator ([4](#4-tls-terminator)), DNS ([5]
 ([8](#8-private-services-and-authenticated-dashboards)), retention ([9](#9-check-90-day-retention-on-the-deployed-database)),
 the hop-by-hop scan ([10](#10-check-every-hop-for-addresses-and-request-data)), backups
 ([11](#11-backups)) and the strict probe against the real name ([12](#12-run-the-synthetic-live-probe)),
-with the probe's rows removed ([13](#13-remove-the-probes-rows)). Anything not done is listed as not done.
-Also required before an eligible build ships: the client-to-backend end-to-end check, which exercises a
-synthetic, isolated, opted-in desktop against this endpoint.
+with the probe's rows removed ([13](#13-remove-the-probes-rows)), and the client test of
+[step 1](#1-fix-what-is-being-deployed) passed at the deployed commit. Anything not done is listed as not
+done.
+
+A desktop cannot be pointed at this endpoint before activation: test eligibility accepts only a loopback
+receiver, and production delivery needs the switch below. So the desktop's own delivery is checked against
+the reference stack (`test.sh --client`), and against the real endpoint only by the probe's
+desktop-shaped batch. Delivery from a real desktop build to the real endpoint stays **unverified** until a
+build with the switch on has delivered ([after activation](#after-activation-live-delivery-is-still-unverified)).
 
 Any later change to the host, provider, proxy, DNS, compose file, an image pin or a limit sends you back
 to the steps it touches, and to steps 10 and 12 in every case.
@@ -445,3 +465,15 @@ route at the proxy; each batch is sent once, so refused or unreachable deliverie
 back off or stop for the launch), fix the
 cause, delete what was recorded wrongly, repeat the steps it touches, and release a build with the
 switch off if the fix will take long.
+
+### After activation, live delivery is still unverified
+
+The switch is this checklist's last step; nothing above shows a real desktop delivering to the real
+endpoint. Once a build with the switch on exists, and only with the owner's authorization, verify one live
+delivery from it: on a machine you administer, start that build with a new, empty configuration,
+choose **Share statistics**, open and edit a photograph, and leave it presented for more than ten minutes. On the host,
+the new installation's session must appear in `luxforge.events` with the events performed, and its
+`usage.read` diagnostics (through `luxforge-ctl call usage.read`) must show an accepted batch. Then delete
+that installation's rows with the statements of [step 13](#13-remove-the-probes-rows) and turn sharing off.
+Until this is done, record live delivery as unverified; a desktop that cannot reach the endpoint is not a
+client failure.
