@@ -202,6 +202,43 @@ pub enum Refusal {
         spread_ev: f64,
         residual_ev: f64,
     },
+    /// Too few samples usable in both this input and the reference connect them for alignment:
+    /// the frames barely overlap, or their exposures share too little usable range.
+    AlignmentSupport {
+        input: usize,
+        samples: u64,
+    },
+    /// The scene has too little texture to fix this input's position in some direction.
+    LowTexture {
+        input: usize,
+    },
+    /// No consistent alignment: the best match correlates by only `correlation`, another
+    /// distinct match correlates nearly as well, or after the fit only `inlier_fraction` of the
+    /// shared samples agree with it.
+    AmbiguousAlignment {
+        input: usize,
+        correlation: f64,
+        inlier_fraction: Option<f64>,
+    },
+    /// The input moved further than handheld alignment corrects: `shift_px` full-resolution
+    /// pixels and `rotation_deg` degrees from the reference.
+    SevereMisalignment {
+        input: usize,
+        shift_px: f64,
+        rotation_deg: f64,
+    },
+    /// Alignment is off but the input is not framed as the reference: another orientation
+    /// (`shift_px` absent), or a visible displacement of `shift_px` full-resolution pixels.
+    FramingMismatch {
+        input: usize,
+        shift_px: Option<f64>,
+    },
+    /// The aligned inputs share only a `width × height` rectangle, under half the frame on a
+    /// side.
+    InsufficientCoverage {
+        width: u32,
+        height: u32,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -284,6 +321,61 @@ impl fmt::Display for Refusal {
                 "the measured exposure of input {} is ambiguous (spread {spread_ev:.3} EV, \
                  residual {residual_ev:.3} EV)",
                 n(input)
+            ),
+            Self::AlignmentSupport { input, samples } => write!(
+                f,
+                "input {} shares too few usable samples with the reference to align it \
+                 ({samples})",
+                n(input)
+            ),
+            Self::LowTexture { input } => write!(
+                f,
+                "input {} has too little detail to align with the reference",
+                n(input)
+            ),
+            Self::AmbiguousAlignment {
+                input,
+                correlation,
+                inlier_fraction,
+            } => match inlier_fraction {
+                Some(inliers) => write!(
+                    f,
+                    "input {} has no consistent alignment with the reference (only {:.0}% of \
+                     samples agree)",
+                    n(input),
+                    inliers * 100.0
+                ),
+                None => write!(
+                    f,
+                    "input {} has no consistent alignment with the reference (correlation \
+                     {correlation:.2})",
+                    n(input)
+                ),
+            },
+            Self::SevereMisalignment {
+                input,
+                shift_px,
+                rotation_deg,
+            } => write!(
+                f,
+                "input {} moved too far to align ({shift_px:.0} px, {rotation_deg:.1}°)",
+                n(input)
+            ),
+            Self::FramingMismatch { input, shift_px } => match shift_px {
+                Some(shift) => write!(
+                    f,
+                    "input {} is displaced by about {shift:.0} px; turn alignment on to merge it",
+                    n(input)
+                ),
+                None => write!(
+                    f,
+                    "input {} has a different orientation; turn alignment on to merge it",
+                    n(input)
+                ),
+            },
+            Self::InsufficientCoverage { width, height } => write!(
+                f,
+                "the aligned exposures share only a {width} × {height} area"
             ),
         }
     }
