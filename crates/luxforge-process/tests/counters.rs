@@ -157,6 +157,32 @@ fn gpu_allocations_are_unavailable_until_enabled() {
     assert_eq!(gpu.unified_memory, None);
 }
 
+/// A read that opens nothing reports allocations only once an ordinary read has opened the device,
+/// and reads them from it afterwards, as the statistics sampler relies on.
+#[test]
+fn a_read_that_opens_nothing_reads_allocations_only_from_an_opened_device() {
+    let mut sampler = Sampler::new();
+    sampler.enable_gpu_allocations();
+    let before = sampler.read_opening_nothing().gpu;
+    assert!(before.allocated_bytes.is_err());
+    assert_eq!(before.unified_memory, None);
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            before.allocated_bytes,
+            Err(Unavailable(
+                "GPU allocations are read once the Performance section has opened the device"
+            ))
+        );
+        if sampler.read().gpu.allocated_bytes.is_err() {
+            println!("SKIPPED: this machine has no Metal device");
+            return;
+        }
+        let after = sampler.read_opening_nothing().gpu;
+        assert!(after.allocated_bytes.is_ok());
+        assert!(after.unified_memory.is_some());
+    }
+}
+
 /// A fill rate no Apple GPU's counted time can show, in bytes a second: five times the 800 GB/s of
 /// the M2 and M3 Ultra. The M4 Pro fills the test's buffer at about 200 GB/s alone, and the driver
 /// counted it at about 1 TB/s beside the workspace's GPU tests, crediting only part of the work.

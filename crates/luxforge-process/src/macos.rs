@@ -80,6 +80,16 @@ impl State {
             unified_memory,
         }
     }
+
+    /// [`Self::gpu`] with allocations only from a device an earlier read opened.
+    pub(crate) fn gpu_opening_nothing(&mut self) -> Gpu {
+        let (allocated_bytes, unified_memory) = self.allocations.read_open();
+        Gpu {
+            time_ns: self.gpu_time.read(),
+            allocated_bytes,
+            unified_memory,
+        }
+    }
 }
 
 // CPU time and memory.
@@ -525,6 +535,20 @@ impl Allocations {
         match self.device.get_or_insert_with(MetalDevice::system_default) {
             Ok(device) => (Ok(device.allocated_bytes()), Some(device.unified)),
             Err(reason) => (Err(*reason), None),
+        }
+    }
+
+    /// [`Self::read`] without opening the device: unavailable until a read has opened it.
+    fn read_open(&mut self) -> (Result<u64, Unavailable>, Option<bool>) {
+        match &self.device {
+            Some(_) => self.read(),
+            None if !self.enabled => (Err(Unavailable("no GPU presenter in this process")), None),
+            None => (
+                Err(Unavailable(
+                    "GPU allocations are read once the Performance section has opened the device",
+                )),
+                None,
+            ),
         }
     }
 }
