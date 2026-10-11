@@ -248,9 +248,6 @@ pub struct ViewSummary {
     pub stacks: u32,
     #[serde(default)]
     pub collapsed: u32,
-    /// Photographs in the view that are in the current development set.
-    #[serde(default)]
-    pub in_development_set: u32,
     pub groups: GroupLayout,
     /// The library journal and the index revision the view was evaluated at: a later library change
     /// or index change marks it stale ([`BrowseSession::stale`]).
@@ -350,9 +347,6 @@ pub struct ViewRow {
     /// The row's place in an HDR stack: a result leading one, or one of its originals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<super::RowStack>,
-    /// A photograph in the current development set: the accent check labelled In Development set.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub in_development_set: bool,
     /// Why an original's row is not available, for a provenance row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -490,15 +484,12 @@ pub struct BrowseSession {
     pub evaluated_at: Option<ViewStamp>,
 }
 
-/// What a view was evaluated at: the catalog's latest library change, the index's revision and the
-/// development set's. A view is stale once any has moved on.
+/// What a view was evaluated at: the catalog's latest library change and the index's revision. A
+/// view is stale once either has moved on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ViewStamp {
     pub library_sequence: LibraryChangeSeq,
     pub index_revision: u64,
-    /// The catalog's development-set revision: a replaced set changes what is In Development set
-    /// and Picked without a library change.
-    pub development_set_revision: u64,
 }
 
 #[cfg(test)]
@@ -578,12 +569,11 @@ mod tests {
             availability: FileAvailability::Available,
             preview: PreviewState::Thumbnail,
             stack: None,
-            in_development_set: false,
             reason: None,
         };
         let json = serde_json::to_value(&row).unwrap();
         assert_eq!(json["item"], "file");
-        assert!(json.get("stack").is_none() && json.get("in_development_set").is_none());
+        assert!(json.get("stack").is_none());
         assert_eq!(json["file_id"], 9);
         assert_eq!(json["path"], "/card/DSC_0001.NEF");
         assert_eq!(serde_json::from_value::<ViewRow>(json).unwrap(), row);

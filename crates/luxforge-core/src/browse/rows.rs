@@ -2,7 +2,7 @@
 //! no query, and their rows are read in a fixed number of statements whatever the window's size —
 //! for files the index's rows and preview records, the offline roots, and the catalog's picks and
 //! developed originals among the window's paths; for photographs the catalog's rows, their
-//! collections, development-set memberships and the index's rendered previews. An expanded HDR
+//! collections and the index's rendered previews. An expanded HDR
 //! stack's provenance rows are read an original at a time, at most nine a stack, and every stacked
 //! row carries the badge the view was arranged with.
 
@@ -20,7 +20,6 @@ use crate::{
         Exposure, FileAvailability, FileId, Moment, MomentRef, PreviewState, RowItem,
         StackInputKey, ViewItem, ViewRow,
     },
-    library::development_set,
 };
 use rusqlite::Row;
 use std::collections::HashMap;
@@ -61,15 +60,7 @@ pub(crate) fn rows(
         answer.extend(file_rows(service, &files, moments, grid)?);
     }
     if !photos.is_empty() {
-        let in_set = development_set::in_current(
-            &service.connection,
-            &photos.iter().map(|(_, row)| *row).collect::<Vec<_>>(),
-        )?;
-        let mut read = photo_rows(service, &photos, moments, grid)?;
-        for (row, (_, asset_row)) in read.iter_mut().zip(&photos) {
-            row.in_development_set = in_set.contains(asset_row);
-        }
-        answer.extend(read);
+        answer.extend(photo_rows(service, &photos, moments, grid)?);
     }
     if !inputs.is_empty() {
         answer.extend(input_rows(service, &inputs, moments, grid)?);
@@ -231,7 +222,6 @@ fn file_rows(
             availability,
             preview,
             stack: None,
-            in_development_set: false,
             reason: None,
         });
     }
@@ -295,7 +285,6 @@ fn photo_rows(
             })?,
             preview: PreviewState::Pending,
             stack: None,
-            in_development_set: false,
             reason: None,
         };
         found.insert(row.get(0)?, PhotoFacts { row: row_facts });
@@ -391,7 +380,6 @@ fn input_rows(
             availability: found.availability,
             preview: PreviewState::Unavailable,
             stack: None,
-            in_development_set: false,
             reason: found.reason,
         });
     }
