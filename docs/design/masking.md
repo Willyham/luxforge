@@ -516,5 +516,5 @@ P1 to P11 are accepted by the owner (confirmed 2026-10-07), and each stays recor
 
 - [Tool modules and the shared core](modules-and-api.md) · [Content-space edits](content-space-edits.md) · [Instant previews](instant-preview.md) · [Presence, colour mixer and vignette](presence-mixer-vignette.md) · [Basic and histogram](basic-and-histogram.md)
 - [Develop workspace](develop-workspace.md) · [UI components](ui-components.md) · [Architecture](architecture.md) · [Performance rules](../engineering/performance-rules.md)
-- [Corrections](corrections.md), the planned other consumer of the shared brush
+- [Corrections](corrections.md), the other consumer of the shared brush
 - [Lightroom geometry, masking and retouching research](../research/lightroom/geometry-masks-and-retouching.md) · [darktable geometry, masks, blending and retouching research](../research/darktable/geometry-masks-and-retouching.md)
