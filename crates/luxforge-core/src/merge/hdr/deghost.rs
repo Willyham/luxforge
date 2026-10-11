@@ -674,6 +674,63 @@ impl MotionMap {
         (label > 0).then(|| &self.regions[label as usize - 1])
     }
 
+    /// The reference the map was detected for.
+    pub fn reference(&self) -> usize {
+        self.reference
+    }
+
+    /// The box factor of the proxy grid the map lies on.
+    pub fn factor(&self) -> u32 {
+        self.factor
+    }
+
+    /// The proxy grid's dimensions: the reference proxy's.
+    pub fn grid(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// The label of reference proxy pixel `(x, y)`: 0 outside every region, else the index into
+    /// [`Self::regions`] plus one. 0 past the grid.
+    pub fn label(&self, x: usize, y: usize) -> u32 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        self.labels[y * self.width + x]
+    }
+
+    /// Render the selection of `rect` on the proxy grid itself (proxy coordinates) into `out`:
+    /// each proxy pixel's own confidence and its region's selected input, the reference at 0
+    /// elsewhere. This is [`Self::render`] sampled at the proxy pixels' centres, for a picture
+    /// drawn at proxy scale.
+    pub fn render_proxy(&self, rect: PixelRect, out: &mut MotionRect) -> Result<(), Error> {
+        let (width, height) = (rect.width as usize, rect.height as usize);
+        if rect.x as usize + width > self.width || rect.y as usize + height > self.height {
+            return Err(Error::validation(
+                "HDR motion rectangle lies outside the proxy grid",
+            ));
+        }
+        let n = width * height;
+        out.width = width;
+        out.height = height;
+        out.selected.clear();
+        out.selected.resize(n, self.reference as u8);
+        out.confidence.clear();
+        out.confidence.resize(n, 0.0);
+        for y in 0..height {
+            let row = (rect.y as usize + y) * self.width + rect.x as usize;
+            for x in 0..width {
+                let label = self.labels[row + x];
+                if label == 0 {
+                    continue;
+                }
+                let o = y * width + x;
+                out.confidence[o] = self.confidence[row + x].clamp(0.0, 1.0);
+                out.selected[o] = self.regions[label as usize - 1].selected as u8;
+            }
+        }
+        Ok(())
+    }
+
     /// Render the full-resolution selection of `rect` (reference coordinates) into `out`. See
     /// the module documentation.
     pub fn render(&self, rect: PixelRect, out: &mut MotionRect) -> Result<(), Error> {
