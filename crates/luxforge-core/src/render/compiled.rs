@@ -152,7 +152,7 @@ impl Entry {
         match self {
             Self::Resample(entry) => entry.reads(window, received),
             Self::Spatial(entry) => Some(entry.halo_reads(window, received)),
-            Self::Repair(entry) => Some(entry.window_reads(window)),
+            Self::Repair(entry) => Some(entry.read_bounds(window)),
         }
     }
 
@@ -162,7 +162,9 @@ impl Entry {
     /// to, and a spatial operation's halo with no tile grid ([`SpatialEntry::halo_reads`]). A
     /// global estimate is never prepared from the window: the GPU computes the whole stage's from
     /// the source by its light link, so an estimate behind an earlier spatial layer cuts like any
-    /// other.
+    /// other. A repair reads `read` alone: its step holds its read set itself, every rectangle its
+    /// operations read cut from the source into an atlas of its own
+    /// ([`super::gpu::repair`](mod@super::gpu::repair)), so no window grows to hold a far source.
     pub(crate) fn plan_gpu_window(
         &self,
         read: Region,
@@ -173,7 +175,7 @@ impl Entry {
                 .reads(read, received)
                 .ok_or(RegionFallback::UnplannableGeometry),
             Self::Spatial(entry) => Ok(entry.halo_reads(read, received)),
-            Self::Repair(entry) => Ok(entry.window_reads(read)),
+            Self::Repair(_) => Ok(read),
         }
     }
 

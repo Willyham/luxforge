@@ -548,11 +548,12 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 28] = [
+const AFTER_MESSAGE: [AfterMessage; 29] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
     slider::after_message,
+    presets::after_message,
     evidence::after_message,
     controls::after_message,
     preview::after_message,
@@ -934,7 +935,8 @@ impl Editor {
         }
         self.full_updates += 1;
         let before = Before::of(self);
-        let mut tasks = vec![self.dispatch(message)];
+        let before_task = presets::before_message(self, &message);
+        let mut tasks = vec![before_task, self.dispatch(message)];
         tasks.extend(AFTER_MESSAGE.iter().map(|hook| hook(self, &before)));
         let rederive_started = Instant::now();
         self.rederive();
@@ -1058,7 +1060,13 @@ impl Editor {
             gesture_conflicted: self.gesture_conflicted(),
             gesture: self.core_gesture().map(|gesture| gesture.kind.noun()),
             apply_refusal: self.release_refusal(),
-            preset_refusal: self.gesture_refusal(Starting::Preset),
+            preset_refusal: if self.presets.library.interaction.hovered.is_some()
+                && self.preset_drafting()
+            {
+                None
+            } else {
+                self.gesture_refusal(Starting::Preset)
+            },
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
             history_refusal: self.gesture_refusal(Starting::History),
             // The one editability rule, computed once for every model that reads it; a start's
@@ -1086,6 +1094,7 @@ impl Editor {
             busy: self.busy,
             can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
             can_export: self.can_export(),
+            export_held: self.export.held.as_ref().map(|held| held.stale.as_slice()),
             developer: self.developer,
             compare_held: self.document.compare_return.is_some(),
             view_state: &self.view_state,
@@ -1397,6 +1406,10 @@ impl Editor {
                 self.section_target(),
             ),
             mask_typing: self.mask_panel.typing.is_some(),
+            preset_typing: matches!(
+                self.presets.library.interaction.editing,
+                crate::state::tools::ValueEdit::Typing(_)
+            ),
             correction_typing: self.corrections.typing.is_some(),
             mask_menu_open: self.mask_menu_open(),
             kind_menu: self.kind_menu_open().map(|menu| {

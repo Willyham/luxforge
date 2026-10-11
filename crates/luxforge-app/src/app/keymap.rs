@@ -5,8 +5,8 @@ use crate::app::Editor;
 use crate::app::message::{
     Message, crop::CropMessage, draft::DraftMessage, export::ExportMessage,
     history::HistoryMessage, mask::BrushEdit, mask::KindMenu, mask::MaskKey, mask::MaskMessage,
-    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, settings::SettingsMessage,
-    sync::SyncMessage, view::ViewMessage,
+    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, preset::PresetMessage,
+    settings::SettingsMessage, sync::SyncMessage, view::ViewMessage,
 };
 use crate::app::message::{
     develop::DevelopMessage,
@@ -140,6 +140,8 @@ pub(crate) struct KeyContext {
     /// The Masks panel's text field is open, so Escape closes it without sending anything,
     /// whichever widget last saw the key.
     pub(crate) mask_typing: bool,
+    /// The preset Amount text field closes on Escape without changing settings.
+    pub(crate) preset_typing: bool,
     /// A Corrections band slider's text field is open, so Escape closes it with nothing sent.
     pub(crate) correction_typing: bool,
     /// One of the Masks panel's menus is open, so Escape closes it before anything else hears it.
@@ -455,6 +457,9 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
     // focus and has already taken the key, so this acts whatever `status` says.
     if context.mask_typing && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)));
+    }
+    if context.preset_typing && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Preset(PresetMessage::AmountCancel));
     }
     if context.correction_typing && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Corrections(
@@ -1319,6 +1324,7 @@ mod tests {
             leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],
             mask_typing: false,
+            preset_typing: false,
             correction_typing: false,
             mask_menu_open: false,
             kind_menu: None,
@@ -1640,6 +1646,23 @@ mod tests {
         assert!(matches!(
             keymap(&escape, Status::Captured, &typing),
             Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)))
+        ));
+    }
+
+    #[test]
+    fn preset_amount_typing_escape_precedes_draft_cancel() {
+        let typing = KeyContext {
+            preset_typing: true,
+            slider_drafting: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Captured,
+                &typing
+            ),
+            Some(Message::Preset(PresetMessage::AmountCancel))
         ));
     }
 

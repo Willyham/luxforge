@@ -2121,6 +2121,18 @@
             "notes": "applies a settings set as one history entry labelled by its origin: `Preset: <name>`, or `Paste settings from <source>` with a source over 64 characters shortened in the middle. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, masked layers are unchanged, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole set and writes nothing.",
             "parameters": [
               {
+                "default": 100.0,
+                "kind": "number",
+                "max": 200.0,
+                "min": 0.0,
+                "name": "amount",
+                "notes": "Preset strength: omitted or 100 preserves the set; numbers scale from their module defaults and clamp to bounds, identity curves blend y from x. Unsupported fields and analysis steps require 100. Unnamed fields keep their values.",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": "%"
+              },
+              {
                 "default": null,
                 "kind": "settings",
                 "name": "settings",
@@ -5772,8 +5784,22 @@
         "mutates": true,
         "mutation": "revision",
         "notes": "applies a settings set as one history entry labelled by its origin: `Preset: <name>`, or `Paste settings from <source>` with a source over 64 characters shortened in the middle. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, masked layers are unchanged, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole set and writes nothing.",
-        "optional": {},
+        "optional": {
+          "amount": "Preset strength: omitted or 100 preserves the set; numbers scale from their module defaults and clamp to bounds, identity curves blend y from x. Unsupported fields and analysis steps require 100. Unnamed fields keep their values."
+        },
         "parameters": [
+          {
+            "default": 100.0,
+            "kind": "number",
+            "max": 200.0,
+            "min": 0.0,
+            "name": "amount",
+            "notes": "Preset strength: omitted or 100 preserves the set; numbers scale from their module defaults and clamp to bounds, identity curves blend y from x. Unsupported fields and analysis steps require 100. Unnamed fields keep their values.",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": "%"
+          },
           {
             "default": null,
             "kind": "settings",

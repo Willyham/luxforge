@@ -5352,7 +5352,7 @@ mod tests {
         assert_eq!(entry["label"], json!("Preset: Warm"));
         assert_eq!(
             entry["parameters"],
-            json!({"settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
+            json!({"amount":100.0, "settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
         );
         let rows = described(&mut service, &mut session, &asset);
         assert_eq!(

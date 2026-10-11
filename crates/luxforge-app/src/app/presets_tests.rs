@@ -186,6 +186,237 @@ fn without_request_id(mut request: Value) -> Value {
     request
 }
 
+fn finish_preset_draft(library: &mut Library) {
+    let open = library.editor.core_gesture().unwrap().clone();
+    let result = tasks::draft_commit_now(
+        &library.owner(),
+        library.editor.client,
+        &open.draft.draft_id,
+        library.asset.clone(),
+        tasks::mutation(open.draft.base_revision),
+        library.editor.drawn(),
+    )
+    .unwrap();
+    let _ = library.editor.update(Message::Draft(
+        super::message::draft::DraftMessage::Committed {
+            gesture: open.draft.gesture,
+            draft: open.draft.draft_id,
+            result: Ok(result.map(Box::new)),
+        },
+    ));
+}
+
+#[test]
+fn preset_hover_leave_escape_and_other_edits_write_no_preset_history() {
+    let mut library = Library::opened();
+    library
+        .import("fixtures/presets/soft-film.lfpreset")
+        .unwrap();
+    let id = library.row("Soft film").id;
+    let before = library.held();
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Amount(50.0)));
+    for end in [
+        Message::Preset(PresetMessage::Leave(id.clone())),
+        Message::Draft(super::message::draft::DraftMessage::Cancel),
+        Message::Control(ControlMessage::ToggleSection("luxforge.basic".into())),
+    ] {
+        let _ = library
+            .editor
+            .update(Message::Preset(PresetMessage::Hover(id.clone())));
+        assert!(library.editor.preset_drafting());
+        assert_eq!(
+            library.editor.core_gesture().unwrap().draft.sent().unwrap()["amount"],
+            json!(50.0)
+        );
+        assert!(
+            library.row("Soft film").enabled,
+            "hover keeps its row clickable"
+        );
+        let _ = library.editor.update(end);
+        assert!(!library.editor.preset_drafting());
+        assert!(library.editor.presets.library.interaction.hovered.is_none());
+        assert_eq!(
+            library.editor.presets.library.interaction.amount, 50.0,
+            "hover leaves the chosen Amount alone"
+        );
+        assert_eq!(library.held(), before);
+        let (state, _) = call(
+            &library.owner(),
+            library.agent,
+            "asset.state",
+            json!({"asset_id":library.asset}),
+        )
+        .unwrap();
+        assert_eq!(state["revision"], json!(before.1));
+    }
+    library.finish();
+}
+
+#[test]
+fn preset_hover_click_and_amount_reapply_use_one_draft_and_library_values() {
+    let mut library = Library::opened();
+    library
+        .import("fixtures/presets/soft-film.lfpreset")
+        .unwrap();
+    let row = library.row("Soft film");
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Hover(row.id.clone())));
+    let draft_id = library
+        .editor
+        .core_gesture()
+        .unwrap()
+        .draft
+        .draft_id
+        .clone();
+    let _ = library.editor.update(Message::Action(ActionMessage::Run {
+        action: "apply-settings".into(),
+        preset: row.apply.unwrap(),
+    }));
+    assert_eq!(
+        library.editor.core_gesture().unwrap().draft.draft_id,
+        draft_id,
+        "click commits its hover"
+    );
+    finish_preset_draft(&mut library);
+    assert!(library.row("Soft film").selected);
+    assert!(library.presets().amount_enabled);
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::AmountEdit));
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::AmountText("201".into())));
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::AmountSubmit));
+    assert!(library.presets().amount_invalid.is_some());
+    assert!(!library.editor.preset_drafting());
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::AmountCancel));
+    assert_eq!(
+        library.presets().amount_edit,
+        crate::state::tools::ValueEdit::None
+    );
+    assert!(library.presets().amount_invalid.is_none());
+    let original_settings = library
+        .editor
+        .presets
+        .library
+        .find(&row.id)
+        .unwrap()
+        .settings
+        .clone();
+    for amount in [50.0, 150.0, 100.0] {
+        let _ = library
+            .editor
+            .update(Message::Preset(PresetMessage::Amount(amount)));
+        let sent = library.editor.core_gesture().unwrap().draft.sent().unwrap();
+        assert_eq!(
+            sent["settings"],
+            Value::Object(original_settings.clone()),
+            "amount never compounds the previous result"
+        );
+        assert_eq!(sent["amount"], json!(amount));
+        let _ = library
+            .editor
+            .update(Message::Preset(PresetMessage::AmountReleased));
+        finish_preset_draft(&mut library);
+        assert_eq!(library.presets().amount, amount);
+        let _ = library
+            .editor
+            .update(Message::Palette(PaletteMessage::Open));
+        let palette = library
+            .editor
+            .workspace
+            .palette
+            .entries
+            .iter()
+            .find(|entry| entry.label == "Apply preset: Soft film")
+            .unwrap();
+        assert_eq!(
+            palette.action,
+            PaletteAction::Run {
+                action: "apply-settings".into(),
+                preset: library.row("Soft film").apply.unwrap()
+            }
+        );
+        let _ = library
+            .editor
+            .update(Message::Palette(PaletteMessage::Close));
+    }
+    // A double-click reset can arrive before the first click's asynchronous commit answers.
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Amount(50.0)));
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::AmountReleased));
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::AmountReset));
+    finish_preset_draft(&mut library);
+    assert_eq!(
+        library.editor.core_gesture().unwrap().draft.sent().unwrap()["amount"],
+        json!(100.0)
+    );
+    finish_preset_draft(&mut library);
+    assert_eq!(library.presets().amount, 100.0);
+
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Amount(75.0)));
+    let _ = library
+        .editor
+        .update(Message::Draft(super::message::draft::DraftMessage::Cancel));
+    assert_eq!(
+        library.presets().amount,
+        100.0,
+        "Escape restores the committed amount"
+    );
+    library.finish();
+}
+
+#[test]
+fn preset_hover_old_leave_does_not_cancel_a_newer_row() {
+    let mut library = Library::opened();
+    library
+        .import("fixtures/presets/soft-film.lfpreset")
+        .unwrap();
+    library.import("fixtures/presets/develop.xmp").unwrap();
+    let first = library.row("Soft film").id;
+    let second = library.row("Soft Film").id;
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Hover(first.clone())));
+    let draft = library
+        .editor
+        .core_gesture()
+        .unwrap()
+        .draft
+        .draft_id
+        .clone();
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Hover(second.clone())));
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Leave(first)));
+    assert_eq!(library.editor.core_gesture().unwrap().draft.draft_id, draft);
+    assert_eq!(
+        library.editor.presets.library.interaction.hovered,
+        Some(second.clone())
+    );
+    let _ = library
+        .editor
+        .update(Message::Preset(PresetMessage::Leave(second)));
+    assert!(!library.editor.preset_drafting());
+    library.finish();
+}
+
 #[test]
 fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
     let mut library = Library::opened();

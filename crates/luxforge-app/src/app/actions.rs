@@ -126,6 +126,9 @@ impl Editor {
                 None => self.status.text = "No crop draft to copy".into(),
             },
             ActionMessage::Run { action, preset } => {
+                if let Some(task) = self.commit_preset_hover(&action, &preset) {
+                    return task;
+                }
                 if let Some(reason) = self.action_refusal(&action) {
                     self.status.text = reason;
                     return Task::none();

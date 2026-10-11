@@ -799,3 +799,140 @@ fn gpu_frozen_patches_meet_the_spatial_limits() {
         "cases missing the spatial limits: {missed:?}"
     );
 }
+
+/// Frozen patches at a reduced stage (`docs/design/corrections.md`, "The composite at a reduced
+/// stage"): a Fit frame's plan draws the repair stage smaller than the patches were placed, from
+/// their box means, and is held to the CPU reference at that same stage — the layer compiled as
+/// the host compiles a proxy and run over the same reduced frame — by the spatial class's limits
+/// on the codes, with its largest linear difference reported. A patch alone, one a later Clone
+/// reads, and overlapping patches, at a half, a third and two fifths of the content.
+#[test]
+fn gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage() {
+    use luxforge_core::qualification::corrections::{
+        QualBrush, QualPatch, QualStep, reduced, repair_stack,
+    };
+    let test = "gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let full = (360u32, 240u32);
+    let ramp = |seed: u32| -> Box<dyn Fn(u32, u32) -> ([f32; 3], f32)> {
+        Box::new(move |x, y| {
+            let value = |channel: u32| {
+                ((x * 5 + y * 11 + channel * 37 + seed) % 256) as f32 / 255.0 * 1.5 - 0.25
+            };
+            (
+                [value(0), value(1), value(2)],
+                ((x + 2 * y + seed) % 5) as f32 / 4.0,
+            )
+        })
+    };
+    let patch = |rect: [u32; 4], opacity: u8, seed: u32| {
+        QualStep::Patch(QualPatch {
+            rect,
+            opacity,
+            pixel: ramp(seed),
+        })
+    };
+    type Steps<'a> = Box<dyn Fn() -> Vec<QualStep> + 'a>;
+    let shapes: [(&str, Steps<'_>); 3] = [
+        (
+            "a patch alone",
+            Box::new(|| vec![patch([101, 61, 91, 71], 85, 1)]),
+        ),
+        (
+            "a patch a Clone reads",
+            Box::new(|| {
+                vec![
+                    patch([40, 40, 64, 48], 100, 2),
+                    QualStep::Brush(QualBrush {
+                        heal: false,
+                        points: vec![[250.0 / 360.0, 150.0 / 240.0]],
+                        radius: 12.0 / 240.0,
+                        source: [70.0 / 360.0, 62.0 / 240.0],
+                        feather: 30,
+                        opacity: 100,
+                    }),
+                ]
+            }),
+        ),
+        (
+            "overlapping patches",
+            Box::new(|| {
+                vec![
+                    patch([30, 30, 150, 100], 100, 3),
+                    patch([97, 77, 133, 113], 60, 4),
+                ]
+            }),
+        ),
+    ];
+    let mut missed = Vec::new();
+    let mut all = Vec::new();
+    let mut largest = 0.0f64;
+    for (name, steps) in &shapes {
+        let stack = repair_stack(steps(), Vec::new());
+        for stage in [(180u32, 120u32), (120, 80), (144, 96)] {
+            let pixels = photograph(stage.0, stage.1, 29);
+            let cpu = reduced(&stack, stage, full, &pixels);
+            let request = GpuPlanRequest::fit(
+                0,
+                Stage {
+                    width: stage.0,
+                    height: stage.1,
+                },
+                Stage {
+                    width: full.0,
+                    height: full.1,
+                },
+            )
+            .from_source()
+            .qualifying()
+            .linear();
+            let plan = match gpu_plan(&registry, &stack, request).expect("the stack compiles") {
+                GpuAnswer::Plan(plan) => *plan,
+                GpuAnswer::Fallback(reason) => panic!("{name} at {stage:?}: {reason}"),
+            };
+            assert!(
+                !plan.spatial[0].resident.is_empty(),
+                "{name}: the patch's means are resident in the step"
+            );
+            let held = boundary_as(BoundaryFormat::Float, stage.0, stage.1, 1, &pixels)
+                .expect("a boundary");
+            let converted = surface_plan(&plan, held).expect("a runnable plan");
+            let gpu = qualifier.evaluate(&converted).expect("a readback");
+            let linear = gpu
+                .iter()
+                .zip(&cpu)
+                .flat_map(|(g, c)| (0..3).map(move |i| f64::from((g[i] - c[i]).abs())))
+                .fold(0.0, f64::max);
+            largest = largest.max(linear);
+            let measured = compare(
+                stage.0,
+                stage.1,
+                &codes(gpu.iter().map(|texel| [texel[0], texel[1], texel[2]])),
+                &codes(cpu.iter().copied()),
+            );
+            let passed = preview_error::verdict(&measured, Class::Spatial).passed();
+            let label = format!("{name} at {}x{}", stage.0, stage.1);
+            eprintln!(
+                "{label}: {} | largest linear {linear:.2e}{}",
+                figures(&measured),
+                if passed { "" } else { " MISS" }
+            );
+            if !passed {
+                missed.push(label);
+            }
+            all.push(measured);
+        }
+    }
+    eprintln!(
+        "{test}: worst of {}: {} | largest linear {largest:.2e}",
+        all.len(),
+        figures(&worst(&all))
+    );
+    assert!(
+        missed.is_empty(),
+        "cases missing the spatial limits: {missed:?}"
+    );
+}

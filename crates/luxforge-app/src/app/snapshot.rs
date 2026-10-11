@@ -457,7 +457,7 @@ impl Editor {
     /// picture on screen.
     pub(super) fn status_bar_summary(&self) -> Value {
         let model = &self.workspace.status;
-        json!({"message":model.message,"render":model.render,"fallback":state::status::Fallback::evidence(model.fallback.as_ref()),"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_approximate":self.activity.render.map(|time| time.approximate)})
+        json!({"message":model.message,"render":model.render,"fallback":state::status::Fallback::evidence(model.fallback.as_ref()),"stale":state::status::Fallback::evidence(model.stale.as_ref()),"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_approximate":self.activity.render.map(|time| time.approximate)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.

@@ -796,6 +796,41 @@ fn presets_view<'a>(model: &'a PresetsModel, menu: Option<&'a MenuTarget>) -> El
     .spacing(theme::SPACING / 2.0)
     .align_y(Alignment::Center);
     let mut body = column![header].spacing(theme::SPACING / 2.0);
+    body = body.push(slider(
+        &SliderModel {
+            id: Some("preset-amount".into()),
+            label: "Amount".into(),
+            min: 0.0,
+            max: 200.0,
+            soft_min: 0.0,
+            soft_max: 200.0,
+            value: model.amount,
+            step: 1.0,
+            shift_step: 10.0,
+            fine_step: 1.0,
+            zero: Some(100.0),
+            rail: RailDecoration::Plain,
+            over_range: None,
+            unit: Some("%".into()),
+            display: format!("{:.0}", model.amount),
+            edit: ui_edit(
+                &model.amount_edit,
+                &format!("{:.0}", model.amount),
+                &model.amount_invalid,
+            ),
+            dragging: model.amount_dragging,
+            enabled: model.amount_enabled,
+        },
+        |fraction| Message::Preset(PresetMessage::Amount((fraction * 200.0).round())),
+        preset(PresetMessage::AmountReleased),
+        preset(PresetMessage::AmountEdit),
+        |text| Message::Preset(PresetMessage::AmountText(text)),
+        preset(PresetMessage::AmountSubmit),
+        preset(PresetMessage::AmountReset),
+    ));
+    if let Some(reason) = &model.amount_reason {
+        body = body.push(caption(reason.clone()));
+    }
     if model.form.open {
         body = body.push(preset_form_view(&model.form));
     }
@@ -946,12 +981,21 @@ fn preset_row_view<'a>(
         button(content)
             .padding([4.0, theme::SPACING])
             .width(Length::Fill)
-            .style(theme::button_plain)
+            .style(if row.selected {
+                theme::button_control
+            } else {
+                theme::button_plain
+            })
             .on_press_maybe(press),
     )
+    .on_enter(Message::Preset(PresetMessage::Hover(row.id.clone())))
+    .on_exit(Message::Preset(PresetMessage::Leave(row.id.clone())))
     .on_right_press(Message::View(ViewMessage::OpenMenu(target.clone())))
     .into();
     let mut block = column![control].spacing(2.0);
+    if let Some(reason) = &row.preview_unavailable {
+        block = block.push(container(caption(reason.clone())).padding([0.0, theme::SPACING]));
+    }
     if let Some(reason) = &row.unavailable {
         block = block.push(
             iced::widget::container(error_caption(reason.clone())).padding([0.0, theme::SPACING]),

@@ -14,6 +14,10 @@ pub(crate) enum ExportMessage {
     },
     /// The plan answered and a destination was chosen, or `None` when the dialog was cancelled.
     Chosen(Result<Option<Box<ExportChoice>>, String>),
+    /// Export anyway: send the export held for its stale patches again, acknowledging exactly them.
+    Anyway,
+    /// Cancel the export held for its stale patches.
+    Dismiss,
     /// `export.jpeg` answered: the queued job, or the refusal with its code.
     Queued(Result<Value, CallError>),
     /// What the export's reader read of the job it names: its first record, a record that differs

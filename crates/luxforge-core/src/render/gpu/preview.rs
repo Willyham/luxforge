@@ -1339,7 +1339,7 @@ fn plan_tiles(
     let source = (full.width, full.height);
     let window_of = |rect: Region| {
         WindowPlan::of_gpu_rect(compiled, source, rect)
-            .map(|windows| super::plan::anchored_over(compiled, windows.reads(0), anchor))
+            .map(|windows| super::anchored(windows.reads(0), anchor))
     };
     // What a tile's slot may take: the budget less the source the surface holds, the view plan's
     // slot and the accumulator with its rest output, at most half the budget.
@@ -1625,8 +1625,8 @@ fn planned_preview(
     if let GpuAnswer::Plan(plan) = &answer {
         let anchor =
             super::plan::common_anchor(std::iter::once(&**plan).chain(cpu_shape.as_deref()));
-        window = window.map(|window| super::plan::anchored_over(&fit.compiled, window, anchor));
-        reduced = reduced.map(|reduced| super::fit::anchored_plan(&fit.compiled, reduced, anchor));
+        window = window.map(|window| super::anchored(window, anchor));
+        reduced = reduced.map(|reduced| super::fit::anchored_plan(reduced, anchor));
     }
     // Every plan starts from the source.
     let boundary_request = match &answer {
