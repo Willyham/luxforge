@@ -647,7 +647,6 @@ pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Opt
         LibraryItem::CatalogFolder { .. } => "a catalog folder".to_owned(),
         LibraryItem::Collection { .. } => "a collection".to_owned(),
         LibraryItem::MergeStack { .. } => "an HDR stack".to_owned(),
-        LibraryItem::SetMember { .. } => "the Development set".to_owned(),
         _ => "a photograph".to_owned(),
     };
     let others = match count.saturating_sub(1) {

@@ -139,7 +139,6 @@ fn summary_of(query: ViewQuery, count: u32) -> ViewSummary {
         unavailable: 0,
         stacks: 0,
         collapsed: 0,
-        in_development_set: 0,
         groups: GroupLayout::default(),
         library_sequence: LibraryChangeSeq(4),
         index_revision: 1,
@@ -178,7 +177,6 @@ fn photo_row(position: u32, folder: &str, collections: &[&str], edited: bool) ->
         availability: FileAvailability::Available,
         preview: PreviewState::Pending,
         stack: None,
-        in_development_set: false,
         reason: None,
     }
 }
