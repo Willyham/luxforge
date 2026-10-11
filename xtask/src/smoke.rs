@@ -1405,10 +1405,24 @@ pub fn launch_planned(
 /// checks: `then` makes them, in the run and over the launches already checked, which it extends.
 /// `corrections` moves an original between launches that way, which a list of launches cannot say.
 pub fn launch_planned_then(
+    run: Run,
+    scenario: &Scenario,
+    sources: Vec<PathBuf>,
+    plans: impl FnOnce(&mut Run, &[PathBuf]) -> Result<Vec<Plan>>,
+    then: impl FnOnce(&mut Run, &mut Vec<Checked>) -> Result,
+) -> Result {
+    launch_planned_with(run, scenario, sources, plans, |launch| launch, then)
+}
+
+/// [`launch_planned_then`] with each listed launch finished by `adjust` before it starts: a row
+/// whose launch takes what only its own run knows, as `settings` names the proof endpoint its run
+/// started.
+pub fn launch_planned_with(
     mut run: Run,
     scenario: &Scenario,
     sources: Vec<PathBuf>,
     plans: impl FnOnce(&mut Run, &[PathBuf]) -> Result<Vec<Plan>>,
+    adjust: impl Fn(Launch) -> Launch,
     then: impl FnOnce(&mut Run, &mut Vec<Checked>) -> Result,
 ) -> Result {
     if let Some(note) = scenario.note {
@@ -1441,7 +1455,13 @@ pub fn launch_planned_then(
                 ensure(catalog.is_file(), format!("Launch {earlier} wrote no catalog"))?;
             }
             let evidence = run
-                .launch(launch_of(scenario, spec, &plan, &sources, run.out()))?
+                .launch(adjust(launch_of(
+                    scenario,
+                    spec,
+                    &plan,
+                    &sources,
+                    run.out(),
+                )))?
                 .dir;
             checked.push(plan.check(&evidence)?);
         }

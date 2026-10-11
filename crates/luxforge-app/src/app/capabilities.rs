@@ -33,7 +33,7 @@ use luxforge_core::{
     capabilities::{
         grants::{self, GrantList},
         host::{self, TASK_PREFIX},
-        resources,
+        resources, runtime,
         settings::{self, SettingsRead},
     },
     jobs::{JOB_CANCEL, JOB_READ, JobRecord},
@@ -213,6 +213,13 @@ fn perform(
             client,
             resources::REMOVE,
             json!({"module_id": module_id, "resource_id": resource, "mutation": request()}),
+            sent,
+        ),
+        Operation::Unload { resource } => call(
+            owner,
+            client,
+            runtime::UNLOAD,
+            json!({"module_id": module_id, "resource_id": resource}),
             sent,
         ),
         Operation::Cancel { job } => call(owner, client, JOB_CANCEL, json!({"job_id": job}), sent),
@@ -617,6 +624,26 @@ impl Editor {
                 module_id,
                 resource,
             } => return self.capability_op(&module_id, Operation::Remove { resource }),
+            CapabilityMessage::Unload {
+                module_id,
+                resource,
+            } => return self.capability_op(&module_id, Operation::Unload { resource }),
+            CapabilityMessage::CopyModelRequest {
+                module_id,
+                resource,
+                request: kind,
+            } => {
+                self.view_state.menu = None;
+                let copied = kind.request(&module_id, &resource, json!(request()));
+                self.status.text = format!(
+                    "Copied the {} request",
+                    copied["method"].as_str().unwrap_or_default()
+                );
+                self.event("model_request_copied", || copied.clone());
+                return iced::clipboard::write(
+                    serde_json::to_string_pretty(&copied).unwrap_or_default(),
+                );
+            }
             CapabilityMessage::Cancel { module_id, job } => {
                 return self.capability_op(&module_id, Operation::Cancel { job });
             }
@@ -1085,6 +1112,45 @@ impl Editor {
         Ok(Some(match action {
             CapabilityAction::Settle => return Ok(None),
             CapabilityAction::Task(task) => CapabilityMessage::RunTask { module_id, task },
+            // The Models tab's buttons, pressed only when the tab draws them for that row.
+            CapabilityAction::Remove(resource) => {
+                let drawn = self
+                    .workspace
+                    .settings
+                    .models
+                    .as_ref()
+                    .and_then(|tab| {
+                        tab.rows
+                            .iter()
+                            .find(|row| row.module_id == module && row.resource_id == resource)
+                    })
+                    .is_some_and(|row| row.removable && row.enabled);
+                if !drawn {
+                    return Err(format!(
+                        "the Models tab draws no Remove for {module} {resource}"
+                    ));
+                }
+                CapabilityMessage::Remove {
+                    module_id,
+                    resource,
+                }
+            }
+            CapabilityAction::Unload(resource) => {
+                let drawn = self.workspace.settings.models.as_ref().is_some_and(|tab| {
+                    tab.resident.iter().any(|row| {
+                        row.module_id == module && row.resource_id == resource && row.enabled
+                    })
+                });
+                if !drawn {
+                    return Err(format!(
+                        "the Models tab draws no Unload now for {module} {resource}"
+                    ));
+                }
+                CapabilityMessage::Unload {
+                    module_id,
+                    resource,
+                }
+            }
             CapabilityAction::Consent(allow) => {
                 if self
                     .capabilities
