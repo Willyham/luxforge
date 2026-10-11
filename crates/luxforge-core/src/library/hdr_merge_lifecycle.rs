@@ -29,23 +29,23 @@ use std::{fs, sync::atomic::AtomicBool};
 const WIDTH: u32 = 48;
 const HEIGHT: u32 = 32;
 
-fn never() -> AtomicBool {
+pub(super) fn never() -> AtomicBool {
     AtomicBool::new(false)
 }
 
 /// A catalog beside a bracket of `frames` distinct files, the second developed into the catalog
 /// as an ordinary photograph, so the merge has both a plain file input and a catalog photograph
 /// input.
-struct Bench {
-    directory: PathBuf,
-    catalog: PathBuf,
-    service: EditorService,
-    files: Vec<PathBuf>,
-    developed: AssetId,
+pub(super) struct Bench {
+    pub(super) directory: PathBuf,
+    pub(super) catalog: PathBuf,
+    pub(super) service: EditorService,
+    pub(super) files: Vec<PathBuf>,
+    pub(super) developed: AssetId,
 }
 
 impl Bench {
-    fn new(name: &str, frames: usize) -> Self {
+    pub(super) fn new(name: &str, frames: usize) -> Self {
         let directory = temp_dir(&format!("hdr-merge-lifecycle-{name}"))
             .canonicalize()
             .unwrap();
@@ -71,7 +71,7 @@ impl Bench {
         }
     }
 
-    fn reopen(&mut self) {
+    pub(super) fn reopen(&mut self) {
         let placeholder = EditorService::open(&self.directory.join("placeholder.sqlite")).unwrap();
         drop(std::mem::replace(&mut self.service, placeholder));
         self.service = EditorService::open(&self.catalog).unwrap();
@@ -79,7 +79,7 @@ impl Bench {
 
     /// The provenance of a merge of `inputs` (positions in the bracket), with `deghost` as its
     /// one varied parameter, the middle input the reference.
-    fn provenance(&self, inputs: &[usize], deghost: DeghostMode) -> MergeProvenance {
+    pub(super) fn provenance(&self, inputs: &[usize], deghost: DeghostMode) -> MergeProvenance {
         let count = inputs.len();
         let reference = count / 2;
         let merge_inputs = inputs
@@ -207,7 +207,7 @@ impl Bench {
     }
 
     /// A durable derived source of signed values with headroom, different for each `seed`.
-    fn source(&self, seed: u32) -> PublishedSource {
+    pub(super) fn source(&self, seed: u32) -> PublishedSource {
         let plane = (WIDTH * HEIGHT) as usize;
         let values: Vec<f32> = (0..3 * plane)
             .map(|at| ((at as u32 * 37 + seed * 101) % 500) as f32 / 97.0 - 1.5)
@@ -218,7 +218,7 @@ impl Bench {
             .unwrap()
     }
 
-    fn folder(&self) -> CatalogFolderId {
+    pub(super) fn folder(&self) -> CatalogFolderId {
         let folder: String = self
             .service
             .connection
@@ -232,7 +232,7 @@ impl Bench {
     }
 
     /// Publish a merge of `provenance` with `source` as `actor` under `request_id`.
-    fn publish_as(
+    pub(super) fn publish_as(
         &mut self,
         actor: &str,
         request_id: &str,
@@ -271,7 +271,12 @@ impl Bench {
         )
     }
 
-    fn publish(&mut self, request_id: &str, inputs: &[usize], seed: u32) -> PublishedMerge {
+    pub(super) fn publish(
+        &mut self,
+        request_id: &str,
+        inputs: &[usize],
+        seed: u32,
+    ) -> PublishedMerge {
         let provenance = self.provenance(inputs, DeghostMode::Auto);
         let source = self.source(seed);
         self.publish_as("agent", request_id, &provenance, &source, |_, _, _| {
@@ -280,7 +285,7 @@ impl Bench {
         .unwrap()
     }
 
-    fn row(&self, asset: &AssetId) -> AssetRowId {
+    pub(super) fn row(&self, asset: &AssetId) -> AssetRowId {
         AssetRowId(
             self.service
                 .connection
@@ -293,7 +298,7 @@ impl Bench {
         )
     }
 
-    fn remove_as(
+    pub(super) fn remove_as(
         &mut self,
         actor: &str,
         request_id: &str,
@@ -305,7 +310,7 @@ impl Bench {
         })
     }
 
-    fn restore_as(
+    pub(super) fn restore_as(
         &mut self,
         actor: &str,
         request_id: &str,
@@ -317,18 +322,18 @@ impl Bench {
         })
     }
 
-    fn undo_as(&mut self, actor: &str, request_id: &str) -> Result<Outcome, Error> {
+    pub(super) fn undo_as(&mut self, actor: &str, request_id: &str) -> Result<Outcome, Error> {
         self.service
             .library_write(|tx| journal::undo(tx, request("library.undo", actor, request_id)))
     }
 
-    fn redo_as(&mut self, actor: &str, request_id: &str) -> Result<Outcome, Error> {
+    pub(super) fn redo_as(&mut self, actor: &str, request_id: &str) -> Result<Outcome, Error> {
         self.service
             .library_write(|tx| journal::redo(tx, request("library.redo", actor, request_id)))
     }
 
     /// Each bracket file's SHA-256, read from disk.
-    fn hashes(&self) -> Vec<String> {
+    pub(super) fn hashes(&self) -> Vec<String> {
         self.files
             .iter()
             .map(|file| format!("{:x}", Sha256::digest(fs::read(file).unwrap())))
@@ -336,7 +341,7 @@ impl Bench {
     }
 
     /// The photograph's removal time, read from its row: `None` while it is visible.
-    fn removed_ms(&self, asset: &AssetId) -> Option<i64> {
+    pub(super) fn removed_ms(&self, asset: &AssetId) -> Option<i64> {
         self.service
             .connection
             .query_row(
@@ -348,7 +353,7 @@ impl Bench {
     }
 
     /// The input paths each active stack claims, as `(path, merge)` in path order.
-    fn claimed(&self) -> Vec<(String, String)> {
+    pub(super) fn claimed(&self) -> Vec<(String, String)> {
         self.service
             .connection
             .prepare("SELECT path, merge_id FROM stack_claims ORDER BY path")
@@ -359,7 +364,7 @@ impl Bench {
             .unwrap()
     }
 
-    fn count(&self, table: &str) -> i64 {
+    pub(super) fn count(&self, table: &str) -> i64 {
         self.service
             .connection
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
@@ -370,7 +375,7 @@ impl Bench {
 
     /// The photograph's whole history as stored: each entry's identity and text, in order, and
     /// its head.
-    fn history(&self, asset: &AssetId) -> (Vec<(String, String)>, String) {
+    pub(super) fn history(&self, asset: &AssetId) -> (Vec<(String, String)>, String) {
         let entries = self
             .service
             .connection
@@ -393,7 +398,7 @@ impl Bench {
     }
 
     /// The source the photograph holds, by its asset-source reference.
-    fn held(&self, asset: &AssetId) -> Option<String> {
+    pub(super) fn held(&self, asset: &AssetId) -> Option<String> {
         self.service
             .connection
             .query_row(
@@ -405,7 +410,7 @@ impl Bench {
             .unwrap()
     }
 
-    fn read_back(&self, asset: &AssetId) -> Vec<u32> {
+    pub(super) fn read_back(&self, asset: &AssetId) -> Vec<u32> {
         let read = self.service.derived_source_read(asset).unwrap();
         read_derived_source(&read, &never())
             .unwrap()
@@ -416,7 +421,7 @@ impl Bench {
             .collect()
     }
 
-    fn finish(self) {
+    pub(super) fn finish(self) {
         let Self {
             directory, service, ..
         } = self;
@@ -425,7 +430,7 @@ impl Bench {
     }
 }
 
-fn request<'a>(method: &'a str, actor: &'a str, request_id: &'a str) -> Request<'a> {
+pub(super) fn request<'a>(method: &'a str, actor: &'a str, request_id: &'a str) -> Request<'a> {
     Request {
         method,
         actor,

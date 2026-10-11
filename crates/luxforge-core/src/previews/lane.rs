@@ -465,6 +465,9 @@ pub(crate) fn run(store: &mut Store, task: &Task, stage: &dyn Fn()) -> Outcome {
         (ViewItem::Photo(_), None) => Err(Error::internal(
             "a photograph's camera preview was queued without its original",
         )),
+        (ViewItem::Input(_), _) => Err(Error::internal(
+            "an HDR stack's original is previewed as its file",
+        )),
     };
     Outcome {
         permanent: ended.permanent && result.is_err(),

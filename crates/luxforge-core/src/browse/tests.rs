@@ -888,14 +888,23 @@ fn browse_facets_equal_the_views_they_predict() {
     assert_eq!(refused.kind, ErrorKind::Validation);
 }
 
+/// The view the owner would hold for `evaluation`, of files or photographs as `over_files` says.
 fn held(evaluation: &Evaluation, over_files: bool) -> View {
+    assert!(
+        evaluation
+            .items
+            .iter()
+            .all(|item| matches!(item, ViewItem::File(_)) == over_files),
+        "a view of one kind"
+    );
     View {
         revision: 1,
-        over_files,
         items: evaluation.items.clone(),
         layout: evaluation.layout.clone(),
         selection: ViewSelection::default(),
         stale: false,
+        hidden: evaluation.stacks.hidden.clone(),
+        badges: evaluation.stacks.badges.clone(),
     }
 }
 
@@ -1179,7 +1188,7 @@ fn browse_selection_modes_ranges_items_all_and_active() {
     let range = |start, len| PositionRange { start, len };
     let file = |position: usize| match view_item(&evaluation, position) {
         ViewItem::File(file_id) => ItemRef::File { file_id },
-        ViewItem::Photo(_) => unreachable!(),
+        ViewItem::Photo(_) | ViewItem::Input(_) => unreachable!(),
     };
     apply(
         &mut view,
@@ -1609,7 +1618,7 @@ fn browse_source_files_lists_what_a_source_covers() {
             .iter()
             .map(|item| match item.item {
                 ViewItem::File(file) => file,
-                ViewItem::Photo(_) => unreachable!(),
+                ViewItem::Photo(_) | ViewItem::Input(_) => unreachable!(),
             })
             .collect();
         ids.sort();

@@ -7,8 +7,8 @@
 //! most [`MAX_LIBRARY_BATCH`] items, never split silently. Library changes sit beside each
 //! photograph's history, never inside it.
 use super::{
-    CatalogFolderId, CollectionId, EventId, FileId, FileSignature, LibraryChangeSeq, MergeId,
-    ViewQuery, VolumeId,
+    CatalogFolderId, CollectionId, DevelopmentSetId, EventId, FileId, FileSignature,
+    LibraryChangeSeq, MergeId, ViewQuery, VolumeId,
 };
 use crate::{AssetId, Error, JobId, MutationOutcome};
 use serde::{Deserialize, Serialize};
@@ -125,6 +125,7 @@ pub struct LibraryChange {
 /// | `indexed-folder` | the folder's path | the [`IndexedFolder`](super::IndexedFolder) |
 /// | `developed-asset` | the asset | [`DevelopedAssetValue`] `{path}` of the file it was developed from; a Develop's undo sends it back |
 /// | `merge-stack` | the merge | [`MergeStackValue`](super::MergeStackValue) `{state}`: `active`, `removed` or `undone`; `null` once Empty Removed deleted it |
+/// | `set-member` | `set-…/asset-…` | [`SetMemberValue`](super::SetMemberValue) `{position}`, its place in the development set's order; `null` while not a member |
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LibraryItem {
@@ -159,11 +160,15 @@ pub enum LibraryItem {
     MergeStack {
         merge_id: MergeId,
     },
+    SetMember {
+        set_id: DevelopmentSetId,
+        asset_id: AssetId,
+    },
 }
 
 impl LibraryItem {
     /// Every `item_kind` the journal stores, in the order the table documents them.
-    pub const KINDS: [&'static str; 10] = [
+    pub const KINDS: [&'static str; 11] = [
         "pick",
         "asset-folder",
         "asset-removal",
@@ -174,6 +179,7 @@ impl LibraryItem {
         "indexed-folder",
         "developed-asset",
         "merge-stack",
+        "set-member",
     ];
 
     /// The row's `item_kind`.
@@ -189,6 +195,7 @@ impl LibraryItem {
             Self::IndexedFolder { .. } => "indexed-folder",
             Self::DevelopedAsset { .. } => "developed-asset",
             Self::MergeStack { .. } => "merge-stack",
+            Self::SetMember { .. } => "set-member",
         }
     }
 
@@ -207,6 +214,7 @@ impl LibraryItem {
                 asset_id,
             } => format!("{collection_id}/{asset_id}"),
             Self::MergeStack { merge_id } => merge_id.to_string(),
+            Self::SetMember { set_id, asset_id } => format!("{set_id}/{asset_id}"),
         }
     }
 
@@ -237,6 +245,15 @@ impl LibraryItem {
             "merge-stack" => Self::MergeStack {
                 merge_id: MergeId::parse(key)?,
             },
+            "set-member" => {
+                let (set, asset) = key
+                    .split_once('/')
+                    .ok_or_else(|| Error::incompatible("a set-member key names no asset"))?;
+                Self::SetMember {
+                    set_id: DevelopmentSetId::parse(set)?,
+                    asset_id: AssetId::parse(asset)?,
+                }
+            }
             "membership" => {
                 let (collection, asset) = key
                     .split_once('/')
@@ -955,9 +972,15 @@ mod tests {
             LibraryItem::IndexedFolder {
                 path: "/Users/a/Pictures".into(),
             },
-            LibraryItem::DevelopedAsset { asset_id: asset },
+            LibraryItem::DevelopedAsset {
+                asset_id: asset.clone(),
+            },
             LibraryItem::MergeStack {
                 merge_id: MergeId::new(),
+            },
+            LibraryItem::SetMember {
+                set_id: DevelopmentSetId::new(),
+                asset_id: asset,
             },
         ];
         for (item, kind) in items.iter().zip(LibraryItem::KINDS) {

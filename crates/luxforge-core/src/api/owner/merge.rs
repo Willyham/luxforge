@@ -214,10 +214,14 @@ fn inputs(owner: &Owner, client: ClientId, targets: &Targets) -> Result<Vec<Name
             .selected(client)?
             .into_iter()
             .map(|item| match item {
-                ViewItem::File(id) => Item::File(id),
-                ViewItem::Photo(row) => Item::Row(row),
+                ViewItem::File(id) => Ok(Item::File(id)),
+                ViewItem::Photo(row) => Ok(Item::Row(row)),
+                // A provenance row is an original an active stack already claims.
+                ViewItem::Input(_) => Err(Error::validation(
+                    "a selected original belongs to an HDR stack already; remove that merge first",
+                )),
             })
-            .collect(),
+            .collect::<Result<_, _>>()?,
     };
     if !(MIN_INPUTS..=MAX_INPUTS).contains(&items.len()) {
         return Err(Refusal::InputCount { count: items.len() }.into());

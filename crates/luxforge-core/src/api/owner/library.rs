@@ -8,10 +8,10 @@
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
 //! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
 //! (`source.check`, `source.locate`), `missing.rs` (`source.missing`, `source.find`,
-//! `source.relink`), `remove.rs` (`asset.remove`, `asset.restore`, `catalog.empty-removed`) and
-//! `info.rs` (`catalog.info`). Every method that changes the
-//! library records it through [`change`], which runs the journal in one catalog transaction and
-//! announces the change it recorded as one event.
+//! `source.relink`), `remove.rs` (`asset.remove`, `asset.restore`, `catalog.empty-removed`),
+//! `development_set_methods.rs` (`development-set.*`) and `info.rs` (`catalog.info`). Every
+//! method that changes the library records it through [`change`], which runs the journal in one
+//! catalog transaction and announces the change it recorded as one event.
 
 mod info;
 mod journal;
@@ -51,8 +51,11 @@ mod remove_tests;
 
 // Batch settings and export: `batch.apply-settings`, `batch.export`.
 pub(in crate::api) mod batch;
+
+// The development set: `development-set.read`, `.replace`, `.add`, `.remove`.
 #[cfg(test)]
 mod batch_tests;
+pub(in crate::api) mod development_set_methods;
 
 pub(in crate::api) use info::catalog_info;
 pub(in crate::api) use journal::{library_inspect, library_journal, library_redo, library_undo};
@@ -64,7 +67,10 @@ use crate::{
     activity::ActivityBoard,
     api::announce_once,
     catalog_types::{LibraryAnswer, ViewItem},
-    library::journal::{self as library_journal, Outcome, Request},
+    library::{
+        development_set,
+        journal::{self as library_journal, Outcome, Request},
+    },
 };
 use rusqlite::Transaction;
 use std::sync::Arc;
@@ -594,12 +600,18 @@ pub(super) fn change(
     origin: &crate::api::Origin,
     change: impl FnOnce(&Transaction<'_>) -> Result<Outcome, Error>,
 ) -> Result<LibraryAnswer, Error> {
+    let set_before = development_set::revision(&owner.service.connection)?;
     let outcome = owner.service.library_write(change)?;
     if let Some(sequence) = outcome.announced() {
         let mut announced = origin.clone().library(sequence);
         let mut sources = outcome.sources();
         if let (Some(asset), None) = (sources.next(), sources.next()) {
             announced = announced.changed(asset.clone(), None);
+        }
+        // A change to the development set's members names the set's revision it left.
+        let set_after = development_set::revision(&owner.service.connection)?;
+        if set_after != set_before {
+            announced = announced.development_set(set_after);
         }
         announce_once(&mut owner.announced, &announced);
         owner.library_changed(origin, outcome.items());

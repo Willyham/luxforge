@@ -13,7 +13,10 @@
 //! - [`browse`]: view queries, summaries, rows, facets and the selection.
 //! - [`library`]: picks, targets, catalog folders, collections, the journal, developing picks,
 //!   availability and missing originals, batch reports.
-//! - [`merge`]: merges' provenance, their result-led stacks and their lifecycle state.
+//! - [`merge`]: merges' provenance, their result-led stacks and their lifecycle state, and how a
+//!   view shows a stack.
+//! - [`development_set`]: the development set the owner holds for every client, its members and
+//!   their journal item.
 //! - [`previews`]: preview tiers, items, origins and answers.
 //! - [`jobs`]: the long-running catalog work, each kind named once.
 //! - `api`: every catalog method's parameters, answer, envelope and error codes, declared once
@@ -24,6 +27,7 @@
 //! and `deny_unknown_fields` on everything a request carries.
 pub(crate) mod api;
 pub mod browse;
+pub mod development_set;
 pub mod disk;
 pub mod header;
 pub mod identity;
@@ -34,6 +38,7 @@ pub mod organize;
 pub mod previews;
 
 pub use browse::*;
+pub use development_set::*;
 pub use disk::*;
 pub use header::*;
 pub use identity::*;

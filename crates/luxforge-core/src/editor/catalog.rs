@@ -11,6 +11,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Format 15 adds the development set ([`DEVELOPMENT_SET_SCHEMA`]): the sets a catalog session
+/// replaces, the current one marked, their ordered members, and the journal's `set-member` item.
+/// Format 14 holds none of them and is refused like every other marker.
+///
 /// Format 14 adds derived sources ([`DERIVED_SOURCE_SCHEMA`]): the rows recording each source an
 /// HDR merge stores under the artifact root, their manifest-chunk references and the asset-source
 /// reference that retains one for its photograph, and a `derived` source kind; and merges
@@ -39,7 +43,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 14;
+pub(crate) const CATALOG_FORMAT: i64 = 15;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -253,6 +257,7 @@ impl EditorService {
                  END;
                  {DERIVED_SOURCE_SCHEMA}
                  {MERGE_SCHEMA}
+                 {DEVELOPMENT_SET_SCHEMA}
                  PRAGMA user_version={CATALOG_FORMAT};"
             ))?;
             tx.execute(
@@ -371,6 +376,38 @@ const MERGE_SCHEMA: &str = "
     CREATE TRIGGER merge_stacks_are_permanent BEFORE DELETE ON merge_stacks BEGIN
         SELECT RAISE(ABORT, 'merges are permanent');
     END;";
+
+/// Format 15's development set (`docs/design/catalog.md`, "Develop and the development set";
+/// `crate::library::development_set`), beside the library and the index:
+///
+/// - `development_sets` records each set a session made, by its identity, with the global
+///   revision of its last change and the next place a member takes. At most one is `current`
+///   (the column is 1 for it and null for every retired set, which `retired_ms` dates); opening
+///   the catalog retires it, since a set lasts a session.
+/// - `development_set_members` is each set's members by photograph row, each once, in the order
+///   of their places, which only grow. A retired set keeps only the members, and the set row,
+///   that a library change names, for that change's undo and redo; Empty Removed deletes a
+///   photograph's memberships with it.
+const DEVELOPMENT_SET_SCHEMA: &str = "
+    CREATE TABLE development_sets (
+        row INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        created_ms INTEGER NOT NULL,
+        retired_ms INTEGER,
+        current INTEGER UNIQUE CHECK (current = 1),
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        next_position INTEGER NOT NULL CHECK (next_position >= 0),
+        CHECK ((current IS NULL) = (retired_ms IS NOT NULL))
+    );
+    CREATE TABLE development_set_members (
+        set_row INTEGER NOT NULL REFERENCES development_sets(row),
+        asset_row INTEGER NOT NULL REFERENCES assets(row_id),
+        position INTEGER NOT NULL CHECK (position >= 0),
+        PRIMARY KEY (set_row, asset_row)
+    ) WITHOUT ROWID;
+    CREATE UNIQUE INDEX development_set_members_in_order
+        ON development_set_members(set_row, position);
+    CREATE INDEX development_set_members_by_asset ON development_set_members(asset_row);";
 
 /// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
 /// catalog columns and capture rows, collections, picks, indexed folders and the library journal
@@ -571,7 +608,7 @@ const LIBRARY_SCHEMA: &str = "
         ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
         item_kind TEXT NOT NULL CHECK (item_kind IN ('pick', 'asset-folder', 'asset-removal',
             'asset-source', 'catalog-folder', 'collection', 'membership', 'indexed-folder',
-            'developed-asset', 'merge-stack')),
+            'developed-asset', 'merge-stack', 'set-member')),
         item_key TEXT NOT NULL,
         before_json TEXT,
         after_json TEXT,
@@ -1099,20 +1136,20 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 14 with every table, index and trigger of the
-    /// design's storage, the catalog's, auto-collapse's, the derived sources' and the merges' alike,
-    /// and makes no
+    /// An empty database initializes as format 15 with every table, index and trigger of the
+    /// design's storage, the catalog's, auto-collapse's, the derived sources', the merges' and the
+    /// development set's alike, and makes no
     /// index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-14.sqlite");
+        let catalog = temp("format-15.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 14);
-        assert_eq!(CATALOG_FORMAT, 14);
+        assert_eq!(format, 15);
+        assert_eq!(CATALOG_FORMAT, 15);
         assert_eq!(
             schema_names(connection, "table"),
             [
@@ -1129,6 +1166,8 @@ mod tests {
                 "collections",
                 "derived_source_chunks",
                 "derived_sources",
+                "development_set_members",
+                "development_sets",
                 "entries",
                 "indexed_folders",
                 "library_change_rows",
@@ -1170,6 +1209,8 @@ mod tests {
                 "collection_names",
                 "collections_by_parent",
                 "derived_source_chunks_by_hash",
+                "development_set_members_by_asset",
+                "development_set_members_in_order",
                 "library_change_rows_by_item",
                 "library_changes_by_client",
                 "library_changes_by_request",
@@ -1230,7 +1271,7 @@ mod tests {
     /// they are, with no artifact or index directory made for them.
     #[test]
     fn catalog_format_thirteen_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
-        for marker in [0, 11, 12, 13, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
+        for marker in [0, 11, 12, 13, 14, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();
