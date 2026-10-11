@@ -159,10 +159,10 @@ mod proof_controls_tests;
 mod query_choice;
 mod remembered;
 #[cfg(test)]
-mod remove_tests;
+mod remembered_tests;
 pub(crate) mod remove;
 #[cfg(test)]
-mod remembered_tests;
+mod remove_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
@@ -594,11 +594,12 @@ const AFTER_MESSAGE: [AfterMessage; 30] = [
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
 /// is the derived model's answer, so they run after [`Editor::rederive`], in this order.
-const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 4] = [
+const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
     capabilities::after_derive,
     controls::after_derive,
     palette::after_derive,
     loupe::after_derive,
+    remove::after_derive,
 ];
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns

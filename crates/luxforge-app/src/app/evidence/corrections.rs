@@ -9,12 +9,18 @@ use crate::{
             Message,
             corrections::{CanvasHit, CorrectionMessage},
             evidence::EvidenceMessage,
+            remove::RemoveMessage,
         },
+        remove::RemoveWait,
     },
     brush::{Handle, Modifiers},
+    state::remove::TierAction,
 };
 use iced::{Subscription, Task};
-use luxforge_evidence::{CorrectionHandle, CorrectionStep, PressModifier};
+use luxforge_evidence::{CorrectionHandle, CorrectionStep, PressModifier, RemoveStep, RemoveUntil};
+
+/// The kind a script chooses Remove by, as the kind control's third segment is titled.
+const REMOVE_KIND: &str = "remove";
 use serde_json::json;
 use std::{collections::VecDeque, time::Duration};
 
@@ -77,6 +83,7 @@ impl Editor {
             return self.fail_step("the Corrections list or map has not been read for this entry");
         }
         let mut tasks = Vec::new();
+        self.remove_reads.wait = None;
         match step {
             CorrectionStep::Press(press) => {
                 let modifiers = Modifiers {
@@ -245,9 +252,18 @@ impl Editor {
                 };
                 tasks.push(self.update(correction(CorrectionMessage::Menu(Some(operation)))));
             }
+            // Remove is the kind control's third segment, which sends Remove's own message.
+            CorrectionStep::Kind(kind) if kind == REMOVE_KIND => {
+                self.remove_reads.wait = Some(RemoveWait::Done);
+                tasks.push(self.update(Message::Remove(RemoveMessage::Choose)));
+            }
             CorrectionStep::Kind(kind) => {
                 tasks.push(self.update(correction(CorrectionMessage::Kind(kind))));
             }
+            CorrectionStep::Remove(step) => match self.remove_step(step) {
+                Ok(message) => tasks.push(self.update(message)),
+                Err(reason) => return self.fail_step(reason),
+            },
             CorrectionStep::Field { name, fraction } => {
                 tasks.push(self.update(correction(CorrectionMessage::Field { name, fraction })));
                 tasks.push(self.update(correction(CorrectionMessage::FieldReleased)));
@@ -269,6 +285,79 @@ impl Editor {
         self.await_step(Settle::Corrections);
         self.settle_corrections();
         Task::batch(tasks)
+    }
+
+    /// The message one Remove control sends, read from the band as drawn, and what the step's
+    /// frame waits for.
+    fn remove_step(&mut self, step: RemoveStep) -> Result<Message, String> {
+        if !self.remove_active() {
+            return Err("a remove step needs Remove chosen: {\"kind\": \"remove\"}".into());
+        }
+        let model = self
+            .workspace
+            .corrections
+            .remove
+            .as_ref()
+            .ok_or("the band draws no Remove controls")?;
+        let (message, wait) = match step {
+            RemoveStep::Generate(until) => (RemoveMessage::Generate, until),
+            RemoveStep::Regenerate(until) => (RemoveMessage::Regenerate, until),
+            RemoveStep::Cancel => (RemoveMessage::Cancel, RemoveUntil::Done),
+            RemoveStep::Candidate(index) => {
+                let cell = model
+                    .strip
+                    .get(index)
+                    .ok_or_else(|| format!("the strip holds {} candidates", model.strip.len()))?;
+                (
+                    RemoveMessage::Candidate {
+                        job_id: cell.job_id.clone(),
+                        candidate: cell.candidate,
+                    },
+                    RemoveUntil::Done,
+                )
+            }
+            RemoveStep::Prompt(text) => (RemoveMessage::Prompt(text), RemoveUntil::Done),
+            RemoveStep::Tier(tier) => {
+                if !model.tiers.iter().any(|option| option.tier == tier) {
+                    return Err(format!("the Fill setting offers no {tier} tier"));
+                }
+                (RemoveMessage::Tier(tier), RemoveUntil::Done)
+            }
+            RemoveStep::Download => {
+                let message = if let Some(encoder) = &model.encoder {
+                    RemoveMessage::Download {
+                        module_id: encoder.module_id.clone(),
+                        resource: encoder.resource.clone(),
+                    }
+                } else {
+                    match model
+                        .unoffered
+                        .as_ref()
+                        .and_then(|unoffered| unoffered.action.as_ref())
+                    {
+                        Some((
+                            _,
+                            TierAction::Download {
+                                module_id,
+                                resource,
+                            },
+                        )) => RemoveMessage::Download {
+                            module_id: module_id.clone(),
+                            resource: resource.clone(),
+                        },
+                        Some((_, TierAction::Experiments)) => RemoveMessage::Experiments,
+                        None => return Err("Remove offers no download".into()),
+                    }
+                };
+                (message, RemoveUntil::Done)
+            }
+            RemoveStep::Accept => (RemoveMessage::Accept, RemoveUntil::Done),
+        };
+        self.remove_reads.wait = Some(match wait {
+            RemoveUntil::Progress => RemoveWait::Progress,
+            RemoveUntil::Done => RemoveWait::Done,
+        });
+        Ok(Message::Remove(message))
     }
 
     /// Hand a paced step's positions to its timer and send nothing here, exactly as a paced mask

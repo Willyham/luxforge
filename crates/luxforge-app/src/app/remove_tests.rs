@@ -182,7 +182,11 @@ impl Filling {
         .unwrap();
         let session = serde_json::from_value(session).unwrap();
         self.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
-        assert!(self.editor.corrections_active(), "{}", self.editor.status.text);
+        assert!(
+            self.editor.corrections_active(),
+            "{}",
+            self.editor.status.text
+        );
         self.remove(RemoveMessage::Choose);
         self.answer_capabilities();
         assert!(self.editor.remove_active());
@@ -245,10 +249,7 @@ impl Filling {
     }
 
     fn flag(&self) {
-        self.api(
-            "flags.set",
-            json!({"flag": "ai.generative", "value": true}),
-        );
+        self.api("flags.set", json!({"flag": "ai.generative", "value": true}));
     }
 
     /// Grant and install one developer model through the API, as any client does.
@@ -360,8 +361,8 @@ impl Filling {
                 return;
             }
             for (job, candidate) in reading {
-                let result = read_preview(&self.owner(), self.editor.client, &job, candidate)
-                    .map(Arc::new);
+                let result =
+                    read_preview(&self.owner(), self.editor.client, &job, candidate).map(Arc::new);
                 self.remove(RemoveMessage::Preview {
                     job_id: job,
                     candidate,
@@ -465,7 +466,10 @@ fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
     assert!(!model.reading, "the tiers were read on choosing Remove");
     assert!(model.tiers.is_empty());
     let unoffered = model.unoffered.clone().expect("why no tier is offered");
-    assert_eq!(unoffered.reason, "Generative fill is an experiment that is off");
+    assert_eq!(
+        unoffered.reason,
+        "Generative fill is an experiment that is off"
+    );
     assert!(matches!(
         unoffered.action,
         Some((ref label, TierAction::Experiments)) if label == "Settings \u{203a} Experiments"
@@ -477,13 +481,29 @@ fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
 
     filling.flag();
     filling.refresh_tiers();
-    let unoffered = filling.model().unoffered.clone().expect("the model is missing");
+    let unoffered = filling
+        .model()
+        .unoffered
+        .clone()
+        .expect("the model is missing");
     assert_eq!(
         unoffered.reason,
-        "Generative fill needs its model installed \u{b7} download it here or in Settings \u{203a} \
-         Models"
+        "Generative fill needs its model installed, also listed in Settings \u{203a} Models"
     );
-    let Some((label, TierAction::Download { module_id, resource })) = unoffered.action else {
+    assert_eq!(
+        filling.editor.status.text,
+        "Generative fill needs its model installed, also listed in Settings \u{203a} Models \u{b7} \
+         Download",
+        "the status bar says why and what to do"
+    );
+    let Some((
+        label,
+        TierAction::Download {
+            module_id,
+            resource,
+        },
+    )) = unoffered.action
+    else {
         panic!("a Download action: {unoffered:?}");
     };
     assert_eq!(label, "Download");
@@ -542,7 +562,10 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates()
     assert!(canvas.preview.is_none(), "a draft selection is tinted");
 
     let copied = filling.copy(RemoveRequest::Generate);
-    assert_eq!(filling.editor.status.text, format!("Copied the {TASK} request"));
+    assert_eq!(
+        filling.editor.status.text,
+        format!("Copied the {TASK} request")
+    );
     filling.remove(RemoveMessage::Generate);
     let sent = filling
         .editor
@@ -552,7 +575,10 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates()
         .expect("Generate sent its request");
     same_request(copied, &sent);
     assert_eq!(sent.1["model"], GENERATOR);
-    assert_eq!(sent.1["selection-radius"], json!(filling.editor.remove_radius()));
+    assert_eq!(
+        sent.1["selection-radius"],
+        json!(filling.editor.remove_radius())
+    );
     assert!(sent.1.get("prompt").is_none());
     assert_eq!(filling.editor.status.text, "Generating\u{2026}");
 
@@ -567,7 +593,10 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates()
         "{:?}",
         filling.model().running
     );
-    assert!(filling.editor.remove_canvas().unwrap().progress.is_some(), "the ring");
+    assert!(
+        filling.editor.remove_canvas().unwrap().progress.is_some(),
+        "the ring"
+    );
     assert_eq!(filling.finished(&job)["status"], "ready");
     filling.poll(&job);
     filling.read_previews();
@@ -579,7 +608,10 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates()
     assert!(model.strip.iter().all(|cell| cell.state == "live"));
     assert!(model.strip[0].chosen, "the first candidate is chosen");
     assert!(model.can_accept && model.can_regenerate);
-    assert_eq!(filling.editor.status.text, "3 candidates \u{b7} choose one and Accept");
+    assert_eq!(
+        filling.editor.status.text,
+        "3 candidates \u{b7} choose one and Accept"
+    );
     for cell in &model.strip {
         assert!(
             filling
@@ -616,13 +648,22 @@ fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() 
     filling.ready();
     filling.paint();
     let first = filling.generate(false);
-    let next_seed = filling.editor.remove.job(&first).unwrap().next_seed.unwrap();
+    let next_seed = filling
+        .editor
+        .remove
+        .job(&first)
+        .unwrap()
+        .next_seed
+        .unwrap();
 
     let copied = filling.copy(RemoveRequest::Regenerate);
     filling.remove(RemoveMessage::Regenerate);
     let sent = filling.editor.remove_reads.last_request.clone().unwrap();
     same_request(copied, &sent);
-    assert_eq!(sent.1["seed"], next_seed, "Regenerate continues from the next seed");
+    assert_eq!(
+        sent.1["seed"], next_seed,
+        "Regenerate continues from the next seed"
+    );
     let second = filling.start();
     assert_eq!(filling.finished(&second)["status"], "ready");
     filling.poll(&second);
@@ -644,7 +685,11 @@ fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() 
         .unwrap()
         .id();
     let (preview, _) = filling.editor.remove_canvas().unwrap().preview.unwrap();
-    assert_eq!(preview.id(), chosen, "the chosen candidate's own handle is drawn");
+    assert_eq!(
+        preview.id(),
+        chosen,
+        "the chosen candidate's own handle is drawn"
+    );
     let copied = filling.copy(RemoveRequest::Preview);
     assert_eq!(
         copied,
@@ -666,7 +711,10 @@ fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() 
     assert_eq!(history[0], "Add Generative fill 1");
     let model = filling.model();
     assert!(!model.selection && model.strip.is_empty(), "{model:?}");
-    assert_eq!(filling.editor.status.text, "Accepted \u{b7} \u{2318}Z undoes it");
+    assert_eq!(
+        filling.editor.status.text,
+        "Accepted \u{b7} \u{2318}Z undoes it"
+    );
     assert!(filling.editor.remove_canvas().unwrap().preview.is_none());
     // The candidate accepted is the one the agent reads as accepted.
     let record = filling.api("job.read", json!({"job_id": second}));
@@ -710,15 +758,16 @@ fn a_prompt_replaces_and_without_the_encoder_generates_nothing() {
     filling.remove(RemoveMessage::Generate);
     let sent = filling.editor.remove_reads.last_request.clone().unwrap();
     same_request(copied, &sent);
-    assert_eq!(sent.1["prompt"], "a red bicycle", "the prompt as an API client sends it");
-    let job = filling.start();
-    assert!(
-        filling
-            .model()
-            .running
-            .as_ref()
-            .is_some_and(|running| running.sentence.starts_with("Replace \u{201c}a red bicycle\u{201d}"))
+    assert_eq!(
+        sent.1["prompt"], "a red bicycle",
+        "the prompt as an API client sends it"
     );
+    let job = filling.start();
+    assert!(filling.model().running.as_ref().is_some_and(|running| {
+        running
+            .sentence
+            .starts_with("Replace \u{201c}a red bicycle\u{201d}")
+    }));
     assert_eq!(filling.finished(&job)["status"], "ready");
     filling.poll(&job);
     filling.read_previews();
@@ -736,7 +785,10 @@ fn a_prompt_replaces_and_without_the_encoder_generates_nothing() {
 fn a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears() {
     let mut filling = Filling::opened();
     filling.ready();
-    filling.fake.controls().set_step_delay(Duration::from_millis(200));
+    filling
+        .fake
+        .controls()
+        .set_step_delay(Duration::from_millis(200));
     let other = testing::import_and_adopt(
         &filling.owner(),
         filling.agent,
@@ -752,13 +804,19 @@ fn a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears()
             .is_some_and(|message| message.contains("step"))
     });
 
-    assert_eq!(filling.editor.generation_lock().as_deref(), Some(GENERATING));
+    assert_eq!(
+        filling.editor.generation_lock().as_deref(),
+        Some(GENERATING)
+    );
     assert_eq!(
         filling.editor.gesture_refusal(Starting::Action).as_deref(),
         Some(GENERATING)
     );
     assert_eq!(
-        filling.editor.gesture_refusal(Starting::Correction).as_deref(),
+        filling
+            .editor
+            .gesture_refusal(Starting::Correction)
+            .as_deref(),
         Some(GENERATING)
     );
     let model = filling.model();
@@ -771,9 +829,7 @@ fn a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears()
     filling.content_press([0.2, 0.2]);
     assert_eq!(filling.editor.status.text, GENERATING);
     // The owner refuses this photograph's edits, and takes the other photograph's.
-    let exposure = |asset: &AssetId, revision: u64| {
-        json!({"asset_id": asset, "exposure": 0.5, "mutation": tasks::mutation(revision)})
-    };
+    let exposure = |asset: &AssetId, revision: u64| json!({"asset_id": asset, "exposure": 0.5, "mutation": tasks::mutation(revision)});
     let revision = |asset: &AssetId| {
         filling.api("asset.state", json!({"asset_id": asset}))["revision"]
             .as_u64()
@@ -786,7 +842,10 @@ fn a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears()
         exposure(&filling.asset, revision(&filling.asset)),
     )
     .unwrap_err();
-    assert!(refused.contains("locked") || refused.contains("conflict"), "{refused}");
+    assert!(
+        refused.contains("locked") || refused.contains("conflict"),
+        "{refused}"
+    );
     assert!(filling.editor.remove.running_on(&other).is_none());
     call(
         &filling.owner(),
@@ -802,18 +861,28 @@ fn a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears()
     same_request(copied, &sent);
     assert!(filling.model().running.as_ref().unwrap().cancelling);
     filling.run_cancel();
-    assert_eq!(filling.editor.generation_lock(), None, "the lock is released at once");
+    assert_eq!(
+        filling.editor.generation_lock(),
+        None,
+        "the lock is released at once"
+    );
     assert_eq!(filling.editor.gesture_refusal(Starting::Action), None);
     assert_eq!(filling.editor.status.text, "Generation cancelled");
     assert_eq!(filling.finished(&job)["status"], "cancelled");
-    assert!(filling.model().selection, "the first Escape keeps the selection");
+    assert!(
+        filling.model().selection,
+        "the first Escape keeps the selection"
+    );
 
     filling.key(Key::Named(Named::Escape), Keys::empty());
     let model = filling.model();
     assert!(!model.selection && model.strip.is_empty());
     assert_eq!(filling.editor.status.text, "Selection cleared");
     assert!(
-        !filling.history().iter().any(|label| label.contains("Generative")),
+        !filling
+            .history()
+            .iter()
+            .any(|label| label.contains("Generative")),
         "a cancelled generation commits nothing"
     );
 }

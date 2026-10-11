@@ -453,9 +453,10 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
                 .center(Length::Fixed(CELL))
                 .into(),
             };
-            let mut cell_button = button(image)
-                .padding(2)
-                .style(theme::image_cell(cell.chosen, 4.0, 2.0));
+            let mut cell_button =
+                button(image)
+                    .padding(2)
+                    .style(theme::image_cell(cell.chosen, 4.0, 2.0));
             if cell.state == "live" {
                 cell_button = cell_button.on_press(remove_message(RemoveMessage::Candidate {
                     job_id: cell.job_id.clone(),
@@ -510,7 +511,10 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
             .spacing(theme::ROW_SPACING),
         );
     }
-    group = group.push(note(model.hint.clone(), Token::TextTertiary));
+    // A running generation and a tier that is not offered say their sentence above already.
+    if model.running.is_none() && model.unoffered.is_none() {
+        group = group.push(note(model.hint.clone(), Token::TextTertiary));
+    }
     group.into()
 }
 

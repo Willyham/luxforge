@@ -127,7 +127,8 @@ pub(crate) const NOT_CURRENT: &str = "Return to the current state before editing
 pub(crate) const IN_FLIGHT: &str = "Waiting for the last request";
 /// Why an edit of a photograph is refused while a generation this desktop started runs on it: the
 /// owner locks the photograph until the job ends.
-pub(crate) const GENERATING: &str = "A generation is running on this photograph \u{b7} Esc cancels it";
+pub(crate) const GENERATING: &str =
+    "A generation is running on this photograph \u{b7} Esc cancels it";
 
 /// The editable state, as one rule: a photograph is open ([`NO_PHOTOGRAPH`]) and the current state,
 /// not a previewed entry, is on screen ([`NOT_CURRENT`]). `None` is editable. The app's one start

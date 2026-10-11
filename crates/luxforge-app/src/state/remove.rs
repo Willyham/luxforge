@@ -265,10 +265,7 @@ pub(crate) struct TierOption {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TierAction {
     /// Install the model's file through the capability block's own install and consent notice.
-    Download {
-        module_id: String,
-        resource: String,
-    },
+    Download { module_id: String, resource: String },
     /// Turn the tier's flag on in Settings › Experiments.
     Experiments,
 }
@@ -370,7 +367,10 @@ fn unoffered(module: &str, tier: &FillTier) -> Unoffered {
     if missing("flag").is_some() {
         return Unoffered {
             reason: format!("{title} fill is an experiment that is off"),
-            action: Some(("Settings \u{203a} Experiments".into(), TierAction::Experiments)),
+            action: Some((
+                "Settings \u{203a} Experiments".into(),
+                TierAction::Experiments,
+            )),
         };
     }
     if missing("runtime").is_some() {
@@ -386,7 +386,7 @@ fn unoffered(module: &str, tier: &FillTier) -> Unoffered {
             reason: match (installing, model) {
                 (true, Some(model)) => format!("Downloading {}\u{2026}", model.title),
                 _ => format!(
-                    "{title} fill needs its model installed \u{b7} download it here or in Settings \u{203a} Models"
+                    "{title} fill needs its model installed, also listed in Settings \u{203a} Models"
                 ),
             },
             action: model.filter(|_| !installing).map(|model| {
@@ -479,7 +479,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         })
         .collect();
     let coming = running_job
-        .filter(|job| asset.is_some_and(|asset| panel.selection_on(asset).map(|s| s.serial) == Some(job.serial)))
+        .filter(|job| {
+            asset.is_some_and(|asset| {
+                panel.selection_on(asset).map(|s| s.serial) == Some(job.serial)
+            })
+        })
         .map(|job| {
             let asked = job_count(job);
             asked.saturating_sub(job.candidates.len())
@@ -518,8 +522,14 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
     let newest_ready = asset
         .and_then(|asset| panel.newest(asset))
         .is_some_and(|job| job.status == JobStatus::Ready && job.next_seed.is_some());
+    // Why no tier is offered, with its action: what the person can do next.
+    let why = unoffered.as_ref().map(|unoffered| match &unoffered.action {
+        Some((label, _)) => format!("{} \u{b7} {label}", unoffered.reason),
+        None => unoffered.reason.clone(),
+    });
     let hint = match (&running, selection, strip.is_empty()) {
         (Some(running), _, _) => format!("{} \u{b7} Esc cancels", running.sentence),
+        (None, _, _) if why.is_some() => why.unwrap_or_default(),
         (None, false, _) => "Paint over what to remove \u{b7} [ ] sizes the brush".into(),
         (None, true, true) => format!("{action} fills the selection \u{b7} Esc clears it"),
         (None, true, false) => {
@@ -680,7 +690,10 @@ mod tests {
         };
         let tiers = [off, offered];
         assert_eq!(chosen_tier(&tiers, None).unwrap().tier, "generative");
-        assert_eq!(chosen_tier(&tiers, Some("fast")).unwrap().tier, "generative");
+        assert_eq!(
+            chosen_tier(&tiers, Some("fast")).unwrap().tier,
+            "generative"
+        );
         assert!(chosen_tier(&tiers[..1], None).is_none());
     }
 
