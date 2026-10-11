@@ -28,10 +28,10 @@ pub use placement::insertion_index_among;
 pub(crate) use variants::{Superseded, superseded_in, superseded_refusal_in};
 
 use super::{
-    BasicModule, CandidateProofModule, CanvasInteraction, CapabilitiesProofModule, ai::AiModule,
+    BasicModule, CandidateProofModule, CanvasInteraction, CapabilitiesProofModule,
     CorrectionsModule, CropModule, CurveModule, DetailModule, LensModule, LookModule, MixerModule,
     ModuleDescriptor, PerspectiveModule, PresenceModule, PresetsModule, RawModule, ToolModule,
-    VignetteModule, controls_module,
+    VignetteModule, ai::AiModule, controls_module,
 };
 use crate::Error;
 #[cfg(test)]

@@ -269,9 +269,8 @@ fn channel_correlation(samples: &[Vec<f32>; 3], sigma: [f32; 3]) -> f32 {
     if keep.len() < MIN_SAMPLES {
         return 0.0;
     }
-    let mean = |c: usize| {
-        keep.iter().map(|&i| f64::from(samples[c][i])).sum::<f64>() / keep.len() as f64
-    };
+    let mean =
+        |c: usize| keep.iter().map(|&i| f64::from(samples[c][i])).sum::<f64>() / keep.len() as f64;
     let m = [mean(0), mean(1), mean(2)];
     let cov = |a: usize, b: usize| {
         keep.iter()
@@ -294,10 +293,7 @@ pub(crate) fn fill_stats(fill: &Planes, cov: &[f32]) -> Option<[f32; 3]> {
     if w < 3 || h < 3 {
         return None;
     }
-    let stride = ((w * h) as f64 / MAX_SAMPLES as f64)
-        .sqrt()
-        .ceil()
-        .max(1.0) as usize;
+    let stride = ((w * h) as f64 / MAX_SAMPLES as f64).sqrt().ceil().max(1.0) as usize;
     let mut samples: [Vec<f32>; 3] = Default::default();
     for y in (1..h - 1).step_by(stride) {
         for x in (1..w - 1).step_by(stride) {
@@ -408,8 +404,8 @@ pub(crate) fn add_grain(
         };
         let shared = grain_field(seed, 0, band, kernel);
         let oy = (y0 - window.y0) as usize;
-        for c in 0..3 {
-            if sigma[c] <= 0.0 {
+        for (c, (plane, &level)) in fill.c.iter_mut().zip(&sigma).enumerate() {
+            if level <= 0.0 {
                 continue;
             }
             let own = grain_field(seed, c as u64 + 1, band, kernel);
@@ -418,7 +414,7 @@ pub(crate) fn add_grain(
                     let i = (y + oy) * ww + x + ox;
                     if cov[i] > 0.0 {
                         let g = y * bw + x;
-                        fill.c[c][i] += sigma[c] * (a * shared[g] + b * own[g]);
+                        plane[i] += level * (a * shared[g] + b * own[g]);
                     }
                 }
             }

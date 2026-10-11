@@ -92,6 +92,7 @@ pub(crate) struct Reduced {
 /// band as it is read, so a caller copies out what it needs of it without a second read. The
 /// horizontal pass's results are held for every row read, `rows × n` pixels in `f32`, and each band
 /// is dropped after its pass. `checkpoint` is called between bands.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reduce(
     plan: &CropPlan,
     stage: Stage,
@@ -125,11 +126,15 @@ pub(crate) fn reduce(
     let (x0, x1) = (0..n * k)
         .filter(weighted)
         .map(|t| columns[t])
-        .fold((inside.x0, inside.x1()), |(lo, hi), x| (lo.min(x), hi.max(x + 1)));
+        .fold((inside.x0, inside.x1()), |(lo, hi), x| {
+            (lo.min(x), hi.max(x + 1))
+        });
     let (y0, y1) = (0..n * k)
         .filter(weighted)
         .map(row)
-        .fold((inside.y0, inside.y1()), |(lo, hi), y| (lo.min(y), hi.max(y + 1)));
+        .fold((inside.y0, inside.y1()), |(lo, hi), y| {
+            (lo.min(y), hi.max(y + 1))
+        });
     let span = Region {
         x0,
         y0,
