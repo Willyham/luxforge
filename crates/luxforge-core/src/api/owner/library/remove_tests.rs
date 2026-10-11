@@ -1228,7 +1228,7 @@ fn remove_put_back_and_empty_keep_shared_patch_artifacts_and_collect_the_rest() 
     assert_ne!(shared, own);
     assert_eq!(
         artifacts(&harness, k1),
-        [shared.clone()],
+        std::slice::from_ref(&shared),
         "the same bytes are one artifact"
     );
     let root = harness.dir.join("catalog.artifacts");
@@ -1249,7 +1249,7 @@ fn remove_put_back_and_empty_keep_shared_patch_artifacts_and_collect_the_rest() 
     assert_eq!(emptied["deleted"], 1, "{emptied}");
     assert_eq!(
         harness.strings("SELECT id FROM artifacts"),
-        [shared.clone()],
+        std::slice::from_ref(&shared),
         "only the shared patch is left"
     );
     luxforge_testbase::wait_for("k0's own patch file to be collected", || {
