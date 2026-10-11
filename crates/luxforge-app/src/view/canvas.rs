@@ -602,8 +602,9 @@ fn plain<'a>(
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
     let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
-    // The picture at rest, or the same tiles for their counts alone where the picture is not
-    // drawn: a whole frame draws either, a percentage view's region only the counts'.
+    // The picture at rest, or the same tiles where the picture is not drawn, for their counts
+    // alone or at 100% and above as the backdrop: a whole frame draws either, a percentage view's
+    // region the counts' or the backdrop under its region frame.
     let gpu_rest = surfaces.gpu_rest.or(surfaces.gpu_counts);
     let gpu_counts = surfaces.gpu_counts;
     let dissolve = surfaces.dissolve;

@@ -312,6 +312,12 @@ impl Editor {
                 "stale_photo_draws":gpu.stale_photo_draws,
                 "drawn_stale_photo":gpu.drawn_stale_photo,
                 "drawn_photo_blank":gpu.drawn_photo_blank,
+                // A percentage view drawn short of what it shows, and a frame that drew the CPU
+                // frame or nothing where the GPU's picture had been and was still asked for.
+                "uncovered_photo_draws":gpu.uncovered_photo_draws,
+                "drawn_photo_uncovered":gpu.drawn_photo_uncovered,
+                "gpu_lapsed_draws":gpu.gpu_lapsed_draws,
+                "drawn_gpu_lapse":gpu.drawn_gpu_lapse,
                 "drawn_fallback_content":gpu.drawn_fallback_content,
                 "drawn_content":gpu.drawn_content,
                 "drawn_full_version":gpu.drawn_full_version,
@@ -376,6 +382,9 @@ impl Editor {
                     "attribution":super::gpu_preview::rest_attribution(&rest),
                     "fallback":rest.fallback.map(gpu_fallback)})),
                 "drawn_rest":gpu.drawn_rest,
+                // The picture at rest a percentage view drew as its region's backdrop.
+                "drawn_backdrop":gpu.drawn_backdrop,
+                "backdrop_draws":gpu.backdrop_draws,
                 // Compare's After side while Compare is shown: `rest` or `view` for the GPU picture
                 // of the stack Compare began over, retained, `retained` for its retained frame.
                 "compare":self.presentation.compare_after.as_ref().map(|_| {
