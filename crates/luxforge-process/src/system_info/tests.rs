@@ -365,6 +365,9 @@ fn the_probe_runs_on_this_host() {
     assert!(facts.cpu.logical_cores.is_some_and(|cores| cores >= 1));
     assert!(facts.cpu.physical_cores.is_some_and(|cores| cores >= 1));
     assert!(facts.memory.is_some());
+    // The exact figure the capability host holds a model's minimum against, in the same band.
+    let installed = installed_memory_bytes();
+    assert_eq!(installed.and_then(MemoryBand::of_bytes), facts.memory);
     assert_eq!(facts.arch, Arch::current());
     if cfg!(target_os = "macos") {
         assert_eq!(facts.os.family, OsFamily::Macos);

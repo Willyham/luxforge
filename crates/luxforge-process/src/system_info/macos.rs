@@ -13,7 +13,7 @@ pub(super) fn read() -> Raw {
         cpu_brand: sysctl_string(c"machdep.cpu.brand_string"),
         physical_cores: sysctl_u64(c"hw.physicalcpu"),
         logical_cores: sysctl_u64(c"hw.logicalcpu"),
-        memory_bytes: sysctl_u64(c"hw.memsize"),
+        memory_bytes: memory(),
         ..Raw::default()
     };
     if Arch::current() == Arch::X86_64 {
@@ -27,6 +27,11 @@ pub(super) fn read() -> Raw {
         raw.cpu_vendor = Some(CpuVendor::Other);
     }
     raw
+}
+
+/// The installed memory, `hw.memsize`.
+pub(super) fn memory() -> Option<u64> {
+    sysctl_u64(c"hw.memsize")
 }
 
 /// A string value of at most 255 bytes; a longer one is not wanted and reads as `None`.
