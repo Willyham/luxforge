@@ -1049,9 +1049,22 @@ pub struct OwnerHandle {
     /// The host's usage statistics collector ([`HostConfig::usage`]), which the desktop's
     /// GUI-local producers record into beside the owner's own.
     usage: Arc<crate::usage::Collector>,
+    /// The models `local-runtime` capabilities hold loaded, which a memory signal releases without
+    /// waiting for the owner.
+    runtime: crate::capabilities::runtime::Runtime,
 }
 
 impl OwnerHandle {
+    /// The host's memory signal: release every model the owner's `local-runtime` capabilities hold
+    /// loaded, at once, from any thread, without waiting for the catalog owner, as an unload of each
+    /// would. A task already using a model keeps it until the task ends; a load in progress keeps
+    /// nothing. For a host to call when the operating system reports memory pressure. Answers how
+    /// many models were loaded or loading. A desktop-internal path, not a JSON method
+    /// (`module.runtime.unload` is the clients' own); it emits no event.
+    pub fn memory_signal(&self) -> usize {
+        self.runtime.release_all()
+    }
+
     pub fn start(catalog: &Path) -> Result<(Self, JoinHandle<()>), Error> {
         Self::start_with(catalog, Arc::new(ModuleRegistry::builtin()))
     }
@@ -1173,6 +1186,7 @@ impl OwnerHandle {
         let completions = sender.clone();
         let usage = host.usage.clone();
         let host = CapabilityHost::new(host);
+        let runtime = host.runtime().clone();
         // Every usage producer records into the host's one collector.
         service.usage = crate::usage::produce::Producer::new(host.usage().clone());
         jobs.set_usage(host.usage().clone());
@@ -1206,6 +1220,7 @@ impl OwnerHandle {
                 activity,
                 render,
                 usage,
+                runtime,
             },
             join,
         ))

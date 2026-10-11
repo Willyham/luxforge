@@ -99,6 +99,7 @@ impl Fixture {
             tiles: None,
             usage: Default::default(),
             usage_consent: Default::default(),
+            ..HostConfig::unconfigured()
         }
     }
 

@@ -114,6 +114,8 @@ pub enum JobKind {
     Install,
     Remove,
     Task,
+    /// Load the model a `local-runtime` capability holds, ahead of its first task.
+    Load,
     /// A JPEG export.
     Export,
     // The catalog's long-running work (`crate::catalog_types::jobs`), each scheduled by the index,
@@ -175,7 +177,7 @@ impl JobKind {
         match self {
             Self::Prepare | Self::Develop | Self::Artifacts | Self::Collect => Family::Source,
             Self::Analysis => Family::Analysis,
-            Self::Install | Self::Remove | Self::Task => Family::Capability,
+            Self::Install | Self::Remove | Self::Task | Self::Load => Family::Capability,
             Self::Export => Family::Export,
             Self::IndexRefresh
             | Self::PreviewExtract
@@ -194,7 +196,7 @@ impl JobKind {
     pub(crate) fn lane(self) -> Option<Lane> {
         match self {
             Self::Install | Self::Remove => Some(Lane::Transfer),
-            Self::Task => Some(Lane::Module),
+            Self::Task | Self::Load => Some(Lane::Module),
             Self::Export => Some(Lane::Export),
             Self::Prepare | Self::Develop | Self::Artifacts | Self::Collect | Self::Analysis => {
                 None
@@ -752,6 +754,7 @@ fn capability_activity(record: &JobRecord) -> ActivitySpec {
         JobKind::Install => (INSTALL, "Installing resource"),
         JobKind::Remove => (REMOVE, "Removing resource"),
         JobKind::Task => ("module.task", "Running task"),
+        JobKind::Load => (crate::capabilities::runtime::LOAD, "Loading model"),
         _ => ("export", "Exporting JPEG"),
     };
     let detail = match &record.resource_id {

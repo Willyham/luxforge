@@ -25,7 +25,7 @@ pub(crate) use input::source_identity;
 pub use input::{RepairInput, StaleReason};
 pub(crate) use module::CorrectionsModule;
 pub use query::StaleCorrection;
-pub(crate) use query::{new_top_input, stale_corrections};
+pub(crate) use query::{new_top_input, repair_stage, stale_corrections};
 pub(crate) use stroke::RepairCarrier;
 
 /// The repair layer's effect.

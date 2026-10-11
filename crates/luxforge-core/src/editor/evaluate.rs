@@ -625,6 +625,47 @@ impl EditorService {
     /// once here so a stack the host cannot evaluate is refused now. It binds the stack like
     /// [`Self::sample_entry`], so an unprepared source or artifact is `preparation-required`. A
     /// state read, a cached source verification and an `O(layers)` compile; no pixel is read.
+    /// Plan a task's host-planned stage read ([`crate::capabilities::read`]): the asset's current
+    /// entry bound as one immutable evaluation with its verified source and artifacts, the stage
+    /// `boundary` names and that stage's input identity. For the repair stage's input that is the
+    /// stage the repair layer receives — at its index, or the index a new one would take — read as
+    /// that layer receives it, and the identity a new top correction is generated against, which
+    /// `edit.accept-correction-patch` checks. `O(layers)`: the prefix is compiled, no pixel is
+    /// read. An unprepared source or artifact is `preparation-required`, as for `render.sample`.
+    pub(crate) fn stage_plan(
+        &self,
+        asset_id: &AssetId,
+        boundary: crate::capabilities::descriptor::ReadBoundary,
+    ) -> Result<crate::capabilities::read::StagePlan, Error> {
+        use crate::capabilities::descriptor::ReadBoundary;
+        let evaluation = self.exact_evaluation(asset_id, AnalysisSelection::Current)?;
+        evaluation.compiled()?;
+        let asset = self.head(asset_id)?.asset;
+        let (layer, input) = match boundary {
+            ReadBoundary::RepairInput => {
+                self.with_stage_context(&asset, evaluation.recipe(), None, |context| {
+                    crate::modules::corrections_repair_stage(context)
+                })?
+            }
+        };
+        let mode =
+            crate::render::MaskInputMode::for_layer(self.registry(), evaluation.recipe(), layer);
+        let size = crate::Stage {
+            width: input.dimensions[0],
+            height: input.dimensions[1],
+        };
+        Ok(crate::capabilities::read::StagePlan {
+            boundary,
+            evaluation,
+            stage: ReadStage::Before {
+                layer,
+                mode: mode.into(),
+            },
+            size,
+            input,
+        })
+    }
+
     pub(crate) fn sample_plan(&self, asset_id: &AssetId) -> Result<SamplePlan, Error> {
         // Samples are numbers sent to a provider, so a white balance the planes do not hold is
         // `preparation-required` here, as it is for `render.sample`.

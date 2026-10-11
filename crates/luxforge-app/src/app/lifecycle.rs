@@ -61,6 +61,11 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         // session reports until the photo surface has checked its GPU stage.
         renderer: super::renderer::launched(config.launch_renderer().refused()),
         tiles: Some(tiles),
+        // A developer run serves the deterministic fake to a local-runtime capability; a release
+        // build has no local inference until a runtime is configured.
+        inference: config
+            .developer
+            .then(luxforge_core::inference::fake::FakeInference::shared),
         ..HostConfig::unconfigured()
     }
 }

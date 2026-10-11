@@ -64,6 +64,7 @@ impl Publisher {
                         .notes("fail after publishing"),
                 ],
                 apply: None,
+                reads: None,
             }],
             ..ModuleDescriptor::default()
         };
