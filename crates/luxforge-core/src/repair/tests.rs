@@ -264,6 +264,62 @@ fn coverage_is_the_reference_bit_for_bit() {
     }
 }
 
+/// A stroke brushed back and forth is one pass: its coverage is the union of its capsules (the
+/// nearest segment's distance), so going back over pixels it already covers changes nothing. The
+/// painted path goes right, back left and right again over one row, and it is stored as the host
+/// stores it (decimated at its radius, every turn kept); its coverage, Clone and Heal are those of
+/// the single pass along the same row, value for value, and the reference's.
+#[test]
+fn a_stroke_brushed_back_and_forth_is_one_pass() {
+    let s = STAGE;
+    let row = |from: f64, to: f64| {
+        (0..=40).map(move |step| [from + (to - from) * f64::from(step) / 40.0, 80.0])
+    };
+    let painted: Vec<[f64; 2]> = row(40.0, 200.0)
+        .chain(row(200.0, 70.0))
+        .chain(row(70.0, 170.0))
+        .collect();
+    let input = texture(s, 9, 0.25, 0.5);
+    for kind in [Clone, Heal] {
+        for feather in [0.0, 50.0] {
+            let once = Op::new(kind, s, &[[40.0, 80.0], [200.0, 80.0]], 10.0)
+                .feather(feather)
+                .source(s, 0.0, 40.0);
+            let mut revisited = Op::new(kind, s, &painted, 10.0)
+                .feather(feather)
+                .source(s, 0.0, 40.0);
+            revisited.points = path::decimate(&revisited.points, revisited.radius).unwrap();
+            assert_eq!(
+                revisited.points.len(),
+                4,
+                "every turn is stored: {:?}",
+                revisited.points
+            );
+            let (a, b) = (once.core(s), revisited.core(s));
+            for y in 0..s.height {
+                for x in 0..s.width {
+                    assert_eq!(
+                        a.footprint.coverage(x, y).to_bits(),
+                        b.footprint.coverage(x, y).to_bits(),
+                        "{kind:?} feather {feather} at ({x}, {y})"
+                    );
+                }
+            }
+            assert_exact(
+                "back and forth",
+                s,
+                &input,
+                std::slice::from_ref(&revisited),
+            );
+            assert_eq!(
+                core_apply(s, &input, std::slice::from_ref(&once)),
+                core_apply(s, &input, std::slice::from_ref(&revisited)),
+                "{kind:?} feather {feather}"
+            );
+        }
+    }
+}
+
 fn reference_stage(stage: Stage) -> luxforge_reference::mask::Stage {
     luxforge_reference::mask::Stage::new(stage.width, stage.height)
 }
