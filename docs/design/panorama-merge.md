@@ -229,7 +229,9 @@ No component holds level 0 whole. The measurement task reports the real peaks; n
 
 ## Generalizing the merge boundary
 
-HDR's boundary was built for one kind. A panorama needs these changes. They also change the [HDR design](hdr-merge.md)'s stored shapes and commands, which are updated when they land.
+HDR's boundary was built for one kind. A panorama needs these changes. They also change the [HDR design](hdr-merge.md)'s stored shapes and commands, which describe them.
+
+The kinds, stack members, provenance, catalog format, commands, lane, ceilings, usage exemption and desktop words below are implemented. This build registers HDR's provider alone (`crates/luxforge-core/src/merge/providers.rs`): schemas list `hdr` as the only `kind`, a panorama request is refused `not-ready` naming `luxforge.panorama`, there are no panorama options, and a panorama merge's provenance, which no build writes yet, is read as `incompatible` while browse still shows its stack.
 
 - **Kinds.** `MergeKind` gains `Panorama` (`"panorama"`). `merges.kind` accepts it, and browse reads it rather than refusing it as `incompatible`.
 - **Stack members.** `merge_inputs.offset_ev` becomes nullable: HDR members keep their EV offset, while panorama members have none and carry their position in the stack's order. Browse's reference ordinal comes from the provenance's reference, not from the zero offset.

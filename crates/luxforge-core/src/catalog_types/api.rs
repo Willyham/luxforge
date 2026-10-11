@@ -15,12 +15,8 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
-use super::{ExposureOverride, MergeId, MergeKind};
-use crate::{
-    AssetId, PresetId, SettingsOrigin,
-    api::params::host_params,
-    merge::hdr::{AlignmentMode, DeghostMode},
-};
+use super::{HdrOptions, MergeId, MergeKind};
+use crate::{AssetId, PresetId, SettingsOrigin, api::params::host_params};
 use std::path::PathBuf;
 
 /// What a target list is, as every `targets` parameter's notes say.
@@ -306,34 +302,34 @@ host_params! {
 // Merges.
 
 /// What a merge's `targets` name, as its notes say.
-const MERGE_TARGETS: &str = "the bracket's 2 to 9 RAW frames: {kind: paths, paths: [...]}, {kind: files, file_ids: [...]}, {kind: assets, asset_ids: [...]} (photographs developed from them; never a merged result) or {kind: selection}, files and photographs alike";
-/// What a merge's `reference` names.
-const MERGE_REFERENCE: &str = "the input whose exposure and white balance the result keeps, by its path; default the metadata's median exposure, else the middle of the capture order";
-/// What a merge's `exposure_overrides` name.
-const MERGE_OVERRIDES: &str = "[{path, offset_ev}]: an input's EV offset from the reference, replacing what its metadata or the fit resolves";
+const MERGE_TARGETS: &str = "the frames to merge, as many as the kind takes (hdr: a bracket's 2 to 9 RAW frames): {kind: paths, paths: [...]}, {kind: files, file_ids: [...]}, {kind: assets, asset_ids: [...]} (photographs developed from them; never a merged result) or {kind: selection}, files and photographs alike";
+/// What a merge's `kind` names.
+const MERGE_KIND: &str = "what the merge makes: one of the kinds this build has a provider for; another kind is refused not-ready naming its provider";
+/// What a merge's `hdr` options are.
+const MERGE_HDR: &str = "an hdr merge's options, each defaulted when left out: {reference?: path, the input whose exposure and white balance the result keeps (default the metadata's median exposure, else the middle of the capture order); exposure_overrides?: [{path, offset_ev}], an input's EV offset from the reference, replacing what its metadata or the fit resolves; alignment?: auto | off (default auto, fitting each frame's rigid motion; off checks the framing only); deghost?: auto | off (default auto, showing each moving region from one exposure)}; validation on a request of another kind";
+
+/// The kinds a merge request may name: those this build has a provider for.
+fn merge_kinds() -> impl Iterator<Item = &'static str> {
+    crate::merge::providers::registered().map(MergeKind::as_str)
+}
 
 host_params! {
     /// `merge.plan`.
     pub(crate) struct MergePlanParams {
+        kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
         targets: Targets = json(MERGE_TARGETS),
-        reference: Option<PathBuf> = path().notes(MERGE_REFERENCE),
-        exposure_overrides: Option<Vec<ExposureOverride>> = json(MERGE_OVERRIDES),
-        alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto").notes("auto fits each frame's rigid motion; off checks the framing only"),
-        deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto").notes("auto shows each moving region from one exposure"),
+        hdr: Option<HdrOptions> = json(MERGE_HDR),
     }
 }
 
 host_params! {
     /// `merge.create`: Import merged (the default) or, with `add_to_development_set`, Pick merged.
     pub(crate) struct MergeCreate {
-        kind: MergeKind = enumeration(["hdr"]),
+        kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
         targets: Targets = json(MERGE_TARGETS),
         mutation: MutationRequest,
         plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
-        reference: Option<PathBuf> = path().notes(MERGE_REFERENCE),
-        exposure_overrides: Option<Vec<ExposureOverride>> = json(MERGE_OVERRIDES),
-        alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto"),
-        deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto"),
+        hdr: Option<HdrOptions> = json(MERGE_HDR),
         folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the folder merge.plan proposes"),
         add_to_development_set: Option<bool> = boolean().default(false).notes("Pick merged: append the result to the current development set in the same library change that publishes it, or start a one-result set when there is none; false (Import merged) leaves the set as it is"),
         set_id: Option<super::DevelopmentSetId> = name().notes("with add_to_development_set: the set the client believes is current, refused with conflict unless it is; ignored without it"),
@@ -361,10 +357,8 @@ host_params! {
     pub(crate) struct MergeRerun {
         merge_id: MergeId = string(64).notes("merge-…: the merge whose recorded inputs to merge again"),
         mutation: MutationRequest,
-        reference: Option<PathBuf> = path().notes("default the recorded reference"),
-        exposure_overrides: Option<Vec<ExposureOverride>> = json("default the recorded overrides; [] clears them"),
-        alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).notes("default the recorded mode"),
-        deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).notes("default the recorded mode"),
+        kind: Option<MergeKind> = enumeration(merge_kinds()).notes("the recorded merge's kind; validation when it names another"),
+        hdr: Option<HdrOptions> = json("an hdr merge's options as merge.create takes them, each left out defaulting to the recorded one: {reference?, exposure_overrides? ([] clears the recorded ones), alignment?, deghost?}; validation for a merge of another kind"),
         folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the replaced result's folder"),
     }
 }
@@ -423,8 +417,8 @@ host_params! {
     /// `stack.inspect`.
     pub(crate) struct StackInspect {
         merge_id: super::MergeId = name().notes("a merge, merge-…"),
-        from: Option<u32> = integer(0, crate::merge::hdr::MAX_INPUTS as i64).default(0).notes("the ordinal of the first original"),
-        limit: Option<usize> = integer(1, crate::merge::hdr::MAX_INPUTS as i64).default(crate::merge::hdr::MAX_INPUTS as i64),
+        from: Option<u32> = integer(0, MergeKind::MAX_STACK as i64).default(0).notes("the ordinal of the first original"),
+        limit: Option<usize> = integer(1, MergeKind::MAX_STACK as i64).default(MergeKind::MAX_STACK as i64),
     }
 }
 
@@ -660,13 +654,13 @@ mod contract_table {
             "stack.inspect",
             "StackInspection",
             &[Validation, Incompatible, CatalogError],
-            "an HDR stack's result and a page of its originals with EV offsets, availability and reason, pick and catalog identity",
+            "a stack's kind, result and a page of its originals with, in an HDR stack, EV offsets, availability and reason, pick and catalog identity",
         ),
         method::<StackSetExpanded>(
             "stack.set-expanded",
             "ViewSummary",
             &[Validation, ResourceLimit, Conflict, CatalogError],
-            "how the caller shows an HDR stack, collapsed, expanded or all originals, evaluating its view again; session state",
+            "how the caller shows a stack of any kind, collapsed, expanded or all originals, evaluating its view again; session state",
         ),
         method::<PickSet>(
             "pick.set",

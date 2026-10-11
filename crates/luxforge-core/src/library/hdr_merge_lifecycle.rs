@@ -10,7 +10,8 @@ use crate::{
     artifacts::derived_source::{payload_work, read_derived_source},
     catalog_types::{
         AssetRowId, Collection, CollectionId, CollectionKind, HdrDevelopment, HdrParameters,
-        HdrResolution, MERGE_PROVENANCE_FORMAT, MembershipValue, MergeInput, MergeProvider,
+        HdrResolution, MERGE_PROVENANCE_FORMAT, MembershipValue, MergeInput, MergeParameters,
+        MergeProvider, MergeResolution,
     },
     editor::{distinct_jpeg, insert_collection, mutation},
     index::volume_of,
@@ -124,14 +125,14 @@ impl Bench {
                 version: 1,
             },
             inputs: merge_inputs,
-            parameters: HdrParameters {
+            parameters: MergeParameters::Hdr(HdrParameters {
                 alignment: crate::merge::hdr::AlignmentOptions {
                     alignment: AlignmentMode::Auto,
                     deghost,
                 },
                 ..HdrParameters::default()
-            },
-            resolved: HdrResolution {
+            }),
+            resolved: MergeResolution::Hdr(HdrResolution {
                 exposures: ResolvedExposures {
                     reference,
                     reference_origin: ReferenceOrigin::ZeroBias,
@@ -203,7 +204,7 @@ impl Bench {
                     highlight_extended: 40,
                     ..Default::default()
                 },
-            },
+            }),
         }
     }
 
@@ -246,11 +247,11 @@ impl Bench {
         ) -> Result<Vec<(LibraryItem, Desired)>, Error>,
     ) -> Result<PublishedMerge, Error> {
         let folder = self.folder();
-        let volume = volume_of(&provenance.reference().path, 1).unwrap();
+        let volume = volume_of(&provenance.reference_input().path, 1).unwrap();
         let name = format!(
             "{} HDR",
             provenance
-                .reference()
+                .reference_input()
                 .path
                 .file_stem()
                 .unwrap()
@@ -522,7 +523,7 @@ fn hdr_merge_lifecycle_publication_survives_index_deletion_and_reopening() {
     assert_eq!(record.source_id, source.id);
     assert_eq!(record.state, MergeState::Active);
     assert_eq!(record.provenance, provenance);
-    let members: Vec<(PathBuf, Option<AssetId>, f64)> = record
+    let members: Vec<(PathBuf, Option<AssetId>, Option<f64>)> = record
         .members
         .iter()
         .map(|member| {
@@ -536,9 +537,13 @@ fn hdr_merge_lifecycle_publication_survives_index_deletion_and_reopening() {
     assert_eq!(
         members,
         [
-            (bench.files[0].clone(), None, -1.0),
-            (bench.files[1].clone(), Some(bench.developed.clone()), 0.0),
-            (bench.files[2].clone(), None, 1.0),
+            (bench.files[0].clone(), None, Some(-1.0)),
+            (
+                bench.files[1].clone(),
+                Some(bench.developed.clone()),
+                Some(0.0)
+            ),
+            (bench.files[2].clone(), None, Some(1.0)),
         ]
     );
     let claimed: Vec<(String, String)> = bench
@@ -839,6 +844,7 @@ fn hdr_merge_lifecycle_one_active_stack_per_input() {
         [StackClaim {
             path: bench.files[2].clone(),
             merge_id: first.merge_id.clone(),
+            kind: MergeKind::Hdr,
             result_asset_id: first.result.clone(),
         }]
     );
@@ -1033,7 +1039,7 @@ fn hdr_merge_lifecycle_publication_rechecks_its_inputs() {
             "format",
             &kind,
             ErrorKind::Incompatible,
-            "provenance format 2 is not supported",
+            "provenance format 3 is not supported",
         ),
     ] {
         let error = bench

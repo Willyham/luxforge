@@ -517,7 +517,7 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
     // for a fit and no folder holds them yet.
     let plan = bench.ok(
         "merge.plan",
-        json!({"targets": {"kind": "paths", "paths": paths}}),
+        json!({"kind": "hdr", "targets": {"kind": "paths", "paths": paths}}),
     );
     assert_eq!(plan["kind"], "hdr");
     assert_eq!(plan["suitable"], true, "{plan}");
@@ -532,11 +532,11 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
             .unwrap()
             .contains("folder.create")
     );
-    assert_eq!(plan["provider"]["module"], job::PROVIDER_MODULE);
+    assert_eq!(plan["provider"]["module"], MergeKind::Hdr.module());
     assert_eq!(plan["provider"]["available"], true);
     assert_eq!(
         plan["estimates"]["temp_ceiling_bytes"],
-        json!(job::TEMP_CEILING)
+        json!(MergeKind::Hdr.temp_ceiling())
     );
     assert_eq!(bench.reads(), 0, "planning reads no pixels");
 
@@ -553,7 +553,7 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
     // A plan that no longer matches its options is refused.
     let mut stale = bench.create_params(0, "stale");
     stale["plan_id"] = plan["plan_id"].clone();
-    stale["deghost"] = json!("off");
+    stale["hdr"] = json!({"deghost": "off"});
     assert_eq!(bench.failure("merge.create", stale)["code"], "conflict");
 
     // Held as it aligns, the job reports its stage and what it holds.
@@ -576,8 +576,11 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
         json!(3 * pixels * job::SPOOL_PIXEL)
     );
     assert_eq!(accounting["development_bytes"], json!(pixels * 12));
-    assert_eq!(accounting["scratch_limit_bytes"], json!(job::SCRATCH_LIMIT));
-    assert!(accounting["scratch_peak_bytes"].as_u64().unwrap() <= job::SCRATCH_LIMIT);
+    assert_eq!(
+        accounting["scratch_limit_bytes"],
+        json!(MergeKind::Hdr.scratch_limit())
+    );
+    assert!(accounting["scratch_peak_bytes"].as_u64().unwrap() <= MergeKind::Hdr.scratch_limit());
     assert_eq!(bench.spools().len(), 3, "one spool file an input");
     // The same request again is the same job, and so is the same merge asked for anew.
     assert_eq!(
@@ -629,10 +632,13 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
     assert_eq!(inspected["state"], "active");
     assert_eq!(inspected["source"]["status"], "available", "{inspected}");
     assert_eq!(inspected["rerunnable"], true);
-    assert_eq!(inspected["provider"]["version"], job::PROVIDER_VERSION);
+    assert_eq!(
+        inspected["provider"]["version"],
+        crate::merge::providers::HDR_VERSION
+    );
     assert_eq!(
         inspected["provenance"]["provider"],
-        json!({"module": job::PROVIDER_MODULE, "version": job::PROVIDER_VERSION})
+        json!({"module": MergeKind::Hdr.module(), "version": crate::merge::providers::HDR_VERSION})
     );
     for input in inspected["inputs"].as_array().unwrap() {
         assert_eq!(input["file"], "available");
@@ -858,7 +864,7 @@ fn hdr_merge_job_queue_pressure_slow_reads_and_disconnect() {
     // While the read is held, the owner answers.
     let plan = bench.ok(
         "merge.plan",
-        json!({"targets": {"kind": "paths", "paths": bench.paths(2)}}),
+        json!({"kind": "hdr", "targets": {"kind": "paths", "paths": bench.paths(2)}}),
     );
     assert_eq!(plan["suitable"], true);
     // The waiting job's retry is that job.
@@ -951,12 +957,12 @@ fn hdr_merge_job_refuses_past_the_temp_ceiling_a_full_disk_and_the_scratch_limit
     let cases: [(&str, Limit, &str); 4] = [
         (
             "ceiling",
-            Box::new(|lane| lane.limits.temp_ceiling = 1 << 20),
+            Box::new(|lane| lane.limits_mut(MergeKind::Hdr).temp_ceiling = 1 << 20),
             "ceiling_bytes",
         ),
         (
             "free-space",
-            Box::new(|lane| lane.limits.available = Some(1 << 20)),
+            Box::new(|lane| lane.limits_mut(MergeKind::Hdr).available = Some(1 << 20)),
             "available_bytes",
         ),
         (
@@ -966,7 +972,7 @@ fn hdr_merge_job_refuses_past_the_temp_ceiling_a_full_disk_and_the_scratch_limit
         ),
         (
             "scratch",
-            Box::new(|lane| lane.limits.scratch = 1 << 20),
+            Box::new(|lane| lane.limits_mut(MergeKind::Hdr).scratch = 1 << 20),
             "",
         ),
     ];
@@ -988,19 +994,19 @@ fn hdr_merge_job_refuses_past_the_temp_ceiling_a_full_disk_and_the_scratch_limit
             "resource-limit"
         );
         bench.lane(|lane| {
-            lane.limits = Limits::default();
+            *lane.limits_mut(MergeKind::Hdr) = Limits::of(MergeKind::Hdr);
             lane.hooks = Hooks::default();
         });
     }
     assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 0);
     // The plan reports the limits a merge is held to.
-    bench.lane(|lane| lane.limits.available = Some(123));
+    bench.lane(|lane| lane.limits_mut(MergeKind::Hdr).available = Some(123));
     let plan = bench.ok(
         "merge.plan",
-        json!({"targets": {"kind": "paths", "paths": bench.paths(0)}}),
+        json!({"kind": "hdr", "targets": {"kind": "paths", "paths": bench.paths(0)}}),
     );
     assert_eq!(plan["estimates"]["available_bytes"], 123);
-    bench.lane(|lane| lane.limits = Limits::default());
+    bench.lane(|lane| *lane.limits_mut(MergeKind::Hdr) = Limits::of(MergeKind::Hdr));
     assert_eq!(bench.merged(0, "fits")["inputs"], 3);
     bench.originals_unchanged();
 }
@@ -1390,7 +1396,7 @@ fn hdr_merge_job_rerun_takes_the_replaced_results_place_in_the_development_set()
 
     let rerun = bench.ok(
         "merge.rerun",
-        json!({"merge_id": old["merge_id"], "deghost": "off", "mutation": envelope("rerun")}),
+        json!({"merge_id": old["merge_id"], "hdr": {"deghost": "off"}, "mutation": envelope("rerun")}),
     );
     let new = bench.settled(&rerun["job_id"]);
     assert_eq!(new["status"], "ready", "{new}");
@@ -1529,7 +1535,7 @@ fn hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
     let reads = bench.reads();
     let rerun = bench.ok(
         "merge.rerun",
-        json!({"merge_id": first["merge_id"], "deghost": "off", "mutation": envelope("rerun")}),
+        json!({"merge_id": first["merge_id"], "hdr": {"deghost": "off"}, "mutation": envelope("rerun")}),
     );
     let second = bench.settled(&rerun["job_id"]);
     assert_eq!(second["status"], "ready", "{second}");
@@ -1540,7 +1546,10 @@ fn hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
     let old = bench.ok("merge.inspect", json!({"merge_id": first["merge_id"]}));
     assert_eq!(old["state"], "removed");
     let new = bench.ok("merge.inspect", json!({"merge_id": second["merge_id"]}));
-    assert_eq!(new["parameters"]["alignment"]["deghost"], "off", "{new}");
+    assert_eq!(
+        new["parameters"]["hdr"]["alignment"]["deghost"], "off",
+        "{new}"
+    );
 
     // An exact rerun of a whole source gives the new result the same source, merging nothing.
     let exact = bench.ok(
@@ -1579,10 +1588,13 @@ fn hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
 
     // Another provider version: reruns are incompatible.
     bench.lane(|lane| {
-        lane.provider = Ok(MergeProvider {
-            module: job::PROVIDER_MODULE.into(),
-            version: job::PROVIDER_VERSION + 1,
-        });
+        lane.set_provider(
+            MergeKind::Hdr,
+            Ok(MergeProvider {
+                module: MergeKind::Hdr.module().into(),
+                version: crate::merge::providers::HDR_VERSION + 1,
+            }),
+        );
     });
     let incompatible = bench.failure(
         "merge.rerun",
@@ -1594,10 +1606,15 @@ fn hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
     assert!(inspected["rerun_reason"].is_string());
 
     // No provider: nothing is created or rerun, and the plan says why.
-    bench.lane(|lane| lane.provider = Err("the HDR module is not installed".into()));
+    bench.lane(|lane| {
+        lane.set_provider(
+            MergeKind::Hdr,
+            Err("the HDR module is not installed".into()),
+        )
+    });
     let plan = bench.ok(
         "merge.plan",
-        json!({"targets": {"kind": "paths", "paths": bench.paths(0)}}),
+        json!({"kind": "hdr", "targets": {"kind": "paths", "paths": bench.paths(0)}}),
     );
     assert_eq!(plan["provider"]["available"], false);
     assert_eq!(
@@ -1613,7 +1630,12 @@ fn hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
     );
 
     // A changed input: inspection reports it, and a rerun is refused naming it.
-    bench.lane(|lane| lane.provider = Ok(job::provider()));
+    bench.lane(|lane| {
+        lane.set_provider(
+            MergeKind::Hdr,
+            Ok(crate::merge::providers::provider(MergeKind::Hdr).unwrap()),
+        )
+    });
     fs::write(&bench.files[2], b"edited elsewhere").unwrap();
     let inspected = bench.ok("merge.inspect", json!({"merge_id": third["merge_id"]}));
     assert_eq!(inspected["inputs"][2]["file"], "changed", "{inspected}");
@@ -1669,7 +1691,7 @@ fn hdr_merge_job_and_an_editor_never_wait_on_each_other() {
     bench.developer.reading.shut();
     let rerun = bench.ok(
         "merge.rerun",
-        json!({"merge_id": first["merge_id"], "deghost": "off", "mutation": envelope("rerun")}),
+        json!({"merge_id": first["merge_id"], "hdr": {"deghost": "off"}, "mutation": envelope("rerun")}),
     );
     bench.developer.reading.wait_reached(4, "the rerun's read");
     assert!(prepared(&bench)["rgba"].is_array());
@@ -1678,3 +1700,6 @@ fn hdr_merge_job_and_an_editor_never_wait_on_each_other() {
     assert_eq!(bench.settled(&rerun["job_id"])["status"], "ready");
     bench.originals_unchanged();
 }
+
+#[path = "merge_kind_tests.rs"]
+mod merge_kind;

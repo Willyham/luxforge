@@ -1,6 +1,6 @@
-//! HDR stacks in views (`docs/design/hdr-merge.md`, "The stack and the originals"): which active
-//! stacks a source holds, how a view shows each, and the originals `stack.inspect` and expanded
-//! stacks list.
+//! Merge stacks of every kind in views (`docs/design/hdr-merge.md`, "The stack and the
+//! originals"): which active stacks a source holds, how a view shows each, and the originals
+//! `stack.inspect` and expanded stacks list.
 //!
 //! - **Reading.** Over files, the active stacks claiming a path in the source's folders
 //!   (`stack_claims`, one range read per outermost folder) bring their results into the view as
@@ -52,17 +52,18 @@ pub(super) struct Stacks {
     pub in_set: HashSet<AssetRowId>,
 }
 
-/// One active stack: its merge, its result's row, and its originals in order.
+/// One active stack: its merge and kind, its result's row, and its originals in order.
 pub(super) struct Stack {
     pub merge_id: MergeId,
+    pub kind: MergeKind,
     pub result: AssetRowId,
     pub inputs: Vec<StackInput>,
 }
 
-/// One original: its place, EV offset, and the source's item that is it, if any.
+/// One original: its place, EV offset in an HDR stack, and the source's item that is it, if any.
 pub(super) struct StackInput {
     pub ordinal: u32,
-    pub offset_ev: f64,
+    pub offset_ev: Option<f64>,
     pub item: Option<ViewItem>,
 }
 
@@ -103,12 +104,13 @@ impl Stacks {
     }
 }
 
-/// One active stack as read: its merge, result row and originals' ordinal, path, offset and
+/// One active stack as read: its merge, kind, result row and originals' ordinal, path, offset and
 /// developed photograph's row.
 pub(super) struct Loaded {
     merge_id: MergeId,
+    kind: MergeKind,
     result: AssetRowId,
-    inputs: Vec<(u32, String, f64, Option<AssetRowId>)>,
+    inputs: Vec<(u32, String, Option<f64>, Option<AssetRowId>)>,
 }
 
 /// The paths the active stacks claim under `folders` (each the outermost of the source's folders),
@@ -137,7 +139,7 @@ pub(super) fn claimed(
 /// result's row and each original's developed photograph (named by the merge, or developed from
 /// its path since), not in Removed.
 const STACK_ROWS: &str = "SELECT i.merge_id, r.row_id, i.ordinal, i.path, i.offset_ev,
-         coalesce(a1.row_id, a2.row_id)
+         coalesce(a1.row_id, a2.row_id), m.kind
      FROM merge_inputs i
      JOIN merge_stacks s ON s.merge_id = i.merge_id AND s.state = 'active'
      JOIN merges m ON m.id = i.merge_id
@@ -152,16 +154,20 @@ fn loaded(rows: &mut rusqlite::Rows<'_>) -> Result<Vec<Loaded>, Error> {
         let input = (
             row.get::<_, i64>(2)? as u32,
             row.get::<_, String>(3)?,
-            row.get::<_, f64>(4)?,
+            row.get::<_, Option<f64>>(4)?,
             row.get::<_, Option<i64>>(5)?.map(AssetRowId),
         );
         match stacks.last_mut() {
             Some(last) if last.merge_id.as_str() == merge => last.inputs.push(input),
-            _ => stacks.push(Loaded {
-                merge_id: MergeId::parse(merge)?,
-                result: AssetRowId(row.get(1)?),
-                inputs: vec![input],
-            }),
+            _ => {
+                let merge_id = MergeId::parse(merge)?;
+                stacks.push(Loaded {
+                    kind: crate::library::merge::stored_kind(&merge_id, &row.get::<_, String>(6)?)?,
+                    merge_id,
+                    result: AssetRowId(row.get(1)?),
+                    inputs: vec![input],
+                });
+            }
         }
     }
     Ok(stacks)
@@ -201,6 +207,7 @@ pub(super) fn over_files(loaded: Vec<Loaded>, files: &HashMap<String, ViewItem>)
             .into_iter()
             .map(|stack| Stack {
                 merge_id: stack.merge_id,
+                kind: stack.kind,
                 result: stack.result,
                 inputs: stack
                     .inputs
@@ -230,6 +237,7 @@ pub(super) fn over_photos(loaded: Vec<Loaded>, holds: impl Fn(AssetRowId) -> boo
             })
             .map(|stack| Stack {
                 merge_id: stack.merge_id,
+                kind: stack.kind,
                 result: stack.result,
                 inputs: stack
                     .inputs
@@ -290,15 +298,16 @@ pub(super) fn arrange(
     let mut moved: HashSet<ViewItem> = HashSet::new();
     for stack in &stacks.list {
         let leader = ViewItem::Photo(stack.result);
-        let exposures = stack.inputs.len() as u32;
+        let size = stack.inputs.len() as u32;
         let original = |input: &StackInput, role, outside_filter| RowStack {
             merge_id: stack.merge_id.clone(),
+            kind: stack.kind,
             role,
-            exposures,
+            size,
             collapsed: 0,
             expansion: None,
             ordinal: Some(input.ordinal),
-            offset_ev: Some(input.offset_ev),
+            offset_ev: input.offset_ev,
             outside_filter,
         };
         if !visible.contains(&leader) {
@@ -378,8 +387,9 @@ pub(super) fn arrange(
             leader,
             RowStack {
                 merge_id: stack.merge_id.clone(),
+                kind: stack.kind,
                 role: StackRole::Leader,
-                exposures,
+                size,
                 collapsed,
                 expansion: Some(expansion),
                 ordinal: None,
@@ -440,17 +450,10 @@ pub(crate) fn inspect(
         .optional()?;
     let (kind, state, result, file_name, removed, result_row) =
         row.ok_or_else(|| Error::validation(format!("unknown merge {merge}")))?;
-    let kind = match kind.as_str() {
-        "hdr" => MergeKind::Hdr,
-        other => {
-            return Err(Error::incompatible(format!(
-                "merge {merge}: unknown kind {other}; it is kept unchanged"
-            )));
-        }
-    };
+    let kind = crate::library::merge::stored_kind(merge, &kind)?;
     let members = crate::library::merge::members(connection, merge)?;
-    let exposures = members.len() as u32;
-    let reference = reference_ordinal(&members);
+    let size = members.len() as u32;
+    let reference = crate::library::merge::reference(connection, merge)?;
     let page: Vec<_> = members
         .into_iter()
         .skip(from as usize)
@@ -481,20 +484,10 @@ pub(crate) fn inspect(
         removed: removed.is_some(),
         in_development_set: in_set(connection)?.contains(&AssetRowId(result_row)),
         expansion,
-        exposures,
+        size,
         from,
         originals,
     })
-}
-
-/// The reference original: the one at no EV offset, every other's offset being from it; the
-/// middle one if none is.
-fn reference_ordinal(members: &[crate::catalog_types::StackMember]) -> Option<u32> {
-    members
-        .iter()
-        .find(|member| member.offset_ev == 0.0)
-        .or_else(|| members.get(members.len() / 2))
-        .map(|member| member.ordinal)
 }
 
 /// What the catalog and the index say of one original now.

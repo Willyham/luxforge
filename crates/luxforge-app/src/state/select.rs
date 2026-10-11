@@ -984,9 +984,11 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
 }
 
 /// A moment's header buttons: for a bracket over files, Pick all while its frames are not all
-/// picked, then Import merged and the primary Pick merged while a merge takes that many frames.
+/// picked, then Import merged and the primary Pick merged while an HDR merge, a bracket's kind,
+/// takes that many frames.
 fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<MomentAction> {
-    use super::select_merge::{MAX_FRAMES, MIN_FRAMES, MergeMode};
+    use super::select_merge::MergeMode;
+    use luxforge_core::catalog_types::MergeKind;
     let mut actions = Vec::new();
     if !bracket_of_files {
         return actions;
@@ -994,7 +996,7 @@ fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<Momen
     if picked < frames {
         actions.push(MomentAction::PickAll(frames));
     }
-    if (MIN_FRAMES..=MAX_FRAMES).contains(&frames) {
+    if MergeKind::Hdr.inputs().contains(&(frames as usize)) {
         actions.push(MomentAction::Merge(MergeMode::Import));
         actions.push(MomentAction::Merge(MergeMode::Pick));
     }
