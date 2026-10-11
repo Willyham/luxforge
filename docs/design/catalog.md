@@ -399,19 +399,19 @@ Not built: as for a photograph sent back, the owner's clients' sessions are not 
 | `←` `→`, `↑` `↓` | Frames; moments (loupe) or rows (grid); with `Shift`, extend the selection | Previous and next in the development set |
 | `1`–`9` | Jump to that frame of the moment (loupe) | `1` stays 100% |
 | `P` | Pick or clear | — |
-| `Z`, `C`, `S` | 100% focus check; compare the moment; collapse or expand a burst | — |
+| `Z`, `C`, `S` | 100% focus check; compare the moment; collapse or expand a burst, or an HDR stack from its result or an original | — |
 | `Cmd+Return` | Develop the picks in view | — |
 | `Cmd+O` | Add a folder… | Open a single file |
 | `Cmd+A`, `Cmd+D`, `Cmd+F` | Select all in view, select none, search | — |
 | `Cmd+Z`, `Shift+Cmd+Z` | Library undo and redo | The photograph's history |
 | `Tab`, `Cmd+Option+F` | Side panels | Side panels, filmstrip |
-| `Delete` | Remove from catalog… (catalog views only) | — |
+| `Delete` | Remove from catalog… (catalog views); Remove merge of the active HDR result (over files) | — |
 
 Letters act only when no text field has focus, from the one keymap table (`app/keymap.rs`).
 
 ### HDR stacks and the development set
 
-The [HDR design](hdr-merge.md#the-stack-and-the-originals)'s stacks and session development set are built in the core and the API; the desktop draws no stack, badge or merge control yet, and its views keep the shapes they had.
+The [HDR design](hdr-merge.md#the-stack-and-the-originals)'s stacks and session development set are built in the core and the API; the desktop's merge actions, pending row, badges and stack disclosure are described [in the HDR design](hdr-merge.md#in-the-desktop).
 
 **The development set** (`crate::library::development_set`, `api/owner/library/development_set_methods.rs`) is the owner's, one per catalog session: a current set with an identity (`set-…`) and a revision that every replacement and membership change moves on, announced on the change's event as `development_set_revision`. `development-set.replace` (Develop N's photographs, a view's around the one opened, one photograph, or none) starts a new set and retires the old one; it is session state, not a library change, and a retry is answered as the first was. `development-set.add` and `.remove` are library changes of `set-member` items (a member's place in the set's order, which only grows, so an undo puts a member back between the members it was between), each photograph once, every other member and its order untouched; naming `set_id` refuses a change meant for a set since replaced, by name, with `conflict`; removing from no set is a no-op, and adding to none starts a set of those photographs. Opening the catalog retires the set a session left; a retired set keeps only the members and the set row a library change still names, for that change's undo and redo, and Empty Removed takes a photograph's memberships with it. The publication of a merge captures the set when it is asked for (`development_set::capture`) and, for Pick merged, appends the result in the same change (`development_set::membership_for_publication`), refusing the whole publication with `conflict` (`data.set_id`, `data.current`) when the set was replaced meanwhile; Remove and Put back of a result carry its memberships in their change, and their undo restores only those.
 
