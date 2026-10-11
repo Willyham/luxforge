@@ -534,7 +534,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .ok_or_else(|| format!("merging: no merge.create was sent: {sent}"))?;
     ensure(
         create["params"]["kind"] == "hdr"
-            && create["params"].get("add_to_development_set").is_none()
             && create["params"]["mutation"]["actor"] == "desktop",
         format!("merging: Merge HDR sent {create}"),
     )?;

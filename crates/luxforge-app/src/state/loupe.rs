@@ -1057,7 +1057,6 @@ mod tests {
             unavailable: 0,
             stacks: 0,
             collapsed: 0,
-            in_development_set: 0,
             groups: GroupLayout {
                 moments: moments
                     .iter()
@@ -1137,7 +1136,6 @@ mod tests {
             availability: FileAvailability::Available,
             preview: PreviewState::Ready,
             stack: None,
-            in_development_set: false,
             reason: None,
         }
     }

@@ -32,7 +32,6 @@ fn summary(count: u32, groups: GroupLayout) -> ViewSummary {
         unavailable: 0,
         stacks: 0,
         collapsed: 0,
-        in_development_set: 0,
         groups,
         library_sequence: LibraryChangeSeq(1),
         index_revision: 1,
@@ -1016,7 +1015,6 @@ fn row(position: u32) -> ViewRow {
         availability: FileAvailability::Available,
         preview: PreviewState::Pending,
         stack: None,
-        in_development_set: false,
         reason: None,
     }
 }

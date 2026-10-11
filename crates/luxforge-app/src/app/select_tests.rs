@@ -51,7 +51,6 @@ fn summary(count: u32) -> ViewSummary {
         unavailable: 0,
         stacks: 0,
         collapsed: 0,
-        in_development_set: 0,
         groups: GroupLayout {
             days: vec![DayGroup {
                 day: LocalDay::from_ymd(2026, 9, 12),
