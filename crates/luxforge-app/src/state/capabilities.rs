@@ -38,8 +38,9 @@ pub(crate) fn declares(module: &ModuleDescriptor) -> bool {
 }
 
 /// `module.status` as the desktop reads it: every declared resource, how many grants and denials
-/// are recorded, and the module's recent jobs. The settings are read in full through
-/// `module.settings.read` instead.
+/// are recorded, and the module's recent jobs; for a module that holds models, its resident set
+/// and this machine's memory. The settings are read in full through `module.settings.read`
+/// instead.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub(crate) struct ModuleStatus {
     #[serde(default)]
@@ -48,6 +49,46 @@ pub(crate) struct ModuleStatus {
     pub(crate) permissions: PermissionCounts,
     #[serde(default)]
     pub(crate) jobs: Vec<JobRecord>,
+    #[serde(default)]
+    pub(crate) runtime: Option<RuntimeStatus>,
+    #[serde(default)]
+    pub(crate) machine: Option<MachineStatus>,
+}
+
+/// `module.status`'s `runtime`: the host's resident set as this module holds it, and the bytes
+/// every module's loaded models hold against the host's budget.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub(crate) struct RuntimeStatus {
+    #[serde(default)]
+    pub(crate) held_bytes: u64,
+    #[serde(default)]
+    pub(crate) budget_bytes: u64,
+    /// The host has a runtime to load models with.
+    #[serde(default)]
+    pub(crate) available: bool,
+    #[serde(default)]
+    pub(crate) models: Vec<ResidentModel>,
+}
+
+/// One of the module's models that is loaded or loading.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct ResidentModel {
+    pub(crate) resource_id: String,
+    /// `loaded` or `loading`.
+    pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) resident_bytes: u64,
+    #[serde(default)]
+    pub(crate) placement: Option<luxforge_core::inference::Placement>,
+    #[serde(default)]
+    pub(crate) in_use: bool,
+}
+
+/// `module.status`'s `machine`: this machine's memory as the host was told it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub(crate) struct MachineStatus {
+    #[serde(default)]
+    pub(crate) memory_bytes: Option<u64>,
 }
 
 /// `error.data.consent` of a `consent-required` failure: the scope a grant would cover, exactly as
@@ -85,6 +126,10 @@ pub(crate) enum Operation {
     Remove {
         resource: String,
     },
+    /// Release one loaded model of the module at once: `module.runtime.unload`.
+    Unload {
+        resource: String,
+    },
     Cancel {
         job: String,
     },
@@ -114,6 +159,7 @@ impl Operation {
             Self::Set { .. } => "set",
             Self::Install { .. } => "install",
             Self::Remove { .. } => "remove",
+            Self::Unload { .. } => "unload",
             Self::Cancel { .. } => "cancel",
             Self::RevokeAll => "revoke-all",
             Self::RunTask { .. } => "task",
@@ -505,7 +551,11 @@ fn resource_row(declared: &ResourceDescriptor, state: &ModuleCapabilities) -> Re
     ResourceRowModel {
         id: declared.id.clone(),
         title: declared.title.clone(),
-        detail: format!("v{} · {}", declared.version, human_bytes(declared.bytes)),
+        detail: format!(
+            "v{} · {}",
+            declared.version,
+            human_bytes(declared.total_bytes())
+        ),
         state: text,
         progress,
         action,

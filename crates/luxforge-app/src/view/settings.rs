@@ -7,11 +7,12 @@
 //! [usage statistics](../../../../docs/design/usage-statistics.md#settings-and-programmatic-parity)).
 use crate::{
     app::message::{
-        Message, settings::SettingsMessage, theme::ThemeMessage, usage::UsageMessage,
-        view::ViewMessage,
+        Message, capability::CapabilityMessage, settings::SettingsMessage, theme::ThemeMessage,
+        usage::UsageMessage, view::ViewMessage,
     },
     state::{
         MenuTarget,
+        models::{ModelRequest, ModelRow, ModelsModel, ResidentRow},
         preferences::{GeneralControl, GeneralRow, GeneralValue},
         settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
         themes::{FolderLine, ThemeRow},
@@ -92,6 +93,7 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
     let content = match open {
         SettingsTab::General => general(model),
         SettingsTab::Appearance => appearance(model),
+        SettingsTab::Models => models_tab(model.models.as_ref()),
         SettingsTab::Experiments => experiments(model),
         SettingsTab::Privacy => privacy(model.privacy.as_ref()),
     };
@@ -139,9 +141,178 @@ fn tab_icon(tab: SettingsTab) -> Icon {
         SettingsTab::General => Icon::Settings,
         // The colour drop the Masks panel's colour range draws: the interface's colours.
         SettingsTab::Appearance => Icon::Colour,
+        SettingsTab::Models => Icon::Spark,
         SettingsTab::Experiments => Icon::Beaker,
         SettingsTab::Privacy => Icon::Lock,
     }
+}
+
+/// What Models says before its rows.
+pub(crate) const MODELS_INTRO: &str = "Models run on this machine. Nothing loads until a tool \
+     needs it, and a loaded model is released after ten minutes unused.";
+
+/// The Models tab: the machine line, every known model with its state, size, trade-off, any use
+/// restriction, what it needs and Remove, then the models loaded now with Unload now. Each row's
+/// menu copies the request its button sends.
+fn models_tab(model: Option<&ModelsModel>) -> Element<'_, Message> {
+    let mut content = column![title("Models"), caption(MODELS_INTRO)]
+        .spacing(theme::SPACING)
+        .width(Length::Fill);
+    let Some(tab) = model else {
+        return content.into();
+    };
+    if let Some(machine) = &tab.machine {
+        content = content.push(label(machine.clone()));
+    }
+    if tab.loading {
+        content = content.push(caption("Reading the models\u{2026}"));
+    }
+    for error in &tab.errors {
+        content = content.push(error_caption(format!("Could not read the models: {error}")));
+    }
+    for model_row in &tab.rows {
+        content = content
+            .push(horizontal_rule())
+            .push(model_row_view(model_row));
+    }
+    content = content
+        .push(horizontal_rule())
+        .push(section_label("Loaded now"));
+    if let Some(line) = &tab.resident_line {
+        content = content.push(caption(line.clone()));
+    }
+    if tab.resident.is_empty() {
+        content = content.push(caption("No model is loaded."));
+    }
+    for resident in &tab.resident {
+        content = content.push(resident_row_view(resident));
+    }
+    content.into()
+}
+
+/// The trailing More button and, when open, the inline menu whose one item copies `copy`.
+fn copy_menu<'a>(
+    name: &str,
+    open: bool,
+    target: MenuTarget,
+    copy: Message,
+) -> (Element<'a, Message>, Option<Element<'a, Message>>) {
+    let button = icon_button(
+        &IconButtonModel {
+            icon: Icon::More,
+            tooltip: format!("{name} actions"),
+            enabled: true,
+            selected: open,
+        },
+        Some(Message::View(ViewMessage::OpenMenu(target))),
+    );
+    let menu = open.then(|| {
+        inline_menu(vec![
+            ("Copy as JSON request".to_owned(), copy),
+            ("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu)),
+        ])
+    });
+    (button, menu)
+}
+
+/// One model: its title over its version, size and state, its trade-off, its use restriction,
+/// what it needs and, when this machine has too little memory, that it cannot be installed here;
+/// Remove when it is installed or a partial download is kept.
+fn model_row_view(model_row: &ModelRow) -> Element<'_, Message> {
+    let mut text = column![
+        label(model_row.title.clone()),
+        caption(format!("{} \u{b7} {}", model_row.detail, model_row.state)),
+    ]
+    .spacing(theme::ROW_SPACING)
+    .width(Length::Fill);
+    if let Some(tradeoff) = &model_row.tradeoff {
+        text = text.push(caption(tradeoff.clone()));
+    }
+    if let Some(restriction) = &model_row.use_restriction {
+        text = text.push(caption(restriction.clone()));
+    }
+    if let Some(requirement) = &model_row.requirement {
+        text = text.push(caption(requirement.clone()));
+    }
+    if model_row.fits == Some(false) {
+        text = text.push(error_caption(
+            "This machine has less memory than the model needs, so it cannot be installed here",
+        ));
+    }
+    let mut trailing = row![].spacing(theme::SPACING).align_y(Alignment::Center);
+    let mut menu = None;
+    if model_row.removable {
+        let remove = Message::Capability(CapabilityMessage::Remove {
+            module_id: model_row.module_id.clone(),
+            resource: model_row.resource_id.clone(),
+        });
+        trailing = trailing.push(text_button(
+            "Remove",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            model_row.enabled.then_some(remove),
+        ));
+        let (button, open) = copy_menu(
+            &model_row.title,
+            model_row.menu_open,
+            MenuTarget::Model {
+                module_id: model_row.module_id.clone(),
+                resource_id: model_row.resource_id.clone(),
+            },
+            Message::Capability(CapabilityMessage::CopyModelRequest {
+                module_id: model_row.module_id.clone(),
+                resource: model_row.resource_id.clone(),
+                request: ModelRequest::Remove,
+            }),
+        );
+        trailing = trailing.push(button);
+        menu = open;
+    }
+    let line = row![text, trailing]
+        .spacing(theme::SPACING * 2.0)
+        .align_y(Alignment::Start);
+    column![line].extend(menu).spacing(2.0).into()
+}
+
+/// One loaded model: its title over its state, resident size, backend and precision, and Unload
+/// now.
+fn resident_row_view(resident: &ResidentRow) -> Element<'_, Message> {
+    let text = column![
+        label(resident.title.clone()),
+        caption(resident.detail.clone())
+    ]
+    .spacing(theme::ROW_SPACING)
+    .width(Length::Fill);
+    let unload = Message::Capability(CapabilityMessage::Unload {
+        module_id: resident.module_id.clone(),
+        resource: resident.resource_id.clone(),
+    });
+    let (button, menu) = copy_menu(
+        &resident.title,
+        resident.menu_open,
+        MenuTarget::Resident {
+            module_id: resident.module_id.clone(),
+            resource_id: resident.resource_id.clone(),
+        },
+        Message::Capability(CapabilityMessage::CopyModelRequest {
+            module_id: resident.module_id.clone(),
+            resource: resident.resource_id.clone(),
+            request: ModelRequest::Unload,
+        }),
+    );
+    let line = row![
+        text,
+        text_button(
+            "Unload now",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            resident.enabled.then_some(unload),
+        ),
+        button,
+    ]
+    .spacing(theme::SPACING)
+    .align_y(Alignment::Center);
+    column![line].extend(menu).spacing(2.0).into()
 }
 
 /// The Privacy tab: the statistics switch beside the short disclosure, why statistics are off when

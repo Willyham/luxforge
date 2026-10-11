@@ -2,7 +2,7 @@
 //! `luxforge_testbase::ProofEndpoint` depends on no workspace crate, so it is handed this. The
 //! endpoint's own tests live here, against the core's real protocol.
 use luxforge_core::{
-    PROOF_ENCODER_PATH, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
+    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
     capabilities::data::{SAMPLE_GRID_BYTES, SAMPLE_GRID_SAMPLES},
     palette_bytes, proof_model_files,
 };
@@ -26,6 +26,7 @@ pub fn proof_protocol() -> ProofProtocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_core::PROOF_ENCODER_PATH;
     use luxforge_core::capabilities::data::sample_grid_body;
     use luxforge_testbase::{ProofAnswer, ProofEndpoint, TestServer};
     use std::{
