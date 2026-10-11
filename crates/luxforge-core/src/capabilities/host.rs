@@ -143,6 +143,13 @@ impl HostConfig {
     }
 }
 
+/// This machine's installed memory as the operating system reports it, for
+/// [`HostConfig::machine_memory_bytes`]: one system call or file read, `None` where the platform
+/// does not say.
+pub fn installed_memory_bytes() -> Option<u64> {
+    luxforge_process::system_info::installed_memory_bytes()
+}
+
 impl std::fmt::Debug for HostConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostConfig")

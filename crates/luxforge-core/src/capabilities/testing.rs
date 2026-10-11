@@ -359,7 +359,9 @@ impl Answer {
 
     /// One header field, after the status and before the body; its name is lowercased.
     pub(crate) fn header(&self, name: &str, value: &str) {
-        let _ = self.0.send(Piece::Header(name.to_ascii_lowercase(), value.to_owned()));
+        let _ = self
+            .0
+            .send(Piece::Header(name.to_ascii_lowercase(), value.to_owned()));
     }
 
     pub(crate) fn bytes(&self, bytes: &[u8]) {
@@ -521,6 +523,7 @@ pub(crate) fn proof_endpoint(api_key: &str) -> ProofEndpoint {
             wrong_palette: crate::palette_bytes([1.0, 1.0, 1.0]).to_vec(),
             grid_bytes: super::data::SAMPLE_GRID_BYTES,
             grid_samples: super::data::SAMPLE_GRID_SAMPLES,
+            models: crate::proof_model_files(),
         },
     )
 }

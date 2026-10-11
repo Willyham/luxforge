@@ -6,6 +6,13 @@ use super::{OsFamily, Raw, parse_cpuinfo, parse_mem_total};
 
 pub(super) const FAMILY: OsFamily = OsFamily::Linux;
 
+/// `MemTotal` from `/proc/meminfo`.
+pub(super) fn memory() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|meminfo| parse_mem_total(&meminfo))
+}
+
 pub(super) fn read() -> Raw {
     let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     let cpu = parse_cpuinfo(&cpuinfo);
@@ -23,9 +30,7 @@ pub(super) fn read() -> Raw {
         // Without topology fields (Arm kernels omit them) one logical processor is one core.
         physical_cores: cpu.physical.or(logical),
         logical_cores: logical,
-        memory_bytes: std::fs::read_to_string("/proc/meminfo")
-            .ok()
-            .and_then(|meminfo| parse_mem_total(&meminfo)),
+        memory_bytes: memory(),
         ..Raw::default()
     };
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

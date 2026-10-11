@@ -2,14 +2,15 @@
 //! `luxforge_testbase::ProofEndpoint` depends on no workspace crate, so it is handed this. The
 //! endpoint's own tests live here, against the core's real protocol.
 use luxforge_core::{
-    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
+    PROOF_ENCODER_PATH, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
     capabilities::data::{SAMPLE_GRID_BYTES, SAMPLE_GRID_SAMPLES},
-    palette_bytes,
+    palette_bytes, proof_model_files,
 };
 use luxforge_testbase::ProofProtocol;
 
 /// The proof module's paths, its pinned palette and a wrong one of the same length (gains of one,
-/// a well-formed palette the pin refuses), and the size of a `sample-grid-8` body.
+/// a well-formed palette the pin refuses), the size of a `sample-grid-8` body and the models
+/// proof's two files.
 pub fn proof_protocol() -> ProofProtocol {
     ProofProtocol {
         palette_path: PROOF_PALETTE_PATH,
@@ -18,6 +19,7 @@ pub fn proof_protocol() -> ProofProtocol {
         wrong_palette: palette_bytes([1.0, 1.0, 1.0]).to_vec(),
         grid_bytes: SAMPLE_GRID_BYTES,
         grid_samples: SAMPLE_GRID_SAMPLES,
+        models: proof_model_files(),
     }
 }
 
@@ -65,6 +67,47 @@ mod tests {
         .into_bytes();
         request.extend_from_slice(body);
         request
+    }
+
+    /// A model file whole, from a byte with `Range`, refused past its end, and cut part-way once.
+    #[test]
+    fn the_endpoint_serves_model_files_with_ranges_and_cuts_one_when_asked() {
+        let endpoint = ProofEndpoint::start("secret-key", proof_protocol()).unwrap();
+        let encoder = &proof_model_files()[0].1;
+        let get = |range: Option<&str>| {
+            let range = range
+                .map(|range| format!("Range: {range}\r\n"))
+                .unwrap_or_default();
+            format!("GET {PROOF_ENCODER_PATH} HTTP/1.1\r\nHost: x\r\n{range}\r\n").into_bytes()
+        };
+        let (status, body) = exchange(&endpoint, &get(None));
+        assert_eq!((status, &body), (200, encoder));
+        let (status, body) = exchange(&endpoint, &get(Some("bytes=100-")));
+        assert_eq!((status, body.as_slice()), (206, &encoder[100..]));
+        let (status, _) = exchange(&endpoint, &get(Some(&format!("bytes={}-", encoder.len()))));
+        assert_eq!(status, 416);
+        let (status, _) = exchange(&endpoint, &get(Some("bytes=0-99")));
+        assert_eq!(status, 416, "only an open range is served");
+        endpoint.cut_next_model(1000);
+        let (status, body) = exchange(&endpoint, &get(None));
+        assert_eq!((status, body.as_slice()), (200, &encoder[..1000]));
+        let (_, body) = exchange(&endpoint, &get(None));
+        assert_eq!(&body, encoder, "once");
+        let in_process = ProofEndpoint::in_process("secret-key", proof_protocol());
+        let answer = in_process.answer(
+            "GET",
+            PROOF_ENCODER_PATH,
+            &[("Range".into(), "bytes=5990-".into())],
+            b"",
+        );
+        assert_eq!(answer.status, 206);
+        assert_eq!(
+            answer.headers,
+            [("Content-Range", "bytes 5990-5999/6000".to_owned())]
+        );
+        let recorded = endpoint.requests();
+        assert_eq!(recorded[1].header("range"), Some("bytes=100-"));
+        assert_eq!(recorded[1].status, 206);
     }
 
     #[test]
@@ -147,6 +190,7 @@ mod tests {
                 status: 200,
                 content_type: "application/octet-stream",
                 body: PROOF_PALETTE.to_vec(),
+                ..ProofAnswer::default()
             }
         );
         let grid: Vec<[u8; 3]> = (0..SAMPLE_GRID_SAMPLES)
