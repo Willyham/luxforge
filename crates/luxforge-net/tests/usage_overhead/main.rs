@@ -131,5 +131,8 @@ fn usage_the_transports_heap_for_one_batch_is_measured_apart_from_the_statistics
         assert!(bytes <= CEILING, "{what}: {bytes} bytes");
     }
     assert!(tls_kept <= CEILING);
-    assert!(tls_next_left <= 1024, "a later request left {tls_next_left} bytes");
+    assert!(
+        tls_next_left <= 1024,
+        "a later request left {tls_next_left} bytes"
+    );
 }

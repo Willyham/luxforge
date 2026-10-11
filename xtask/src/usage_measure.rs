@@ -278,7 +278,9 @@ fn producer(report: &mut Report) -> Result {
         contended.extend(producer.join().map_err(|_| "a producer thread panicked")?);
     }
     done.store(true, Ordering::Relaxed);
-    detacher.join().map_err(|_| "the detaching thread panicked")?;
+    detacher
+        .join()
+        .map_err(|_| "the detaching thread panicked")?;
 
     // The keyed image ID: one HMAC over the catalog fingerprint, once per open.
     let fingerprint = "ab".repeat(32);
@@ -511,10 +513,34 @@ fn owner(report: &mut Report, options: &Options) -> Result {
                 options.repeats
             );
             let [develop, prepare, commit, export] = held;
-            report.row(&format!("owner.{name}.{mode}.develop"), "ms", develop, &scope, &load);
-            report.row(&format!("owner.{name}.{mode}.prepare"), "ms", prepare, &scope, &load);
-            report.row(&format!("owner.{name}.{mode}.commit"), "ms", commit, &scope, &load);
-            report.row(&format!("owner.{name}.{mode}.export"), "ms", export, &scope, &load);
+            report.row(
+                &format!("owner.{name}.{mode}.develop"),
+                "ms",
+                develop,
+                &scope,
+                &load,
+            );
+            report.row(
+                &format!("owner.{name}.{mode}.prepare"),
+                "ms",
+                prepare,
+                &scope,
+                &load,
+            );
+            report.row(
+                &format!("owner.{name}.{mode}.commit"),
+                "ms",
+                commit,
+                &scope,
+                &load,
+            );
+            report.row(
+                &format!("owner.{name}.{mode}.export"),
+                "ms",
+                export,
+                &scope,
+                &load,
+            );
         }
         report.write()?;
     }
@@ -582,8 +608,10 @@ fn drag(report: &mut Report, options: &Options, bin: &Path) -> Result {
                         usage: Some(mode),
                     },
                 )?;
-                loads.push(json!({"run": dir.file_name().map(|n| n.to_string_lossy().into_owned()),
-                    "start": before, "end": report.load()}));
+                loads.push(
+                    json!({"run": dir.file_name().map(|n| n.to_string_lossy().into_owned()),
+                    "start": before, "end": report.load()}),
+                );
                 let latency = read_json(&dir.join("latency.json"))?;
                 for (metric, _) in DRAG_METRICS {
                     if let Some(samples) = stats::distribution(&latency, metric)
@@ -735,7 +763,9 @@ fn presence(report: &mut Report, options: &Options, bin: &Path) -> Result {
                         }
                     }
                 }
-                if let Some(close) = editor_latency::close_after_shutdown(&events, &launched.watched) {
+                if let Some(close) =
+                    editor_latency::close_after_shutdown(&events, &launched.watched)
+                {
                     figures.entry((index, "close")).or_default().push(close);
                 }
                 let requests = setup.requests();
@@ -765,7 +795,11 @@ fn presence(report: &mut Report, options: &Options, bin: &Path) -> Result {
             WINDOW.ms
         );
         for (key, metric, unit) in [
-            ("presented.cpu", "presented_idle_process_cpu_percent_one_core", "%"),
+            (
+                "presented.cpu",
+                "presented_idle_process_cpu_percent_one_core",
+                "%",
+            ),
             ("presented.frames", "presented_idle_drawn_frames", "frames"),
             ("presented.views", "presented_idle_views", "views"),
             ("presented.updates", "presented_idle_updates", "updates"),
@@ -924,8 +958,12 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             "xtask_profile": if cfg!(debug_assertions) { "dev" } else { "release" },
         }),
     };
-    let wanted =
-        |name: &str| options.only.as_ref().is_none_or(|only| only.iter().any(|n| n == name));
+    let wanted = |name: &str| {
+        options
+            .only
+            .as_ref()
+            .is_none_or(|only| only.iter().any(|n| n == name))
+    };
     let mut failed = Vec::new();
     for name in COMPONENTS {
         if !wanted(name) {

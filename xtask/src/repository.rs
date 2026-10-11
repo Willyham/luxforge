@@ -1096,6 +1096,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             // `verify`'s component pool, and `check`'s steps and test binaries.
             "xtask/src/verify.rs",
             "xtask/src/check.rs",
+            // `usage-measure`'s contending producers and the window detacher beside them.
+            "xtask/src/usage_measure.rs",
         ],
         mode: Match::Whole,
         tests: false,
