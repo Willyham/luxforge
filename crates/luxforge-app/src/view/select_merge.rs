@@ -12,7 +12,6 @@ use iced::{
     Alignment, Length, Padding, Size,
     widget::{Column, Space, column, container, mouse_area, row, text},
 };
-use luxforge_core::catalog_types::StackExpansion;
 use luxforge_ui::{
     ButtonSize, ButtonTone, Element, FilterOption, FilterSegmentsModel, Icon, LabelledButtonModel,
     MenuEntry, MenuItem, NoticeCardModel, Token, Tone as NoticeTone, caption, filter_segments,
@@ -344,10 +343,7 @@ pub(crate) fn stack_band(band: &StackBand) -> Element<'_, Message> {
     if let Some(note) = &band.note {
         content = content.push(caption(note.clone()));
     }
-    let open = band
-        .expansion
-        .is_some_and(|expansion| expansion != StackExpansion::Collapsed);
-    let expanded = !band.leader || open;
+    let expanded = band.expanded;
     let mut actions = row![labelled_button(
         &LabelledButtonModel {
             label: if expanded {
@@ -363,14 +359,7 @@ pub(crate) fn stack_band(band: &StackBand) -> Element<'_, Message> {
             fill: true,
             enabled: true,
         },
-        Some(act(MergeAction::Expand(
-            band.merge_id.clone(),
-            if expanded {
-                StackExpansion::Collapsed
-            } else {
-                StackExpansion::Expanded
-            },
-        ))),
+        Some(act(MergeAction::Expand(band.merge_id.clone(), band.toggle))),
     )]
     .spacing(theme::BUTTON_ROW_SPACING);
     if band.leader {

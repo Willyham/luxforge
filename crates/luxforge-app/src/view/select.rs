@@ -40,7 +40,6 @@ use iced::{
     alignment::Vertical,
     widget::{Column, Space, column, container, mouse_area, row, scrollable, stack, text, tooltip},
 };
-use luxforge_core::catalog_types::{StackExpansion, StackRole};
 use luxforge_ui::{
     ButtonSize, ButtonTone, CatalogSheetModel, CellAvailability, CellStack, CellView, ChipEnd,
     FilterChipModel, FilterOption, FilterSegmentsModel, GridCell, GridLayout, Icon,
@@ -713,26 +712,17 @@ fn cell_view<'a>(
     // A merge's result leads its stack with a badge; each original says its exposure, and why it
     // is shown when the filter would not show it.
     let row = rows.row(shown);
-    let stack = row.and_then(|row| row.stack.as_ref());
-    let badge = stack
-        .filter(|stack| stack.role == StackRole::Leader)
-        .map(|stack| {
-            let (label, short) = select_merge::stack_words(stack.exposures);
-            CellStack {
-                label,
-                short,
-                expanded: stack
-                    .expansion
-                    .is_some_and(|expansion| expansion != StackExpansion::Collapsed),
-            }
-        });
-    let note = stack.and_then(|stack| {
-        select_merge::stack_note(stack, row.and_then(|row| row.reason.as_deref()))
+    let stack = select_merge::stack_cell(
+        row.and_then(|row| row.stack.as_ref()),
+        row.and_then(|row| row.reason.as_deref()),
+    );
+    let badge = stack.badge.map(|(label, short, expanded)| CellStack {
+        label,
+        short,
+        expanded,
     });
-    let exposure = stack
-        .filter(|stack| stack.role == StackRole::Original)
-        .and_then(|stack| stack.offset_ev)
-        .and_then(select_merge::ev_words);
+    let note = stack.note;
+    let exposure = stack.exposure;
     CellView {
         // The decoded preview while the cache holds it; the placeholder at the photograph's shape
         // while it loads.
