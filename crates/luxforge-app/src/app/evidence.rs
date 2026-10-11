@@ -1750,6 +1750,7 @@ impl Editor {
             && self.preferences.reading.idle()
             && self.themes.listing.idle()
             && !self.settings.reading
+            && self.settings.flag_reads == 0
             && self.theme_settled();
         if followed {
             if let Some(evidence) = &mut self.evidence {

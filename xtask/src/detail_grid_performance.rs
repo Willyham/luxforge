@@ -28,7 +28,12 @@ struct Fixture {
 }
 impl Fixture {
     fn import(catalog: &Path, source: &Path) -> Result<Self> {
-        let owner = Owner::start(catalog, ModuleRegistry::builtin(), ACTOR)?;
+        let owner = Owner::start_with_host(
+            catalog,
+            ModuleRegistry::builtin(),
+            client::range_masks_host(),
+            ACTOR,
+        )?;
         let client = owner.client();
         let state = owner.open(client, source)?;
         let mut fixture = Self {

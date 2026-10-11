@@ -231,6 +231,11 @@ struct ComponentKind {
     /// fields: a `range` over its patch method, named by that method. `None` for every kind that is
     /// not a band; its number fields are all a panel draws for it.
     band: Option<fn(&'static str) -> Control>,
+    /// The experiment flag ([`crate::flags`]) that must be on for a new component of this kind to
+    /// be created, or `None` for a kind that is always offered. Off, the kind is evaluated, listed
+    /// and edited as ever; only `mask.create-<kind>` and `mask.add-<kind>` are refused, naming the
+    /// flag, and a client leaves the kind out of what it offers to create.
+    experiment: Option<&'static str>,
 }
 
 /// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
@@ -269,6 +274,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "linear",
         menu_title: "Linear gradient",
         band: None,
+        experiment: None,
     },
     ComponentKind {
         kind: radial::KIND,
@@ -282,6 +288,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "radial",
         menu_title: "Radial gradient",
         band: None,
+        experiment: None,
     },
     ComponentKind {
         kind: brush::KIND,
@@ -295,6 +302,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "brush",
         menu_title: "Brush",
         band: None,
+        experiment: None,
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
@@ -308,6 +316,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "luminance",
         menu_title: "Luminance range",
         band: Some(range::luminance_band),
+        experiment: Some(crate::flags::RANGE_MASKS),
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
@@ -325,6 +334,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Colour range",
         // A colour range is a set of swatches and a radius, not a band on one axis.
         band: None,
+        experiment: Some(crate::flags::RANGE_MASKS),
     },
 ];
 
@@ -385,6 +395,17 @@ pub fn kind_menu_title(kind: &str) -> String {
 /// and retain.
 pub fn component_kinds() -> impl Iterator<Item = &'static str> {
     COMPONENT_KINDS.iter().map(|entry| entry.kind)
+}
+
+/// The experiment flag that must be on for a new component of `kind` to be created, or `None` for
+/// a kind that is always offered or one this build does not know. A client reads this rather than
+/// matching on kind tokens, so a kind put behind a flag later is left out of its menus with no edit
+/// to the client.
+pub fn component_kind_experiment(kind: &str) -> Option<&'static str> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .and_then(|entry| entry.experiment)
 }
 
 /// The kinds whose geometry is a set of declared numbers, in table order. The command family
