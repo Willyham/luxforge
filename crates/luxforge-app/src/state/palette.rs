@@ -325,6 +325,7 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
 fn shortcut(action: &PaletteAction, chords: &[(Chord, String)]) -> Option<Chord> {
     match action {
         PaletteAction::Host(command) => Some(command.chord()),
+        PaletteAction::Fit => Some(Chord::command('0')),
         PaletteAction::Run { action, preset } if preset.is_empty() => chords
             .iter()
             .find(|(_, declared)| declared == action)
