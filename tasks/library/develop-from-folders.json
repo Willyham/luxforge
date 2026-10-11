@@ -1,0 +1,207 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "develop-from-folders",
+  "title": "Develop from catalog folders",
+  "objective": "Make the catalog folder chosen in Select what Develop holds, file developed picks under Year › Place › Day catalog folders, list the real folder tree in Select, and make HDR's two merge actions one Merge HDR, removing the development set.",
+  "context_summary": "Decided by the owner on 2026-10-11 (design: docs/design/develop-from-folders.md): catalog folder only (the development set removed from core, API and desktop), Year › Place › Day folders made by Develop N, years as real catalog folders with the computed year grouping gone, and one Merge action replacing Pick merged and Import merged. Implementation is authorized by the request. The owner's verification direction of 2026-10-11 applies: targeted tests while building and one quick tier at the end; rendered and timing runs are not run and are reported as such.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Remove the development set from luxforge-core, its API and the catalog schema (catalog format 15), and decide brackets by their active merge result.",
+      "status": "in_progress",
+      "dependencies": [],
+      "extra_context": [
+        "Delete library/development_set.rs, catalog_types/development_set.rs, api/owner/library/development_set_methods.rs and their tests; the set-member library item; the development_sets and development_set_members tables; ApiEvent/Origin development_set_revision; in_development_set in ViewSummary, ViewRow and StackInspection; the view stamp's set revision; merge.create's add_to_development_set and set_id and the publication's set capture and membership; Remove/Put back/Empty Removed set ties.",
+        "Moments without a pick treats a bracket whose stack has an active result as decided; the Picked facet counts file picks only.",
+        "Catalog format 15; a format-14 catalog is refused by the existing marker check. Remove the usage statistics features for set add/remove, keeping services/usage-ingest/registry.json equal to the core registry and the usage coverage document complete.",
+        "Update catalog.md's API table rows for the removed methods and fields, which the contract test reads."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Design",
+          "target": "docs/design/develop-from-folders.md",
+          "relevance": "Removed section and Merging"
+        },
+        {
+          "kind": "file",
+          "label": "Development set module",
+          "target": "crates/luxforge-core/src/library/development_set.rs",
+          "relevance": "What is removed"
+        }
+      ],
+      "acceptance_criteria": [
+        "No development set type, method, table, item kind, event field or view field remains in luxforge-core.",
+        "A format-14 catalog is refused; a new catalog is format 15.",
+        "A merged bracket is decided for Moments without a pick; Picked counts file picks only.",
+        "luxforge-core tests pass."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the core tests touching catalog schema, browse, merges and usage."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "File developed picks under Year › Place › Day: the place and day folder choices, the plan's proposals with days, per-photograph resolution at commit, folder.list's sibling order and merge.create's folder choice.",
+      "status": "in_progress",
+      "dependencies": [],
+      "extra_context": [
+        "FolderChoice gains {kind: place, name} and existing's days flag; pick.plan answers days and undated per event; batches make the year, place and day folders they need in their own change; place folders record their events' span and key.",
+        "folder.list orders siblings: four-digit years newest first, day names in calendar order, then others by name ignoring case.",
+        "merge.plan proposes as Develop would for the reference frame; merge.create takes folder? (a folder choice) and makes any folder it needs in the publication change. This part builds on TASK-001's merge changes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Design",
+          "target": "docs/design/develop-from-folders.md",
+          "relevance": "Folders Develop makes, Order of folders, Merging"
+        },
+        {
+          "kind": "file",
+          "label": "Develop planning",
+          "target": "crates/luxforge-core/src/library/develop/plan.rs",
+          "relevance": "Proposals and destinations"
+        }
+      ],
+      "acceptance_criteria": [
+        "Real-owner tests prove proposals, folders made, found and shared across events, days, years and undated picks, the batch changes and their undo, and a file opened directly.",
+        "folder.list answers the sibling order.",
+        "merge.create makes the result in the proposed day folder without a prior folder.create."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Run the develop, folder and merge tests and the JSON CLI develop test."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core develop",
+          "tools/cargo-cached test -p luxforge-core folder",
+          "tools/cargo-cached test -p luxforge-core hdr_merge",
+          "tools/cargo-cached test -p luxforge-cli develop"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Make the desktop's Develop folder what the filmstrip holds, list the real folder tree in Select's Catalog sources, show the place tree in Develop N's confirmation, and make Merge HDR the one merge action; update evidence and the rendered scenarios.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Groundwork may start at once against the current API; the confirmation's place field and the removal of set calls finish against TASK-001 and TASK-002.",
+        "luxforge-app, luxforge-ui, luxforge-evidence and the xtask smoke scenarios (filmstrip, develop-picks, select, select-catalog, loupe, hdr-merge, copy-settings, catalog_measure) change with it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Design",
+          "target": "docs/design/develop-from-folders.md",
+          "relevance": "Select's Catalog sources, Develop's folder, Merging"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop Develop",
+          "target": "crates/luxforge-app/src/app/develop.rs",
+          "relevance": "The set the filmstrip holds today"
+        }
+      ],
+      "acceptance_criteria": [
+        "Desktop tests against a real owner prove the folder tree, a year folder viewed and made Develop's folder, D opening on it, another client's Develop reaching the filmstrip, Develop N opening on the common folder, a double-click in All photographs opening the photograph's folder, and Merge HDR staying in Select with the result in its day folder.",
+        "The rendered scenarios compile and describe the new behaviour."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Run the app's develop, select, catalog and merge tests and xtask's unit tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app",
+          "tools/cargo-cached test -p xtask"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Bring the catalog, HDR and panorama designs, decisions, feature status, user guide and format references up to the delivered behaviour, run the quick tier, and fold this design into the catalog design.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Docs describe current behaviour only. The panorama plan and design take Merge panorama in place of Pick merged and Import merged. The storage anchor becomes catalog format 15."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Design",
+          "target": "docs/design/develop-from-folders.md",
+          "relevance": "Whole design"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "The sections this replaces"
+        }
+      ],
+      "acceptance_criteria": [
+        "No document describes the development set, Pick merged or the computed year grouping as current.",
+        "cargo xtask check and the quick tier pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run check and the quick tier once."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask verify --tier quick --output artifacts/develop-from-folders/quick"
+        ],
+        "expected_results": [
+          "Both pass."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004"
+      ]
+    }
+  ]
+}
