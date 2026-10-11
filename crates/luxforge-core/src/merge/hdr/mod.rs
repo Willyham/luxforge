@@ -28,6 +28,10 @@
 //!    aligned linear samples and levels, with an optional [`MotionSelection`], into float32
 //!    linear sRGB/D65 at the reference's brightness, and reports [`FusionDiagnostics`] that
 //!    aggregate across rectangles.
+//! 10. [`preview`]: the merge preview's picture, drawn at proxy scale from each input's
+//!     [`ColourProxy`] through the same resample and fusion ([`fuse_preview`]), its display
+//!     transform and JPEG ([`encode_preview_jpeg`]), and its deghost overlay
+//!     ([`motion_overlays`]).
 //!
 //! The equations, weights, tolerances and sample bounds are recorded in the design's
 //! "Exposure resolution and fusion equations" and "Alignment, coverage and motion equations".
@@ -39,6 +43,7 @@ pub mod deghost;
 pub mod exposure;
 pub mod frame;
 pub mod fusion;
+pub mod preview;
 pub mod proxy;
 pub mod resample;
 
@@ -64,6 +69,11 @@ pub use fusion::{
     FusedRect, FusionDiagnostics, FusionParameters, Limitations, PixelLimits, RangeOutcome,
     fuse_rect,
 };
+pub use preview::{
+    ColourProxy, ColourProxyBuilder, MotionOverlay, PreviewPicture, display_pixel,
+    encode_preview_jpeg, fuse_preview, max_residual_px, motion_overlays, preview_proxy_side,
+    preview_rect, preview_scratch_bytes, proxy_transform,
+};
 pub use proxy::{AnalysisProxy, ProxyBuilder};
 pub use resample::{AlignedRect, SourceWindow, resample_rect, source_window};
 
@@ -71,3 +81,5 @@ pub use resample::{AlignedRect, SourceWindow, resample_rect, source_window};
 mod hdr_merge_alignment;
 #[cfg(test)]
 mod hdr_merge_fusion;
+#[cfg(test)]
+mod merge_preview;
