@@ -389,12 +389,9 @@ impl Klein {
             Conditioning::Encoder { llm, tokenizer } => {
                 (Some(llm.as_path()), Some(tokenizer.as_path()))
             }
-            Conditioning::Supplied(path) => {
-                sd::supply_condition(prompt, Some(path))?;
-                (None, None)
-            }
+            Conditioning::Supplied(_) => (None, None),
         };
-        let ctx = sd::Context::open(&sd::OpenOptions {
+        let mut ctx = sd::Context::open(&sd::OpenOptions {
             diffusion_model: transformer,
             vae,
             llm,
@@ -402,6 +399,9 @@ impl Klein {
             threads,
             flash_attn: true,
         })?;
+        if let Conditioning::Supplied(path) = conditioning {
+            ctx.supply_condition(prompt, Some(path))?;
+        }
         Ok((
             Self {
                 ctx,

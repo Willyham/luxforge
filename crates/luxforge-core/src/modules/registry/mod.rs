@@ -67,7 +67,7 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(VignetteModule::new()),
         Arc::new(controls_module()),
         Arc::new(CandidateProofModule::new()),
-        Arc::new(AiModule::developer()),
+        Arc::new(AiModule::for_run(developer)),
     ];
     linked
         .into_iter()

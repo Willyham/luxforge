@@ -302,8 +302,8 @@ impl CapabilityHost {
     }
 
     /// `module.resource.remove`: queue the removal of the installed version, joining one already
-    /// queued. A model a `local-runtime` capability holds of it is released first, and its load
-    /// cancelled, so nothing keeps a removed model loaded.
+    /// queued. A model a `local-runtime` capability holds of it, or opens with it, is released
+    /// first, and its load cancelled, so nothing keeps a removed model loaded.
     pub(crate) fn remove(
         &mut self,
         jobs: &mut Jobs,
@@ -315,13 +315,20 @@ impl CapabilityHost {
         let descriptor = registered(registry, &request.module_id)?;
         let resource = declared_resource(descriptor, &request.resource_id)?;
         let store = self.resources()?.clone();
-        if super::runtime::runtime_capability(descriptor, &resource.id).is_ok() {
-            self.unload_models(
-                jobs,
-                &descriptor.id,
-                std::slice::from_ref(&resource.id),
-                announce,
-            );
+        let held: Vec<String> = descriptor
+            .capabilities
+            .iter()
+            .filter_map(|capability| match &capability.kind {
+                CapabilityKind::LocalRuntime {
+                    resource: held,
+                    with,
+                    ..
+                } if *held == resource.id || with.contains(&resource.id) => Some(held.clone()),
+                _ => None,
+            })
+            .collect();
+        if !held.is_empty() {
+            self.unload_models(jobs, &descriptor.id, &held, announce);
         }
         let answer = |job: Option<&JobRecord>, state: ResourceState| {
             let mut value = json!({

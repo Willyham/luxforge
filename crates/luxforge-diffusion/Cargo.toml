@@ -1,0 +1,38 @@
+[package]
+name = "luxforge-diffusion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The generative tier's local runtime: stable-diffusion.cpp and ggml built from vendored, pinned sources with the cc crate, behind the core's InferenceRuntime and Generator traits."
+links = "luxforge_sdcpp"
+build = "build.rs"
+
+# Only the desktop and `luxforge-json` depend on it, and hand it to the catalog owner through
+# `HostConfig::inference` beside ONNX Runtime, so `luxforge-core` and its test binaries link no
+# generative runtime (`cargo xtask check-repository`'s `core-links-no-runtime`).
+[dependencies]
+luxforge-core = { path = "../luxforge-core" }
+serde_json.workspace = true
+
+[build-dependencies]
+# The version `luxforge-raw` already builds with, so the crate adds no package. Compiles the
+# vendored translation units concurrently, within Cargo's jobserver budget.
+cc = { version = "=1.4.7", features = ["parallel"] }
+
+[dev-dependencies]
+luxforge-testbase = { path = "../luxforge-testbase" }
+image.workspace = true
+sha2.workspace = true
+
+# Hardware SHA-256 on aarch64, as every crate that names `sha2` asks (see `crates/luxforge-raw`).
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dev-dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
+# `unsafe` is allowed by name only in `src/native.rs`, the binding over the shim's C ABI, each call
+# beside its `SAFETY:` comment. The crate denies it everywhere else, and the rest of the workspace
+# keeps its forbid(unsafe_code) policy.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

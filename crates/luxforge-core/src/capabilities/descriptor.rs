@@ -219,12 +219,20 @@ pub enum CapabilityKind {
     /// `module.runtime.load` or by the first task that uses it, never by a listing, a catalog open
     /// or a launch; unloaded by `module.runtime.unload`, after an idle interval, on a memory signal
     /// and when the resource is removed. Needs no grant: nothing leaves the machine.
+    ///
+    /// `with` names other declared resources the model opens with, such as the generator a text
+    /// encoder runs beside: each is installed by a `download-artifact` capability, a missing one
+    /// is an unmet requirement as the resource itself is, the runtime is handed their installed
+    /// files as the model's companions, `resident_bytes` counts them loaded, and removing one
+    /// releases the model.
     LocalRuntime {
         resource: String,
         model: ModelKind,
         resident_bytes: u64,
         backends: Vec<String>,
         precision: crate::inference::Precision,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        with: Vec<String>,
     },
 }
 
@@ -295,7 +303,9 @@ pub struct ResourceDescriptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redirect_origins: Vec<String>,
     /// The resource's further files, at most [`MAX_RESOURCE_FILES`] with its own, each pinned as
-    /// its own file is and served from the same origin.
+    /// its own file is, over the same endpoint class: a model's weights from their publisher and a
+    /// file the project publishes may be one resource. The grant names the resource's version,
+    /// which pins every file's URL, and the disclosure names every origin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ResourceFile>,
     /// The plain trade-off a person chooses this model by, such as "Finds smaller objects; slower
@@ -660,8 +670,52 @@ fn validate_capability<'a>(
             resource,
             resident_bytes,
             backends,
+            with,
             ..
-        } => validate_local_runtime(module, id, resource, *resident_bytes, backends)?,
+        } => {
+            validate_local_runtime(module, id, resource, *resident_bytes, backends)?;
+            validate_companions(module, id, resource, with)?;
+        }
+    }
+    Ok(())
+}
+
+/// The most further resources a `local-runtime` capability's model opens with.
+pub(crate) const MAX_COMPANIONS: usize = 4;
+
+/// A `local-runtime` capability's `with`: at most [`MAX_COMPANIONS`] distinct declared resources,
+/// none of them its own, each installed by a `download-artifact` capability.
+fn validate_companions(
+    module: &ModuleDescriptor,
+    id: &str,
+    resource: &str,
+    with: &[String],
+) -> Result<(), Error> {
+    if with.len() > MAX_COMPANIONS {
+        return Err(Error::validation(format!(
+            "capability {id} opens its model with {} resources; at most {MAX_COMPANIONS}",
+            with.len()
+        )));
+    }
+    let mut seen = HashSet::with_capacity(with.len());
+    for companion in with {
+        if companion == resource || !seen.insert(companion.as_str()) {
+            return Err(Error::validation(format!(
+                "capability {id} names resource {companion} twice"
+            )));
+        }
+        if module.resource(companion).is_none() {
+            return Err(Error::validation(format!(
+                "capability {id} opens its model with undeclared resource {companion}"
+            )));
+        }
+        if !module.capabilities.iter().any(|capability| {
+            matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: held } if held == companion)
+        }) {
+            return Err(Error::validation(format!(
+                "capability {id} opens its model with resource {companion}, which no download-artifact capability installs"
+            )));
+        }
     }
     Ok(())
 }
@@ -832,7 +886,8 @@ fn validate_resource<'a>(
 
 /// A resource's further files: at most [`MAX_RESOURCE_FILES`] with its own, each a plain name that
 /// is not the resource's own file, the install record's or another's, each pinned as the resource
-/// is, all from the origin of the resource's own URL, and at most [`MAX_RESOURCE_BYTES`] together.
+/// is, each over the endpoint class of the resource's own URL (remote HTTPS, or loopback), and at
+/// most [`MAX_RESOURCE_BYTES`] together.
 fn validate_files(resource: &ResourceDescriptor) -> Result<(), Error> {
     let id = &resource.id;
     if resource.files.len() + 1 > MAX_RESOURCE_FILES {
@@ -841,11 +896,9 @@ fn validate_files(resource: &ResourceDescriptor) -> Result<(), Error> {
             resource.files.len() + 1
         )));
     }
-    let origin = |url: &str| {
-        parse_endpoint(url, &[EndpointClass::Remote, EndpointClass::Loopback])
-            .map(|endpoint| endpoint.origin())
-    };
-    let own_origin = origin(&resource.url)?;
+    let endpoint =
+        |url: &str| parse_endpoint(url, &[EndpointClass::Remote, EndpointClass::Loopback]);
+    let own = endpoint(&resource.url)?;
     let mut names = HashSet::with_capacity(resource.files.len() + 1);
     names.insert(id.as_str());
     for file in &resource.files {
@@ -865,15 +918,21 @@ fn validate_files(resource: &ResourceDescriptor) -> Result<(), Error> {
                 "resource {id} declares file {name} twice; its own file is named {id}"
             )));
         }
-        let served = origin(&file.url).map_err(|error| {
+        let served = endpoint(&file.url).map_err(|error| {
             Error::validation(format!(
                 "resource {id} file {name} declares url {}: {}",
                 file.url, error.detail
             ))
         })?;
-        if served != own_origin {
+        if served.class != own.class {
             return Err(Error::validation(format!(
-                "resource {id} file {name} is served from {served}; every file of a resource comes from {own_origin}, the origin its download grant names"
+                "resource {id} file {name} is served from {}; every file of a resource served from {} is {}",
+                served.origin(),
+                own.origin(),
+                match own.class {
+                    EndpointClass::Loopback => "on loopback",
+                    _ => "remote",
+                }
             )));
         }
         if !sha256_hex(&file.sha256) {
@@ -1545,11 +1604,11 @@ mod tests {
             (
                 |d| {
                     d.resources[0].files = vec![ResourceFile {
-                        url: "https://cdn.example.com/decoder".into(),
+                        url: "http://127.0.0.1:9/decoder".into(),
                         ..file("decoder")
                     }]
                 },
-                "resource palette file decoder is served from https://cdn.example.com; every file of a resource comes from https://example.com",
+                "resource palette file decoder is served from http://127.0.0.1:9; every file of a resource served from https://example.com is remote",
             ),
             (
                 |d| {
@@ -1737,6 +1796,7 @@ mod tests {
                 resident_bytes: 1 << 20,
                 backends: vec!["coreml".into(), "cpu".into()],
                 precision: crate::inference::Precision::Fp16,
+                with: Vec::new(),
             },
             purpose: "Fill a selection.".into(),
         });

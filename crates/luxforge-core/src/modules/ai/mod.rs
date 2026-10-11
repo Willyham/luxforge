@@ -5,6 +5,7 @@
 //! or repair stage of its own.
 pub(crate) mod fill;
 mod generative;
+mod formats;
 mod models;
 mod module;
 mod selection;
