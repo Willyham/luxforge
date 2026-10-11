@@ -17,6 +17,7 @@ path = "src/ctl.rs"
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
 luxforge-net = { path = "../luxforge-net" }
+luxforge-onnx = { path = "../luxforge-onnx" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

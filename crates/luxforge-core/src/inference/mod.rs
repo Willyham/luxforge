@@ -5,9 +5,10 @@
 //!
 //! A runtime ([`InferenceRuntime`]) is handed to the catalog owner through
 //! [`crate::HostConfig::inference`], exactly as the network transport and the secret store are: a
-//! native implementation comes from a crate of its own, developer runs of the desktop and
-//! `luxforge-json` are given [`fake`], and `None`
-//! means this host runs no local inference. The runtime opens a verified model file
+//! native implementation comes from a crate of its own (`luxforge-onnx`), developer runs of the
+//! desktop and `luxforge-json` are also given [`fake`] beside it through a [`CompositeInference`]
+//! that serves each backend name from one runtime, and `None` means this host runs no local
+//! inference. The runtime opens a verified model file
 //! ([`ModelFile`]) on the first of a list of named backends it offers, as one of two things:
 //!
 //! - a [`Session`], which runs named tensors in and out and reports its placement and precision;
@@ -29,12 +30,14 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+mod composite;
 pub mod fake;
 mod generator;
 mod tensor;
 #[cfg(test)]
 mod tests;
 
+pub use composite::CompositeInference;
 pub use generator::{
     Conditioning, GenerateRequest, Generated, Generator, MAX_GENERATION_SIDE, MAX_PROMPT_CHARS,
     MAX_STEPS, StepProgress,
@@ -172,6 +175,17 @@ pub trait InferenceRuntime: Send + Sync {
 
     /// The named backends this runtime offers on this host, in its own preference order.
     fn backends(&self) -> Vec<String>;
+
+    /// Write what this runtime derives from a verified model file, once, inside the model's own
+    /// directory, ahead of its first open (`luxforge-onnx`'s fixed-shape Core ML copy and its
+    /// record): what a host calls after installing a model. It answers every derived file, written
+    /// now or found already written and still matching. A runtime that derives nothing answers
+    /// none, which is the default. An open never depends on it having run: the first open derives
+    /// what it needs.
+    fn prepare(&self, model: &ModelFile, cancel: &Cancel) -> Result<Vec<PathBuf>, Error> {
+        let _ = (model, cancel);
+        Ok(Vec::new())
+    }
 
     /// Open `model` as a tensor session on the first backend of `options` it offers.
     fn open_session(
