@@ -659,6 +659,49 @@
         {"api": {"method": "edit.add-correction", "params": {"points": [[0.03, 0.9]], "radius": 0.02, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.2, "source-y": 0.9}}},
         {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}}
       ]
+    },
+    {
+      "id": "repair-patch-layers",
+      "family": "repair-patch",
+      "class": "spatial",
+      "developer": true,
+      "description": "Two candidates of the developer producer accepted as frozen patches over a Clone, the second overlapping the first at opacity 70, and a Heal over both: a linear patch whose values pass both ends of the linear range and an 8-bit sRGB one, each with coverage stepping through 0, 1/4, 1/2, 3/4 and 1, at the same content pixels on every source.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.3, 0.4]], "radius": 0.02, "mode": "clone", "feather": 50, "opacity": 100, "source-x": 0.42, "source-y": 0.46}}},
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 1, "width": 640, "height": 480, "x": 400, "y": 300, "seed": 7, "colour": "linear"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 0, "opacity": 100}}},
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 2, "width": 512, "height": 384, "x": 700, "y": 500, "seed": 23, "colour": "srgb8"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 1, "opacity": 70}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.5, 0.55]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.62, "source-y": 0.48}}}
+      ]
+    },
+    {
+      "id": "repair-patch-large",
+      "family": "repair-patch",
+      "class": "spatial",
+      "developer": true,
+      "description": "One 2048 x 2048 frozen patch, the largest candidate the producer makes (64 MiB), at opacity 90 before Detail: 32 MiB of patch words in the GPU repair step, under its 64 MiB bound.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 1, "width": 2048, "height": 2048, "x": 1200, "y": 1000, "seed": 41, "colour": "linear"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 0, "opacity": 90}}},
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
+      ]
+    },
+    {
+      "id": "repair-patch-stale",
+      "family": "repair-patch",
+      "class": "spatial",
+      "developer": true,
+      "description": "A frozen patch over a Clone whose opacity then changes: the patch is stale (earlier-correction) and keeps rendering over what the Clone now leaves.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.3, 0.4]], "radius": 0.03, "mode": "clone", "feather": 50, "opacity": 100, "source-x": 0.42, "source-y": 0.46}}},
+        {"api": {"method": "task.generate-proof-patches", "params": {"count": 1, "width": 768, "height": 512, "x": 300, "y": 250, "seed": 59, "colour": "linear"}}},
+        {"api": {"method": "edit.accept-correction-patch", "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 0, "opacity": 100}}},
+        {"api": {"method": "edit.update-correction", "params": {"operation": "correction-1", "opacity": 40}}}
+      ]
     }
   ]
 }

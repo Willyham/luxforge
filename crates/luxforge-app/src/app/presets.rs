@@ -39,6 +39,8 @@ use std::path::PathBuf;
 pub(crate) struct Presets {
     pub(crate) library: PresetLibrary,
     pub(crate) form: PresetForm,
+    /// Double-click reset may arrive while the first click's commit is still answering.
+    reset_after: Option<luxforge_core::AssetId>,
 }
 
 impl Editor {
@@ -59,6 +61,65 @@ impl Editor {
     /// Every Presets-section change goes through here.
     pub(crate) fn preset_update(&mut self, message: PresetMessage) -> Task<Message> {
         match message {
+            PresetMessage::Hover(id) => return self.preset_hover(id),
+            PresetMessage::Leave(id) => {
+                if self.presets.library.interaction.hovered.as_ref() == Some(&id) {
+                    return self.cancel_preset_hover();
+                }
+            }
+            PresetMessage::Amount(value) => return self.preset_amount(value),
+            PresetMessage::AmountReleased => {
+                if self.preset_drafting() && self.presets.library.interaction.hovered.is_none() {
+                    return self.release();
+                }
+            }
+            PresetMessage::AmountEdit => {
+                self.presets.library.interaction.editing = tools::ValueEdit::Typing(format!(
+                    "{:.0}",
+                    self.presets.library.interaction.amount
+                ));
+                self.presets.library.interaction.invalid = None;
+                return iced::widget::operation::focus(iced::widget::Id::new("preset-amount"));
+            }
+            PresetMessage::AmountText(text) => {
+                self.presets.library.interaction.editing = tools::ValueEdit::Typing(text);
+                self.presets.library.interaction.invalid = None;
+            }
+            PresetMessage::AmountSubmit => {
+                if let tools::ValueEdit::Typing(text) = &self.presets.library.interaction.editing {
+                    if let Ok(value) = text.trim().parse::<f64>()
+                        && value.is_finite()
+                        && (0.0..=200.0).contains(&value)
+                    {
+                        let moved = self.preset_amount(value);
+                        let released = self.preset_update(PresetMessage::AmountReleased);
+                        return Task::batch([moved, released]);
+                    }
+                    self.presets.library.interaction.invalid =
+                        Some("Amount must be between 0 and 200".into());
+                }
+            }
+            PresetMessage::AmountCancel => {
+                self.presets.library.interaction.editing = tools::ValueEdit::None;
+                self.presets.library.interaction.invalid = None;
+            }
+            PresetMessage::AmountReset => {
+                if self.busy
+                    || self
+                        .core_gesture()
+                        .is_some_and(|gesture| gesture.draft.released())
+                {
+                    self.presets.reset_after = self
+                        .document
+                        .state
+                        .as_ref()
+                        .map(|state| state.asset.id.clone());
+                    return Task::none();
+                }
+                let moved = self.preset_amount(100.0);
+                let released = self.preset_update(PresetMessage::AmountReleased);
+                return Task::batch([moved, released]);
+            }
             PresetMessage::Listed(result) => match result {
                 Ok((presets, sequence)) => self.adopt_presets(presets, sequence),
                 Err(error) => {
@@ -300,6 +361,279 @@ impl Editor {
         });
         self.status.text = error;
     }
+
+    pub(crate) fn preset_drafting(&self) -> bool {
+        self.slider_gesture().is_some_and(|slider| {
+            slider.action == "apply-settings"
+                && ["amount", "preview"].contains(&slider.parameter.as_str())
+        })
+    }
+
+    pub(crate) fn cancel_preset_hover(&mut self) -> Task<Message> {
+        if self.presets.library.interaction.hovered.take().is_some() && self.preset_drafting() {
+            self.event("preset_hover_cancelled", || json!({}));
+            return self.discard();
+        }
+        Task::none()
+    }
+
+    fn preset_hover(&mut self, id: String) -> Task<Message> {
+        if self.presets.library.interaction.hovered.as_ref() == Some(&id) {
+            return Task::none();
+        }
+        if self.presets.library.interaction.hovered.is_none()
+            && self
+                .gesture_refusal(super::gesture::Starting::Preset)
+                .is_some()
+        {
+            return Task::none();
+        }
+        if self.busy || !self.at_current() || self.mask_tool_refusal().is_some() {
+            return Task::none();
+        }
+        let Some(preset) = self.presets.library.find(&id).cloned() else {
+            return Task::none();
+        };
+        if !preset.unavailable.is_empty()
+            || !luxforge_core::settings_can_preview(&self.modules, &preset.settings)
+        {
+            return self.cancel_preset_hover();
+        }
+        let Some((module, action)) = presets_control(&self.modules) else {
+            return Task::none();
+        };
+        let Some(mut fields) = module
+            .action(action)
+            .and_then(|a| crate::state::presets::apply_fields(a, &preset))
+        else {
+            return Task::none();
+        };
+        let amount =
+            if luxforge_core::settings_at_amount(&self.modules, &preset.settings, 0.0).is_ok() {
+                self.presets.library.interaction.amount
+            } else {
+                100.0
+            };
+        fields.insert("amount".into(), json!(amount));
+        self.presets.library.interaction.hovered = Some(id.clone());
+        self.event("preset_hover", || json!({"preset_id":id,"amount":amount}));
+        self.preset_offer(fields)
+    }
+
+    fn preset_offer(&mut self, fields: serde_json::Map<String, Value>) -> Task<Message> {
+        if self.preset_drafting() {
+            return self.drive(super::draft::Event::Offer(Value::Object(fields)));
+        }
+        let gesture = self.next_gesture();
+        self.open_core(
+            gesture,
+            super::gesture::Kind::Slider(super::gesture::SliderGesture {
+                action: "apply-settings".into(),
+                parameter: if self.presets.library.interaction.hovered.is_some() {
+                    "preview"
+                } else {
+                    "amount"
+                }
+                .into(),
+                label: "Preset Amount".into(),
+                target: Default::default(),
+                unpreviewed: false,
+            }),
+            Some(Value::Object(fields)),
+        )
+    }
+
+    fn preset_amount(&mut self, amount: f64) -> Task<Message> {
+        if !amount.is_finite() || !(0.0..=200.0).contains(&amount) {
+            return self.preset_refused("Amount must be between 0 and 200".into());
+        }
+        if self.busy || !self.at_current() || self.mask_tool_refusal().is_some() {
+            return Task::none();
+        }
+        if self.core_gesture().is_some() && !self.preset_drafting() {
+            return Task::none();
+        }
+        if self.gesture_conflicted() {
+            return Task::none();
+        }
+        // Keep the request pinned for a continuing Amount gesture, even if another client edits
+        // the library meanwhile. It is the same immutable settings snapshot the draft began with.
+        if self.preset_drafting()
+            && self.presets.library.interaction.hovered.is_none()
+            && let Some(mut fields) = self
+                .core_gesture()
+                .and_then(|gesture| gesture.draft.sent())
+                .and_then(Value::as_object)
+                .cloned()
+        {
+            let Some(settings) = fields.get("settings").and_then(Value::as_object) else {
+                return Task::none();
+            };
+            if let Err(error) = luxforge_core::settings_at_amount(&self.modules, settings, amount) {
+                return self.preset_refused(error.detail);
+            }
+            fields.insert("amount".into(), json!(amount));
+            self.presets.library.interaction.amount = amount;
+            self.presets.library.interaction.editing = tools::ValueEdit::None;
+            self.presets.library.interaction.invalid = None;
+            return self.preset_offer(fields);
+        }
+        let hovering = self.presets.library.interaction.hovered.is_some();
+        let preset = self
+            .presets
+            .library
+            .interaction
+            .hovered
+            .as_deref()
+            .and_then(|id| self.presets.library.find(id))
+            .or_else(|| {
+                self.document.state.as_ref().and_then(|state| {
+                    crate::state::presets::selected_preset(
+                        &self.presets.library,
+                        &state.current_entry,
+                    )
+                })
+            })
+            .cloned();
+        if let Some(preset) = &preset
+            && let Err(error) =
+                luxforge_core::settings_at_amount(&self.modules, &preset.settings, amount)
+        {
+            return self.preset_refused(error.detail);
+        }
+        self.presets.library.interaction.amount = amount;
+        self.presets.library.interaction.editing = tools::ValueEdit::None;
+        self.presets.library.interaction.invalid = None;
+        let Some(preset) = preset else {
+            return Task::none();
+        };
+        let Some((module, action)) = presets_control(&self.modules) else {
+            return Task::none();
+        };
+        let Some(mut fields) = module
+            .action(action)
+            .and_then(|a| crate::state::presets::apply_fields(a, &preset))
+        else {
+            return Task::none();
+        };
+        fields.insert("amount".into(), json!(amount));
+        if !hovering {
+            self.controls.dragging = Some((action.to_owned(), "amount".into()));
+        }
+        self.preset_offer(fields)
+    }
+
+    /// A row click over its hover preview commits that exact draft, rather than applying over it.
+    pub(crate) fn commit_preset_hover(
+        &mut self,
+        action: &str,
+        fields: &serde_json::Map<String, Value>,
+    ) -> Option<Task<Message>> {
+        if action != "apply-settings" || !self.preset_drafting() {
+            return None;
+        }
+        let hovered = self.presets.library.interaction.hovered.as_deref()?;
+        if fields.get("origin")?["preset_id"].as_str() != Some(hovered) {
+            return None;
+        }
+        self.presets.library.interaction.hovered = None;
+        Some(self.release())
+    }
+}
+
+/// Passive previews yield to the next explicit operation, including focus loss and other edits.
+pub(super) fn before_message(editor: &mut Editor, message: &Message) -> Task<Message> {
+    if editor.presets.library.interaction.hovered.is_none() {
+        return Task::none();
+    }
+    if matches!(
+        message,
+        Message::Preset(
+            PresetMessage::Hover(_)
+                | PresetMessage::Leave(_)
+                | PresetMessage::Amount(_)
+                | PresetMessage::AmountReleased
+        )
+    ) {
+        return Task::none();
+    }
+    if let Message::Action(super::message::action::ActionMessage::Run { action, preset }) = message
+        && action == "apply-settings"
+        && preset.get("origin").is_some_and(|origin| {
+            origin["preset_id"].as_str() == editor.presets.library.interaction.hovered.as_deref()
+        })
+    {
+        return Task::none();
+    }
+    if message.yields_to_mask_tool()
+        || matches!(
+            message,
+            Message::Close | Message::Key(iced::Event::Window(iced::window::Event::Unfocused), _)
+        )
+    {
+        return editor.cancel_preset_hover();
+    }
+    Task::none()
+}
+
+pub(super) fn after_message(editor: &mut Editor, before: &super::Before) -> Task<Message> {
+    if !editor.preset_drafting() {
+        editor.presets.library.interaction.hovered = None;
+    }
+    let changed = before.entry != editor.displayed_entry();
+    let invalid_hover = editor
+        .presets
+        .library
+        .interaction
+        .hovered
+        .as_deref()
+        .is_some_and(|id| {
+            editor.presets.library.find(id).is_none_or(|preset| {
+                editor
+                    .core_gesture()
+                    .and_then(|gesture| gesture.draft.sent())
+                    .is_some_and(|sent| sent["settings"] != Value::Object(preset.settings.clone()))
+            })
+        })
+        || editor.gesture_conflicted();
+    let cancelled = if changed || invalid_hover {
+        editor.cancel_preset_hover()
+    } else {
+        Task::none()
+    };
+    if changed && !editor.preset_drafting() {
+        editor.presets.library.interaction.amount = editor
+            .document
+            .state
+            .as_ref()
+            .and_then(|state| {
+                crate::state::presets::selected_preset(
+                    &editor.presets.library,
+                    &state.current_entry,
+                )
+                .map(|_| {
+                    state.current_entry.parameters["amount"]
+                        .as_f64()
+                        .unwrap_or(100.0)
+                })
+            })
+            .unwrap_or(100.0);
+        editor.presets.library.interaction.editing = tools::ValueEdit::None;
+        editor.presets.library.interaction.invalid = None;
+    }
+    if !editor.busy
+        && editor.core_gesture().is_none()
+        && let Some(asset) = editor.presets.reset_after.take()
+        && editor
+            .document
+            .state
+            .as_ref()
+            .is_some_and(|state| state.asset.id == asset)
+    {
+        let reset = editor.preset_update(PresetMessage::AmountReset);
+        return Task::batch([cancelled, reset]);
+    }
+    cancelled
 }
 
 /// A record's name and group, as the status line quotes them.

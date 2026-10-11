@@ -333,6 +333,48 @@ fn a_candidate_is_accepted_once_as_one_patch_entry_and_a_retry_answers_the_first
     assert_eq!(harness.states(&job), ["live", "accepted"]);
 }
 
+/// Patches stack: a candidate generated after an earlier patch was accepted, over a Clone, reads
+/// the stack with both and is accepted on top of them as an entry of its own. Two accepts in a row
+/// by one actor never collapse: planned on the first's base, the second would be checked against a
+/// stack its candidate was not generated against.
+#[test]
+fn a_candidate_generated_over_an_accepted_patch_is_accepted_on_top_of_it() {
+    let harness = Harness::new("stacked");
+    harness.ok(
+        "edit.add-correction",
+        json!({"asset_id": harness.asset, "mutation": mutation_json(harness.revision(), "clone"),
+               "points": [[0.3, 0.4]], "radius": 0.02, "mode": "clone", "feather": 50,
+               "opacity": 100, "source-x": 0.42, "source-y": 0.46}),
+    );
+    let first = harness.generate(1, 7);
+    harness.ok(
+        ACCEPT,
+        harness.accept_params(&first, 0, harness.revision(), "first"),
+    );
+    let second = harness.generate(2, 23);
+    let mut params = harness.accept_params(&second, 1, harness.revision(), "second");
+    params["opacity"] = json!(70);
+    let accepted = harness.ok(ACCEPT, params);
+    assert_eq!(accepted["outcome"], "applied");
+    let rows = harness.corrections();
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows.iter().all(|row| row.get("stale").is_none()),
+        "{rows:?}"
+    );
+    let history = harness.ok(
+        "history.list",
+        json!({"asset_id": harness.asset, "limit": 5}),
+    );
+    let labels: Vec<&str> = history["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["label"].as_str())
+        .collect();
+    assert_eq!(&labels[..2], ["Add Patch 3", "Add Patch 2"], "{history}");
+}
+
 #[test]
 fn what_is_not_a_live_candidate_of_this_photograph_is_refused_before_anything_is_published() {
     let harness = Harness::new("refusals");

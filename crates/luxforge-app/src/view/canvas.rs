@@ -352,6 +352,12 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                             crate::app::message::select_missing::MissingMessage::LocateOriginal,
                         ))
                     }
+                    NoticeAction::ExportAnyway => {
+                        Message::Export(crate::app::message::export::ExportMessage::Anyway)
+                    }
+                    NoticeAction::DismissExport => {
+                        Message::Export(crate::app::message::export::ExportMessage::Dismiss)
+                    }
                 },
             )
         })

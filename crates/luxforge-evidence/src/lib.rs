@@ -106,7 +106,9 @@ pub fn write(steps: &[Step]) -> Value {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
     /// One owner request. The desktop fills `asset_id` and the mutation envelope itself, so a script
-    /// never carries a revision or a request id.
+    /// never carries a revision or a request id. A `task.*` request settles once the job it starts
+    /// has ended, and a later step names that job by its task, `"job_id": {"started_by":
+    /// "task.…"}` ([`JobReference`]), since a job's identity is not known before the run.
     Api {
         method: String,
         #[serde(default, skip_serializing_if = "Map::is_empty")]
@@ -183,6 +185,13 @@ pub enum Step {
     },
     /// Click one library preset's row.
     Preset(PresetPick),
+    /// Hover a row, or leave the current hover with null; uses the actual row handlers.
+    PresetHover(Option<PresetPick>),
+    /// Move the Amount rail, optionally releasing to commit the drafted preset.
+    PresetAmount {
+        value: f64,
+        release: bool,
+    },
     /// Settings clipboard gestures through the desktop command paths.
     CopySettings(CopySettingsStep),
     /// Open the create form, type its name and group, set every checkbox and press Create.
@@ -354,7 +363,7 @@ impl Step {
                         ));
                     }
                 }
-                Ok(())
+                JobReference::of(params).map(|_| ())
             }
             Self::Draft(step) => step.validate(),
             Self::Slider(step) => step.validate(),
@@ -465,6 +474,15 @@ impl Step {
                 Ok(())
             }
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
+            Self::PresetHover(Some(pick)) => pick.validate(),
+            Self::PresetHover(None) => Ok(()),
+            Self::PresetAmount { value, .. } => {
+                if value.is_finite() && (0.0..=200.0).contains(value) {
+                    Ok(())
+                } else {
+                    Err("preset Amount must be finite and within 0..=200".into())
+                }
+            }
             Self::PresetCreate(step) => step.validate(),
             Self::CopySettings(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
@@ -1939,6 +1957,43 @@ impl Reference {
             Self::Id(id) => text(id, "an identity"),
             Self::Name { name } => text(name, "a reference's name"),
             Self::Index(_) => Ok(()),
+        }
+    }
+}
+
+/// The prefix of the method a module's task is started by.
+pub const TASK_METHOD_PREFIX: &str = "task.";
+
+/// A job named by the task that started it: the value of an `api` or `agent` step's `job_id`
+/// written `{"started_by": "task.generate-proof-patches"}`, which is the job the run's latest step
+/// calling that task started. A `task.*` step settles only once its job has ended, so the job a
+/// reference names has its result, or its candidates, by the time the step naming it runs. An
+/// identity written as a plain string is sent as written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobReference {
+    pub started_by: String,
+}
+
+impl JobReference {
+    /// The reference `params` hold in `job_id`, when they hold one rather than an identity; an
+    /// error for a `job_id` that is neither, or a reference to a method that is not a task.
+    pub fn of(params: &Map<String, Value>) -> Result<Option<Self>, String> {
+        let Some(value) = params.get("job_id") else {
+            return Ok(None);
+        };
+        if value.is_string() {
+            return Ok(None);
+        }
+        let reference: Self = serde_json::from_value(value.clone()).map_err(|error| {
+            format!("job_id takes an identity or {{\"started_by\": \"task.…\"}}: {error}")
+        })?;
+        match reference.started_by.strip_prefix(TASK_METHOD_PREFIX) {
+            Some(task) if !task.trim().is_empty() => Ok(Some(reference)),
+            _ => Err(format!(
+                "job_id's started_by names a task method ({TASK_METHOD_PREFIX}…), not {}",
+                reference.started_by
+            )),
         }
     }
 }

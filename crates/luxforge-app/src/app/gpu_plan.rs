@@ -650,6 +650,19 @@ pub(crate) fn spatial_step(
         // A repair step's frozen patches, the same allocations every tick.
         resident: spatial.resident.blocks.clone(),
         resident_key: spatial.resident.key,
+        // A repair step's read set, which the surface fills before its passes.
+        reads: spatial
+            .repair
+            .as_ref()
+            .and_then(|repair| repair.atlas.as_ref())
+            .map(|atlas| luxforge_gpu::ReadAtlas {
+                plane: index(atlas.plane),
+                rects: atlas
+                    .rects
+                    .iter()
+                    .map(|(rect, at)| ([rect.x0, rect.y0, rect.width, rect.height], *at))
+                    .collect(),
+            }),
     })))
 }
 

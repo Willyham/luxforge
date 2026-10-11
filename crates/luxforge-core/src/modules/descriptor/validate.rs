@@ -1254,8 +1254,7 @@ impl ModuleDescriptor {
         Ok(())
     }
 
-    /// A presets control submits its action with a preset's settings set and its origin, and
-    /// nothing else, so the action declares exactly those parameters with the kinds that carry
+    /// A presets control submits its action with a preset's settings set and its origin, and optionally an Amount, so the action declares those parameters with the kinds that carry
     /// them. A field patch makes every parameter optional, so it cannot require them.
     fn check_presets_action(&self, action: &ActionDescriptor) -> Result<(), Error> {
         let id = &action.id;
@@ -1279,14 +1278,27 @@ impl ModuleDescriptor {
         required(SETTINGS_ORIGIN, "settings-origin", |kind| {
             matches!(kind, ParameterKind::SettingsOrigin)
         })?;
-        if let Some(extra) = action
-            .parameters
-            .iter()
-            .find(|parameter| ![PRESET_SETTINGS, SETTINGS_ORIGIN].contains(&&*parameter.name))
-        {
+        if let Some(extra) = action.parameters.iter().find(|parameter| {
+            ![PRESET_SETTINGS, SETTINGS_ORIGIN, "amount"].contains(&&*parameter.name)
+        }) {
             return Err(Error::validation(format!(
                 "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS} and {SETTINGS_ORIGIN}",
                 extra.name
+            )));
+        }
+        if let Some(amount) = action.parameter("amount")
+            && (amount.required
+                || !matches!(
+                    amount.kind,
+                    ParameterKind::Number {
+                        min: 0.0,
+                        max: 200.0
+                    }
+                )
+                || amount.default != Some(serde_json::json!(100.0)))
+        {
+            return Err(Error::validation(format!(
+                "presets control action {id} amount must be optional, 0..=200 with default 100"
             )));
         }
         Ok(())

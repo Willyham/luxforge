@@ -10,9 +10,16 @@
 //!   each end in a blend pass that writes the state the next reads — the window's own planes,
 //!   alternating — and the last group's apply blends over the last state. Every group's block is
 //!   the step's storage block from its own offset, which its passes' fourth word names.
-//! - **Reads.** The step's window holds every pixel its operations read for the output it is
-//!   asked for (`RepairEntry::window_reads`); an operation no output pixel needs may compute values
-//!   outside that set from clamped reads, which nothing reads.
+//! - **Reads.** The step holds its read set itself (`RepairEntry::step_reads`): every rectangle its
+//!   operations read, packed into atlas planes of its own ([`GpuReadAtlas`]). The photo surface
+//!   cuts the step's input into the first from the photograph's source, or copies it from the
+//!   boundary where the boundary holds it, before any pass reads it; the states chained groups
+//!   leave take the same placements, and the read table at the start of the step's block takes a
+//!   stage pixel to its atlas texel and back. So the step evaluates every operation from the whole
+//!   frame's values whatever window its output is drawn over: a source across a 60 MP frame grows
+//!   no window, and the window walk reads the repair's output window alone. A read set that does
+//!   not pack into one atlas of [`REPAIR_ATLAS_SIDE`] texels a side is drawn by the reference,
+//!   named.
 //!
 //! Planned on the catalog owner from the bound table: `O(operations + segments × nearby tiles +
 //! tiles)` for the groups' blocks, no pixel read.
@@ -59,7 +66,8 @@ pub(crate) fn admit(
             program: crate::repair::REPAIR_PROGRAM.entry,
         });
     }
-    let step = plan_repair(layer, entry, planning.linear);
+    let step = plan_repair(layer, entry, planning.linear)
+        .map_err(|why| GpuFallback::Repair { layer, why })?;
     if step.resident.len() > REPAIR_PATCH_WORDS {
         return Err(GpuFallback::Repair {
             layer,
@@ -71,9 +79,19 @@ pub(crate) fn admit(
             ),
         });
     }
+    // The Heal levels' planes: those after the read set's atlas-sized ones, which are charged with
+    // the step's planes on either device.
+    let held = step
+        .repair
+        .as_ref()
+        .and_then(|repair| repair.atlas.as_ref())
+        .map_or(0..0, |atlas| atlas.plane..atlas.plane + atlas.planes);
     let levels: u64 = step
         .planes
         .iter()
+        .enumerate()
+        .filter(|(index, _)| !held.contains(index))
+        .map(|(_, plane)| plane)
         .filter(|plane| matches!(plane.size, GpuPlaneSize::Fixed { .. }))
         .map(|plane| plane.extent((0, 0), (0, 0)))
         .map(|(width, height)| u64::from(width) * u64::from(height) * 16)
@@ -111,15 +129,15 @@ pub(crate) fn admit(
 }
 
 /// What a repair step carries beside its passes: each operation's identity and regions at the
-/// step's stage, for the change between two plans of one gesture, and how far its reads reach
-/// beyond its writes, for the staged sweeps.
+/// step's stage, for the change between two plans of one gesture, and the read set it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuRepair {
     /// Per operation in table order: a hash of its stored row, the pixels it may write and the two
     /// rectangles it reads.
     pub operations: Vec<GpuRepairOperation>,
-    /// The farthest any operation reads beyond its destination, in pixels of its stage.
-    pub reach: u32,
+    /// The step's read set, held in atlas planes of its own; `None` when no pass reads its input,
+    /// a step of frozen patches alone or of operations that write nothing at this stage.
+    pub atlas: Option<GpuReadAtlas>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +146,151 @@ pub struct GpuRepairOperation {
     pub heal: bool,
     pub writes: Region,
     pub reads: [Region; 2],
+}
+
+/// A repair step's read set ([`RepairEntry::step_reads`]) packed into one atlas of
+/// [`REPAIR_ATLAS_SIDE`] texels a side at most: the plane `plane` of the step holds its input
+/// there, cut from the photograph's source by the surface before any of its passes reads it, and
+/// its chained groups' states take the same placements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuReadAtlas {
+    /// The step's plane that holds its input.
+    pub plane: usize,
+    /// How many of the step's planes, from `plane` on, are atlas-sized: its input, then the states
+    /// its chained groups leave. Charged with the step's planes on either device, not with its
+    /// Heal levels ([`REPAIR_LEVEL_BYTES`]).
+    pub planes: usize,
+    /// The atlas's texels across and down.
+    pub size: (u32, u32),
+    /// Each rectangle of the stage, with the atlas texel its first pixel is held at.
+    pub rects: Vec<(Region, [u32; 2])>,
+}
+
+/// The longest side, in texels, of a repair step's read atlas: the photo surface's device limit.
+/// A read set that does not pack into one is drawn by the reference, named.
+pub const REPAIR_ATLAS_SIDE: u32 = 8192;
+
+/// What an atlas's sides are rounded up to, so the planes of a gesture's ticks keep their size
+/// while its reads grow a little.
+const ATLAS_ROUNDING: u32 = 256;
+
+/// The side, in pixels, of the cells the read table indexes its rectangles by, of the stage and of
+/// the atlas alike.
+const READ_INDEX_CELL: u32 = 64;
+
+/// Words of the read table before its rectangles' records, six words each.
+const READ_HEADER_WORDS: usize = 10;
+
+/// An atlas's size and each rectangle's placement in it.
+pub(crate) type Packed = ((u32, u32), Vec<[u32; 2]>);
+
+/// `rects` packed into one atlas: shelves of rectangles, tallest first, across a width near the
+/// square root of their area, every placement a function of the sizes alone, so a source dragged
+/// keeps every placement. The atlas's size, rounded up to [`ATLAS_ROUNDING`], and each rectangle's
+/// placement in `rects`' order, or what does not fit within [`REPAIR_ATLAS_SIDE`].
+pub(crate) fn pack(rects: &[Region]) -> Result<Packed, String> {
+    let round = |side: u32| side.div_ceil(ATLAS_ROUNDING).max(1) * ATLAS_ROUNDING;
+    let widest = rects.iter().map(|rect| rect.width).max().unwrap_or(1);
+    let tallest = rects.iter().map(|rect| rect.height).max().unwrap_or(1);
+    if widest > REPAIR_ATLAS_SIDE || tallest > REPAIR_ATLAS_SIDE {
+        return Err(format!(
+            "one rectangle it reads is {widest}x{tallest} pixels, past the {REPAIR_ATLAS_SIDE} a \
+             side of one GPU atlas"
+        ));
+    }
+    let area: u64 = rects.iter().map(|rect| rect.pixels()).sum();
+    let mut order: Vec<usize> = (0..rects.len()).collect();
+    order.sort_by_key(|&index| {
+        let rect = rects[index];
+        (
+            std::cmp::Reverse(rect.height),
+            std::cmp::Reverse(rect.width),
+            index,
+        )
+    });
+    let shelve = |width: u32| -> (u32, Vec<[u32; 2]>) {
+        let mut placed = vec![[0, 0]; rects.len()];
+        let (mut x, mut y, mut shelf) = (0u32, 0u32, 0u32);
+        for &index in &order {
+            let rect = rects[index];
+            if x > 0 && x + rect.width > width {
+                (x, y, shelf) = (0, y + shelf, 0);
+            }
+            placed[index] = [x, y];
+            x += rect.width;
+            shelf = shelf.max(rect.height);
+        }
+        (y + shelf, placed)
+    };
+    let square = round(((area as f64).sqrt().ceil() as u32).max(widest)).min(REPAIR_ATLAS_SIDE);
+    for width in [square, REPAIR_ATLAS_SIDE] {
+        let width = width.max(widest);
+        let (height, placed) = shelve(width);
+        if height <= REPAIR_ATLAS_SIDE {
+            let size = (
+                round(width).min(REPAIR_ATLAS_SIDE),
+                round(height).min(REPAIR_ATLAS_SIDE),
+            );
+            return Ok((size, placed));
+        }
+    }
+    Err(format!(
+        "the {} rectangles it reads, {} MP, do not pack into one GPU atlas of {REPAIR_ATLAS_SIDE} \
+         texels a side",
+        rects.len(),
+        area.div_ceil(1_000_000)
+    ))
+}
+
+/// The read table a repair step's block starts with (`repair.wgsl`, "The read set"): its header,
+/// each rectangle's record, then an index of the stage's cells and one of the atlas's, each listing
+/// the rectangles that meet a cell. `clamps` where the byte path clamps the step's input.
+fn read_table(stage: Stage, atlas: &GpuReadAtlas, clamps: bool) -> Vec<u32> {
+    let mut table = vec![0u32; READ_HEADER_WORDS];
+    table[0] = atlas.rects.len() as u32;
+    table[1] = u32::from(clamps);
+    for (rect, at) in &atlas.rects {
+        table.extend([rect.x0, rect.y0, rect.width, rect.height, at[0], at[1]]);
+    }
+    // One index: per cell of a `width x height` plane, the rectangles whose placement there meets it.
+    let index = |table: &mut Vec<u32>, header: usize, (width, height): (u32, u32), atlas_side| {
+        let columns = width.div_ceil(READ_INDEX_CELL).max(1);
+        let rows = height.div_ceil(READ_INDEX_CELL).max(1);
+        let mut lists: Vec<Vec<u32>> = vec![Vec::new(); (columns * rows) as usize];
+        for (number, (rect, at)) in atlas.rects.iter().enumerate() {
+            let (x0, y0) = if atlas_side {
+                (at[0], at[1])
+            } else {
+                (rect.x0, rect.y0)
+            };
+            let (x1, y1) = (x0 + rect.width, y0 + rect.height);
+            for row in y0 / READ_INDEX_CELL..=(y1 - 1) / READ_INDEX_CELL {
+                for column in x0 / READ_INDEX_CELL..=(x1 - 1) / READ_INDEX_CELL {
+                    if row < rows && column < columns {
+                        lists[(row * columns + column) as usize].push(number as u32);
+                    }
+                }
+            }
+        }
+        table[header] = READ_INDEX_CELL;
+        table[header + 1] = columns;
+        table[header + 2] = rows;
+        table[header + 3] = table.len() as u32;
+        let mut offset = (lists.len() + 1) as u32;
+        let mut offsets = Vec::with_capacity(lists.len() + 1);
+        for list in &lists {
+            offsets.push(offset);
+            offset += list.len() as u32;
+        }
+        offsets.push(offset);
+        table.extend(offsets);
+        for list in &lists {
+            table.extend_from_slice(list);
+        }
+    };
+    index(&mut table, 2, (stage.width, stage.height), false);
+    index(&mut table, 6, atlas.size, true);
+    table
 }
 
 fn meets(a: Region, b: Region) -> bool {
@@ -181,8 +344,13 @@ pub(crate) fn groups(entry: &RepairEntry) -> Vec<Vec<usize>> {
 }
 
 /// The repair boundary `entry` of layer `layer` as a spatial step of the plan, its input and output
-/// clamped where the byte path quantizes ([module](self) docs).
-pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> GpuSpatial {
+/// clamped where the byte path quantizes ([module](self) docs), or why its read set does not pack
+/// into one atlas.
+pub(crate) fn plan_repair(
+    layer: usize,
+    entry: &RepairEntry,
+    linear: bool,
+) -> Result<GpuSpatial, String> {
     let bound = entry.bound();
     // A frozen patch reads nothing another operation of its group writes, and writes nothing one
     // reads, so it is drawn on its own right after the rest of its group.
@@ -202,63 +370,125 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
     } else {
         GpuPlaneFormat::Colour
     };
+    // The read set, held in atlas planes of the step's own: its input, cut from the source, and
+    // the states chained groups leave, every one at the same placements. A step whose every phase
+    // is a patch drawn last reads no input and holds none.
+    let reads_input = phases
+        .iter()
+        .enumerate()
+        .any(|(number, phase)| matches!(phase, Phase::Group(_)) || number + 1 < phases.len());
+    let rects = match (reads_input, entry.step_reads()) {
+        (false, _) => Vec::new(),
+        // Every operation writes nothing at this stage: their passes read nothing, and the atlas
+        // holds one pixel for them to be bound to.
+        (true, rects) if rects.is_empty() => vec![Region {
+            x0: 0,
+            y0: 0,
+            width: 1,
+            height: 1,
+        }],
+        (true, rects) => rects,
+    };
+    let mut atlas = if rects.is_empty() {
+        None
+    } else {
+        let (size, placed) = pack(&rects)?;
+        Some(GpuReadAtlas {
+            plane: 0,
+            planes: 1,
+            size,
+            rects: rects.into_iter().zip(placed).collect(),
+        })
+    };
+    let atlas_plane = |atlas: &GpuReadAtlas| GpuPlane {
+        format: state_format,
+        size: GpuPlaneSize::Fixed {
+            width: atlas.size.0,
+            height: atlas.size.1,
+        },
+        scratch: false,
+    };
     let mut words: Vec<u32> = Vec::new();
     let mut planes: Vec<GpuPlane> = Vec::new();
     let mut passes: Vec<GpuPass> = Vec::new();
-    let mut block: Vec<u32> = Vec::new();
-    let states: Vec<usize> = match phases.len() {
-        0 | 1 => Vec::new(),
-        2 => vec![0],
-        _ => vec![0, 1],
+    // The block: the read table, then each group's block and each patch's record.
+    let mut block: Vec<u32> = match &atlas {
+        Some(atlas) => read_table(entry.stage, atlas, !linear),
+        None => Vec::new(),
     };
-    for _ in &states {
-        planes.push(GpuPlane {
-            format: state_format,
-            size: GpuPlaneSize::Reduced(1),
-            scratch: false,
-        });
+    // The input plane, then the states: plane 0, then 1 and 2.
+    let input = atlas.as_ref().map(|atlas| {
+        planes.push(atlas_plane(atlas));
+        0
+    });
+    let states: Vec<usize> = match (&atlas, phases.len()) {
+        (None, _) | (_, 0 | 1) => Vec::new(),
+        (Some(_), 2) => vec![1],
+        (Some(_), _) => vec![1, 2],
+    };
+    if let Some(atlas) = atlas.as_mut() {
+        for _ in &states {
+            planes.push(atlas_plane(atlas));
+        }
+        atlas.planes += states.len();
     }
-    // The state the group being placed reads: the step's input, or a state plane.
-    let mut state: Option<usize> = None;
+    // The flags a pass reading plane `plane` at slot `slot` takes: 4, the plane is an atlas the
+    // read table addresses; 16, it holds the step's input, which the table may clamp.
+    let reading =
+        |plane: usize, slot: u32| 4 | (slot << 8) | if Some(plane) == input { 16 } else { 0 };
+    // The plane the phase being placed reads: the step's input, or a state.
+    let mut state: Option<usize> = input;
     let mut apply = None;
+    // An apply also binds the input plane last, unread, so the link keeps it across ticks: the
+    // surface cuts it once for the plan's reads, not each tick.
+    let keep = |mut planes: Vec<usize>| {
+        planes.extend(input);
+        planes
+    };
     for (number, phase) in phases.iter().enumerate() {
         let last = number + 1 == phases.len();
+        let next = |state: Option<usize>| match state {
+            Some(plane) if plane == states[0] && states.len() > 1 => states[1],
+            _ => states[0],
+        };
         let group = match phase {
             Phase::Group(group) => group,
             Phase::Patch(index) => {
                 let record = block.len() as u32;
                 block.extend_from_slice(&resident.records[*index]);
                 let words_at = words.len();
-                // `[-, -, flags, record]`: flags 4 reads the state plane at slot 0.
-                words.extend([0, 0, if state.is_some() { 4 } else { 0 }, record]);
+                let chained = state.filter(|plane| Some(*plane) != input);
                 if last {
-                    apply = Some(match state {
+                    // `[-, -, -, record]`: the patch over the step's input, or over the state
+                    // the phases before it left (bound first).
+                    words.extend([0, 0, 0, record]);
+                    apply = Some(match chained {
                         None => GpuApply {
                             function: "lf_repair_patch_apply",
-                            planes: Vec::new(),
+                            planes: keep(Vec::new()),
                             words: words_at,
                             identity: false,
                         },
                         Some(plane) => GpuApply {
                             function: "lf_repair_patch_apply_over",
-                            planes: vec![plane],
+                            planes: keep(vec![plane]),
                             words: words_at,
                             identity: false,
                         },
                     });
                 } else {
-                    let output = match state {
-                        Some(plane) if plane == states[0] && states.len() > 1 => states[1],
-                        _ => states[0],
-                    };
+                    // `[-, -, flags, record]`: the patch over the plane at slot 0.
+                    let read = state.expect("a chained patch reads the input plane");
+                    words.extend([0, 0, reading(read, 0), record]);
+                    let output = next(chained);
                     passes.push(GpuPass {
                         kernel: "lf_repair_patch_blend",
-                        inputs: state.into_iter().collect(),
+                        inputs: vec![read],
                         output,
                         words: words_at,
                         source: 0,
                         shape: GpuPassShape::Texels { span: [1, 1] },
-                        reads_source: state.is_none(),
+                        reads_source: false,
                         unit: 0,
                     });
                     state = Some(output);
@@ -266,6 +496,7 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
                 continue;
             }
         };
+        let read = state.expect("a group reads the input plane");
         let ops: Vec<crate::repair::RepairOp> =
             group.iter().map(|&index| bound[index].clone()).collect();
         let described = crate::repair::gpu::describe(&ops, entry.stage, None);
@@ -283,28 +514,22 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
                 scratch: !(last && index == described.apply_plane),
             });
         }
-        // Every record names the group's block offset; a pass that reads the input reads the
-        // state plane, when there is one, bound after its own inputs.
-        let mut record = |at: usize, flags: u32| {
-            words[words_at + at + 2] |= flags;
+        // Every record names the group's block offset; a pass that reads the group's input reads
+        // the input plane or the state, bound after its own inputs.
+        let mut record = |at: usize| {
             words[words_at + at + 3] = offset;
         };
         for pass in &described.passes {
-            record(pass.words, 0);
+            record(pass.words);
         }
-        record(described.apply_words, 0);
+        record(described.apply_words);
         for pass in &described.passes {
             let mut inputs: Vec<usize> =
                 pass.inputs.iter().map(|&plane| planes_at + plane).collect();
-            let reads_source = match (pass.reads_source, state) {
-                (true, Some(plane)) => {
-                    let slot = inputs.len() as u32;
-                    words[words_at + pass.words + 2] |= 4 | (slot << 8);
-                    inputs.push(plane);
-                    false
-                }
-                (reads, _) => reads,
-            };
+            if pass.reads_source {
+                words[words_at + pass.words + 2] |= reading(read, inputs.len() as u32);
+                inputs.push(read);
+            }
             passes.push(GpuPass {
                 kernel: pass.kernel,
                 inputs,
@@ -312,68 +537,47 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
                 words: words_at + pass.words,
                 source: 0,
                 shape: GpuPassShape::Texels { span: [1, 1] },
-                reads_source,
+                reads_source: false,
                 unit: 0,
             });
         }
         let composite = planes_at + described.apply_plane;
+        let chained = state.filter(|plane| Some(*plane) != input);
         if last {
-            apply = Some(match state {
+            apply = Some(match chained {
                 None => GpuApply {
                     function: "lf_repair_apply",
-                    planes: vec![composite],
+                    planes: keep(vec![composite]),
                     words: words_at + described.apply_words,
                     identity: false,
                 },
                 Some(plane) => GpuApply {
                     function: "lf_repair_apply_over",
-                    planes: vec![plane, composite],
+                    planes: keep(vec![plane, composite]),
                     words: words_at + described.apply_words,
                     identity: false,
                 },
             });
         } else {
-            // The blend into the next state: words `[-, -, flags, offset, composite slot]`.
-            let output = match state {
-                Some(plane) if plane == states[0] && states.len() > 1 => states[1],
-                _ => states[0],
-            };
-            let mut inputs = vec![composite];
-            let mut flags = 0;
-            let mut reads_source = true;
-            if let Some(plane) = state {
-                flags = 4 | (1 << 8);
-                inputs.push(plane);
-                reads_source = false;
-            }
+            // The blend into the next state over the atlas: words `[-, -, flags, offset,
+            // composite slot]`, the plane it blends over at slot 1.
+            let output = next(chained);
             let at = words.len();
-            words.extend([0, 0, flags, offset, 0]);
+            words.extend([0, 0, reading(read, 1), offset, 0]);
             passes.push(GpuPass {
                 kernel: "lf_repair_blend",
-                inputs,
+                inputs: vec![composite, read],
                 output,
                 words: at,
                 source: 0,
                 shape: GpuPassShape::Texels { span: [1, 1] },
-                reads_source,
+                reads_source: false,
                 unit: 0,
             });
             state = Some(output);
         }
     }
     let apply = apply.expect("a repair layer of at least one operation");
-    let reach = entry
-        .regions()
-        .iter()
-        .map(|regions| {
-            let dx = regions.delta[0].unsigned_abs();
-            let dy = regions.delta[1].unsigned_abs();
-            u32::try_from(dx.max(dy))
-                .unwrap_or(u32::MAX)
-                .saturating_add(1)
-        })
-        .max()
-        .unwrap_or(0);
     let operations = entry
         .operations()
         .iter()
@@ -409,7 +613,7 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
             reads: regions.reads,
         })
         .collect();
-    GpuSpatial {
+    Ok(GpuSpatial {
         layer,
         program: &crate::repair::REPAIR_PROGRAM,
         words,
@@ -422,9 +626,9 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
         halos: Vec::new(),
         light: None,
         block: Some(block.into()),
-        repair: Some(Arc::new(GpuRepair { operations, reach })),
+        repair: Some(Arc::new(GpuRepair { operations, atlas })),
         resident: resident.blocks,
-    }
+    })
 }
 
 /// One set of a repair step's dispatches: a group of Clone and Heal operations drawn through the

@@ -465,17 +465,20 @@ fn patch_description(stale: Option<&Value>) -> String {
     if reasons.is_empty() {
         return "frozen patch".into();
     }
-    let changed: Vec<&str> = reasons
-        .iter()
-        .map(|reason| match *reason {
-            "source" => "the original changed",
-            "dimensions" => "the photograph's dimensions changed",
-            "development" => "the RAW development changed",
-            "earlier-correction" => "a correction below it changed",
-            other => other,
-        })
-        .collect();
+    let changed: Vec<&str> = reasons.iter().map(|reason| stale_phrase(reason)).collect();
     format!("stale \u{b7} {} since it was generated", changed.join(", "))
+}
+
+/// What changed for a frozen patch to be stale, for a stale reason `query.corrections` and
+/// `recipe.describe` name: `a correction below it changed`.
+pub(crate) fn stale_phrase(reason: &str) -> &str {
+    match reason {
+        "source" => "the original changed",
+        "dimensions" => "the photograph's dimensions changed",
+        "development" => "the RAW development changed",
+        "earlier-correction" => "a correction below it changed",
+        other => other,
+    }
 }
 
 /// The pin, the band and the status bar's name for the add a press would make now.
