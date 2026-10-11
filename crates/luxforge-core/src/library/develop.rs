@@ -44,7 +44,7 @@ pub(crate) use commit::{Decided, Refused, decide, failure, write};
     reason = "`plan.rs` reads frames through its module; nothing outside `develop` reads it"
 )]
 pub(crate) use frames::{Frames, frames};
-pub(crate) use filing::Destination;
+pub(crate) use filing::{Destination, file_one};
 pub(crate) use plan::{Plan, PlannedFile, destinations, plan};
 pub(crate) use read::{ReadFile, from_copy, read};
 
