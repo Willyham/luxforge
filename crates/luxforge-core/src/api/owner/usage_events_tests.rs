@@ -580,3 +580,161 @@ fn usage_a_develop_cancelled_after_a_committed_batch_records_the_photographs_it_
     );
     assert_eq!(harness.events(), [interaction(Feature::DevelopPicks, None)]);
 }
+
+/// What one editing session leaves behind: the original's SHA-256 before and after, the exported
+/// JPEG's bytes and the photograph's history and recipe as the API reads them.
+struct Outputs {
+    original_before: String,
+    original_after: String,
+    export: Vec<u8>,
+    history: Value,
+    recipe: Value,
+}
+
+fn sha256_hex(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(fs::read(path).unwrap());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Develop a copy of `source`, open it, commit Basic, drag and commit it again, and export it,
+/// with collection started (`collecting`) or off, in a catalog of its own.
+fn edited(name: &str, source: &Path, collecting: bool) -> Outputs {
+    let harness = Harness::new(name);
+    if collecting {
+        harness.start();
+    }
+    let ext = source.extension().and_then(|ext| ext.to_str()).unwrap_or("jpg");
+    let photo = harness.dir.join(format!("original.{ext}"));
+    fs::copy(source, &photo).unwrap();
+    let original_before = sha256_hex(&photo);
+    let developed = harness.develop("develop", &[&photo]);
+    assert_eq!(developed["status"], "ready", "{developed}");
+    let asset = developed["result"]["developed"][0]["asset_id"].clone();
+    harness.open(&asset);
+    assert!(harness.set_basic(&asset, "exposure", 0.6).error.is_none());
+    let draft = harness.ok(
+        "draft.begin",
+        json!({"asset_id": asset, "action": "set-basic"}),
+    );
+    for tick in 1..=5 {
+        harness.ok(
+            "draft.set",
+            json!({"draft_id": draft["draft_id"], "fields": {"contrast": f64::from(tick) * 7.0}}),
+        );
+    }
+    let mutation = harness.asset_mutation(&asset, "drag");
+    harness.ok(
+        "draft.commit",
+        json!({"draft_id": draft["draft_id"], "mutation": mutation}),
+    );
+    let destination = harness.dir.join("export.jpg");
+    let accepted = harness.ok(
+        "export.jpeg",
+        json!({"asset_id": asset, "destination": destination, "mutation": harness.request("export")}),
+    );
+    let record = harness.settle(&accepted["job_id"]);
+    assert_eq!(record["status"], "ready", "{record}");
+    let mut history = harness.ok("history.list", json!({"asset_id": asset}));
+    let mut recipe = harness.ok("asset.state", json!({"asset_id": asset}))["recipe"].clone();
+    // Catalog-local identities and times differ between any two catalogs; what was done does not.
+    for value in [&mut history, &mut recipe] {
+        scrub(value);
+    }
+    let outputs = Outputs {
+        original_before,
+        original_after: sha256_hex(&photo),
+        export: fs::read(&destination).unwrap(),
+        history,
+        recipe,
+    };
+    if collecting {
+        assert!(
+            harness.collector.session().unwrap().diagnostics().recorded > 0,
+            "the collecting session recorded the operations"
+        );
+    } else {
+        assert!(harness.collector.session().is_none());
+    }
+    outputs
+}
+
+/// Remove the keys that name catalog-local identities or times.
+fn scrub(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|key, _| {
+                !(key.ends_with("_id")
+                    || key.ends_with("_at")
+                    || key.ends_with("_ms")
+                    || key == "id"
+                    || key == "undo_parent"
+                    || key == "created"
+                    || key == "timestamp")
+            });
+            map.values_mut().for_each(scrub);
+        }
+        Value::Array(items) => items.iter_mut().for_each(scrub),
+        _ => {}
+    }
+}
+
+fn assert_unchanged_by_collection(name: &str, source: &Path) {
+    let off = edited(&format!("{name}-off"), source, false);
+    let on = edited(&format!("{name}-on"), source, true);
+    let source_hash = sha256_hex(source);
+    for (what, outputs) in [("off", &off), ("on", &on)] {
+        assert_eq!(outputs.original_before, source_hash, "{name} {what}");
+        assert_eq!(
+            outputs.original_after, outputs.original_before,
+            "{name} {what}: the original changed"
+        );
+    }
+    assert!(!off.export.is_empty());
+    assert!(
+        on.export == off.export,
+        "{name}: the export differs with collection on"
+    );
+    assert_eq!(on.recipe, off.recipe, "{name}: the recipe differs");
+    assert_eq!(on.history, off.history, "{name}: the history differs");
+}
+
+/// Collecting statistics changes nothing a person keeps: the original's bytes, the exported image
+/// byte for byte (the reference renderer's), the recipe and the history are the same with
+/// collection on and off, for the fixtures' JPEGs.
+#[test]
+fn usage_collection_leaves_originals_recipes_and_exports_unchanged() {
+    for fixture in ["orientation-6.jpg", "portrait.jpg"] {
+        assert_unchanged_by_collection(
+            &format!("preserve-{}", fixture.trim_end_matches(".jpg")),
+            &fixture_path(fixture),
+        );
+    }
+}
+
+/// [`usage_collection_leaves_originals_recipes_and_exports_unchanged`] over photo-sized inputs:
+/// the generated 24 MP and 60 MP JPEGs (`cargo xtask generate-fixtures`), and every file in
+/// `LUXFORGE_USAGE_PRESERVATION_RAW_DIR` when it is set.
+#[test]
+#[ignore = "photo-sized: set LUXFORGE_GENERATED_FIXTURES to the generated JPEGs"]
+fn usage_collection_leaves_photo_sized_originals_and_exports_unchanged() {
+    let generated = PathBuf::from(
+        std::env::var_os("LUXFORGE_GENERATED_FIXTURES")
+            .expect("LUXFORGE_GENERATED_FIXTURES names the generated fixtures"),
+    );
+    let mut sources = vec![generated.join("24mp.jpg"), generated.join("60mp.jpg")];
+    if let Some(dir) = std::env::var_os("LUXFORGE_USAGE_PRESERVATION_RAW_DIR") {
+        let mut raws: Vec<PathBuf> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file())
+            .collect();
+        raws.sort();
+        sources.extend(raws);
+    }
+    for (index, source) in sources.iter().enumerate() {
+        assert!(source.is_file(), "{} is missing", source.display());
+        assert_unchanged_by_collection(&format!("preserve-large-{index}"), source);
+        println!("unchanged with collection on and off: {}", source.display());
+    }
+}

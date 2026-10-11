@@ -562,3 +562,100 @@ fn usage_the_collector_gate_governs_the_held_profile() {
     collector.stop();
     assert!(context.profile(collector.gate()).is_none());
 }
+
+/// This Mac's real probe against what the system's own tools report, read here by the test (the
+/// probe itself runs no command): the OS version and build, the architecture, the core counts,
+/// the Apple silicon generation and tier from the CPU brand, and the memory band holding the
+/// installed memory. The profile carries those values only as numbers and enums: no brand string,
+/// product name, host name or user name appears in what it would send.
+#[cfg(target_os = "macos")]
+#[test]
+fn usage_this_macs_profile_matches_what_the_system_reports_without_its_strings() {
+    use crate::usage::{AppleTier, Arch, CpuVendor, MemoryBand, OsFamily};
+    fn output(program: &str, args: &[&str]) -> String {
+        let out = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("{program}: {error}"));
+        assert!(out.status.success(), "{program} {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+    let sysctl = |name: &str| output("sysctl", &["-n", name]);
+    let gate = Gate::new();
+    gate.enable();
+    let mut context = DeviceContext::new();
+    assert_eq!(
+        context.update(&gate, &[], RendererPath::Gpu),
+        Ok(Update::Changed)
+    );
+    let profile = *context.profile(&gate).unwrap();
+
+    let os = profile.os();
+    assert_eq!(os.family, OsFamily::Macos);
+    let version: Vec<u32> = output("sw_vers", &["-productVersion"])
+        .split('.')
+        .map(|part| part.parse().unwrap())
+        .collect();
+    assert_eq!(os.version.parts(), version.as_slice());
+    let build = output("sw_vers", &["-buildVersion"]);
+    assert_eq!(os.build.map(|build| build.as_str().to_owned()), Some(build));
+
+    let expected_arch = match std::env::consts::ARCH {
+        "aarch64" => Arch::Arm64,
+        "x86_64" => Arch::X86_64,
+        _ => Arch::Other,
+    };
+    assert_eq!(profile.arch(), expected_arch);
+
+    let cpu = profile.cpu();
+    assert_eq!(
+        u32::from(cpu.physical_cores),
+        sysctl("hw.physicalcpu").parse::<u32>().unwrap()
+    );
+    assert_eq!(
+        u32::from(cpu.logical_cores),
+        sysctl("hw.logicalcpu").parse::<u32>().unwrap()
+    );
+    let brand = sysctl("machdep.cpu.brand_string");
+    let words: Vec<&str> = brand.split_whitespace().collect();
+    if let ["Apple", chip, rest @ ..] = words.as_slice()
+        && let Some(generation) = chip.strip_prefix('M').and_then(|n| n.parse::<u8>().ok())
+    {
+        assert_eq!(cpu.vendor, CpuVendor::Apple, "{brand}");
+        assert_eq!(cpu.generation, Some(generation), "{brand}");
+        let tier = match rest {
+            [] => Some(AppleTier::Base),
+            ["Pro"] => Some(AppleTier::Pro),
+            ["Max"] => Some(AppleTier::Max),
+            ["Ultra"] => Some(AppleTier::Ultra),
+            _ => None,
+        };
+        assert_eq!(cpu.tier, tier, "{brand}");
+    }
+
+    let gib = sysctl("hw.memsize").parse::<u64>().unwrap().div_ceil(1 << 30);
+    match profile.memory() {
+        MemoryBand::Over1024 => assert!(gib > 1024),
+        band => {
+            let upper = u64::from(band.upper_gib().unwrap());
+            assert!(gib <= upper && (upper == 8 || gib > upper / 2), "{gib} GiB in {band:?}");
+        }
+    }
+
+    // The values travel as numbers and enums only.
+    let sent = json(&profile);
+    let host = output("hostname", &[]);
+    let user = std::env::var("USER").unwrap_or_default();
+    for raw in [
+        brand.as_str(),
+        "macOS",
+        "Mac OS",
+        host.as_str(),
+        user.as_str(),
+    ] {
+        if raw.len() >= 3 {
+            assert!(!sent.contains(raw), "{raw:?} in {sent}");
+        }
+    }
+    assert!(sent.len() <= 2048);
+}
