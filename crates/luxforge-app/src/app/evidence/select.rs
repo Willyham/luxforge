@@ -344,6 +344,11 @@ impl Editor {
                         "position {position} is a developed photograph, not a file to pick"
                     ));
                 }
+                Some(RowItem::Input { .. }) => {
+                    return self.fail_step(format!(
+                        "position {position} is an HDR stack's original outside the view"
+                    ));
+                }
                 None => {
                     return self.fail_step(format!("position {position}'s row has not been read"));
                 }

@@ -650,7 +650,7 @@ pub(crate) fn frame_files(rows: &RowCache, start: u32, len: u32) -> Option<Vec<F
     (start..start.saturating_add(len))
         .map(|position| match rows.row(position)?.item {
             RowItem::File { file_id } => Some(file_id),
-            RowItem::Photo { .. } => None,
+            RowItem::Photo { .. } | RowItem::Input { .. } => None,
         })
         .collect()
 }
@@ -2451,7 +2451,7 @@ pub(crate) fn item_info(
                 Some(if row.edited { "Yes" } else { "No" }.to_owned()),
             );
         }
-        RowItem::File { .. } => {}
+        RowItem::File { .. } | RowItem::Input { .. } => {}
     }
     ItemInfo {
         name: row.file_name.clone(),

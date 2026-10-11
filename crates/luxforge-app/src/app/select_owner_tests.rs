@@ -1039,7 +1039,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
         .map(
             |position| match editor.select.state.rows.row(position).unwrap().item {
                 RowItem::File { file_id } => json!(file_id),
-                RowItem::Photo { .. } => panic!("a file"),
+                RowItem::Photo { .. } | RowItem::Input { .. } => panic!("a file"),
             },
         )
         .collect();
@@ -1075,7 +1075,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
     // An agent picks the last file; the wake reads it.
     let last = match editor.select.state.rows.row(11).unwrap().item {
         RowItem::File { file_id } => file_id,
-        RowItem::Photo { .. } => panic!("a file"),
+        RowItem::Photo { .. } | RowItem::Input { .. } => panic!("a file"),
     };
     let last_name = name(&editor, 11);
     call(
@@ -1169,7 +1169,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
     click(&mut editor, 1);
     let frame = match editor.select.state.rows.row(1).unwrap().item {
         RowItem::File { file_id } => file_id,
-        RowItem::Photo { .. } => panic!("a file"),
+        RowItem::Photo { .. } | RowItem::Input { .. } => panic!("a file"),
     };
     let _ = editor.pick_active();
     let (params, request_id) = sent(&editor, "pick.set");

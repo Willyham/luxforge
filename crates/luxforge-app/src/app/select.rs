@@ -1418,11 +1418,14 @@ impl Editor {
                     .state
                     .rows
                     .row(position)
-                    .map(|row| match &row.item {
-                        RowItem::File { file_id } => ItemRef::File { file_id: *file_id },
-                        RowItem::Photo { asset_id } => ItemRef::Photo {
+                    .and_then(|row| match &row.item {
+                        RowItem::File { file_id } => Some(ItemRef::File { file_id: *file_id }),
+                        RowItem::Photo { asset_id } => Some(ItemRef::Photo {
                             asset_id: asset_id.clone(),
-                        },
+                        }),
+                        // An HDR stack's original outside the view has no identity a selection
+                        // names: the cell is selected by position once the view lands.
+                        RowItem::Input { .. } => None,
                     })
             })
             .collect()

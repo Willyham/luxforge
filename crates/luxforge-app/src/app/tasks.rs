@@ -174,6 +174,9 @@ pub(crate) struct SyncResult {
     /// A `theme.*` method changed the theme library, which the desktop lists again whether or not
     /// the sheet is open.
     pub(crate) themes: bool,
+    /// The newest development-set revision another client's change named, `u64::MAX` after a gap
+    /// in the event log: Develop reads its set again when it holds an older one.
+    pub(crate) development_set: Option<u64>,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -192,6 +195,7 @@ impl SyncResult {
             flags: false,
             preferences: false,
             themes: false,
+            development_set: None,
             own: Vec::new(),
         }
     }
@@ -2105,6 +2109,16 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("theme."));
+    // A development-set change, Pick merged's among them, names the revision it left.
+    let development_set = if events.gap {
+        Some(u64::MAX)
+    } else {
+        events
+            .events
+            .iter()
+            .filter_map(|event| event.development_set_revision)
+            .max()
+    };
     let asset = held.as_ref().is_some_and(|(asset_id, held)| {
         events.gap
             || events.events.iter().any(|event| {
@@ -2135,6 +2149,7 @@ pub(crate) fn sync_now(
         flags,
         preferences,
         themes,
+        development_set,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2870,6 +2885,7 @@ mod tests {
             flags: false,
             preferences: false,
             themes: false,
+            development_set: None,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));

@@ -29,7 +29,7 @@ use iced::{
 };
 use luxforge_core::{
     ApiRequest, Cancel, EditorService, EntryId,
-    catalog_types::{FolderChoice, ViewSource, ViewSummary},
+    catalog_types::{FolderChoice, ViewRows, ViewSource, ViewSummary},
     decode_preview,
 };
 use luxforge_testbase::{
@@ -761,7 +761,7 @@ fn filmstrip_a_catalog_view_opens_develop_with_its_photographs_as_the_set() {
         .clone()
         .expect("the photograph opening");
     let serial = set.serial;
-    let result = set_now(&editor.owner, editor.client, revision, count, 2);
+    let result = set_now(&editor.owner, editor.client, revision, 2);
     send(editor, DevelopMessage::SetRead { serial, result });
     scene
         .client
@@ -777,7 +777,7 @@ fn filmstrip_a_catalog_view_opens_develop_with_its_photographs_as_the_set() {
         .iter()
         .filter_map(|row| match &row.item {
             RowItem::Photo { asset_id } => Some(asset_id.clone()),
-            RowItem::File { .. } => None,
+            RowItem::File { .. } | RowItem::Input { .. } => None,
         })
         .collect();
     let set = editor.develop.state.set.clone().unwrap();
@@ -796,6 +796,56 @@ fn filmstrip_a_catalog_view_opens_develop_with_its_photographs_as_the_set() {
         editor.document.state.as_ref().map(|state| &state.asset.id),
         Some(&expected[2])
     );
+    // The set is the owner's: an agent reads the same members, and its change to them reaches the
+    // filmstrip through the event poll, the photograph on screen keeping its place.
+    let agent_read = scene.client.ok("development-set.read", json!({}));
+    let members: Vec<Value> = agent_read["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| member["asset_id"].clone())
+        .collect();
+    assert_eq!(
+        members,
+        expected
+            .iter()
+            .map(|asset| json!(asset))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(scene.editor.develop.held_set, agent_read["revision"]);
+    scene.client.ok(
+        "development-set.remove",
+        json!({"asset_ids": [expected[0]], "set_id": agent_read["set_id"],
+            "mutation": scene.client.mutation()}),
+    );
+    let editor = &mut scene.editor;
+    let own: Vec<String> = editor.sync.own_requests.iter().cloned().collect();
+    let polled = tasks::sync_now(
+        &editor.owner,
+        editor.client,
+        None,
+        editor.sync.sequence,
+        &own,
+        None,
+    )
+    .unwrap();
+    let moved = polled
+        .development_set
+        .expect("the change names the set's revision");
+    assert!(moved > editor.develop.held_set);
+    let serial = editor.develop.state.set.as_ref().unwrap().serial;
+    let result = read_set_now(&editor.owner, editor.client);
+    send(editor, DevelopMessage::SetRead { serial, result });
+    let set = editor.develop.state.set.clone().unwrap();
+    assert_eq!(
+        set.photos
+            .iter()
+            .map(|photo| photo.asset_id.clone())
+            .collect::<Vec<_>>(),
+        expected[1..]
+    );
+    assert_eq!(set.photos[set.active].asset_id, expected[2]);
+    assert_eq!(editor.develop.held_set, moved);
     finish(scene);
 }
 
@@ -991,9 +1041,9 @@ fn catalog_folder_develop_set_survives_import_browsing() {
     );
     let before = scene.editor.session.browse.clone();
     let active = assets[2].clone();
-    let (photos, index) = folder_set_now(&scene.editor.owner, &query, Some(&active)).unwrap();
-    assert_eq!(photos.len(), assets.len());
-    assert_eq!(photos[index].asset_id, active);
+    let read = folder_set_now(&scene.editor.owner, &query, Some(&active)).unwrap();
+    assert_eq!(read.photos.len(), assets.len());
+    assert_eq!(read.photos[read.active].asset_id, active);
     assert_eq!(
         scene.editor.session.browse, before,
         "the import view's session is preserved"
@@ -1005,7 +1055,7 @@ fn catalog_folder_develop_set_survives_import_browsing() {
             .editor
             .update(Message::Develop(DevelopMessage::FolderSetRead {
                 serial,
-                result: Ok((photos, index)),
+                result: Ok(read),
             })),
     );
     assert!(!scene.editor.select_shown());
@@ -1038,7 +1088,11 @@ fn catalog_folder_develop_set_survives_import_browsing() {
             .editor
             .update(Message::Develop(DevelopMessage::FolderSetRead {
                 serial: stale,
-                result: Ok((Vec::new(), 0)),
+                result: Ok(crate::state::develop::ReadSet {
+                    photos: Vec::new(),
+                    active: 0,
+                    revision: 0,
+                }),
             })),
     );
     drop(scene.editor.enter_develop_set());
