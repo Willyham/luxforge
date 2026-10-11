@@ -48,8 +48,9 @@ per-installation limit, the forwarding queue. The limits touch only this route.
 
 The `feature` and `tool` enums come from `registry.json` in this directory, compiled in. It is a
 byte-for-byte copy of `crates/luxforge-core/src/usage/registry.json` (the desktop's checked-in
-registry, commit d3fce966 of the events task) and **must stay equal to it**; the end-to-end check
-holds the two equal. A test fails if the file is not sorted, unique and kebab-case.
+registry) and **must stay equal to it**: `tests/desktop.rs` fails when the two differ, and also runs
+every synthetic batch the desktop's core accepts or refuses (`crates/luxforge-core/tests/fixtures/usage/`)
+through this validator, which must agree. A test fails if the file is not sorted, unique and kebab-case.
 
 The wire format counts nesting depth as "at most 4"; its schema has a deepest value (`driver_version`
 inside a GPU object inside `gpus` inside `device` inside the envelope) at the fifth container, so

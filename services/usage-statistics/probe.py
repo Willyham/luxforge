@@ -4,7 +4,9 @@
 Runs the deployment checklist's live checks (../usage-statistics/DEPLOYMENT.md) against a base URL
 with generated, clearly synthetic data only: random installation and session IDs, release
 `0.0.0+000000000000` (no real build carries it), no file read and no real report. It follows no
-redirect, reads at most 4 KiB of any reply, and sends no header but the request's own.
+redirect, reads at most 4 KiB of any reply, and sends no header but the request's own, except one
+batch sent exactly as the desktop sends it: its header fields, in its order, with its fixed
+User-Agent.
 
     ./probe.sh http://127.0.0.1:8080                       # a local reference stack
     ./probe.sh --strict https://staging.example.org        # every check, a skip is a failure
@@ -36,6 +38,10 @@ PRODUCTION_DOMAIN = "luxforge.app"
 MAX_REPLY_BODY = 64  # the ingress answers with a fixed short status word
 READ_LIMIT = 4096
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
+# What the desktop's transport (crates/luxforge-net/src/transport.rs) writes between Host and
+# Content-Type; it writes Content-Length first. The version is the workspace's, 0.0.0 in every build
+# today. `services/usage-statistics/test.sh --client` records the desktop's actual header fields.
+DESKTOP_HEADERS = (("User-Agent", "Luxforge/0.0.0"), ("Accept-Encoding", "identity"), ("Connection", "close"))
 
 # Response headers that would mean something between the client and the ingress identifies,
 # traces or tracks requests. Matched by exact name or prefix, case-insensitively.
@@ -127,15 +133,25 @@ class Probe:
         return http.client.HTTPConnection(self.host, port, timeout=self.timeout)
 
     def send(self, method, path, body=None, content_type="application/json", chunked=False, extra=(),
-             scheme=None, port=None, track=True):
-        """One request on its own connection; never follows a redirect; reads at most READ_LIMIT bytes."""
+             scheme=None, port=None, track=True, desktop=False):
+        """One request on its own connection; never follows a redirect; reads at most READ_LIMIT bytes.
+        `desktop` writes the desktop's header fields in its order: Content-Length, Host, User-Agent,
+        Accept-Encoding, Connection, Content-Type."""
         time.sleep(self.pause)
         conn = self.connection(scheme, port)
         try:
-            conn.putrequest(method, path)
+            conn.putrequest(method, path, skip_host=desktop, skip_accept_encoding=desktop)
+            if desktop:
+                default = (scheme or self.scheme) == "https" and (port or self.port) == 443 or \
+                    (scheme or self.scheme) == "http" and (port or self.port) == 80
+                host = f"[{self.host}]" if ":" in self.host else self.host
+                conn.putheader("Content-Length", str(len(body)))
+                conn.putheader("Host", host if default else f"{host}:{port or self.port}")
+                for name, value in DESKTOP_HEADERS:
+                    conn.putheader(name, value)
             if content_type is not None:
                 conn.putheader("Content-Type", content_type)
-            if body is not None and not chunked:
+            if body is not None and not chunked and not desktop:
                 conn.putheader("Content-Length", str(len(body)))
             if chunked:
                 conn.putheader("Transfer-Encoding", "chunked")
@@ -199,6 +215,33 @@ class Probe:
                 "installation_id": installation or self.installation, "session_id": session,
                 "session_start": start, "batch_seq": 0, "dropped": 0, "device": device, "events": events}
 
+    def desktop_batch(self):
+        """A valid synthetic batch in the shape the desktop sends: a macOS profile with every optional
+        field an Apple silicon Mac reports, and the events of an opt-in and a Develop journey."""
+        b = self.batch(installation=self.new_id())
+        self.installations.append(b["installation_id"])
+        image = "11" * 16
+        b["device"] = {"os": {"family": "macos", "version": [26, 5], "build": "25F71"}, "arch": "arm64",
+                       "cpu": {"vendor": "apple", "physical_cores": 12, "logical_cores": 12, "generation": 4,
+                               "tier": "pro"},
+                       "memory_gib_band": 32,
+                       "gpus": [{"vendor": "apple", "backend": "metal", "type": "integrated", "unified_memory": True,
+                                 "vendor_id": 4203, "generation": 4, "tier": "pro"}],
+                       "renderer": "gpu"}
+        b["events"] = [
+            {"seq": 0, "t": 0, "name": "session.start", "trigger": "opt-in"},
+            {"seq": 1, "t": 900, "name": "interaction", "feature": "develop-picks"},
+            {"seq": 2, "t": 1100, "name": "operation.end", "operation": "source-preparation", "outcome": "completed",
+             "duration_ms": 180, "image": image},
+            {"seq": 3, "t": 1120, "name": "image.open", "image": image},
+            {"seq": 4, "t": 2400, "name": "tool.commit", "tool": "basic", "image": image},
+            {"seq": 5, "t": 3000, "name": "interaction", "feature": "zoom", "image": image},
+            {"seq": 6, "t": 4000, "name": "interaction", "feature": "export", "image": image},
+            {"seq": 7, "t": 4800, "name": "operation.end", "operation": "export", "outcome": "completed",
+             "duration_ms": 790, "count": 1, "image": image},
+        ]
+        return b
+
     @staticmethod
     def encode(value):
         return json.dumps(value, separators=(",", ":")).encode()
@@ -222,6 +265,9 @@ class Probe:
         self.expect("a minimal valid batch is accepted (202)", self.post(self.batch()), 202, body=b"")
         self.expect("Content-Type application/json; charset=utf-8 is accepted (202)",
                     self.post(self.batch(), content_type="application/json; charset=utf-8"), 202)
+        self.expect("a batch sent exactly as the desktop sends it (its header fields and User-Agent, a macOS "
+                    "profile, a Develop journey) is accepted (202, empty body)",
+                    self.post(self.desktop_batch(), desktop=True), 202, body=b"")
 
     def rejected(self):
         def mutated(change):
