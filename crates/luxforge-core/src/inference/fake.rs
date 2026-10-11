@@ -36,6 +36,10 @@ pub const FAKE_RUNTIME: &str = "luxforge-fake";
 pub const FAKE_VERSION: &str = "1";
 /// The one backend the fake offers: every model it opens runs on the CPU.
 pub const FAKE_BACKEND: &str = "cpu";
+/// The backend name a developer run of the desktop or `luxforge-json` serves the fake under, beside
+/// the native runtime's own `cpu` ([`super::CompositeInference`]): a developer module that wants
+/// the fake names this backend.
+pub const FAKE_HOST_BACKEND: &str = "fake";
 /// The fake generator's sampler, as provenance records it.
 pub const FAKE_SAMPLER: &str = "fake-blocks";
 /// The side of the blocks the fake generator fills with one colour each.

@@ -108,13 +108,17 @@ fn run() -> Result<(), (String, String)> {
         config_dir: paths.as_ref().map(Paths::module_config),
         resource_dir: paths.as_ref().map(Paths::module_resources),
         secrets,
-        // A developer run installs the developer models from memory and serves the deterministic
-        // fake to a local-runtime capability.
+        // A developer run installs the developer models from memory.
         transport: luxforge_core::DeveloperModels::for_run(
             developer,
             Arc::new(HttpTransport::system()),
         ),
-        inference: developer.then(luxforge_core::inference::fake::FakeInference::shared),
+        // ONNX Runtime, compiling under the data root; a developer run also serves the
+        // deterministic fake, as the `fake` backend. Nothing starts until a model opens.
+        inference: Some(luxforge_onnx::host_runtime(
+            paths.as_ref().map(Paths::inference_cache),
+            developer,
+        )),
         ..HostConfig::unconfigured()
     };
     let (owner, join) = OwnerHandle::start_with_host(&catalog, Arc::new(registry), host)

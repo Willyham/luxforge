@@ -64,6 +64,35 @@ fn native_jpeg_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the linked ONNX Runtime's provenance (`luxforge-onnx`'s), its MIT licence and the notices
+/// of the libraries it builds in beside the other native notices. The prebuilt archive carries no
+/// notice of its own; these are the upstream tag's.
+fn native_onnxruntime_notices(root: &Path, out: &Path) -> Result {
+    let source = root.join("crates/luxforge-onnx");
+    let notices = [
+        ("THIRD_PARTY.md", "luxforge-onnx/THIRD_PARTY.md"),
+        (
+            "notices/onnxruntime-1.28.0/LICENSE",
+            "onnxruntime-1.28.0/LICENSE",
+        ),
+        (
+            "notices/onnxruntime-1.28.0/ThirdPartyNotices.txt",
+            "onnxruntime-1.28.0/ThirdPartyNotices.txt",
+        ),
+    ];
+    for (from, to) in notices {
+        let input = source.join(from);
+        ensure(
+            input.is_file(),
+            format!("Missing ONNX Runtime notice: {}", input.display()),
+        )?;
+        let destination = out.join("native").join(to);
+        fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+        fs::copy(input, destination)?;
+    }
+    Ok(())
+}
+
 /// Copies the bundled UI font's provenance and its SIL Open Font License beside the other notices.
 fn bundled_font_notices(root: &Path, out: &Path) -> Result {
     let source = root.join("crates/luxforge-ui");
@@ -189,6 +218,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     }
     native_raw_notices(root, out)?;
     native_jpeg_notices(root, out)?;
+    native_onnxruntime_notices(root, out)?;
     bundled_font_notices(root, out)?;
     bundled_theme_notices(root, out)?;
     bundled_data_notices(root, out)?;
@@ -239,6 +269,15 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "notices":"licenses/mozjpeg-sys-2.2.3",
                     "provenance":"native/luxforge-jpeg/THIRD_PARTY.md",
                     "build":"Crate-bundled source built with cc; with_simd (NEON on aarch64, portable C on x86_64 without NASM) and unwinding only"
+                },
+                {
+                    "name":"ONNX Runtime",
+                    "version":"1.28.0",
+                    "revision":"da9b5e364c465de65c49d91e696cd6485270757f",
+                    "selected_license":"MIT (bundled libraries listed in ThirdPartyNotices.txt)",
+                    "notices":"native/onnxruntime-1.28.0",
+                    "provenance":"native/luxforge-onnx/THIRD_PARTY.md",
+                    "build":"pyke's attested prebuilt static archive (pykeio/ort-artifacts 25d68de6) pinned by SHA-256; Core ML provider on macOS, DirectML on Windows, CPU on Linux"
                 }
             ],
             "native_provenance":"native/luxforge-raw/THIRD_PARTY.md",
@@ -450,6 +489,23 @@ mod tests {
         let provenance =
             fs::read_to_string(tmp.path().join("native/luxforge-jpeg/THIRD_PARTY.md")).unwrap();
         assert!(provenance.contains("based in part on the work of the Independent JPEG Group"));
+    }
+    #[test]
+    fn copies_the_onnx_runtime_licence_and_notices() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        native_onnxruntime_notices(root, tmp.path()).unwrap();
+        let native = tmp.path().join("native");
+        let licence = fs::read_to_string(native.join("onnxruntime-1.28.0/LICENSE")).unwrap();
+        assert!(licence.contains("MIT License"));
+        assert!(licence.contains("Microsoft Corporation"));
+        assert!(
+            native
+                .join("onnxruntime-1.28.0/ThirdPartyNotices.txt")
+                .is_file()
+        );
+        let provenance = fs::read_to_string(native.join("luxforge-onnx/THIRD_PARTY.md")).unwrap();
+        assert!(provenance.contains("not a completed audit"));
     }
     #[test]
     fn copies_the_bundled_font_licence() {
