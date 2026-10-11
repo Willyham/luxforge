@@ -1612,6 +1612,7 @@ fn owner_loop(
         // answers it on time; with none held the owner sleeps on a plain receive.
         owner.expire_event_waits();
         owner.wake_job_waits();
+        owner.host.runtime().release_idle();
         let message = match owner.next_event_deadline() {
             None => match receiver.recv() {
                 Ok(message) => message,
@@ -2321,12 +2322,14 @@ impl Owner {
         let _ = held.response.send(response);
     }
 
-    /// The soonest deadline among the held waits: how long the owner may sleep on its channel.
+    /// The soonest deadline among the held waits and the loaded models' idle release: how long
+    /// the owner may sleep on its channel.
     fn next_event_deadline(&self) -> Option<Instant> {
         self.event_waits
             .iter()
             .map(|held| held.wait.deadline)
             .chain(self.job_waits.iter().filter_map(|held| held.deadline))
+            .chain(self.host.runtime().next_deadline())
             .min()
     }
 

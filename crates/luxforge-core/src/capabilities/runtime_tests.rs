@@ -23,7 +23,7 @@ use crate::{
         fake::{FAKE_INPUT, FakeControls, FakeInference},
     },
 };
-use luxforge_testbase::{Gate, wait_for};
+use luxforge_testbase::{Gate, wait_for, wait_until};
 use serde_json::{Map, Value, json};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
@@ -539,13 +539,28 @@ fn an_idle_model_is_released_after_the_interval_and_every_model_on_a_memory_sign
     wait_for("the task to hold its model", || {
         Some(()).filter(|_| fixture.gate.holding())
     });
-    std::thread::sleep(fixture.idle * 3);
+    let held = std::time::Instant::now();
+    wait_until("three idle intervals to pass", || {
+        held.elapsed() > fixture.idle * 3
+    });
     assert_eq!(owner.resident(), [FILL], "a model in use stays");
     assert_eq!(owner.models()[0]["in_use"], true);
     fixture.gate.open();
     assert_eq!(owner.finished(&queued["job_id"])["status"], "ready");
+    // Once the task has ended the model goes unused, and is released after the interval.
+    wait_for("the model the task used to be released", || {
+        Some(()).filter(|_| owner.models().is_empty())
+    });
+    assert_eq!(controls.live(), 0);
+    drop(owner);
 
     // The memory signal releases every model at once, from any thread.
+    let fixture = Fixture::new("memory");
+    let controls = fixture.controls();
+    let owner = fixture.start();
+    owner.install(FILL);
+    owner.install(EMBED);
+    owner.load(FILL);
     owner.load(EMBED);
     let mut resident = owner.resident();
     resident.sort();
