@@ -956,6 +956,54 @@ fn local_disagreement_leaves_the_global_fit_and_is_found_as_motion() {
 }
 
 #[test]
+fn a_still_surface_in_the_reference_roll_off_is_not_motion() {
+    // A white card the reference records just past its roll-off start, in a black mount the
+    // shorter exposure records under its noise floor, its edges drawn over two pixels as a lens
+    // draws them, in a bracket that does not move. Along the card's edge the reference's
+    // neighbourhoods lose the card, the shorter exposure's the mount and the longer exposure's
+    // the card's edge: averaged over their own usable pixels they disagree by half a stop and
+    // more over a band three pixels wide, which opening keeps, though nothing moved.
+    let background = geometry::textured_scene(11);
+    let card = |x: f64, y: f64| {
+        let outside = (150.0 - x).max(x - 229.0).max(80.0 - y).max(y - 169.0);
+        let grey = match outside {
+            d if d <= 0.0 => 0.9,
+            d if d <= 1.0 => 0.4,
+            d if d <= 2.0 => 0.21,
+            d if d <= 6.0 => 0.012,
+            _ => return background(x, y),
+        };
+        [grey; 3]
+    };
+    let offsets = [-2.0, 0.0, 2.0];
+    let still = [
+        Rigid::identity(W, H),
+        Rigid::identity(W, H),
+        Rigid::identity(W, H),
+    ];
+    let frames = bracket(&card, W, H, &offsets, &still, Some(70));
+    let centre = 125 * W + 190;
+    let level = frames[1].fraction[centre];
+    assert!(
+        level > proxy::PROXY_CEILING && level < 0.95,
+        "the card is in the roll-off: {level}"
+    );
+    let (proxies, registration) = register_all(&frames, 1, AlignmentMode::Off);
+    let registration = registration.unwrap();
+    let cancel = Cancel::new();
+    let aligned = AlignedProxies::new(&registration, &proxies, &cancel).unwrap();
+    let motion = detect_motion(
+        &aligned,
+        &exposures(&offsets, 1),
+        DeghostMode::Auto,
+        &cancel,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(motion.is_empty(), "{:?}", motion.regions());
+}
+
+#[test]
 fn refuses_unalignable_brackets() {
     let cancel = Cancel::new();
     let still = [Rigid::identity(W, H), Rigid::identity(W, H)];
