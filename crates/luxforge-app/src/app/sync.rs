@@ -234,6 +234,7 @@ impl Editor {
                             sync.flags,
                             sync.preferences,
                             sync.themes,
+                            sync.usage,
                         );
                         if sync.capabilities {
                             return Task::batch([flags, self.reload_capabilities()]);

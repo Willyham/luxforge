@@ -616,6 +616,20 @@ struct Entry {
     grants: Vec<String>,
     origin: Option<Origin>,
     activity: Option<ActivitySpec>,
+    /// When and in which consent generation an instrumented job began ([`Jobs::usage_start`]).
+    usage: Option<UsageStart>,
+}
+
+/// An instrumented job's start, so its terminal outcome is recorded with its duration in the
+/// generation it began in: work begun before an opt-in, or across a revocation, records nothing.
+#[derive(Clone, Copy, Debug)]
+struct UsageStart {
+    generation: crate::usage::Generation,
+    started: std::time::Instant,
+    image: Option<crate::usage::ImageId>,
+    /// The photographs a Develop has newly created so far, batch by batch as each commits
+    /// ([`Jobs::usage_added`]), so a cancelled or failed one still counts what it committed.
+    added: u64,
 }
 
 impl Entry {
@@ -631,6 +645,7 @@ impl Entry {
             grants: Vec::new(),
             origin: None,
             activity: None,
+            usage: None,
         }
     }
 
@@ -752,6 +767,74 @@ fn capability_activity(record: &JobRecord) -> ActivitySpec {
     }
 }
 
+/// Record an instrumented job's terminal outcome in the generation it began in: a source
+/// preparation's, an export's (the files it wrote) or a catalog scan's `operation.end`, and the
+/// originals a Develop newly committed as `images.added`, counted as its batches committed
+/// ([`Jobs::usage_added`]), whether it then completed, was cancelled or failed (photographs it
+/// linked to or relinked add nothing). Reads the finished record and its output in place;
+/// allocates nothing.
+fn usage_finished(collector: &crate::usage::Collector, start: UsageStart, entry: &Entry) {
+    use crate::usage::{DurationMs, EventKind, OperationEnd, Outcome as Ended};
+    let outcome = match entry.record.status {
+        JobStatus::Ready => Ended::Completed,
+        JobStatus::Cancelled | JobStatus::Superseded => Ended::Cancelled,
+        _ => match entry.error.as_ref().map(|error| error.kind) {
+            Some(
+                ErrorKind::Validation
+                | ErrorKind::Conflict
+                | ErrorKind::ConsentRequired
+                | ErrorKind::Forbidden
+                | ErrorKind::NotReady
+                | ErrorKind::ResourceLimit
+                | ErrorKind::PreparationRequired
+                | ErrorKind::SourceUnavailable,
+            ) => Ended::Refused,
+            _ => Ended::Failed,
+        },
+    };
+    let duration = DurationMs::from_duration(start.started.elapsed());
+    let value = match &entry.output {
+        Some(Output::Value(value)) => Some(value),
+        _ => None,
+    };
+    let kind = match entry.record.kind {
+        JobKind::Prepare => {
+            // The prepared photograph's image ID, from the fingerprint its state already holds.
+            let image = match &entry.output {
+                Some(Output::Asset(state, _)) => collector.image_id(&state.asset.fingerprint),
+                _ => start.image,
+            };
+            EventKind::OperationEnd(OperationEnd::source_preparation(outcome, duration, image))
+        }
+        JobKind::Export => EventKind::OperationEnd(OperationEnd::export(
+            outcome,
+            duration,
+            (outcome == Ended::Completed).then_some(1),
+            start.image,
+        )),
+        JobKind::BatchExport => {
+            let written = value
+                .and_then(|value| value["written"].as_array())
+                .map_or(0, |written| written.len() as u64);
+            EventKind::OperationEnd(OperationEnd::export(
+                outcome,
+                duration,
+                (outcome == Ended::Completed).then_some(written),
+                None,
+            ))
+        }
+        JobKind::IndexRefresh => {
+            EventKind::OperationEnd(OperationEnd::catalog_scan(outcome, duration))
+        }
+        JobKind::DevelopPicks => match crate::usage::AddedCount::new(start.added) {
+            Some(count) => EventKind::ImagesAdded { count },
+            None => return,
+        },
+        _ => return,
+    };
+    collector.record_in(start.generation, kind);
+}
+
 fn unknown(job_id: &JobId) -> Error {
     Error::validation(format!("unknown job {job_id}"))
 }
@@ -771,6 +854,8 @@ pub(crate) struct Jobs {
     /// Where every lane job publishes from the moment its lane picks it up, so `activity.list`
     /// shows capability work and export beside source preparation and analysis.
     board: Arc<ActivityBoard>,
+    /// Where an instrumented kind's terminal outcome is recorded ([`UsageStart`]).
+    usage: Arc<crate::usage::Collector>,
 }
 
 impl Jobs {
@@ -788,6 +873,67 @@ impl Jobs {
             ],
             deliver,
             board,
+            usage: Arc::new(crate::usage::Collector::new()),
+        }
+    }
+
+    /// The host's usage collector, which each instrumented job's terminal outcome is recorded in.
+    pub(crate) fn set_usage(&mut self, usage: Arc<crate::usage::Collector>) {
+        self.usage = usage;
+    }
+
+    /// The usage start of a new job of `kind`: the consent generation and the moment it was
+    /// opened, for a kind whose terminal outcome is a usage event, while collection is on. One
+    /// atomic load otherwise.
+    fn usage_start(&self, kind: JobKind) -> Option<UsageStart> {
+        if !matches!(
+            kind,
+            JobKind::Prepare
+                | JobKind::Export
+                | JobKind::BatchExport
+                | JobKind::IndexRefresh
+                | JobKind::DevelopPicks
+        ) {
+            return None;
+        }
+        let generation = self.usage.gate().current()?;
+        Some(UsageStart {
+            generation,
+            started: std::time::Instant::now(),
+            image: None,
+            added: 0,
+        })
+    }
+
+    /// The image a job is about, for its terminal usage event: the open photograph an export of
+    /// it writes. Nothing when the job is not instrumented or collection was off at its start.
+    pub(crate) fn set_usage_image(&mut self, job_id: &JobId, image: crate::usage::ImageId) {
+        if let Some(start) = self
+            .entries
+            .get_mut(job_id)
+            .and_then(|entry| entry.usage.as_mut())
+        {
+            start.image = Some(image);
+        }
+    }
+
+    /// `created` photographs a running Develop's batch has just committed as new, counted toward
+    /// the `images.added` it records when it ends, however it ends. Nothing when the job is not
+    /// instrumented, collection was off at its start, or it records no usage event (a retry).
+    pub(crate) fn usage_added(&mut self, job_id: &JobId, created: u64) {
+        if let Some(start) = self
+            .entries
+            .get_mut(job_id)
+            .and_then(|entry| entry.usage.as_mut())
+        {
+            start.added = start.added.saturating_add(created);
+        }
+    }
+
+    /// A job that records no usage event when it ends: a retry answered from its first attempt.
+    pub(crate) fn forget_usage(&mut self, job_id: &JobId) {
+        if let Some(entry) = self.entries.get_mut(job_id) {
+            entry.usage = None;
         }
     }
 
@@ -1047,6 +1193,7 @@ impl Jobs {
         );
         entry.origin = origin;
         entry.interest = interest;
+        entry.usage = self.usage_start(kind);
         self.entries.insert(job_id, entry);
     }
 
@@ -1090,6 +1237,7 @@ impl Jobs {
             self.keys.insert(key.clone(), job_id.clone());
             entry.key = Some(key);
         }
+        entry.usage = self.usage_start(kind);
         self.entries.insert(job_id, entry);
     }
 
@@ -1216,6 +1364,9 @@ impl Jobs {
         });
         if let Some(interest) = entry.interest.as_mut() {
             interest.interested.clear();
+        }
+        if let Some(start) = entry.usage.take() {
+            usage_finished(&self.usage, start, entry);
         }
         let finished = Finished {
             record: entry.read(),
@@ -1351,6 +1502,7 @@ impl Jobs {
         entry.grants = job.grants;
         entry.origin = job.origin;
         entry.activity = job.activity;
+        entry.usage = self.usage_start(job.kind);
         self.entries.insert(job_id.clone(), entry);
         self.lanes[lane.index()].waiting.push_back(job_id.clone());
         if let Err(error) = self.dispatch(lane) {
@@ -1595,6 +1747,10 @@ fn lane_worker(receiver: Receiver<Dispatch>, deliver: Deliver) {
         deliver(job_id, result);
     }
 }
+
+#[cfg(test)]
+#[path = "jobs_usage_tests.rs"]
+mod usage_tests;
 
 #[cfg(test)]
 mod tests {

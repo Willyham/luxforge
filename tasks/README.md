@@ -68,18 +68,21 @@ Import from and alignment with Lightroom Classic.
 
 | Plan | Purpose |
 | --- | --- |
+| [Preset interaction](interface/preset-interaction.json) | Amount and reversible hover delivered through shared drafts; native rendered and scoped checks pass, with the aggregate quick gate open for unrelated native filesystem-watcher failures |
 | [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Implemented with quick and native M2 / Metal verification; final corpus qualification pending: copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through `edit.apply-settings` and `batch.apply-settings` with a `paste` origin |
 | [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Planned whole-image overview at percentage zoom ≥200, with owner-chosen click/drag navigation through `view.set`, bounded GPU/reference rendering, working integration first and final qualification/measurement; implementation awaits authorization |
 
 ### Project (`project/`)
 
-Owner decisions, host services and repository upkeep.
+Owner decisions, release preparation, host services and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](project/product-decisions.json) | Open product questions |
-| [Optional usage statistics](project/usage-statistics.json) ([design](../docs/design/usage-statistics.md)) | Planned once-only opt-in and Settings Privacy controls, protected consent, random persistent ID and approved device details, full-app timelines of typed events linked by installation, session and keyed per-image ID without PII/IP tracking/photo contents or metadata, no hourly/daily caps, bounded best-effort HTTPS batches, production activation off until the real endpoint is deployed, and an independent open-source backend reference; working client before final native/privacy/live qualification. Implementation is not authorized |
+| [Tag-triggered builds](project/tag-release-builds.json) ([design](../docs/design/tag-release-builds.md)) | Implemented guarded one-command initiation from clean synchronized main, versioned macOS/Linux build candidates, short/full SemVer tag identity, optional signing/notarization, integrity checks and automatic pre-release CI; hosted credentials and actual hosted/native qualification remain external inputs |
+| [v0.1 release preparation](project/release-v0-1.json) ([design](../docs/design/release-v0.1.md)) | Version/identity, complete source/notices, distribution advisory review, macOS bundle/signing and Linux tarball/desktop integration, packet verification/pre-release publication, installation/help and final native/corpus/install qualification; macOS and Linux chosen together; paid Apple membership active, signing setup reported complete with profile `luxforge-notarization`, identity/profile validation and native Linux qualification outstanding, owner-pushed tags request automatic pre-release publication |
+| [Optional usage statistics](project/usage-statistics.json) ([design](../docs/design/usage-statistics.md)) | Planned once-only opt-in and Settings Privacy controls, protected consent, random persistent ID and approved device details, full-app timelines of typed events linked by installation, session and keyed per-image ID without PII/IP tracking/photo contents or metadata, no hourly/daily caps, bounded best-effort HTTPS batches, production activation off until the real endpoint is deployed, and an independent open-source backend reference; working client before final native/privacy/live qualification. Working client, backend journey and M4 qualification implemented; RAW corpus, Windows/Linux and live activation remain |
 
 The post-consolidation programme, the Tone curve, Detail, Lens and perspective, the live-session CLI and Corrections are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md). Corrections' designs are [Corrections](../docs/design/corrections.md), its [workspace](../docs/design/corrections-workspace.md) and its [numerics](../docs/design/corrections-numerics.md).
 

@@ -5,8 +5,8 @@ use crate::app::Editor;
 use crate::app::message::{
     Message, crop::CropMessage, draft::DraftMessage, export::ExportMessage,
     history::HistoryMessage, mask::BrushEdit, mask::KindMenu, mask::MaskKey, mask::MaskMessage,
-    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, settings::SettingsMessage,
-    sync::SyncMessage, view::ViewMessage,
+    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, preset::PresetMessage,
+    settings::SettingsMessage, sync::SyncMessage, view::ViewMessage,
 };
 use crate::app::message::{
     develop::DevelopMessage,
@@ -104,6 +104,9 @@ impl CompareKey {
 /// the canvas modes the registry offers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyContext {
+    /// The usage statistics notice is on screen, so an Escape nothing else takes answers it No
+    /// thanks.
+    pub(crate) usage_notice: bool,
     pub(crate) gallery_open: bool,
     pub(crate) comparing: bool,
     /// A crop draft or a mask shape gesture is open, so Enter applies it and Escape cancels it
@@ -137,6 +140,8 @@ pub(crate) struct KeyContext {
     /// The Masks panel's text field is open, so Escape closes it without sending anything,
     /// whichever widget last saw the key.
     pub(crate) mask_typing: bool,
+    /// The preset Amount text field closes on Escape without changing settings.
+    pub(crate) preset_typing: bool,
     /// A Corrections band slider's text field is open, so Escape closes it with nothing sent.
     pub(crate) correction_typing: bool,
     /// One of the Masks panel's menus is open, so Escape closes it before anything else hears it.
@@ -214,7 +219,32 @@ pub(crate) fn chord_of(key: &Key, modifiers: &iced::keyboard::Modifiers) -> Opti
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
 /// arrives as `Captured` and never reaches a letter shortcut or a draft key.
+///
+/// The usage statistics notice holds no key of its own: Escape answers it No thanks only when
+/// nothing else in the window — a sheet, a menu, a draft, a mode, a field — takes Escape, so it
+/// never cancels work or traps the keyboard.
 pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Option<Message> {
+    let message = route(event, status, context);
+    if message.is_none()
+        && context.usage_notice
+        && status == Status::Ignored
+        && matches!(
+            event,
+            Event::Keyboard(Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            })
+        )
+    {
+        return Some(Message::Usage(
+            crate::app::message::usage::UsageMessage::Decline,
+        ));
+    }
+    message
+}
+
+/// Every key but the usage statistics notice's Escape.
+fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message> {
     if matches!(event, Event::Window(iced::window::Event::CloseRequested)) {
         return Some(Message::Close);
     }
@@ -427,6 +457,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     // focus and has already taken the key, so this acts whatever `status` says.
     if context.mask_typing && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)));
+    }
+    if context.preset_typing && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Preset(PresetMessage::AmountCancel));
     }
     if context.correction_typing && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Corrections(
@@ -850,6 +883,18 @@ pub(super) fn raw_event(
     status: iced::event::Status,
     _: iced::window::Id,
 ) -> Option<Message> {
+    // A key press, a button press, a scroll or a touch is a deliberate interaction for usage
+    // statistics' idleness: one cheap call, and no message of its own. A pointer move is not.
+    if matches!(
+        event,
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. })
+            | iced::Event::Mouse(
+                iced::mouse::Event::ButtonPressed(_) | iced::mouse::Event::WheelScrolled { .. }
+            )
+            | iced::Event::Touch(iced::touch::Event::FingerPressed { .. })
+    ) {
+        super::usage_supervisor::interacted();
+    }
     match &event {
         iced::Event::Keyboard(_)
         | iced::Event::Window(
@@ -1265,6 +1310,7 @@ mod tests {
 
     fn context() -> KeyContext {
         KeyContext {
+            usage_notice: false,
             comparing: false,
             gallery_open: false,
             drafting: false,
@@ -1278,6 +1324,7 @@ mod tests {
             leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],
             mask_typing: false,
+            preset_typing: false,
             correction_typing: false,
             mask_menu_open: false,
             kind_menu: None,
@@ -1379,6 +1426,66 @@ mod tests {
                 &pressed(Key::Named(Named::Backspace), none),
                 Status::Captured,
                 &mode
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn usage_escape_answers_the_notice_only_when_nothing_else_takes_it() {
+        use crate::app::message::usage::UsageMessage;
+        let escape = pressed(Key::Named(Named::Escape), Modifiers::empty());
+        let notice = KeyContext {
+            usage_notice: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(&escape, Status::Ignored, &notice),
+            Some(Message::Usage(UsageMessage::Decline))
+        ));
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    select: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Usage(UsageMessage::Decline))
+        ));
+        // A draft, the sheet or a field takes Escape first.
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    crop: true,
+                    drafting: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Draft(DraftMessage::Cancel))
+        ));
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    settings_open: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Settings(SettingsMessage::Close))
+        ));
+        assert!(keymap(&escape, Status::Captured, &notice).is_none());
+        assert!(keymap(&escape, Status::Ignored, &context()).is_none());
+        // Every other key goes where it always went.
+        assert!(
+            keymap(
+                &pressed(letter("q"), Modifiers::empty()),
+                Status::Ignored,
+                &notice
             )
             .is_none()
         );
@@ -1539,6 +1646,23 @@ mod tests {
         assert!(matches!(
             keymap(&escape, Status::Captured, &typing),
             Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)))
+        ));
+    }
+
+    #[test]
+    fn preset_amount_typing_escape_precedes_draft_cancel() {
+        let typing = KeyContext {
+            preset_typing: true,
+            slider_drafting: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Captured,
+                &typing
+            ),
+            Some(Message::Preset(PresetMessage::AmountCancel))
         ));
     }
 

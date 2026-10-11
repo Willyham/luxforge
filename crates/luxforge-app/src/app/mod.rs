@@ -163,6 +163,7 @@ mod remembered_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
+// Consumed by the usage statistics supervisor, which a later task adds.
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
@@ -195,6 +196,18 @@ pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;
 pub(crate) mod thumbnails;
+pub(crate) mod usage;
+pub(crate) mod usage_device;
+#[cfg(test)]
+mod usage_device_tests;
+mod usage_events;
+#[cfg(test)]
+mod usage_events_tests;
+pub(crate) mod usage_supervisor;
+#[cfg(test)]
+mod usage_supervisor_tests;
+#[cfg(test)]
+mod usage_tests;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
@@ -482,6 +495,13 @@ pub(crate) struct Editor {
     /// The interface's theme, which Iced reads again after every update and hands to every style
     /// function and canvas draw. An Iced value, so it lives here rather than in the view model.
     pub(crate) theme: luxforge_ui::Theme,
+    /// Usage statistics: the startup notice and the Privacy tab ([`usage`]).
+    pub(crate) usage: state::usage::Usage,
+    /// The open photograph's usage image ID, kept for the GUI-local events that act on it.
+    pub(crate) usage_image: usage_events::UsageImage,
+    /// The window visibility last reported to the usage statistics supervisor
+    /// ([`usage_supervisor`]), once the native gate is ready.
+    pub(crate) usage_reported_presented: Option<bool>,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -528,11 +548,12 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 27] = [
+const AFTER_MESSAGE: [AfterMessage; 29] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
     slider::after_message,
+    presets::after_message,
     evidence::after_message,
     controls::after_message,
     preview::after_message,
@@ -556,6 +577,7 @@ const AFTER_MESSAGE: [AfterMessage; 27] = [
     long_work::after_message,
     drawn_frames::after_message,
     themes::after_message,
+    usage::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -693,6 +715,12 @@ impl Editor {
             renderer: renderer::RendererReport::new(config.launch_renderer()),
             workspace: Default::default(),
             theme: luxforge_ui::Theme::luxforge_dark(),
+            usage: state::usage::Usage {
+                eligible: config.usage_eligible,
+                ..Default::default()
+            },
+            usage_image: Default::default(),
+            usage_reported_presented: None,
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -747,6 +775,12 @@ impl Editor {
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));
+        // What the launch knows of its renderer before the surface checks its stage, for the
+        // usage statistics device profile; a refused stage's path is already final.
+        editor.usage_observe();
+        if editor.usage.eligible {
+            editor.event("usage_supervisor", usage_supervisor::summary);
+        }
         if let Some(problem) = &config.live_problem {
             editor.event("live_session_problem", || json!({"problem": problem}));
         }
@@ -901,7 +935,8 @@ impl Editor {
         }
         self.full_updates += 1;
         let before = Before::of(self);
-        let mut tasks = vec![self.dispatch(message)];
+        let before_task = presets::before_message(self, &message);
+        let mut tasks = vec![before_task, self.dispatch(message)];
         tasks.extend(AFTER_MESSAGE.iter().map(|hook| hook(self, &before)));
         let rederive_started = Instant::now();
         self.rederive();
@@ -1013,6 +1048,7 @@ impl Editor {
     /// them builds them from it on demand ([`state::tools::controls_of`]).
     pub(crate) fn inputs(&self) -> state::Inputs<'_> {
         state::Inputs {
+            usage: &self.usage,
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -1024,7 +1060,13 @@ impl Editor {
             gesture_conflicted: self.gesture_conflicted(),
             gesture: self.core_gesture().map(|gesture| gesture.kind.noun()),
             apply_refusal: self.release_refusal(),
-            preset_refusal: self.gesture_refusal(Starting::Preset),
+            preset_refusal: if self.presets.library.interaction.hovered.is_some()
+                && self.preset_drafting()
+            {
+                None
+            } else {
+                self.gesture_refusal(Starting::Preset)
+            },
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
             history_refusal: self.gesture_refusal(Starting::History),
             // The one editability rule, computed once for every model that reads it; a start's
@@ -1132,6 +1174,7 @@ impl Editor {
             Message::Performance(message) => self.performance_update(message),
             Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
+            Message::Usage(message) => self.usage_update(message),
             Message::Preferences(message) => self.preferences_update(message),
             Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),
@@ -1343,6 +1386,7 @@ impl Editor {
     /// What the keyboard table depends on right now.
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
+            usage_notice: self.workspace.usage_notice.is_some(),
             gallery_open: self.gallery_page().is_some(),
             comparing: self.document.compare_return.is_some() || self.compare_key.is_down(),
             drafting: self.crop().is_some()
@@ -1362,6 +1406,10 @@ impl Editor {
                 self.section_target(),
             ),
             mask_typing: self.mask_panel.typing.is_some(),
+            preset_typing: matches!(
+                self.presets.library.interaction.editing,
+                crate::state::tools::ValueEdit::Typing(_)
+            ),
             correction_typing: self.corrections.typing.is_some(),
             mask_menu_open: self.mask_menu_open(),
             kind_menu: self.kind_menu_open().map(|menu| {

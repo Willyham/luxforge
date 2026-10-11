@@ -60,6 +60,8 @@ pub mod theme;
 /// The service that answers every pixel read off the catalog owner and renders an export's bands:
 /// the contract a host's GPU provider implements, and the reference renderer's own service.
 pub mod tiles;
+/// Optional usage and performance statistics: consent, typed events and bounded delivery.
+pub mod usage;
 
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
 // and this crate's integration tests name through the crate root, and every type a public item's
@@ -128,7 +130,7 @@ pub use presets::{
     DerivedSettings, GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip,
     MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord, PresetSummary, ReportCounts,
     ReportedSetting, SettingsAnalysis, SettingsGroup, SettingsGroups, SettingsPhoto,
-    USER_PRESET_GROUP, inspect_preset, settings_groups,
+    USER_PRESET_GROUP, inspect_preset, settings_at_amount, settings_can_preview, settings_groups,
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,

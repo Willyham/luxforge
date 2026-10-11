@@ -696,6 +696,10 @@ pub struct EditorService {
     /// builds it ([`Self::set_raw_look`]). Standard until the host sets it from the person's
     /// preference.
     raw_look: RawLook,
+    /// Where this catalog's committed changes record their usage events, and the image IDs of
+    /// the photographs clients have open ([`crate::usage::produce`]). The catalog owner gives it
+    /// the host's collector; until then it records nothing.
+    pub(crate) usage: crate::usage::produce::Producer,
 }
 
 impl EditorService {
@@ -776,6 +780,7 @@ impl EditorService {
             auto_collapse: false,
             auto_lens_profile: true,
             raw_look: RawLook::default(),
+            usage: Default::default(),
         })
     }
 

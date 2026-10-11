@@ -174,6 +174,9 @@ pub(crate) struct SyncResult {
     /// A `theme.*` method changed the theme library, which the desktop lists again whether or not
     /// the sheet is open.
     pub(crate) themes: bool,
+    /// A `usage.*` method changed the usage statistics consent, which an eligible desktop reads
+    /// again.
+    pub(crate) usage: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -192,6 +195,7 @@ impl SyncResult {
             flags: false,
             preferences: false,
             themes: false,
+            usage: false,
             own: Vec::new(),
         }
     }
@@ -2129,6 +2133,12 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("theme."));
+    // A consent change touches no asset: it alone reads the consent again.
+    let usage = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| event.method.starts_with("usage."));
     let asset = held.as_ref().is_some_and(|(asset_id, held)| {
         events.gap
             || events.events.iter().any(|event| {
@@ -2159,6 +2169,7 @@ pub(crate) fn sync_now(
         flags,
         preferences,
         themes,
+        usage,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2894,6 +2905,7 @@ mod tests {
             flags: false,
             preferences: false,
             themes: false,
+            usage: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));

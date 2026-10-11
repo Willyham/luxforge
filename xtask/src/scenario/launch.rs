@@ -180,6 +180,11 @@ pub struct Launch {
     no_gpu_render: bool,
     developer: bool,
     endpoint: Option<String>,
+    /// A loopback receiver for usage statistics: explicit test eligibility, so the launch shows
+    /// the startup notice and the Privacy tab. It never names the production origin.
+    usage_receiver: Option<String>,
+    /// An earlier evidence run's configuration directory, carried into this one.
+    evidence_config: Option<PathBuf>,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
@@ -202,6 +207,8 @@ impl Launch {
             no_gpu_render: false,
             developer: false,
             endpoint: None,
+            usage_receiver: None,
+            evidence_config: None,
             sources: Vec::new(),
             script: None,
             window: None,
@@ -275,6 +282,19 @@ impl Launch {
     /// Register the capability proof module against this endpoint.
     pub fn proof_endpoint(mut self, url: &str) -> Self {
         self.endpoint = Some(url.into());
+        self
+    }
+
+    /// Give the launch explicit usage statistics test eligibility with this loopback receiver.
+    pub fn usage_receiver(mut self, url: &str) -> Self {
+        self.usage_receiver = Some(url.into());
+        self
+    }
+
+    /// Keep an earlier evidence launch's configuration (`<its evidence>/host/config`) as this
+    /// one's, so what it stored is what this launch reads. Passed beside `--evidence-dir`.
+    pub fn evidence_config(mut self, dir: &Path) -> Self {
+        self.evidence_config = Some(dir.into());
         self
     }
 
@@ -401,13 +421,18 @@ impl Launch {
                         args.extend(["--disable-module".into(), module.into()]);
                     }
                 }
-                Flag::Evidence => match &self.evidence {
-                    Evidence::Named(name) => {
-                        args.extend(["--evidence-dir".into(), out.join(name).into()]);
+                Flag::Evidence => {
+                    match &self.evidence {
+                        Evidence::Named(name) => {
+                            args.extend(["--evidence-dir".into(), out.join(name).into()]);
+                        }
+                        Evidence::At(dir) => args.extend(["--evidence-dir".into(), dir.into()]),
+                        Evidence::None => {}
                     }
-                    Evidence::At(dir) => args.extend(["--evidence-dir".into(), dir.into()]),
-                    Evidence::None => {}
-                },
+                    if let Some(dir) = &self.evidence_config {
+                        args.extend(["--evidence-config".into(), dir.into()]);
+                    }
+                }
                 Flag::GpuIdentity => {
                     if self.gpu_identity {
                         args.push("--evidence-gpu-identity".into());
@@ -423,9 +448,14 @@ impl Launch {
                         args.push("--developer".into());
                     }
                 }
+                // The two harness endpoints: the capability proof's and the usage statistics
+                // test receiver.
                 Flag::Endpoint => {
                     if let Some(url) = &self.endpoint {
                         args.extend(["--proof-endpoint".into(), url.into()]);
+                    }
+                    if let Some(url) = &self.usage_receiver {
+                        args.extend(["--usage-test-receiver".into(), url.into()]);
                     }
                 }
                 Flag::Open => {
@@ -643,6 +673,14 @@ impl Run {
     /// The sources [`Run::hash`] hashed: what the run opens.
     pub fn sources(&self) -> &[PathBuf] {
         &self.sources
+    }
+
+    /// The editor executable a new run launches; `None` in a replay.
+    pub fn binary(&self) -> Option<&Path> {
+        match &self.mode {
+            Mode::Launch { bin, .. } => Some(bin),
+            Mode::Replay { .. } => None,
+        }
     }
 
     /// Whether each launch is the recorded one rather than a new process.
@@ -905,6 +943,39 @@ fn file_name(path: &Path) -> Result<String> {
         .ok_or("A source has no file name")?
         .to_string_lossy()
         .into_owned())
+}
+
+/// One `luxforge-ctl call` against the live session of the editor that owns `catalog`, recorded
+/// with what it printed and named `name` for the scenario's checks: the harness's live-session
+/// client, beside the editor launches it may run during.
+pub fn ctl_call(
+    ctl: &Path,
+    catalog: &Path,
+    name: &str,
+    method: &str,
+    params: Value,
+    asset: Option<&str>,
+) -> Result<Value> {
+    let mut command = Command::new(ctl);
+    command
+        .arg("--catalog")
+        .arg(catalog)
+        .args(["call", method, "--params", &params.to_string()]);
+    if let Some(asset) = asset {
+        command.args(["--asset", asset]);
+    }
+    let started = Instant::now();
+    let output = command.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(json!({
+        "name": name,
+        "method": method,
+        "params": params,
+        "exit_code": output.status.code(),
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+        "result": serde_json::from_str::<Value>(stdout.trim()).unwrap_or_else(|_| json!(stdout)),
+        "stderr": String::from_utf8_lossy(&output.stderr),
+    }))
 }
 
 #[cfg(test)]

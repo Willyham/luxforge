@@ -1,0 +1,172 @@
+# Luxforge usage statistics reference stack: ingress -> Vector -> ClickHouse -> Grafana.
+# Local reference only; see README.md. Start with:  docker compose up -d --build
+#
+# Networks: the ingress is the only container on a network with a published port, and that port is
+# bound to 127.0.0.1. Everything else sits on internal networks (no route out, nothing published):
+#   edge (published)  ingress
+#   collector         ingress, vector
+#   store             vector, clickhouse
+#   viz               clickhouse, grafana
+name: luxforge-usage-statistics
+
+x-hardening: &hardening
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 512
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "3"
+
+services:
+  ingress:
+    <<: *hardening
+    build:
+      context: ../usage-ingest
+      dockerfile: ../usage-statistics/ingress/Dockerfile
+    image: luxforge/usage-ingress:local
+    read_only: true
+    mem_limit: 128m
+    cpus: 1.0
+    environment:
+      LUXFORGE_INGEST_COLLECTOR_URL: http://vector:8686
+      LUXFORGE_INGEST_LISTEN: 0.0.0.0:8080
+      LUXFORGE_INGEST_ID_INTERVAL_SECS: ${LUXFORGE_INGRESS_ID_INTERVAL_SECS:-20}
+      LUXFORGE_INGEST_ID_BURST: ${LUXFORGE_INGRESS_ID_BURST:-5}
+      LUXFORGE_INGEST_STATS_INTERVAL_SECS: ${LUXFORGE_INGRESS_STATS_INTERVAL_SECS:-60}
+    ports:
+      - "127.0.0.1:${LUXFORGE_INGRESS_PORT:-8080}:8080"
+    networks: [edge, collector]
+    depends_on:
+      vector:
+        condition: service_started
+
+  vector:
+    <<: *hardening
+    image: timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e9b6a5e92f04bd2f133223506f72d09682c1df16c015172b7a
+    read_only: true
+    mem_limit: 512m
+    cpus: 1.0
+    # Vector 0.59 interpolates ${VAR} in its configuration only when asked; the only variable in its
+    # environment is the writer password that vector.yaml names.
+    command: ["--config", "/etc/vector/vector.yaml", "--dangerously-allow-env-var-interpolation", "--quiet"]
+    environment:
+      LUXFORGE_CLICKHOUSE_WRITER_PASSWORD: ${LUXFORGE_CLICKHOUSE_WRITER_PASSWORD:?set it in .env}
+      VECTOR_LOG: warn
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+    tmpfs:
+      - /var/lib/vector:size=16m
+      - /tmp:size=16m
+    networks: [collector, store]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  clickhouse:
+    <<: *hardening
+    image: clickhouse/clickhouse-server:25.8.33.6@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
+    user: "101:101"
+    pids_limit: 4096
+    mem_limit: 2g
+    cpus: 2.0
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+      CLICKHOUSE_USER: luxforge_admin
+      CLICKHOUSE_PASSWORD: ${LUXFORGE_CLICKHOUSE_ADMIN_PASSWORD:?set it in .env}
+      LUXFORGE_CLICKHOUSE_ADMIN_PASSWORD: ${LUXFORGE_CLICKHOUSE_ADMIN_PASSWORD:?set it in .env}
+      LUXFORGE_CLICKHOUSE_WRITER_PASSWORD: ${LUXFORGE_CLICKHOUSE_WRITER_PASSWORD:?set it in .env}
+      LUXFORGE_CLICKHOUSE_READER_PASSWORD: ${LUXFORGE_CLICKHOUSE_READER_PASSWORD:?set it in .env}
+      CLICKHOUSE_ALWAYS_RUN_INITDB_SCRIPTS: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.d/privacy.xml:/etc/clickhouse-server/config.d/privacy.xml:ro
+      - ./clickhouse/users.d/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
+      - ./clickhouse/initdb:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /tmp:size=64m
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [store, viz]
+
+  grafana:
+    <<: *hardening
+    build:
+      context: ./grafana
+    image: luxforge/usage-grafana:local
+    read_only: true
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      LUXFORGE_CLICKHOUSE_READER_PASSWORD: ${LUXFORGE_CLICKHOUSE_READER_PASSWORD:?set it in .env}
+      GF_SECURITY_ADMIN_USER: ${LUXFORGE_GRAFANA_ADMIN_USER:?set it in .env}
+      GF_SECURITY_ADMIN_PASSWORD: ${LUXFORGE_GRAFANA_ADMIN_PASSWORD:?set it in .env}
+      # Authenticated access only: no anonymous org, no sign-up, no public sharing.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+      GF_PUBLIC_DASHBOARDS_ENABLED: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      # No telemetry, update checks, news, feedback links, or plugin downloads.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_ANALYTICS_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PATHS_PLUGINS: /opt/luxforge/plugins
+      GF_METRICS_ENABLED: "false"
+      # Logs: console only; no router (access) logging, and the request logger, which records the
+      # peer address of failed requests, is silenced. Errors from other loggers still appear.
+      GF_LOG_MODE: console
+      GF_LOG_LEVEL: warn
+      GF_LOG_FILTERS: context:critical
+      GF_SERVER_ROUTER_LOGGING: "false"
+      GF_SERVER_ENABLE_GZIP: "false"
+      GF_SERVER_HTTP_ADDR: 0.0.0.0
+      GF_SERVER_DOMAIN: localhost
+      GF_UNIFIED_ALERTING_ENABLED: "false"
+      GF_ALERTING_ENABLED: "false"
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 30s
+      GF_LIVE_MAX_CONNECTIONS: "0"
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/etc/luxforge/dashboards:ro
+    tmpfs:
+      - /var/lib/grafana:size=128m,uid=472,gid=0
+      - /tmp:size=32m,uid=472,gid=0
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [viz]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+networks:
+  edge: {}
+  collector:
+    internal: true
+  store:
+    internal: true
+  viz:
+    internal: true
+
+volumes:
+  clickhouse-data: {}

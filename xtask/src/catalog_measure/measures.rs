@@ -947,6 +947,7 @@ fn drag(cx: &Context, name: &str, scope: &str) -> Result<Vec<Row>> {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         },
     )?;
     let report = read_json(&dir.join("latency.json"))?;

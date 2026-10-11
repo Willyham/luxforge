@@ -1,0 +1,58 @@
+<!--
+  Luxforge usage statistics: ClickHouse privacy and bounds.
+
+  No system log table is kept: a query log would record statements, and several of the others record
+  addresses, settings or errors that this deployment has no use for. The server log is console only,
+  at warning level, where no statement text or inserted row is written. No telemetry is sent.
+-->
+<clickhouse>
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+        <log remove="remove"/>
+        <errorlog remove="remove"/>
+    </logger>
+
+    <send_crash_reports>
+        <enabled>false</enabled>
+    </send_crash_reports>
+
+    <!-- Every system log table off: nothing but the two Luxforge tables is stored on disk. -->
+    <query_log remove="remove"/>
+    <query_thread_log remove="remove"/>
+    <query_views_log remove="remove"/>
+    <part_log remove="remove"/>
+    <text_log remove="remove"/>
+    <trace_log remove="remove"/>
+    <metric_log remove="remove"/>
+    <asynchronous_metric_log remove="remove"/>
+    <asynchronous_insert_log remove="remove"/>
+    <session_log remove="remove"/>
+    <crash_log remove="remove"/>
+    <opentelemetry_span_log remove="remove"/>
+    <processors_profile_log remove="remove"/>
+    <zookeeper_log remove="remove"/>
+    <backup_log remove="remove"/>
+    <blob_storage_log remove="remove"/>
+    <error_log remove="remove"/>
+    <query_metric_log remove="remove"/>
+    <latency_log remove="remove"/>
+    <query_cache remove="remove"/>
+
+    <!-- Only the HTTP interface (dashboards, Vector) and the local native port (init, tests). -->
+    <mysql_port remove="remove"/>
+    <postgresql_port remove="remove"/>
+    <interserver_http_port remove="remove"/>
+    <prometheus remove="remove"/>
+
+    <!-- Bounded memory. -->
+    <max_server_memory_usage>1500000000</max_server_memory_usage>
+    <max_concurrent_queries>20</max_concurrent_queries>
+    <mark_cache_size>134217728</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+
+    <!-- Expired rows are removed by a merge at least this often (seconds); queries also hide them. -->
+    <merge_tree>
+        <merge_with_ttl_timeout>3600</merge_with_ttl_timeout>
+    </merge_tree>
+</clickhouse>

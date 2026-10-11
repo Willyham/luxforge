@@ -32,6 +32,7 @@ pub(crate) mod testing;
 pub(crate) mod themes;
 pub(crate) mod title;
 pub(crate) mod tools;
+pub(crate) mod usage;
 
 use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
@@ -377,6 +378,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) palette: &'a palette::Palette,
     /// The Settings sheet.
     pub(crate) settings: &'a settings::Settings,
+    /// Usage statistics: the startup notice and the Privacy tab.
+    pub(crate) usage: &'a usage::Usage,
     /// The person's preferences and the writes outstanding.
     pub(crate) preferences: &'a preferences::PreferenceWriter,
     /// The theme library and the theme on screen.
@@ -460,6 +463,8 @@ pub(crate) struct Workspace {
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
     pub(crate) settings: settings::SettingsModel,
+    /// The usage statistics startup notice, while it is on screen.
+    pub(crate) usage_notice: Option<usage::UsageNotice>,
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
@@ -506,7 +511,9 @@ impl Workspace {
             inputs.preferences,
             inputs.themes,
             inputs.view_state,
+            inputs.usage,
         );
+        self.usage_notice = usage::notice(inputs.usage);
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -688,6 +695,7 @@ mod tests {
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
         settings: settings::Settings,
+        usage: usage::Usage,
         preferences: preferences::PreferenceWriter,
         themes: themes::Themes,
         version_form: VersionForm,
@@ -736,6 +744,7 @@ mod tests {
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
                 settings: settings::Settings::default(),
+                usage: usage::Usage::default(),
                 preferences: preferences::PreferenceWriter::default(),
                 themes: themes::Themes::default(),
                 version_form: VersionForm::default(),
@@ -837,6 +846,7 @@ mod tests {
                 hover: &self.hover,
                 palette: &self.palette,
                 settings: &self.settings,
+                usage: &self.usage,
                 preferences: &self.preferences,
                 themes: &self.themes,
                 version_form: &self.version_form,

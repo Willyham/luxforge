@@ -15,3 +15,8 @@ regex.workspace = true
 percent-encoding.workspace = true
 tempfile = "=3.27.0"
 time.workspace = true
+semver = "=1.0.28"
+sha2.workspace = true
+
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
