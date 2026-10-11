@@ -23,6 +23,13 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashSet, ops::RangeInclusive, path::PathBuf};
 
 identifier!(
+    /// A client's open merge preview, `merge-preview-…`: session state on the owner, never stored
+    /// in the catalog.
+    MergePreviewId,
+    "merge-preview-"
+);
+
+identifier!(
     /// A merge, `merge-…`, and the stack its result leads: stable for the catalog's life,
     /// whatever happens to the index or the moments it was suggested from.
     MergeId,
@@ -573,6 +580,93 @@ pub struct MergePlan {
     pub existing: Option<MergeMatch>,
     /// Active stacks that claim an input already: a merge is refused until each is removed.
     pub claimed: Vec<StackClaim>,
+}
+
+/// A merge's options by kind, as one preview revision drew them: `{"hdr": HdrOptions}`. A merge
+/// given that preview's `preview_id` must name the same options.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum MergeOptions {
+    Hdr(HdrOptions),
+}
+
+/// What an HDR preview measured, for its status line and output: the proxies' long side, the
+/// alignment and its largest residual, deghosting, whether the merge extends the reference's
+/// highlights or shadows, each input's resolved offset and the reference.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HdrPreviewDiagnostics {
+    pub proxy_side: u32,
+    pub alignment: AlignmentMode,
+    /// The largest fitted residual of any input's alignment, in full-resolution pixels; none
+    /// with alignment off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_residual_px: Option<f64>,
+    pub deghost: DeghostMode,
+    pub highlights_extended: bool,
+    pub shadows_extended: bool,
+    /// Each input's EV offset from the reference, in the stack's order.
+    pub exposures: Vec<f64>,
+    pub reference: u32,
+}
+
+/// A preview's diagnostics by kind: `{"hdr": HdrPreviewDiagnostics}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum MergePreviewDiagnostics {
+    Hdr(HdrPreviewDiagnostics),
+}
+
+/// An HDR preview's overlay data, in the picture's pixels: each moving region's piece with the
+/// input it is shown from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HdrPreviewOverlays {
+    pub motion: Vec<crate::merge::hdr::MotionOverlay>,
+}
+
+/// A preview's overlays by kind: `{"hdr": HdrPreviewOverlays}`. A client draws them, so an agent
+/// reads the same facts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum MergePreviewOverlays {
+    Hdr(HdrPreviewOverlays),
+}
+
+/// What the merge will save: its size, its scale against the reference (1 for HDR) and its
+/// source's bytes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeOutput {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+    pub source_bytes: u64,
+}
+
+/// What a `merge-preview` job answers (`merge.preview`, `merge.preview-update`): one revision of a
+/// client's open preview. `path` is a display-referred JPEG under the catalog's preview cache, for
+/// viewing only, never the saved pixels. A refused preview answers its typed `refusal` (`reason`,
+/// the inputs it names and `message`) and no picture; its session stays open for another setting.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergePreview {
+    pub preview_id: MergePreviewId,
+    pub revision: u32,
+    pub kind: MergeKind,
+    pub options: MergeOptions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<MergePreviewDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlays: Option<MergePreviewOverlays>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<MergeOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<serde_json::Value>,
 }
 
 /// What a merge job answers once it ends `ready`: the published or reused merge, its result and
