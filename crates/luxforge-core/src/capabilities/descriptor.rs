@@ -1604,7 +1604,9 @@ mod tests {
                 "resource palette declares an empty use_restriction",
             ),
             (
-                |d| d.resources[0].use_restriction = Some("x".repeat(MAX_USE_RESTRICTION_CHARS + 1)),
+                |d| {
+                    d.resources[0].use_restriction = Some("x".repeat(MAX_USE_RESTRICTION_CHARS + 1))
+                },
                 "resource palette declares a use_restriction of 161 characters",
             ),
             (
