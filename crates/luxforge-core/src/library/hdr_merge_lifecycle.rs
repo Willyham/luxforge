@@ -265,6 +265,7 @@ impl Bench {
                 header: &HeaderMetadata::default(),
                 place: None,
                 volumes: std::slice::from_ref(&volume),
+                replaces: None,
             },
             extra,
         )

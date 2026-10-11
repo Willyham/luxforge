@@ -6,7 +6,7 @@
 //! on an index [`FileId`](super::FileId) or a computed moment, so removing or rebuilding the index
 //! changes neither. Its inputs are original files, named by path, volume and [`FileSignature`],
 //! each optionally the catalog photograph it was developed into; never another merge's result.
-use super::{FileSignature, VolumeId};
+use super::{CatalogFolderId, FileSignature, VolumeId};
 use crate::{
     AssetId, DerivedSourceId, Error,
     merge::hdr::{
@@ -284,4 +284,192 @@ pub struct StackClaim {
     pub path: PathBuf,
     pub merge_id: MergeId,
     pub result_asset_id: AssetId,
+}
+
+/// A person's exposure for one input (`exposure_overrides`), named by the input's path: its EV
+/// offset from the reference, which replaces what the metadata or the fit would resolve.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposureOverride {
+    pub path: PathBuf,
+    pub offset_ev: f64,
+}
+
+/// One input of a planned merge, in the stack's order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedInput {
+    pub ordinal: u32,
+    pub path: PathBuf,
+    pub file_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<super::FileId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<AssetId>,
+    /// Whether the file is where the request names it now.
+    pub available: bool,
+    /// The interpretation suitability was judged on: the index's or the catalog's header, before
+    /// any decoding. The job validates the decoded interpretation again.
+    pub frame: FrameMetadata,
+}
+
+/// Where a merge's result goes: an existing catalog folder and why it was proposed — the folder
+/// made from the inputs' event (`event`), the one every catalog photograph among the inputs is in
+/// (`inputs`), the reference photograph's (`reference`), or the request's own (`requested`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderProposal {
+    pub folder_id: CatalogFolderId,
+    pub name: String,
+    pub from: String,
+}
+
+/// What a merge of the planned inputs would take, from their header dimensions: the temporary
+/// storage it spools with the result's objects, the result's own bytes at most (before its
+/// coverage crop), the free space where it spools, and the limits it is held to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeEstimates {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_bytes: Option<u64>,
+    pub temp_ceiling_bytes: u64,
+    pub scratch_limit_bytes: u64,
+}
+
+/// The provider a merge needs: this build's, whether it can merge now, and why not.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderState {
+    pub module: String,
+    pub version: u32,
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// What `merge.plan` answers: the inputs in the stack's order, whether their headers make a
+/// bracket and why not, the exposures their metadata resolves (or that the job will measure them),
+/// the reference, the folder the result would go into, the estimates, the provider, an exact
+/// recorded match and any active stack claiming an input.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergePlan {
+    pub kind: MergeKind,
+    /// The plan's identity: `merge.create`'s `plan_id` is refused once the inputs or the options
+    /// differ from what was planned.
+    pub plan_id: String,
+    pub inputs: Vec<PlannedInput>,
+    pub suitable: bool,
+    /// Why the headers are not a bracket: a typed refusal (`reason` and the inputs it names) with
+    /// its `message`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<serde_json::Value>,
+    /// The exposures the metadata resolves, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposures: Option<ResolvedExposures>,
+    /// When the metadata cannot resolve them, the job measures them from the aligned pixels.
+    pub needs_fit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<u32>,
+    pub parameters: HdrParameters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<FolderProposal>,
+    /// Why no existing folder is proposed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_reason: Option<String>,
+    /// The new folder the inputs' event would make, which `folder.create` makes before the merge
+    /// names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_folder: Option<super::FolderChoice>,
+    pub estimates: MergeEstimates,
+    pub provider: ProviderState,
+    /// A recorded merge of exactly these inputs, options and provider: reused while active,
+    /// offered as Put back merge while removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing: Option<MergeMatch>,
+    /// Active stacks that claim an input already: a merge is refused until each is removed.
+    pub claimed: Vec<StackClaim>,
+}
+
+/// What a merge job answers once it ends `ready`: the published or reused merge, its result and
+/// source, where the result went, what it merged and the library change that made it visible.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeAnswer {
+    pub merge_id: MergeId,
+    pub result_asset_id: AssetId,
+    pub source_id: DerivedSourceId,
+    pub file_name: String,
+    pub catalog_folder_id: CatalogFolderId,
+    /// A merged result, never one capture.
+    pub merged: bool,
+    pub inputs: u32,
+    /// The bracket's EV range about the reference, lowest first.
+    pub exposure_range_ev: [f64; 2],
+    /// An exact recorded match answered the request: nothing was merged or published.
+    pub reused: bool,
+    /// The merge a rerun replaced as the inputs' stack, now in Removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<MergeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<super::LibraryChangeSeq>,
+    pub deduplicated: bool,
+    /// What the job held while it merged, when it merged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<serde_json::Value>,
+}
+
+/// Whether a merge's saved source can be read, by stat alone: `available`, or `missing` or
+/// `corrupt` (an object absent or of another length) with the message preparation gives. A
+/// damaged source is never merged again automatically.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAvailability {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// One input as `merge.inspect` reports it: its member row and whether its file is still the one
+/// merged (`available`), changed since (`changed`) or gone (`missing`), by one stat. A
+/// regeneration diagnostic only: the saved result never needs it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InspectedInput {
+    #[serde(flatten)]
+    pub member: StackMember,
+    pub file: String,
+}
+
+/// What `merge.inspect` answers: the merge as recorded, its result's source availability, its
+/// stack's inputs with their regeneration diagnostics, whether this build can rerun it, its
+/// summary and its provenance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeInspection {
+    pub merge_id: MergeId,
+    pub kind: MergeKind,
+    pub state: MergeState,
+    pub result_asset_id: AssetId,
+    pub source_id: DerivedSourceId,
+    pub created_ms: i64,
+    pub source: SourceAvailability,
+    pub inputs: Vec<InspectedInput>,
+    pub merged: bool,
+    pub exposure_range_ev: [f64; 2],
+    pub parameters: HdrParameters,
+    pub provider: ProviderState,
+    /// Whether `merge.rerun` would start now, and why not.
+    pub rerunnable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_reason: Option<String>,
+    pub provenance: MergeProvenance,
 }

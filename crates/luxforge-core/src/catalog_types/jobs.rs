@@ -4,7 +4,7 @@
 //! activity board under its activity kind, with a count once it knows its extent (an honest "48,210
 //! of about 200,000" while a walk is still discovering it), and is read and cancelled through
 //! `job.read` and `job.cancel` like every other job. Each has its [`JobKind`] in the catalog
-//! family: the lane that runs it (the index, preview or library lane) schedules it on its own
+//! family: the lane that runs it (the index, preview, library or merge lane) schedules it on its own
 //! workers, and a cancel stops it for everyone and tells that lane.
 //!
 //! [`ActivityProgress`]: crate::activity::ActivityProgress
@@ -95,8 +95,17 @@ pub const BATCH_EXPORT: CatalogJob = CatalogJob {
     label: "Exporting",
 };
 
+/// Merging an exposure bracket into one HDR photograph (`merge.create`, `merge.rerun`), on the
+/// merge lane: one running and one waiting per host.
+pub const HDR_MERGE: CatalogJob = CatalogJob {
+    kind: JobKind::HdrMerge,
+    job_kind: "hdr-merge",
+    activity: "merge.hdr",
+    label: "Merging HDR",
+};
+
 /// Every catalog job kind.
-pub const CATALOG_JOBS: [CatalogJob; 10] = [
+pub const CATALOG_JOBS: [CatalogJob; 11] = [
     INDEX_REFRESH,
     PREVIEW_EXTRACT,
     PREVIEW_REGION,
@@ -107,6 +116,7 @@ pub const CATALOG_JOBS: [CatalogJob; 10] = [
     SOURCE_LOCATE,
     BATCH_SETTINGS,
     BATCH_EXPORT,
+    HDR_MERGE,
 ];
 
 /// The catalog job that publishes activity board entries of kind `activity`, if one does: how a

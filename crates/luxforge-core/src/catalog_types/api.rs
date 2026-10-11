@@ -15,7 +15,12 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
-use crate::{AssetId, PresetId, SettingsOrigin, api::params::host_params};
+use super::{ExposureOverride, MergeId, MergeKind};
+use crate::{
+    AssetId, PresetId, SettingsOrigin,
+    api::params::host_params,
+    merge::hdr::{AlignmentMode, DeghostMode},
+};
 use std::path::PathBuf;
 
 /// What a target list is, as every `targets` parameter's notes say.
@@ -295,6 +300,71 @@ host_params! {
     pub(crate) struct SourceRelink {
         pairs: Vec<RelinkPair> = json("[{asset_id, path}]: results a find or a locate verified"),
         mutation: MutationRequest,
+    }
+}
+
+// Merges.
+
+/// What a merge's `targets` name, as its notes say.
+const MERGE_TARGETS: &str = "the bracket's 2 to 9 RAW frames: {kind: paths, paths: [...]}, {kind: files, file_ids: [...]}, {kind: assets, asset_ids: [...]} (photographs developed from them; never a merged result) or {kind: selection}, files and photographs alike";
+/// What a merge's `reference` names.
+const MERGE_REFERENCE: &str = "the input whose exposure and white balance the result keeps, by its path; default the metadata's median exposure, else the middle of the capture order";
+/// What a merge's `exposure_overrides` name.
+const MERGE_OVERRIDES: &str = "[{path, offset_ev}]: an input's EV offset from the reference, replacing what its metadata or the fit resolves";
+
+host_params! {
+    /// `merge.plan`.
+    pub(crate) struct MergePlanParams {
+        targets: Targets = json(MERGE_TARGETS),
+        reference: Option<PathBuf> = path().notes(MERGE_REFERENCE),
+        exposure_overrides: Option<Vec<ExposureOverride>> = json(MERGE_OVERRIDES),
+        alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto").notes("auto fits each frame's rigid motion; off checks the framing only"),
+        deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto").notes("auto shows each moving region from one exposure"),
+    }
+}
+
+host_params! {
+    /// `merge.create`. The request's own fields; the development-set fields TASK-007 adds
+    /// (`add_to_development_set`, the target set's identity and revision) join them unchanged.
+    pub(crate) struct MergeCreate {
+        kind: MergeKind = enumeration(["hdr"]),
+        targets: Targets = json(MERGE_TARGETS),
+        mutation: MutationRequest,
+        plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
+        reference: Option<PathBuf> = path().notes(MERGE_REFERENCE),
+        exposure_overrides: Option<Vec<ExposureOverride>> = json(MERGE_OVERRIDES),
+        alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto"),
+        deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto"),
+        folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the folder merge.plan proposes"),
+    }
+}
+
+host_params! {
+    /// `merge.inspect`: exactly one of `merge_id` and `asset_id`.
+    pub(crate) struct MergeInspect {
+        merge_id: Option<MergeId> = string(64).notes("merge-…; exactly one of merge_id and asset_id"),
+        asset_id: Option<AssetId> = asset().notes("a merge's result photograph"),
+    }
+}
+
+host_params! {
+    /// `merge.remove` and `merge.restore`.
+    pub(crate) struct MergeTargets {
+        merge_ids: Vec<MergeId> = json("[merge-…]: the merges whose results to remove or put back"),
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    /// `merge.rerun`: the recorded options, each named one replaced.
+    pub(crate) struct MergeRerun {
+        merge_id: MergeId = string(64).notes("merge-…: the merge whose recorded inputs to merge again"),
+        mutation: MutationRequest,
+        reference: Option<PathBuf> = path().notes("default the recorded reference"),
+        exposure_overrides: Option<Vec<ExposureOverride>> = json("default the recorded overrides; [] clears them"),
+        alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).notes("default the recorded mode"),
+        deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).notes("default the recorded mode"),
+        folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the replaced result's folder"),
     }
 }
 

@@ -170,8 +170,8 @@ pub(crate) fn insert_capture(
 }
 
 /// An asset's capture row as header metadata and its place, or none when it has no row. The
-/// thumbnail is the index's, never the catalog's, so it is always absent here.
-#[cfg(test)]
+/// thumbnail is the index's, never the catalog's, so it is always absent here. A merge plans a
+/// catalog photograph's frame from it when the index does not list its file.
 pub(crate) fn capture_of(
     connection: &Connection,
     row: AssetRowId,
