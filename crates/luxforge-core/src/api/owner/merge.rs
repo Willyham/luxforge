@@ -84,6 +84,9 @@ use std::{
 };
 
 #[cfg(test)]
+#[path = "hdr_merge_end_to_end.rs"]
+mod hdr_merge_end_to_end;
+#[cfg(test)]
 #[path = "hdr_merge_job.rs"]
 mod hdr_merge_job;
 
