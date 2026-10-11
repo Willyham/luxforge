@@ -329,6 +329,8 @@ pub(crate) struct CorrectionsModel {
     pub(crate) pins_hidden: bool,
     /// The mode the band's close leaves for: the pointer.
     pub(crate) leave_mode: String,
+    /// Remove, the kind control's fill segment, when a module fills ([`crate::state::remove`]).
+    pub(crate) remove: Option<crate::state::remove::RemoveModel>,
 }
 
 /// The no-source notice's second line: how to finish, and the core's reason when it is not the
@@ -753,6 +755,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CorrectionsModel {
         notice: panel.notice.clone(),
         pins_hidden: !inputs.session.workspace.mask_handles,
         leave_mode: luxforge_core::POINTER_MODE.to_owned(),
+        remove: crate::state::remove::derive(inputs, enabled),
     }
 }
 
@@ -784,6 +787,7 @@ impl CorrectionsModel {
             }),
             "pins_hidden": self.pins_hidden,
             "waiting": self.waiting,
+            "remove": self.remove.as_ref().map(crate::state::remove::RemoveModel::summary),
         })
     }
 }

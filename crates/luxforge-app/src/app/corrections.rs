@@ -393,6 +393,9 @@ impl Editor {
         if !self.corrections_active() {
             return None;
         }
+        if let Some(line) = self.remove_status() {
+            return Some(line);
+        }
         if let Some(gesture) = self.correction_gesture() {
             let info = gesture.describe();
             return Some(match &gesture.op {
@@ -462,7 +465,25 @@ impl Editor {
         let Some((module, binding)) = self.corrections_binding() else {
             return Task::none();
         };
+        // With Remove chosen, a press on the photograph paints the selection: no draft opens and
+        // no pin or handle is caught.
+        let removing = self.remove_active();
         match message {
+            CorrectionMessage::Press {
+                view,
+                content,
+                modifiers,
+                ..
+            } if removing => {
+                self.view_state.menu = None;
+                self.remove_press(view, content, modifiers)
+            }
+            CorrectionMessage::Drag { view, content } if removing => {
+                self.remove_drag(view, content)
+            }
+            CorrectionMessage::Release { view, content } if removing => {
+                self.remove_release(view, content)
+            }
             CorrectionMessage::Press {
                 view,
                 content,
@@ -476,6 +497,7 @@ impl Editor {
                 Task::none()
             }
             CorrectionMessage::Kind(kind) => {
+                self.remove.chosen = false;
                 let mut settings = self.new_settings(&binding);
                 if binding.set_mode(&mut settings, &kind) {
                     self.corrections.settings = Some(settings);
@@ -847,6 +869,9 @@ impl Editor {
     /// Escape with no draft open, one level at a time: put the press held before its draft down,
     /// then deselect, then clear a set source, then leave the mode.
     fn correction_escape(&mut self) -> Task<Message> {
+        if let Some(task) = self.remove_escape() {
+            return task;
+        }
         if self.correction_reads.held.take().is_some() {
             self.status.text = "Press cancelled".into();
             return Task::none();
@@ -1690,21 +1715,29 @@ impl Editor {
                 self.corrections.notice,
                 Some(CorrectionNotice::Limit { .. })
             );
+        let remove = self.remove_canvas();
         Some(crate::view::corrections_canvas::CanvasData {
             map,
             operations,
             selected: self.corrections.selected.as_deref(),
             hovered: self.corrections.hovered.as_deref(),
-            hidden: !self.session.workspace.mask_handles,
+            // Remove paints its selection: no pin or handle is drawn or caught.
+            hidden: !self.session.workspace.mask_handles || remove.is_some(),
+            remove,
             radius: settings.radius,
             feather: settings.feather.unwrap_or(0.0),
             source: self.corrections.source,
             gesture,
             painting: gesture.is_some_and(|gesture| gesture.adds()),
             automatic: gesture.is_some_and(|gesture| gesture.adds() && gesture.automatic()),
-            refused: at_limit
-                || self.gesture_refusal(Starting::Correction).is_some()
-                    && self.correction_gesture().is_none(),
+            refused: if self.remove_active() {
+                self.generation_lock().is_some()
+                    || self.gesture_refusal(Starting::Correction).is_some()
+            } else {
+                at_limit
+                    || self.gesture_refusal(Starting::Correction).is_some()
+                        && self.correction_gesture().is_none()
+            },
             waiting: self.correction_reads.map_stale,
         })
     }
@@ -1767,6 +1800,7 @@ impl Editor {
             "map_stale": self.correction_reads.map_stale,
             "draft": draft,
             "band": self.workspace.corrections.summary(),
+            "remove": self.remove_summary(),
         })
     }
 }

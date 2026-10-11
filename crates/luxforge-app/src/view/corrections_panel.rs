@@ -3,18 +3,23 @@
 //! the selected row expanded in place, and the footer. Everything is rendered straight from
 //! [`CorrectionsModel`]; every control publishes one [`CorrectionMessage`] and decides nothing.
 use crate::{
-    app::message::{
-        Message,
-        corrections::{CorrectionMessage, TypingEdit},
-        view::ViewMessage,
+    app::{
+        message::{
+            Message,
+            corrections::{CorrectionMessage, TypingEdit},
+            remove::{RemoveMessage, RemoveRequest},
+            view::ViewMessage,
+        },
+        remove::RemoveImages,
     },
-    state::corrections::{
-        BandSlider, CorrectionNotice, CorrectionRow, CorrectionsModel, ExpandedRow,
+    state::{
+        corrections::{BandSlider, CorrectionNotice, CorrectionRow, CorrectionsModel, ExpandedRow},
+        remove::{RemoveModel, TierAction},
     },
 };
 use iced::{
     Alignment, Length, Padding,
-    widget::{Column, Space, column, container, mouse_area, row, text},
+    widget::{Column, Row, Space, button, column, container, mouse_area, row, text, text_input},
 };
 use luxforge_ui::{
     ButtonSize, ButtonTone, CorrectionRowMessages, CorrectionRowModel, DropEdge, Element,
@@ -37,7 +42,10 @@ fn note<'a>(content: impl Into<String>, ink: Token) -> Element<'a, Message> {
 }
 
 /// The band, while the mode is active.
-pub(crate) fn corrections_band(model: &CorrectionsModel) -> Element<'_, Message> {
+pub(crate) fn corrections_band<'a>(
+    model: &'a CorrectionsModel,
+    images: RemoveImages<'a>,
+) -> Element<'a, Message> {
     let band = band_header_with_reset(
         &model.title,
         model.count > 0,
@@ -49,6 +57,9 @@ pub(crate) fn corrections_band(model: &CorrectionsModel) -> Element<'_, Message>
     );
     let mut body = Column::new().spacing(theme::ROW_SPACING + 4.0);
     body = body.push(new_group(model));
+    if let Some(remove) = model.remove.as_ref().filter(|remove| remove.chosen) {
+        body = body.push(remove_group(remove, images));
+    }
     body = body.push(group_rule(
         &GroupRuleModel {
             label: "Stack".into(),
@@ -138,18 +149,39 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
         None,
     ));
     let options: Vec<String> = model.kinds.iter().map(|kind| kind.option.clone()).collect();
+    // Remove, when a module fills, is the kind control's last segment.
+    let removing = model.remove.as_ref().is_some_and(|remove| remove.chosen);
+    let mut titles: Vec<String> = model.kinds.iter().map(|kind| kind.title.clone()).collect();
+    if model.remove.is_some() {
+        titles.push("Remove".into());
+    }
     group = group.push(segmented_fill(
         &SegmentedModel {
-            options: model.kinds.iter().map(|kind| kind.title.clone()).collect(),
-            selected: model.new_kind,
+            options: titles,
+            selected: if removing {
+                model.kinds.len()
+            } else {
+                model.new_kind
+            },
             enabled: true,
         },
-        move |index| {
-            message(CorrectionMessage::Kind(
-                options.get(index).cloned().unwrap_or_default(),
-            ))
+        move |index| match options.get(index) {
+            Some(option) => message(CorrectionMessage::Kind(option.clone())),
+            None => Message::Remove(RemoveMessage::Choose),
         },
     ));
+    if removing {
+        // A selection is painted at the brush's Size; feather, opacity and source are a repair's.
+        for field in model.new_fields.iter().take(1) {
+            group = group.push(band_slider(
+                field,
+                true,
+                |name, fraction| message(CorrectionMessage::Field { name, fraction }),
+                message(CorrectionMessage::FieldReleased),
+            ));
+        }
+        return group.into();
+    }
     for field in &model.new_fields {
         group = group.push(band_slider(
             field,
@@ -195,6 +227,290 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
         None => note(model.source_note.clone(), Token::TextTertiary),
     };
     group = group.push(note_line);
+    group.into()
+}
+
+fn remove_message(message: RemoveMessage) -> Message {
+    Message::Remove(message)
+}
+
+/// A button of the Remove group, sending `on` when it can be pressed.
+fn remove_button<'a>(
+    label: &str,
+    tone: ButtonTone,
+    key: Option<&str>,
+    on: Option<Message>,
+) -> Element<'a, Message> {
+    labelled_button(
+        &LabelledButtonModel {
+            label: label.into(),
+            icon: None,
+            key_hint: key.map(str::to_owned),
+            tone,
+            size: ButtonSize::Regular,
+            fill: true,
+            enabled: on.is_some(),
+        },
+        on,
+    )
+}
+
+/// The prompt field's focus identity.
+pub(crate) const PROMPT_ID: &str = "remove-prompt";
+/// A strip cell's preview side, in points.
+const CELL: f32 = 52.0;
+
+/// The **Remove** group: the Fill setting, the Replace prompt, Generate (or Cancel and the
+/// progress while one runs), the candidate strip, Regenerate and Accept, and its Copy as JSON menu.
+fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element<'a, Message> {
+    let mut group = Column::new().spacing(theme::ROW_SPACING + 2.0);
+    let rule = group_rule(
+        &GroupRuleModel {
+            label: "Remove".into(),
+            caption: Some("paint over what to remove".into()),
+            caption_accent: false,
+            menu_tooltip: Some("Copy as JSON request".into()),
+            menu_open: model.menu_open,
+            enabled: true,
+        },
+        Some(remove_message(RemoveMessage::Menu(!model.menu_open))),
+    );
+    let menu = model.menu_open.then(|| {
+        menu_list(
+            RemoveRequest::ALL
+                .into_iter()
+                .map(|request| {
+                    MenuEntry::Item(MenuItem {
+                        icon: None,
+                        label: request.label().into(),
+                        trailing: None,
+                        on_press: Some(remove_message(RemoveMessage::Copy(request))),
+                        reason: None,
+                    })
+                })
+                .collect(),
+        )
+    });
+    group = group.push(popover(
+        rule,
+        menu,
+        remove_message(RemoveMessage::Menu(false)),
+    ));
+    // The Fill setting: the tiers offered, or why none is and the one thing to do about it.
+    if model.reading {
+        group = group.push(caption("Reading the fill tiers\u{2026}"));
+    } else if let Some(unoffered) = &model.unoffered {
+        group = group.push(inline_notice(Tone::Neutral, unoffered.reason.clone()));
+        if let Some((label, action)) = &unoffered.action {
+            let press = match action {
+                TierAction::Download {
+                    module_id,
+                    resource,
+                } => RemoveMessage::Download {
+                    module_id: module_id.clone(),
+                    resource: resource.clone(),
+                },
+                TierAction::Experiments => RemoveMessage::Experiments,
+            };
+            group = group.push(remove_button(
+                label,
+                ButtonTone::Control,
+                None,
+                Some(remove_message(press)),
+            ));
+        }
+    } else {
+        let tiers: Vec<String> = model.tiers.iter().map(|tier| tier.tier.clone()).collect();
+        group = group.push(
+            row![
+                text("Fill")
+                    .size(theme::SIZE_CONTROL)
+                    .style(theme::ink(Token::TextLabel)),
+                Space::new().width(Length::Fill),
+                container(segmented(
+                    &SegmentedModel {
+                        options: model.tiers.iter().map(|tier| tier.title.clone()).collect(),
+                        selected: model.tier,
+                        enabled: model.running.is_none(),
+                    },
+                    move |index| {
+                        remove_message(RemoveMessage::Tier(
+                            tiers.get(index).cloned().unwrap_or_default(),
+                        ))
+                    },
+                ))
+                .width(Length::Fixed(112.0)),
+            ]
+            .align_y(Alignment::Center),
+        );
+        // The Replace prompt, under the Generative tier: with text the fill replaces.
+        let mut prompt = text_input("Replace with\u{2026} (optional)", &model.prompt)
+            .id(iced::widget::Id::new(PROMPT_ID))
+            .style(theme::text_input_style(false))
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill);
+        if model.running.is_none() {
+            prompt = prompt.on_input(|text| remove_message(RemoveMessage::Prompt(text)));
+            if model.generate_reason.is_none() {
+                prompt = prompt.on_submit(remove_message(RemoveMessage::Generate));
+            }
+        }
+        group = group.push(prompt);
+        if let Some(offer) = &model.encoder {
+            group = group.push(inline_notice(
+                Tone::Neutral,
+                if offer.installing {
+                    "Downloading the text encoder Replace needs\u{2026}"
+                } else {
+                    "Replace needs the model's text encoder"
+                },
+            ));
+            if !offer.installing {
+                group = group.push(remove_button(
+                    "Download",
+                    ButtonTone::Control,
+                    None,
+                    Some(remove_message(RemoveMessage::Download {
+                        module_id: offer.module_id.clone(),
+                        resource: offer.resource.clone(),
+                    })),
+                ));
+            }
+        } else if !model.prompt.trim().is_empty() {
+            group = group.push(note(
+                format!(
+                    "{} / {} characters",
+                    model.prompt.chars().count(),
+                    model.prompt_max
+                ),
+                Token::TextTertiary,
+            ));
+        }
+    }
+    if let Some(notice) = &model.notice {
+        group = group.push(inline_notice(
+            Tone::Error,
+            format!("{} \u{b7} {}", notice.text, notice.code),
+        ));
+    }
+    // Generate, or Cancel with the progress while one runs.
+    match &model.running {
+        Some(running) => {
+            group = group.push(note(running.sentence.clone(), Token::TextLabel));
+            if let Some(fraction) = running.fraction {
+                group = group.push(
+                    iced::widget::progress_bar(0.0..=1.0, fraction as f32)
+                        .girth(Length::Fixed(4.0)),
+                );
+            }
+            group = group.push(remove_button(
+                if running.cancelling {
+                    "Cancelling\u{2026}"
+                } else {
+                    "Cancel"
+                },
+                ButtonTone::Control,
+                Some("esc"),
+                (!running.cancelling).then(|| remove_message(RemoveMessage::Cancel)),
+            ));
+        }
+        None if model.unoffered.is_none() && !model.reading => {
+            group = group.push(remove_button(
+                &model.action,
+                ButtonTone::Primary,
+                None,
+                model
+                    .generate_reason
+                    .is_none()
+                    .then(|| remove_message(RemoveMessage::Generate)),
+            ));
+            if let Some(reason) = &model.generate_reason
+                && model.selection
+            {
+                group = group.push(note(reason.clone(), Token::TextTertiary));
+            }
+        }
+        None => {}
+    }
+    // The candidate strip: each candidate's preview, the chosen one outlined.
+    if !model.strip.is_empty() || model.coming > 0 {
+        let mut cells = Row::new().spacing(theme::ROW_SPACING);
+        for cell in &model.strip {
+            let image: Element<'a, Message> = match images.image(&cell.job_id, cell.candidate) {
+                Some(handle) => iced::widget::image::Image::new(handle.clone())
+                    .width(Length::Fixed(CELL))
+                    .height(Length::Fixed(CELL))
+                    .content_fit(iced::ContentFit::Cover)
+                    .into(),
+                None => container(note(
+                    if cell.state == "live" {
+                        "\u{2026}".to_owned()
+                    } else {
+                        cell.state.clone()
+                    },
+                    Token::TextTertiary,
+                ))
+                .center(Length::Fixed(CELL))
+                .into(),
+            };
+            let mut cell_button = button(image)
+                .padding(2)
+                .style(theme::image_cell(cell.chosen, 4.0, 2.0));
+            if cell.state == "live" {
+                cell_button = cell_button.on_press(remove_message(RemoveMessage::Candidate {
+                    job_id: cell.job_id.clone(),
+                    candidate: cell.candidate,
+                }));
+            }
+            cells = cells.push(
+                column![
+                    cell_button,
+                    note(cell.number.to_string(), Token::TextTertiary)
+                ]
+                .align_x(Alignment::Center),
+            );
+        }
+        for _ in 0..model.coming {
+            cells = cells.push(
+                container(note("\u{2026}", Token::TextTertiary)).center(Length::Fixed(CELL + 4.0)),
+            );
+        }
+        group = group.push(
+            iced::widget::scrollable(cells).direction(
+                iced::widget::scrollable::Direction::Horizontal(
+                    iced::widget::scrollable::Scrollbar::new()
+                        .width(4)
+                        .scroller_width(4),
+                ),
+            ),
+        );
+        group = group.push(
+            row![
+                remove_button(
+                    "Regenerate",
+                    ButtonTone::Control,
+                    None,
+                    model
+                        .can_regenerate
+                        .then(|| remove_message(RemoveMessage::Regenerate)),
+                ),
+                remove_button(
+                    if model.accepting {
+                        "Accepting\u{2026}"
+                    } else {
+                        "Accept"
+                    },
+                    ButtonTone::Primary,
+                    None,
+                    model
+                        .can_accept
+                        .then(|| remove_message(RemoveMessage::Accept)),
+                ),
+            ]
+            .spacing(theme::ROW_SPACING),
+        );
+    }
+    group = group.push(note(model.hint.clone(), Token::TextTertiary));
     group.into()
 }
 

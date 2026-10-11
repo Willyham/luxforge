@@ -27,6 +27,7 @@ pub(crate) mod pointer;
 pub(crate) mod preferences;
 pub(crate) mod preset;
 pub(crate) mod preview;
+pub(crate) mod remove;
 pub(crate) mod renderer;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
@@ -60,6 +61,8 @@ pub(crate) enum Message {
     /// One Masks-panel change.
     Mask(mask::MaskMessage),
     Corrections(corrections::CorrectionMessage),
+    /// One change of the Corrections band's Remove mode.
+    Remove(remove::RemoveMessage),
     /// One decision about, or owner answer for, the open slider or mask gesture's core draft.
     Draft(draft::DraftMessage),
     /// One Presets-section change.

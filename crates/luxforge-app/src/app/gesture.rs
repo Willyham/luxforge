@@ -151,6 +151,8 @@ pub(crate) struct Halves {
     pub(crate) editable: bool,
     /// No request of this desktop's is in flight.
     pub(crate) busy: bool,
+    /// No generation this desktop started is running on the photograph.
+    pub(crate) locked: bool,
 }
 
 impl Starting {
@@ -174,6 +176,9 @@ impl Starting {
             one_draft,
             editable,
             busy,
+            // Every start that edits the photograph, and Undo, Redo, Restore and a preset's apply,
+            // which the owner refuses on a locked photograph too.
+            locked: editable || matches!(self, Self::History | Self::Preset),
         }
     }
 
@@ -402,6 +407,13 @@ impl Editor {
                 state::editable_refusal(self.document.state.as_ref(), &self.session)
         {
             return Some(reason.into());
+        }
+        // A generation this desktop started locks its photograph: the owner refuses every edit,
+        // draft, undo, redo and restore of it until the job ends, so none is sent.
+        if halves.locked
+            && let Some(reason) = self.generation_lock()
+        {
+            return Some(reason);
         }
         (halves.busy && self.busy).then(|| IN_FLIGHT.into())
     }
