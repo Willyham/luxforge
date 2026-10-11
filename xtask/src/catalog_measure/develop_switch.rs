@@ -19,7 +19,7 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, EditorService, OwnerHandle};
-use luxforge_evidence::{self as script, DevelopStep, SelectStep, SetStep};
+use luxforge_evidence::{self as script, DevelopStep, SelectStep, StripStep};
 use std::time::Duration;
 
 pub const METRIC: &str = "desktop.develop_switch.key_to_presented";
@@ -58,7 +58,7 @@ pub fn plan(samples: usize) -> Plan {
         steps.push(develop(format!("ready-{at}"), DevelopStep::Ready));
         steps.push(develop(
             format!("next-{at}"),
-            DevelopStep::Step(SetStep::Next),
+            DevelopStep::Step(StripStep::Next),
         ));
     }
     Plan::new(steps)

@@ -376,7 +376,7 @@ fn select_adds_lists_undoes_and_removes_an_indexed_folder_on_a_real_owner() {
     assert_eq!(listed(&editor)[0].0, "Card dumps");
 
     // In Develop a drop never adds a folder. Set up that workspace directly: this scene has
-    // no loaded development set, so its Develop tab is intentionally disabled.
+    // no Develop folder, so its Develop tab is disabled.
     drop(editor.show_develop_workspace());
     let _ = editor.update(Message::Select(SelectMessage::Dropped(folder.clone())));
     assert!(editor.select.adding.is_none());

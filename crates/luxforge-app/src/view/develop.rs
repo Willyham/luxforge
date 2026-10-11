@@ -1,4 +1,4 @@
-//! Developing picks and the development set ([event board](../../../../docs/design/catalog/event.png),
+//! Developing picks and the filmstrip ([event board](../../../../docs/design/catalog/event.png),
 //! [development-set board](../../../../docs/design/catalog/development-set.png)): Develop N in
 //! Select's title bar and its confirmation under it, and Develop's filmstrip under the canvas,
 //! drawn from `state/develop.rs`'s model.

@@ -185,11 +185,14 @@ impl Editor {
             }
         } else {
             Targets::Assets(
+                // The strip's selection; the open photograph alone when none of the strip's is
+                // selected, as when it is not in the Develop folder.
                 self.develop
                     .state
-                    .set
+                    .strip
                     .as_ref()
-                    .map(|set| set.selected_assets())
+                    .map(|strip| strip.selected_assets())
+                    .filter(|selected| !selected.is_empty())
                     .unwrap_or_else(|| {
                         self.document
                             .state
@@ -241,7 +244,7 @@ impl Editor {
                 .copy_settings
                 .cell_menu
                 .and_then(|(index, at)| {
-                    let set = self.develop.state.set.as_ref()?;
+                    let set = self.develop.state.strip.as_ref()?;
                     let photo = set.photo(index)?;
                     let source = Source {
                         asset: photo.asset_id.clone(),
@@ -294,11 +297,11 @@ impl Editor {
             } else {
                 self.develop
                     .state
-                    .set
+                    .strip
                     .as_ref()
-                    .map_or(usize::from(self.document.state.is_some()), |set| {
-                        set.selected_count()
-                    })
+                    .map(|strip| strip.selected_count())
+                    .filter(|count| *count > 0)
+                    .unwrap_or(usize::from(self.document.state.is_some()))
             },
         }
     }
@@ -509,14 +512,20 @@ impl Editor {
             crate::state::select_catalog::selected_rows(&self.select.state, &selection)
                 .map(|rows| rows.iter().map(|row| row.kind).collect())
         } else {
-            self.develop.state.set.as_ref().and_then(|set| {
-                set.photos
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| set.selected(*index))
-                    .map(|(_, photo)| photo.kind)
-                    .collect()
-            })
+            self.develop
+                .state
+                .strip
+                .as_ref()
+                .and_then(|strip| {
+                    strip
+                        .photos
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| strip.selected(*index))
+                        .map(|(_, photo)| photo.kind)
+                        .collect::<Option<Vec<_>>>()
+                })
+                .filter(|kinds| !kinds.is_empty())
         };
         clipboard.skip_notice(kinds.as_deref())
     }

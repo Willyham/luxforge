@@ -1,5 +1,5 @@
-//! Evidence steps on developing picks and Develop's development set: each gesture sent
-//! through the message its control or key sends. A move through the set is captured in the frame
+//! Evidence steps on developing picks and Develop's filmstrip: each gesture sent through the
+//! message its control or key sends. A move through the filmstrip is captured in the frame
 //! after its key when that frame draws the photograph's cached preview, and once the move has
 //! settled otherwise; the other steps once nothing developing picks asked the owner for is in
 //! flight.
@@ -9,7 +9,7 @@ use crate::app::{
     message::{Message, develop::DevelopMessage},
 };
 use iced::Task;
-use luxforge_evidence::{DevelopStep, SetStep};
+use luxforge_evidence::{DevelopStep, StripStep};
 use serde_json::json;
 
 fn develop(message: DevelopMessage) -> Message {
@@ -114,11 +114,11 @@ impl Editor {
             }
             DevelopStep::Step(step) => {
                 let delta = match step {
-                    SetStep::Previous => -1,
-                    SetStep::Next => 1,
+                    StripStep::Previous => -1,
+                    StripStep::Next => 1,
                 };
                 if self.select_shown() || !self.filmstrip_shown() {
-                    return self.fail_step("Develop shows no development set");
+                    return self.fail_step("Develop shows no filmstrip");
                 }
                 let task = self.update(develop(DevelopMessage::Step(delta)));
                 self.after_move();
@@ -145,8 +145,8 @@ impl Editor {
                 Task::none()
             }
             DevelopStep::Strip => {
-                if self.develop.state.set.is_none() {
-                    return self.fail_step("Develop has no development set");
+                if self.develop.state.strip.is_none() {
+                    return self.fail_step("Develop has no filmstrip");
                 }
                 let task = self.update(develop(DevelopMessage::Collapse));
                 self.await_develop();
@@ -155,7 +155,7 @@ impl Editor {
         }
     }
 
-    /// A move through the set: captured in the frame after the key when that frame draws the
+    /// A move through the filmstrip: captured in the frame after the key when that frame draws the
     /// photograph's cached preview, which is what the step is evidence of; once the move has
     /// settled when nothing was decoded for it; and at once when it was refused.
     fn after_move(&mut self) {

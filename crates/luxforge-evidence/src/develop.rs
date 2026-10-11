@@ -1,29 +1,29 @@
-//! Evidence steps on developing picks and Develop's development set: Develop N's confirmation in
-//! Select, opening a catalog photograph, and moving through the filmstrip in Develop. Each
-//! gesture is sent through the message its control or key sends.
+//! Evidence steps on developing picks and Develop's folder: Develop N's confirmation in Select,
+//! opening a catalog photograph, and moving through the filmstrip in Develop. Each gesture is sent
+//! through the message its control or key sends.
 use super::text;
 use serde::{Deserialize, Serialize};
 
-/// One gesture on developing picks or the development set.
+/// One gesture on developing picks or the Develop folder's filmstrip.
 ///
 /// `"picks"` presses Select's Develop N, and is captured once the confirmation shows what
 /// `pick.plan` answered. `"active"` double-clicks the active photograph in a catalog view in Select:
-/// it opens Develop on that photograph with the view's photographs as the development set,
-/// captured once that photograph's exact render is on screen.
+/// it opens Develop on that photograph with its own catalog folder as the Develop folder, captured
+/// once that folder is read into the filmstrip and the photograph's exact render is on screen.
 /// `{"name": {"event": 0, "text": "Lake trip"}}` types `text` over the
 /// selected name of the confirmation's event at that index, as typing does. `{"existing":
 /// {"event": 0, "folder": "Konstanz · Sep 2026"}}` opens that event's Or add to an existing folder
 /// and chooses the folder listed so. `{"copies": false}` sets whether a card's picks use their
 /// copies in indexed folders. `"confirm"` presses Develop (Return), and is captured once the Develop
-/// has ended and Develop shows the first developed photograph's exact render, or the reason it
-/// did not. `"cancel"` is Escape, captured at once.
+/// has ended, the folder holding what it developed is read into the filmstrip and Develop shows the
+/// first developed photograph's exact render, or the reason it did not. `"cancel"` is Escape, captured at once.
 ///
 /// In Develop: `{"step": "next"}` or `{"step": "previous"}` is `→` or `←`, and `{"cell": 3}` presses
-/// the filmstrip's cell of the set's photograph at that index; each is captured in the frame after
+/// the filmstrip's cell of the photograph at that index; each is captured in the frame after
 /// the key, which draws the photograph's cached large preview when one is decoded. `"settle"` is
 /// captured once the photograph moved to is open and its exact render has replaced the preview.
 /// `"ready"` is captured once the large previews Develop decodes ahead — the active photograph's
-/// neighbours in the set — are decoded. `"strip"` is `Cmd+Option+F`, which collapses or expands the
+/// neighbours in the filmstrip — are decoded. `"strip"` is `Cmd+Option+F`, which collapses or expands the
 /// filmstrip.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -35,17 +35,17 @@ pub enum DevelopStep {
     Copies(bool),
     Confirm,
     Cancel,
-    Step(SetStep),
+    Step(StripStep),
     Cell(usize),
     Settle,
     Ready,
     Strip,
 }
 
-/// A step through the development set.
+/// A step through the filmstrip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SetStep {
+pub enum StripStep {
     Previous,
     Next,
 }

@@ -493,8 +493,8 @@ fn catalog() -> Element<'static, ()> {
 
 // -- HDR merges ------------------------------------------------------------------------------------
 
-/// A bracket's header with its merges: Pick all while not all are picked, Import merged and the
-/// primary Pick merged.
+/// A bracket's header with its merge: Pick all while not all are picked, and the primary Merge
+/// HDR.
 fn bracket_with_merges(picked: Option<&str>) -> GridBlock {
     GridBlock::Moment {
         header: MomentHeader {
@@ -505,8 +505,7 @@ fn bracket_with_merges(picked: Option<&str>) -> GridBlock {
             picked: picked.map(Into::into),
             actions: vec![
                 HeaderAction::new("Pick all 3"),
-                HeaderAction::new("Import merged"),
-                HeaderAction::primary("Pick merged"),
+                HeaderAction::primary("Merge HDR"),
             ],
         },
         frames: 3,
@@ -593,15 +592,12 @@ fn merge_pending() -> Element<'static, ()> {
     whole(&MERGE_PENDING, |grid| exposure(grid.item as usize))
 }
 
-/// The result published: active, leading its collapsed stack with its badge and the Development
-/// set's check, between the frames before and after the bracket.
+/// The result published: active, leading its collapsed stack with its badge, never shown picked,
+/// between the frames before and after the bracket.
 static MERGE_RESULT: LazyLock<GridLayout> = LazyLock::new(|| {
     GridLayout::new(
         vec![
-            GridBlock::Day(heading(
-                "Saturday 12 September 2026",
-                "4 photographs \u{b7} 1 in the Development set",
-            )),
+            GridBlock::Day(heading("Saturday 12 September 2026", "4 photographs")),
             GridBlock::Singles(4),
         ],
         compact(GridMetrics::select(theme::CELL_SIZE.width)),
@@ -613,7 +609,6 @@ fn merge_result() -> Element<'static, ()> {
     whole(&MERGE_RESULT, |grid| match grid.item {
         1 => CellView {
             image: Some(&EXPOSURES[1]),
-            picked: true,
             selected: true,
             active: true,
             stack: badge(false),
@@ -662,7 +657,6 @@ fn merge_expanded() -> Element<'static, ()> {
     whole(&MERGE_EXPANDED, |grid| match grid.item {
         0 => CellView {
             image: Some(&EXPOSURES[1]),
-            picked: true,
             stack: badge(true),
             ..CellView::default()
         },
@@ -685,7 +679,7 @@ fn merge_expanded() -> Element<'static, ()> {
 }
 
 /// The smallest cells in a narrow grid: the header's actions give way from Pick all, the primary
-/// Pick merged last; the result's badge is short.
+/// Merge HDR last; the result's badge is short.
 static MERGE_NARROW: LazyLock<GridLayout> = LazyLock::new(|| {
     GridLayout::new(
         vec![
@@ -713,7 +707,6 @@ fn merge_narrow() -> Element<'static, ()> {
             },
             3 => CellView {
                 image: Some(&EXPOSURES[1]),
-                picked: true,
                 stack: badge(false),
                 ..CellView::default()
             },
@@ -729,8 +722,8 @@ fn merge_narrow() -> Element<'static, ()> {
     .into()
 }
 
-/// The selection's merge menu: Pick merged and Import merged with their hints, and Merge options…
-/// with the frame count; beside it the same refused, the core's reason as each one's tooltip.
+/// The selection's merge menu: Merge HDR with its hint, and Merge options… with the frame count;
+/// beside it the same refused, the core's reason as Merge HDR's tooltip.
 fn merge_menu() -> Element<'static, ()> {
     let item = |label: &str, trailing: Option<&str>, enabled: bool| {
         MenuEntry::Item(MenuItem {
@@ -743,10 +736,8 @@ fn merge_menu() -> Element<'static, ()> {
     };
     let entries = |enabled: bool| {
         vec![
-            item("Pick merged", None, enabled),
-            MenuEntry::Hint("Merge HDR and add to Development set".into()),
-            item("Import merged", None, enabled),
-            MenuEntry::Hint("Merge HDR into the catalog only".into()),
+            item("Merge HDR", None, enabled),
+            MenuEntry::Hint("Merge the frames into one HDR photograph in the catalog".into()),
             item("Merge options\u{2026}", Some("3 frames"), true),
         ]
     };

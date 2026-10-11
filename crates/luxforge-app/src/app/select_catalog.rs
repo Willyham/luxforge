@@ -46,7 +46,6 @@ use crate::state::select::{LibraryGesture, SelectionModel};
 use crate::state::select_catalog::{
     self as model, BatchEnd, BatchKind, BatchRun, CatalogAction, CatalogChange, CatalogGesture,
     CatalogMenu, Confirm, Emptying, Naming, NamingTarget, PresetChoice, SelectionRows, SourceTotal,
-    YearGroup,
 };
 use iced::Task;
 use luxforge_core::{
@@ -237,6 +236,10 @@ impl Editor {
             CatalogMessage::Act(action) => return self.catalog_act(action),
             CatalogMessage::Lists(result) => {
                 self.select.catalog.lists.answered();
+                if let Ok(answer) = &result {
+                    let before = self.select.state.catalog.folders.take();
+                    self.develop_folders_listed(before.as_ref(), &answer.0);
+                }
                 let state = &mut self.select.state.catalog;
                 match result {
                     Ok(answer) => {
@@ -334,15 +337,10 @@ impl Editor {
                 let query = model::view_query(&self.select.state.catalog, source);
                 return self.evaluate(query);
             }
-            CatalogAction::ToggleYear(group) => {
-                let open = self.year_open(group);
-                self.select.state.catalog.years.insert(group, !open);
-            }
             CatalogAction::ToggleFolder(folder) => {
-                let open = &mut self.select.state.catalog.open_folders;
-                if !open.remove(&folder) {
-                    open.insert(folder);
-                }
+                let catalog = &mut self.select.state.catalog;
+                let open = model::folder_open(catalog, &folder);
+                catalog.folders_open.insert(folder, !open);
             }
             CatalogAction::ToggleGroup(group) => {
                 let closed = &mut self.select.state.catalog.closed_groups;
@@ -383,7 +381,11 @@ impl Editor {
                 self.close_catalog_menus();
                 let params = model::folder_merge_params(&folder, &into, &request());
                 let (task, done) = self.catalog_library(CatalogGesture::MergeFolder, params);
-                // A merged folder is gone: its view becomes the folder it went into.
+                // A merged folder is gone: its view, and Develop's, become the folder it went
+                // into.
+                if done {
+                    self.develop_folder_merged(&folder, into.clone());
+                }
                 let viewing = self.viewing_folder(&folder);
                 if done && viewing {
                     let source = ViewSource::CatalogFolder {
@@ -400,6 +402,9 @@ impl Editor {
                 let params = model::folder_delete_params(&folder, &request());
                 let viewing = self.viewing_folder(&folder);
                 let (task, done) = self.catalog_library(CatalogGesture::DeleteFolder, params);
+                if done {
+                    self.develop_folder_gone(&folder);
+                }
                 return self.after_removal(task, done && viewing);
             }
             CatalogAction::DeleteCollection(collection) => {
@@ -635,10 +640,11 @@ impl Editor {
         let names = self
             .develop
             .state
-            .set
+            .strip
             .as_ref()
-            .map(|set| {
-                set.photos
+            .map(|strip| {
+                strip
+                    .photos
                     .iter()
                     .map(|photo| (photo.asset_id.clone(), photo.name.clone()))
                     .collect()
@@ -930,19 +936,6 @@ impl Editor {
         self.select.state.catalog.close();
     }
 
-    /// Whether the year group's folders are shown, as the sources panel draws it now.
-    fn year_open(&self, group: YearGroup) -> bool {
-        self.workspace
-            .select
-            .catalog
-            .sources
-            .folders
-            .iter()
-            .find(|row| row.toggle == Some(CatalogAction::ToggleYear(group)))
-            .and_then(|row| row.open)
-            .unwrap_or(false)
-    }
-
     fn viewing_folder(&self, folder: &luxforge_core::catalog_types::CatalogFolderId) -> bool {
         matches!(
             self.select.state.query.as_ref().map(|query| &query.source),
@@ -984,7 +977,7 @@ impl Editor {
             parent: Some(parent),
         } = &target
         {
-            state.open_folders.insert(parent.clone());
+            state.folders_open.insert(parent.clone(), true);
         }
         state.naming = Some(Naming { target, text });
         iced::widget::operation::focus(iced::widget::Id::from(

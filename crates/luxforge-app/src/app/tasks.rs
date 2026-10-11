@@ -174,9 +174,10 @@ pub(crate) struct SyncResult {
     /// A `theme.*` method changed the theme library, which the desktop lists again whether or not
     /// the sheet is open.
     pub(crate) themes: bool,
-    /// The newest development-set revision another client's change named, `u64::MAX` after a gap
-    /// in the event log: Develop reads its set again when it holds an older one.
-    pub(crate) development_set: Option<u64>,
+    /// The newest library change an event named, this desktop's own or another client's,
+    /// `u64::MAX` after a gap in the event log: Develop reads its folder again when it holds an
+    /// older one.
+    pub(crate) library: Option<u64>,
     /// A `usage.*` method changed the usage statistics consent, which an eligible desktop reads
     /// again.
     pub(crate) usage: bool,
@@ -198,7 +199,7 @@ impl SyncResult {
             flags: false,
             preferences: false,
             themes: false,
-            development_set: None,
+            library: None,
             usage: false,
             own: Vec::new(),
         }
@@ -899,7 +900,7 @@ fn import_now(
 /// Open a photograph of the catalog as this client's one photograph: its original prepared
 /// (`source.prepare`), the preparation adopted (`job.adopt`) and everything an open reads, read
 /// back. A newer open supersedes it, as [`OpenGuard`] says. The open path every open shares: a
-/// file opened (after its Develop) and a photograph of Develop's development set moved to.
+/// file opened (after its Develop) and a photograph of Develop's filmstrip moved to.
 pub(crate) fn open_photograph(
     owner: &OwnerHandle,
     client: ClientId,
@@ -2137,14 +2138,16 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("theme."));
-    // A development-set change, Pick merged's among them, names the revision it left.
-    let development_set = if events.gap {
+    // A library change, this desktop's own among them, names the journal sequence it recorded.
+    let library_change = if events.gap {
         Some(u64::MAX)
     } else {
         events
             .events
             .iter()
-            .filter_map(|event| event.development_set_revision)
+            .chain(&read)
+            .filter_map(|event| event.library_sequence)
+            .map(|sequence| sequence.0)
             .max()
     };
     // A consent change touches no asset: it alone reads the consent again.
@@ -2183,7 +2186,7 @@ pub(crate) fn sync_now(
         flags,
         preferences,
         themes,
-        development_set,
+        library: library_change,
         usage,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
@@ -2920,7 +2923,7 @@ mod tests {
             flags: false,
             preferences: false,
             themes: false,
-            development_set: None,
+            library: None,
             usage: false,
             own: Vec::new(),
         };

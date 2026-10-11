@@ -653,7 +653,8 @@ impl Editor {
                     crate::state::select::shown_path(&locating.path, home)
                 );
                 match locating.from {
-                    // Opened again from its new file, through the Open path.
+                    // Opened again from its new file, through the Open path, keeping the Develop
+                    // folder.
                     LocateFrom::Develop
                         if self
                             .document
@@ -661,6 +662,7 @@ impl Editor {
                             .as_ref()
                             .is_some_and(|state| state.asset.id == locating.asset_id) =>
                     {
+                        self.develop.reopen = true;
                         self.open(locating.path)
                     }
                     _ => Task::none(),

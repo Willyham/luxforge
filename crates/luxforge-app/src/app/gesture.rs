@@ -136,7 +136,7 @@ pub(crate) enum Starting {
     /// an open draft is applied or cancelled first. Neither a previewed entry nor a request in
     /// flight holds it back, and switching pauses neither.
     Workspace,
-    /// Moving to another photograph of the development set, which replaces the one document: one
+    /// Moving to another photograph of the filmstrip, which replaces the one document: one
     /// draft only, so an open draft is applied or cancelled first. A previewed entry does not hold
     /// it back; a request of this desktop's in flight is answered by the switch itself.
     Photograph,

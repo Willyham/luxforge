@@ -428,7 +428,7 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
             .unwrap_or_else(|| error.detail.clone());
         return PhotoView::Empty(format!("Preview unavailable: {reason}"));
     }
-    // A photograph of the development set opening with no preview decoded for it yet.
+    // A photograph of the filmstrip opening with no preview decoded for it yet.
     if let Some(name) = &inputs.develop.switching {
         return PhotoView::Empty(format!("Opening {name}\u{2026}"));
     }

@@ -558,7 +558,7 @@ pub(crate) enum Settle {
     /// An HDR merge step's pending row shows the job's progress, or the merge has ended and the
     /// view read again holds its result.
     Merge,
-    /// Nothing developing picks or the development set asked for is in flight, and the photograph
+    /// Nothing developing picks or the filmstrip asked for is in flight, and the photograph
     /// open in Develop has its exact frame on screen.
     Develop,
     /// The large previews Develop decodes ahead of a move are decoded.
@@ -688,7 +688,7 @@ impl Editor {
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
     /// and do not inherit a stale diagnostic from the ordinary photograph.
     pub(super) fn capture_photo_ready(&self) -> bool {
-        // A cached preview drawn while a photograph of the development set prepares is the
+        // A cached preview drawn while a photograph of the filmstrip prepares is the
         // photograph on screen, though no document is open.
         if (self.document.state.is_none() && self.develop.state.preview.is_none())
             || self.crop().is_some()
@@ -4451,7 +4451,7 @@ impl Editor {
             // wait for and is captured with its reason.
             Some(Message::Select(_)) => {
                 let task = self.dispatch(Message::Key(event, status));
-                if self.develop.state.folder_loading {
+                if self.develop.state.entering {
                     self.await_develop();
                 } else if self.select_shown() {
                     self.await_step(Settle::Select);
@@ -4460,7 +4460,7 @@ impl Editor {
                 }
                 task
             }
-            // `D` and the development set's keys wait for what developing picks asked for.
+            // `D` and the filmstrip's keys wait for what developing picks asked for.
             Some(Message::Develop(_)) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.await_develop();

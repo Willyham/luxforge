@@ -246,9 +246,9 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
     (
         "Select grid · HDR merges",
         &[
-            "Bracket header · Pick all 3, Import merged and the primary Pick merged",
+            "Bracket header · Pick all 3 and the primary Merge HDR",
             "Pending merge · its row with progress and Cancel, the frames still shown",
-            "Merged result · active, HDR · 3 exposures, in the Development set",
+            "Merged result · active, HDR · 3 exposures",
             "Failed merge · the row names its input, with Dismiss",
         ],
     ),
@@ -292,9 +292,9 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
             "100% inset · a camera preview and a Luxforge development",
             "Moment frames · the middle of a 1,000-frame burst",
             "Region box · the 100% region under the pointer",
-            "Filmstrip · the development set's first photograph",
+            "Filmstrip · a catalog folder's first photograph",
             "Key hints · the loupe's keys",
-            "Filmstrip · deep in a long set, two previews still loading",
+            "Filmstrip · deep in a large folder, two previews still loading",
         ],
     ),
     // -- end Select: chrome's pages.

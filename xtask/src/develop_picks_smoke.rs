@@ -35,7 +35,7 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, ClientId, EditorService, OwnerHandle};
-use luxforge_evidence::{self as script, DevelopStep, SelectStep, SetStep};
+use luxforge_evidence::{self as script, DevelopStep, SelectStep, StripStep};
 
 pub const SCENARIO: &str = "develop-picks";
 /// What `reproduce.md` says the run does before it launches.
@@ -126,7 +126,7 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         ),
         develop("developed", DevelopStep::Confirm),
         develop("ready", DevelopStep::Ready),
-        develop("next", DevelopStep::Step(SetStep::Next)),
+        develop("next", DevelopStep::Step(StripStep::Next)),
         develop("settled", DevelopStep::Settle),
     ]))
 }

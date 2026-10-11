@@ -1,31 +1,36 @@
-//! Developing picks and Develop's development set ([catalog design](../../../../docs/design/catalog.md#developing-picks)).
-//! Its model is `state/develop.rs`.
+//! Developing picks and Develop's folder ([develop from
+//! folders](../../../../docs/design/develop-from-folders.md)). Its model is `state/develop.rs`.
 //!
 //! - **Develop N.** The title bar's Develop N or `Cmd+Return`, over a view of files with picks,
 //!   reads `pick.plan` of the picks in view and `folder.list` in one owner task, and opens the
-//!   confirmation under the button: each event's catalog folder — a new one named after it, its
-//!   name selected for typing, or an existing one — and what happens to picks on a card. Escape
-//!   closes it and nothing is sent. Develop (Return) sends one `pick.develop {into, mutation,
-//!   use_copies?, confirm_removable?}`, the request an agent sends for the same choice, of the picks
-//!   in view. Its job progresses on the activity board; its end is heard through the owner's own
-//!   answer that the job ended ([`OwnerHandle::wait_source`], which answers for the library lane's
-//!   jobs too), never a timer, and its record read with `job.read`. Then Develop opens on the first
-//!   photograph it developed, with the photographs it answered as the development set. A failed or
-//!   cancelled Develop says so; what it committed stays in the catalog, as the core keeps it.
-//! - **The development set** is the owner's, one for every client
-//!   ([`development-set.*`](../../../../docs/design/catalog.md#hdr-stacks-and-the-development-set)):
-//!   the photographs a Develop answered, a catalog view's photographs around the one opened, or the
-//!   one photograph Develop is entered on replace it (`development-set.replace`), and a file opened
-//!   alone leaves none. The filmstrip shows the set read back a page of `development-set.read` at a
-//!   time, and reads it again when an event names a revision past the one it holds, so a
-//!   membership another client changed, a Pick merged among them, reaches it.
-//! - **Opening a catalog photograph.** A double-click opens Develop on the photograph at once, and
-//!   the view's photographs around it become the set.
-//! - **Moving through the set.** `←`, `→`, the filmstrip's buttons and a press on its cell replace
-//!   the one document through the open path every open shares ([`tasks::open_photograph`]:
+//!   confirmation under the button: each event's catalog folder, as the plan proposes it, its name
+//!   selected for typing, or an existing one, and what happens to picks on a card. Escape closes it
+//!   and nothing is sent. Develop (Return) sends one `pick.develop {into, mutation, use_copies?,
+//!   confirm_removable?}`, the request an agent sends for the same choice, of the picks in view. Its
+//!   job progresses on the activity board; its end is heard through the owner's own answer that the
+//!   job ended ([`OwnerHandle::wait_source`], which answers for the library lane's jobs too), never
+//!   a timer, and its record read with `job.read`. Then Develop opens on the first photograph it
+//!   developed, and the deepest catalog folder holding every one of them becomes the Develop folder.
+//!   A failed or cancelled Develop says so; what it committed stays in the catalog, as the core
+//!   keeps it.
+//! - **The Develop folder** is the catalog folder Develop holds, the catalog's own view state
+//!   (`CatalogState::develop_folder`): the folder last viewed in Select, the folder of a photograph
+//!   double-clicked in a catalog view, the folder a Develop N filed its photographs under, or the
+//!   folder of a file opened. Browsing files, events and other catalog views keeps it.
+//! - **The filmstrip** is the Develop folder's photographs with its subfolders', captured oldest
+//!   first, read through a client of its own so Select's view and selection are untouched
+//!   (`browse.view`, then `browse.rows` a window of [`STRIP_WINDOW`] at a time, at most
+//!   [`MAX_STRIP_PHOTOS`]). It is read again after any library change that reaches this desktop, its
+//!   own or another client's, keeping the open photograph's place; while Select is shown it is
+//!   marked stale and read when Develop is next entered.
+//! - **`D` and the Develop tab** open Develop on the Develop folder: on the open photograph when it
+//!   is in it, otherwise on its first. With no folder chosen, a photograph already open is shown
+//!   without a filmstrip; with neither, the tab is disabled and `D` says why.
+//! - **Moving through the folder.** `←`, `→`, the filmstrip's buttons and a press on its cell
+//!   replace the one document through the open path every open shares ([`tasks::open_photograph`]:
 //!   `source.prepare`, then `job.adopt`), refused with the one start refusal's reason while a draft
 //!   is open. The photograph's large preview (`preview.read {kind: photo, tier: large}`), decoded
-//!   ahead off the update loop for the active photograph and its neighbours in the set within a
+//!   ahead off the update loop for the active photograph and its neighbours in the strip within a
 //!   byte budget (the loupe's own frames cache), is handed to the photo surface in the update of
 //!   the key, so it is drawn in the frame after it, labelled in the status bar's render slot. The
 //!   controls enable once the original is prepared, and its render replaces the preview as every
@@ -34,7 +39,7 @@
 //!   being switched to has its preview drawn: an answer or a decode for another arriving after a
 //!   move is kept for that photograph and never drawn for this one, and a preview of another entry
 //!   than the one the open then shows is withdrawn.
-//! - **The filmstrip** under the canvas draws a window of the set, each cell's grid preview read
+//! - **The filmstrip** under the canvas draws a window of the strip, each cell's grid preview read
 //!   and decoded by a cache of the Select grid's own kind; `Cmd+Option+F` collapses it.
 use crate::app::{
     Before, Editor,
@@ -49,19 +54,20 @@ use crate::layout;
 use crate::state::{
     self,
     develop::{
-        Confirmation, DevelopSet, Developing, ReadSet, SetPhoto, ShownPreview, develop_params,
-        developed_photos, developed_sentence,
+        Confirmation, Developing, Filmstrip, FolderRead, MAX_STRIP_PHOTOS, ShownPreview,
+        StripPhoto, develop_params, developed_photos, developed_sentence,
     },
 };
 use iced::{Subscription, Task, widget::image::Handle};
 use luxforge_core::{
     AssetId, ClientId, JobId, OwnerHandle,
     catalog_types::{
-        CatalogFolders, DevelopPlan, DevelopReport, DevelopmentSetPage, DevelopmentSetReplaced,
-        PreviewItem, PreviewState, RowItem,
+        CatalogFolderId, CatalogFolders, DevelopPlan, DevelopReport, MAX_VIEW_ROWS, PreviewItem,
+        PreviewState, RowItem, SortKey, ViewQuery, ViewRows, ViewSort, ViewSource, ViewSummary,
     },
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
@@ -75,12 +81,13 @@ pub(crate) const AHEAD: usize = 2;
 /// The filmstrip's decoded grid previews: a strip's window and a window either side, at a cell's
 /// 144 × 104 pixels, several times over.
 pub(crate) const STRIP_BUDGET_BYTES: usize = 32 << 20;
-/// The members one `development-set.read` asks for: the method's most. The owner holds at most
-/// `MAX_SET_MEMBERS` (100,000) photographs in a set, 16 bytes of identity and a name each here.
-const SET_WINDOW: usize = luxforge_core::catalog_types::MAX_SET_PAGE;
-/// How many times a read of the set starts again because another change moved it on while it was
-/// read, before it is answered as it last stood.
-const SET_RETRIES: u32 = 4;
+/// The rows one `browse.rows` of the Develop folder asks for: the method's most. The strip holds at
+/// most [`MAX_STRIP_PHOTOS`] photographs, 16 bytes of identity and a name each.
+pub(crate) const STRIP_WINDOW: usize = MAX_VIEW_ROWS;
+/// What `D` says with no Develop folder chosen and no photograph open.
+pub(crate) const DEVELOP_GUIDANCE: &str = "Choose a catalog folder to develop";
+/// What `D` says when the Develop folder holds no photographs.
+pub(crate) const EMPTY_FOLDER: &str = "This catalog folder has no photographs";
 
 /// The last Develop this desktop sent, for evidence: its request, what `pick.develop` answered
 /// and the job's record when it ended.
@@ -91,7 +98,7 @@ pub(crate) struct DevelopRecord {
     pub(crate) record: Option<Value>,
 }
 
-/// A move to another photograph of the set, until its open has answered.
+/// A move to another photograph of the strip, until its open has answered.
 #[derive(Clone, Debug)]
 pub(crate) struct Switch {
     pub(crate) asset: AssetId,
@@ -116,11 +123,21 @@ pub(crate) struct Develop {
     pub(crate) state: state::develop::DevelopState,
     /// The newest confirmation's number: a `pick.plan` answered for another is dropped.
     plan_serial: u64,
-    /// The newest set's number.
-    set_serial: u64,
-    /// The owner's development-set revision the set Develop shows was read at: an event naming a
-    /// later one reads it again.
-    pub(crate) held_set: u64,
+    /// The newest read of the Develop folder's number: an answer for an older one is dropped.
+    pub(crate) strip_serial: u64,
+    /// The library change the strip was read at: a later one reads it again.
+    pub(crate) strip_sequence: u64,
+    /// A library change reached the desktop while Select was shown: the strip is read again when
+    /// Develop is next entered.
+    pub(crate) strip_stale: bool,
+    /// The read of the Develop folder in flight, by its number.
+    pub(crate) reading: Option<u64>,
+    /// The open of a file in flight, by its request generation: once it answers, its folder is
+    /// found and becomes the Develop folder.
+    pub(crate) file_open: Option<u64>,
+    /// The next open of a file keeps the Develop folder: a photograph opened again from the file
+    /// Locate found for it.
+    pub(crate) reopen: bool,
     pub(crate) last: DevelopRecord,
     /// The move in flight.
     pub(crate) switch: Option<Switch>,
@@ -141,8 +158,12 @@ impl Default for Develop {
         Self {
             state: Default::default(),
             plan_serial: 0,
-            set_serial: 0,
-            held_set: 0,
+            strip_serial: 0,
+            strip_sequence: 0,
+            strip_stale: false,
+            reading: None,
+            file_open: None,
+            reopen: false,
             last: DevelopRecord::default(),
             switch: None,
             timing: SwitchTiming::default(),
@@ -237,106 +258,206 @@ pub(crate) fn ended_now(owner: &OwnerHandle, client: ClientId, job: &str) -> Res
     }
 }
 
-/// Replace the owner's development set with the photographs `source` names
-/// (`development-set.replace`) and read it back: where the photograph it opens on is among them,
-/// for a view's set, and the first otherwise.
-pub(crate) fn replace_set_now(
-    owner: &OwnerHandle,
-    client: ClientId,
-    source: Value,
-) -> Result<ReadSet, String> {
-    let (replaced, _) = call(
-        owner,
-        client,
-        "development-set.replace",
-        json!({ "source": source, "mutation": request() }),
-    )?;
-    let replaced: DevelopmentSetReplaced = parse(replaced)?;
-    let mut read = read_set_now(owner, client)?;
-    read.active = replaced.active.map_or(0, |active| active as usize);
-    Ok(read)
-}
-
-/// The owner's development set, read a page of [`SET_WINDOW`] members at a time, never all at
-/// once. A page at another revision than the first means the set changed under the read, which
-/// starts again, at most [`SET_RETRIES`] times.
-pub(crate) fn read_set_now(owner: &OwnerHandle, client: ClientId) -> Result<ReadSet, String> {
-    let mut retries = 0;
-    let mut photos: Vec<SetPhoto> = Vec::new();
-    let mut revision = None;
-    loop {
-        let (page, _) = call(
-            owner,
-            client,
-            "development-set.read",
-            json!({ "from": photos.len(), "limit": SET_WINDOW }),
-        )?;
-        let page: DevelopmentSetPage = parse(page)?;
-        if revision.is_some_and(|revision| revision != page.revision) && retries < SET_RETRIES {
-            retries += 1;
-            photos.clear();
-            revision = None;
-            continue;
-        }
-        revision = Some(page.revision);
-        let done = page.members.is_empty();
-        photos.extend(page.members.into_iter().map(|member| SetPhoto {
-            asset_id: member.asset_id,
-            kind: Some(member.kind),
-            name: member.file_name,
-        }));
-        if done || photos.len() >= page.count as usize {
-            return Ok(ReadSet {
-                photos,
-                active: 0,
-                revision: page.revision,
-            });
-        }
+/// The query the filmstrip reads a folder with: its photographs and its subfolders', captured
+/// oldest first, with no filter. An agent reads the same view of what Develop holds.
+pub(crate) fn strip_query(folder: &CatalogFolderId) -> ViewQuery {
+    ViewQuery {
+        sort: ViewSort {
+            key: SortKey::CaptureTime,
+            descending: false,
+        },
+        ..ViewQuery::of(ViewSource::CatalogFolder {
+            folder_id: folder.clone(),
+            subfolders: true,
+        })
     }
 }
 
-/// The photographs of the caller's view at `revision` around `position` made the development set:
-/// at most the owner's `MAX_SET_MEMBERS`, with where `position` is among them.
-pub(crate) fn set_now(
+/// A photograph of a view, with the catalog folder it is in.
+type FiledPhoto = (StripPhoto, Option<CatalogFolderId>);
+
+/// Evaluate `query` into `client`'s view and read its photographs a window of [`STRIP_WINDOW`] rows
+/// at a time, at most `limit`, until `enough` says the photographs read so far are enough.
+fn read_photos(
     owner: &OwnerHandle,
     client: ClientId,
-    revision: u64,
-    position: u32,
-) -> Result<ReadSet, String> {
-    replace_set_now(
+    query: &ViewQuery,
+    limit: usize,
+    mut enough: impl FnMut(&[FiledPhoto]) -> bool,
+) -> Result<(ViewSummary, Vec<FiledPhoto>), String> {
+    let (summary, _) = call(
         owner,
         client,
-        json!({ "kind": "view", "revision": revision, "position": position }),
-    )
+        "browse.view",
+        state::select::view_params(query),
+    )?;
+    let summary: ViewSummary = parse(summary)?;
+    let total = (summary.count as usize).min(limit);
+    let mut photos = Vec::with_capacity(total);
+    let mut from = 0;
+    while from < total && !enough(&photos) {
+        let count = STRIP_WINDOW.min(total - from);
+        let (rows, _) = call(
+            owner,
+            client,
+            "browse.rows",
+            json!({"from": from, "count": count, "revision": summary.revision}),
+        )?;
+        let rows: ViewRows = parse(rows)?;
+        if rows.rows.is_empty() {
+            break;
+        }
+        from += rows.rows.len();
+        photos.extend(rows.rows.into_iter().filter_map(|row| match row.item {
+            RowItem::Photo { asset_id } => Some((
+                StripPhoto {
+                    asset_id,
+                    kind: Some(row.kind),
+                    name: row.file_name,
+                },
+                row.folder_id,
+            )),
+            RowItem::File { .. } | RowItem::Input { .. } => None,
+        }));
+    }
+    Ok((summary, photos))
 }
 
-/// The catalog folder `query` names made the development set, read through a client of its own so
-/// the Select view's session is left as it is, opening on `active` when it is among them. A folder
-/// without photographs leaves the set as it was.
-pub(crate) fn folder_set_now(
+/// The folder's path from the top level, by its names.
+fn folder_path(folders: &CatalogFolders, folder: &CatalogFolderId) -> Vec<String> {
+    let by_id: HashMap<&CatalogFolderId, _> = folders
+        .folders
+        .iter()
+        .map(|folder| (&folder.id, folder))
+        .collect();
+    let mut path = Vec::new();
+    let mut at = Some(folder);
+    while let Some(id) = at {
+        let Some(held) = by_id.get(id) else {
+            break;
+        };
+        if path.len() > by_id.len() {
+            break;
+        }
+        path.push(held.name.clone());
+        at = held.parent_id.as_ref();
+    }
+    path.reverse();
+    path
+}
+
+/// The catalog folder `folder` read for the filmstrip on `client`: its path, and its photographs
+/// with its subfolders', captured oldest first, at most [`MAX_STRIP_PHOTOS`].
+fn strip_on(
     owner: &OwnerHandle,
-    query: &luxforge_core::catalog_types::ViewQuery,
-    active: Option<&AssetId>,
-) -> Result<ReadSet, String> {
+    client: ClientId,
+    folder: &CatalogFolderId,
+) -> Result<FolderRead, String> {
+    let (folders, _) = call(owner, client, "folder.list", json!({}))?;
+    let folders: CatalogFolders = parse(folders)?;
+    let (summary, photos) = read_photos(
+        owner,
+        client,
+        &strip_query(folder),
+        MAX_STRIP_PHOTOS,
+        |_| false,
+    )?;
+    Ok(FolderRead {
+        folder: folder.clone(),
+        path: folder_path(&folders, folder),
+        photos: photos.into_iter().map(|(photo, _)| photo).collect(),
+        count: summary.count,
+        library_sequence: summary.library_sequence.0,
+    })
+}
+
+/// The Develop folder read for the filmstrip, through a client of its own so the Select view's
+/// session is left as it is.
+pub(crate) fn folder_strip_now(
+    owner: &OwnerHandle,
+    folder: &CatalogFolderId,
+) -> Result<FolderRead, String> {
+    let client = owner.register();
+    let result = strip_on(owner, client, folder);
+    owner.disconnect(client);
+    result
+}
+
+/// The deepest folder holding every one of `folders`, by `folder.list`'s parent links; the first
+/// one when they share none.
+pub(crate) fn common_folder(
+    folders: &CatalogFolders,
+    of: &[CatalogFolderId],
+) -> Option<CatalogFolderId> {
+    let first = of.first()?;
+    let chain = |folder: &CatalogFolderId| {
+        let mut chain: Vec<CatalogFolderId> = Vec::new();
+        let mut at = Some(folder.clone());
+        while let Some(id) = at {
+            if chain.len() > folders.folders.len() {
+                break;
+            }
+            at = folders
+                .folders
+                .iter()
+                .find(|held| held.id == id)
+                .and_then(|held| held.parent_id.clone());
+            chain.push(id);
+        }
+        chain.reverse();
+        chain
+    };
+    let mut common = chain(first);
+    for folder in &of[1..] {
+        let other = chain(folder);
+        let shared = common
+            .iter()
+            .zip(&other)
+            .take_while(|(a, b)| a == b)
+            .count();
+        common.truncate(shared);
+    }
+    common.pop().or_else(|| Some(first.clone()))
+}
+
+/// The folder Develop holds for `assets`, photographs just developed or opened, read with its
+/// filmstrip through a client of its own: the deepest catalog folder holding every one of them, or
+/// the first one's own folder when they share none. Each photograph's folder is its row's in All
+/// photographs, newest developed first, so a photograph just developed is in the first window.
+/// `None` when none of them is found among the first [`MAX_STRIP_PHOTOS`].
+pub(crate) fn developed_folder_now(
+    owner: &OwnerHandle,
+    assets: &[AssetId],
+) -> Result<Option<FolderRead>, String> {
     let client = owner.register();
     let result = (|| {
-        let summary = super::select::evaluate_now(owner, client, query)?.0;
-        if summary.count == 0 {
-            return Ok(ReadSet {
-                photos: Vec::new(),
-                active: 0,
-                revision: 0,
-            });
-        }
-        let mut read = set_now(owner, client, summary.revision, 0)?;
-        read.active = active
-            .and_then(|asset| {
-                read.photos
-                    .iter()
-                    .position(|photo| &photo.asset_id == asset)
+        let query = ViewQuery {
+            sort: ViewSort {
+                key: SortKey::DateDeveloped,
+                descending: true,
+            },
+            ..ViewQuery::of(ViewSource::AllPhotographs)
+        };
+        let wanted = |photos: &[FiledPhoto]| {
+            assets
+                .iter()
+                .all(|asset| photos.iter().any(|(photo, _)| &photo.asset_id == asset))
+        };
+        let (_, rows) = read_photos(owner, client, &query, MAX_STRIP_PHOTOS, wanted)?;
+        let found: Vec<CatalogFolderId> = assets
+            .iter()
+            .filter_map(|asset| {
+                rows.iter()
+                    .find(|(photo, _)| &photo.asset_id == asset)
+                    .and_then(|(_, folder)| folder.clone())
             })
-            .unwrap_or(0);
-        Ok(read)
+            .collect();
+        let (folders, _) = call(owner, client, "folder.list", json!({}))?;
+        let folders: CatalogFolders = parse(folders)?;
+        match common_folder(&folders, &found) {
+            Some(folder) => strip_on(owner, client, &folder).map(Some),
+            None => Ok(None),
+        }
     })();
     owner.disconnect(client);
     result
@@ -352,11 +473,11 @@ fn item(asset: &AssetId) -> PreviewItem {
 }
 
 impl Editor {
-    /// One message of developing picks or the development set.
+    /// One message of developing picks or the filmstrip.
     pub(crate) fn develop_update(&mut self, message: DevelopMessage) -> Task<Message> {
         match message {
             DevelopMessage::Open => return self.develop_open(),
-            DevelopMessage::OpenAt(position) => return self.open_view_set(position),
+            DevelopMessage::OpenAt(position) => return self.open_from_view(position),
             DevelopMessage::Planned { serial, result } => return self.planned(serial, result),
             DevelopMessage::Name { event, text } => {
                 if let Some(choice) = self
@@ -398,38 +519,17 @@ impl Editor {
             }
             DevelopMessage::Started(result) => return self.develop_started(result),
             DevelopMessage::Ended { job, result } => return self.develop_ended(job, result),
-            DevelopMessage::SetRead { serial, result } => self.set_read(serial, result),
-            DevelopMessage::FolderSetRead { serial, result } => {
-                if serial != self.develop.set_serial {
-                    return Task::none();
-                }
-                self.develop.state.folder_loading = false;
-                match result {
-                    Ok(read) if !read.photos.is_empty() => {
-                        let index = read.active;
-                        self.develop.held_set = read.revision;
-                        self.develop.state.set = Some(DevelopSet::new(serial, read.photos, index));
-                        self.develop.state.collapsed = false;
-                        self.status.text = "Showing Develop".into();
-                        let shown = self.show_develop_workspace();
-                        return Task::batch([shown, self.switch_to(index)]);
-                    }
-                    Ok(_) => {
-                        self.status.text =
-                            "This catalog folder has no photographs to develop".into()
-                    }
-                    Err(error) => {
-                        self.status.text = format!("Could not load the development set: {error}")
-                    }
-                }
+            DevelopMessage::StripRead { serial, result } => return self.strip_read(serial, result),
+            DevelopMessage::FolderFound { serial, result } => {
+                self.folder_found(serial, result);
             }
             DevelopMessage::Step(delta) => {
                 let Some(index) = self
                     .develop
                     .state
-                    .set
+                    .strip
                     .as_ref()
-                    .and_then(|set| set.step(delta))
+                    .and_then(|strip| strip.step(delta))
                 else {
                     return Task::none();
                 };
@@ -441,24 +541,24 @@ impl Editor {
                 command,
                 shift,
             } => {
-                if let Some(set) = &mut self.develop.state.set {
-                    set.select(index, command, shift);
+                if let Some(strip) = &mut self.develop.state.strip {
+                    strip.select(index, command, shift);
                 }
             }
             DevelopMessage::SelectAll => {
                 self.view_state.copy_settings.cell_menu = None;
-                if let Some(set) = &mut self.develop.state.set {
-                    if set.reading {
-                        self.status.text = "Wait for the development set to finish loading".into();
+                if let Some(strip) = &mut self.develop.state.strip {
+                    if strip.reading {
+                        self.status.text = "Wait for the folder to finish loading".into();
                     } else {
-                        set.selected = (0..set.photos.len()).collect();
+                        strip.selected = (0..strip.photos.len()).collect();
                     }
                 }
             }
             DevelopMessage::SelectOnly => {
                 self.view_state.copy_settings.cell_menu = None;
-                if let Some(set) = &mut self.develop.state.set {
-                    set.selected.clear();
+                if let Some(strip) = &mut self.develop.state.strip {
+                    strip.selected.clear();
                 }
             }
             DevelopMessage::CellMenu { index, at } => {
@@ -466,7 +566,7 @@ impl Editor {
             }
             DevelopMessage::Show(index) => return self.switch_to(index),
             DevelopMessage::Collapse => {
-                if self.develop.state.set.is_some() {
+                if self.develop.state.strip.is_some() {
                     self.usage_interaction(luxforge_core::usage::Feature::PanelToggle, false);
                     self.develop.state.collapsed = !self.develop.state.collapsed;
                 }
@@ -638,8 +738,9 @@ impl Editor {
         )
     }
 
-    /// The Develop's job ended. Ready, Develop opens on the first photograph it developed with
-    /// them as the set; failed or cancelled, the status bar says so, and what it committed stays.
+    /// The Develop's job ended. Ready, Develop opens on the first photograph it developed, its
+    /// photographs shown in the strip until the folder holding them all is found and read as the
+    /// Develop folder; failed or cancelled, the status bar says so, and what it committed stays.
     /// Either way the view's picks changed, so Select reads its view again when it is next shown.
     fn develop_ended(&mut self, job: String, result: Result<Value, String>) -> Task<Message> {
         if self
@@ -696,156 +797,278 @@ impl Editor {
         if photos.is_empty() {
             return Task::none();
         }
-        self.develop.set_serial += 1;
-        self.develop.state.folder_query = None;
         let assets: Vec<AssetId> = photos.iter().map(|photo| photo.asset_id.clone()).collect();
-        let mut set = DevelopSet::new(self.develop.set_serial, photos, 0);
-        set.reading = true;
-        self.develop.state.set = Some(set);
+        self.develop.strip_serial += 1;
+        self.develop.state.entering = false;
+        let mut strip = Filmstrip::new(self.develop.strip_serial, photos, 0);
+        strip.reading = true;
+        self.develop.state.strip = Some(strip);
         self.develop.state.collapsed = false;
         let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
-        let replaced = self.replace_set_task(json!({ "kind": "assets", "asset_ids": assets }));
-        Task::batch([shown, opened, replaced])
+        let found = self.find_folder_task(assets);
+        Task::batch([shown, opened, found])
     }
 
-    /// Replace the owner's development set with `source` and read it back into the set Develop
-    /// shows, which keeps its photograph on screen.
-    fn replace_set_task(&self, source: Value) -> Task<Message> {
-        let serial = self.develop.set_serial;
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || replace_set_now(&owner, client, source),
-            move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
-        )
+    // -- The Develop folder and its filmstrip -----------------------------------------------------
+
+    /// The Develop folder, as the catalog's view state holds it.
+    pub(crate) fn develop_folder(&self) -> Option<&CatalogFolderId> {
+        self.select.state.catalog.develop_folder.as_ref()
     }
 
-    /// Another client changed the owner's development set past `revision`, the newest an event
-    /// named (`u64::MAX` after a gap in the event log): the set Develop shows is read again. A
-    /// desktop showing no set has none of the owner's to follow.
-    pub(crate) fn development_set_changed(&mut self, revision: u64) -> Task<Message> {
-        if revision <= self.develop.held_set || self.develop.state.set.is_none() {
-            return Task::none();
+    /// Make `folder` the Develop folder. Choosing another fences a read of the one before.
+    fn choose_develop_folder(&mut self, folder: Option<CatalogFolderId>) {
+        if self.select.state.catalog.develop_folder != folder {
+            self.select.state.catalog.develop_folder = folder;
+            if std::mem::take(&mut self.develop.state.entering) {
+                self.develop.strip_serial += 1;
+            }
         }
-        let serial = self.develop.set_serial;
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || read_set_now(&owner, client),
-            move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
-        )
     }
 
-    /// This desktop added a photograph to the owner's development set (Select's Pick merged): Develop
-    /// follows that set from now on rather than the last catalog folder, and reads it into the set it
-    /// shows, a set it did not show yet starting empty while it is read.
-    pub(crate) fn follow_owner_set(&mut self) -> Task<Message> {
-        self.develop.state.folder_query = None;
-        if self.develop.state.set.is_none() {
-            self.develop.set_serial += 1;
-            let mut set = DevelopSet::new(self.develop.set_serial, Vec::new(), 0);
-            set.reading = true;
-            self.develop.state.set = Some(set);
+    /// A catalog folder viewed in Select becomes the Develop folder; any other view keeps it.
+    pub(crate) fn remember_develop_folder(&mut self, query: &ViewQuery) {
+        if let ViewSource::CatalogFolder { folder_id, .. } = &query.source {
+            self.choose_develop_folder(Some(folder_id.clone()));
         }
-        let Some(serial) = self.develop.state.set.as_ref().map(|set| set.serial) else {
-            return Task::none();
-        };
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || read_set_now(&owner, client),
-            move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
-        )
     }
 
-    /// Catalog views select or clear the Develop folder; import browsing preserves it.
-    /// Changing that selection fences an outstanding set read for the previous folder.
-    pub(crate) fn remember_develop_folder(
+    /// A catalog folder was merged into `into` by this desktop: when it was the Develop folder,
+    /// the folder it went into is.
+    pub(crate) fn develop_folder_merged(
         &mut self,
-        query: &luxforge_core::catalog_types::ViewQuery,
+        folder: &CatalogFolderId,
+        into: CatalogFolderId,
     ) {
-        let folder = match &query.source {
-            luxforge_core::catalog_types::ViewSource::CatalogFolder { .. } => Some(query.clone()),
-            source if source.over_files() => return,
-            _ => None,
-        };
-        if self.develop.state.folder_query != folder {
-            self.develop.set_serial += 1;
-            self.develop.state.folder_loading = false;
-            self.develop.state.folder_query = folder;
+        if self.develop_folder() == Some(folder) {
+            self.choose_develop_folder(Some(into));
+            self.develop.strip_stale = true;
         }
     }
 
-    /// Enter Develop using the last catalog folder, or the previously loaded set.
-    pub(crate) fn enter_develop_set(&mut self) -> Task<Message> {
-        if self.develop.state.folder_loading {
-            return Task::none();
+    /// `folder.list` answered: a Develop folder it listed before and lists no longer was deleted,
+    /// or merged by another client, and Develop holds none.
+    pub(crate) fn develop_folders_listed(
+        &mut self,
+        before: Option<&CatalogFolders>,
+        now: &CatalogFolders,
+    ) {
+        let Some(folder) = self.develop_folder().cloned() else {
+            return;
+        };
+        let listed = |list: &CatalogFolders| list.folders.iter().any(|held| held.id == folder);
+        if before.is_some_and(listed) && !listed(now) {
+            self.develop_folder_gone(&folder);
         }
-        if let Some(query) = self.develop.state.folder_query.clone() {
-            self.develop.set_serial += 1;
-            let serial = self.develop.set_serial;
-            self.develop.state.folder_loading = true;
-            self.status.text = "Reading the catalog folder for Develop…".into();
-            let (owner, active) = (
-                self.owner.clone(),
-                self.document
-                    .state
-                    .as_ref()
-                    .map(|state| state.asset.id.clone()),
-            );
-            return owner_task(
-                move || folder_set_now(&owner, &query, active.as_ref()),
-                move |result| Message::Develop(DevelopMessage::FolderSetRead { serial, result }),
-            );
+    }
+
+    /// The Develop folder is gone: Develop holds none, and its strip goes with it.
+    pub(crate) fn develop_folder_gone(&mut self, folder: &CatalogFolderId) {
+        if self.develop_folder() != Some(folder) {
+            return;
         }
+        self.choose_develop_folder(None);
         if self
             .develop
             .state
-            .set
+            .strip
             .as_ref()
-            .is_some_and(|set| !set.photos.is_empty())
+            .is_some_and(|strip| strip.folder.as_ref() == Some(folder))
         {
-            let index = self.develop.state.set.as_ref().unwrap().active;
-            let shown = self.show_develop_workspace();
-            return Task::batch([shown, self.switch_to(index)]);
+            self.develop.strip_serial += 1;
+            self.develop.state.strip = None;
         }
-        if let Some(state) = &self.document.state {
-            self.develop.set_serial += 1;
-            self.develop.state.set = Some(DevelopSet::new(
-                self.develop.set_serial,
-                vec![SetPhoto {
-                    asset_id: state.asset.id.clone(),
-                    kind: Some(state.asset.source.tag()),
-                    name: state
-                        .asset
-                        .locator
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                }],
-                0,
-            ));
-            let replaced = self.replace_set_task(
-                json!({ "kind": "assets", "asset_ids": [state.asset.id.clone()] }),
-            );
-            return Task::batch([self.show_develop_workspace(), replaced]);
+    }
+
+    /// `D` or the Develop tab: Develop on the Develop folder, opening on the photograph already
+    /// open when it is in it and on the folder's first otherwise, read first unless the strip holds
+    /// it as it is. With no folder chosen a photograph already open is shown without a filmstrip,
+    /// and with neither the status bar says to choose a folder.
+    pub(crate) fn enter_develop(&mut self) -> Task<Message> {
+        if self.develop.state.entering {
+            return Task::none();
         }
-        self.status.text = "Pick a catalog folder or choose images to develop from the grid".into();
+        let Some(folder) = self.develop_folder().cloned() else {
+            if self.document.state.is_some() {
+                self.develop.strip_serial += 1;
+                self.develop.state.strip = None;
+                self.status.text = "Showing Develop".into();
+                return self.show_develop_workspace();
+            }
+            self.status.text = DEVELOP_GUIDANCE.into();
+            return Task::none();
+        };
+        let held = self.develop.state.strip.as_ref().is_some_and(|strip| {
+            strip.folder.as_ref() == Some(&folder) && !strip.reading && !self.develop.strip_stale
+        });
+        if held {
+            return self.show_strip();
+        }
+        self.develop.state.entering = true;
+        self.status.text = "Reading the catalog folder for Develop\u{2026}".into();
+        self.read_strip_task(folder)
+    }
+
+    /// Develop shown on the strip as it is: on the open photograph when it is in it, otherwise on
+    /// its first. An empty folder stays in Select and says so.
+    fn show_strip(&mut self) -> Task<Message> {
+        let open = self
+            .document
+            .state
+            .as_ref()
+            .map(|state| state.asset.id.clone());
+        let Some(strip) = &self.develop.state.strip else {
+            return Task::none();
+        };
+        if strip.photos.is_empty() {
+            self.status.text = EMPTY_FOLDER.into();
+            return Task::none();
+        }
+        let index = open.and_then(|asset| strip.position(&asset)).unwrap_or(0);
+        self.status.text = "Showing Develop".into();
+        // The grid's wake is the one a client has; Develop is passed it.
+        self.select.previews.watch(&self.owner, self.client);
+        let shown = self.show_develop_workspace();
+        Task::batch([shown, self.switch_to(index)])
+    }
+
+    /// Read `folder` for the filmstrip, numbered so an older read's answer is dropped.
+    fn read_strip_task(&mut self, folder: CatalogFolderId) -> Task<Message> {
+        self.develop.strip_serial += 1;
+        let serial = self.develop.strip_serial;
+        self.develop.reading = Some(serial);
+        let owner = self.owner.clone();
+        owner_task(
+            move || folder_strip_now(&owner, &folder),
+            move |result| Message::Develop(DevelopMessage::StripRead { serial, result }),
+        )
+    }
+
+    /// Find the folder holding `assets` and read it, numbered as the strip it will fill.
+    fn find_folder_task(&mut self, assets: Vec<AssetId>) -> Task<Message> {
+        let serial = self.develop.strip_serial;
+        self.develop.reading = Some(serial);
+        let owner = self.owner.clone();
+        owner_task(
+            move || developed_folder_now(&owner, &assets),
+            move |result| Message::Develop(DevelopMessage::FolderFound { serial, result }),
+        )
+    }
+
+    /// The photograph Develop shows or is moving to.
+    fn shown_asset(&self) -> Option<AssetId> {
+        self.develop
+            .switch
+            .as_ref()
+            .map(|switch| switch.asset.clone())
+            .or_else(|| {
+                self.document
+                    .state
+                    .as_ref()
+                    .map(|state| state.asset.id.clone())
+            })
+    }
+
+    /// Take a read of the Develop folder into the strip, the photograph shown keeping its place.
+    fn adopt_folder(&mut self, read: FolderRead) {
+        self.develop.strip_sequence = read.library_sequence;
+        self.develop.strip_stale = false;
+        let active = self.shown_asset();
+        let serial = self.develop.strip_serial;
+        let capacity = self.develop.state.capacity;
+        let strip = self
+            .develop
+            .state
+            .strip
+            .get_or_insert_with(|| Filmstrip::new(serial, Vec::new(), 0));
+        if strip.folder.is_some() && strip.folder.as_ref() != Some(&read.folder) {
+            *strip = Filmstrip::new(serial, Vec::new(), 0);
+        }
+        strip.adopt(read, active.as_ref());
+        strip.reveal(capacity);
+    }
+
+    /// The Develop folder was read: into the strip, and, when `D` asked for it, Develop shown on it.
+    fn strip_read(&mut self, serial: u64, result: Result<FolderRead, String>) -> Task<Message> {
+        if serial != self.develop.strip_serial {
+            return Task::none();
+        }
+        self.develop.reading = None;
+        let entering = std::mem::take(&mut self.develop.state.entering);
+        match result {
+            Ok(read) if self.develop_folder() == Some(&read.folder) => {
+                self.adopt_folder(read);
+                if entering {
+                    return self.show_strip();
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                if let Some(strip) = &mut self.develop.state.strip {
+                    strip.reading = false;
+                }
+                self.status.text = format!("Could not read the catalog folder: {error}");
+            }
+        }
         Task::none()
     }
 
-    // -- The development set --------------------------------------------------------------------
+    /// The folder of photographs a Develop N developed, or of a file opened, was found and read:
+    /// it is the Develop folder, and its strip replaces the photographs shown meanwhile. None found,
+    /// the photographs stay as they were shown.
+    fn folder_found(&mut self, serial: u64, result: Result<Option<FolderRead>, String>) {
+        if serial != self.develop.strip_serial {
+            return;
+        }
+        self.develop.reading = None;
+        match result {
+            Ok(Some(read)) => {
+                self.choose_develop_folder(Some(read.folder.clone()));
+                self.adopt_folder(read);
+            }
+            Ok(None) => {
+                if let Some(strip) = &mut self.develop.state.strip {
+                    strip.reading = false;
+                }
+            }
+            Err(error) => {
+                if let Some(strip) = &mut self.develop.state.strip {
+                    strip.reading = false;
+                }
+                self.status.text =
+                    format!("Could not find the photograph's catalog folder: {error}");
+            }
+        }
+    }
 
-    /// A double-click on the photograph at `position` of a catalog view: Develop opens on
-    /// it with the view's photographs as the set, read into it a window of rows at a time.
-    fn open_view_set(&mut self, position: u32) -> Task<Message> {
-        let Some(summary) = &self.select.state.summary else {
+    /// A library change at `sequence` reached the desktop, this desktop's own or another client's
+    /// (`u64::MAX` after a gap in the event log): the strip of a folder read before it is read
+    /// again, keeping the open photograph's place, at once while Develop is shown and otherwise
+    /// when it is next entered.
+    pub(crate) fn develop_library_changed(&mut self, sequence: u64) -> Task<Message> {
+        if sequence <= self.develop.strip_sequence {
+            return Task::none();
+        }
+        let Some(folder) = self
+            .develop
+            .state
+            .strip
+            .as_ref()
+            .and_then(|strip| strip.folder.clone())
+        else {
             return Task::none();
         };
-        self.develop.state.folder_query = matches!(
-            summary.query.source,
-            luxforge_core::catalog_types::ViewSource::CatalogFolder { .. }
-        )
-        .then(|| summary.query.clone());
-        let (revision, count) = (summary.revision, summary.count);
+        if self.select_shown() || self.develop.state.entering {
+            self.develop.strip_stale = true;
+            return Task::none();
+        }
+        self.read_strip_task(folder)
+    }
+
+    /// A double-click on the photograph at `position` of a catalog view: Develop opens on it at
+    /// once, and its own catalog folder becomes the Develop folder, read into the strip.
+    fn open_from_view(&mut self, position: u32) -> Task<Message> {
         let Some(row) = self.select.state.rows.read(position) else {
             self.status.text = "Reading the photograph\u{2026}".into();
             return Task::none();
@@ -853,81 +1076,45 @@ impl Editor {
         let RowItem::Photo { asset_id } = &row.item else {
             return Task::none();
         };
-        let photo = SetPhoto {
+        let photo = StripPhoto {
             asset_id: asset_id.clone(),
             kind: Some(row.kind),
             name: row.file_name.clone(),
         };
-        self.develop.set_serial += 1;
-        let serial = self.develop.set_serial;
-        let mut set = DevelopSet::new(serial, vec![photo], 0);
-        set.reading = count > 1;
-        self.develop.state.set = Some(set);
+        let folder = row.folder_id.clone();
+        if folder.is_some() {
+            self.choose_develop_folder(folder.clone());
+        }
+        self.develop.state.entering = false;
+        let read = match folder.clone() {
+            Some(folder) => self.read_strip_task(folder),
+            None => {
+                self.develop.strip_serial += 1;
+                Task::none()
+            }
+        };
+        let mut strip = Filmstrip::new(self.develop.strip_serial, vec![photo], 0);
+        strip.folder = folder;
+        strip.reading = strip.folder.is_some();
+        self.develop.state.strip = Some(strip);
         self.develop.state.collapsed = false;
         // The grid's wake is the one a client has; Develop is passed it.
         self.select.previews.watch(&self.owner, self.client);
         let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
-        let read = if count > 1 {
-            let (owner, client) = (self.owner.clone(), self.client);
-            owner_task(
-                move || set_now(&owner, client, revision, position),
-                move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
-            )
-        } else {
-            Task::none()
-        };
         Task::batch([shown, opened, read])
     }
 
-    /// A view's photographs were read into the set: the photograph Develop shows keeps its place.
-    fn set_read(&mut self, serial: u64, result: Result<ReadSet, String>) {
-        let Some(set) = self
-            .develop
-            .state
-            .set
-            .as_mut()
-            .filter(|set| set.serial == serial)
-        else {
-            return;
-        };
-        set.reading = false;
-        match result {
-            Ok(ReadSet {
-                photos,
-                active: index,
-                revision,
-            }) => {
-                self.develop.held_set = self.develop.held_set.max(revision);
-                let active = set.photo(set.active).map(|photo| photo.asset_id.clone());
-                let index = match photos.get(index) {
-                    Some(photo) if Some(&photo.asset_id) == active.as_ref() => index,
-                    _ => active
-                        .and_then(|active| photos.iter().position(|photo| photo.asset_id == active))
-                        .unwrap_or(0),
-                };
-                if !photos.is_empty() {
-                    set.photos = photos;
-                    set.active = index;
-                    set.selected.clear();
-                    set.first = index;
-                    set.reveal(self.develop.state.capacity);
-                }
-            }
-            Err(error) => self.status.text = format!("The set was not read: {error}"),
-        }
-    }
-
-    /// Move to the set's photograph at `index`: the one document is replaced through the open path,
+    /// Move to the strip's photograph at `index`: the one document is replaced through the open path,
     /// its cached large preview drawn at once when it is decoded. Refused while a draft is open.
     pub(crate) fn switch_to(&mut self, index: usize) -> Task<Message> {
         self.view_state.copy_settings.cell_menu = None;
         let Some(photo) = self
             .develop
             .state
-            .set
+            .strip
             .as_ref()
-            .and_then(|set| set.photo(index))
+            .and_then(|strip| strip.photo(index))
             .cloned()
         else {
             return Task::none();
@@ -943,10 +1130,10 @@ impl Editor {
             .as_ref()
             .is_some_and(|switch| switch.asset == photo.asset_id);
         if (open && self.develop.switch.is_none()) || moving {
-            if let Some(set) = &mut self.develop.state.set {
-                set.active = index;
-                set.selected.clear();
-                set.reveal(self.develop.state.capacity);
+            if let Some(strip) = &mut self.develop.state.strip {
+                strip.active = Some(index);
+                strip.selected.clear();
+                strip.reveal(self.develop.state.capacity);
             }
             return Task::none();
         }
@@ -960,10 +1147,10 @@ impl Editor {
             self.status.text = state::IN_FLIGHT.into();
             return Task::none();
         }
-        if let Some(set) = &mut self.develop.state.set {
-            set.active = index;
-            set.selected.clear();
-            set.reveal(self.develop.state.capacity);
+        if let Some(strip) = &mut self.develop.state.strip {
+            strip.active = Some(index);
+            strip.selected.clear();
+            strip.reveal(self.develop.state.capacity);
         }
         // The open path's own bookkeeping, as opening a file does: one open request, the frames in
         // flight for the photograph on screen stopped.
@@ -1067,9 +1254,15 @@ impl Editor {
     }
 
     /// What Develop decodes ahead: the active photograph, on screen, then its neighbours in the
-    /// set, nearest first and the direction of travel before the other, at the canvas's pixels.
+    /// strip, nearest first and the direction of travel before the other, at the canvas's pixels.
     fn frames_wanted(&self) -> Vec<Want> {
-        let Some(set) = &self.develop.state.set else {
+        let Some((strip, active)) = self
+            .develop
+            .state
+            .strip
+            .as_ref()
+            .and_then(|strip| Some((strip, strip.active?)))
+        else {
             return Vec::new();
         };
         let [left, top, right, bottom] = layout::canvas_logical(
@@ -1085,7 +1278,7 @@ impl Editor {
         );
         let mut wants = Vec::with_capacity(1 + 2 * AHEAD);
         let mut push = |index: usize, shown: bool| {
-            if let Some(photo) = set.photo(index) {
+            if let Some(photo) = strip.photo(index) {
                 wants.push(Want {
                     slot: Slot::frame(item(&photo.asset_id)),
                     pixels,
@@ -1093,10 +1286,10 @@ impl Editor {
                 });
             }
         };
-        push(set.active, true);
+        push(active, true);
         for distance in 1..=AHEAD {
-            push(set.active + distance, false);
-            if let Some(before) = set.active.checked_sub(distance) {
+            push(active + distance, false);
+            if let Some(before) = active.checked_sub(distance) {
                 push(before, false);
             }
         }
@@ -1105,26 +1298,27 @@ impl Editor {
 
     /// The filmstrip's cells on screen and a window either side, at the pixels a cell's image needs.
     fn strip_wanted(&self) -> Wanted {
-        let Some(set) = self
+        let Some(strip) = self
             .develop
             .state
-            .set
+            .strip
             .as_ref()
             .filter(|_| !self.develop.state.collapsed)
         else {
             return Wanted::default();
         };
         let capacity = self.develop.state.capacity.max(1);
-        let end = (set.first + capacity).min(set.photos.len());
+        let end = (strip.first + capacity).min(strip.photos.len());
         let at = |index: usize| {
-            set.photo(index)
+            strip
+                .photo(index)
                 .map(|photo| (Item::Photo(photo.asset_id.clone()), PreviewState::Pending))
         };
-        let visible = (set.first..end).filter_map(at).collect();
+        let visible = (strip.first..end).filter_map(at).collect();
         let mut margin = Vec::with_capacity(2 * capacity);
         for distance in 0..capacity {
             margin.extend(at(end + distance));
-            if let Some(before) = set.first.checked_sub(distance + 1) {
+            if let Some(before) = strip.first.checked_sub(distance + 1) {
                 margin.extend(at(before));
             }
         }
@@ -1133,7 +1327,7 @@ impl Editor {
             .ceil()
             .max(1.0) as u32;
         Wanted {
-            revision: set.serial,
+            revision: strip.serial,
             visible,
             margin,
             side,
@@ -1161,25 +1355,40 @@ impl Editor {
             .map(|answers| strip_message(SelectPreviewMessage::Read(answers)))
     }
 
-    /// A file is opened as today, alone: the set, a move in flight and its preview are forgotten,
-    /// and the owner's set is retired with none in its place (`development-set.replace {none}`).
-    pub(crate) fn develop_opened_alone(&mut self) -> Task<Message> {
-        self.develop.state.set = None;
+    /// A file is being opened, the open numbered `generation`: the strip, a move in flight and its
+    /// preview are forgotten, and once it answers its folder becomes the Develop folder. A file
+    /// opened again where Locate found it keeps the Develop folder and its strip.
+    pub(crate) fn develop_file_opening(&mut self, generation: u64) {
         self.develop.state.switching = None;
         self.develop.state.preview = None;
         self.develop.switch = None;
-        self.develop.set_serial += 1;
-        self.replace_set_task(json!({ "kind": "none" }))
+        if std::mem::take(&mut self.develop.reopen) {
+            return;
+        }
+        self.develop.strip_serial += 1;
+        self.develop.state.entering = false;
+        self.develop.state.strip = None;
+        self.develop.file_open = Some(generation);
     }
 
-    /// Develop's layout has the filmstrip under its canvas: Develop has a set and the strip is not
+    /// The open of a file numbered `generation` answered with the photograph `asset`: its folder is
+    /// found and read, to become the Develop folder.
+    pub(crate) fn develop_file_opened(&mut self, generation: u64, asset: AssetId) -> Task<Message> {
+        if self.develop.file_open != Some(generation) {
+            return Task::none();
+        }
+        self.develop.file_open = None;
+        self.find_folder_task(vec![asset])
+    }
+
+    /// Develop's layout has the filmstrip under its canvas: Develop holds a folder and the strip is not
     /// collapsed. It is Develop's layout whichever workspace is on screen, so a frame rendered for
     /// Develop while Select is shown is sized for the canvas it is drawn in.
     pub(crate) fn filmstrip_shown(&self) -> bool {
         self.develop.state.strip_shown()
     }
 
-    /// The development set's photographs moved to since the key, followed through: the move ends
+    /// The strip's photographs moved to since the key, followed through: the move ends
     /// once its open answered; the preview goes once another frame replaced it, and at once when it
     /// is of another photograph or entry than the one the open shows.
     fn follow_switch(&mut self) {
@@ -1255,18 +1464,18 @@ impl Editor {
         }
     }
 
-    /// Nothing developing picks or the set asked for is in flight: no plan, Develop, set read or
-    /// move, and, with a photograph open in Develop, its newest requested frame on screen. What an
-    /// evidence step settles on; a capture then waits for the photograph's actual GPU draw.
+    /// Nothing developing picks or the filmstrip asked for is in flight: no plan, Develop, folder
+    /// read or move, and, with a photograph open in Develop, its newest requested frame on screen.
+    /// What an evidence step settles on; a capture then waits for the photograph's actual GPU draw.
     pub(crate) fn develop_quiet(&self) -> bool {
-        if self.develop.state.folder_loading {
-            return false;
-        }
         let state = &self.develop.state;
         !state.planning
+            && !state.entering
+            && self.develop.reading != Some(self.develop.strip_serial)
             && state.developing.is_none()
+            && self.develop.file_open != Some(self.activity.requested)
             && self.develop.switch.is_none()
-            && !state.set.as_ref().is_some_and(|set| set.reading)
+            && !state.strip.as_ref().is_some_and(|strip| strip.reading)
             && !self.busy
             && !self.activity.pending
             && (self.select_shown()
@@ -1284,19 +1493,22 @@ impl Editor {
         !wants.is_empty() && self.develop.frames.settled(&wants) && ahead == ready
     }
 
-    /// What developing picks and the set show, for correlated evidence.
+    /// What developing picks and the filmstrip show, for correlated evidence.
     pub(crate) fn develop_summary(&self) -> Value {
         let state = &self.develop.state;
-        let set = state.set.as_ref().map(|set| {
+        let filmstrip = state.strip.as_ref().map(|strip| {
             json!({
-                "serial": set.serial,
-                "count": set.photos.len(),
-                "active": set.active,
-                "first": set.first,
-                "reading": set.reading,
-                "selected": set.selected_assets(),
-                "assets": set.photos.iter().map(|photo| &photo.asset_id).collect::<Vec<_>>(),
-                "names": set.photos.iter().map(|photo| &photo.name).collect::<Vec<_>>(),
+                "serial": strip.serial,
+                "folder": strip.folder,
+                "path": strip.path,
+                "count": strip.photos.len(),
+                "truncated": strip.truncated,
+                "active": strip.active,
+                "first": strip.first,
+                "reading": strip.reading,
+                "selected": strip.selected_assets(),
+                "assets": strip.photos.iter().map(|photo| &photo.asset_id).collect::<Vec<_>>(),
+                "names": strip.photos.iter().map(|photo| &photo.name).collect::<Vec<_>>(),
             })
         });
         let model = &self.workspace.develop;
@@ -1361,7 +1573,9 @@ impl Editor {
                 "answer": self.develop.last.answer,
                 "record": self.develop.last.record,
             },
-            "set": set,
+            "folder": self.develop_folder(),
+            "entering": state.entering,
+            "filmstrip": filmstrip,
             "collapsed": state.collapsed,
             "filmstrip_shown": self.filmstrip_shown(),
             "strip": strip,
@@ -1399,7 +1613,7 @@ fn strip_message(message: SelectPreviewMessage) -> Message {
     Message::Develop(DevelopMessage::Strip(message))
 }
 
-/// After every message: the strip's capacity for the window; while Develop shows a set, its large
+/// After every message: the strip's capacity for the window; while Develop shows a filmstrip, its large
 /// previews and its strip's grid previews read and decoded; a move followed through; and both
 /// caches emptied while Select is shown. An evidence run also hears when a develop step settles.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
@@ -1410,11 +1624,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         false,
     );
     editor.develop.state.capacity = luxforge_ui::filmstrip_capacity(width);
-    if let Some(set) = &mut editor.develop.state.set {
-        set.reveal(editor.develop.state.capacity);
+    if let Some(strip) = &mut editor.develop.state.strip {
+        strip.reveal(editor.develop.state.capacity);
     }
     let mut tasks = Vec::new();
-    if editor.select_shown() || editor.develop.state.set.is_none() {
+    if editor.select_shown() || editor.develop.state.strip.is_none() {
         if !editor.develop.released {
             editor.develop.released = true;
             let cancel = editor.develop.frames.release();
@@ -1440,9 +1654,9 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     Task::batch(tasks)
 }
 
-/// This seam's signal while Develop shows a set; a signal posted meanwhile waits for it.
+/// This seam's signal while Develop shows a filmstrip; a signal posted meanwhile waits for it.
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
-    if !editor.select_shown() && editor.develop.state.set.is_some() {
+    if !editor.select_shown() && editor.develop.state.strip.is_some() {
         Subscription::run(|| signal().stream())
     } else {
         Subscription::none()

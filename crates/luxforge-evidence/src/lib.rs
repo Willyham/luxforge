@@ -26,7 +26,7 @@ pub use corrections::{
     CorrectionHandle, CorrectionStep, DragStep as CorrectionDrag, PressModifier, PressStep,
     RowFieldStep,
 };
-pub use develop::{DevelopStep, SetStep};
+pub use develop::{DevelopStep, StripStep};
 pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
@@ -309,7 +309,7 @@ pub enum Step {
     /// browser and Info panel.
     Catalog(CatalogStep),
     /// One gesture on developing picks — Develop N's confirmation, `D` — or on Develop's
-    /// development set.
+    /// filmstrip.
     Develop(DevelopStep),
     /// One gesture on the Corrections workspace: a press on the photograph, a handle drag or a
     /// band control.
@@ -2384,8 +2384,8 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// job has ended on the activity board, the view that waited on it has heard, and the section has
 /// read the board again.
 ///
-/// HDR merges: `{"merge": {"position": 0, "mode": "pick"}}` presses the Pick merged (`"import"`:
-/// Import merged) action of the bracket holding that view position, as its header does, and is
+/// HDR merges: `{"merge": {"position": 0}}` presses the Merge HDR action of the bracket holding
+/// that view position, as its header does, and is
 /// captured once the merge's pending row shows the job's first progress, or fails with the reason
 /// when the merge is refused or has already ended. `"merged"` is captured once the merge this
 /// desktop started has ended ready and the view it read again holds its result, selected, with
@@ -2428,18 +2428,8 @@ pub enum SelectStep {
     AddFolder(String),
     Merge {
         position: u32,
-        mode: MergeMode,
     },
     Merged,
-}
-
-/// Which merge a bracket header's action makes: Pick merged, which adds the result to the
-/// Development set, or Import merged, into the catalog alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MergeMode {
-    Pick,
-    Import,
 }
 
 /// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.

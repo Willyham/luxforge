@@ -160,8 +160,8 @@ pub(crate) struct KeyContext {
     pub(crate) loupe_open: bool,
     /// Develop N's confirmation is open, so Escape cancels it and Return develops.
     pub(crate) develop_confirm: bool,
-    /// Develop has a development set, so `←` and `→` move through it.
-    pub(crate) development_set: bool,
+    /// Develop holds a filmstrip, so `←` and `→` move through it.
+    pub(crate) filmstrip: bool,
     /// What of Copy settings is open over the workspace, which takes the keyboard while it is.
     pub(crate) copy_settings_modal: Option<CopySettingsModal>,
     /// The chords the registered modules declare for their actions, with the action each runs
@@ -329,7 +329,7 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         }
         if character(key, "a")
             && !context.select
-            && context.development_set
+            && context.filmstrip
             && !modifiers.alt()
             && !modifiers.shift()
         {
@@ -430,7 +430,7 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
                 return Some(Message::View(ViewMessage::TogglePanel(Panel::Tools)));
             }
             // The filmstrip collapses and expands with the side panels' modifiers.
-            if context.development_set && character(key, "f") {
+            if context.filmstrip && character(key, "f") {
                 return Some(Message::Develop(DevelopMessage::Collapse));
             }
         }
@@ -619,9 +619,9 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
             }
         }
     }
-    // `←` and `→` move through the development set when no text field, draft or gesture holds
+    // `←` and `→` move through the filmstrip when no text field, draft or gesture holds
     // them, and repeat while held. A slider on the pointer's rail captures them itself.
-    if context.development_set
+    if context.filmstrip
         && !context.drafting
         && !context.slider_drafting
         && !context.mask_keys
@@ -647,7 +647,7 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         let leave = context.leave_to.as_deref().unwrap_or(POINTER_MODE);
         return Some(Message::View(ViewMessage::SetMode(leave.into())));
     }
-    if context.development_set && matches!(key, Key::Named(Named::Escape)) {
+    if context.filmstrip && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Develop(DevelopMessage::SelectOnly));
     }
     // Single-key shortcuts act only when no text field took the key, and only on the first press:
@@ -955,7 +955,7 @@ mod tests {
     fn copy_settings_shortcuts_yield_to_fields_and_keep_select_separate() {
         use crate::app::message::copy_settings::CopySettingsMessage as C;
         let context = KeyContext {
-            development_set: true,
+            filmstrip: true,
             ..KeyContext::default()
         };
         for key in ["c", "v", "a"] {
@@ -1035,7 +1035,7 @@ mod tests {
         let contexts = [
             KeyContext::default(),
             KeyContext {
-                development_set: true,
+                filmstrip: true,
                 ..KeyContext::default()
             },
             KeyContext {
@@ -1333,7 +1333,7 @@ mod tests {
             select_menu_open: false,
             loupe_open: false,
             develop_confirm: false,
-            development_set: false,
+            filmstrip: false,
             copy_settings_modal: None,
             actions: vec![(Chord::command('U'), "auto-tone".into())],
             corrections: None,

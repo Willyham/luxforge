@@ -1,18 +1,18 @@
-//! Developing picks — Develop N's confirmation in Select — and Develop's development set: its
-//! filmstrip and moving through it. Handled in `app/develop.rs`.
+//! Developing picks — Develop N's confirmation in Select — and Develop's folder: its filmstrip
+//! and moving through it. Handled in `app/develop.rs`.
 use crate::app::loupe_frames::LoupeFramesMessage;
 use crate::app::select_previews::SelectPreviewMessage;
-use crate::state::develop::ReadSet;
+use crate::state::develop::FolderRead;
 use luxforge_core::catalog_types::{CatalogFolderId, CatalogFolders, DevelopPlan};
 use serde_json::Value;
 
-/// One gesture on developing picks or the development set, or an owner answer for one.
+/// One gesture on developing picks or the filmstrip, or an owner answer for one.
 #[derive(Clone, Debug)]
 pub(crate) enum DevelopMessage {
     /// Develop N, or `Cmd+Return`: open the confirmation over the picks in view.
     Open,
-    /// A double-click on a photograph of a catalog view, by its position: Develop on it, with the
-    /// view's photographs as the set.
+    /// A double-click on a photograph of a catalog view, by its position: Develop on it, with its
+    /// own catalog folder as the Develop folder.
     OpenAt(u32),
     /// `pick.plan` and `folder.list` answered for the confirmation numbered `serial`.
     Planned {
@@ -44,21 +44,20 @@ pub(crate) enum DevelopMessage {
         job: String,
         result: Result<Value, String>,
     },
-    /// The last viewed catalog folder's photographs, made the owner's development set in an
-    /// independent browse session.
-    FolderSetRead {
+    /// The Develop folder was read for the filmstrip numbered `serial`, through a client of its own.
+    StripRead {
         serial: u64,
-        result: Result<ReadSet, String>,
+        result: Result<FolderRead, String>,
     },
-    /// The owner's development set was read into the set numbered `serial`: after this desktop
-    /// replaced it, or once another client changed it.
-    SetRead {
+    /// The folder holding the photographs a Develop N developed, or a file opened, was found and
+    /// read for the filmstrip numbered `serial`; none when none of them was found.
+    FolderFound {
         serial: u64,
-        result: Result<ReadSet, String>,
+        result: Result<Option<FolderRead>, String>,
     },
     /// `←` or `→` in Develop, or the filmstrip's previous and next buttons.
     Step(isize),
-    /// A press on the filmstrip's cell of the set's photograph at this index.
+    /// A press on the filmstrip's cell of the photograph at this index.
     Show(usize),
     Select {
         index: usize,

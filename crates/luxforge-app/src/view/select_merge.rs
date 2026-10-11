@@ -5,7 +5,7 @@
 use crate::{
     app::message::{Message, select::SelectMessage, select_merge::MergeMessage},
     state::select_merge::{
-        FormModel, MenuModel, MergeAction, MergeMode, PutBackModel, StackBand, Toggle,
+        FormModel, MERGE_HINT, MERGE_LABEL, MenuModel, MergeAction, PutBackModel, StackBand, Toggle,
     },
 };
 use iced::{
@@ -30,7 +30,7 @@ fn act(action: MergeAction) -> Message {
     Message::Select(SelectMessage::Merge(MergeMessage::Act(action)))
 }
 
-/// The merge menu at the pointer: Pick merged and Import merged with their hints, Merge options…,
+/// The merge menu at the pointer: Merge HDR with its hint, Merge options…,
 /// or a result's stack actions; an entry the core refuses says why as its tooltip.
 pub(crate) fn menu(model: &MenuModel, viewport: Size) -> Element<'_, Message> {
     let mut entries = Vec::with_capacity(model.entries.len() * 2);
@@ -117,7 +117,7 @@ fn line<'a>(label: &str, control: Element<'a, Message>) -> Element<'a, Message> 
 
 /// The Merge options… sheet: each frame with its exposure (stepped by a third of a stop, or put
 /// back to the plan's) and the reference, alignment and deghosting, the folder, the plan's refusal,
-/// and Cancel, Import merged and Pick merged.
+/// and Cancel and Merge HDR.
 pub(crate) fn form(model: &FormModel) -> Element<'_, Message> {
     let mut body = column![
         text(model.title.clone())
@@ -252,16 +252,8 @@ pub(crate) fn form(model: &FormModel) -> Element<'_, Message> {
                 .style(theme::ink(Token::Error)),
         );
     }
-    let button = |mode: MergeMode, tone| {
-        text_button(
-            mode.label(),
-            tone,
-            ButtonSize::Regular,
-            model.enabled.then(|| act(MergeAction::FormStart(mode))),
-        )
-    };
     let buttons = row![
-        caption(MergeMode::Pick.hint()),
+        caption(MERGE_HINT),
         Space::new().width(Length::Fill),
         text_button(
             "Cancel",
@@ -269,8 +261,12 @@ pub(crate) fn form(model: &FormModel) -> Element<'_, Message> {
             ButtonSize::Regular,
             Some(act(MergeAction::FormClose)),
         ),
-        button(MergeMode::Import, ButtonTone::Control),
-        button(MergeMode::Pick, ButtonTone::Primary),
+        text_button(
+            MERGE_LABEL,
+            ButtonTone::Primary,
+            ButtonSize::Regular,
+            model.enabled.then(|| act(MergeAction::FormStart)),
+        ),
     ]
     .spacing(theme::BUTTON_ROW_SPACING)
     .align_y(Alignment::Center);
@@ -316,8 +312,8 @@ pub(crate) fn put_back(model: &PutBackModel) -> Element<'_, Message> {
     )
 }
 
-/// The Info panel's stack band: "HDR · 3 exposures" (or an original's place in its stack), that
-/// the result is in the Development set, and Expand or Collapse stack with `S` and Remove merge.
+/// The Info panel's stack band: "HDR · 3 exposures" (or an original's place in its stack), and
+/// Expand or Collapse stack with `S` and Remove merge.
 pub(crate) fn stack_band(band: &StackBand) -> Element<'_, Message> {
     let mut content = column![
         text(band.title.clone())
@@ -326,20 +322,6 @@ pub(crate) fn stack_band(band: &StackBand) -> Element<'_, Message> {
             .style(theme::ink(Token::Text)),
     ]
     .spacing(theme::SPACING);
-    if band.in_set {
-        content = content.push(labelled_button(
-            &LabelledButtonModel {
-                label: "In the Development set".into(),
-                icon: Some(Icon::Check),
-                key_hint: None,
-                tone: ButtonTone::Selected,
-                size: ButtonSize::Regular,
-                fill: true,
-                enabled: true,
-            },
-            None,
-        ));
-    }
     if let Some(note) = &band.note {
         content = content.push(caption(note.clone()));
     }
