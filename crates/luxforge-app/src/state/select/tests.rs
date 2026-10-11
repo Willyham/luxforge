@@ -487,6 +487,7 @@ fn the_select_sources_panel_lists_cards_volumes_folders_and_counts() {
             photographs: 842,
             recently_developed: 6,
             removed: 4,
+            removed_merges: 0,
             unavailable: 212,
             folders: 3,
             collections: 1,

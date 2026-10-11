@@ -88,7 +88,10 @@ pub(in crate::api) fn catalog_empty_removed(
     }
     let (emptied, collection) = owner.service.empty_removed(MAX_LIBRARY_BATCH)?;
     let Emptied {
-        assets, remaining, ..
+        assets,
+        merges,
+        remaining,
+        ..
     } = &emptied;
     if !assets.is_empty() {
         announce_once(&mut owner.announced, &call.origin);
@@ -113,6 +116,7 @@ pub(in crate::api) fn catalog_empty_removed(
             MutationOutcome::Applied
         },
         deleted: u32::try_from(assets.len()).unwrap_or(u32::MAX),
+        merges: u32::try_from(*merges).unwrap_or(u32::MAX),
         remaining: u32::try_from(*remaining).unwrap_or(u32::MAX),
         deduplicated: false,
     })

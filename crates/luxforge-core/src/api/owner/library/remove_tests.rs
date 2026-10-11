@@ -755,14 +755,14 @@ fn remove_empty_is_forbidden_without_permission_authority() {
     let emptied = harness.empty("empty-1");
     assert_eq!(
         emptied,
-        json!({"outcome": "applied", "deleted": 1, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "applied", "deleted": 1, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     assert_eq!(harness.events_after(sequence), ["catalog.empty-removed"]);
     let after_first = harness.sequence();
     let retried = harness.empty("empty-1");
     assert_eq!(
         retried,
-        json!({"outcome": "applied", "deleted": 1, "remaining": 0, "deduplicated": true})
+        json!({"outcome": "applied", "deleted": 1, "merges": 0, "remaining": 0, "deduplicated": true})
     );
     assert_eq!(harness.sequence(), after_first, "a retry records no event");
     let counts = harness.counts();
@@ -774,7 +774,7 @@ fn remove_empty_is_forbidden_without_permission_authority() {
     let nothing = harness.empty("empty-2");
     assert_eq!(
         nothing,
-        json!({"outcome": "no-op", "deleted": 0, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "no-op", "deleted": 0, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     assert_eq!(harness.sequence(), after_first);
     // An edit client is refused even with nothing to delete.
@@ -942,7 +942,7 @@ fn remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_and_a
     assert_eq!(cached, 0, "the preview cache forgets an emptied photograph");
     assert_eq!(
         emptied,
-        json!({"outcome": "applied", "deleted": 2, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "applied", "deleted": 2, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     assert_eq!(harness.events_after(sequence), ["catalog.empty-removed"]);
     for gone in [k0, k1] {
