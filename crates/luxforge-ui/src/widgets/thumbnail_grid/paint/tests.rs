@@ -848,6 +848,14 @@ fn a_header_s_actions_give_way_from_the_left_and_the_primary_last() {
         }
     }
     assert_eq!(seen, [vec![0, 1, 2], vec![1, 2], vec![2], vec![]]);
+    // The title is whole whenever an ordinary action is drawn; only the primary shortens it.
+    for width in (40..900).step_by(2) {
+        let plan = plan(width as f32);
+        if plan.actions.iter().any(|action| !action.primary) {
+            let title = plan.title.as_ref().map(|(title, _)| title.as_ref());
+            assert_eq!(title, Some(header.title.as_str()), "at {width} pt");
+        }
+    }
 }
 
 /// A primary action is drawn in the accent's button style, an ordinary one in the control's.

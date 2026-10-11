@@ -401,9 +401,10 @@ pub(crate) struct PlannedAction<'h> {
 
 /// Lays out a moment header in `strip` (the frame's top `moment_header` points): the kind icon,
 /// title and detail from the left, the pick count, evidence tag and action buttons from the right.
-/// The left keeps at least its icon and an ellipsis; while the right parts leave it less, the tag
-/// goes first, then the pick count, then the ordinary actions from the left, then the primary. The
-/// title and detail then end in an ellipsis where they do not fit.
+/// The left keeps its whole title while the right parts can give way to it: the tag goes first,
+/// then the pick count, then the ordinary actions from the left. Only the primary action then
+/// shortens the title, to no less than its icon and an ellipsis, before it goes too. The title and
+/// detail then end in an ellipsis where they do not fit.
 pub(crate) fn plan_header<'h>(
     header: &'h MomentHeader,
     strip: Rectangle,
@@ -416,6 +417,7 @@ pub(crate) fn plan_header<'h>(
     let centre = strip.y + strip.height / 2.0;
     let title_x = left + theme::MOMENT_ICON_SIZE + spacing;
     let least = title_x + measure.measure(ELLIPSIS, MOMENT_TITLE);
+    let whole = title_x + measure.measure(&header.title, MOMENT_TITLE);
 
     let actions: Vec<(&str, f32, bool)> = header
         .actions
@@ -434,9 +436,9 @@ pub(crate) fn plan_header<'h>(
         .picked
         .as_deref()
         .map(|label| (label, measure.measure(label, MOMENT_PICKED)));
-    // Which right-hand parts stay: all that leave the left its least, dropping the tag, then the
-    // pick count, then the ordinary actions from the left, then the primary. The buttons are one
-    // part, each a margin after what is before it.
+    // Which right-hand parts stay: all that leave the left its whole title, dropping the tag, then
+    // the pick count, then the ordinary actions from the left; then all that leave it its least,
+    // dropping the primary. The buttons are one part, each a margin after what is before it.
     let mut keep_picked = picked.is_some();
     let mut keep_tag = tag.is_some();
     let mut keep_actions = vec![true; actions.len()];
@@ -464,18 +466,23 @@ pub(crate) fn plan_header<'h>(
             - (count as f32 - 1.0).max(0.0) * spacing
             - if count > 0 { 2.0 * spacing } else { 0.0 }
     };
-    let mut drops = (0..actions.len())
-        .filter(|&action| !actions[action].2)
-        .chain((0..actions.len()).filter(|&action| actions[action].2));
-    while limit(keep_picked, keep_tag, &keep_actions) < least {
+    let mut ordinary = (0..actions.len()).filter(|&action| !actions[action].2);
+    while limit(keep_picked, keep_tag, &keep_actions) < whole {
         if keep_tag {
             keep_tag = false;
         } else if keep_picked {
             keep_picked = false;
-        } else if let Some(action) = drops.next() {
+        } else if let Some(action) = ordinary.next() {
             keep_actions[action] = false;
         } else {
             break;
+        }
+    }
+    let mut primary = (0..actions.len()).filter(|&action| actions[action].2);
+    while limit(keep_picked, keep_tag, &keep_actions) < least {
+        match primary.next() {
+            Some(action) => keep_actions[action] = false,
+            None => break,
         }
     }
     let limit = limit(keep_picked, keep_tag, &keep_actions);
