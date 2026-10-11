@@ -24,7 +24,9 @@ use crate::{
         },
         endpoint::Endpoint,
         grants::{GrantScope, RemoteScope},
+        read::GrantedRead,
         resources::ResourceState,
+        runtime::RuntimeGrant,
         settings::{FieldRead, ProfileRead, ProfileStatus},
     },
     jobs::{JobControl, JobKind, JobStatus, Jobs, NewJob, Work},
@@ -210,6 +212,7 @@ impl CapabilityHost {
         }
         let rows = self.resource_rows(jobs, descriptor);
         let mut resources = Vec::new();
+        let mut runtimes = Vec::new();
         for capability in &capabilities {
             match &capability.kind {
                 // A task that uses a resource's capability reads the installed resource; the
@@ -232,6 +235,21 @@ impl CapabilityHost {
                     }
                 }
                 CapabilityKind::RemoteImageRequest { .. } => {}
+                // A model the task uses needs the host's runtime and its installed resource; it is
+                // opened on the lane, by the task's first use, unless it is already resident.
+                CapabilityKind::LocalRuntime { .. } => {
+                    if self.runtime.configured().is_err() {
+                        missing.push(Requirement {
+                            kind: RequirementKind::Runtime,
+                            id: capability.id.clone(),
+                            state: "unavailable".into(),
+                        });
+                    }
+                    match self.load_request(jobs, descriptor, capability)? {
+                        Ok(load) => runtimes.push((capability.id.clone(), load)),
+                        Err(requirement) => missing.push(requirement),
+                    }
+                }
             }
         }
         if !missing.is_empty() {
@@ -279,7 +297,9 @@ impl CapabilityHost {
                     });
                     (scope, Some(endpoint))
                 }
-                CapabilityKind::DownloadArtifact { .. } => continue,
+                CapabilityKind::DownloadArtifact { .. } | CapabilityKind::LocalRuntime { .. } => {
+                    continue;
+                }
             };
             let (grant, denied) = self.grants()?.consent(module_id, &capability.id, &scope)?;
             let Some(grant) = grant else {
@@ -341,6 +361,18 @@ impl CapabilityHost {
         }
         for (resource, path) in resources {
             context = context.with_resource(&resource, path);
+        }
+        for (capability, load) in runtimes {
+            context =
+                context.with_runtime(&capability, RuntimeGrant::new(self.runtime.clone(), load));
+        }
+        // The stage a task reads is the asset's current entry as it is now, bound here in
+        // `O(layers)` and read on the lane from the reference renderer.
+        if let (Some(boundary), Some(asset_id)) = (task.reads, &asset_id) {
+            context = context.with_read(GrantedRead {
+                plan: service.stage_plan(asset_id, boundary)?,
+                reads: self.reads.clone(),
+            });
         }
         let mut grant_ids = Vec::with_capacity(granted.len());
         for Granted {

@@ -12,10 +12,12 @@
 //! [`permissions`], [`resources`] and [`tasks`] hold the other methods over the same
 //! [`CapabilityHost`].
 use super::{
-    descriptor::SettingDescriptor,
+    descriptor::{CapabilityKind, SettingDescriptor},
     endpoint::{Endpoint, parse_endpoint},
     grants::{Grant, GrantKind, GrantScope, GrantsStore, PermissionCounts},
+    read::ModuleReads,
     resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore},
+    runtime::Runtime,
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
         CLEAR_SECRET, CREATE_PROFILE, FieldRead, REMOVE_PROFILE, RESET, SET, SET_SECRET,
@@ -34,10 +36,12 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 mod permissions;
 mod resources;
+mod runtime;
 mod tasks;
 
 pub(crate) use permissions::{DenyParams, GrantParams, PermissionList, RevokeParams};
 pub(crate) use resources::{InstallParams, ResourceParams};
+pub(crate) use runtime::{LoadParams, UnloadParams};
 pub use tasks::TASK_PREFIX;
 
 /// A module's capability status.
@@ -70,6 +74,18 @@ pub struct HostConfig {
     pub transport: Arc<dyn Transport>,
     /// The storage every module's installed resources may take together.
     pub resource_quota_bytes: u64,
+    /// The local model runtime `local-runtime` capabilities load their models through
+    /// ([`crate::inference`]): a native runtime crate's in the desktop and `luxforge-json`, the
+    /// deterministic fake ([`crate::inference::fake::FakeInference`]) in developer runs and tests.
+    /// `None` runs no local inference: `module.runtime.load` and every task that uses a
+    /// `local-runtime` capability answer `not-ready`. Nothing opens a model at start.
+    pub inference: Option<Arc<dyn crate::inference::InferenceRuntime>>,
+    /// How long a loaded model may go unused before the host releases it
+    /// ([`super::runtime::RUNTIME_IDLE_UNLOAD`] by default).
+    pub runtime_idle: std::time::Duration,
+    /// The most resident bytes the loaded models may declare together
+    /// ([`super::runtime::DEFAULT_RUNTIME_BUDGET_BYTES`] by default).
+    pub runtime_budget_bytes: u64,
     /// What the desktop's launch resolved for each launch flag, which `flags.list` reports as
     /// `active`. Any other host resolves none.
     pub launch_flags: crate::flags::LaunchFlags,
@@ -110,6 +126,9 @@ impl HostConfig {
                 "no network transport is configured",
             )),
             resource_quota_bytes: DEFAULT_RESOURCE_QUOTA_BYTES,
+            inference: None,
+            runtime_idle: super::runtime::RUNTIME_IDLE_UNLOAD,
+            runtime_budget_bytes: super::runtime::DEFAULT_RUNTIME_BUDGET_BYTES,
             launch_flags: Default::default(),
             renderer: crate::Renderer::headless(),
             tiles: None,
@@ -128,6 +147,9 @@ impl std::fmt::Debug for HostConfig {
             .field("secrets", &self.secrets.name())
             .field("transport", &self.transport)
             .field("resource_quota_bytes", &self.resource_quota_bytes)
+            .field("inference", &self.inference)
+            .field("runtime_idle", &self.runtime_idle)
+            .field("runtime_budget_bytes", &self.runtime_budget_bytes)
             .field("launch_flags", &self.launch_flags)
             .field("renderer", &self.renderer)
             .field("tiles", &self.tiles.as_ref().map(|tiles| tiles.status()))
@@ -265,6 +287,8 @@ pub(crate) enum RequirementKind {
     Resource,
     /// The profile the task sends through is not ready.
     Profile,
+    /// A `local-runtime` capability the task uses has no local inference runtime on this host.
+    Runtime,
 }
 
 impl RequirementKind {
@@ -272,6 +296,7 @@ impl RequirementKind {
         match self {
             Self::Resource => "resource",
             Self::Profile => "profile",
+            Self::Runtime => "runtime",
         }
     }
 }
@@ -304,6 +329,10 @@ pub(crate) struct CapabilityHost {
     transport: Arc<dyn Transport>,
     /// Queued and running tasks, at most one lane's worth.
     tasks: HashMap<JobId, tasks::TaskRun>,
+    /// The models `local-runtime` capabilities hold loaded between tasks.
+    runtime: Runtime,
+    /// The admission of tasks' stage readers.
+    reads: Arc<ModuleReads>,
 }
 
 impl CapabilityHost {
@@ -316,8 +345,20 @@ impl CapabilityHost {
             resources: config.resource_dir.clone().map(ResourceStore::new),
             transport: config.transport.clone(),
             tasks: HashMap::new(),
+            runtime: Runtime::new(
+                config.inference.clone(),
+                config.runtime_idle,
+                config.runtime_budget_bytes,
+            ),
+            reads: Arc::default(),
             config,
         }
+    }
+
+    /// The resident set of `local-runtime` models, which the owner's handle shares for the host's
+    /// memory signal.
+    pub(crate) fn runtime(&self) -> &Runtime {
+        &self.runtime
     }
 
     /// What the desktop's launch resolved for each launch flag.
@@ -715,13 +756,33 @@ impl CapabilityHost {
                 counts
             }
         };
-        Ok(json!({
+        let mut status = json!({
             "module_id": descriptor.id,
             "settings": settings,
             "resources": self.resource_rows(jobs, descriptor),
             "permissions": permissions,
             "jobs": jobs.of_module(&descriptor.id),
-        }))
+        });
+        // A module that declares local-runtime also reports what it holds loaded, from the
+        // resident set's own table: no model is opened or touched to answer.
+        if descriptor
+            .capabilities
+            .iter()
+            .any(|capability| matches!(capability.kind, CapabilityKind::LocalRuntime { .. }))
+        {
+            let mut runtime = self.runtime.budget();
+            runtime["available"] = json!(self.runtime.configured().is_ok());
+            runtime["models"] = json!(self.runtime.status(&descriptor.id));
+            status["runtime"] = runtime;
+        }
+        Ok(status)
+    }
+}
+
+/// The owner stopping releases every loaded model and ends the idle thread.
+impl Drop for CapabilityHost {
+    fn drop(&mut self) {
+        self.runtime.shutdown();
     }
 }
 

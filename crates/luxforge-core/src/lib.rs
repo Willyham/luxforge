@@ -24,6 +24,7 @@ mod file_metadata;
 pub mod flags;
 /// The index of the files Luxforge browses, beside the catalog.
 mod index;
+pub mod inference;
 pub mod jobs;
 /// One persistent worker that runs the newest job, behind the preview, the analysis and the
 /// desktop's clipping overlay.

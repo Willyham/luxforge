@@ -209,6 +209,8 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `module.resource.install` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.resource.list` | Exempt (read) | Lists resources. |
 | `module.resource.remove` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
+| `module.runtime.load` | Exempt (privacy) | Module capability administration: names a module and a resource, and no shipped adjustment tool holds a local model; no registry value. |
+| `module.runtime.unload` | Exempt (privacy) | Module capability administration: names a module and a resource, and no shipped adjustment tool holds a local model; no registry value. |
 | `module.settings.clear-secret` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.settings.read` | Exempt (read) | Reads module settings. |
 | `module.settings.reset` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |

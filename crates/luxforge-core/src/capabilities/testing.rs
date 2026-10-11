@@ -212,6 +212,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 action: "apply-test-tint".into(),
                 parameter: "tint".into(),
             }),
+            reads: None,
         }],
         ..ModuleDescriptor::default()
     }
