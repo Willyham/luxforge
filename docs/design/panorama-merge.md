@@ -115,7 +115,7 @@ The owner settled the scope. The numerical algorithms, thresholds, feature detec
 
 - **Count and duplicates.** Accept 2–32 frames. No identity may appear twice, and no RAW and JPEG of one exposure may both be present.
 - **Recording.** Every frame is RAW or every frame is JPEG. A mixed selection is refused naming the first frame of the other kind.
-- **Camera and lens.** Make and model, monochrome/colour, recording mode, upright dimensions and focal length (within 0.1%) must match the first frame. A value recorded on one frame and not another is a mixture; values absent on every frame agree. A merged result is never an input.
+- **Camera and lens.** Make and model, monochrome/colour, recording mode, upright dimensions and focal length (within 1 mm or 2% of the first frame's, whichever is more, as HDR allows a zoom's rounded record) must match the first frame. A value recorded on one frame and not another is a mixture; values absent on every frame agree. A merged result is never an input.
 - **Exposure.** Exposure, aperture and ISO may differ: panoramas are often shot in automatic exposure. Exposures more than 3 EV apart are refused as a bracket, not a panorama.
 - **A bracket.** After registration, two frames registered to within 2% of the frame's diagonal of each other, overlapping at least 90%, are refused as "the same view; merge HDR instead", naming both frames.
 

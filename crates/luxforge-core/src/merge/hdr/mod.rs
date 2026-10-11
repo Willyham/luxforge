@@ -2,8 +2,8 @@
 //!
 //! 1. [`frame`]: the typed per-input metadata and [`validate_bracket`], which refuses an
 //!    unsuitable request with a typed [`Refusal`] (RAW only, one body and recording mode, one
-//!    colour interpretation, dimensions, aperture, ISO and focal length, no RAW+JPEG pair of one
-//!    exposure, 2–9 inputs).
+//!    colour interpretation, dimensions, aperture and focal length within a rounding tolerance,
+//!    no RAW+JPEG pair of one exposure, 2–9 inputs; ISO may vary).
 //! 2. [`exposure`]: [`resolve_exposures`] picks the reference frame and each input's effective
 //!    EV offset from its settings or its recorded bias, never both, with per-input overrides;
 //!    when the metadata is absent or contradictory it returns a [`FitPlan`], which a bounded set
@@ -57,8 +57,9 @@ pub use exposure::{
     resolve_exposures,
 };
 pub use frame::{
-    ExposureSettings, FrameMetadata, FrameRect, MAX_INPUTS, MIN_INPUTS, MotionSelection, Recording,
-    Refusal, SensorLayout, SensorLevel, validate_bracket,
+    ExposureSettings, FOCAL_TOLERANCE_MM, FOCAL_TOLERANCE_RELATIVE, FrameMetadata, FrameRect,
+    MAX_INPUTS, MIN_INPUTS, MotionSelection, Recording, Refusal, SensorLayout, SensorLevel,
+    validate_bracket,
 };
 pub use fusion::{
     FusedRect, FusionDiagnostics, FusionParameters, Limitations, PixelLimits, RangeOutcome,
