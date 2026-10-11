@@ -225,7 +225,7 @@
     {
       "id": "TASK-005",
       "description": "Qualify the generative tier: build the runtime within the one-toolchain rule and run Moebius and FLUX.2 klein 4B on the M4, with the shipped prompt embedding, candidates, memory and quality against the prototype's Fast fill.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
