@@ -57,8 +57,10 @@ pub(crate) fn run(
         .collect();
     if let Some(encoder) = model.text_encoder
         && request.prompt.is_some()
+        && model.prompt_runtime.is_none()
     {
-        // The host granted the request only with the text encoder installed.
+        // The host granted the request only with the text encoder installed. A model with a
+        // Replace runtime holds the encoder in that runtime's slot instead.
         context.resource_path(encoder.resource)?;
     }
     let prompt = request.prompt.is_some();

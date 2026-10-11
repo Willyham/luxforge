@@ -159,8 +159,8 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
     answer_write(&mut editor);
     let summary = editor.settings_summary();
     assert_eq!(summary["open"], "experiments");
-    assert_eq!(summary["rows"][1]["control"], json!({"choice": "first"}));
-    assert_eq!(summary["rows"][1]["can_reset"], false);
+    assert_eq!(summary["rows"][2]["control"], json!({"choice": "first"}));
+    assert_eq!(summary["rows"][2]["can_reset"], false);
     assert_eq!(summary["writes_outstanding"], 0);
     assert!(
         editor.document.state.is_none(),

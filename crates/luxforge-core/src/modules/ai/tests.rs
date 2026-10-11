@@ -641,6 +641,16 @@ fn every_refusal_is_named_and_generates_nothing() {
     let row = &job["candidates"][0];
     assert_eq!(row["label"], "Replace \"a red bicycle\"");
     assert!(row["provenance"]["prompt_hash"].is_string(), "{row}");
+    // Replace is the generator's, held by its own slot with the encoder, and is not blended.
+    assert_eq!(row["provenance"]["model"], FAKE_GENERATOR.resource);
+    assert_eq!(row["provenance"]["blend"], "none");
+    let held: Vec<Value> = owner.status(AI_MODULE)["runtime"]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["resource_id"].clone())
+        .collect();
+    assert!(held.contains(&json!(FAKE_TEXT_ENCODER.resource)), "{held:?}");
     owner
         .accept_as(owner.edit, &asset, &job["job_id"], 0)
         .unwrap();
@@ -731,6 +741,102 @@ fn the_developer_transport_serves_only_the_pinned_models_and_install_checks_thei
         assert!(file.url().starts_with(DEVELOPER_ORIGIN));
     }
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
+    use crate::capabilities::descriptor::{CapabilityKind, machine_floor};
+    use super::models::{
+        CONDITIONING_ASSET, CONDITIONING_RELEASE_TAG, CONDITIONING_URL, KLEIN_GENERATOR,
+        KLEIN_TEXT_ENCODER,
+    };
+    let registry = ModuleRegistry::builtin();
+    let module = registry.module(AI_MODULE).expect("every run serves luxforge.ai");
+    let descriptor = module.descriptor();
+    assert!(!descriptor.developer);
+    descriptor.validate().unwrap();
+    let resources: Vec<_> = descriptor.resources.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(resources, [KLEIN_GENERATOR.resource, KLEIN_TEXT_ENCODER.resource]);
+    for resource in &descriptor.resources {
+        assert!(resource.url.starts_with("https://huggingface.co/"), "{}", resource.url);
+        assert!(resource.url.contains("/resolve/"), "pinned by revision: {}", resource.url);
+        assert_eq!(resource.license, "Apache-2.0");
+        assert!(resource.use_restriction.is_none());
+        assert!(resource.tradeoff.is_some());
+        assert_eq!(resource.sha256.len(), 64);
+        for file in &resource.files {
+            assert_eq!(file.sha256.len(), 64, "{}", file.name);
+            assert!(file.bytes > 0);
+        }
+    }
+    // The removal conditioning is the project's own release asset, named by its hash.
+    assert_eq!(
+        CONDITIONING_URL,
+        format!(
+            "https://github.com/Willyham/luxforge/releases/download/{CONDITIONING_RELEASE_TAG}/{CONDITIONING_ASSET}"
+        )
+    );
+    let conditioning = KLEIN_GENERATOR
+        .files
+        .iter()
+        .find(|file| file.url == CONDITIONING_URL)
+        .unwrap();
+    assert!(CONDITIONING_ASSET.contains(&conditioning.sha256[..8]));
+    // Removal holds the generator, Replace the encoder with the generator, each refused below
+    // the memory its resource asks for.
+    let runtimes: Vec<_> = descriptor
+        .capabilities
+        .iter()
+        .filter_map(|capability| match &capability.kind {
+            CapabilityKind::LocalRuntime {
+                resource,
+                resident_bytes,
+                backends,
+                with,
+                ..
+            } => Some((
+                capability.id.as_str(),
+                resource.as_str(),
+                *resident_bytes,
+                backends.clone(),
+                with.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    const GIB: u64 = 1 << 30;
+    assert_eq!(
+        runtimes,
+        [
+            (
+                "run-klein",
+                KLEIN_GENERATOR.resource,
+                5 * GIB,
+                vec!["metal".to_owned(), "diffusion-cpu".to_owned()],
+                vec![]
+            ),
+            (
+                "run-klein-replace",
+                KLEIN_TEXT_ENCODER.resource,
+                9 * GIB,
+                vec!["metal".to_owned(), "diffusion-cpu".to_owned()],
+                vec![KLEIN_GENERATOR.resource.to_owned()]
+            ),
+        ]
+    );
+    for (file, resident) in [(KLEIN_GENERATOR, 5 * GIB), (KLEIN_TEXT_ENCODER, 9 * GIB)] {
+        let min = file.min_memory_bytes.unwrap();
+        assert!(min >= machine_floor(resident), "{}", file.resource);
+    }
+    assert_eq!(KLEIN_GENERATOR.min_memory_bytes, Some(16 * GIB));
+    assert_eq!(KLEIN_TEXT_ENCODER.min_memory_bytes, Some(24 * GIB));
+    // No developer fixture reaches an ordinary run.
+    assert!(
+        descriptor
+            .resources
+            .iter()
+            .all(|resource| !resource.url.starts_with(DEVELOPER_ORIGIN))
+    );
 }
 
 fn hex(bytes: &[u8]) -> String {

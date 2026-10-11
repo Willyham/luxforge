@@ -155,11 +155,13 @@ impl FakeInference {
                 model.identity().id
             )));
         }
-        if !model.path().is_file() {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
-                format!("model file of {} is missing", model.identity().id),
-            ));
+        for file in std::iter::once(model).chain(model.companions()) {
+            if !file.path().is_file() {
+                return Err(Error::new(
+                    ErrorKind::SourceUnavailable,
+                    format!("model file of {} is missing", file.identity().id),
+                ));
+            }
         }
         self.controls.opens.fetch_add(1, Ordering::SeqCst);
         Ok(Live::new(
@@ -211,9 +213,12 @@ impl InferenceRuntime for FakeInference {
         cancel: &Cancel,
     ) -> Result<Box<dyn Generator>, Error> {
         let live = self.open(model, options, cancel)?;
+        // Opened with companions, the model is a text encoder and its first companion the
+        // generator, which is what a candidate names, as `luxforge-diffusion` does.
+        let generator = model.companions().first().unwrap_or(model);
         Ok(Box::new(FakeGenerator {
-            key: model_key(model.identity()),
-            model: model.identity().clone(),
+            key: model_key(generator.identity()),
+            model: generator.identity().clone(),
             runtime: Self::identity_value(),
             live,
         }))
