@@ -6,6 +6,7 @@
 //! catalog and renders nothing, so the catalog owner can run it within the request limit: a 1 MiB
 //! document is text work, not frame work. The library, the API methods and the desktop build on
 //! it; `docs/design/presets.md` is the contract.
+mod amount;
 mod document;
 mod groups;
 #[cfg(test)]
@@ -22,6 +23,7 @@ mod library_tests;
 #[cfg(test)]
 mod tests;
 
+pub use amount::{settings_at_amount, settings_can_preview};
 pub use groups::{
     GroupOnKind, GroupState, KindSkip, SettingsAnalysis, SettingsGroup, SettingsGroups,
     SettingsPhoto, settings_groups,

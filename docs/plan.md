@@ -132,9 +132,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Optional: **sky replacement** as a deterministic layer over the Select Sky mask; people parts and depth-range masks
 - Last: the typed remote-provider adapter and loopback protocol, Windows and Linux functional checks, qualification and measurement, documentation
 
-**Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create and Lightroom import are delivered.
+**Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create, Lightroom import, Amount and hover preview are delivered. [Preset interaction verification](../tasks/interface/preset-interaction.json) remains open for the native watcher overflow timeout in the aggregate quick check; the scoped tests and M4 Pro / Metal synthetic preset journey pass.
 - Owner review of the recorded defaults
-- An Amount slider and a hover preview
 - Calibrated RAW white balance preset import in the Lightroom alignment RAW white-balance round; the existing conversion matches white chromaticity, not a measured rendered response
 
 **Lightroom import** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-import.md), [plan](../tasks/lightroom/lightroom-import.json)). Bring a Lightroom Classic catalog or a folder of XMP sidecars across, read-only.

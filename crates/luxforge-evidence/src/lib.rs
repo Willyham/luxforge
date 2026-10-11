@@ -163,6 +163,13 @@ pub enum Step {
     },
     /// Click one library preset's row.
     Preset(PresetPick),
+    /// Hover a row, or leave the current hover with null; uses the actual row handlers.
+    PresetHover(Option<PresetPick>),
+    /// Move the Amount rail, optionally releasing to commit the drafted preset.
+    PresetAmount {
+        value: f64,
+        release: bool,
+    },
     /// Settings clipboard gestures through the desktop command paths.
     CopySettings(CopySettingsStep),
     /// Open the create form, type its name and group, set every checkbox and press Create.
@@ -432,6 +439,15 @@ impl Step {
                 Ok(())
             }
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
+            Self::PresetHover(Some(pick)) => pick.validate(),
+            Self::PresetHover(None) => Ok(()),
+            Self::PresetAmount { value, .. } => {
+                if value.is_finite() && (0.0..=200.0).contains(value) {
+                    Ok(())
+                } else {
+                    Err("preset Amount must be finite and within 0..=200".into())
+                }
+            }
             Self::PresetCreate(step) => step.validate(),
             Self::CopySettings(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),

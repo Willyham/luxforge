@@ -12,9 +12,9 @@ In scope:
 - **The presets module.** `luxforge.presets` declares `apply-settings`, which applies a settings set as one entry labelled by where the set came from: `Preset: <name>` for a preset, `Paste settings from <source>` for [copied settings](copy-settings.md).
 - **A preset library in the catalog.** List, read, create, capture from a photo, update, delete, export and import, all through `preset.*` methods.
 - **Import.** Lightroom Classic XMP develop presets, legacy `.lrtemplate` presets and Luxforge's own preset document, with a per-setting report. A dry run returns the same report without saving anything.
-- **A desktop Presets section.** The grouped library, apply on click, a create form, a file import and a delete command.
+- **A desktop Presets section.** The grouped library, apply on click, Amount, hover previews, a create form, a file import and a delete command.
 
-Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, named white balances, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs. Applying a library preset to several developed photographs is `batch.apply-settings` with its `preset_id` ([the catalog](catalog.md#the-catalog)), which applies it to each through `edit.apply-settings`'s own path.
+Not in scope, with no placeholder controls: writing Lightroom XMP, DNG presets, Lightroom profiles, named white balances, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs. Applying a library preset to several developed photographs is `batch.apply-settings` with its `preset_id` ([the catalog](catalog.md#the-catalog)), which applies it to each through `edit.apply-settings`'s own path.
 
 Copy and paste settings is a separate [desktop clipboard](copy-settings.md) using `preset.capture` and the same two methods with a `paste` origin.
 
@@ -57,7 +57,7 @@ At most 16 steps are allowed. Planning costs O(steps × layers) and rasterizes n
 
 When the final stack equals the starting stack, the action is a no-op with no entry. Otherwise the host validates, compiles and commits the final snapshot once. That snapshot carries one entry, one revision, one request result and one event. The entry stores the composite action's identity, its label and its parameters as the module parsed them, never the individual steps. Undo returns to the stack from before the preset, and restore and redo work as they do for any other entry.
 
-A draft of a composite action resolves the same way. `EditorService::draft_recipe` and a commit share one helper, so a drafted preview is exactly what the commit would produce. No desktop gesture drafts a preset yet.
+A draft of a composite action resolves the same way. `EditorService::draft_recipe` and a commit share one helper, so a drafted preview is exactly what the commit would produce. Desktop hover and Amount gestures draft this same action; analysis presets remain non-draftable.
 
 ## The presets module
 
@@ -70,10 +70,11 @@ A draft of a composite action resolves the same way. `EditorService::draft_recip
 | `actions` | `apply-settings`, titled `Apply settings`, `patch: false` |
 | `controls` | One `presets {action: "apply-settings"}` control |
 
-`apply-settings`, generated as `edit.apply-settings`, takes two parameters:
+`apply-settings`, generated as `edit.apply-settings`, takes settings, origin and an optional `amount` (0–200%, omitted means 100%):
 
 | Parameter | Kind | Required | Meaning |
 | --- | --- | --- | --- |
+| `amount` | number, 0–200 | no | Omitted means 100%. Scales supported named fields from their module defaults; unsupported sets require 100% |
 | `settings` | `settings` | yes | The settings set to apply, inline. Analysis steps such as `{"auto-tone": {}}` are accepted |
 | `origin` | `settings-origin` | yes | Where the set came from, which labels the entry: `{kind: "preset", name, preset_id?}` or `{kind: "paste", source, source_asset?}`. `name` is 1 to 128 characters; `source`, the source photograph's file name, 1 to 255, so any file name a platform allows fits. Neither may be blank or hold a control character. `preset_id` and `source_asset` are typed identities kept as provenance only; the host does not look them up |
 
@@ -262,18 +263,26 @@ A qualifying rule applies only when the preset holds the amount it depends on. A
 
 `value` is the text as written, and a structured value (a curve or a sequence) is its items joined with `; `, up to 256 characters. A preset is **partial** when `unsupported` or `refused` is non-empty; a refused derived entry always comes with a refused setting. An import that maps nothing is refused with `unsupported-input`, a message giving the four counts and nothing stored; `preset.inspect` returns the full report for such a file.
 
+## Amount and hover preview
+
+Amount is 0–200%, starts at 100%, and applies only to fields the preset names. Numbers interpolate from the owning module's declared default to the preset value, clamped to that field's declared bounds. Tone curves interpolate each knot's y from its x (identity); extrapolation clamps y to 0–1 and enforces nondecreasing y for a monotone curve. 100% preserves the original settings exactly. Fields without a numeric default or an identity-curve default, and analysis actions, do not support reduced or amplified amounts: the whole preset applies at 100%, with the Amount control disabled and a visible reason. This is Luxforge's rule, independent of Lightroom's SupportsAmount flag. It adds no rendering operation: scaled settings run through the existing field patches and renderers.
+
+Hovering an enabled, draftable row opens one `apply-settings` draft at the current Amount. Leaving cancels it and restores the committed picture without history or recipe writes. Moving between rows replaces the preview; clicking commits the same draft once. Amount previews its changes as a slider gesture and commits once on release for the selected preset; each later drag reapplies the library values at the chosen amount, never scales the previous result. Unnamed settings and masked layers are untouched. Selection follows the current entry's preset provenance and matching library settings. Another edit, a historical preview, library deletion or changed settings clears the adjustment target; switching photographs reads that photograph's own entry. No remembered preset is applied to a different photograph. Escape discards a preview. Another active gesture, historical preview, Compare, busy request or mask tool prevents hover. Analysis presets show a preview-unavailable reason and still apply through the ordinary command path, without silently dropping analysis.
+
+Previews reuse the bounded draft/GPU lane and stale-generation rejection. No hover timer, per-row image cache, original read or new frame allocation is added on the UI or owner thread. Cold program combinations use the existing compiling hold and reference fallback; the warm-list bound stays unchanged. Hover and amount inputs are evidence-script messages through the same handlers as the widgets. Exact reference-buffer tests compare scaled presets with direct field patches. The native synthetic preset journey on the M4 Pro / Metal verifies hover, leave, click, 50% Amount and reset with correlated state, logs and captures; cold combinations wait for the handed GPU programs before pixel comparison. Physical pointer gestures, photo-sized latency and the photographic preset-combination corpus remain unqualified.
+
 ## Desktop
 
 The Presets section is generated from the `presets` control and follows Crop in the tools panel, collapsed until opened:
 
-- **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report's four counts, and a preset with unavailable actions shows why it cannot apply. Rows are disabled while the editor is busy, while a draft is open and during a historical preview. The whole section, Import and the form included, is disabled while no photo is open, like every other section.
+- **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report's four counts, and a preset with unavailable actions shows why it cannot apply. Rows are disabled while the editor is busy, while another gesture is open and during a historical preview; the row owning a hover preview remains clickable. The whole section, Import and the form included, is disabled while no photo is open, like every other section.
 - **Apply.** Clicking a row submits `edit.apply-settings` once with that preset's `settings` and `origin: {kind: preset, name, preset_id}`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
 - **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per available [settings group](#settings-groups), labelled by its title and checked by its `default_checked`, so all but white balance. Each declared analysis step is a separate unchecked choice, `Basic · Auto tone (per photo)`, placed before the first group it overwrites; checking it clears and disables the groups it overwrites, Basic Tone and Colour. Create calls `preset.capture` for the displayed entry with the checked group and step identities, then `preset.create`.
 - **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lfpreset`. The file is read in the dialog's task, refused over 1 MiB or when it is not UTF-8, and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`; the neutral count is in the badge's tooltip. A duplicate name, or a file that maps nothing, appears as the error it is.
 - **Row menu.** Right-clicking a row offers Export…, which writes the `preset.export` document through a native save dialog; Copy import report, for an imported preset, which copies the full report as JSON from `preset.read`; and Delete, which calls `preset.delete`.
 - **Palette.** The command palette lists `Apply preset: <name>` for each library preset that can apply in this build.
 
-The library is listed at startup, after each of the desktop's own preset calls, after a photo opens and when the event sync sees a `preset.*` event from another client, which reads the library and not the asset. An agent's new preset therefore appears without a restart. Only a click or a palette entry applies a preset, and only that path requests `asset.state` and a preview job.
+The library is listed at startup, after each of the desktop's own preset calls, after a photo opens and when the event sync sees a `preset.*` event from another client, which reads the library and not the asset. An agent's new preset therefore appears without a restart. A click, palette entry or Amount release applies a preset. Hover and Amount movement request draft previews; hover leave and Escape cancel and restore the committed frame. They add no history or asset-state refresh.
 
 ## Verification
 
@@ -291,14 +300,12 @@ The owner asked for this work to proceed without blocking. These are proposals t
 2. Only field-patch actions are presettable, so RAW's explicit gains and sensor pick, transforms and crop are excluded. The RAW white balance (`set-raw`) is presettable, and a preset carries each kind's white balance separately (owner decision 6, [source-kind controls](source-controls.md#decisions)).
 3. `edit.apply-settings` carries the settings, not a library reference; a preset and a paste share it and differ only in their origin.
 4. Imports are value transfers for the controls Luxforge has, and Lightroom's absolute `Temperature` and `Tint` a value conversion through the white they name (owner decision 5). Nothing is clamped.
-5. The Presets section is the first tools-panel section, collapsed, in the "what can I do" panel. Lightroom Classic puts presets on the left instead.
+5. The Presets section follows Crop in the tools panel, collapsed, in the "what can I do" panel. Lightroom Classic puts presets on the left instead.
 6. The create form leaves white balance unchecked by default, because white balance is usually per photo. Basic declares its White balance group `per_photo`, so the default is the descriptor's, not a list of field names.
 
 ## Later
 
 | Item | Needs |
 | --- | --- |
-| Amount slider | A per-field scaling rule from each module; Lightroom scales only presets that declare `SupportsAmount` |
-| Hover preview | A draft of `apply-settings` drawn as a drag's frames are, on the GPU within the slider latency budget, with warm-up coverage for the hovered stack's program combinations within the existing warm-list bound. The current warm list already includes first drags of available absent modules, but not every multi-layer preset combination; a cold combination uses the declared compiling hold and reference fallback |
 | DNG presets and profiles | Reading an embedded XMP packet from binary content; a profile system |
 | Writing Lightroom XMP | An exporter for the mapped fields only, with the same value-transfer caveat |

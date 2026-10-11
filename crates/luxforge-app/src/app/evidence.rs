@@ -1304,6 +1304,64 @@ impl Editor {
                 interval_ms,
             } => self.canvas_hover_sweep_step(points, interval_ms),
             Step::Preset(pick) => self.preset_step(pick),
+            Step::PresetHover(pick) => {
+                let message = match pick {
+                    Some(pick) => {
+                        let row = match self.preset_row(&pick) {
+                            Ok(row) => row,
+                            Err(error) => return self.fail_step(error),
+                        };
+                        if !row.enabled || row.preview_unavailable.is_some() {
+                            return self.fail_step("the row cannot preview");
+                        }
+                        self.await_step(Settle::SliderDraft);
+                        PresetMessage::Hover(row.id)
+                    }
+                    None => {
+                        let Some(id) = self.presets.library.interaction.hovered.clone() else {
+                            return self.fail_step("no preset hover is open");
+                        };
+                        self.await_step(Settle::Preview);
+                        PresetMessage::Leave(id)
+                    }
+                };
+                let task = self.update(Message::Preset(message));
+                if self.core_gesture().is_some_and(|g| g.draft.drained())
+                    && self.gpu_draws_newest_tick()
+                    && !self.drag_frame_waiting()
+                {
+                    self.settle_step(Settle::SliderDraft, "gpu_tick");
+                }
+                task
+            }
+            Step::PresetAmount { value, release } => {
+                let Some(model) = self.presets_model_now() else {
+                    return self.fail_step("no presets section");
+                };
+                if !model.amount_enabled {
+                    return self.fail_step("the Amount slider is disabled");
+                }
+                self.await_step(if release {
+                    Settle::Preview
+                } else {
+                    Settle::SliderDraft
+                });
+                let moved = self.update(Message::Preset(PresetMessage::Amount(value)));
+                if release {
+                    let released = self.update(Message::Preset(PresetMessage::AmountReleased));
+                    Task::batch([moved, released])
+                } else {
+                    if self.core_gesture().is_some_and(|g| g.draft.drained())
+                        && self.gpu_draws_newest_tick()
+                        && !self.drag_frame_waiting()
+                    {
+                        self.settle_step(Settle::SliderDraft, "gpu_tick");
+                    } else if self.core_gesture().is_none() {
+                        self.capture_next_frame();
+                    }
+                    moved
+                }
+            }
             Step::CopySettings(step) => self.copy_settings_step(step),
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
@@ -4718,7 +4776,11 @@ impl Editor {
             action: presets.action,
             preset,
         }));
-        if !self.busy {
+        if !self.busy
+            && !self
+                .core_gesture()
+                .is_some_and(|gesture| gesture.draft.released())
+        {
             return self.fail_step(format!("the preset was not applied: {}", self.status.text));
         }
         task
