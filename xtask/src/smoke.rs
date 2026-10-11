@@ -5,12 +5,12 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, curve_smoke as curve, detail_smoke as detail,
-    develop_picks_smoke as develop_picks, export_smoke as export, filmstrip_smoke as filmstrip,
-    gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
-    gpu_preview_zoom_smoke as gpu_preview_zoom, grading_smoke as grading,
-    histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
-    look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
+    corrections_raw_smoke as raw_corrections, corrections_smoke as corrections, crop_smoke as crop,
+    curve_smoke as curve, detail_smoke as detail, develop_picks_smoke as develop_picks,
+    export_smoke as export, filmstrip_smoke as filmstrip, gallery_smoke as gallery,
+    gpu_preview_smoke as gpu_preview, gpu_preview_zoom_smoke as gpu_preview_zoom,
+    grading_smoke as grading, histogram_smoke as histogram, information_smoke as information,
+    lens_smoke as lens, look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
     minify_smoke as minify, mixer_smoke as mixer, no_gpu_render_smoke as no_gpu_render,
@@ -633,10 +633,10 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "histogram",
-        about: "The histogram, its clipping overlays, a render.sample of the edited pixel and a drafted frame",
+        about: "The histogram, its clipping overlays, a render.sample of the edited stack and a drafted frame",
         launches: &[LaunchSpec {
             plan: histogram::plan,
-            // The scenario commits an `edit.set-pixel`, and the pixel proof is a test module.
+            // The scenario commits an `edit.set-controls`, and the controls proof is a test module.
             developer: true,
             ..APP
         }],
@@ -847,6 +847,50 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: Some(mask_brush::NOTE),
         own: None,
+    },
+    Scenario {
+        name: corrections::SCENARIO,
+        about: "Every Corrections gesture and key, the stacking principle read from pixels, export, Select, Remove and Put back, the limit, the overlay through crop, straighten and perspective, and Locate after the original moves",
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: corrections::launch1,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                script: "script2.json",
+                plan: corrections::launch2,
+                catalog: Some("launch1"),
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch3",
+                script: "script3.json",
+                plan: corrections::launch3,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch4",
+                script: "script4.json",
+                plan: corrections::launch4,
+                catalog: Some("launch3"),
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch5",
+                script: "script5.json",
+                plan: corrections::launch5,
+                catalog: Some("launch1"),
+                ..APP
+            },
+        ],
+        verify: corrections::verify,
+        source: Source::Fixtures(&[corrections::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(corrections::NOTE),
+        own: Some(corrections::run),
     },
     Scenario {
         name: mask_range::SCENARIO,
@@ -1077,6 +1121,37 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: raw_corrections::SCENARIO,
+        about: "Corrections on a supplied RAW: automatic Heals, a set-source Clone, history, versions, Restore, reopen, Select's preview, Remove and Put back, the overlay through the lens profile and a warp, GPU, reference and batch exports, and Locate",
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: raw_corrections::launch1,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                script: "script2.json",
+                plan: raw_corrections::launch2,
+                catalog: Some("launch1"),
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch3",
+                script: "script3.json",
+                plan: raw_corrections::launch3,
+                catalog: Some("launch1"),
+                ..APP
+            },
+        ],
+        verify: raw_corrections::verify,
+        source: Source::Supplied { listed: false },
+        window: Some(PANELLED),
+        note: Some(raw_corrections::NOTE),
+        own: Some(raw_corrections::run),
+    },
+    Scenario {
         name: look::SCENARIO,
         about: "The RAW look over a supplied RAW file: Standard in the new photograph's Original, Neutral and Standard through the Look section above Basic, an Amount drag, the reset and a double-click, Neutral through the API",
         launches: &[LaunchSpec {
@@ -1248,10 +1323,23 @@ pub fn launch_all(run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> Resul
 /// are hashed: a row whose plans read more than its sources, as `raw-editor`'s read its source's
 /// manifest entry, plans in its own function and launches through this one.
 pub fn launch_planned(
+    run: Run,
+    scenario: &Scenario,
+    sources: Vec<PathBuf>,
+    plans: impl FnOnce(&mut Run, &[PathBuf]) -> Result<Vec<Plan>>,
+) -> Result {
+    launch_planned_then(run, scenario, sources, plans, |_, _| Ok(()))
+}
+
+/// [`launch_planned`] with launches of the row's own to make after its listed ones and before its
+/// checks: `then` makes them, in the run and over the launches already checked, which it extends.
+/// `corrections` moves an original between launches that way, which a list of launches cannot say.
+pub fn launch_planned_then(
     mut run: Run,
     scenario: &Scenario,
     sources: Vec<PathBuf>,
     plans: impl FnOnce(&mut Run, &[PathBuf]) -> Result<Vec<Plan>>,
+    then: impl FnOnce(&mut Run, &mut Vec<Checked>) -> Result,
 ) -> Result {
     if let Some(note) = scenario.note {
         run.note(note);
@@ -1287,6 +1375,7 @@ pub fn launch_planned(
                 .dir;
             checked.push(plan.check(&evidence)?);
         }
+        then(run, &mut checked)?;
         (scenario.verify)(run, &checked)?;
         run.sources_unchanged()?;
         // The adapter that drew the run, identified as wgpu describes it: its device type tells a
@@ -1308,7 +1397,7 @@ pub fn launch_planned(
 }
 
 /// The launch `spec` makes over `sources` in a run whose output directory is `out`.
-fn launch_of(
+pub(crate) fn launch_of(
     scenario: &Scenario,
     spec: &LaunchSpec,
     plan: &Plan,
@@ -2087,6 +2176,7 @@ mod tests {
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
         assert!(find("look").is_ok_and(|look| !look.rendered()));
+        assert!(find("raw-corrections").is_ok_and(|raw| !raw.rendered()));
         // The filmstrip takes a RAW source, and runs without one, its RAW steps pending.
         assert!(find("filmstrip").is_ok_and(|filmstrip| filmstrip.rendered()));
         assert_eq!(
@@ -2099,6 +2189,7 @@ mod tests {
                 "performance",
                 "filmstrip",
                 "raw-panel",
+                "raw-corrections",
                 "look",
                 "raw-editor"
             ]

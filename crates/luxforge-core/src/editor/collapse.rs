@@ -45,8 +45,13 @@ impl EditorService {
         next: &Recipe,
     ) -> Result<Option<Collapsing>, Error> {
         let current = &state.current_entry;
+        let ActionRef::Module(module, _) = prepared.action else {
+            return Ok(None);
+        };
+        // An action whose module says it never collapses — an operation's add, which planned on
+        // the base would mint another operation — is not planned a second time at all.
         if !self.auto_collapse
-            || !matches!(prepared.action, ActionRef::Module(..))
+            || !module.collapses(&prepared.input)
             || current.result_revision != state.revision
             || current.restore_target.is_some()
             || current.actor != actor

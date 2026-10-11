@@ -60,6 +60,7 @@ use std::{
 mod analysis;
 pub(crate) mod grid;
 mod reference;
+pub mod region;
 pub use analysis::ANALYSIS_QUEUE_CAPACITY;
 pub(crate) use analysis::AnalysisWorker;
 pub use grid::{

@@ -618,13 +618,7 @@ mod tests {
             .prepare(&service.entry_needs(&asset, None).unwrap())
             .unwrap();
         let next = service
-            .apply_pixel(
-                &asset,
-                mutation(reopened.revision, "pixel"),
-                1,
-                1,
-                [9, 9, 9],
-            )
+            .apply_exposure(&asset, mutation(reopened.revision, "pixel"), 0.9)
             .unwrap()
             .current_entry_id;
         let committed = service.entry(&asset, &next).unwrap().snapshot.recipe;
@@ -791,10 +785,6 @@ mod tests {
         // names the action that was asked.
         for (action, parameters) in [
             (
-                "set-pixel",
-                json!({"mask": first.id, "x": 0, "y": 0, "rgb": [1, 2, 3]}),
-            ),
-            (
                 "transform",
                 json!({"mask": first.id, "transform": "rotate-left"}),
             ),
@@ -891,7 +881,7 @@ mod tests {
                 .unwrap_err(),
             // Planning checks the stored stack's structure before it asks a module for a plan.
             service
-                .apply_pixel(&asset, mutation(revision, "pixel"), 0, 0, [1, 2, 3])
+                .apply_exposure(&asset, mutation(revision, "pixel"), 0.1)
                 .unwrap_err(),
             service
                 .apply_transform(&asset, mutation(revision, "turn"), Transform::RotateLeft)

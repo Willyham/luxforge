@@ -3,8 +3,8 @@
 use super::*;
 use crate::{
     BASIC_EFFECT, BoxRect, CROP_EFFECT, CropStage, EFFECT_FORMAT, ErrorKind, Layer, LayerId,
-    LinearImage, LinearSettings, Mask, ModuleRegistry, Orientation, PIXEL_EFFECT, PreviewSource,
-    ProxyBounds, ProxyPlan, ProxyWindow, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, Stage,
+    LinearImage, LinearSettings, Mask, ModuleRegistry, Orientation, PreviewSource, ProxyBounds,
+    ProxyPlan, ProxyWindow, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, Stage,
     colour::srgb::decode_u8, proxy::BoxDownscale,
 };
 use luxforge_reference::srgb;
@@ -499,7 +499,16 @@ fn a_white_balance_approximation_commutes_with_the_downscale() {
 
 #[test]
 fn a_pixel_stage_layer_makes_a_stack_ineligible_and_is_named() {
-    let registry = ModuleRegistry::developer();
+    let mut registry = ModuleRegistry::developer();
+    registry
+        .register(crate::modules::StageModule::shared(
+            "test.pixel",
+            crate::modules::REPAIR_STAGE_EFFECT,
+            "set-test-pixel",
+            crate::EffectStage::Repair,
+            0,
+        ))
+        .unwrap();
     let eligible = recipe(vec![
         Layer::orientation(Orientation {
             mirror: true,
@@ -514,14 +523,17 @@ fn a_pixel_stage_layer_makes_a_stack_ineligible_and_is_named() {
 
     let ineligible = recipe(vec![
         Layer::orientation(Orientation::NEUTRAL),
-        Layer::pixel(3, 4, [9, 9, 9]),
+        Layer::new(crate::modules::REPAIR_STAGE_EFFECT, json!({})),
         fitted_crop_layer(480, 320, 0.0),
     ]);
     let error = registry
         .proxy_eligible(&ineligible)
-        .expect_err("a point replacement addresses content pixels");
+        .expect_err("a pixel-stage effect addresses content pixels");
     assert_eq!(error.kind, ErrorKind::Validation);
-    assert!(error.detail.contains(PIXEL_EFFECT), "{error}");
+    assert!(
+        error.detail.contains(crate::modules::REPAIR_STAGE_EFFECT),
+        "{error}"
+    );
     assert!(error.detail.contains("layer 1"), "{error}");
 
     let unknown = recipe(vec![Layer {

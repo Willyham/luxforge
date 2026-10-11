@@ -11,6 +11,8 @@ mod catalog_probes;
 mod conformance;
 mod controls_smoke;
 mod copy_settings_smoke;
+mod corrections_raw_smoke;
+mod corrections_smoke;
 mod crop_smoke;
 mod curve_acceptance;
 mod curve_smoke;
@@ -528,22 +530,24 @@ fn main_result() -> Result {
                 Some("commit") => editor_latency::Mode::Commit,
                 Some("burst") => editor_latency::Mode::Burst,
                 Some("paint") => editor_latency::Mode::Paint,
+                Some("corrections") => editor_latency::Mode::Corrections,
                 Some("hover") => editor_latency::Mode::Hover,
                 Some("crop-start") => editor_latency::Mode::CropStart,
                 Some(other) => {
                     return Err(format!(
-                        "--mode is drag, commit, burst, paint, hover or crop-start, not {other}"
+                        "--mode is drag, commit, burst, paint, corrections, hover or crop-start, not {other}"
                     )
                     .into());
                 }
             };
-            // A paint run's samples are the stroke's positions, and it paints hundreds by default.
+            // A paint run's samples are the stroke's positions, and it paints hundreds by default;
+            // a corrections run's are each of its two gestures' positions.
             let samples = samples(
                 &mut a,
-                if mode == editor_latency::Mode::Paint {
-                    editor_latency::PAINT_POSITIONS
-                } else {
-                    30
+                match mode {
+                    editor_latency::Mode::Paint => editor_latency::PAINT_POSITIONS,
+                    editor_latency::Mode::Corrections => editor_latency::CORRECTION_POSITIONS,
+                    _ => 30,
                 },
             )?;
             if mask_overlay

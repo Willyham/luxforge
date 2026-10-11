@@ -7,6 +7,7 @@
 mod adapters;
 mod app;
 mod browser;
+mod brush;
 mod coalesce;
 mod crop_draft;
 mod diagnostics;

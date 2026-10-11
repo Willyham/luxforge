@@ -132,7 +132,12 @@ pub fn plan(archive: &str, tree: &str, rescued: &str) -> Plan {
 }
 
 /// One request through the runner's own client.
-fn ask(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Result<Value> {
+pub(crate) fn ask(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     let response = owner
         .call(
             client,
@@ -151,7 +156,7 @@ fn ask(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Re
 }
 
 /// Read a job until it ends.
-fn settle(owner: &OwnerHandle, client: ClientId, job: &Value) -> Result<Value> {
+pub(crate) fn settle(owner: &OwnerHandle, client: ClientId, job: &Value) -> Result<Value> {
     let started = std::time::Instant::now();
     loop {
         let read = ask(owner, client, "job.read", json!({ "job_id": job }))?;
@@ -167,7 +172,7 @@ fn settle(owner: &OwnerHandle, client: ClientId, job: &Value) -> Result<Value> {
 }
 
 /// `body` through an owner of the runner's own over `catalog`.
-fn with_owner<T>(
+pub(crate) fn with_owner<T>(
     catalog: &Path,
     body: impl FnOnce(&OwnerHandle, ClientId) -> Result<T>,
 ) -> Result<T> {

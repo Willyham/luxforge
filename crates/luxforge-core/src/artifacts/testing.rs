@@ -4,7 +4,7 @@ use super::ArtifactMeta;
 use crate::{CapabilitiesProofModule, ModuleRegistry, modules::PROOF_TINT_KIND};
 use std::sync::Arc;
 
-/// The developer registry, whose pixel proof the artifact tests edit with, and the capability proof
+/// The developer registry, whose Basic module the artifact tests edit with, and the capability proof
 /// pinned at a loopback endpoint nothing contacts.
 pub(crate) fn registry() -> Arc<ModuleRegistry> {
     let mut registry = ModuleRegistry::developer();

@@ -47,6 +47,7 @@ impl ModuleRegistry {
             self.check_artifacts(layer)?;
             module.validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
         }
+        self.validate_repair_run(&recipe.layers)?;
         Ok(())
     }
 
@@ -75,11 +76,41 @@ impl ModuleRegistry {
         Ok(())
     }
 
+    /// A repair layer reads the developed source and nothing else, so it belongs to the leading run
+    /// of a stack: after an optional source layer, before every other layer
+    /// (`docs/design/corrections.md`, "Module, effect and stage"). Insertion never produces any
+    /// other order; a stack that holds one is refused by name, as it stands, and nothing is
+    /// rewritten or reordered. The refusal is what keeps a repair's input — the source, its
+    /// development and nothing else — well defined for the input grid and a patch's input key.
+    /// `O(layers)` descriptor lookups, no pixel.
+    fn validate_repair_run(&self, layers: &[Layer]) -> Result<(), Error> {
+        let mut leading = true;
+        for (index, layer) in layers.iter().enumerate() {
+            match self.effect_stage(&layer.effect_id) {
+                Some(EffectStage::Source) if index == 0 => {}
+                Some(EffectStage::Repair) if leading => {}
+                Some(EffectStage::Repair) => {
+                    let title = self
+                        .effect(&layer.effect_id)
+                        .map_or(layer.effect_id.as_str(), |(module, _)| {
+                            module.descriptor().title.as_str()
+                        });
+                    return Err(Error::incompatible(format!(
+                        "the {title} layer must follow only the source development (layer {})",
+                        layer.id
+                    )));
+                }
+                _ => leading = false,
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse a layer whose mask this build cannot evaluate.
     ///
-    /// A mask reaches a colour operation and a spatial operation, and nothing else: a point
-    /// replacement writes one stored pixel and has no blend to perform, so there is nothing for a
-    /// coverage to modulate. (A geometry or finish layer cannot carry a mask at all, for the earlier
+    /// A mask reaches a colour operation and a spatial operation, and nothing else: a warp or
+    /// resample moves pixels and has no blend to perform, so there is nothing for a coverage to
+    /// modulate. (A geometry or finish layer cannot carry a mask at all, for the earlier
     /// reason that it has no content stage to read one in; that is
     /// [`Self::validate_masked_stages`].) A mask this build cannot evaluate must never be silently
     /// omitted from a frame or an export, so such a stack is refused by name wherever it would be
@@ -361,6 +392,10 @@ impl ModuleRegistry {
             let module = self
                 .provider(&layer.effect_id)
                 .ok_or_else(|| self.unavailable_in(layers, &layer.effect_id))?;
+            if index + 1 == layers.len() {
+                // Every provider is available: the order of the stack is the next refusal.
+                self.validate_repair_run(layers)?;
+            }
             if self.effect_single(&layer.effect_id)
                 && !single_effects.insert((layer.effect_id.as_str(), layer.mask.as_ref()))
             {
@@ -380,6 +415,7 @@ impl ModuleRegistry {
                 layer,
                 crate::CompileStage::sampled(stage, full).shaped(shaped == Some(index)),
                 artifacts,
+                strokes,
             )?;
             // The stage this layer hands the next one, checked before anything is evaluated.
             let output = Self::output_stage(&processing, stage)?;
@@ -389,17 +425,6 @@ impl ModuleRegistry {
                     segment.width = output.width;
                     segment.height = output.height;
                     segment.operations.push(Processing::ExactGeometry(step));
-                }
-                Processing::PointReplace { x, y, rgb } => {
-                    // A point replacement has no blend to perform, so a mask on one would be a mask
-                    // this build cannot evaluate. No delivered pixel-stage effect declares itself
-                    // maskable; refusing by name is what keeps a later one from silently rendering
-                    // its replacement everywhere instead of through the selection.
-                    self.refuse_unevaluated_mask(layer)?;
-                    segment.has_pixels = true;
-                    segment
-                        .operations
-                        .push(Processing::PointReplace { x, y, rgb });
                 }
                 Processing::Color(operation) => {
                     if operation.len() > MAX_COLOR_UNITS {
@@ -475,13 +500,32 @@ impl ModuleRegistry {
                         stage.height,
                     ));
                 }
+                Processing::Repair(table) => {
+                    // An emptied layer changes nothing, and nothing is no processing: the stack
+                    // keeps its single pass and the shared source buffer.
+                    if table.is_empty() {
+                        continue;
+                    }
+                    if self.effect_stage(&layer.effect_id) != Some(EffectStage::Repair) {
+                        return Err(Error::internal(format!(
+                            "effect {} compiled a repair table outside the repair stage",
+                            layer.effect_id
+                        )));
+                    }
+                    self.refuse_unevaluated_mask(layer)?;
+                    table.validate()?;
+                    segments.push(Segment::new(
+                        Some(Entry::repair(table, stage)),
+                        stage.width,
+                        stage.height,
+                    ));
+                }
                 Processing::Warp(step) => {
                     self.refuse_unevaluated_mask(layer)?;
                     if step.is_identity() {
                         continue;
                     }
                     if let Some(entry) = segment.entry.as_mut()
-                        && !segment.has_pixels
                         && !segment.has_color
                         && segment.geometry.is_identity(stage.width, stage.height)
                         && entry.fuse(step, output)?
@@ -504,7 +548,6 @@ impl ModuleRegistry {
                 }
                 Processing::Resample(resample) => {
                     if let Mapping::Affine(matrix) = &resample.map
-                        && !segment.has_pixels
                         && !segment.has_color
                         && segment.geometry.is_identity(stage.width, stage.height)
                         && let Some(entry) = segment.entry.as_mut()
@@ -564,6 +607,7 @@ impl ModuleRegistry {
                     layer,
                     crate::CompileStage::exact(stage),
                     &recipe.artifacts,
+                    &recipe.strokes,
                 )
                 .and_then(|processing| Self::output_stage(&processing, stage))
             {
@@ -577,16 +621,40 @@ impl ModuleRegistry {
 
     /// One layer's processing against the stage it receives: its provider's compile or, for a
     /// layer that references artifacts, the provider's capability compile over the verified bytes
-    /// the recipe was bound with. Reads no pixels.
+    /// the recipe was bound with. A layer that carries strokes in the store — the Corrections
+    /// repair layer ([`crate::modules::RepairCarrier`]) — compiles only with every one resolved as
+    /// its declared type: a missing, corrupt or wrong-type stroke refuses every path that would
+    /// draw it, named by the operation that references it, and never compiles to an empty repair.
+    /// Reads no pixels; `O(operations)` lookups for a repair layer.
     fn compile_layer(
         &self,
         module: Provider<'_>,
         layer: &Layer,
         at: crate::CompileStage,
         artifacts: &ArtifactTable,
+        strokes: &crate::path::StrokeTable,
     ) -> Result<Processing, Error> {
+        if layer.effect_id == crate::modules::CORRECTIONS_EFFECT {
+            use crate::path::StrokeCarrier;
+            let mut references = Vec::new();
+            crate::modules::RepairCarrier(layer).stroke_references(&mut references)?;
+            for reference in &references {
+                strokes.check_reference(reference).map_err(|error| {
+                    Error::new(
+                        error.kind,
+                        format!("{} referenced by {}", error.detail, reference.what),
+                    )
+                })?;
+            }
+        }
         if layer.artifacts.is_empty() {
-            return module.compile(&layer.effect_id, layer.effect_format, &layer.payload, at);
+            return module.compile_with_strokes(
+                &layer.effect_id,
+                layer.effect_format,
+                &layer.payload,
+                at,
+                strokes,
+            );
         }
         // The recipe carries the verified bytes it was bound with, so resolving them is a lookup;
         // an artifact the recipe was not bound with is refused, never skipped.
@@ -617,6 +685,7 @@ impl ModuleRegistry {
             &layer.payload,
             at,
             &bound,
+            strokes,
         )
     }
 

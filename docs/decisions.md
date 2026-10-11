@@ -504,6 +504,8 @@ Decided by the owner on 2026-10-09, accepting the [Corrections workspace](design
 
 An interim implementation built on a branch before this design is set aside, not merged; Corrections is implemented again from the [task plan](../tasks/editing/corrections.json).
 
+**Heal quality (owner, 2026-10-11).** After a blinded review of 16 corpus cases, the owner accepted Heal as delivered, with its failure classes documented in the user guide (seams across continuing lines, large repairs repeating their source, objects whose surroundings hold the object). The frozen automatic-source candidate set stands; the proposed clearing-distance candidates are not adopted, since the review found no difference between them ([numerics](design/corrections-numerics.md#the-corpus-review-task-012)).
+
 ## Open product questions
 
 [Product decisions](../tasks/project/product-decisions.json) carries the storage, external-module, workload, Presence, GPU reconciliation, themes and Lightroom-authorization tasks. The other recorded defaults remain proposals in their designs; they acquire no additional decision task.

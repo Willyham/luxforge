@@ -144,9 +144,90 @@ fn operation_change(old: &GpuOperation, new: &GpuOperation) -> Option<Option<Spa
     }
 }
 
+fn meets(a: Region, b: Region) -> bool {
+    !a.is_empty()
+        && !b.is_empty()
+        && a.x0 < b.x1()
+        && b.x0 < a.x1()
+        && a.y0 < b.y1()
+        && b.y0 < a.y1()
+}
+
+/// Where `new` may draw other values than `old`, one repair step of the same layer
+/// (`docs/design/corrections.md`, "Incremental changes"): the destinations of every operation
+/// added, removed or changed, in either table, position by position — a reorder changes what
+/// every operation after its first moved position samples — then forward over the new table, the
+/// destination of every later operation whose reads meet what changed, a Heal's whole patch. Past
+/// half the stage's area, anywhere.
+fn repair_change(
+    old: &GpuSpatial,
+    new: &GpuSpatial,
+    stage: crate::modules::Stage,
+) -> Option<Option<Span>> {
+    let (Some(before), Some(after)) = (&old.repair, &new.repair) else {
+        return None;
+    };
+    if old.layer != new.layer
+        || !std::ptr::eq(old.program, new.program)
+        || old.clamps != new.clamps
+        || old.after.len() != new.after.len()
+    {
+        return None;
+    }
+    let mut changed: Vec<Region> = Vec::new();
+    let positions = before.operations.len().max(after.operations.len());
+    let mut first = None;
+    for index in 0..positions {
+        let (was, is) = (before.operations.get(index), after.operations.get(index));
+        if was.map(|op| op.key) == is.map(|op| op.key) {
+            continue;
+        }
+        first.get_or_insert(index);
+        changed.extend(was.map(|op| op.writes));
+        changed.extend(is.map(|op| op.writes));
+    }
+    if let Some(first) = first {
+        for op in &after.operations[(first + 1).min(after.operations.len())..] {
+            if op
+                .reads
+                .iter()
+                .any(|read| changed.iter().any(|area| meets(*read, *area)))
+            {
+                changed.push(op.writes);
+            }
+        }
+    }
+    let mut span = changed
+        .iter()
+        .filter(|area| !area.is_empty())
+        .map(|area| {
+            [
+                i64::from(area.x0),
+                i64::from(area.y0),
+                i64::from(area.x1()),
+                i64::from(area.y1()),
+            ]
+        })
+        .fold(None, |span, area| Some(union(span, area)));
+    if let Some([x0, y0, x1, y1]) = span
+        && (x1 - x0) * (y1 - y0) * 2 > i64::from(stage.width) * i64::from(stage.height)
+    {
+        return None;
+    }
+    for (old, new) in old.after.iter().zip(&new.after) {
+        if let Some(changed) = operation_change(old, new)? {
+            span = Some(union(span, changed));
+        }
+    }
+    Some(span)
+}
+
 /// Where `new` may draw other values than `old`, one spatial operation of the same layer, before
 /// its neighbourhood grows its input's changes: its own mask's.
 fn spatial_change(old: &GpuSpatial, new: &GpuSpatial) -> Option<Option<Span>> {
+    if old.repair.is_some() || new.repair.is_some() || old.block != new.block {
+        return None;
+    }
     if old.layer != new.layer
         || !std::ptr::eq(old.program, new.program)
         || old.words != new.words
@@ -198,7 +279,11 @@ impl GpuPlan {
             }
         }
         for (old, new) in previous.spatial.iter().zip(&self.spatial) {
-            match spatial_change(old, new) {
+            let change = match old.repair.is_some() && new.repair.is_some() {
+                true => repair_change(old, new, self.boundary.stage),
+                false => spatial_change(old, new),
+            };
+            match change {
                 None => return GpuChange::Anywhere,
                 Some(Some(changed)) => span = Some(union(span, changed)),
                 Some(None) => {}

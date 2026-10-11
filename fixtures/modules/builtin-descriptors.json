@@ -2168,6 +2168,444 @@
       {
         "actions": [
           {
+            "id": "add-correction",
+            "notes": "Adds one Clone or Heal operation on top of the photograph's corrections and answers it as correction {operation, name, index, source-x, source-y, source-origin}. With source-x and source-y the source is set; without them the best automatic source is found off the catalog owner against this revision and stored as an ordinary offset, or the request is refused with data.reason no-source. A photograph holds at most 100 corrections.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "points",
+                "name": "points",
+                "notes": "the correction's path in the content stage's normalized coordinates (x a fraction of its width, y of its height, the frame 0..1), in drawn order, raw or already decimated; one position is a spot. Its first stored position is the anchor the source is measured from. The stroke it decimates to holds at most 1024 positions",
+                "points_max": 16384,
+                "points_min": 1,
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 0.25,
+                "min": 0.0005,
+                "name": "radius",
+                "notes": "the brush radius in content heights, so a spot is round at any aspect ratio; a resize keeps the stored positions",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "content heights"
+              },
+              {
+                "default": "heal",
+                "kind": "enum",
+                "name": "mode",
+                "notes": "heal borrows the source's detail and adapts it to the destination's tone; clone copies the source's pixels",
+                "options": [
+                  "heal",
+                  "clone"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 50,
+                "kind": "integer",
+                "max": 100,
+                "min": 0,
+                "name": "feather",
+                "notes": "the share of the radius over which coverage falls to zero",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 100,
+                "kind": "integer",
+                "max": 100,
+                "min": 0,
+                "name": "opacity",
+                "notes": "how strongly the correction blends",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "source-x",
+                "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "source-y",
+                "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Add correction"
+          },
+          {
+            "id": "update-correction",
+            "notes": "Changes the sent fields of one correction. New points move its destination and keep its source where it is unless a source is sent too; a radius keeps the stored positions. Answers the correction as add-correction does.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "operation",
+                "notes": "the correction, correction-<n>, as add-correction answered it",
+                "of": "correction",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "points",
+                "notes": "the correction's path in the content stage's normalized coordinates (x a fraction of its width, y of its height, the frame 0..1), in drawn order, raw or already decimated; one position is a spot. Its first stored position is the anchor the source is measured from. The stroke it decimates to holds at most 1024 positions",
+                "points_max": 16384,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 0.25,
+                "min": 0.0005,
+                "name": "radius",
+                "notes": "the brush radius in content heights, so a spot is round at any aspect ratio; a resize keeps the stored positions",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "content heights"
+              },
+              {
+                "default": null,
+                "kind": "enum",
+                "name": "mode",
+                "notes": "heal borrows the source's detail and adapts it to the destination's tone; clone copies the source's pixels",
+                "options": [
+                  "heal",
+                  "clone"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "integer",
+                "max": 100,
+                "min": 0,
+                "name": "feather",
+                "notes": "the share of the radius over which coverage falls to zero",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "integer",
+                "max": 100,
+                "min": 0,
+                "name": "opacity",
+                "notes": "how strongly the correction blends",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "source-x",
+                "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "source-y",
+                "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "enum",
+                "name": "source-origin",
+                "notes": "where the sent source came from, only with source-x and source-y; set when omitted",
+                "options": [
+                  "auto",
+                  "set"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": true,
+            "preset": false,
+            "title": "Edit correction"
+          },
+          {
+            "id": "delete-correction",
+            "notes": "Removes one correction.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "operation",
+                "notes": "the correction, correction-<n>, as add-correction answered it",
+                "of": "correction",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Delete correction"
+          },
+          {
+            "id": "reorder-correction",
+            "notes": "Moves one correction in the order corrections apply in; it then samples the corrections below its new place.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "operation",
+                "notes": "the correction, correction-<n>, as add-correction answered it",
+                "of": "correction",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "integer",
+                "max": 99,
+                "min": 0,
+                "name": "index",
+                "notes": "the correction's new place in application order, 0 the bottom, counted after removing it",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Reorder correction"
+          },
+          {
+            "id": "reset-corrections",
+            "notes": "Removes every correction; numbers already used are not reused.",
+            "parameters": [],
+            "patch": false,
+            "preset": false,
+            "title": "Reset corrections"
+          },
+          {
+            "accepts_candidate": true,
+            "id": "accept-correction-patch",
+            "notes": "Adds a task's candidate patch on top of the photograph's corrections as a frozen patch and answers it as correction {operation, name, index}. The candidate must be live, belong to this photograph and have been generated against what a new top correction reads now (otherwise conflict, with data.reasons); its bytes are published as a repair-patch artifact off the catalog owner before the one entry is committed. A frozen patch keeps rendering when what it was generated against changes, and is then reported stale.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "job_id",
+                "notes": "the task job that published the candidate",
+                "of": "job",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "integer",
+                "max": 3,
+                "min": 0,
+                "name": "candidate",
+                "notes": "the candidate's number in its job, as job.read lists it",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 100,
+                "kind": "integer",
+                "max": 100,
+                "min": 0,
+                "name": "opacity",
+                "notes": "how strongly the patch blends",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Accept patch"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": {
+          "action": "add-correction",
+          "edit": {
+            "action": "update-correction",
+            "list": "corrections",
+            "operation": "operation"
+          },
+          "feather": "feather",
+          "icon": "heal",
+          "kind": "brush-mask",
+          "mode": "mode",
+          "opacity": "opacity",
+          "points": "points",
+          "radius": "radius",
+          "shortcut": "Q",
+          "source": {
+            "query": "correction-sources",
+            "x": "source-x",
+            "y": "source-y"
+          },
+          "title": "Corrections"
+        },
+        "collapsed": true,
+        "controls": [],
+        "developer": false,
+        "effects": [
+          {
+            "artifacts": true,
+            "format": 1,
+            "id": "luxforge.corrections.repair",
+            "operations": {
+              "identity": "correction",
+              "max": 100
+            },
+            "order": 0,
+            "single": true,
+            "stage": "repair"
+          }
+        ],
+        "hint": "Clone and Heal",
+        "id": "luxforge.corrections",
+        "layout": "stacked",
+        "queries": [
+          {
+            "id": "corrections",
+            "notes": "The photograph's corrections as stored, in application order: {limit, next, operations: [{operation, name, kind, index, points, radius, feather, opacity, source-x, source-y, source-origin}]}; a frozen patch is {operation, name, kind: patch, index, label, artifact, rect, opacity, provenance, stale?}, stale: {reasons} (source, dimensions, development, earlier-correction) when what it was generated against changed. Reads no pixel.",
+            "parameters": [],
+            "patch": false,
+            "title": "Corrections"
+          },
+          {
+            "id": "correction-sources",
+            "notes": "Ranks automatic sources without writing anything, exactly as add-correction ranks them (rank 1 is what an add stores): {outcome: found | no-source, candidates: [{rank, source-x, source-y, score}]}. Send operation, or points with radius. Read off the catalog owner.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "operation",
+                "notes": "rank sources for this correction, over the corrections below it",
+                "of": "correction",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "points",
+                "notes": "rank sources for a new correction on this path, over every correction",
+                "points_max": 16384,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 0.25,
+                "min": 0.0005,
+                "name": "radius",
+                "notes": "the new correction's radius, with points",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "content heights"
+              },
+              {
+                "default": 8,
+                "kind": "integer",
+                "max": 8,
+                "min": 1,
+                "name": "count",
+                "notes": "how many ranked sources to answer",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "title": "Correction sources"
+          }
+        ],
+        "reset": {
+          "action": "reset-corrections",
+          "preset": {}
+        },
+        "title": "Corrections"
+      },
+      {
+        "actions": [
+          {
             "id": "set-raw",
             "notes": "sets the RAW development's white balance in the required RAW source layer: temperature (K) and tint on the camera matrix's locus, or white-balance as-shot for the camera's own. A field not sent keeps the white balance in force, and custom may be sent beside temperature or tint; as-shot beside either, and custom alone, are refused",
             "parameters": [
@@ -2830,7 +3268,7 @@
                 "max": 16383,
                 "min": 0,
                 "name": "x",
-                "notes": "the x coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any pixel replacement before it. Map a rendered pixel to it with render.locate",
+                "notes": "the x coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any layer before it. Map a rendered pixel to it with render.locate",
                 "precision": null,
                 "required": true,
                 "step": null,
@@ -2842,7 +3280,7 @@
                 "max": 16383,
                 "min": 0,
                 "name": "y",
-                "notes": "the y coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any pixel replacement before it. Map a rendered pixel to it with render.locate",
+                "notes": "the y coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any layer before it. Map a rendered pixel to it with render.locate",
                 "precision": null,
                 "required": true,
                 "step": null,
@@ -5169,6 +5607,167 @@
   },
   "schema.list": {
     "methods": {
+      "edit.accept-correction-patch": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Adds a task's candidate patch on top of the photograph's corrections as a frozen patch and answers it as correction {operation, name, index}. The candidate must be live, belong to this photograph and have been generated against what a new top correction reads now (otherwise conflict, with data.reasons); its bytes are published as a repair-patch artifact off the catalog owner before the one entry is committed. A frozen patch keeps rendering when what it was generated against changes, and is then reported stale.",
+        "optional": {
+          "opacity": "how strongly the patch blends"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "job_id",
+            "notes": "the task job that published the candidate",
+            "of": "job",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "integer",
+            "max": 3,
+            "min": 0,
+            "name": "candidate",
+            "notes": "the candidate's number in its job, as job.read lists it",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 100,
+            "kind": "integer",
+            "max": 100,
+            "min": 0,
+            "name": "opacity",
+            "notes": "how strongly the patch blends",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "job_id",
+          "candidate"
+        ],
+        "revision_of": "asset"
+      },
+      "edit.add-correction": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Adds one Clone or Heal operation on top of the photograph's corrections and answers it as correction {operation, name, index, source-x, source-y, source-origin}. With source-x and source-y the source is set; without them the best automatic source is found off the catalog owner against this revision and stored as an ordinary offset, or the request is refused with data.reason no-source. A photograph holds at most 100 corrections.",
+        "optional": {
+          "feather": "the share of the radius over which coverage falls to zero",
+          "mode": "heal borrows the source's detail and adapts it to the destination's tone; clone copies the source's pixels",
+          "opacity": "how strongly the correction blends",
+          "source-x": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+          "source-y": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "points",
+            "name": "points",
+            "notes": "the correction's path in the content stage's normalized coordinates (x a fraction of its width, y of its height, the frame 0..1), in drawn order, raw or already decimated; one position is a spot. Its first stored position is the anchor the source is measured from. The stroke it decimates to holds at most 1024 positions",
+            "points_max": 16384,
+            "points_min": 1,
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 0.25,
+            "min": 0.0005,
+            "name": "radius",
+            "notes": "the brush radius in content heights, so a spot is round at any aspect ratio; a resize keeps the stored positions",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": "content heights"
+          },
+          {
+            "default": "heal",
+            "kind": "enum",
+            "name": "mode",
+            "notes": "heal borrows the source's detail and adapts it to the destination's tone; clone copies the source's pixels",
+            "options": [
+              "heal",
+              "clone"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 50,
+            "kind": "integer",
+            "max": 100,
+            "min": 0,
+            "name": "feather",
+            "notes": "the share of the radius over which coverage falls to zero",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 100,
+            "kind": "integer",
+            "max": 100,
+            "min": 0,
+            "name": "opacity",
+            "notes": "how strongly the correction blends",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "source-x",
+            "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "source-y",
+            "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "points",
+          "radius"
+        ],
+        "revision_of": "asset"
+      },
       "edit.apply-settings": {
         "mutates": true,
         "mutation": "revision",
@@ -5426,6 +6025,32 @@
         ],
         "revision_of": "asset"
       },
+      "edit.delete-correction": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Removes one correction.",
+        "optional": {},
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "operation",
+            "notes": "the correction, correction-<n>, as add-correction answered it",
+            "of": "correction",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "operation"
+        ],
+        "revision_of": "asset"
+      },
       "edit.pick-raw-neutral": {
         "mutates": true,
         "mutation": "revision",
@@ -5469,6 +6094,45 @@
           "raw"
         ]
       },
+      "edit.reorder-correction": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Moves one correction in the order corrections apply in; it then samples the corrections below its new place.",
+        "optional": {},
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "operation",
+            "notes": "the correction, correction-<n>, as add-correction answered it",
+            "of": "correction",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "integer",
+            "max": 99,
+            "min": 0,
+            "name": "index",
+            "notes": "the correction's new place in application order, 0 the bottom, counted after removing it",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "operation",
+          "index"
+        ],
+        "revision_of": "asset"
+      },
       "edit.reset-basic": {
         "mutates": true,
         "mutation": "revision",
@@ -5494,6 +6158,19 @@
           "step": null,
           "unit": null
         }
+      },
+      "edit.reset-corrections": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Removes every correction; numbers already used are not reused.",
+        "optional": {},
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "revision_of": "asset"
       },
       "edit.reset-curve": {
         "mutates": true,
@@ -6986,6 +7663,141 @@
           "asset_id",
           "mutation",
           "transform"
+        ],
+        "revision_of": "asset"
+      },
+      "edit.update-correction": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Changes the sent fields of one correction. New points move its destination and keep its source where it is unless a source is sent too; a radius keeps the stored positions. Answers the correction as add-correction does.",
+        "optional": {
+          "feather": "the share of the radius over which coverage falls to zero",
+          "mode": "heal borrows the source's detail and adapts it to the destination's tone; clone copies the source's pixels",
+          "opacity": "how strongly the correction blends",
+          "points": "the correction's path in the content stage's normalized coordinates (x a fraction of its width, y of its height, the frame 0..1), in drawn order, raw or already decimated; one position is a spot. Its first stored position is the anchor the source is measured from. The stroke it decimates to holds at most 1024 positions",
+          "radius": "the brush radius in content heights, so a spot is round at any aspect ratio; a resize keeps the stored positions",
+          "source-origin": "where the sent source came from, only with source-x and source-y; set when omitted",
+          "source-x": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+          "source-y": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "operation",
+            "notes": "the correction, correction-<n>, as add-correction answered it",
+            "of": "correction",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "points",
+            "notes": "the correction's path in the content stage's normalized coordinates (x a fraction of its width, y of its height, the frame 0..1), in drawn order, raw or already decimated; one position is a spot. Its first stored position is the anchor the source is measured from. The stroke it decimates to holds at most 1024 positions",
+            "points_max": 16384,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 0.25,
+            "min": 0.0005,
+            "name": "radius",
+            "notes": "the brush radius in content heights, so a spot is round at any aspect ratio; a resize keeps the stored positions",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "content heights"
+          },
+          {
+            "default": null,
+            "kind": "enum",
+            "name": "mode",
+            "notes": "heal borrows the source's detail and adapts it to the destination's tone; clone copies the source's pixels",
+            "options": [
+              "heal",
+              "clone"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "integer",
+            "max": 100,
+            "min": 0,
+            "name": "feather",
+            "notes": "the share of the radius over which coverage falls to zero",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "integer",
+            "max": 100,
+            "min": 0,
+            "name": "opacity",
+            "notes": "how strongly the correction blends",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "source-x",
+            "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "source-y",
+            "notes": "the absolute position the anchor samples from, in the same normalized coordinates as points; send source-x and source-y together",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "enum",
+            "name": "source-origin",
+            "notes": "where the sent source came from, only with source-x and source-y; set when omitted",
+            "options": [
+              "auto",
+              "set"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation",
+          "operation"
         ],
         "revision_of": "asset"
       },
@@ -8929,6 +9741,80 @@
           "unit": null
         }
       },
+      "query.correction-sources": {
+        "mutates": false,
+        "notes": "Ranks automatic sources without writing anything, exactly as add-correction ranks them (rank 1 is what an add stores): {outcome: found | no-source, candidates: [{rank, source-x, source-y, score}]}. Send operation, or points with radius. Read off the catalog owner.",
+        "optional": {
+          "count": "how many ranked sources to answer",
+          "entry_id": "entry to ask about; default the session's selection",
+          "operation": "rank sources for this correction, over the corrections below it",
+          "points": "rank sources for a new correction on this path, over every correction",
+          "radius": "the new correction's radius, with points"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "operation",
+            "notes": "rank sources for this correction, over the corrections below it",
+            "of": "correction",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "points",
+            "notes": "rank sources for a new correction on this path, over every correction",
+            "points_max": 16384,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 0.25,
+            "min": 0.0005,
+            "name": "radius",
+            "notes": "the new correction's radius, with points",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "content heights"
+          },
+          {
+            "default": 8,
+            "kind": "integer",
+            "max": 8,
+            "min": 1,
+            "name": "count",
+            "notes": "how many ranked sources to answer",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
+        ]
+      },
+      "query.corrections": {
+        "mutates": false,
+        "notes": "The photograph's corrections as stored, in application order: {limit, next, operations: [{operation, name, kind, index, points, radius, feather, opacity, source-x, source-y, source-origin}]}; a frozen patch is {operation, name, kind: patch, index, label, artifact, rect, opacity, provenance, stale?}, stale: {reasons} (source, dimensions, development, earlier-correction) when what it was generated against changed. Reads no pixel.",
+        "optional": {
+          "entry_id": "entry to ask about; default the session's selection"
+        },
+        "parameters": [],
+        "required": [
+          "asset_id"
+        ]
+      },
       "query.lens-profiles": {
         "mutates": false,
         "notes": "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
@@ -9004,7 +9890,7 @@
             "max": 16383,
             "min": 0,
             "name": "x",
-            "notes": "the x coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any pixel replacement before it. Map a rendered pixel to it with render.locate",
+            "notes": "the x coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any layer before it. Map a rendered pixel to it with render.locate",
             "precision": null,
             "required": true,
             "step": null,
@@ -9016,7 +9902,7 @@
             "max": 16383,
             "min": 0,
             "name": "y",
-            "notes": "the y coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any pixel replacement before it. Map a rendered pixel to it with render.locate",
+            "notes": "the y coordinate, in pixels of the stage the Basic layer receives: the content stage, the source after EXIF orientation plus any layer before it. Map a rendered pixel to it with render.locate",
             "precision": null,
             "required": true,
             "step": null,
