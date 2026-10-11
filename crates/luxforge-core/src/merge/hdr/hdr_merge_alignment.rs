@@ -3,7 +3,8 @@
 //! covered rectangle; `luxforge_reference::hdr` for the simulated RAW camera).
 //!
 //! Declared tolerances: a fitted motion within 0.1 full-resolution pixels of the recorded one at
-//! every frame corner (noise-free) or 0.15 (with noise); its brightness offset within 0.05 EV of
+//! every frame corner (noise-free) or 0.15 (with noise), and within 0.02 of a turned and shifted
+//! frame of detail at the sampling limit (noise-free); its brightness offset within 0.05 EV of
 //! the recorded exposure; resampled samples within `1e-6 · max|reference| + 1e-9` of the
 //! reference bilinear (both `f64`, one `f32` rounding) with identical levels; coverage exact.
 
@@ -374,6 +375,32 @@ fn registers_through_a_reduced_proxy() {
         height as u32,
     );
     assert!(distance <= 0.25, "{distance} px");
+}
+
+#[test]
+fn detail_at_the_sampling_limit_does_not_pull_a_fit() {
+    // Texture with gratings 3.3 and 3.7 pixels apart, ±1.2 stops, near the frames' sampling
+    // limit: sampled bilinearly in the turned and shifted input alone, softened by a sub-pixel
+    // phase that varies over the frame, and read as recorded in the reference, it pulled each fit
+    // 0.15 to 0.2 pixel off its motion at every exposure. Through the prefilter, under a
+    // hundredth.
+    let texture = geometry::textured_scene(11);
+    let scene = |x: f64, y: f64| {
+        let tau = std::f64::consts::TAU;
+        let stops =
+            0.6 * (tau * (x / 3.3 + y / 7.9)).sin() + 0.6 * (tau * (y / 3.7 - x / 8.3)).sin();
+        texture(x, y).map(|v| v * stops.exp2())
+    };
+    let motions = [Rigid::identity(W, H), Rigid::new(W, H, 0.8, (5.3, -3.7))];
+    for offset in [0.0, -1.0, -2.0, -4.0] {
+        let frames = bracket(&scene, W, H, &[0.0, offset], &motions, None);
+        let (_, registration) = register_all(&frames, 0, AlignmentMode::Auto);
+        let got = &registration.expect("aligns").inputs[1];
+        let distance =
+            got.transform
+                .corner_distance(&transform(&motions[1], W, H), W as u32, H as u32);
+        assert!(distance <= 0.02, "{offset} EV: {distance} px: {got:?}");
+    }
 }
 
 #[test]
