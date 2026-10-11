@@ -284,18 +284,17 @@
     },
     {
       "id": "TASK-006",
-      "description": "Add the inference port to the core, the ONNX Runtime crate behind it, the deterministic fake, the host-planned reference read in ModuleContext, and the local-runtime capability with activation and unload.",
-      "status": "in_progress",
+      "description": "Add the inference port to the core, the deterministic fake, the host-planned reference read in ModuleContext, and the local-runtime capability with activation and unload.",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
-        "The port is two traits the core declares and never implements natively: Session (open a verified model file on a named backend; run named tensors in and out; report placement and precision) and Generator (image, mask, optional prompt or embedding, seed; yield candidates one at a time, cancellably). A new crate, luxforge-onnx, implements Session over ort 2.0.0-rc.13 statically linked with the Core ML provider on macOS and DirectML on Windows, writes the fixed-shape Core ML copy of a model once at install time, keeps the compile cache under the application data root keyed by model hash, runtime version and OS build, and is handed to the host through HostConfig as luxforge-net's transport is. A deterministic fake backend implementing both traits lives in luxforge-core beside the proof modules and is served only to developer runs and tests: the core-free-test-base rule keeps every workspace crate out of luxforge-testbase and the core-builds-once rule keeps the core from naming luxforge-testkit, so the fake can live nowhere else.",
+        "The port is the InferenceRuntime, Session and Generator traits the core declares and never implements natively, handed to the host through HostConfig.inference as luxforge-net's transport is; the native ONNX Runtime crate is the model manager task's. A deterministic fake implementing them lives in luxforge-core beside the proof modules and is served only to developer runs and tests: the core-free-test-base rule keeps every workspace crate out of luxforge-testbase and the core-builds-once rule keeps the core from naming luxforge-testkit, so the fake can live nowhere else.",
         "The Generator trait is what the generative workflow and the local provider share: an input crop in the model's encoded domain with its mask, an optional prompt or precomputed embedding, a seed and a step count; it yields one candidate at a time with per-step progress and cancellation and reports the provenance fields (model identity, version and hash, runtime, backend, precision, seed, steps, sampler, prompt hash). The fake generator is deterministic in its inputs and seed, can be told to be slow or to fail, and is registered only in developer runs and tests.",
-        "A dependency rule row in xtask/src/repository.rs keeps ort, ort-sys and every runtime crate out of luxforge-core's manifest, with an allowed and a refused case in its tests; add a new xtask archive check against the pinned version, SHA-256 and published attestation, with explicit failure tests; no such archive-attestation check exists today.",
         "The local-runtime capability is defined by this consumer: a module declaring it may hold loaded sessions between tasks in a host-owned slot with a declared resident budget per model, is unloaded on a memory signal or after an idle interval (recorded default 10 minutes), is never loaded by module.list, a catalog open or a launch, and reports its resident set through module.status. The capability brings two generated methods, module.runtime.load {module_id, resource_id} (a tool's warm-up on pick) and module.runtime.unload {module_id, resource_id?} (the Models tab's Unload now), so loading and releasing are requests any client can send. CapabilityKind gains local-runtime; today serde rejects that unknown variant before registration, and managed-storage stays unsupported.",
         "Every AI pixel read uses a host-planned bounded stage read, and the generative fill needs it before the analysis cache exists, so it is part of this foundation. ModuleContext has no pixel-read port today: add one that holds an immutable evaluation and cancellation off the owner, using the reference reads in luxforge_core::tiles, independently of the host's production GPU provider. TileSession::read reads ReadStage::Before {layer, mode} rectangles in ReadValues::Linear, bounded to one evaluated frame per read; TileService::stream provides output-stage RGBA8 bands for export, not arbitrary-prefix bands. The host selects the stage boundary (the repair stage's input for a fill, its output for analysis) and sampling mode; the module reduces tiled reads on its lane. TILE_QUEUE_CAPACITY is nine (eight clients plus desktop); define bounded admission for module reads without silently enlarging it. Owner, 2026-10-07: every AI input uses reference reads on every host. The read reports the input identity (source, dimensions, development, earlier corrections) the Corrections candidate seam records, so a candidate generated from it is accepted or refused by edit.accept-correction-patch's existing check.",
-        "Nothing in this task renders, and no model ships: it is proven with the fake and with one pinned model file the test downloads nowhere (the harness's installed EfficientViT-SAM, opt-in)."
+        "Nothing in this task renders, links a runtime or ships a model: it is proven with the fake."
       ],
       "context_links": [
         {
@@ -313,18 +312,6 @@
         },
         {
           "kind": "file",
-          "label": "Transport injection",
-          "target": "crates/luxforge-net/src/lib.rs",
-          "relevance": "The pattern for a native crate the core never links, handed in through HostConfig."
-        },
-        {
-          "kind": "file",
-          "label": "Repository rules",
-          "target": "xtask/src/repository.rs",
-          "relevance": "The dependency rule table a runtime-free core joins."
-        },
-        {
-          "kind": "file",
           "label": "Module capabilities design",
           "target": "docs/design/module-capabilities.md",
           "locator": "Lifecycle, jobs and resources",
@@ -338,35 +325,34 @@
         }
       ],
       "acceptance_criteria": [
-        "luxforge-core builds and tests without any runtime crate, the new dependency rule refuses one, and the desktop and luxforge-json link luxforge-onnx through HostConfig; the developer-only fake in the core drives every core test and scenario that needs a session or a generator, and luxforge-testbase's manifest is unchanged.",
-        "On the M4 the opt-in test opens the pinned segmenter on the CPU provider and on Core ML over the fixed-shape copy, matches the two within the recorded tolerance, and reports placement and precision.",
+        "luxforge-core builds and tests without any runtime crate; the desktop and luxforge-json hand the developer-only fake to the host through HostConfig.inference; the fake drives every core test and scenario that needs a session or a generator, and luxforge-testbase's manifest is unchanged.",
         "ModuleContext's read returns a bounded linear rectangle of the host-chosen stage from the reference renderer off the owner, with its input identity, honours cancellation and bounded admission, and is byte-identical to the reference renderer's own read of the same rectangle.",
         "A module declaring local-runtime loads once ahead of its tasks through module.runtime.load or on its first task, is reported by module.status, unloads through module.runtime.unload, after the idle interval and on the memory signal, and is never loaded by module.list, a catalog open or a launch; the capability's registration rules and the archive hash check have tests.",
         "The performance-rules checklist is answered: no owner-thread or interface-thread inference, bounded resident memory, cancellation between runs."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "unit",
         "steps": [
-          "Unit-test the port against the fake, the dependency rule, the activation lifecycle and the hash check.",
-          "Run the opt-in native test with the installed segmenter on both providers and compare outputs."
+          "Unit-test the port against the fake, the activation lifecycle through the owner's JSON methods, and the read port's identity, admission and cancellation."
         ],
         "commands": [
-          "cargo test --locked --package luxforge-core",
-          "cargo test --locked --package luxforge-onnx"
+          "cargo test --locked --package luxforge-core"
         ],
         "expected_results": [
-          "A runtime-free core with one port, one native implementation and one fake, and a defined local-runtime capability."
+          "A runtime-free core with one port and one fake, a defined local-runtime capability and a host-planned reference read."
         ]
       }
     },
     {
       "id": "TASK-007",
-      "description": "Deliver the model manager: multi-file resources, resumable hash-checked downloads, plain-language model choices with any use restriction in the disclosure, and the Settings Models tab.",
+      "description": "Deliver real models: the ONNX Runtime crate behind the inference port, and the model manager with multi-file resources, resumable hash-checked downloads, plain-language model choices with any use restriction in the disclosure, and the Settings Models tab.",
       "status": "in_progress",
       "dependencies": [
         "TASK-006"
       ],
       "extra_context": [
+        "A new crate, luxforge-onnx, implements luxforge_core::inference::InferenceRuntime and Session over ort 2.0.0-rc.13 statically linked with the Core ML provider on macOS and DirectML on Windows, writes the fixed-shape Core ML copy of a model once at install time, keeps the compile cache under the application data root keyed by model hash, runtime version and OS build, reports a real Placement, and is handed to the host through HostConfig.inference in the desktop and luxforge-json as luxforge-net's transport is. HostConfig.inference holds one runtime, so serving the developer fake beside it needs a composite runtime that dispatches by backend name.",
+        "A dependency rule row in xtask/src/repository.rs keeps ort, ort-sys and every runtime crate out of luxforge-core's manifest, with an allowed and a refused case in its tests; add a new xtask archive check against the pinned version, SHA-256 and published attestation, with explicit failure tests; no such archive-attestation check exists today.",
         "A resource today is one file from one pinned URL, staged, length- and SHA-256-checked, validated by the module's hook, installed under <data>/modules/resources/<module>/<resource>/<version>/ with installed.json last; an interrupted download restarts. This task adds several files per resource installed together or not at all, resumption of a matching partial transfer with the whole-file hash still checked at the end, and the fixed-shape Core ML copy written after install as part of the resource's directory.",
         "The resource descriptor gains a one-line use restriction, present only when the licence restricts how the person may use their results, a plain-language trade-off label for every choice between models (\"Finds smaller objects; slower to start\", never a technical name alone), and runtime requirements (backend, precision, resident budget, minimum machine memory); the disclosure before a download shows the size, the destination and the restriction line, and no training-data note (owner, 2026-10-05). A machine below a model's minimum cannot install it and sees the requirement.",
         "Settings gains a Models tab: every known model with its state, size, trade-off label, any use restriction and Remove; the resident set with Unload now (module.runtime.unload); each feature's default tier; this machine's memory against each minimum. It reads module.resource.list and module.status and writes through module.resource.install, module.resource.remove and module.runtime.unload; nothing in it changes a recipe.",
@@ -398,9 +384,29 @@
           "target": "docs/design/module-capabilities.md",
           "locator": "Configuration contract",
           "relevance": "The resource declaration and its registration rules."
+        },
+        {
+          "kind": "file",
+          "label": "Transport injection",
+          "target": "crates/luxforge-net/src/lib.rs",
+          "relevance": "The pattern for a native crate the core never links, handed in through HostConfig."
+        },
+        {
+          "kind": "file",
+          "label": "Repository rules",
+          "target": "xtask/src/repository.rs",
+          "relevance": "The dependency rule table a runtime-free core joins."
+        },
+        {
+          "kind": "file",
+          "label": "Inference port",
+          "target": "crates/luxforge-core/src/inference/mod.rs",
+          "relevance": "The InferenceRuntime and Session traits luxforge-onnx implements."
         }
       ],
       "acceptance_criteria": [
+        "luxforge-core still builds and tests without any runtime crate, the new dependency rule refuses one, and the desktop and luxforge-json link luxforge-onnx through HostConfig.inference, with the developer fake still served to developer runs; the archive hash check has failure tests.",
+        "On the M4 the opt-in test opens the pinned segmenter on the CPU provider and on Core ML over the fixed-shape copy, matches the two within the recorded tolerance, and reports placement and precision.",
         "A multi-file resource installs atomically or not at all; an interrupted transfer resumes from its offset and is refused if the final hash differs; stale staging is removed; the fixed-shape copy is written once and recorded.",
         "The disclosure and the resource card show size, destination, the trade-off label, the use restriction when there is one and the requirements, and no training-data note; a model above the machine's memory cannot be installed and says why.",
         "The Models tab lists, removes and unloads models through module.resource.remove and module.runtime.unload, each shown by Copy as JSON request, and a settings smoke frame shows it with its state correlated to module.status.",
@@ -409,11 +415,13 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
+          "Unit-test the dependency rule and the archive check; run the opt-in native test with the harness's installed segmenter on both providers and compare outputs.",
           "Lifecycle tests over the loopback test server: multi-file, resume, hash mismatch after resume, quota, policy flag, machine minimum.",
           "Extend the settings smoke scenario to the Models tab and read its frames against state."
         ],
         "commands": [
           "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-onnx",
           "cargo test --locked --package luxforge-app",
           "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
         ],
