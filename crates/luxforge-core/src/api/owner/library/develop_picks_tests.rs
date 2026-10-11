@@ -372,9 +372,10 @@ fn asset_of(report: &Value, name: &str) -> Value {
 }
 
 /// A plan groups the files by event over every file its folders hold, chronologically and undated
-/// last; proposes the folder an earlier Develop made from an event (by its span) or a new one named
-/// after its place and month, unique among the top-level folders; counts the picks on a removable
-/// volume and those with a copy in an indexed folder; and counts the offline file.
+/// last, with each event's capture days and undated count; proposes the folder an earlier Develop
+/// made from an event (by its span), with day folders, or its place, never numbered; counts the
+/// picks on a removable volume and those with a copy in an indexed folder; and counts the offline
+/// file.
 #[test]
 fn develop_picks_plan_groups_by_event_and_proposes_folders() {
     let harness = Harness::new("plan");
@@ -432,8 +433,8 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
         record(&c2, &card.id),
         gone_record,
     ]);
-    // An earlier Develop's folder from the Zürich event, and an unrelated one named as the new
-    // Konstanz folder would be.
+    // An earlier Develop's folder from the Zürich event, and an unrelated one named as the
+    // Konstanz place is.
     let zurich = folder(
         "Zürich trip",
         Some(EventSpan {
@@ -455,7 +456,7 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
             upsert_volume(tx, volume)?;
         }
         insert_catalog_folder(tx, &zurich)?;
-        insert_catalog_folder(tx, &folder("Konstanz · Sep 2026", None))?;
+        insert_catalog_folder(tx, &folder("Konstanz", None))?;
         insert_indexed_folder(tx, &dump_folder)
     });
 
@@ -491,17 +492,21 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
     assert!(events.iter().all(|event| event["event_id"].is_string()));
     assert_eq!(
         events[0]["folder"],
-        json!({"kind": "new", "name": "Konstanz · Sep 2026 2"}),
-        "the name the unrelated folder has is taken"
+        json!({"kind": "place", "name": "Konstanz"}),
+        "a place is never numbered"
+    );
+    assert_eq!(
+        (&events[0]["days"], events[0].get("undated")),
+        (&json!(["2026-09-12"]), None)
     );
     assert_eq!(
         events[1]["folder"],
-        json!({"kind": "existing", "folder_id": zurich_id})
+        json!({"kind": "existing", "folder_id": zurich_id, "days": true})
     );
     assert_eq!(events[1]["folder_name"], "Zürich trip");
     assert_eq!(
         events[2]["folder"],
-        json!({"kind": "new", "name": "Lindau · Sep 2026"})
+        json!({"kind": "place", "name": "Lindau"})
     );
     assert_eq!(
         events[2]["removable"],
@@ -509,13 +514,21 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
     );
     assert_eq!(
         events[3]["folder"],
-        json!({"kind": "new", "name": "Konstanz · Oct 2026"})
+        json!({"kind": "place", "name": "Konstanz"})
     );
     assert!(
         events[3].get("removable").is_none(),
         "an offline file is not developable"
     );
-    assert_eq!(events[4]["folder"], json!({"kind": "new", "name": "loose"}));
+    // The file no index lists is an undated frame of its folder, named after it.
+    assert_eq!(
+        events[4]["folder"],
+        json!({"kind": "place", "name": "loose"})
+    );
+    assert_eq!(
+        (events[4].get("days"), &events[4]["undated"]),
+        (None, &json!(1))
+    );
 
     // Without targets a plan takes the view's picks, and there is no view yet.
     let refused = harness.refused("pick.plan", json!({}));
@@ -525,7 +538,8 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
 
 /// Developing the picks of two events brings in exactly those photographs, in batches — the first
 /// of one file, then the rest of its event, then the next event — each one library change announced
-/// once: new folders named after the events with their spans, each photograph with its
+/// once: the year, place and day folders each event needs, made by the batch that first files a
+/// photograph in them, a place folder with its event's span, each photograph with its
 /// fingerprint, interpretation, Original entry, capture row with its place, source folder and
 /// burst, the committed picks cleared, and every original unchanged.
 #[test]
@@ -599,7 +613,14 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
     };
     assert_eq!(
         kinds(&changes[0]),
-        ["catalog-folder ", "developed-asset ", "pick k1.jpg"]
+        [
+            "catalog-folder ",
+            "catalog-folder ",
+            "catalog-folder ",
+            "developed-asset ",
+            "pick k1.jpg"
+        ],
+        "2026, Konstanz and 12 Sep, parents first"
     );
     assert_eq!(
         kinds(&changes[1]),
@@ -613,6 +634,7 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
     assert_eq!(
         kinds(&changes[2]),
         [
+            "catalog-folder ",
             "catalog-folder ",
             "developed-asset ",
             "pick z1.jpg",
@@ -656,7 +678,15 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
         "every one names the job: {events:?}"
     );
 
-    // The folders the plan proposed, made from their events.
+    // The places the plan proposed, under their year, each photograph in its day's folder, and
+    // each place folder made from its event; the year found by the second event.
+    assert_eq!(
+        (&plan["events"][0]["folder"], &plan["events"][1]["folder"]),
+        (
+            &json!({"kind": "place", "name": "Konstanz"}),
+            &json!({"kind": "place", "name": "Zürich"})
+        )
+    );
     let folders = harness.ok("folder.list", json!({}))["folders"].clone();
     let names: Vec<&str> = folders
         .as_array()
@@ -664,9 +694,19 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
         .iter()
         .map(|folder| folder["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Konstanz · Sep 2026", "Zürich · Sep 2026"]);
-    let konstanz = &folders[0];
-    assert_eq!(konstanz["count"], 3);
+    assert_eq!(names, ["2026", "Konstanz", "12 Sep", "Zürich", "16 Sep"]);
+    assert_eq!(folders[0].get("event"), None, "a year records no event");
+    assert_eq!(folders[2].get("event"), None, "a day records no event");
+    assert_eq!(folders[2]["parent_id"], folders[1]["id"]);
+    assert_eq!(folders[1]["parent_id"], folders[0]["id"]);
+    assert_eq!(folders[3]["parent_id"], folders[0]["id"]);
+    assert_eq!(
+        folders[3]["event"]["event_id"],
+        plan["events"][1]["event_id"]
+    );
+    assert_eq!(folders[2]["count"], 3);
+    let konstanz = &folders[1];
+    assert_eq!(konstanz["count"], 0, "its photographs are in its day");
     assert_eq!(konstanz["event"]["event_id"], plan["events"][0]["event_id"]);
     assert_eq!(
         konstanz["event"]["start_ms"],
@@ -713,9 +753,9 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
         assert_eq!(availability, "available");
         assert_eq!(kind, "jpeg");
         let expected = if name.starts_with('k') {
-            ("Konstanz · Sep 2026", "Konstanz")
+            ("12 Sep", "Konstanz")
         } else {
-            ("Zürich · Sep 2026", "Zürich")
+            ("16 Sep", "Zürich")
         };
         assert_eq!(
             (folder.as_str(), place.as_deref()),
@@ -1118,7 +1158,8 @@ fn develop_picks_answers_a_retry_with_the_first_result() {
 }
 
 /// `library.undo` of a Develop sends its unedited photograph back — its record deleted, its file
-/// picked again as it was, its new folder gone — and redoing it is refused; an edited photograph
+/// picked again as it was, the year, place and day folders it made gone — and redoing it is
+/// refused; an edited photograph
 /// refuses the undo, naming it, and nothing changes.
 #[test]
 fn develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photograph() {
@@ -1135,7 +1176,8 @@ fn develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photograph() 
             .as_array()
             .unwrap()
             .len(),
-        1
+        3,
+        "2026 › Konstanz › 12 Sep"
     );
 
     let undone = harness.ok("library.undo", json!({"mutation": envelope("undo-1")}));
@@ -1212,8 +1254,8 @@ fn develop_picks_undo_of_a_develop_in_batches_is_one_step() {
     let undone = harness.ok("library.undo", json!({"mutation": envelope("undo-all")}));
     assert_eq!(
         (&undone["outcome"], &undone["items"]),
-        (&json!("applied"), &json!(7)),
-        "three photographs sent back, three picks restored and the new folder gone: {undone}"
+        (&json!("applied"), &json!(9)),
+        "three photographs sent back, three picks restored and the three folders gone: {undone}"
     );
     assert_eq!(harness.photographs(), 0);
     assert_eq!(harness.ok("folder.list", json!({}))["folders"], json!([]));
@@ -1230,7 +1272,7 @@ fn develop_picks_undo_of_a_develop_in_batches_is_one_step() {
     let retry = harness.ok("library.undo", json!({"mutation": envelope("undo-all")}));
     assert_eq!(
         (&retry["change"], &retry["items"], &retry["deduplicated"]),
-        (&undone["change"], &json!(7), &json!(true))
+        (&undone["change"], &json!(9), &json!(true))
     );
     assert_eq!(harness.photographs(), 0, "a retry undoes nothing more");
 
@@ -1569,6 +1611,363 @@ fn develop_picks_into_sends_each_event_to_the_folder_it_names() {
         portfolio.get("event"),
         None,
         "an existing folder keeps its own"
+    );
+}
+
+/// The catalog folder tree as each folder's path ("2026 › Konstanz › 12 Sep") and count, in
+/// `folder.list`'s order, and each photograph's folder path by its file name.
+fn filed(harness: &Harness) -> (Vec<(String, u64)>, Vec<(String, String)>) {
+    let folders = harness.ok("folder.list", json!({}))["folders"].clone();
+    let folders = folders.as_array().unwrap();
+    let path_of = |id: &str| {
+        let mut names = Vec::new();
+        let mut at = Some(id.to_owned());
+        while let Some(id) = at {
+            let folder = folders.iter().find(|folder| folder["id"] == id).unwrap();
+            names.push(folder["name"].as_str().unwrap().to_owned());
+            at = folder["parent_id"].as_str().map(str::to_owned);
+        }
+        names.reverse();
+        names.join(" › ")
+    };
+    let tree = folders
+        .iter()
+        .map(|folder| {
+            (
+                path_of(folder["id"].as_str().unwrap()),
+                folder["count"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let photographs = harness
+        .query(
+            "SELECT file_name, catalog_folder_id FROM assets ORDER BY file_name",
+            vec![],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .into_iter()
+        .map(|(name, folder)| (name, path_of(&folder)))
+        .collect();
+    (tree, photographs)
+}
+
+/// How many folders each change of a report made.
+fn folders_made(harness: &Harness, report: &Value) -> Vec<usize> {
+    report["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|sequence| {
+            harness.inspect(sequence)["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["item"]["kind"] == "catalog-folder")
+                .count()
+        })
+        .collect()
+}
+
+fn pair(path: &str, count: u64) -> (String, u64) {
+    (path.to_owned(), count)
+}
+
+fn at(name: &str, path: &str) -> (String, String) {
+    (name.to_owned(), path.to_owned())
+}
+
+/// Each photograph a place takes is filed under the year of its own capture day, the place and
+/// its day: folders found by name ignoring case are used as they are, and the rest are made by the
+/// batch that first files a photograph in them, parents first; events of one place share them, an
+/// event that crosses a year files each photograph under its own year, and a photograph with no
+/// capture time goes to Undated › its place. A place folder Develop makes records the event that
+/// made it, and a year or day folder none. Undoing the Develop deletes the folders it made and
+/// leaves the ones it found.
+#[test]
+fn develop_picks_files_each_photograph_under_its_year_place_and_day() {
+    let harness = Harness::new("place");
+    let trip = harness.dir.join("trip");
+    let zurich = |time: &str| Shot::at(time).in_place(47.3769, 8.5417);
+    let n1 = photo(&trip.join("n1.jpg"), &Shot::at("2025:12:31 23:00:00"));
+    let n2 = photo(&trip.join("n2.jpg"), &Shot::at("2026:01:01 00:30:00"));
+    let k1 = photo(&trip.join("k1.jpg"), &Shot::at("2026:09:12 22:30:00"));
+    let k2 = photo(&trip.join("k2.jpg"), &Shot::at("2026:09:13 00:30:00"));
+    let k3 = photo(&trip.join("k3.jpg"), &Shot::at("2026:09:13 01:30:00"));
+    let z1 = photo(&trip.join("z1.jpg"), &zurich("2026:09:16 10:00:00"));
+    let z2 = photo(&trip.join("z2.jpg"), &zurich("2026:09:18 10:00:00"));
+    let k4 = photo(&trip.join("k4.jpg"), &Shot::at("2026:09:20 10:00:00"));
+    let s1 = photo(
+        &harness.dir.join("scans").join("s1.jpg"),
+        &Shot::undated("1"),
+    );
+    let all = [&n1, &n2, &k1, &k2, &k3, &z1, &z2, &k4, &s1];
+    harness.index_paths(&all);
+    // A year and a place a person made, named in another case.
+    let year = harness.ok(
+        "folder.create",
+        json!({"name": "2026", "mutation": envelope("year")}),
+    )["folder"]["id"]
+        .clone();
+    harness.ok(
+        "folder.create",
+        json!({"name": "KONSTANZ", "parent_id": year, "mutation": envelope("place")}),
+    );
+    let targets = json!({"kind": "paths", "paths": all});
+
+    let plan = harness.ok("pick.plan", json!({"targets": targets}));
+    let events: Vec<(&Value, &Value, &Value)> = plan["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            (
+                &event["folder"]["name"],
+                event.get("days").unwrap_or(&Value::Null),
+                event.get("undated").unwrap_or(&Value::Null),
+            )
+        })
+        .collect();
+    assert_eq!(
+        events,
+        [
+            (
+                &json!("Konstanz"),
+                &json!(["2025-12-31", "2026-01-01"]),
+                &Value::Null
+            ),
+            (
+                &json!("Konstanz"),
+                &json!(["2026-09-12", "2026-09-13"]),
+                &Value::Null
+            ),
+            (&json!("Zürich"), &json!(["2026-09-16"]), &Value::Null),
+            (&json!("Zürich"), &json!(["2026-09-18"]), &Value::Null),
+            (&json!("Konstanz"), &json!(["2026-09-20"]), &Value::Null),
+            (&json!("scans"), &Value::Null, &json!(1)),
+        ],
+        "{plan}"
+    );
+    assert!(
+        plan["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["folder"]["kind"] == "place")
+    );
+
+    let report = harness.develop_paths("develop-place", &all);
+    assert_eq!(report["failed"], json!([]), "{report}");
+    assert_eq!(
+        folders_made(&harness, &report),
+        [
+            3, // 2025, Konstanz, 31 Dec
+            1, // 2026 and KONSTANZ found, 1 Jan
+            2, // 12 Sep, 13 Sep
+            2, // Zürich, 16 Sep
+            1, // 18 Sep
+            1, // 20 Sep
+            2, // Undated, scans
+        ]
+    );
+    let (tree, photographs) = filed(&harness);
+    assert_eq!(
+        tree,
+        [
+            pair("2026", 0),
+            pair("2026 › KONSTANZ", 0),
+            pair("2026 › KONSTANZ › 1 Jan", 1),
+            pair("2026 › KONSTANZ › 12 Sep", 1),
+            pair("2026 › KONSTANZ › 13 Sep", 2),
+            pair("2026 › KONSTANZ › 20 Sep", 1),
+            pair("2026 › Zürich", 0),
+            pair("2026 › Zürich › 16 Sep", 1),
+            pair("2026 › Zürich › 18 Sep", 1),
+            pair("2025", 0),
+            pair("2025 › Konstanz", 0),
+            pair("2025 › Konstanz › 31 Dec", 1),
+            pair("Undated", 0),
+            pair("Undated › scans", 1),
+        ]
+    );
+    assert_eq!(
+        photographs,
+        [
+            at("k1.jpg", "2026 › KONSTANZ › 12 Sep"),
+            at("k2.jpg", "2026 › KONSTANZ › 13 Sep"),
+            at("k3.jpg", "2026 › KONSTANZ › 13 Sep"),
+            at("k4.jpg", "2026 › KONSTANZ › 20 Sep"),
+            at("n1.jpg", "2025 › Konstanz › 31 Dec"),
+            at("n2.jpg", "2026 › KONSTANZ › 1 Jan"),
+            at("s1.jpg", "Undated › scans"),
+            at("z1.jpg", "2026 › Zürich › 16 Sep"),
+            at("z2.jpg", "2026 › Zürich › 18 Sep"),
+        ]
+    );
+    // Only a place folder Develop made records an event: the one whose batch made it.
+    let folders = harness.ok("folder.list", json!({}))["folders"].clone();
+    let event_of = |name: &str| {
+        folders
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|folder| folder["name"] == name)
+            .unwrap()
+            .get("event")
+            .cloned()
+    };
+    let new_year = event_of("Konstanz").expect("2025 › Konstanz records its event");
+    assert_eq!(new_year["event_id"], plan["events"][0]["event_id"]);
+    assert_eq!(new_year["start_ms"], instant("2025:12:31 23:00:00"));
+    assert_eq!(new_year["end_ms"], instant("2026:01:01 00:30:00"));
+    assert_eq!(
+        event_of("Zürich").unwrap()["event_id"],
+        plan["events"][2]["event_id"]
+    );
+    for unchanged in ["2026", "KONSTANZ", "2025", "31 Dec", "Undated", "scans"] {
+        assert_eq!(event_of(unchanged), None, "{unchanged}");
+    }
+
+    // Undone, the photographs go back and every folder it made goes with them.
+    let undone = harness.ok("library.undo", json!({"mutation": envelope("undo-place")}));
+    assert_eq!(undone["outcome"], "applied", "{undone}");
+    assert_eq!(harness.photographs(), 0);
+    assert_eq!(
+        filed(&harness).0,
+        [pair("2026", 0), pair("2026 › KONSTANZ", 0)]
+    );
+}
+
+/// A place is the event's place, else the user-named folder on disk that names it, else "Unknown
+/// place"; an undated event's is its folder's name. Once a Develop has filed an event, a later
+/// plan of its picks proposes the place folder it made, with day folders, and an undated folder's
+/// picks the folder its last developed photograph went into, without. A file no index lists, as an
+/// opened file is, takes its folder's name as its place and its year and day from its header.
+#[test]
+fn develop_picks_proposes_a_place_a_named_folder_or_the_folder_an_earlier_develop_made() {
+    let harness = Harness::new("proposals");
+    let nowhere = |time: &str| Shot {
+        position: None,
+        ..Shot::at(time)
+    };
+    let lake = harness.dir.join("2026-09-14 Lake");
+    let l1 = photo(&lake.join("l1.jpg"), &nowhere("2026:09:14 10:00:00"));
+    let l2 = photo(&lake.join("l2.jpg"), &nowhere("2026:09:14 11:00:00"));
+    let dcim = harness.dir.join("card").join("DCIM").join("100NZ8_1");
+    let u1 = photo(&dcim.join("u1.jpg"), &nowhere("2026:09:15 10:00:00"));
+    let anna = harness.dir.join("From Anna");
+    let s1 = photo(&anna.join("s1.jpg"), &Shot::undated("1"));
+    let s2 = photo(&anna.join("s2.jpg"), &Shot::undated("2"));
+    let opened = photo(
+        &harness.dir.join("Opened").join("o1.jpg"),
+        &Shot::at("2026:03:03 10:00:00"),
+    );
+    harness.index_paths(&[&l1, &l2, &u1, &s1, &s2]);
+    let proposals = |paths: &[&PathBuf]| -> Vec<(Value, Value)> {
+        harness.ok(
+            "pick.plan",
+            json!({"targets": {"kind": "paths", "paths": paths}}),
+        )["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                (
+                    event["folder"].clone(),
+                    event.get("folder_name").cloned().unwrap_or(Value::Null),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        proposals(&[&l1, &u1, &s1]),
+        [
+            (json!({"kind": "place", "name": "Lake"}), Value::Null),
+            (
+                json!({"kind": "place", "name": "Unknown place"}),
+                Value::Null
+            ),
+            (json!({"kind": "place", "name": "From Anna"}), Value::Null),
+        ]
+    );
+
+    harness.develop_paths("develop-first", &[&l1, &s1]);
+    let (tree, _) = filed(&harness);
+    assert_eq!(
+        tree,
+        [
+            pair("2026", 0),
+            pair("2026 › Lake", 0),
+            pair("2026 › Lake › 14 Sep", 1),
+            pair("Undated", 0),
+            pair("Undated › From Anna", 1),
+        ]
+    );
+    let id_of = |name: &str| {
+        harness.ok("folder.list", json!({}))["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|folder| folder["name"] == name)
+            .unwrap()["id"]
+            .clone()
+    };
+    let (lake_id, anna_id) = (id_of("Lake"), id_of("From Anna"));
+    assert_eq!(
+        proposals(&[&l2, &u1, &s2]),
+        [
+            (
+                json!({"kind": "existing", "folder_id": lake_id, "days": true}),
+                json!("Lake")
+            ),
+            (
+                json!({"kind": "place", "name": "Unknown place"}),
+                Value::Null
+            ),
+            (
+                json!({"kind": "existing", "folder_id": anna_id}),
+                json!("From Anna")
+            ),
+        ]
+    );
+    harness.develop_paths("develop-second", &[&l2, &s2]);
+
+    // The opened file: an undated frame of its folder in the plan, filed by its header.
+    let plan = harness.ok(
+        "pick.plan",
+        json!({"targets": {"kind": "paths", "paths": [&opened]}}),
+    );
+    assert_eq!(
+        (&plan["events"][0]["folder"], &plan["events"][0]["undated"]),
+        (&json!({"kind": "place", "name": "Opened"}), &json!(1))
+    );
+    let report = harness.develop_paths("develop-opened", &[&opened]);
+    assert_eq!(
+        folders_made(&harness, &report),
+        [2],
+        "2026 found, Opened and 3 Mar made"
+    );
+    let (tree, photographs) = filed(&harness);
+    assert_eq!(
+        tree,
+        [
+            pair("2026", 0),
+            pair("2026 › Lake", 0),
+            pair("2026 › Lake › 14 Sep", 2),
+            pair("2026 › Opened", 0),
+            pair("2026 › Opened › 3 Mar", 1),
+            pair("Undated", 0),
+            pair("Undated › From Anna", 2),
+        ]
+    );
+    assert_eq!(
+        photographs,
+        [
+            at("l1.jpg", "2026 › Lake › 14 Sep"),
+            at("l2.jpg", "2026 › Lake › 14 Sep"),
+            at("o1.jpg", "2026 › Opened › 3 Mar"),
+            at("s1.jpg", "Undated › From Anna"),
+            at("s2.jpg", "Undated › From Anna"),
+        ]
     );
 }
 
