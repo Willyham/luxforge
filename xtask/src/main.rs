@@ -428,6 +428,11 @@ fn main_result() -> Result {
             a.done()?;
             policy::audit(&root)?;
         }
+        "onnxruntime-attestation" => {
+            let out = a.path("--output")?;
+            a.done()?;
+            xtask_cli::onnxruntime::attest(&out)?;
+        }
         "editor-acceptance" => {
             let out = absolute(&root, &a.path("--output")?);
             a.done()?;
