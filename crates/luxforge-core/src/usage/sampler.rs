@@ -28,7 +28,9 @@
 //!   `luxforge_core::resources::reading`, which shares one process-wide sampler and remembers the
 //!   newest read by any consumer: when the Performance panel (expanded, one read a second) has
 //!   just read, the sampler uses that reading and makes no system call; otherwise it reads through
-//!   the same sampler, on the calling worker, and the panel can reuse that read in turn.
+//!   the same sampler, on the calling worker. Its own read never opens the GPU device GPU
+//!   allocations come from (a macOS process whose sampler opened it quits about 200 ms later), so
+//!   `gpu_memory_mib` is present only once the Performance panel has opened that device.
 use super::{
     event::{Collector, EventKind, MemoryMib, Percent, ProcessSample},
     gate::Generation,

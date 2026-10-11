@@ -31,10 +31,15 @@ impl Shared {
         u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }
 
-    /// Read the counters now and remember the reading for the next consumer.
-    fn read_now(&mut self) -> (u64, Counters) {
+    /// Read the counters now and remember the reading for the next consumer. `open` lets the read
+    /// open the GPU device GPU allocations are read from ([`Sampler::read_opening_nothing`]).
+    fn read_now(&mut self, open: bool) -> (u64, Counters) {
         let monotonic_ns = self.now_ns();
-        let counters = self.sampler.read();
+        let counters = if open {
+            self.sampler.read()
+        } else {
+            self.sampler.read_opening_nothing()
+        };
         self.latest = Some(Reading::of(monotonic_ns, &counters));
         (monotonic_ns, counters)
     }
@@ -142,7 +147,7 @@ pub struct BudgetReport {
 
 /// Read every counter now, and the budgets of `context`.
 pub fn read(context: &RenderContext) -> ResourceReport {
-    let (monotonic_ns, counters) = shared().read_now();
+    let (monotonic_ns, counters) = shared().read_now(true);
     let scratch = context.scratch();
     let spatial = context.spatial();
     report(
@@ -210,7 +215,9 @@ pub struct Fetched {
 /// The counters now, or, when the newest read by any consumer is at most `max_age` old, that read.
 /// The freshness check and the read are one critical section, so two consumers arriving together
 /// share one read. A consumer with its own cadence (the statistics sampler) calls this on a worker;
-/// it adds no timer and does not wake the Performance panel.
+/// it adds no timer and does not wake the Performance panel. Its own read never opens the GPU device
+/// GPU allocations come from, so they are in it only once the Performance panel's [`read`] has
+/// opened that device: a process whose sampler opened it quits about 200 ms later on macOS.
 pub fn reading(max_age: std::time::Duration) -> Fetched {
     let mut shared = shared();
     let now_ns = shared.now_ns();
@@ -221,7 +228,7 @@ pub fn reading(max_age: std::time::Duration) -> Fetched {
             reused: true,
         };
     }
-    let (monotonic_ns, counters) = shared.read_now();
+    let (monotonic_ns, counters) = shared.read_now(false);
     Fetched {
         reading: Reading::of(monotonic_ns, &counters),
         reused: false,
