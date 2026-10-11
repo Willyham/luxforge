@@ -63,8 +63,8 @@ pub enum LaunchMode {
     Headless,
 }
 
-/// The build's identity: the workspace version and the clean source revision `cargo xtask package`
-/// embedded, if any.
+/// The build's identity: the application version and the clean source revision `cargo xtask package`
+/// or `cargo xtask release-build` embedded, if any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildIdentity {
     version: String,
@@ -72,17 +72,22 @@ pub struct BuildIdentity {
 }
 
 impl BuildIdentity {
-    /// This executable's identity: [`SOURCE_REVISION_ENV`] as it was when the core was compiled.
+    /// This executable's identity: the release tag's version a tag build compiled in
+    /// (`LUXFORGE_RELEASE_VERSION`, as `luxforge-cli` reports it), otherwise the workspace version,
+    /// and [`SOURCE_REVISION_ENV`] as it was when the core was compiled.
     pub fn current() -> Self {
         Self::new(
-            env!("CARGO_PKG_VERSION"),
+            option_env!("LUXFORGE_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
             option_env!("LUXFORGE_SOURCE_REVISION"),
         )
     }
 
-    /// An identity from a version and an embedded revision. A revision that is not a full
-    /// lowercase hexadecimal Git object name (40 or 64 characters) counts as none.
+    /// An identity from a SemVer version and an embedded revision. Only the version's numeric
+    /// `MAJOR.MINOR.PATCH` is kept: a pre-release or build suffix is dropped, since the revision
+    /// already tells builds apart. A revision that is not a full lowercase hexadecimal Git object
+    /// name (40 or 64 characters) counts as none.
     pub fn new(version: &str, revision: Option<&str>) -> Self {
+        let version = &version[..version.find(['-', '+']).unwrap_or(version.len())];
         let revision = revision.filter(|revision| {
             matches!(revision.len(), 40 | 64)
                 && revision
@@ -288,6 +293,9 @@ mod tests {
                 release: "0.0.0+9d4138ca1f2e".into()
             }
         );
+        let tagged = BuildIdentity::new("0.1.0-rc.1+build.5", Some(REVISION));
+        assert_eq!(tagged.release().as_deref(), Some("0.1.0+9d4138ca1f2e"));
+        assert!(super::super::Release::parse(&tagged.release().unwrap()).is_some());
         // An ordinary test build of the core has no embedded revision.
         if option_env!("LUXFORGE_SOURCE_REVISION").is_none() {
             assert_eq!(BuildIdentity::current().release(), None);

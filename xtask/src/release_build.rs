@@ -86,7 +86,12 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
         )?;
     }
     let lock = hash(&root.join("Cargo.lock"))?;
-    let status = cargo_command()
+    // A clean tag build embeds its revision, so its usage statistics release is
+    // `<version>+<revision>`; a dirty rehearsal embeds none and is ineligible to report.
+    let embedded = package::embedded_revision(&revision, dirty);
+    let mut command = cargo_command();
+    package::embed_revision(&mut command, embedded);
+    let status = command
         .current_dir(root)
         .args([
             "build",
@@ -146,7 +151,7 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
             tag.version, tag.tag, target
         ),
     )?;
-    let metadata = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":number,"revision":revision,"target":target,"profile":"release","working_tree_dirty":dirty,"rehearsal":allow_dirty,"lock_sha256":lock,"rustc":output(root,"rustc",&["--version"])?.trim(),"executable_hash_kind":"before-signing","executables":executable_hashes,"release_ready":false});
+    let metadata = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":number,"revision":revision,"target":target,"profile":"release","working_tree_dirty":dirty,"usage_release":luxforge_core::usage::BuildIdentity::new(&tag.version,embedded).release(),"rehearsal":allow_dirty,"lock_sha256":lock,"rustc":output(root,"rustc",&["--version"])?.trim(),"executable_hash_kind":"before-signing","executables":executable_hashes,"release_ready":false});
     write_json(&resource_root.join("build.json"), &metadata)?;
     let archive = archive_payload(out, &tag, &target)?;
     ensure(
