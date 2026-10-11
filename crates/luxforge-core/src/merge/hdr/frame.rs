@@ -381,18 +381,27 @@ impl fmt::Display for Refusal {
     }
 }
 
+impl Refusal {
+    /// The typed refusal as a refusal's data carries it: its `reason` and the inputs it names,
+    /// with the merge kind it refuses, `hdr`.
+    pub fn data(&self) -> serde_json::Value {
+        let mut data = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        if let Some(object) = data.as_object_mut() {
+            object.insert("kind".into(), "hdr".into());
+        }
+        data
+    }
+}
+
 impl From<Refusal> for Error {
     /// A refusal is the request's fault: RAW-only is an unsupported input, everything else a
-    /// validation failure. `data` carries the typed refusal.
+    /// validation failure. `data` carries the typed refusal and its kind ([`Refusal::data`]).
     fn from(refusal: Refusal) -> Self {
         let error = match refusal {
             Refusal::RawOnly { .. } => Error::unsupported_input(refusal.to_string()),
             _ => Error::validation(refusal.to_string()),
         };
-        match serde_json::to_value(&refusal) {
-            Ok(data) => error.with_data(data),
-            Err(_) => error,
-        }
+        error.with_data(refusal.data())
     }
 }
 

@@ -11,7 +11,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 14 adds derived sources ([`DERIVED_SOURCE_SCHEMA`]): the rows recording each source an
+/// Format 15 generalizes merges to kinds ([`MERGE_SCHEMA`]): `merges.kind` is `hdr` or
+/// `panorama`, its provenance document is format 2 with kind-tagged parameters and resolution, and
+/// a stack member's EV offset (`merge_inputs.offset_ev`) is null for a kind whose inputs have none.
+/// Format 14 has none of this and is refused like every other marker.
+///
+/// Format 14 added derived sources ([`DERIVED_SOURCE_SCHEMA`]): the rows recording each source an
 /// HDR merge stores under the artifact root, their manifest-chunk references and the asset-source
 /// reference that retains one for its photograph, and a `derived` source kind; and merges
 /// ([`MERGE_SCHEMA`]): each merge's immutable provenance and exact inputs, its result-led stack's
@@ -41,7 +46,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 14;
+pub(crate) const CATALOG_FORMAT: i64 = 15;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -267,7 +272,7 @@ impl EditorService {
     }
 }
 
-/// Format 14's derived sources (`docs/design/hdr-merge.md#durable-derived-source`), apart from the
+/// The derived sources (`docs/design/hdr-merge.md#durable-derived-source`), apart from the
 /// derived artifacts and their entry references:
 ///
 /// - `derived_sources` records each published source by its identity, the SHA-256 of its manifest,
@@ -314,14 +319,16 @@ const DERIVED_SOURCE_SCHEMA: &str = "
         SELECT RAISE(ABORT, 'asset source references are permanent');
     END;";
 
-/// Format 14's merges (`docs/design/hdr-merge.md`, "The stack and the originals"), apart from the
-/// index, so removing or rebuilding it changes none of them:
+/// The merges of every kind (`docs/design/hdr-merge.md`, "The stack and the originals";
+/// `docs/design/panorama-merge.md`, "Generalizing the merge boundary"), apart from the index, so
+/// removing or rebuilding it changes none of them:
 ///
-/// - `merges` records each merge once and for good: its kind (`hdr` only), its result photograph,
-///   the derived source that photograph holds, the exact-match key ([`MergeProvenance::match_key`])
-///   and the whole provenance document. `merge_inputs` is its stack's members, the exact inputs in
-///   the stack's order with the photograph each was, if any (no foreign key: emptying Removed may
-///   delete that photograph, and the provenance stays) and its EV offset. Neither row changes.
+/// - `merges` records each merge once and for good: its kind (`hdr` or `panorama`), its result
+///   photograph, the derived source that photograph holds, the exact-match key
+///   ([`MergeProvenance::match_key`]) and the whole provenance document. `merge_inputs` is its
+///   stack's members, the exact inputs in the stack's order with the photograph each was, if any
+///   (no foreign key: emptying Removed may delete that photograph, and the provenance stays) and
+///   its EV offset, null for a kind whose inputs have none. Neither row changes.
 /// - `merge_stacks` is the merge's state, `active`, `removed` or `undone`, which the journal's
 ///   `merge-stack` item reads and writes; `stack_claims` holds each input path an active stack
 ///   claims, one stack a path, so a second active stack over any input is refused by the schema
@@ -332,7 +339,7 @@ const DERIVED_SOURCE_SCHEMA: &str = "
 const MERGE_SCHEMA: &str = "
     CREATE TABLE merges (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('hdr')),
+        kind TEXT NOT NULL CHECK (kind IN ('hdr', 'panorama')),
         result_asset_id TEXT NOT NULL UNIQUE REFERENCES assets(id),
         source_id TEXT NOT NULL REFERENCES derived_sources(id),
         match_key TEXT NOT NULL,
@@ -345,7 +352,7 @@ const MERGE_SCHEMA: &str = "
         ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
         path TEXT NOT NULL,
         asset_id TEXT,
-        offset_ev REAL NOT NULL,
+        offset_ev REAL,
         PRIMARY KEY (merge_id, ordinal)
     ) WITHOUT ROWID;
     CREATE INDEX merge_inputs_by_path ON merge_inputs(path);
@@ -375,7 +382,7 @@ const MERGE_SCHEMA: &str = "
         SELECT RAISE(ABORT, 'merges are permanent');
     END;";
 
-/// Format 14's development set (`docs/design/catalog.md`, "Develop and the development set";
+/// The development set (`docs/design/catalog.md`, "Develop and the development set";
 /// `crate::library::development_set`), beside the library and the index:
 ///
 /// - `development_sets` records each set a session made, by its identity, with the global
@@ -409,7 +416,7 @@ const DEVELOPMENT_SET_SCHEMA: &str = "
 
 /// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
 /// catalog columns and capture rows, collections, picks, indexed folders and the library journal
-/// (`docs/design/versions-and-lineage.md#storage-catalog-format-14`).
+/// (`docs/design/versions-and-lineage.md#storage-catalog-format-15`).
 ///
 /// - An asset's `row_id` is its `INTEGER PRIMARY KEY`: stable for the catalog's life, the 8-byte key
 ///   a view holds, and what `capture` and `collection_members` key on, so a view over a million
@@ -1135,20 +1142,20 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 14 with every table, index and trigger of the
+    /// An empty database initializes as format 15 with every table, index and trigger of the
     /// design's storage, the catalog's, auto-collapse's, the derived sources', the merges' and the
     /// development set's alike, and makes no
     /// index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-14.sqlite");
+        let catalog = temp("format-15.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 14);
-        assert_eq!(CATALOG_FORMAT, 14);
+        assert_eq!(format, 15);
+        assert_eq!(CATALOG_FORMAT, 15);
         assert_eq!(
             schema_names(connection, "table"),
             [
@@ -1264,13 +1271,14 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Format 13 — without the derived sources — format 12 — the catalog of developed picks
-    /// without the collapsed-entry table, or the collapsed-entry table without the catalog's tables
-    /// — format 11, every earlier marker and a future one are refused by name and left exactly as
-    /// they are, with no artifact or index directory made for them.
+    /// Format 14 — HDR-only merges — format 13 — without the derived sources — format 12 — the
+    /// catalog of developed picks without the collapsed-entry table, or the collapsed-entry table
+    /// without the catalog's tables — format 11, every earlier marker and a future one are refused
+    /// by name and left exactly as they are, with no artifact or index directory made for them.
     #[test]
-    fn catalog_format_thirteen_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
-        for marker in [0, 11, 12, 13, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
+    fn catalog_format_fourteen_thirteen_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged()
+     {
+        for marker in [0, 11, 12, 13, 14, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();

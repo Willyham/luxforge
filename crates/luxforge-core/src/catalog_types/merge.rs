@@ -1,24 +1,26 @@
 //! Merges and their stacks (`docs/design/hdr-merge.md`, "The stack and the originals", "Remove,
-//! undo and retention"): the immutable provenance a merge records with its result, the result-led
-//! stack of its exact inputs, and the lifecycle state the library journal changes.
+//! undo and retention"; `docs/design/panorama-merge.md`, "Generalizing the merge boundary"): the
+//! kinds of merge, the immutable kind-tagged provenance a merge records with its result, the
+//! result-led stack of its exact inputs, and the lifecycle state the library journal changes.
 //!
 //! A merge is identified by its [`MergeId`], which is also its stack's identity: neither depends
 //! on an index [`FileId`](super::FileId) or a computed moment, so removing or rebuilding the index
 //! changes neither. Its inputs are original files, named by path, volume and [`FileSignature`],
 //! each optionally the catalog photograph it was developed into; never another merge's result.
-use super::{CatalogFolderId, FileSignature, VolumeId};
+use super::{CatalogFolderId, FileSignature, VolumeId, jobs::CatalogJob};
 use crate::{
     AssetId, DerivedSourceId, Error,
     merge::hdr::{
-        AlignmentOptions, Coverage, ExposureOptions, FrameMetadata, FusionDiagnostics,
-        FusionParameters, MAX_INPUTS, MIN_INPUTS, MotionDiagnostics, Registration,
-        ResolvedExposures,
+        AlignmentMode, AlignmentOptions, Coverage, DeghostMode, ExposureOptions, FrameMetadata,
+        FusionDiagnostics, FusionParameters, MAX_INPUTS, MIN_INPUTS, MotionDiagnostics,
+        Registration, ResolvedExposures,
     },
     model::identifier,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, ops::RangeInclusive, path::PathBuf};
 
 identifier!(
     /// A merge, `merge-…`, and the stack its result leads: stable for the catalog's life,
@@ -27,21 +29,89 @@ identifier!(
     "merge-"
 );
 
-/// The one provenance shape this build reads and writes ([`MergeProvenance::format`]). Any other
-/// is `incompatible` and kept as stored.
-pub const MERGE_PROVENANCE_FORMAT: u32 = 1;
+/// The one provenance shape this build reads and writes ([`MergeProvenance::format`]): kind-tagged
+/// parameters and resolution. Any other is `incompatible` and kept as stored.
+pub const MERGE_PROVENANCE_FORMAT: u32 = 2;
 
-/// What a merge combines. Only `hdr` is accepted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+const MIB: u64 = 1024 * 1024;
+
+/// What a merge combines: an exposure bracket into one HDR photograph, or overlapping frames into
+/// one panorama. The catalog records and browses both; a kind merges only while this build
+/// registers its provider (`crate::merge::providers`), and any request of another kind is refused
+/// `not-ready`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MergeKind {
     Hdr,
+    Panorama,
 }
 
 impl MergeKind {
-    pub fn as_str(self) -> &'static str {
+    /// Every kind, in the order schemas and menus list them.
+    pub const ALL: [Self; 2] = [Self::Hdr, Self::Panorama];
+
+    /// The most originals a stack of any kind has: the largest of the kinds' input bounds.
+    pub const MAX_STACK: usize = 32;
+
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Hdr => "hdr",
+            Self::Panorama => "panorama",
+        }
+    }
+
+    /// The kind a stored or requested name is, exactly.
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == text)
+    }
+
+    /// How a message names the kind: "HDR merging", "panorama merging".
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::Hdr => "HDR",
+            Self::Panorama => "panorama",
+        }
+    }
+
+    /// The module that provides the kind's merges, whether or not this build carries it.
+    pub const fn module(self) -> &'static str {
+        match self {
+            Self::Hdr => "luxforge.hdr",
+            Self::Panorama => "luxforge.panorama",
+        }
+    }
+
+    /// How many inputs a merge of this kind takes.
+    pub const fn inputs(self) -> RangeInclusive<usize> {
+        match self {
+            Self::Hdr => MIN_INPUTS..=MAX_INPUTS,
+            Self::Panorama => 2..=32,
+        }
+    }
+
+    /// The provisional temporary-disk ceiling of one merge: its spool and its result's objects.
+    pub const fn temp_ceiling(self) -> u64 {
+        match self {
+            // Nine maximum-size float inputs plus the result.
+            Self::Hdr => 16 * 1024 * MIB,
+            // 32 frames of 60 MP at 14 bytes a pixel, plus a 512 MP result.
+            Self::Panorama => 64 * 1024 * MIB,
+        }
+    }
+
+    /// The scratch one merge may hold beside its one development.
+    pub const fn scratch_limit(self) -> u64 {
+        match self {
+            Self::Hdr => 256 * MIB,
+            Self::Panorama => 512 * MIB,
+        }
+    }
+
+    /// The catalog job a merge of this kind runs as: none until its provider is registered.
+    pub const fn job(self) -> Option<&'static CatalogJob> {
+        match self {
+            Self::Hdr => Some(&super::jobs::HDR_MERGE),
+            Self::Panorama => None,
         }
     }
 }
@@ -146,9 +216,70 @@ pub struct HdrResolution {
     pub fusion: FusionDiagnostics,
 }
 
+/// The options a merge ran with, tagged by its kind (`{"hdr": {...}}`): what, with its inputs and
+/// provider, decides its result.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MergeParameters {
+    Hdr(HdrParameters),
+}
+
+impl MergeParameters {
+    pub fn kind(&self) -> MergeKind {
+        match self {
+            Self::Hdr(_) => MergeKind::Hdr,
+        }
+    }
+}
+
+/// What a merge resolved and measured, tagged by its kind (`{"hdr": {...}}`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MergeResolution {
+    Hdr(HdrResolution),
+}
+
+impl MergeResolution {
+    pub fn kind(&self) -> MergeKind {
+        match self {
+            Self::Hdr(_) => MergeKind::Hdr,
+        }
+    }
+
+    /// The reference input's position in the stack's order.
+    pub fn reference(&self) -> usize {
+        match self {
+            Self::Hdr(resolved) => resolved.exposures.reference,
+        }
+    }
+
+    /// The resolved EV offset from the reference of the input at `position`, for a kind whose
+    /// inputs have one: HDR's do; a panorama's have none.
+    pub fn offset_ev(&self, position: usize) -> Option<f64> {
+        match self {
+            Self::Hdr(resolved) => resolved
+                .exposures
+                .inputs
+                .get(position)
+                .map(|exposure| exposure.offset_ev),
+        }
+    }
+
+    /// The inputs' EV range about the reference, lowest first, for a kind that has one.
+    pub fn exposure_range_ev(&self) -> Option<[f64; 2]> {
+        match self {
+            Self::Hdr(resolved) => {
+                let (low, high) = resolved.exposures.range_ev();
+                Some([low, high])
+            }
+        }
+    }
+}
+
 /// A merge's immutable provenance (`merges.provenance_json`): authoritative catalog data, never an
 /// EXIF name or an index or moment key. Inputs are in the stack's order, which the merge decided
 /// (capture order, the request's breaking ties); every index in `resolved` is a position in it.
+/// `parameters` and `resolved` are the kind's own, tagged by it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MergeProvenance {
@@ -156,14 +287,15 @@ pub struct MergeProvenance {
     pub kind: MergeKind,
     pub provider: MergeProvider,
     pub inputs: Vec<MergeInput>,
-    pub parameters: HdrParameters,
-    pub resolved: HdrResolution,
+    pub parameters: MergeParameters,
+    pub resolved: MergeResolution,
 }
 
 impl MergeProvenance {
-    /// Refuse a provenance this build does not write, or one whose parts disagree: another format
-    /// or kind, an input count outside 2–9, an input named twice or by a relative path, or
-    /// resolved values that do not cover exactly the inputs.
+    /// Refuse a provenance this build does not write, or one whose parts disagree: another format,
+    /// parameters or a resolution of another kind than `kind`, an input count outside the kind's
+    /// bounds, an input named twice or by a relative path, or resolved values that do not cover
+    /// exactly the inputs.
     pub fn validate(&self) -> Result<(), Error> {
         if self.format != MERGE_PROVENANCE_FORMAT {
             return Err(Error::incompatible(format!(
@@ -171,11 +303,26 @@ impl MergeProvenance {
                 self.format
             )));
         }
-        let count = self.inputs.len();
-        if !(MIN_INPUTS..=MAX_INPUTS).contains(&count) {
+        let kind = self.kind;
+        if self.parameters.kind() != kind || self.resolved.kind() != kind {
             return Err(Error::validation(format!(
-                "a merge takes {MIN_INPUTS} to {MAX_INPUTS} inputs, not {count}"
-            )));
+                "a {} merge records {} parameters and a {} resolution; both must be its own",
+                kind.as_str(),
+                self.parameters.kind().as_str(),
+                self.resolved.kind().as_str()
+            ))
+            .with_data(json!({"kind": kind})));
+        }
+        let count = self.inputs.len();
+        let bounds = kind.inputs();
+        if !bounds.contains(&count) {
+            return Err(Error::validation(format!(
+                "a {} merge takes {} to {} inputs, not {count}",
+                kind.as_str(),
+                bounds.start(),
+                bounds.end()
+            ))
+            .with_data(json!({"kind": kind, "count": count})));
         }
         let mut paths = HashSet::with_capacity(count);
         for input in &self.inputs {
@@ -192,28 +339,36 @@ impl MergeProvenance {
                 )));
             }
         }
-        let resolved = &self.resolved;
-        if resolved.exposures.inputs.len() != count
-            || resolved.registration.inputs.len() != count
-            || resolved.exposures.reference >= count
-            || resolved.registration.reference != resolved.exposures.reference
-        {
-            return Err(Error::validation(
-                "a merge's resolved exposures and registration must cover exactly its inputs \
-                 about one reference",
-            ));
+        match (&self.parameters, &self.resolved) {
+            (MergeParameters::Hdr(parameters), MergeResolution::Hdr(resolved)) => {
+                if resolved.exposures.inputs.len() != count
+                    || resolved.registration.inputs.len() != count
+                    || resolved.exposures.reference >= count
+                    || resolved.registration.reference != resolved.exposures.reference
+                {
+                    return Err(Error::validation(
+                        "an HDR merge's resolved exposures and registration must cover exactly \
+                         its inputs about one reference",
+                    ));
+                }
+                parameters.fusion.validate()
+            }
         }
-        self.parameters.fusion.validate()
+    }
+
+    /// The reference input's position in the stack's order, from the resolution.
+    pub fn reference(&self) -> usize {
+        self.resolved.reference()
     }
 
     /// The reference input.
-    pub fn reference(&self) -> &MergeInput {
-        &self.inputs[self.resolved.exposures.reference]
+    pub fn reference_input(&self) -> &MergeInput {
+        &self.inputs[self.reference()]
     }
 
     /// The exact-match key (`merges.match_key`): the SHA-256 of the kind, the provider and its
-    /// version, each input's path and signature in order, and the parameters. Two requests with
-    /// one key would produce the same result, so the second reuses the first's.
+    /// version, each input's path and signature in order, and the kind-tagged parameters. Two
+    /// requests with one key would produce the same result, so the second reuses the first's.
     pub fn match_key(&self) -> Result<String, Error> {
         match_key(
             self.kind,
@@ -231,7 +386,7 @@ pub fn match_key<'a>(
     kind: MergeKind,
     provider: &MergeProvider,
     inputs: impl IntoIterator<Item = (&'a PathBuf, &'a FileSignature)>,
-    parameters: &HdrParameters,
+    parameters: &MergeParameters,
 ) -> Result<String, Error> {
     let inputs: Vec<_> = inputs.into_iter().collect();
     let text = serde_json::to_vec(&(kind, provider, inputs, parameters))
@@ -239,8 +394,8 @@ pub fn match_key<'a>(
     Ok(format!("{:x}", Sha256::digest(text)))
 }
 
-/// One member of a stack (`merge_inputs`): an exact input in the stack's order with its resolved
-/// EV offset from the reference.
+/// One member of a stack (`merge_inputs`): an exact input in the stack's order with, for a kind
+/// whose inputs have one (HDR), its resolved EV offset from the reference.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StackMember {
@@ -248,7 +403,8 @@ pub struct StackMember {
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<AssetId>,
-    pub offset_ev: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_ev: Option<f64>,
 }
 
 /// A merge as the catalog records it: its result, the source the result holds, its state, its
@@ -276,13 +432,14 @@ pub struct MergeMatch {
     pub state: MergeState,
 }
 
-/// The active stack that already claims one of a request's inputs: a second merge of it is
-/// refused, naming this stack, until that merge is removed.
+/// The active stack, of any kind, that already claims one of a request's inputs: a second merge of
+/// it is refused, naming this stack, until that merge is removed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StackClaim {
     pub path: PathBuf,
     pub merge_id: MergeId,
+    pub kind: MergeKind,
     pub result_asset_id: AssetId,
 }
 
@@ -293,6 +450,25 @@ pub struct StackClaim {
 pub struct ExposureOverride {
     pub path: PathBuf,
     pub offset_ev: f64,
+}
+
+/// An HDR merge's options as `merge.plan`, `merge.create` and `merge.rerun` take them, under `hdr`:
+/// the reference and the exposure overrides by path, alignment and deghosting. A field left out is
+/// the default, or for `merge.rerun` the recorded value.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HdrOptions {
+    /// The input whose exposure and white balance the result keeps, by its path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<PathBuf>,
+    /// Inputs' EV offsets from the reference, replacing what their metadata or the fit resolves;
+    /// for `merge.rerun`, `[]` clears the recorded ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_overrides: Option<Vec<ExposureOverride>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<AlignmentMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deghost: Option<DeghostMode>,
 }
 
 /// One input of a planned merge, in the stack's order.
@@ -379,7 +555,7 @@ pub struct MergePlan {
     pub needs_fit: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<u32>,
-    pub parameters: HdrParameters,
+    pub parameters: MergeParameters,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<FolderProposal>,
     /// Why no existing folder is proposed.
@@ -405,6 +581,7 @@ pub struct MergePlan {
 #[serde(deny_unknown_fields)]
 pub struct MergeAnswer {
     pub merge_id: MergeId,
+    pub kind: MergeKind,
     pub result_asset_id: AssetId,
     pub source_id: DerivedSourceId,
     pub file_name: String,
@@ -412,8 +589,9 @@ pub struct MergeAnswer {
     /// A merged result, never one capture.
     pub merged: bool,
     pub inputs: u32,
-    /// The bracket's EV range about the reference, lowest first.
-    pub exposure_range_ev: [f64; 2],
+    /// The bracket's EV range about the reference, lowest first: an HDR merge's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_range_ev: Option<[f64; 2]>,
     /// An exact recorded match answered the request: nothing was merged or published.
     pub reused: bool,
     /// The merge a rerun replaced as the inputs' stack, now in Removed.
@@ -464,8 +642,10 @@ pub struct MergeInspection {
     pub source: SourceAvailability,
     pub inputs: Vec<InspectedInput>,
     pub merged: bool,
-    pub exposure_range_ev: [f64; 2],
-    pub parameters: HdrParameters,
+    /// The bracket's EV range about the reference, lowest first: an HDR merge's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_range_ev: Option<[f64; 2]>,
+    pub parameters: MergeParameters,
     pub provider: ProviderState,
     /// Whether `merge.rerun` would start now, and why not.
     pub rerunnable: bool,
@@ -516,16 +696,18 @@ pub enum StackRole {
     Separate,
 }
 
-/// A view row's stack (`browse.rows`' `stack`): the stack it belongs to, its role there and the
-/// stack's size; for a leader, how many originals it stands for in this view and how the client
-/// shows it; for an original, its place and EV offset, and whether only Show all revealed it.
+/// A view row's stack (`browse.rows`' `stack`): the stack it belongs to, its kind, its role there
+/// and the stack's size; for a leader, how many originals it stands for in this view and how the
+/// client shows it; for an original, its place and, in an HDR stack, its EV offset, and whether
+/// only Show all revealed it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RowStack {
     pub merge_id: MergeId,
+    pub kind: MergeKind,
     pub role: StackRole,
     /// The stack's originals, N: "HDR · N exposures".
-    pub exposures: u32,
+    pub size: u32,
     /// A collapsed leader: its originals the view holds beneath it, which its count leaves out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub collapsed: u32,
@@ -547,8 +729,8 @@ fn is_zero(value: &u32) -> bool {
     *value == 0
 }
 
-/// One original of a stack as `stack.inspect` lists it: its place, path and EV offset, whether it
-/// is the reference, whether it is where it was, its index row and pick, and the catalog
+/// One original of a stack as `stack.inspect` lists it: its place, path and, in an HDR stack, EV
+/// offset, whether it is the reference, whether it is where it was, its index row and pick, and the catalog
 /// photograph it was developed into, if any.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -556,7 +738,8 @@ pub struct StackOriginal {
     pub ordinal: u32,
     pub path: PathBuf,
     pub file_name: String,
-    pub offset_ev: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_ev: Option<f64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reference: bool,
     pub availability: super::FileAvailability,
@@ -571,8 +754,8 @@ pub struct StackOriginal {
     pub asset_id: Option<AssetId>,
 }
 
-/// What `stack.inspect` answers: the stack's identity, state and result, how the caller shows it,
-/// and its originals `from..from + originals.len()` of `exposures`.
+/// What `stack.inspect` answers: the stack's identity, kind, state and result, how the caller
+/// shows it, and its originals `from..from + originals.len()` of `size`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StackInspection {
@@ -586,7 +769,8 @@ pub struct StackInspection {
     pub removed: bool,
     pub in_development_set: bool,
     pub expansion: StackExpansion,
-    pub exposures: u32,
+    /// The stack's originals, N.
+    pub size: u32,
     pub from: u32,
     pub originals: Vec<StackOriginal>,
 }
