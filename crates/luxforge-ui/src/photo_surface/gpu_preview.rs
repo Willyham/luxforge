@@ -76,6 +76,9 @@ impl PhotoPipeline {
             self.sync_outputs(surface, device);
             return;
         };
+        // The boundary the slot's output was last evaluated over: the same photograph, placed the
+        // same way, when it is the plan's.
+        let evaluated_over = surface.gpu.as_ref().map(|slot| slot.output().version);
         let outcome = self
             .executor
             .evaluate_lit(&mut surface.state, device, queue, plan, change);
@@ -94,7 +97,13 @@ impl PhotoPipeline {
         {
             self.release_gpu(surface);
         }
-        surface.gpu_held_frame = output_shown && matches!(outcome, Err(GpuFallback::LightPending));
+        // The GPU frame on screen stays, too, while the plan's sequence compiles over the boundary
+        // it was drawn from — a new step or unit set, a module turned on — rather than the CPU frame
+        // behind it, which for a stack presented on the GPU is an earlier stack's, or none.
+        let compiling_over_it = matches!(outcome, Err(GpuFallback::Compiling))
+            && evaluated_over == Some(plan.boundary.version());
+        surface.gpu_held_frame = output_shown
+            && (compiling_over_it || matches!(outcome, Err(GpuFallback::LightPending)));
         // A dissolve handed beside a plan runs behind it while it is held: the slot keeps the
         // output of the GPU frame the last draw showed, which the plan's unchanged words leave as
         // it was.
