@@ -603,7 +603,7 @@ impl Coordinator {
                     Ok(Input::Wake) | Err(_) => break,
                 }
             }
-            keeper.drop_gone(&mut run, &mounts)?;
+            keeper.drop_gone(&mut run, &mounts, last_stamp)?;
             run.settle()?;
             // Reads answered after the lane began to stop were dropped unwritten: the unit's
             // cursors would skip what they came after, so they are not recorded.

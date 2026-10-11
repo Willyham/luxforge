@@ -313,7 +313,8 @@ fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     let mut watcher = Watcher::start(sender).unwrap();
     // FSEvents can deliver the write during replay or after HistoryDone. If CaughtUp is refused
     // first, the change is folded into that debt without a send attempt. In either case a retry
-    // of the overflow rescan proves the change was covered while the channel was still full.
+    // of the overflow rescan proves the root was owed while the channel was still full; the
+    // write's own report may come later still, live (below).
     let cursor = current_cursor(&dir);
     fs::write(dir.join("lost.jpg"), b"l").unwrap();
     watcher.add_root(root(id, &dir, cursor)).unwrap();
@@ -354,8 +355,20 @@ fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     let seen = events.until("the next change", id, |seen| {
         changed(seen).contains(&dir.join("next.jpg"))
     });
-    // The refused change was covered by the rescan, never sent on its own.
-    assert!(!changed(&seen).contains(&dir.join("lost.jpg")), "{seen:?}");
+    // The refused change was covered by the rescan, never sent while the root was owed: nothing
+    // but a rescan comes before the caught-up. `fseventsd` can number the write's event after the
+    // replay ended when it lags behind under load, and that report then arrives live once nothing
+    // is owed, after the caught-up, as any later change does.
+    let paid = seen
+        .iter()
+        .position(|event| matches!(event, WatchEvent::CaughtUp { .. }))
+        .expect("the caught-up was seen above");
+    assert!(
+        seen[..paid]
+            .iter()
+            .all(|event| matches!(event, WatchEvent::Rescan { .. })),
+        "{seen:?}"
+    );
 }
 
 #[test]

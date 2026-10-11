@@ -11,6 +11,9 @@
 //!   and every row under it dropped. A rename can arrive as two reports, its old path in one and
 //!   its new path in the next, so a path gone waits [`GONE_AFTER`] for the path it may have moved
 //!   to, which carries its row by file identity, before it is looked at again and its rows go.
+//!   Before they go, its file is looked for by identity where the platform can say where a file is
+//!   (macOS): one found under a kept root is looked at as a change there first, which carries the
+//!   rows, since the rename's report can come later than any wait (see [`Keeper::moved_to`]).
 //! - **Rescans are listings, and jobs.** A subtree whose changes were not all reported is listed
 //!   again and reconciled by signature; the whole root when the root itself is named. A root that
 //!   changed (moved, removed, its volume gone) is dropped from the watcher, listed again if it is
@@ -276,11 +279,14 @@ impl Keeper {
 
     /// Look again at each path reported gone whose wait is over, after
     /// writing what the unit wrote so far, so a row a move carried is not dropped: a path still
-    /// gone, or one the listing now skips, has its row and every row under it dropped.
+    /// gone, or one the listing now skips, has its row and every row under it dropped, once the
+    /// path its file moved to, when it is found under a kept root ([`Keeper::moved_to`]), has been
+    /// looked at as a change and has carried what it holds.
     pub(super) fn drop_gone(
         &mut self,
         run: &mut Run<'_>,
         mounts: &[PlatformMount],
+        last_stamp: &mut i64,
     ) -> Result<(), Error> {
         let now = Instant::now();
         let mut due = Vec::new();
@@ -312,10 +318,55 @@ impl Keeper {
                 Err(_) => false,
             };
             if still_gone {
+                if let Some((into, moved)) = self.moved_to(run.connection, &path)? {
+                    self.changed(run, into, &[moved], mounts, last_stamp)?;
+                    run.batch.commit(run.connection, &run.config.post)?;
+                }
                 drop_under(run, &[path])?;
             }
         }
         Ok(())
+    }
+
+    /// Where the rows at or under the path `gone` moved, when the file system can say where a
+    /// file is by its identity ([`luxforge_watch::path_of`]): the kept root it is under now, and the
+    /// path that stands for `gone` there, the file itself or, when `gone` was a folder moved whole,
+    /// that folder. Asked of the row at `gone` or the first under it. A rename's report can reach
+    /// the lane after its old path's wait is over: on macOS `fseventsd` delivers a burst seconds
+    /// late while it catches up under load, so an earlier report of the old path (its creation,
+    /// say) is looked at after the rename and finds it gone, and the report of the rename itself
+    /// comes later still. A file found there is the rename's own report, early.
+    fn moved_to(
+        &self,
+        connection: &Connection,
+        gone: &Path,
+    ) -> Result<Option<(usize, PathBuf)>, Error> {
+        let Some(row) = database::file_at_or_under(connection, gone)? else {
+            return Ok(None);
+        };
+        let Some(now) = row
+            .signature
+            .identity
+            .and_then(|identity| luxforge_watch::path_of(identity.device, identity.inode))
+        else {
+            return Ok(None);
+        };
+        let below = row.path.strip_prefix(gone).unwrap_or(Path::new(""));
+        let moved = if now.ends_with(below) {
+            now.ancestors().nth(below.components().count())
+        } else {
+            Some(now.as_path())
+        };
+        let Some(moved) = moved.filter(|moved| *moved != gone) else {
+            return Ok(None);
+        };
+        Ok(self
+            .roots
+            .iter()
+            .enumerate()
+            .filter(|(_, root)| moved.starts_with(&root.path) && moved != root.path)
+            .max_by_key(|(_, root)| root.path.as_os_str().len())
+            .map(|(index, _)| (index, moved.to_path_buf())))
     }
 
     /// Record each root's newest cursor in the run's batch, its last writes. A stale root records
