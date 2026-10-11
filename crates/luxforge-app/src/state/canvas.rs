@@ -327,6 +327,11 @@ pub(crate) struct CanvasModel {
     /// A comparison has waited longer than [`COMPARE_LOADING_DELAY`] for a picture it needs, drawn
     /// as an indeterminate bar along the top of the photograph ([`CompareLoading`]).
     pub(crate) compare_loading: bool,
+    /// Something is open over the canvas — the palette, the Settings sheet, a menu or a
+    /// copy-settings sheet — so a press there closes it rather than reaching the photograph, and a
+    /// brush's own cursor gives way to the system's ([`super::Workspace::covers_canvas`]). Set once
+    /// the whole workspace is derived.
+    pub(crate) covered: bool,
 }
 
 /// Whether the workspace is on a mask: Mask mode itself, or one of the host's own canvas picks,
@@ -456,6 +461,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             .filter(|_| photo == PhotoView::Plain && inputs.gpu_frame_us.is_none())
             .map(|bar| bar.fraction),
         compare_loading: inputs.compare_loading,
+        covered: false,
     }
 }
 
