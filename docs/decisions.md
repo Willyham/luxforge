@@ -484,17 +484,17 @@ The final refinement task may build the grading-only slice of the alignment tool
 
 Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)):
 
-- Select's grid offers **Import merged** and **Pick merged** for exposure brackets, creates one HDR result shown as a virtual photograph and collapses the original frames into a stack.
+- Select's grid offers a merge for exposure brackets, creates one HDR result shown as a virtual photograph and collapses the original frames into a stack.
 - Keep the merged pixels durably on disk so ordinary reopening needs no repeated merge; source files stay unchanged and each bracket frame can still be picked independently.
 - A merge can be removed or undone without losing the originals. The planned lifecycle retains the generated result and edits for restoration through library undo/redo.
-- **Pick merged adds the result to the development set by default.** The design distinguishes Import's catalog-only result from Pick's appended set member and keeps Select open; ordinary file picks remain the existing workflow.
+- **One Merge action** (owner, 2026-10-11, superseding Pick merged and Import merged): **Merge HDR** makes the result in its catalog folder and keeps Select open, since the development set Pick merged added to was removed ([Develop from catalog folders](#develop-from-catalog-folders)); ordinary file picks remain the existing workflow.
 - Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Panoramas were planned separately afterwards ([panorama merges](#panorama-merges)).
 
 The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract. The owner authorized implementation on 2026-10-10.
 
 ## Panorama merges
 
-Requested for design by the owner on 2026-10-11 ([design](design/panorama-merge.md), [task plan](../tasks/library/panorama-merge.json)), as a second merge kind beside [HDR exposure merges](#hdr-exposure-merges), with the same Pick merged / Import merged workflow, stacks, lifecycle and saved derived source. The owner chose:
+Requested for design by the owner on 2026-10-11 ([design](design/panorama-merge.md), [task plan](../tasks/library/panorama-merge.json)), as a second merge kind beside [HDR exposure merges](#hdr-exposure-merges), with the same merge workflow (one **Merge panorama** action since 2026-10-11), stacks, lifecycle and saved derived source. The owner chose:
 
 - **RAW or JPEG frames.** Every frame of one merge is RAW, or every frame is JPEG; mixing them is refused. HDR panoramas (bracketed positions) are outside this plan, and HDR merges stay RAW-only.
 - **Selection only.** Selecting frames offers the panorama merge, and the job checks their overlap; automatic panorama detection or grouping stays a later catalog feature.
@@ -503,12 +503,21 @@ Requested for design by the owner on 2026-10-11 ([design](design/panorama-merge.
 
 The owner then chose, the same day, a **merge preview that opens first, for both kinds**. It works like Lightroom's Photo Merge preview:
 
-- Pick merged and Import merged open a sheet with a picture built from the frames' proxies, the kind's settings and both merge buttons. ⌥-click merges at once with the kind's last settings.
+- The merge action opens a sheet with a picture built from the frames' proxies, the kind's settings and the merge button. ⌥-click merges at once with the kind's last settings.
 - The preview's reading and alignment are reused by the merge.
 - It replaces HDR's Merge options… sheet, and supersedes the HDR design's "no second approval round" for these actions.
 - The overlays are HDR's deghost overlay, and a panorama's crop and coverage and its frame outlines. Seams are not shown.
 
 Recorded defaults, delegated within that scope and open to the owner's correction: 2–32 frames; Auto, Perspective, Cylindrical and Spherical projections; Boundary Warp 0; frames more than 3 EV apart or registering as the same view are refused as a bracket; a detected lens profile is baked into RAW frames; the result is named with "Panorama"; a panorama is not counted in usage statistics until the owner approves a `panorama-merge` event. Numerical, solver, blending and layout details are delegated. Implementation is not authorized.
+
+## Develop from catalog folders
+
+Decided by the owner on 2026-10-11 ([design](design/develop-from-folders.md)), asking that choosing a catalog folder in Select change what Develop holds, that a parent folder be selectable as a whole, and that a place's photographs from several days be seen and developed together:
+
+- **The catalog folder is what Develop holds.** The development set is removed from the core, the API and the desktop; Develop's filmstrip is the catalog folder last chosen in Select, with its subfolders, and follows it live.
+- **Year › Place › Day.** Develop N files each photograph under a year folder, a place folder and a day folder ("2026 › Konstanz › 12 Sep"), reusing year and place folders by name.
+- **Years are real catalog folders**, selectable, renamable and movable; Select's computed year grouping is gone.
+- **One Merge action.** Merge HDR replaces Pick merged and Import merged, and the planned panorama merge follows.
 
 ## Corrections workspace
 
