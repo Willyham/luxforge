@@ -36,6 +36,10 @@ pub(crate) struct Boot {
     pub(crate) window: (f32, f32),
 }
 
+/// Each step of the developer fake generator in an evidence run: a three-candidate generation of
+/// eight steps each takes about two seconds, long enough to capture its progress.
+const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis(80);
+
 /// Where the capability host keeps module settings, grants and resources, under the run's
 /// resolved paths, and the secret store and network transport it uses. An evidence run keeps all
 /// of it inside its evidence directory with an in-memory store, so it never touches the person's
@@ -43,9 +47,6 @@ pub(crate) struct Boot {
 /// first write, and the transport builds its TLS configuration on its first request. `tiles` is
 /// the launch's GPU tile worker, which the owner's export lane streams every export through and
 /// which starts nothing until the first export asks it.
-/// Each step of the developer fake generator in an evidence run: a three-candidate generation of
-/// eight steps each takes about two seconds, long enough to capture its progress.
-const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis(80);
 
 pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
     let secrets: Arc<dyn SecretStore> = match &config.evidence {

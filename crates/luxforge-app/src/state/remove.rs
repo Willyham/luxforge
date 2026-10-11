@@ -385,7 +385,9 @@ fn unoffered(module: &str, tier: &FillTier) -> Unoffered {
         return Unoffered {
             reason: match (installing, model) {
                 (true, Some(model)) => format!("Downloading {}\u{2026}", model.title),
-                _ => format!("{title} fill needs its model installed"),
+                _ => format!(
+                    "{title} fill needs its model installed \u{b7} download it here or in Settings \u{203a} Models"
+                ),
             },
             action: model.filter(|_| !installing).map(|model| {
                 (
