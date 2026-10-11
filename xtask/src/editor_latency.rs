@@ -3819,14 +3819,14 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     report_geometry(&mut result, options);
     if let Some(setup) = &usage_setup {
         let report = usage_report(setup, &events, &usage, last)?;
-        if let Some(close) = report["close_after_shutdown_ms"].as_f64() {
-            if let Some(rows) = result["rows"].as_array_mut() {
-                rows.push(stats::scalar(
-                    "close_after_shutdown_event",
-                    "ms",
-                    Some(close),
-                ));
-            }
+        if let Some(close) = report["close_after_shutdown_ms"].as_f64()
+            && let Some(rows) = result["rows"].as_array_mut()
+        {
+            rows.push(stats::scalar(
+                "close_after_shutdown_event",
+                "ms",
+                Some(close),
+            ));
         }
         write_json(&out.join("usage-receiver.json"), &setup.record())?;
         result["usage"] = report;
