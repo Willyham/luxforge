@@ -5592,7 +5592,7 @@ In the container: an image `FROM rust:1.94.0-trixie` adding `build-essential pkg
 
 ## Corrections qualified on the M4
 
-The offline Clone/Heal workflow's native qualification ([Corrections](../design/corrections.md), TASK-012): the release gate over the repair families, the RAW journeys and the photographic review. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, 10 October 2026, on a host shared with other agents' builds (one-minute loads of 4 to 41), which bears on no figure here: every one is a pixel or a pass, not a time. Build `63898f0e` with the histogram scenario's fix uncommitted (`e26baa69`).
+The offline Clone/Heal workflow's native qualification ([Corrections](../design/corrections.md)): the release gate over the repair families, the RAW journeys and the photographic review. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, 10 October 2026, on a host shared with other agents' builds (one-minute loads of 4 to 41), which bears on no figure here: every one is a pixel or a pass, not a time. Build `63898f0e` with the histogram scenario's fix uncommitted (`e26baa69`).
 
 ### The repair families against the reference
 
@@ -5607,7 +5607,7 @@ The offline Clone/Heal workflow's native qualification ([Corrections](../design/
 | Heal under geometry | 4 JPEG, lens zone plate | 5 | 20 of 20 | 0.005 / 0.027 / 0.29 / 0.000 | 5, 5, 5 of 5 | 12 of 20 | 12.5 / 28.1 / 40.7 / 2.21 |
 | Heal under geometry | 3 RAW | 3 | 12 of 12 | 0.017 / 0.212 / 0.60 / 0.000 | 3, 3, 3 of 3 | 6 of 12 | 1.62 / 5.62 / 6.61 / 0.19 |
 
-- **The gap.** `repair-heal-spots` on the 60 MP JPEG: on the build measured, its stroke healed from across the frame needed a window wider than the device's 8,192-texel limit, so the tile worker could not draw its tiles (`unplannable`) and the export was the reference's (`texture-limit`). Its picture at rest and samples are within the limits; its histogram and export are unmeasured on the GPU, and the gate is incomplete for that stack alone. A repair step now holds its read set in an atlas of its own, so a tile's window is its own rectangle and halos ([contract](../design/corrections.md#rendering-task-003)); the tile tests draw a Heal and a Clone sampling across a 9,000-pixel frame within the spatial class, but the gate has not been rerun over this stack.
+- **The gap.** `repair-heal-spots` on the 60 MP JPEG: on the build measured, its stroke healed from across the frame needed a window wider than the device's 8,192-texel limit, so the tile worker could not draw its tiles (`unplannable`) and the export was the reference's (`texture-limit`). Its picture at rest and samples are within the limits; its histogram and export are unmeasured on the GPU, and the gate is incomplete for that stack alone. A repair step now holds its read set in an atlas of its own, so a tile's window is its own rectangle and halos ([contract](../design/corrections.md#rendering)); the tile tests draw a Heal and a Clone sampling across a 9,000-pixel frame within the spatial class, but the gate has not been rerun over this stack: the owner set the rerun aside on 2026-10-11, so this stack is not qualified at the gate.
 - **Motion.** A drag's frame at Fit, 33% and 50% evaluates the repair at the reduced stage, where offsets round to that stage's pixels and Heal solves on its pixels ([numerics](../design/corrections-numerics.md#reduced-stages)); the zone plate and the lens zone plate, whose chirp aliases at any reduction, carry the largest differences. Reported, not gated, as for every family.
 - **Exact references.** The CPU units are held bit for bit to the independent `f64` reference and the repair frame to it on JPEG bytes and RAW-precision values by the ordinary tests (`repair::`, `render::repair_tests`), which `check` ran in the same tier.
 
@@ -5625,7 +5625,7 @@ The run's own owner, with no GPU, exported the warped entry through `export.plan
 
 ### Timing
 
-Interaction latency, render, sample and export times, memory and idle cost with a correction stack wait for a quiet host: `verify --tier full --manifest` runs `editor-latency --mode corrections` on the 24 and 60 MP JPEGs and each manifest RAW. Not measured yet; a skipped measurement is not a pass.
+Interaction latency, render, sample and export times, memory and idle cost with a correction stack have not been measured. The owner set the timing, memory and idle runs aside on 2026-10-11, along with the `gpu-qualification` rerun of the 60 MP far-source Heal stack and the gate run of the `repair-patch` family; none was run, and a skipped measurement is not a pass. `verify --tier full --manifest` would run `editor-latency --mode corrections` on the 24 and 60 MP JPEGs and each manifest RAW.
 
 ## Method
 
