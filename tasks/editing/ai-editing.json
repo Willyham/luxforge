@@ -362,7 +362,7 @@
     {
       "id": "TASK-007",
       "description": "Deliver the model manager: multi-file resources, resumable hash-checked downloads, plain-language model choices with any use restriction in the disclosure, and the Settings Models tab.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-006"
       ],
@@ -715,7 +715,7 @@
     {
       "id": "TASK-012",
       "description": "Deliver the generative workflow over the fake generator: the Remove mode with a brush selection, the Fill tier choice, the generative fill task and its pipeline on the candidate seam, the candidate strip with Regenerate, the Replace prompt, Accept through the Corrections patch action with generative provenance, the experiment flag and the generative scenario.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-006"
       ],
