@@ -108,7 +108,7 @@ host_params! {
 host_params! {
     /// `pick.develop`.
     pub(crate) struct PickDevelop {
-        into: Vec<DevelopInto> = json("[{event_id?, folder: {kind: existing, folder_id} or {kind: new, name, parent_id?}}]: one per event of the plan"),
+        into: Vec<DevelopInto> = json("[{event_id?, folder: {kind: place, name} or {kind: existing, folder_id, days?} or {kind: new, name, parent_id?}}]: one per event of the plan; [] takes the plan's proposals"),
         mutation: MutationRequest,
         targets: Option<Targets> = json("the picks to develop; default every pick in the caller's view"),
         use_copies: Option<bool> = boolean().default(false).notes("develop a card's pick from its fingerprint-verified copy in an indexed folder"),
@@ -633,20 +633,20 @@ mod contract_table {
             "pick.plan",
             "DevelopPlan",
             &[Validation, CatalogError],
-            "what developing these picks would do: the picks by event, each event's proposed catalog folder (the one an earlier Develop from its span made, or a new one named after it) and the picks on removable media with or without a copy of the same name and size",
+            "what developing these picks would do: the picks by event with their capture days and undated count, each event's proposed catalog folder (the one an earlier Develop of it made, with day folders, or its place, filed Year › Place › Day) and the picks on removable media with or without a copy of the same name and size",
         ),
         method::<PickDevelop>(
             "pick.develop",
             "DevelopReport",
             &[Validation, SourceUnavailable, ResourceLimit, Conflict, CatalogError, Cancelled],
-            "brings the picks into the catalog folders into names, in batches, each a library change: an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared, and a cancelled or failed job keeps what it committed and nothing partial",
+            "brings the picks into the catalog folders into names, in batches, each a library change: a place files each photograph under its capture year, the place and its day (\"2026 › Konstanz › 12 Sep\"), each folder found by name or made by the batch; an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared, and a cancelled or failed job keeps what it committed and nothing partial",
         )
         .starts(&jobs::DEVELOP_PICKS),
         method::<NoParams>(
             "folder.list",
             "CatalogFolders",
             &[CatalogError],
-            "every catalog folder, parents first, with its count and year",
+            "every catalog folder, parents first, siblings years newest first, then days in calendar order, then by name, with its count and year",
         ),
         method::<FolderCreate>(
             "folder.create",

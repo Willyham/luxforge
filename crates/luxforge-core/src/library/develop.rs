@@ -16,7 +16,8 @@
 //! 3. **Commit** on the owner, in batches (`commit.rs`): the first batch one file, so Develop can
 //!    show it at once, then up to [`BATCH_FILES`] files or [`BATCH_TIME`], never across an event.
 //!    Each batch is one library change, a part of the Develop's request
-//!    ([`journal::apply_part`](super::journal::apply_part)): the folder it needs, its new
+//!    ([`journal::apply_part`](super::journal::apply_part)): the folders it needs, each of its new
+//!    photographs filed by its own capture day (`filing.rs`: year, place and day), its new
 //!    photographs (`developed-asset`, written by the lane and recorded as written), relinked
 //!    originals (`asset-source`) and the committed picks cleared. A file is linked to the
 //!    photograph that already has its bytes, relinks a photograph whose original is not there when
@@ -28,6 +29,7 @@
 //! A cancel stops between files: committed batches stay, whole, and nothing of the batch being
 //! gathered is written. A file that fails is reported and stays picked. Originals are only read.
 mod commit;
+mod filing;
 mod frames;
 mod plan;
 mod read;
@@ -42,7 +44,8 @@ pub(crate) use commit::{Decided, Refused, decide, failure, write};
     reason = "`plan.rs` reads frames through its module; nothing outside `develop` reads it"
 )]
 pub(crate) use frames::{Frames, frames};
-pub(crate) use plan::{Destination, Plan, PlannedFile, destinations, plan};
+pub(crate) use filing::Destination;
+pub(crate) use plan::{Plan, PlannedFile, destinations, plan};
 pub(crate) use read::{ReadFile, from_copy, read};
 
 use super::{availability::SYSTEM_ACTOR, journal::Request, locate::Phase};
@@ -95,7 +98,10 @@ impl EditorService {
             .query_row([&name], |row| row.get(0))
             .optional()?;
         let destination = match existing {
-            Some(id) => Destination::Existing(CatalogFolderId::parse(id)?),
+            Some(id) => Destination::Existing {
+                folder_id: CatalogFolderId::parse(id)?,
+                days: false,
+            },
             None => Destination::New {
                 folder: FolderValue {
                     id: CatalogFolderId::new(),

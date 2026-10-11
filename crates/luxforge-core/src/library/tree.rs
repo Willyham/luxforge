@@ -88,23 +88,61 @@ pub(crate) fn parent_in(
         .flatten())
 }
 
-/// `items` parents first: each node directly followed by its subtree, siblings by name ignoring
-/// case (then by name and identity, so the order is total). A node whose parent is not listed is
-/// placed at the top level, and nodes a stored cycle keeps from the top level come last, so a list
-/// never leaves one out. `O(n log n)`.
-pub(crate) fn parents_first<T>(
+/// The English short names of the months, as day folders and event names write them.
+pub(crate) const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Where a name sorts among its siblings by name alone: ignoring case, then as written.
+pub(crate) fn by_name(name: &str) -> (String, String) {
+    (name.to_lowercase(), name.to_owned())
+}
+
+/// Where a catalog folder's name sorts among its siblings (`folder.list`): years (four digits)
+/// newest first, then day folders ("12 Sep", a day of 1 to 31 and an English short month, as
+/// Develop names them) in calendar order, then every other name by [`by_name`].
+pub(crate) fn folder_order(name: &str) -> (u8, i32, i32, (String, String)) {
+    if let Some(year) = year_name(name) {
+        return (0, -year, 0, (String::new(), String::new()));
+    }
+    if let Some((month, day)) = day_name(name) {
+        return (1, month as i32, day as i32, by_name(name));
+    }
+    (2, 0, 0, by_name(name))
+}
+
+/// The year a name that is exactly four digits names ("2026").
+fn year_name(name: &str) -> Option<i32> {
+    (name.len() == 4 && name.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| name.parse().ok())
+        .flatten()
+}
+
+/// The month (1 to 12) and day (1 to 31) a day folder's name names: the day without a leading zero,
+/// one space and an English short month, its case ignored ("3 Sep", "12 nov").
+fn day_name(name: &str) -> Option<(u32, u32)> {
+    let (day, month) = name.split_once(' ')?;
+    if day.is_empty() || day.len() > 2 || day.starts_with('0') {
+        return None;
+    }
+    let day: u32 = day.parse().ok().filter(|day| (1..=31).contains(day))?;
+    let month = MONTHS
+        .iter()
+        .position(|known| known.eq_ignore_ascii_case(month))?;
+    Some((month as u32 + 1, day))
+}
+
+/// `items` parents first: each node directly followed by its subtree, siblings by `order` (then by
+/// identity, so the order is total). A node whose parent is not listed is placed at the top level,
+/// and nodes a stored cycle keeps from the top level come last, so a list never leaves one out.
+/// `O(n log n)`.
+pub(crate) fn parents_first<T, K: Ord>(
     mut items: Vec<T>,
     id: impl Fn(&T) -> &str,
     parent: impl Fn(&T) -> Option<&str>,
-    name: impl Fn(&T) -> &str,
+    order: impl Fn(&T) -> K,
 ) -> Vec<T> {
-    items.sort_by_cached_key(|item| {
-        (
-            name(item).to_lowercase(),
-            name(item).to_owned(),
-            id(item).to_owned(),
-        )
-    });
+    items.sort_by_cached_key(|item| (order(item), id(item).to_owned()));
     let index: HashMap<&str, usize> = items
         .iter()
         .enumerate()
@@ -222,7 +260,7 @@ mod tests {
     struct Node(&'static str, Option<&'static str>, &'static str);
 
     fn ordered(nodes: Vec<Node>) -> Vec<&'static str> {
-        parents_first(nodes, |node| node.0, |node| node.1, |node| node.2)
+        parents_first(nodes, |node| node.0, |node| node.1, |node| by_name(node.2))
             .into_iter()
             .map(|node| node.0)
             .collect()
@@ -280,5 +318,21 @@ mod tests {
         assert!(within("a", "a", walk).unwrap());
         assert!(!within("a", "e", walk).unwrap());
         assert!(!within("g", "a", walk).unwrap(), "a cycle ends the walk");
+    }
+
+    #[test]
+    fn catalog_folder_siblings_order_years_newest_first_then_days_then_names() {
+        let mut names = vec![
+            "Konstanz", "12 Sep", "2025", "Undated", "3 Sep", "2026", "1 Jan", "alps", "03 Sep",
+            "32 Sep", "12 sep", "2024", "Zürich", "12 Nov", "20266",
+        ];
+        names.sort_by_key(|name| folder_order(name));
+        assert_eq!(
+            names,
+            [
+                "2026", "2025", "2024", "1 Jan", "3 Sep", "12 Sep", "12 sep", "12 Nov", "03 Sep",
+                "20266", "32 Sep", "alps", "Konstanz", "Undated", "Zürich",
+            ]
+        );
     }
 }

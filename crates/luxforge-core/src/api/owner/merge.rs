@@ -542,10 +542,12 @@ fn proposal(
     let mut suggested = None;
     if let [event] = plan.events.as_slice() {
         match &event.proposal {
-            FolderChoice::Existing { folder_id } => {
+            FolderChoice::Existing { folder_id, .. } => {
                 return Ok((Some(named(folder_id, "event")?), None));
             }
-            choice @ FolderChoice::New { .. } => suggested = Some(choice.clone()),
+            choice @ (FolderChoice::New { .. } | FolderChoice::Place { .. }) => {
+                suggested = Some(choice.clone());
+            }
         }
     }
     let folders: Vec<&CatalogFolderId> = inputs
