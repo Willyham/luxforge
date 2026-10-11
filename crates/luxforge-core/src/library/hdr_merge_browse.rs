@@ -1,12 +1,10 @@
-//! HDR stacks in browsing and the development set, against a real catalog, index and owner: a
-//! merge's result shown once over its collapsed originals in folder, event and catalog views and
-//! across an index rebuilt with other rows; filters acting on each item's own metadata, Show all
-//! labelling what they leave out; a result in the set Picked, deciding its bracket and selected
-//! alone; offline and unlisted originals as provenance rows with their reasons; the set's revisions
-//! and conflicts across clients; and Remove, Put back, undo and redo of a merge leaving every other
-//! member and pick as they were, a replaced set refusing the publication whole. Each expectation is
-//! written out from the seeded rows, never read back from what is tested, and the originals' bytes
-//! are checked unchanged.
+//! HDR stacks in browsing, against a real catalog, index and owner: a merge's result shown once
+//! over its collapsed originals in folder, event and catalog views and across an index rebuilt
+//! with other rows; filters acting on each item's own metadata, Show all labelling what they leave
+//! out; an active result deciding its bracket, never Picked, and selected alone; offline and
+//! unlisted originals as provenance rows with their reasons; and Remove, Put back, undo and redo of
+//! a merge leaving every pick as it was. Each expectation is written out from the seeded rows,
+//! never read back from what is tested, and the originals' bytes are checked unchanged.
 use super::hdr_merge_lifecycle::{Bench, request};
 use super::*;
 use crate::{
@@ -18,7 +16,6 @@ use crate::{
     },
     editor::distinct_jpeg,
     index::volume_of,
-    library::{development_set, journal},
     merge::hdr::DeghostMode,
     seed::IndexSeeder,
 };
@@ -70,7 +67,6 @@ fn header(at: usize) -> HeaderMetadata {
 /// ordinary photograph from another folder.
 struct Scene {
     bench: Bench,
-    other: AssetId,
     volume: VolumeId,
 }
 
@@ -93,13 +89,9 @@ impl Scene {
     fn new(name: &str) -> Self {
         let mut bench = Bench::new(&format!("browse-{name}"), 5);
         let other = distinct_jpeg(&jpeg(), &bench.directory.join("other").join("IMG_0001.JPG"));
-        let other = bench.service.import(&other).unwrap().asset.id;
+        bench.service.import(&other).unwrap();
         let volume = volume_of(&bench.files[0], 1).unwrap().id;
-        let scene = Self {
-            bench,
-            other,
-            volume,
-        };
+        let scene = Self { bench, volume };
         scene.seed_index(false);
         scene
     }
@@ -192,23 +184,14 @@ impl Scene {
         )
     }
 
-    /// Import merged: no set membership.
-    fn import(&mut self, inputs: &[usize]) -> PublishedMerge {
-        self.publish_with("person", "import", inputs, |_, _, _| Ok(Vec::new()))
+    /// A merge of the bracket's files `inputs`, with nothing else in its change.
+    fn merge(&mut self, request_id: &str, inputs: &[usize]) -> PublishedMerge {
+        self.publish_with("person", request_id, inputs, |_, _, _| Ok(Vec::new()))
             .unwrap()
     }
 
-    /// Pick merged: the result joins the set captured now.
-    fn pick(
-        &mut self,
-        actor: &str,
-        request_id: &str,
-        inputs: &[usize],
-    ) -> Result<PublishedMerge, Error> {
-        let captured = development_set::capture(&self.bench.service.connection).unwrap();
-        self.publish_with(actor, request_id, inputs, move |tx, _, result| {
-            development_set::membership_for_publication(tx, &captured, result)
-        })
+    fn import(&mut self, inputs: &[usize]) -> PublishedMerge {
+        self.merge("import", inputs)
     }
 
     /// Serve the catalog from an owner, this process's service closed meanwhile.
@@ -227,26 +210,6 @@ impl Scene {
     fn offline(&mut self, live: Live) {
         drop(live);
         self.bench.service = EditorService::open(&self.bench.catalog).unwrap();
-    }
-
-    fn set_rows(&mut self, rows: &[&AssetId]) -> development_set::CurrentSet {
-        let ids: Vec<AssetId> = rows.iter().map(|asset| (*asset).clone()).collect();
-        let rows = development_set::rows_of(&self.bench.service.connection, &ids).unwrap();
-        crate::editor::write(&mut self.bench.service.connection, |tx| {
-            development_set::replace(tx, Some(&rows))
-        })
-        .unwrap()
-        .unwrap()
-    }
-
-    /// The current set's members, by identity, in order.
-    fn members(&self) -> Vec<AssetId> {
-        development_set::page(&self.bench.service.connection, 0, 1000)
-            .unwrap()
-            .members
-            .into_iter()
-            .map(|member| member.asset_id)
-            .collect()
     }
 
     fn picks(&self) -> Vec<String> {
@@ -303,8 +266,7 @@ fn envelope(request_id: &str) -> Value {
 }
 
 /// A row as these tests name it: its file's name (`input` before an original no source item is),
-/// its stack role with what a collapsed leader hides and whether only Show all revealed it, and
-/// whether it is in the development set.
+/// and its stack role with what a collapsed leader hides and whether only Show all revealed it.
 fn describe(row: &Value) -> String {
     let mut text = match row["item"].as_str().unwrap() {
         "input" => format!("input {}", row["file_name"].as_str().unwrap()),
@@ -319,9 +281,6 @@ fn describe(row: &Value) -> String {
         if stack.get("outside_filter") == Some(&json!(true)) {
             text.push_str(" outside");
         }
-    }
-    if row.get("in_development_set") == Some(&json!(true)) {
-        text.push_str(" in-set");
     }
     text
 }
@@ -555,12 +514,12 @@ fn hdr_merge_browse_filters_act_on_each_items_own_metadata() {
     scene.finish();
 }
 
-/// A result in the current development set is Picked over files, carries In Development set and
-/// decides its bracket for Moments without a pick, while Picked and Develop N count file picks
-/// only, a hidden original's pick among them. A collapsed cell's selection is the leader alone.
-/// Another client's change to the set makes the view stale, and its next evaluation shows it.
+/// An active result decides its bracket for Moments without a pick, and itself with it, but is
+/// never Picked: Picked and Develop N count file picks only, a hidden original's pick among them.
+/// A collapsed cell's selection is the leader alone. Another client's Remove merge makes the view
+/// stale, and its next evaluation leaves the bracket undecided.
 #[test]
-fn hdr_merge_browse_a_result_in_the_set_is_picked_and_decides_its_bracket() {
+fn hdr_merge_browse_an_active_result_decides_its_bracket_and_is_not_picked() {
     let mut scene = Scene::new("picked");
     let merge = scene.import(&[0, 1, 2]);
     let bracket = scene.bracket();
@@ -568,49 +527,36 @@ fn hdr_merge_browse_a_result_in_the_set_is_picked_and_decides_its_bracket() {
     let live = scene.live();
     let client = live.owner.register();
     let agent = live.owner.register();
-    ok(
-        &live,
-        client,
-        "pick.set",
-        json!({
-            "targets": {"kind": "paths", "paths": [first, fourth]},
-            "picked": true,
-            "mutation": envelope("pick"),
-        }),
-    );
+    let pick = |paths: Value, picked: bool, request_id: &str| {
+        ok(
+            &live,
+            client,
+            "pick.set",
+            json!({
+                "targets": {"kind": "paths", "paths": paths},
+                "picked": picked,
+                "mutation": envelope(request_id),
+            }),
+        )
+    };
+    pick(json!([fourth]), true, "pick-fourth");
     let query =
         |filter: Value| json!({"source": {"kind": "folder", "path": bracket}, "filter": filter});
-    // Imported alone, the result decides nothing: the bracket is decided by its own pick.
-    let (_, shown) = view(&live, client, query(json!({"without_pick": true})));
-    assert!(
-        shown.contains(&"DSC_0002 HDR leader".to_owned()),
-        "{shown:?}"
-    );
-    ok(
-        &live,
-        agent,
-        "development-set.add",
-        json!({"asset_ids": [merge.result], "mutation": envelope("add")}),
-    );
-    let (summary, shown) = view(&live, client, query(json!({"picked": true})));
-    assert_eq!(
-        shown,
-        ["DSC_0002 HDR leader collapsed=1 in-set", "DSC_0004.JPG"]
-    );
-    assert_eq!(
-        (&summary["picked"], &summary["in_development_set"]),
-        (&json!(2), &json!(1)),
-        "picked counts the two files"
-    );
+    // No original is picked: the active result alone decides the bracket, and itself.
     assert_eq!(
         view(&live, client, query(json!({"without_pick": true}))).1,
         ["DSC_0005.JPG"]
     );
+    pick(json!([first]), true, "pick-first");
+    // The result is not Picked: the picked original shows on its own, its leader left out.
+    let (summary, shown) = view(&live, client, query(json!({"picked": true})));
+    assert_eq!(shown, ["DSC_0001.JPG separate", "DSC_0004.JPG"]);
+    assert_eq!(summary["picked"], 2, "picked counts the two files");
     let (_, shown) = view(&live, client, query(json!({})));
     assert_eq!(
         shown,
         [
-            "DSC_0002 HDR leader collapsed=3 in-set",
+            "DSC_0002 HDR leader collapsed=3",
             "DSC_0004.JPG",
             "DSC_0005.JPG"
         ]
@@ -622,7 +568,7 @@ fn hdr_merge_browse_a_result_in_the_set_is_picked_and_decides_its_bracket() {
     // the background after the owner starts, and `pick.plan` evaluates a view the index moved on
     // from again, so the selection names the view's revision as it is now.
     let (summary, shown) = view(&live, client, query(json!({})));
-    assert_eq!(shown[0], "DSC_0002 HDR leader collapsed=3 in-set");
+    assert_eq!(shown[0], "DSC_0002 HDR leader collapsed=3");
     let session = ok(
         &live,
         client,
@@ -641,31 +587,23 @@ fn hdr_merge_browse_a_result_in_the_set_is_picked_and_decides_its_bracket() {
         refused.0, "validation",
         "the selection holds the result, no file"
     );
-    // Another client takes the result out of the set: the view goes stale with the event.
-    let events = ok(&live, client, "events.since", json!({"after": 0}));
-    let cursor = events["current_sequence"].clone();
+    // Another client removes the merge: the view goes stale, and with the original's pick cleared
+    // the bracket is undecided again.
     ok(
         &live,
         agent,
-        "development-set.remove",
-        json!({"asset_ids": [merge.result], "mutation": envelope("remove")}),
-    );
-    let events = ok(&live, client, "events.since", json!({"after": cursor}));
-    assert!(
-        events["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|event| event.get("development_set_revision").is_some()),
-        "{events}"
+        "merge.remove",
+        json!({"merge_ids": [merge.merge_id], "mutation": envelope("remove")}),
     );
     let state = ok(&live, client, "session.state", json!({}));
     assert_eq!(state["browse"]["stale"], true);
+    pick(json!([first]), false, "clear-first");
     assert_eq!(
-        view(&live, client, query(json!({}))).1,
+        view(&live, client, query(json!({"without_pick": true}))).1,
         [
-            "DSC_0002 HDR leader collapsed=3",
-            "DSC_0004.JPG",
+            "DSC_0001.JPG",
+            "DSC_0002.JPG",
+            "DSC_0003.JPG",
             "DSC_0005.JPG"
         ]
     );
@@ -811,139 +749,14 @@ fn hdr_merge_browse_offline_and_unlisted_originals_have_provenance_rows() {
     scene.finish();
 }
 
-/// The set is one authority for every client: a replacement and each membership change move its
-/// revision on and announce it; a client naming a set since replaced is refused by name; a retry
-/// is answered as first; an undo writes only the member it names, in a retired set too.
+/// Remove takes a merge's result to Removed with its stack in the same change, and undo and Put
+/// back restore both; a creation's undo and redo move only its own result; another actor's later
+/// change to the result refuses the creation's undo by name, all or nothing; every pick stays as it
+/// was, and the originals' bytes too.
 #[test]
-fn hdr_merge_browse_development_set_revisions_and_conflicts_across_clients() {
-    let mut scene = Scene::new("clients");
-    let merge = scene.import(&[0, 1, 2]);
-    let (developed, other) = (scene.bench.developed.clone(), scene.other.clone());
-    let live = scene.live();
-    let desktop = live.owner.register();
-    let agent = live.owner.register();
-    assert_eq!(
-        ok(&live, agent, "development-set.read", json!({}))["count"],
-        0,
-        "opening the catalog leaves no set"
-    );
-    let replace = json!({
-        "source": {"kind": "assets", "asset_ids": [developed, other, developed]},
-        "mutation": envelope("open"),
-    });
-    let first = ok(&live, desktop, "development-set.replace", replace.clone());
-    assert_eq!(first["count"], 2);
-    let mut retry = first.clone();
-    retry["deduplicated"] = json!(true);
-    assert_eq!(
-        ok(&live, desktop, "development-set.replace", replace),
-        retry,
-        "a retry"
-    );
-    let set = first["set_id"].clone();
-    let read = ok(&live, agent, "development-set.read", json!({}));
-    assert_eq!(
-        (&read["set_id"], &read["revision"]),
-        (&set, &first["revision"])
-    );
-    let added = ok(
-        &live,
-        agent,
-        "development-set.add",
-        json!({"asset_ids": [merge.result, other], "set_id": set, "mutation": {"request_id": "add", "actor": "agent"}}),
-    );
-    assert_eq!((&added["count"], &added["items"]), (&json!(3), &json!(1)));
-    assert!(added["revision"].as_u64() > first["revision"].as_u64());
-    let members: Vec<Value> = ok(&live, desktop, "development-set.read", json!({}))["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|member| member["asset_id"].clone())
-        .collect();
-    assert_eq!(
-        members,
-        [json!(developed), json!(other), json!(merge.result)]
-    );
-    // The desktop replaces the set; the agent's next change, meant for the old one, is refused.
-    let second = ok(
-        &live,
-        desktop,
-        "development-set.replace",
-        json!({"source": {"kind": "assets", "asset_ids": [other]}, "mutation": envelope("open-2")}),
-    );
-    let (code, message) = call(
-        &live,
-        agent,
-        "development-set.add",
-        json!({"asset_ids": [developed], "set_id": set, "mutation": {"request_id": "late", "actor": "agent"}}),
-    )
-    .unwrap_err();
-    assert_eq!(code, "conflict");
-    assert!(message.contains(set.as_str().unwrap()), "{message}");
-    // The agent's undo takes its member out of the retired set and leaves the current one alone.
-    ok(
-        &live,
-        agent,
-        "library.undo",
-        json!({"mutation": {"request_id": "undo", "actor": "agent"}}),
-    );
-    let current = ok(&live, desktop, "development-set.read", json!({}));
-    assert_eq!(current["set_id"], second["set_id"]);
-    assert_eq!(current["members"][0]["asset_id"], json!(other));
-    assert_eq!(current["count"], 1);
-    let removed = ok(
-        &live,
-        desktop,
-        "development-set.remove",
-        json!({"asset_ids": [developed], "mutation": envelope("remove-none")}),
-    );
-    assert_eq!(removed["outcome"], "no-op");
-    assert_eq!(
-        call(
-            &live,
-            desktop,
-            "development-set.replace",
-            json!({"source": {"kind": "view", "revision": 4, "position": 0}, "mutation": envelope("no-view")}),
-        )
-        .unwrap_err()
-        .0,
-        "validation"
-    );
-    // A view's set: its photographs around the one opened.
-    let all = ok(
-        &live,
-        desktop,
-        "browse.view",
-        json!({"source": {"kind": "all-photographs"}}),
-    );
-    let from_view = ok(
-        &live,
-        desktop,
-        "development-set.replace",
-        json!({"source": {"kind": "view", "revision": all["revision"], "position": 0}, "mutation": envelope("open-view")}),
-    );
-    assert_eq!(from_view["count"], all["count"]);
-    assert_eq!(from_view["active"], 0);
-    scene.offline(live);
-    scene.finish();
-}
-
-/// Pick merged appends its result to the captured set; Remove takes it out, with its stack, in
-/// the same change, and undo and Put back restore that membership at its place; creation undo and
-/// redo move only the result; another actor's later change to the member refuses the undo by name;
-/// every other member and every pick stays as it was, and the originals' bytes too.
-#[test]
-fn hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_members_and_picks() {
+fn hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_picks() {
     let mut scene = Scene::new("lifecycle");
     let hashes = scene.bench.hashes();
-    let (developed, other) = (scene.bench.developed.clone(), scene.other.clone());
-    let late = scene
-        .bench
-        .service
-        .import(&scene.bench.files[4].clone())
-        .unwrap()
-        .asset
-        .id;
     let pick = scene.path(3);
     scene
         .bench
@@ -957,44 +770,24 @@ fn hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_members_and_pic
         )
         .unwrap();
     let picks = scene.picks();
-    scene.set_rows(&[&developed, &other]);
-    let merge = scene.pick("person", "pick-merged", &[0, 1, 2]).unwrap();
+    // Whether a merge's result is in Removed, and its stack's state.
+    let state = |scene: &Scene, merge: &PublishedMerge| {
+        (
+            scene.bench.removed_ms(&merge.result).is_some(),
+            super::state(&scene.bench.service.connection, &merge.merge_id).unwrap(),
+        )
+    };
+    let active = (false, Some(MergeState::Active));
+    let removed = (true, Some(MergeState::Removed));
+    let merge = scene.merge("merge", &[0, 1, 2]);
     let result = merge.result.clone();
-    assert_eq!(
-        scene.members(),
-        [developed.clone(), other.clone(), result.clone()]
-    );
-    // An agent appends a later member.
-    let set = development_set::current(&scene.bench.service.connection)
-        .unwrap()
-        .unwrap();
-    let changes = development_set::additions(&set, std::slice::from_ref(&late)).unwrap();
-    scene
-        .bench
-        .service
-        .library_write(|tx| {
-            journal::apply(
-                tx,
-                request("development-set.add", "agent", "late"),
-                changes,
-                |_| "late".into(),
-            )
-        })
-        .unwrap();
-    let all = vec![
-        developed.clone(),
-        other.clone(),
-        result.clone(),
-        late.clone(),
-    ];
-    let without = vec![developed.clone(), other.clone(), late.clone()];
-    assert_eq!(scene.members(), all);
+    assert_eq!(state(&scene, &merge), active);
 
     scene.bench.remove_as("person", "remove", &result).unwrap();
-    assert_eq!(scene.members(), without);
+    assert_eq!(state(&scene, &merge), removed);
     assert_eq!(scene.picks(), picks);
     scene.bench.undo_as("person", "undo-remove").unwrap();
-    assert_eq!(scene.members(), all, "back at its place");
+    assert_eq!(state(&scene, &merge), active, "back as it was");
     scene
         .bench
         .remove_as("person", "remove-2", &result)
@@ -1003,40 +796,25 @@ fn hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_members_and_pic
         .bench
         .restore_as("person", "put-back", &result)
         .unwrap();
-    assert_eq!(
-        scene.members(),
-        all,
-        "Put back restores what the removal took"
-    );
+    assert_eq!(state(&scene, &merge), active, "Put back");
     scene.bench.undo_as("person", "undo-put-back").unwrap();
-    assert_eq!(scene.members(), without);
+    assert_eq!(state(&scene, &merge), removed);
     scene.bench.redo_as("person", "redo-put-back").unwrap();
-    assert_eq!(scene.members(), all);
+    assert_eq!(state(&scene, &merge), active);
 
-    // A second merge, its creation undone and redone: only its own membership moves.
-    let second = scene.pick("person", "pick-merged-2", &[3, 4]).unwrap();
-    assert_eq!(scene.members().last(), Some(&second.result));
+    // A second merge, its creation undone and redone: only its own result moves.
+    let second = scene.merge("merge-2", &[3, 4]);
+    assert_eq!(state(&scene, &second), active);
     scene.bench.undo_as("person", "undo-create").unwrap();
-    assert_eq!(scene.members(), all);
+    assert_eq!(state(&scene, &second), (true, Some(MergeState::Undone)));
+    assert_eq!(state(&scene, &merge), active);
     scene.bench.redo_as("person", "redo-create").unwrap();
-    assert_eq!(scene.members().len(), 5);
-    // Another actor takes the second result out of the set: the creation's undo is refused by name,
-    // all or nothing.
-    let set = development_set::current(&scene.bench.service.connection)
-        .unwrap()
-        .unwrap();
-    let changes = development_set::removals(&set, std::slice::from_ref(&second.result));
+    assert_eq!(state(&scene, &second), active);
+    // Another actor removes the second result: the creation's undo is refused by name, all or
+    // nothing.
     scene
         .bench
-        .service
-        .library_write(|tx| {
-            journal::apply(
-                tx,
-                request("development-set.remove", "agent", "take"),
-                changes,
-                |_| "take".into(),
-            )
-        })
+        .remove_as("agent", "take", &second.result)
         .unwrap();
     let refused = scene.bench.undo_as("person", "undo-create-2").unwrap_err();
     assert_eq!(refused.kind, ErrorKind::Conflict, "{refused}");
@@ -1045,56 +823,12 @@ fn hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_members_and_pic
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["kind"] == "set-member"),
+            .any(|item| item["kind"] == "asset-removal"),
         "{refused:?}"
     );
-    assert_eq!(
-        scene.bench.removed_ms(&second.result),
-        None,
-        "nothing undone"
-    );
-    assert_eq!(scene.members(), all);
+    assert_eq!(state(&scene, &second), removed, "nothing undone");
+    assert_eq!(state(&scene, &merge), active);
     assert_eq!(scene.picks(), picks);
     assert_eq!(scene.bench.hashes(), hashes);
-    scene.finish();
-}
-
-/// A set replaced while a Pick merged ran is a named conflict at publication, and the transaction
-/// writes nothing: no result, merge, stack or member; with no set captured, the result starts one
-/// of its own; Import merged leaves the set alone.
-#[test]
-fn hdr_merge_browse_a_replaced_set_refuses_the_publication_whole() {
-    let mut scene = Scene::new("replaced");
-    let (developed, other) = (scene.bench.developed.clone(), scene.other.clone());
-    let first = scene.set_rows(&[&other]);
-    let captured = development_set::capture(&scene.bench.service.connection).unwrap();
-    let second = scene.set_rows(&[&developed]);
-    let assets = scene.bench.count("assets");
-    let error = scene
-        .publish_with("person", "pick-merged", &[0, 1, 2], move |tx, _, result| {
-            development_set::membership_for_publication(tx, &captured, result)
-        })
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Conflict);
-    let data = error.data.as_ref().unwrap();
-    assert_eq!(
-        (&data["set_id"], &data["current"]),
-        (&json!(first.id), &json!(second.id))
-    );
-    assert_eq!(scene.bench.count("assets"), assets);
-    assert_eq!(scene.bench.count("merges"), 0);
-    assert_eq!(scene.bench.count("stack_claims"), 0);
-    assert_eq!(scene.members(), std::slice::from_ref(&developed));
-    // Import merged: the set is as it was.
-    let imported = scene.import(&[0, 1, 2]);
-    assert_eq!(scene.members(), std::slice::from_ref(&developed));
-    assert!(scene.bench.removed_ms(&imported.result).is_none());
-    // No set captured and none now: the result starts one of its own.
-    crate::editor::write(&mut scene.bench.service.connection, |tx| {
-        development_set::replace(tx, None)
-    })
-    .unwrap();
-    let picked = scene.pick("person", "pick-alone", &[3, 4]).unwrap();
-    assert_eq!(scene.members(), [picked.result]);
     scene.finish();
 }

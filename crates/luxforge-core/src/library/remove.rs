@@ -8,9 +8,8 @@
 //!   Removed, and every count, leaves a removed photograph out. The journal undoes and redoes
 //!   either like any other change. A merge's result is removed and put back the same way, its
 //!   merge's `merge-stack` item in the same change ([`merge::lifecycle`]): Remove deactivates the
-//!   stack, so its originals show again, and takes the result out of the development set; Put back
-//!   activates it, refused when another active stack claims an input, and returns the result to the
-//!   sets it was taken from. Remove merge is this Remove.
+//!   stack, so its originals show again; Put back activates it, refused when another active stack
+//!   claims an input. Remove merge is this Remove.
 //! - **Emptying Removed** (`catalog.empty-removed`, [`empty`]) is the one destructive catalog
 //!   operation: in one transaction it deletes every removed photograph's catalog record — entries,
 //!   state, requests, versions, capture row, collection memberships, artifact references, a derived
@@ -85,7 +84,7 @@ fn with_merges(
     let merges = merge::merges_of(connection, &ids)?;
     let mut changes = Vec::with_capacity(assets.len() + merges.len());
     for asset_id in ids {
-        let lifecycle = merge::lifecycle(connection, &asset_id, merges.get(&asset_id), state)?;
+        let lifecycle = merge::lifecycle(merges.get(&asset_id), state)?;
         changes.push(removal(asset_id));
         changes.extend(lifecycle);
     }
@@ -172,13 +171,9 @@ pub(crate) fn empty(
             "SELECT count(*) FROM merges WHERE result_asset_id IN (SELECT value FROM json_each(?1))",
         )?
         .query_row([&ids], |row| row.get(0))?;
-    let members = super::development_set::holds_any(tx, &ids)?;
     lifted(tx, LIFTED_TRIGGERS, |tx| {
         library_rows::delete_photographs(tx, &assets)
     })?;
-    if members {
-        super::development_set::touch(tx)?;
-    }
     if !strokes.is_empty() {
         still_named(tx, &mut strokes)?;
     }

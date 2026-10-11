@@ -50,8 +50,6 @@ pub(crate) struct Evaluation {
     pub in_catalog: u32,
     /// Items whose original is not available.
     pub unavailable: u32,
-    /// Photographs in the current development set.
-    pub in_development_set: u32,
     pub stamp: ViewStamp,
     /// How the view's HDR stacks were arranged.
     pub stacks: Arranged,
@@ -169,13 +167,13 @@ pub(crate) fn evaluate_with(
         )
     })?;
     count_picks(&mut layout, |at| candidates.extra(facts[at].item).picked);
-    let (mut picked, mut in_catalog, mut unavailable, mut in_set) = (0, 0, 0, 0);
+    let (mut picked, mut in_catalog, mut unavailable) = (0, 0, 0);
     for fact in &facts {
         let extra = candidates.extra(fact.item);
         match fact.item {
-            // Picked counts the files a Develop takes; a result's set membership is counted apart.
+            // Picked counts the files a Develop takes; a photograph is never picked.
             ViewItem::File(_) => picked += u32::from(extra.picked),
-            ViewItem::Photo(row) => in_set += u32::from(candidates.stacks.in_set.contains(&row)),
+            ViewItem::Photo(_) => {}
             // A provenance row is no item of the source.
             ViewItem::Input(_) => continue,
         }
@@ -194,7 +192,6 @@ pub(crate) fn evaluate_with(
         picked,
         in_catalog,
         unavailable,
-        in_development_set: in_set,
         stamp,
         stacks,
     })
@@ -240,9 +237,9 @@ pub(super) fn prepare(
 /// Day › Camera › Moment under `thresholds`, whatever the view's own sort and grouping, and a frame
 /// is decided when it is picked or its moment has a picked frame.
 ///
-/// An HDR result in the current development set is decided, and so is its bracket: its originals
-/// count as picked here, so their moment is decided whole. A result is not one of the frames
-/// grouped, and one only imported decides nothing.
+/// A bracket whose stack has an active result is decided: its originals count as picked here, so
+/// their moment is decided whole. The result, which only an active stack brings into a view over
+/// files, is not one of the frames grouped, and is decided with its bracket.
 fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn BracketProbe) {
     let mut facts = std::mem::take(&mut candidates.facts);
     let results: Vec<FrameFacts> = if candidates.stacks.is_empty() {
@@ -270,15 +267,14 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Brac
     let picked: Vec<bool> = facts
         .iter()
         .map(|fact| {
-            candidates.extra(fact.item).picked || candidates.stacks.decided_by_set(fact.item)
+            candidates.extra(fact.item).picked || candidates.stacks.decided_by_result(fact.item)
         })
         .collect();
     for (fact, decided) in facts.iter().zip(decided(&picked, &layout.moments)) {
         candidates.extra_mut(fact.item).decided = decided;
     }
     for result in &results {
-        let extra = candidates.extra_mut(result.item);
-        extra.decided = extra.picked;
+        candidates.extra_mut(result.item).decided = true;
     }
     facts.extend(results);
     candidates.facts = facts;

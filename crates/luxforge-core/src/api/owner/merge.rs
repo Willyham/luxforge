@@ -16,10 +16,8 @@
 //!   library change, announced as one event, unless `job.cancel` reached the owner first, when
 //!   nothing is published and the durable objects the job wrote are unreferenced, for a later
 //!   collection. A cancel after it finds the job `ready`.
-//! - **Pick merged** is `merge.create` with `add_to_development_set`: the set current at admission
-//!   is captured (and refused when the request's `set_id` is another), carried to publication, and
-//!   the result's membership joins the publication's one library change. An exact active match is
-//!   added to the set in a library change of its own, unless it is a member already.
+//! - **An exact active match** is reused as it is: `merge.create` answers its result at once,
+//!   `reused`, and records no library change.
 //! - **Requests across a restart.** Each admitted request keeps a small marker in its own folder
 //!   under the artifact root (`merges/<key>/request.json`, `key` the SHA-256 of its method, actor
 //!   and request identity), beside the job's spool files. A retry while its job is queued or
@@ -55,11 +53,10 @@ use crate::{
     jobs::{JobControl, JobError},
     library::{
         develop,
-        development_set::{self, SetCapture},
-        journal::{self, Request},
+        journal::Request,
         merge::{
-            self, Publication, PublishedMerge, claims, matching, overlap, published_or_picked,
-            record, results,
+            self, Publication, PublishedMerge, claims, matching, overlap, published_by, record,
+            results,
         },
         remove,
     },
@@ -718,19 +715,6 @@ pub(in crate::api) fn merge_create(
         return value(answered);
     }
     let provider = owner.catalog.merge.available_provider()?;
-    // Pick merged: the set the result joins is the one current now, which the client's `set_id`,
-    // when named, must be; a set replaced while the job runs is the publication's conflict.
-    let pick = params.add_to_development_set.unwrap_or(false);
-    let capture = if pick {
-        let connection = &owner.service.connection;
-        development_set::check_expected(
-            development_set::current(connection)?.as_ref(),
-            params.set_id.as_ref(),
-        )?;
-        Some(development_set::capture(connection)?)
-    } else {
-        None
-    };
     let inputs = inputs(owner, call.client, &params.targets)?;
     let parameters = parameters(
         &inputs,
@@ -762,10 +746,7 @@ pub(in crate::api) fn merge_create(
     }
     if let Some(existing) = matching(&owner.service.connection, &key)? {
         if existing.state == MergeState::Active {
-            let mut answer = recorded_answer(&owner.service.connection, &existing.merge_id, true)?;
-            if pick {
-                answer.change = pick_existing(owner, call, request, &existing.result_asset_id)?;
-            }
+            let answer = recorded_answer(&owner.service.connection, &existing.merge_id, true)?;
             return value(LibraryLane::answered(
                 &mut owner.jobs,
                 &HDR_MERGE,
@@ -838,45 +819,8 @@ pub(in crate::api) fn merge_create(
             reuse: None,
             key: Some(key),
             mutation: params.mutation.clone(),
-            membership: capture,
         },
     )
-}
-
-/// Pick merged of a result that exists: append it to the current set as one library change, or
-/// start a one-result set, and answer the change. A result already a member changes nothing.
-fn pick_existing(
-    owner: &mut Owner,
-    call: &Call<'_>,
-    request: Request<'_>,
-    result: &AssetId,
-) -> Result<Option<crate::catalog_types::LibraryChangeSeq>, Error> {
-    let connection = &owner.service.connection;
-    let current = development_set::current(connection)?;
-    if let Some(set) = &current
-        && development_set::member(connection, &set.id, result)?.is_some()
-    {
-        return Ok(None);
-    }
-    let label = format!(
-        "Added {} to the development set",
-        file_name_of(connection, result)
-    );
-    let answer = change(owner, &call.origin, |tx| {
-        let set = match current {
-            Some(set) => set,
-            None => {
-                development_set::replace(tx, Some(&[]))?.expect("an empty replacement starts a set")
-            }
-        };
-        journal::apply(
-            tx,
-            request,
-            development_set::additions(&set, std::slice::from_ref(result))?,
-            |_| label,
-        )
-    })?;
-    Ok(answer.change)
 }
 
 /// `merge.rerun`: merge a recorded merge's exact inputs again, with its recorded options save
@@ -996,7 +940,6 @@ pub(in crate::api) fn merge_rerun(
             reuse,
             key: None,
             mutation: params.mutation.clone(),
-            membership: None,
         },
     )
 }
@@ -1145,8 +1088,6 @@ struct Started {
     /// it runs. None for a rerun, which always makes a new result.
     key: Option<String>,
     mutation: MutationRequest,
-    /// Pick merged: the set the request was made against, which the result joins when published.
-    membership: Option<SetCapture>,
 }
 
 /// Every input's signature, refused with `source-unavailable` naming the first that is not there.
@@ -1260,7 +1201,6 @@ fn start(
         method: call.request.method.clone(),
         mutation: started.mutation,
         origin: call.origin.clone(),
-        membership: started.membership,
     };
     let reuse = started.reuse;
     let matched = started.key;
@@ -1394,19 +1334,15 @@ struct Publish {
     method: String,
     mutation: MutationRequest,
     origin: Origin,
-    membership: Option<SetCapture>,
 }
 
 impl Publish {
     /// Publish `merged` in one transaction and one library change, announced as one event, and
-    /// answer the [`MergeAnswer`]. Pick merged's development-set membership joins the same change
-    /// through `publish_merge`'s `extra`; a set replaced since the request fails the whole
-    /// publication with a conflict.
+    /// answer the [`MergeAnswer`].
     fn commit(self, owner: &mut Owner, merged: Merged) -> Result<Value, Error> {
         let request = Request::new(&self.method, &self.mutation);
         #[cfg(test)]
         let fails = owner.catalog.merge.publish_fails.take();
-        let set_before = development_set::revision(&owner.service.connection)?;
         let published = owner.service.publish_merge(
             request,
             &Publication {
@@ -1419,20 +1355,15 @@ impl Publish {
                 volumes: &merged.volumes,
                 replaces: self.replaces.as_ref(),
             },
-            |tx, _merge, result| {
+            |_, _, _| {
                 #[cfg(test)]
                 if let Some(error) = fails {
                     return Err(error);
                 }
-                match &self.membership {
-                    Some(capture) => {
-                        development_set::membership_for_publication(tx, capture, result)
-                    }
-                    None => Ok(Vec::new()),
-                }
+                Ok(Vec::new())
             },
         )?;
-        announce(owner, &self.origin, &published, set_before);
+        announce(owner, &self.origin, &published);
         let mut answer = recorded_answer(&owner.service.connection, &published.merge_id, false)?;
         answer.change = published.outcome.answer().change;
         answer.deduplicated = published.outcome.announced().is_none();
@@ -1443,19 +1374,13 @@ impl Publish {
 }
 
 /// Announce a publication's library change as [`change`] announces one: one event naming its
-/// sequence and the result, and the lanes that follow its items told; a change to the development
-/// set's members names the set's revision it left, as [`change`] does.
-fn announce(owner: &mut Owner, origin: &Origin, published: &PublishedMerge, set_before: u64) {
+/// sequence and the result, and the lanes that follow its items told.
+fn announce(owner: &mut Owner, origin: &Origin, published: &PublishedMerge) {
     if let Some(sequence) = published.outcome.announced() {
-        let mut announced = origin
+        let announced = origin
             .clone()
             .library(sequence)
             .changed(published.result.clone(), None);
-        if let Ok(set_after) = development_set::revision(&owner.service.connection)
-            && set_after != set_before
-        {
-            announced = announced.development_set(set_after);
-        }
         announce_once(&mut owner.announced, &announced);
         owner.library_changed(origin, published.outcome.items());
     }
@@ -1610,8 +1535,8 @@ fn retried(
     call: &Call<'_>,
     request: Request<'_>,
 ) -> Result<Option<crate::catalog_types::JobStarted>, Error> {
-    if let Some((published, picked)) = published_or_picked(&owner.service.connection, request)? {
-        let mut answer = recorded_answer(&owner.service.connection, &published.merge_id, picked)?;
+    if let Some(published) = published_by(&owner.service.connection, request)? {
+        let mut answer = recorded_answer(&owner.service.connection, &published.merge_id, false)?;
         answer.change = published.outcome.answer().change;
         answer.deduplicated = true;
         return Ok(Some(LibraryLane::answered(

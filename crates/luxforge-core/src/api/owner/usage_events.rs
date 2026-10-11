@@ -49,8 +49,6 @@ pub(crate) fn host_feature(method: &str, params: &Value) -> Option<(Feature, Emi
         "history.undo" => (F::HistoryUndo, OnChange),
         "history.redo" => (F::HistoryRedo, OnChange),
         "history.restore" => (F::HistoryRestore, OnChange),
-        "development-set.add" => (F::DevelopmentSetAdd, OnChange),
-        "development-set.remove" => (F::DevelopmentSetRemove, OnChange),
         "merge.remove" => (F::MergeRemove, OnChange),
         "merge.restore" => (F::MergeRestore, OnChange),
         "index.add-folder" => (F::IndexedFolderAdd, OnChange),

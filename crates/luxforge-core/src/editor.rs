@@ -783,8 +783,6 @@ impl EditorService {
         let catalog_id = catalog_id.ok_or_else(|| {
             Error::incompatible("catalog has no identity; choose a new catalog path")
         })?;
-        // A development set lasts the session that made it.
-        crate::library::development_set::end_session(&mut connection)?;
         // The roots follow the catalog file, so moving them together keeps them valid.
         let artifact_root = default_artifact_root(path);
         let index_dir = crate::index::index_dir(path);

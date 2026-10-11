@@ -14,8 +14,8 @@
 //!   [`StackExpansion::All`] also brings in the originals the filter or the source left out,
 //!   labelled `outside_filter`. Originals whose leader did not match stay where they are, each
 //!   with its stack's badge.
-//! - **Development set.** The current set's members are read once a view; a result in it is
-//!   Picked over files and decides its bracket for Moments without a pick.
+//! - **Decisions.** An active stack's result decides its bracket for Moments without a pick; it is
+//!   never Picked.
 //!
 //! Everything here is bookkeeping over the catalog's and the index's keys: no pixel or file is
 //! read.
@@ -29,7 +29,6 @@ use crate::{
         AssetRowId, FileAvailability, FileId, FrameFacts, MergeId, MergeKind, MergeState, RowStack,
         StackExpansion, StackInputKey, StackInspection, StackOriginal, StackRole, ViewItem,
     },
-    library::development_set,
 };
 use rusqlite::{Connection, OptionalExtension};
 use std::{
@@ -40,7 +39,7 @@ use std::{
 /// How each stack a client expanded is shown; a stack it never named is collapsed.
 pub(crate) type StackExpansions = HashMap<MergeId, StackExpansion>;
 
-/// The active stacks a source holds and the current development set's members.
+/// The active stacks a source holds.
 #[derive(Default)]
 pub(super) struct Stacks {
     pub list: Vec<Stack>,
@@ -48,8 +47,6 @@ pub(super) struct Stacks {
     members: HashMap<ViewItem, (usize, u32)>,
     /// The results leading them.
     leaders: HashSet<AssetRowId>,
-    /// The current development set's members.
-    pub in_set: HashSet<AssetRowId>,
 }
 
 /// One active stack: its merge, its result's row, and its originals in order.
@@ -95,11 +92,10 @@ impl Stacks {
             .map(|&(at, ordinal)| (&self.list[at], ordinal))
     }
 
-    /// Whether `item` is an original of a result in the current development set: a decision for
-    /// its bracket.
-    pub fn decided_by_set(&self, item: ViewItem) -> bool {
-        self.member(item)
-            .is_some_and(|(stack, _)| self.in_set.contains(&stack.result))
+    /// Whether `item` is an original of an active stack: its result is a decision for its
+    /// bracket.
+    pub fn decided_by_result(&self, item: ViewItem) -> bool {
+        self.member(item).is_some()
     }
 }
 
@@ -246,12 +242,6 @@ pub(super) fn over_photos(loaded: Vec<Loaded>, holds: impl Fn(AssetRowId) -> boo
     };
     stacks.index();
     stacks
-}
-
-/// The current development set's members. One range read of the set's members, bounded by the
-/// set's size.
-pub(super) fn in_set(connection: &Connection) -> Result<HashSet<AssetRowId>, Error> {
-    development_set::current_rows(connection)
 }
 
 /// How a view arranged its stacks: the originals a collapsed leader hides, each stacked row's
@@ -421,9 +411,9 @@ pub(crate) fn inspect(
     expansion: StackExpansion,
 ) -> Result<StackInspection, Error> {
     let connection = &service.connection;
-    let row: Option<(String, String, String, String, Option<i64>, i64)> = connection
+    let row: Option<(String, String, String, String, Option<i64>)> = connection
         .prepare_cached(
-            "SELECT m.kind, s.state, a.id, a.file_name, a.removed_ms, a.row_id FROM merges m
+            "SELECT m.kind, s.state, a.id, a.file_name, a.removed_ms FROM merges m
              JOIN merge_stacks s ON s.merge_id = m.id
              JOIN assets a ON a.id = m.result_asset_id WHERE m.id = ?1",
         )?
@@ -434,11 +424,10 @@ pub(crate) fn inspect(
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
-                row.get(5)?,
             ))
         })
         .optional()?;
-    let (kind, state, result, file_name, removed, result_row) =
+    let (kind, state, result, file_name, removed) =
         row.ok_or_else(|| Error::validation(format!("unknown merge {merge}")))?;
     let kind = match kind.as_str() {
         "hdr" => MergeKind::Hdr,
@@ -479,7 +468,6 @@ pub(crate) fn inspect(
         result_asset_id: AssetId::parse(result)?,
         file_name,
         removed: removed.is_some(),
-        in_development_set: in_set(connection)?.contains(&AssetRowId(result_row)),
         expansion,
         exposures,
         from,
