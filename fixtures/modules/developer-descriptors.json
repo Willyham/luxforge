@@ -344,21 +344,12 @@
                         "kind": "wheel",
                         "label": "Wheel",
                         "luminance": "wheel-luminance",
-                        "reset": {
-                          "action": "set-controls",
-                          "preset": {
-                            "wheel-hue": 0.0,
-                            "wheel-luminance": 0.0,
-                            "wheel-saturation": 0.0
-                          }
-                        },
                         "saturation": "wheel-saturation"
                       }
                     ],
-                    "kind": "group",
-                    "label": "Compact",
-                    "reset": null,
-                    "view": true
+                    "id": "compact",
+                    "kind": "view",
+                    "label": "Compact"
                   },
                   {
                     "controls": [
@@ -368,14 +359,6 @@
                         "kind": "wheel",
                         "label": "Wheel",
                         "luminance": "wheel-luminance",
-                        "reset": {
-                          "action": "set-controls",
-                          "preset": {
-                            "wheel-hue": 0.0,
-                            "wheel-luminance": 0.0,
-                            "wheel-saturation": 0.0
-                          }
-                        },
                         "saturation": "wheel-saturation",
                         "style": "large"
                       },
@@ -393,12 +376,12 @@
                         "parameter": "wheel-saturation"
                       }
                     ],
-                    "kind": "group",
-                    "label": "Large",
-                    "reset": null,
-                    "view": true
+                    "id": "large",
+                    "kind": "view",
+                    "label": "Large"
                   }
                 ],
+                "id": "colour-wheel",
                 "kind": "group",
                 "label": "Colour wheel",
                 "layout": "tabs",
