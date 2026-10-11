@@ -409,7 +409,7 @@ const DEVELOPMENT_SET_SCHEMA: &str = "
 
 /// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
 /// catalog columns and capture rows, collections, picks, indexed folders and the library journal
-/// (`docs/design/versions-and-lineage.md#storage-catalog-format-13`).
+/// (`docs/design/versions-and-lineage.md#storage-catalog-format-14`).
 ///
 /// - An asset's `row_id` is its `INTEGER PRIMARY KEY`: stable for the catalog's life, the 8-byte key
 ///   a view holds, and what `capture` and `collection_members` key on, so a view over a million
