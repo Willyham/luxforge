@@ -606,7 +606,7 @@ fn hdr_merge_browse_a_result_in_the_set_is_picked_and_decides_its_bracket() {
         view(&live, client, query(json!({"without_pick": true}))).1,
         ["DSC_0005.JPG"]
     );
-    let (summary, shown) = view(&live, client, query(json!({})));
+    let (_, shown) = view(&live, client, query(json!({})));
     assert_eq!(
         shown,
         [
@@ -618,7 +618,11 @@ fn hdr_merge_browse_a_result_in_the_set_is_picked_and_decides_its_bracket() {
     // Develop N: the file picks of the view, the hidden original's among them, never the result.
     let plan = ok(&live, client, "pick.plan", json!({}));
     assert_eq!(plan["count"], 2, "{plan}");
-    // The collapsed cell's selection is its leader alone.
+    // The collapsed cell's selection is its leader alone. The index lane can move the index on in
+    // the background after the owner starts, and `pick.plan` evaluates a view the index moved on
+    // from again, so the selection names the view's revision as it is now.
+    let (summary, shown) = view(&live, client, query(json!({})));
+    assert_eq!(shown[0], "DSC_0002 HDR leader collapsed=3 in-set");
     let session = ok(
         &live,
         client,
