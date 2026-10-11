@@ -62,6 +62,7 @@ pub(super) mod files;
 #[cfg(test)]
 mod first_open_tests;
 pub(super) mod library;
+pub(super) mod merge;
 #[cfg(test)]
 mod original_tests;
 mod parked;

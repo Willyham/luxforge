@@ -24,9 +24,8 @@
 //!
 //! Everything here is SQL on the owner and, at publication, one stat an input; no payload is read
 //! or hashed.
-// The merge job's publication and the `merge.*` commands (`tasks/library/hdr-merge.json`
-// TASK-006) and stack browsing (TASK-007) call what Remove and Put back do not yet; until they do,
-// only the tests do.
+// Stack browsing (`tasks/library/hdr-merge.json` TASK-007) calls what the `merge.*` commands and
+// Remove and Put back do not yet; until it does, only the tests do.
 #![cfg_attr(not(test), allow(dead_code))]
 use super::journal::{self, Desired, Outcome, Request};
 use crate::{
@@ -62,6 +61,9 @@ pub(crate) struct Publication<'a> {
     pub place: Option<&'a str>,
     /// Every volume an input is on, recorded or refreshed with the merge.
     pub volumes: &'a [Volume],
+    /// The merge a rerun replaces: while its stack is active, its result goes to Removed and its
+    /// stack is deactivated in the same change, so the new result leads the inputs instead.
+    pub replaces: Option<&'a MergeId>,
 }
 
 /// A published merge: its identity, its result photograph and the library change that made both
@@ -113,6 +115,10 @@ impl EditorService {
                 return Ok(published);
             }
             recheck_inputs(tx, provenance)?;
+            let mut changes = match publication.replaces {
+                Some(old) => replace(tx, old, now)?,
+                None => Vec::new(),
+            };
             for volume in publication.volumes {
                 upsert_volume(tx, volume)?;
             }
@@ -154,7 +160,7 @@ impl EditorService {
             claim(tx, &item, &merge_id)?;
             tx.prepare_cached("INSERT INTO merge_stacks (merge_id, state) VALUES (?1, ?2)")?
                 .execute([merge_id.as_str(), MergeState::Active.as_str()])?;
-            let mut changes = vec![
+            changes.extend([
                 (
                     LibraryItem::AssetRemoval {
                         asset_id: asset_id.clone(),
@@ -171,7 +177,7 @@ impl EditorService {
                         })?),
                     },
                 ),
-            ];
+            ]);
             changes.extend(extra(tx, &merge_id, &asset_id)?);
             let label = format!("Merged {}", publication.file_name);
             let outcome = journal::apply(tx, request, changes, |_| label)?;
@@ -182,6 +188,46 @@ impl EditorService {
             })
         })
     }
+}
+
+/// A rerun's replacement of `old`, written before the new merge claims its inputs: while `old`'s
+/// stack is active, its result goes to Removed as of `now_ms` and its stack to `removed`, releasing
+/// its claims, each recorded as written so the change's undo restores both after undoing the new
+/// merge. An inactive `old` changes nothing.
+fn replace(
+    tx: &Transaction<'_>,
+    old: &MergeId,
+    now_ms: i64,
+) -> Result<Vec<(LibraryItem, Desired)>, Error> {
+    if state(tx, old)? != Some(MergeState::Active) {
+        return Ok(Vec::new());
+    }
+    let result: String = tx
+        .prepare_cached("SELECT result_asset_id FROM merges WHERE id = ?1")?
+        .query_row([old.as_str()], |row| row.get(0))?;
+    let writes = [
+        (
+            LibraryItem::AssetRemoval {
+                asset_id: AssetId::parse(result)?,
+            },
+            value(AssetRemovalValue { removed_ms: now_ms })?,
+        ),
+        (
+            LibraryItem::MergeStack {
+                merge_id: old.clone(),
+            },
+            value(MergeStackValue {
+                state: MergeState::Removed,
+            })?,
+        ),
+    ];
+    let mut changes = Vec::with_capacity(writes.len());
+    for (item, to) in writes {
+        let before = super::items::read(tx, &item)?;
+        super::items::write(tx, &item, Some(&to))?;
+        changes.push((item, Desired::Written { before }));
+    }
+    Ok(changes)
 }
 
 /// The record of a merge's result photograph: a derived source, no file of its own. Its locator

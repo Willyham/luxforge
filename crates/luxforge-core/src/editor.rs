@@ -58,7 +58,6 @@ pub(crate) use test_support::{
 pub(crate) use catalog::{
     CATALOG_FORMAT, decode, default_artifact_root, encode, insert_entry, now_ms, write,
 };
-#[cfg(test)]
 pub(crate) use catalog_rows::capture_of;
 pub(crate) use catalog_rows::{
     NewAsset, insert_asset, insert_capture, insert_catalog_folder, insert_collection,

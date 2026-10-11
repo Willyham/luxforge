@@ -187,6 +187,49 @@ pub(crate) fn link_asset_source(
     attach_source(tx, asset_id, &published.id)
 }
 
+/// The record of the source `id` as the catalog holds it, to give another photograph the same
+/// immutable source (a rerun that matches its merge exactly); none when it is not recorded. SQL
+/// only.
+pub(crate) fn recorded_source(
+    connection: &Connection,
+    id: &DerivedSourceId,
+) -> Result<Option<PublishedSource>, Error> {
+    let row: Option<(i64, i64, i64, String)> = connection
+        .prepare_cached(
+            "SELECT manifest_bytes,width,height,colour FROM derived_sources WHERE id=?1",
+        )?
+        .query_row([id.as_str()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .optional()?;
+    let Some((manifest_bytes, width, height, colour)) = row else {
+        return Ok(None);
+    };
+    let colour =
+        serde_json::from_value(serde_json::Value::String(colour.clone())).map_err(|_| {
+            Error::incompatible(format!("derived source colour {colour} is not supported"))
+        })?;
+    let mut statement = connection.prepare_cached(
+        "SELECT sha256, bytes FROM derived_source_chunks WHERE source_id=?1 ORDER BY ordinal",
+    )?;
+    let chunks = statement
+        .query_map([id.as_str()], |row| {
+            Ok(crate::artifacts::derived_source::PublishedChunk {
+                sha256: row.get(0)?,
+                bytes: row.get::<_, i64>(1)? as u64,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(PublishedSource {
+        id: id.clone(),
+        manifest_bytes: manifest_bytes as u64,
+        width: width as u32,
+        height: height as u32,
+        colour,
+        chunks,
+    }))
+}
+
 /// The SHA-256 of every source object the catalog retains: each recorded source's manifest and
 /// every chunk it names. What a collection keeps.
 pub(super) fn retained_source_objects(connection: &Connection) -> Result<HashSet<String>, Error> {

@@ -361,6 +361,7 @@ fn past_tense(entry: &ActivityEntry, home: Option<&Path>) -> String {
         "source.locate" => "Verified original",
         "batch.apply-settings" => "Applied settings",
         "batch.export" => "Exported",
+        "merge.hdr" => "Merged HDR",
         _ => job.label,
     });
     match entry.detail.as_deref() {
