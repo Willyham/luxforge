@@ -9,7 +9,7 @@ A test in the core (`usage_every_registered_command_is_in_the_coverage_inventory
 - **Authoritative boundaries.** A command's event is recorded by the core where the command's outcome stands: the editor service when a recipe transaction commits, the catalog owner when a host method's answer stands, the job table when a job reaches its terminal outcome. Nothing reads the event log, a click handler or a request's arguments to decide.
 - **Once per operation.** A retried mutation (the same `request_id`) is answered from the owner's request table or the catalog's request log and records nothing. A no-op, a refusal and a call parked for a pixel read or deferred for the index lane record nothing until their final answer. A job a retry answers from its first attempt records no outcome.
 - **Commits.** `tool.commit` is one event per built-in tool group whose layers a committed transaction changed (a layer added, removed, reordered or with another payload, format, mask or artifacts; a layer's identity alone is not a change), in the registry's tool order, with the photograph's image ID. History navigation, a Restore, a no-op and a first-open entry by the `system` actor record none.
-- **Continuous gestures.** A drag or a drawn mask is one draft: its ticks (`draft.set`) record nothing, `draft.commit` records its commits once, and a cancelled draft records nothing.
+- **Continuous gestures.** A drag, a drawn mask or a painted correction is one draft: its ticks (`draft.set`) record nothing, `draft.commit` records its commits once, and a cancelled draft records nothing.
 - **Automatic work.** The histogram analysis, maintenance, restoring the remembered workspace at launch and a desktop storing its remembered panels, brush, window or Performance state record nothing.
 - **Images.** The keyed image ID is computed when a photograph is adopted as a client's open photograph (`job.adopt`), from the catalog fingerprint the adoption already holds, and kept beside the photograph; a commit to a photograph no client has open computes it from the fingerprint its state holds. The session remembers the last fingerprint and the ID it gave (one entry, in memory, ended with the session, so a new key never reuses it), so one open's preparation outcome, adoption and the desktop's GUI-local producers cost one HMAC between them. An `interaction` carries the image only when it acts on a photograph a client has open. A multi-photograph export, a scan and an add carry none.
 - **Generations.** A job and an Auto tone solve capture the consent generation when they start and record their outcome only in that generation, so work begun before an opt-in or across a revocation records nothing.
@@ -52,6 +52,8 @@ Recorded by the desktop when the gesture completes, because no command records t
 | The Before/After comparison entered or left | tapping `\`, palette, Escape | `interaction` `compare-slider`, with the image; the divider's moves have no completion signal and record nothing |
 | Copy settings; Paste from previous's capture of the previous photograph's settings | `⌘C` and its sheet; `⌥⌘V` | `interaction` `settings-copy` or `settings-paste-previous`, with the image; the paste itself is `edit.apply-settings`'s `settings-paste` |
 | Brush stroke, gradient or radial drawn and released | Masks panel and canvas | the core's `draft.commit` or mask command (below) |
+| A correction placed, moved, resized or given another source; a row's setting, reorder or delete; `/`, `⌫`, `⌥↑`/`⌥↓`, the band's reset | Corrections mode's canvas, band, row menu and keys | the core's `draft.commit` or Corrections command (below): one `tool.commit` `corrections` |
+| Corrections mode entered or left; a correction selected; a source set or cleared; the New correction settings; pins and outlines hidden (`H`) | Corrections mode | none: desktop view state, as mask selection and the remembered brush are; what is done with them is the commit |
 | Slider, curve or wheel drag released | Develop's panels | the core's `draft.commit` (below): one `tool.commit` per changed group |
 | Settings sheet change | Settings | the core's `preferences.set` or `flags.set` (below) |
 | Theme chosen, imported, exported or deleted | Settings › Appearance | `preferences.set`, `theme.import`, `theme.export`, `theme.delete` (below) |
@@ -101,13 +103,18 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `draft.read` | Exempt (internal) | Reads the draft. |
 | `draft.reapply` | Exempt (internal) | Re-applies the draft after a conflict; part of the gesture. |
 | `draft.set` | Exempt (internal) | One drag tick; ticks record nothing. |
+| `edit.accept-correction-patch` | `tool.commit` corrections | The frozen patch's one entry, when the owner's accept commits it, with the image; a refused or cancelled accept and the unreferenced artifact it leaves record nothing. |
+| `edit.add-correction` | `tool.commit` corrections | One commit when the add commits, with the image. An add without a source is parked while its search is answered off the owner and records once, at its replay's commit; a painted stroke's `draft.commit` records the same event, and a retry records nothing. |
 | `edit.apply-settings` | `tool.commit` × changed groups, then `interaction` `preset-apply` or `settings-paste` | One commit per built-in group the settings set changed, then the interaction (by the request's origin: a preset, or a paste), with the image. A no-op or a retry records nothing. |
 | `edit.auto-tone` | `tool.commit` basic | Applying Auto tone's solve: one commit per changed group (Basic). The solve itself is `query.auto-tone`. |
 | `edit.crop` | `tool.commit` crop | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.crop-fit` | `tool.commit` crop | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.crop-reset` | `tool.commit` crop | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
+| `edit.delete-correction` | `tool.commit` corrections | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.pick-raw-neutral` | `tool.commit` basic | The RAW neutral pick's commit to the RAW development, which Basic presents. |
+| `edit.reorder-correction` | `tool.commit` corrections | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-basic` | `tool.commit` basic | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
+| `edit.reset-corrections` | `tool.commit` corrections | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-curve` | `tool.commit` curve | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-detail` | `tool.commit` detail | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-lens-profile` | `tool.commit` lens | One commit when the lens group changed. |
@@ -129,6 +136,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `edit.set-raw-red-gain` | `tool.commit` basic (RAW white balance) | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.set-vignette` | `tool.commit` vignette | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.transform` | `tool.commit` crop | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
+| `edit.update-correction` | `tool.commit` corrections | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. A moved pin, a moved source, a resize, a kind or a setting and `/`'s next source are each this command or its `draft.commit`. |
 | `event.list` | Exempt (read) | Lists the catalog's events (photo groups). |
 | `events.since` | Exempt (read) | Reads the event log; never copied into statistics. |
 | `events.wait` | Exempt (read) | Holds a read of the event log. |
@@ -155,6 +163,8 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `job.adopt` | `image.open` | Each adoption of a prepared photograph as the client's open photograph; its image ID is computed here, once, from the fingerprint the adoption holds. |
 | `job.cancel` | Exempt (internal) | A cancellation is recorded as the job's own `operation.end` outcome `cancelled`. |
 | `job.read` | Exempt (read) | Reads a job; a poll. |
+| `job.read-candidate` | Exempt (read) | Reads a chunk of a task candidate's pixels. |
+| `job.release-candidates` | Exempt (internal) | Storage housekeeping for a task's candidates, as the budget, a cancel and closing the catalog also release them; accepting one is `edit.accept-correction-patch`. |
 | `job.wait` | Exempt (read) | Holds a read of a job. |
 | `library.inspect` | Exempt (read) | Reads one library change. |
 | `library.journal` | Exempt (read) | Reads the library journal. |
@@ -227,6 +237,8 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `preview.return-current` | Exempt (internal) | Ends a history preview or an Original hold; the desktop records the operation that began it. |
 | `preview.select` | Exempt (internal) | A per-client selection that is also the Original hold's and a comparison's mechanism; the desktop records `history-preview`, `version-select` and `compare-original` at the gesture. |
 | `query.auto-tone` | `operation.end` auto-tone | The solve's terminal outcome (completed; cancelled when superseded or disconnected; failed) and duration, with the open photograph's image; its commit is `edit.auto-tone`. |
+| `query.correction-sources` | Exempt (read) | Ranks automatic sources without writing; the add or update that uses one is the commit. |
+| `query.corrections` | Exempt (read) | Reads the Corrections layer as stored (pins, outlines and rows). |
 | `query.lens-profiles` | Exempt (read) | Lists lens profiles. |
 | `query.neutral-sample` | Exempt (read) | A pixel query (the neutral picker); its commit is `edit.set-basic`/`edit.set-raw`. |
 | `query.sample-curve` | Exempt (read) | A pixel query for the curve picker. |

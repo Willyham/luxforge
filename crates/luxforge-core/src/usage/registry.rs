@@ -71,6 +71,9 @@ wire_enum! {
         /// Basic: white balance, tone and colour. On a RAW photo's global target its white balance
         /// is the RAW development's (`luxforge.raw`), which Basic presents.
         Basic => "basic",
+        /// Corrections: the Clone and Heal operations of the repair stage, and a frozen patch
+        /// accepted from a task's candidate.
+        Corrections => "corrections",
         /// Crop, transform, straighten, including Rotate, Mirror and Flip.
         Crop => "crop",
         /// The tone curve.
@@ -99,6 +102,7 @@ impl Tool {
         Some(match module {
             "luxforge.basic" => Self::Basic,
             raw if raw == crate::modules::RAW_MODULE => Self::Basic,
+            "luxforge.corrections" => Self::Corrections,
             "luxforge.crop" => Self::Crop,
             "luxforge.curve" => Self::Curve,
             "luxforge.detail" => Self::Detail,
