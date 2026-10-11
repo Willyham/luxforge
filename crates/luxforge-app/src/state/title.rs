@@ -181,6 +181,28 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
     Some(identity)
 }
 
+/// The name the title bar gives the open photograph: its original's file name, or, for a derived
+/// photograph (an HDR merge's result), which has no original, the name the catalog gives it as the
+/// development set lists it ("DSC_0001 HDR"), never its source's internal locator.
+pub(crate) fn document_name(
+    asset: &luxforge_core::AssetRecord,
+    set: Option<&super::develop::DevelopSet>,
+) -> Option<String> {
+    if matches!(asset.source, SourceKind::Derived { .. })
+        && let Some(photo) = set.and_then(|set| {
+            set.photos
+                .iter()
+                .find(|photo| photo.asset_id == asset.id && !photo.name.is_empty())
+        })
+    {
+        return Some(photo.name.clone());
+    }
+    asset
+        .locator
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
     let editable = inputs.edit_refusal.is_none();
     let interacting = !inputs.mask_tool_owns_controls();
@@ -199,13 +221,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
             .document
             .state
             .as_ref()
-            .and_then(|state| {
-                state
-                    .asset
-                    .locator
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
+            .and_then(|state| document_name(&state.asset, inputs.develop.set.as_ref()))
             .or_else(|| inputs.develop.switching.clone()),
         identity: identity(inputs),
         zoom_text: inputs.view_state.zoom.clone(),
@@ -303,5 +319,63 @@ mod tests {
         assert_eq!(step_stop(&ZOOM_STOPS, 1200.0, 1), None);
         assert_eq!(step_stop(&ZOOM_STOPS, 50.0, -1), None);
         assert_eq!(step_stop(&ZOOM_STOPS, 18.0, -1), None);
+    }
+
+    /// A merged photograph, whose locator is its derived source's internal name, is titled with
+    /// the name the development set lists for it; a photograph with an original keeps its file's
+    /// name, and a merged one the set does not list falls back to the locator's.
+    #[test]
+    fn a_merged_photograph_is_titled_with_its_catalog_name_not_its_locator() {
+        use super::super::develop::{DevelopSet, SetPhoto};
+        use luxforge_core::{
+            AssetId, AssetRecord, DerivedColour, DerivedInterpretation, DerivedSourceId,
+        };
+        let id = AssetId::new();
+        let record = |source, locator: &str| AssetRecord {
+            id: id.clone(),
+            source_root: "/".into(),
+            locator: locator.into(),
+            fingerprint: String::new(),
+            file_identity: String::new(),
+            byte_len: 0,
+            width: 600,
+            height: 400,
+            source,
+        };
+        let derived = SourceKind::Derived {
+            interpretation: DerivedInterpretation {
+                source_id: DerivedSourceId::parse(format!("source-{}", "a".repeat(64))).unwrap(),
+                width: 600,
+                height: 400,
+                colour: DerivedColour::LinearSrgbD65,
+            },
+        };
+        let merged = record(derived, &format!("derived:{id}"));
+        let set = DevelopSet::new(
+            1,
+            vec![
+                SetPhoto {
+                    asset_id: AssetId::new(),
+                    kind: None,
+                    name: "DSC_0002.NEF".into(),
+                },
+                SetPhoto {
+                    asset_id: id.clone(),
+                    kind: Some(luxforge_core::SourceTag::Derived),
+                    name: "DSC_0001 HDR".into(),
+                },
+            ],
+            1,
+        );
+        assert_eq!(
+            document_name(&merged, Some(&set)).as_deref(),
+            Some("DSC_0001 HDR")
+        );
+        assert_eq!(document_name(&merged, None), Some(format!("derived:{id}")));
+        let jpeg = record(SourceKind::Jpeg, "/photos/DSC_0003.JPG");
+        assert_eq!(
+            document_name(&jpeg, Some(&set)).as_deref(),
+            Some("DSC_0003.JPG")
+        );
     }
 }
