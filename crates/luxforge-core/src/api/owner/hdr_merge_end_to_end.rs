@@ -379,8 +379,16 @@ impl Merging {
                    "mutation": {"request_id": "export", "actor": "test"}}),
         );
         self.finished(&accepted["job_id"]);
-        let decoded = image::open(&destination).expect("a JPEG").to_rgb8();
-        decoded.dimensions()
+        let bytes = fs::read(&destination).unwrap();
+        let mut decoder =
+            luxforge_jpeg::Decoder::new(&bytes, crate::source::JPEG_LIMITS).expect("a JPEG");
+        let (width, height) = (decoder.width(), decoder.height());
+        let mut rows = vec![0; width as usize * height as usize * 4];
+        decoder
+            .read_rows(&mut rows)
+            .expect("the whole JPEG decodes");
+        decoder.finish().unwrap();
+        (width, height)
     }
 
     fn originals_unchanged(&self) {
