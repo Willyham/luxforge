@@ -135,7 +135,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Filtering, tagging and collections | Design one retrieval model from concrete workflows |
 | Full catalog with lazy shoot subsets | Keep catalog scale independent of decoded pixels; scope views to the working set |
 | Multi-selection and stacking | Multi-selection and result-led HDR merge stacks are delivered ([design](design/hdr-merge.md)) |
-| Bracket and panorama identification | Brackets are detected and [HDR merging](#hdr-exposure-merges) is implemented; panorama stitching remains outside that plan |
+| Bracket and panorama identification | Brackets are detected and [HDR merging](#hdr-exposure-merges) is implemented; [panorama merging](#panorama-merges) is planned from a selection, without automatic panorama grouping |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
 ## Presets
@@ -488,9 +488,27 @@ Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)
 - Keep the merged pixels durably on disk so ordinary reopening needs no repeated merge; source files stay unchanged and each bracket frame can still be picked independently.
 - A merge can be removed or undone without losing the originals. The planned lifecycle retains the generated result and edits for restoration through library undo/redo.
 - **Pick merged adds the result to the development set by default.** The design distinguishes Import's catalog-only result from Pick's appended set member and keeps Select open; ordinary file picks remain the existing workflow.
-- Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Do not implement or plan panorama stitching now.
+- Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Panoramas were planned separately afterwards ([panorama merges](#panorama-merges)).
 
 The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract. The owner authorized implementation on 2026-10-10.
+
+## Panorama merges
+
+Requested for design by the owner on 2026-10-11 ([design](design/panorama-merge.md), [task plan](../tasks/library/panorama-merge.json)), as a second merge kind beside [HDR exposure merges](#hdr-exposure-merges), with the same Pick merged / Import merged workflow, stacks, lifecycle and saved derived source. The owner chose:
+
+- **RAW or JPEG frames.** Every frame of one merge is RAW, or every frame is JPEG; mixing them is refused. HDR panoramas (bracketed positions) are outside this plan, and HDR merges stay RAW-only.
+- **Selection only.** Selecting frames offers the panorama merge, and the job checks their overlap; automatic panorama detection or grouping stays a later catalog feature.
+- **Automatic crop with Boundary Warp.** The saved result is always the largest clean rectangle, with a Boundary Warp option (0–100) that bends the stitch to fill the rectangle instead; no empty pixels reach the editor.
+- **Raise the limits for derived sources** to about 65,000 pixels a side and 512 MP, rather than scaling a panorama down to the current 128 MP; camera files keep their current limits.
+
+The owner then chose, the same day, a **merge preview that opens first, for both kinds**. It works like Lightroom's Photo Merge preview:
+
+- Pick merged and Import merged open a sheet with a picture built from the frames' proxies, the kind's settings and both merge buttons. ⌥-click merges at once with the kind's last settings.
+- The preview's reading and alignment are reused by the merge.
+- It replaces HDR's Merge options… sheet, and supersedes the HDR design's "no second approval round" for these actions.
+- The overlays are HDR's deghost overlay, and a panorama's crop and coverage and its frame outlines. Seams are not shown.
+
+Recorded defaults, delegated within that scope and open to the owner's correction: 2–32 frames; Auto, Perspective, Cylindrical and Spherical projections; Boundary Warp 0; frames more than 3 EV apart or registering as the same view are refused as a bracket; a detected lens profile is baked into RAW frames; the result is named with "Panorama"; a panorama is not counted in usage statistics until the owner approves a `panorama-merge` event. Numerical, solver, blending and layout details are delegated. Implementation is not authorized.
 
 ## Corrections workspace
 

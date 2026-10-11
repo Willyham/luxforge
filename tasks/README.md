@@ -37,6 +37,14 @@ RAW development and looks.
 | --- | --- |
 | [RAW looks](raw/raw-looks.json) | New RAW photos start from a Luxforge look: the frozen look units and the corpus-chosen Standard look in the Original with its preference and section (phase 1), then Match camera fitted to the embedded preview off the owner (phase 2), measured once at the end |
 
+### Library (`library/`)
+
+Selection, catalog sources and library operations.
+
+| Plan | Purpose |
+| --- | --- |
+| [Panorama merges and the merge preview](library/panorama-merge.json) ([design](../docs/design/panorama-merge.md)) | Decided, not authorized: a merge preview that opens first for HDR and panoramas, panorama stitching as a second merge kind over the HDR boundary (kind-tagged provenance and commands, a shared merge lane with band-read spools, catalog format 15), derived sources up to 65,000 pixels a side and 512 MP through tiled preparation, rendering and export, merge-only RAW and JPEG frame development, rotation-model registration, projection, photometric fit, seams, blending and Boundary Warp, the job and commands, Select's panorama menu, sheet and stack, and a background journey first; natural-panorama quality and photo-sized measurement last |
+
 ### Editing tools (`editing/`)
 
 One plan per tool module.
