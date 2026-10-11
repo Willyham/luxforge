@@ -1249,6 +1249,46 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "starts an hdr-merge job that merges a recorded merge's exact inputs again into a new result photograph, answering {job_id, status, deduplicated}, whose result is merge.create's with replaced: the merge's recorded options are used save those named (reference, exposure_overrides, alignment, deghost; folder_id defaults to the old result's folder); refused before anything is read: incompatible when this build's provider or its version is not the one that made the merge, not-ready when there is none, source-unavailable or conflict naming an input gone or changed since it was merged, and conflict naming another active stack that claims an input; each input's SHA-256 must be the recorded one (conflict otherwise); with the very same inputs, options and provider and a whole saved source, the new result is given that source and nothing is merged; otherwise it merges as merge.create does; the new result replaces an active old one as the inputs' stack in the same library change, the old result going to Removed with its edits and history, and library.undo restores the old; no result's source or edits are ever overwritten; retries, cancellation, progress and events as merge.create's",
         retries: Owner,
     ),
+    // The development set and stacks.
+    owner!(
+        "development-set.read",
+        crate::catalog_types::api::DevelopmentSetRead,
+        owner::library::development_set_methods::development_set_read,
+        "{set_id?, revision, count, from, members: [{index, asset_id, file_name, kind, removed?, merge_id?}]}: members from..from + limit of the catalog session's current development set, in its order; no set answers no set_id and no members; revision is the catalog's development-set revision, which every replacement and membership change moves on and events name as development_set_revision; reads no pixels"
+    ),
+    owner!(
+        "development-set.replace",
+        crate::catalog_types::api::DevelopmentSetReplace,
+        owner::library::development_set_methods::development_set_replace,
+        "retires the current development set and starts one of the photographs the source names, each once in order, answering {set_id?, revision, count, active?}: {kind: assets} takes them as given (a Develop's photographs, one opened alone), {kind: view, revision, position} the photographs of the caller's view at that revision, at most 100,000 around position, active being where position's photograph is among them, {kind: none} leaves no set; a Removed or unknown photograph is refused; session state, not a library change: a retired set keeps only the members a library change names; one event names the new revision and every view is evaluated again",
+        retries: Owner,
+    ),
+    owner!(
+        "development-set.add",
+        crate::catalog_types::api::DevelopmentSetMembers,
+        owner::library::development_set_methods::development_set_add,
+        "appends photographs to the current development set as one library change of set-member items, each once and after every member, answering {outcome, change?, items, deduplicated, set_id?, revision, count}; with no set it starts one; a member already there keeps its place; conflict when set_id names a set no longer current; a Removed or unknown photograph is refused; library.undo takes back exactly the members it added",
+        retries: Owner,
+    ),
+    owner!(
+        "development-set.remove",
+        crate::catalog_types::api::DevelopmentSetMembers,
+        owner::library::development_set_methods::development_set_remove,
+        "takes photographs out of the current development set as one library change, answering as development-set.add; the other members keep their order; library.undo puts each back in its place; conflict when set_id names a set no longer current",
+        retries: Owner,
+    ),
+    owner!(
+        "stack.inspect",
+        crate::catalog_types::api::StackInspect,
+        owner::views::stack_inspect,
+        "{merge_id, kind, state, result_asset_id, file_name, removed?, in_development_set, expansion, exposures, from, originals: [{ordinal, path, file_name, offset_ev, reference?, availability, reason?, file_id?, picked, asset_id?}]}: an HDR stack's result and its originals from..from + limit in the stack's order, each with its EV offset, whether it is the reference, its availability (a developed original's recorded one, otherwise offline under an offline root or missing when no indexed folder or card lists it, with the reason), its index row, its pick and the catalog photograph developed from it; expansion is how the caller shows the stack; reads no pixels and hashes nothing; validation for an unknown merge"
+    ),
+    owner!(
+        "stack.set-expanded",
+        crate::catalog_types::api::StackSetExpanded,
+        owner::views::stack_set_expanded,
+        "how the caller shows an HDR stack, session view state: collapsed (default) shows the result alone, hiding the originals its view holds, which its summary counts as collapsed; expanded follows the result with those originals in the stack's order, and, in a view with no filter condition, the originals no item of its source is (provenance rows: item input {merge_id, ordinal}); all (Show all N originals) follows it with every original, those the filter or the source leaves out labelled stack.outside_filter; evaluates the caller's view again when it holds one, carrying its selection over by item, and answers its summary (null without a view); changes no library item, reads no pixels and selects nothing; conflict when revision names another view; resource-limit past 10,000 stacks expanded"
+    ),
     // Views: events, browsing and the selection.
     owner!(
         "event.list",
@@ -1303,6 +1343,7 @@ const SESSION_SCOPED: &[&str] = &[
     "workspace.set",
     "browse.select",
     "browse.rows",
+    "stack.set-expanded",
     "job.adopt",
 ];
 

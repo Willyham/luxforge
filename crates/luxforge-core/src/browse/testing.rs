@@ -1207,7 +1207,7 @@ impl Fixture {
                     .iter()
                     .map(|at| match frames[*at as usize].item {
                         ViewItem::File(file) => file,
-                        ViewItem::Photo(_) => unreachable!(),
+                        ViewItem::Photo(_) | ViewItem::Input(_) => unreachable!(),
                     })
                     .collect();
                 files.sort();

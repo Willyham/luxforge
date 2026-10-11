@@ -63,6 +63,25 @@ pub(crate) fn files(
             for item in items {
                 match item {
                     ViewItem::File(id) => add(listed(index, id)?),
+                    // An expanded HDR stack's original outside the view's source: its file.
+                    ViewItem::Input(key) => {
+                        let path: Option<String> = service
+                            .connection
+                            .prepare_cached(
+                                "SELECT i.path FROM assets a
+                                 JOIN merges m ON m.result_asset_id = a.id
+                                 JOIN merge_inputs i ON i.merge_id = m.id AND i.ordinal = ?2
+                                 WHERE a.row_id = ?1",
+                            )?
+                            .query_row([key.result().0, i64::from(key.ordinal())], |row| row.get(0))
+                            .optional()?;
+                        let path = path.ok_or_else(|| {
+                            Error::conflict(
+                                "a selected original's merge is no longer in the catalog",
+                            )
+                        })?;
+                        add(file_at(index, Path::new(&path))?);
+                    }
                     ViewItem::Photo(_) => {
                         return Err(Error::validation(
                             "the selection holds photographs, and only files are picked",
@@ -139,7 +158,7 @@ pub(crate) fn assets(
                         })?;
                         add((AssetId::parse(id)?, row));
                     }
-                    ViewItem::File(_) => {
+                    ViewItem::File(_) | ViewItem::Input(_) => {
                         return Err(Error::validation(
                             "the selection holds files, and this names photographs",
                         ));

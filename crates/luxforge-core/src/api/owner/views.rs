@@ -22,10 +22,14 @@ use crate::{
     EditorService, Error,
     api::ClientSession,
     api::methods::session_value,
-    browse::{self, Context, EventCache, Probe, SelectRequest, View},
+    browse::{self, Context, EventCache, Probe, SelectRequest, StackExpansions, View},
     catalog_types::{
-        BrowseSession, MAX_VIEW_ITEMS, ViewItem, ViewQuery, ViewRows, ViewSummary,
-        api::{BrowseFacets, BrowseRows, BrowseSelect, BrowseView, EventListParams},
+        BrowseSession, MAX_VIEW_ITEMS, MergeId, StackExpansion, ViewItem, ViewQuery, ViewRows,
+        ViewSummary,
+        api::{
+            BrowseFacets, BrowseRows, BrowseSelect, BrowseView, EventListParams, StackInspect,
+            StackSetExpanded,
+        },
     },
 };
 use serde_json::Value;
@@ -36,11 +40,27 @@ use std::collections::HashMap;
 pub(super) struct ViewsLane {
     views: HashMap<ClientId, View>,
     events: EventCache,
+    /// How each client shows the HDR stacks it expanded (`stack.set-expanded`): session view
+    /// state, at most [`MAX_EXPANDED`] stacks a client, dropped when it disconnects.
+    expansions: HashMap<ClientId, StackExpansions>,
 }
+
+/// The most stacks one client holds expanded; expanding another is refused until it collapses one.
+const MAX_EXPANDED: usize = 10_000;
 
 impl ViewsLane {
     pub(super) fn disconnect(&mut self, client: ClientId) {
         self.views.remove(&client);
+        self.expansions.remove(&client);
+    }
+
+    /// How `client` shows the stack of `merge`.
+    pub(super) fn expansion(&self, client: ClientId, merge: &MergeId) -> StackExpansion {
+        self.expansions
+            .get(&client)
+            .and_then(|expansions| expansions.get(merge))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// The items selected in `client`'s current view, in view order: what a library method's
@@ -48,6 +68,15 @@ impl ViewsLane {
     /// and with `conflict` when its view is stale.
     pub(super) fn selected(&self, client: ClientId) -> Result<Vec<ViewItem>, Error> {
         Ok(browse::selected_items(self.fresh(client)?))
+    }
+
+    /// The items `client`'s view holds at `revision`, stale or not: what a development set opened
+    /// from it takes, the photographs the person saw. Refused with `validation` when the client
+    /// holds no view and with `conflict` when its view is at another revision.
+    pub(super) fn held(&self, client: ClientId, revision: u64) -> Result<&[ViewItem], Error> {
+        let view = self.views.get(&client).ok_or_else(no_view)?;
+        check_revision(view, Some(revision))?;
+        Ok(&view.items)
     }
 
     /// `client`'s view, refused with `validation` when it holds none and with `conflict` when a
@@ -165,8 +194,8 @@ pub(in crate::api) fn event_list(
     )?)
 }
 
-/// Every item of `client`'s current view, in view order: what `pick.plan` and `pick.develop` take
-/// by default, the picks among them. A view the catalog or the index has moved on from is evaluated
+/// Every item of `client`'s current view, in view order, then the originals its collapsed HDR
+/// stacks hide: what `pick.plan` and `pick.develop` take by default, the picks among them. A view the catalog or the index has moved on from is evaluated
 /// again first, in place, from the query it was evaluated with — its revision moves on and its
 /// selection is carried over by item, as any evaluation does — so a Develop takes the picks as they
 /// are. Refused with `validation` when the client holds no view.
@@ -190,14 +219,12 @@ pub(super) fn current_items(owner: &mut Owner, client: ClientId) -> Result<Vec<V
             .ok_or_else(no_view)?;
         evaluate_into(owner, client, query)?;
     }
-    Ok(owner
-        .catalog
-        .views
-        .views
-        .get(&client)
-        .ok_or_else(no_view)?
-        .items
-        .clone())
+    let view = owner.catalog.views.views.get(&client).ok_or_else(no_view)?;
+    // The originals a collapsed stack hides are the view's too: their picks wait for a Develop.
+    let mut items = Vec::with_capacity(view.items.len() + view.hidden.len());
+    items.extend_from_slice(&view.items);
+    items.extend_from_slice(&view.hidden);
+    Ok(items)
 }
 
 /// Before a request that targets `client`'s selection: a view the catalog or the index has moved on
@@ -268,14 +295,18 @@ fn evaluate_into(
     client: ClientId,
     query: ViewQuery,
 ) -> Result<ViewSummary, Error> {
-    let evaluation = browse::evaluate(
+    let no_expansions = StackExpansions::new();
+    let lane = &mut owner.catalog.views;
+    let expansions = lane.expansions.get(&client).unwrap_or(&no_expansions);
+    let evaluation = browse::evaluate_with(
         Context {
             service: &owner.service,
-            events: &mut owner.catalog.views.events,
+            events: &mut lane.events,
             probe: Probe::Previews,
             limit: MAX_VIEW_ITEMS,
         },
         &query,
+        expansions,
     )?;
     let selection = owner
         .catalog
@@ -287,7 +318,6 @@ fn evaluate_into(
     let session = owner.sessions.entry(client).or_default();
     let revision = session.browse.revision.saturating_add(1);
     let count = evaluation.items.len() as u32;
-    let over_files = query.source.over_files();
     *session.browse = BrowseSession {
         query: Some(query.clone()),
         revision,
@@ -304,20 +334,31 @@ fn evaluate_into(
         picked: evaluation.picked,
         in_catalog: evaluation.in_catalog,
         unavailable: evaluation.unavailable,
+        stacks: evaluation.stacks.stacks,
+        collapsed: evaluation.stacks.collapsed,
+        in_development_set: evaluation.in_development_set,
         groups: evaluation.layout.clone(),
         library_sequence: evaluation.stamp.library_sequence,
         index_revision: evaluation.stamp.index_revision,
     };
-    want_view(owner, client, &evaluation.items);
+    // A provenance row has no preview of its own to make.
+    let previewed: Vec<ViewItem> = evaluation
+        .items
+        .iter()
+        .filter(|item| !matches!(item, ViewItem::Input(_)))
+        .copied()
+        .collect();
+    want_view(owner, client, &previewed);
     owner.catalog.views.views.insert(
         client,
         View {
             revision,
-            over_files,
             items: evaluation.items,
             layout: evaluation.layout,
             selection,
             stale: false,
+            hidden: evaluation.stacks.hidden,
+            badges: evaluation.stacks.badges,
         },
     );
     Ok(summary)
@@ -399,6 +440,69 @@ pub(in crate::api) fn browse_select(
         session.touch();
     }
     session_value(service, session)
+}
+
+/// `stack.inspect`: a stack's originals, a bounded page, with how the caller shows it.
+pub(in crate::api) fn stack_inspect(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    p: StackInspect,
+) -> Result<Value, Error> {
+    let expansion = owner.catalog.views.expansion(call.client, &p.merge_id);
+    value(browse::inspect(
+        &owner.service,
+        &p.merge_id,
+        p.from.unwrap_or(0),
+        p.limit.unwrap_or(crate::merge::hdr::MAX_INPUTS),
+        expansion,
+    )?)
+}
+
+/// `stack.set-expanded`: how the caller shows a stack, session view state; its view, when it holds
+/// one, is evaluated again from its query, carrying its selection over by item, and its summary
+/// answered. No library change, no pixel read, and no original is selected by it.
+pub(in crate::api) fn stack_set_expanded(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    p: StackSetExpanded,
+) -> Result<Value, Error> {
+    let known: bool = owner.service.connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM merges WHERE id = ?1)",
+        [p.merge_id.as_str()],
+        |row| row.get(0),
+    )?;
+    if !known {
+        return Err(Error::validation(format!("unknown merge {}", p.merge_id)));
+    }
+    if let Some(view) = owner.catalog.views.views.get(&call.client) {
+        check_revision(view, p.revision)?;
+    }
+    let expansions = owner
+        .catalog
+        .views
+        .expansions
+        .entry(call.client)
+        .or_default();
+    if p.expansion == StackExpansion::Collapsed {
+        expansions.remove(&p.merge_id);
+    } else {
+        if expansions.len() >= MAX_EXPANDED && !expansions.contains_key(&p.merge_id) {
+            return Err(Error::resource_limit(format!(
+                "a client holds at most {MAX_EXPANDED} stacks expanded; collapse one first"
+            )));
+        }
+        expansions.insert(p.merge_id.clone(), p.expansion);
+    }
+    let query = owner
+        .sessions
+        .get(&call.client)
+        .and_then(|session| session.browse.query.clone());
+    match query {
+        Some(query) if owner.catalog.views.views.contains_key(&call.client) => {
+            value(evaluate_into(owner, call.client, query)?)
+        }
+        _ => Ok(Value::Null),
+    }
 }
 
 #[cfg(test)]
@@ -857,9 +961,10 @@ mod tests {
             client,
             View {
                 revision: 1,
-                over_files: true,
                 items: (1..=5).map(item).collect(),
                 layout: Default::default(),
+                hidden: Vec::new(),
+                badges: Default::default(),
                 selection: ViewSelection {
                     count: 3,
                     ranges: vec![

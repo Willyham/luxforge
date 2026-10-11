@@ -7,7 +7,13 @@
 //! with range queries on the catalog's `picks` and `assets` keys and the index's offline roots,
 //! never one query per file.
 
-use super::{EventCache, filter::Filter, json_list, local_day, places, subtree_bounds, within};
+use super::{
+    EventCache,
+    filter::Filter,
+    json_list, local_day, places,
+    stacks::{self, Stacks},
+    subtree_bounds, within,
+};
 use crate::{
     EditorService, Error, SourceTag,
     catalog_types::{
@@ -199,9 +205,22 @@ pub(super) struct Candidates {
     /// Aligned with `keys` as read; views reorder them.
     pub facts: Vec<FrameFacts>,
     pub names: Names,
+    /// The active HDR stacks the source holds, and the current development set.
+    pub stacks: Stacks,
 }
 
 impl Candidates {
+    /// Add the provenance rows a view's expanded stacks show: originals no source item is. Every
+    /// such item sorts after every file and photograph, so they keep the items in order.
+    pub fn push_inputs(&mut self, mut inputs: Vec<(ViewItem, Extra)>) {
+        inputs.sort_unstable_by_key(|(item, _)| *item);
+        for (item, extra) in inputs {
+            debug_assert!(self.keys.last().is_none_or(|last| *last < item));
+            self.keys.push(item);
+            self.extras.push(extra);
+        }
+    }
+
     /// The facts of the item `item`, which is one of these.
     pub fn extra(&self, item: ViewItem) -> &Extra {
         &self.extras[self.position(item)]
@@ -279,12 +298,36 @@ pub(super) struct Reader<'a> {
 /// over files or names another smart collection. A smart collection's stored query that names a
 /// catalog folder or collection since merged away or deleted finds nothing from it, so the smart
 /// collection answers an empty view rather than an error its sources panel would show.
+///
+/// With them come the active HDR stacks the source holds (`super::stacks`) and the current
+/// development set: over files, each stack's result joins the files as a photograph, Picked when it
+/// is in the set.
 pub(super) fn read(
     reader: &mut Reader<'_>,
     source: &ViewSource,
     needs: Needs,
 ) -> Result<Candidates, Error> {
-    read_source(reader, source, needs, false)
+    let mut candidates = read_source(reader, source, needs, false)?;
+    let connection = &reader.service.connection;
+    if !candidates.over_files {
+        let loaded = stacks::load_all(connection)?;
+        if !loaded.is_empty() {
+            let keys = &candidates.keys;
+            candidates.stacks = stacks::over_photos(loaded, |row| {
+                keys.binary_search(&ViewItem::Photo(row)).is_ok()
+            });
+        }
+    }
+    candidates.stacks.in_set = stacks::in_set(connection)?;
+    if candidates.over_files && !candidates.stacks.is_empty() {
+        let in_set = &candidates.stacks.in_set;
+        for (key, extra) in candidates.keys.iter().zip(&mut candidates.extras) {
+            if let ViewItem::Photo(row) = key {
+                extra.picked = in_set.contains(row);
+            }
+        }
+    }
+    Ok(candidates)
 }
 
 fn read_source(
@@ -649,7 +692,8 @@ fn read_files(reader: &mut Reader<'_>, scopes: &[FileScope<'_>]) -> Result<Candi
         "SELECT canonical_locator FROM assets
          WHERE canonical_locator >= ?1 AND canonical_locator < ?2 AND removed_ms IS NULL",
     )?;
-    for folder in outermost(&names.folders) {
+    let folders = outermost(&names.folders);
+    for folder in &folders {
         let (lower, upper) = subtree_bounds(folder);
         for path in picks.query_map([&lower, &upper], |row| row.get::<_, String>(0))? {
             picked.insert(path?);
@@ -658,12 +702,20 @@ fn read_files(reader: &mut Reader<'_>, scopes: &[FileScope<'_>]) -> Result<Candi
             developed.insert(path?);
         }
     }
+    // The active stacks claiming a path of the source's folders, and the source's files that are
+    // their originals.
+    let claimed = stacks::claimed(&service.connection, &folders)?;
+    drop(folders);
+    drop(picks);
+    drop(originals);
+    let mut inputs: HashMap<String, ViewItem> = HashMap::new();
     let mut candidates = Candidates {
         over_files: true,
         keys: Vec::with_capacity(read.len()),
         extras: Vec::with_capacity(read.len()),
         facts: Vec::with_capacity(read.len()),
         names,
+        stacks: Stacks::default(),
     };
     for (fact, mut extra, path) in read {
         extra.picked = picked.contains(&*path);
@@ -671,9 +723,29 @@ fn read_files(reader: &mut Reader<'_>, scopes: &[FileScope<'_>]) -> Result<Candi
         if folder_offline[fact.folder.0 as usize] {
             extra.availability = FileAvailability::Offline;
         }
+        if claimed.contains_key(&*path) {
+            inputs.insert(path.into(), fact.item);
+        }
         candidates.keys.push(fact.item);
         candidates.extras.push(extra);
         candidates.facts.push(fact);
+    }
+    if !inputs.is_empty() {
+        let mut merges: Vec<_> = inputs
+            .keys()
+            .filter_map(|path| claimed.get(path).cloned())
+            .collect();
+        merges.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+        merges.dedup();
+        let loaded = stacks::load(&service.connection, &merges)?;
+        let results = json_list(&stacks::results(&loaded))?;
+        append_photos(
+            reader,
+            PhotoScope::Rows(&results),
+            Needs::default(),
+            &mut candidates,
+        )?;
+        candidates.stacks = stacks::over_files(loaded, &inputs);
     }
     Ok(candidates)
 }
@@ -710,6 +782,8 @@ enum PhotoScope<'a> {
     /// Those whose original is not available, but the removed.
     Missing,
     Removed,
+    /// These rows (a JSON array), but the removed: HDR results a view of files shows.
+    Rows(&'a str),
 }
 
 impl PhotoScope<'_> {
@@ -749,6 +823,11 @@ impl PhotoScope<'_> {
                 None,
             ),
             Self::Removed => ("", "a.removed_ms IS NOT NULL", None),
+            Self::Rows(rows) => (
+                "",
+                "a.removed_ms IS NULL AND a.row_id IN (SELECT value FROM json_each(?1))",
+                Some(Box::new(*rows)),
+            ),
         }
     }
 }
@@ -762,6 +841,26 @@ fn read_photos(
     scope: PhotoScope<'_>,
     needs: Needs,
 ) -> Result<Candidates, Error> {
+    let mut candidates = Candidates {
+        over_files: false,
+        keys: Vec::new(),
+        extras: Vec::new(),
+        facts: Vec::new(),
+        names: Names::default(),
+        stacks: Stacks::default(),
+    };
+    append_photos(reader, scope, needs, &mut candidates)?;
+    Ok(candidates)
+}
+
+/// Read the photographs of `scope` into `candidates`, after its items: every photograph sorts after
+/// every file, so a view of files takes its HDR results this way too.
+fn append_photos(
+    reader: &mut Reader<'_>,
+    scope: PhotoScope<'_>,
+    needs: Needs,
+    candidates: &mut Candidates,
+) -> Result<(), Error> {
     let (with, condition, parameter) = scope.condition();
     let edits = if needs.edits { LAST_EDIT } else { "NULL" };
     let sql = format!(
@@ -786,13 +885,9 @@ fn read_photos(
     let capacity = usize::try_from(count).unwrap_or(0).min(reader.limit);
     let mut statement = reader.service.connection.prepare_cached(&sql)?;
     let mut rows = statement.query(parameters.as_slice())?;
-    let mut candidates = Candidates {
-        over_files: false,
-        keys: Vec::with_capacity(capacity),
-        extras: Vec::with_capacity(capacity),
-        facts: Vec::with_capacity(capacity),
-        names: Names::default(),
-    };
+    candidates.keys.reserve_exact(capacity);
+    candidates.extras.reserve_exact(capacity);
+    candidates.facts.reserve_exact(capacity);
     while let Some(row) = rows.next()? {
         if candidates.keys.len() == reader.limit {
             return Err(too_many(reader.limit));
@@ -849,7 +944,7 @@ fn read_photos(
             exposure,
         });
     }
-    Ok(candidates)
+    Ok(())
 }
 
 // ── Columns ──────────────────────────────────────────────────────────────────────────────────

@@ -390,6 +390,51 @@ host_params! {
     }
 }
 
+// The development set and stacks.
+
+host_params! {
+    /// `development-set.read`.
+    pub(crate) struct DevelopmentSetRead {
+        from: Option<u32> = integer(0, super::MAX_SET_MEMBERS as i64).default(0).notes("the index of the first member"),
+        limit: Option<usize> = integer(1, super::MAX_SET_PAGE as i64).default(1000),
+    }
+}
+
+host_params! {
+    /// `development-set.replace`.
+    pub(crate) struct DevelopmentSetReplace {
+        source: super::SetSource = json("{kind: assets, asset_ids: [...]} in order, {kind: view, revision, position}: the photographs of the caller's view around position, or {kind: none}; at most 100,000 photographs"),
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    /// `development-set.add` and `development-set.remove`.
+    pub(crate) struct DevelopmentSetMembers {
+        asset_ids: Vec<AssetId> = json("the photographs, at most 50,000"),
+        set_id: Option<super::DevelopmentSetId> = name().notes("refused with conflict unless the current set is this one"),
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    /// `stack.inspect`.
+    pub(crate) struct StackInspect {
+        merge_id: super::MergeId = name().notes("a merge, merge-…"),
+        from: Option<u32> = integer(0, crate::merge::hdr::MAX_INPUTS as i64).default(0).notes("the ordinal of the first original"),
+        limit: Option<usize> = integer(1, crate::merge::hdr::MAX_INPUTS as i64).default(crate::merge::hdr::MAX_INPUTS as i64),
+    }
+}
+
+host_params! {
+    /// `stack.set-expanded`.
+    pub(crate) struct StackSetExpanded {
+        merge_id: super::MergeId = name().notes("a merge, merge-…"),
+        expansion: super::StackExpansion = enumeration(super::StackExpansion::ALL.map(super::StackExpansion::as_str)),
+        revision: Option<u64> = sequence().notes("refused with conflict unless the view is still at this revision"),
+    }
+}
+
 // Views: events, browsing and the selection.
 
 host_params! {
@@ -584,6 +629,42 @@ mod contract_table {
             "session",
             &[Validation, Conflict],
             "the caller's selection and active item in its view, replaced, added to, removed from or toggled by items, a range or all; session.state reports them as browse.selection",
+        ),
+        method::<DevelopmentSetRead>(
+            "development-set.read",
+            "DevelopmentSetPage",
+            &[Validation, CatalogError],
+            "the catalog session's current development set: its identity, revision, size and members in order, paged",
+        ),
+        method::<DevelopmentSetReplace>(
+            "development-set.replace",
+            "DevelopmentSetReplaced",
+            &[Validation, ResourceLimit, Conflict, CatalogError],
+            "retires the current development set and starts one of the photographs given, of the caller's view around a position, or none; session state, not a library change",
+        ),
+        method::<DevelopmentSetMembers>(
+            "development-set.add",
+            "DevelopmentSetChanged",
+            &[Validation, ResourceLimit, Conflict, CatalogError],
+            "appends photographs to the current development set, each once, as one library change of set-member items; starts a set when there is none",
+        ),
+        method::<DevelopmentSetMembers>(
+            "development-set.remove",
+            "DevelopmentSetChanged",
+            &[Validation, ResourceLimit, Conflict, CatalogError],
+            "takes photographs out of the current development set as one library change; the other members keep their order",
+        ),
+        method::<StackInspect>(
+            "stack.inspect",
+            "StackInspection",
+            &[Validation, Incompatible, CatalogError],
+            "an HDR stack's result and a page of its originals with EV offsets, availability and reason, pick and catalog identity",
+        ),
+        method::<StackSetExpanded>(
+            "stack.set-expanded",
+            "ViewSummary",
+            &[Validation, ResourceLimit, Conflict, CatalogError],
+            "how the caller shows an HDR stack, collapsed, expanded or all originals, evaluating its view again; session state",
         ),
         method::<PickSet>(
             "pick.set",

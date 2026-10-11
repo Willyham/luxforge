@@ -473,3 +473,120 @@ pub struct MergeInspection {
     pub rerun_reason: Option<String>,
     pub provenance: MergeProvenance,
 }
+
+/// How a client shows one stack in its views (`stack.set-expanded`): session view state, never a
+/// library change, read by every view the client evaluates.
+///
+/// - `collapsed`: the result stands for its originals that the view holds and its filter matches.
+/// - `expanded`: those originals follow the result; over the catalog, the inputs never developed
+///   follow it too, as files.
+/// - `all`: every one of the stack's originals follows the result, those the view's source or
+///   filter leaves out labelled outside the filter (Show all N originals).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StackExpansion {
+    #[default]
+    Collapsed,
+    Expanded,
+    All,
+}
+
+impl StackExpansion {
+    pub const ALL: [Self; 3] = [Self::Collapsed, Self::Expanded, Self::All];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Collapsed => "collapsed",
+            Self::Expanded => "expanded",
+            Self::All => "all",
+        }
+    }
+}
+
+/// Where a view row stands in a stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StackRole {
+    /// The merge's result, collapsed or followed by its originals.
+    Leader,
+    /// An original following its expanded leader.
+    Original,
+    /// An original shown on its own, with its stack's badge: its leader is not in the view, or the
+    /// view's filter does not match it.
+    Separate,
+}
+
+/// A view row's stack (`browse.rows`' `stack`): the stack it belongs to, its role there and the
+/// stack's size; for a leader, how many originals it stands for in this view and how the client
+/// shows it; for an original, its place and EV offset, and whether only Show all revealed it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RowStack {
+    pub merge_id: MergeId,
+    pub role: StackRole,
+    /// The stack's originals, N: "HDR · N exposures".
+    pub exposures: u32,
+    /// A collapsed leader: its originals the view holds beneath it, which its count leaves out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub collapsed: u32,
+    /// A leader: how this client shows the stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expansion: Option<StackExpansion>,
+    /// An original's place in the stack's order, from 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_ev: Option<f64>,
+    /// An original revealed solely by Show all N originals: the view's source or filter leaves it
+    /// out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside_filter: bool,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// One original of a stack as `stack.inspect` lists it: its place, path and EV offset, whether it
+/// is the reference, whether it is where it was, its index row and pick, and the catalog
+/// photograph it was developed into, if any.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackOriginal {
+    pub ordinal: u32,
+    pub path: PathBuf,
+    pub file_name: String,
+    pub offset_ev: f64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reference: bool,
+    pub availability: super::FileAvailability,
+    /// Why it is not available: its volume is offline, or the index does not list it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<super::FileId>,
+    pub picked: bool,
+    /// The catalog photograph developed from it, when it is in the catalog and not removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<AssetId>,
+}
+
+/// What `stack.inspect` answers: the stack's identity, state and result, how the caller shows it,
+/// and its originals `from..from + originals.len()` of `exposures`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackInspection {
+    pub merge_id: MergeId,
+    pub kind: MergeKind,
+    pub state: MergeState,
+    pub result_asset_id: AssetId,
+    pub file_name: String,
+    /// The result is in Removed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+    pub in_development_set: bool,
+    pub expansion: StackExpansion,
+    pub exposures: u32,
+    pub from: u32,
+    pub originals: Vec<StackOriginal>,
+}

@@ -13,7 +13,7 @@ use crate::{
     catalog_types::{
         AssetFolderValue, AssetRemovalValue, AssetSourceValue, CatalogFolder, Collection,
         CollectionValue, DevelopedAssetValue, FolderValue, IndexedFolder, LibraryItem,
-        MembershipValue, MergeStackValue, Pick,
+        MembershipValue, MergeStackValue, Pick, SetMemberValue,
     },
     editor::library_rows as rows,
 };
@@ -60,6 +60,11 @@ pub(crate) fn read(connection: &Connection, item: &LibraryItem) -> Result<Option
         LibraryItem::MergeStack { merge_id } => super::merge::state(connection, merge_id)?
             .map(|state| value(MergeStackValue { state }))
             .transpose(),
+        LibraryItem::SetMember { set_id, asset_id } => {
+            super::development_set::member(connection, set_id, asset_id)?
+                .map(|position| value(SetMemberValue { position }))
+                .transpose()
+        }
     }
 }
 
@@ -160,6 +165,15 @@ pub(crate) fn write(
             let MergeStackValue { state } = typed(item, required(item, to)?)?;
             super::merge::set_state(tx, item, merge_id, state)
         }
+        // A development set's member, at its place, or out of the set; a set no longer kept or a
+        // photograph no longer in the catalog refuses it.
+        LibraryItem::SetMember { set_id, asset_id } => {
+            let position = to
+                .map(|to| typed::<SetMemberValue>(item, to))
+                .transpose()?
+                .map(|member| member.position);
+            super::development_set::write_member(tx, item, set_id, asset_id, position)
+        }
     }
 }
 
@@ -174,7 +188,12 @@ fn send_back(tx: &Transaction<'_>, item: &LibraryItem, asset: &AssetId) -> Resul
         ))
         .with_data(json!({"items": [item], "count": 1})));
     }
-    present(asset, refused(item, rows::delete_photograph(tx, asset))?)
+    let member = super::development_set::holds_any(tx, &crate::browse::json_list(&[asset])?)?;
+    present(asset, refused(item, rows::delete_photograph(tx, asset))?)?;
+    if member {
+        super::development_set::touch(tx)?;
+    }
+    Ok(())
 }
 
 /// A path's file name as a person reads it.

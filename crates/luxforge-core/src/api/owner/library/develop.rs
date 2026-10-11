@@ -145,7 +145,7 @@ fn files(
         .into_iter()
         .filter_map(|item| match item {
             ViewItem::File(id) => Some(id),
-            ViewItem::Photo(_) => None,
+            ViewItem::Photo(_) | ViewItem::Input(_) => None,
         })
         .collect();
     if file_ids.is_empty() {

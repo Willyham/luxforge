@@ -103,7 +103,10 @@ impl ApiResponse {
 /// `index.add-folder`, or the undo or redo of an indexed folder): one event however many files it
 /// wrote. An event a job records — a batch it committed, and the one it records as it ends —
 /// also names the job (`job_id`), so a client tells the job's end and its progress apart by the
-/// job and reads `job.read` only for its own.
+/// job and reads `job.read` only for its own. A change that replaced the development set or
+/// changed its members — a library change of its `set-member` items, a merge's publication, or a
+/// replacement — names the development-set revision it left (`development_set_revision`), so a
+/// client holding the set reads it again only when it moved past the revision it holds.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {
@@ -120,6 +123,8 @@ pub struct ApiEvent {
     pub index_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<JobId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development_set_revision: Option<u64>,
 }
 
 /// What a change is announced as: the method and request identity a client watching
@@ -135,6 +140,8 @@ pub(crate) struct Origin {
     pub index_revision: Option<u64>,
     /// The job that recorded the change, when a job did.
     pub job_id: Option<JobId>,
+    /// The development-set revision the change left, when it changed the set.
+    pub development_set_revision: Option<u64>,
 }
 
 impl Origin {
@@ -147,6 +154,7 @@ impl Origin {
             library_sequence: None,
             index_revision: None,
             job_id: None,
+            development_set_revision: None,
         }
     }
 
@@ -159,6 +167,12 @@ impl Origin {
     /// The same request, naming the library change it recorded.
     pub(crate) fn library(mut self, sequence: LibraryChangeSeq) -> Self {
         self.library_sequence = Some(sequence);
+        self
+    }
+
+    /// The same request, naming the development-set revision it left.
+    pub(crate) fn development_set(mut self, revision: u64) -> Self {
+        self.development_set_revision = Some(revision);
         self
     }
 

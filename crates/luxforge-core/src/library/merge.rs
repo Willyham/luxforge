@@ -27,7 +27,10 @@
 // Stack browsing (`tasks/library/hdr-merge.json` TASK-007) calls what the `merge.*` commands and
 // Remove and Put back do not yet; until it does, only the tests do.
 #![cfg_attr(not(test), allow(dead_code))]
-use super::journal::{self, Desired, Outcome, Request};
+use super::{
+    development_set,
+    journal::{self, Desired, Outcome, Request},
+};
 use crate::{
     AssetId, EditorService, Error, SourceKind,
     artifacts::derived_source::PublishedSource,
@@ -589,29 +592,48 @@ pub(crate) fn merges_of(
 
 /// What removing a merge's result (`to` is `removed`) or putting it back (`active`) changes beside
 /// its `asset-removal`: its merge's `merge-stack`, deactivated or, for Put back, active again
-/// (refused when another active stack now claims an input). Removing a result whose stack is not
-/// active leaves the stack's state as it is, so an undone merge stays labelled undone. `merge` is
-/// the result's merge and state ([`merges_of`]); a photograph that is no merge's result has none.
+/// (refused when another active stack now claims an input), and its development-set memberships.
+/// Removing a result whose stack is not active leaves the stack's state as it is, so an undone
+/// merge stays labelled undone. `merge` is the result's merge and state ([`merges_of`]); a
+/// photograph that is no merge's result has none, and changes nothing here.
 ///
-/// This is where everything else that follows a merge result's visibility joins its Remove: the
-/// result's development-set memberships (`tasks/library/hdr-merge.json` TASK-007) go absent here
-/// in the same change, so undoing the Remove puts back exactly the memberships it took.
+/// This is where everything else that follows a merge result's visibility joins its Remove, in
+/// the same change, through the one function general Remove and Remove merge share: the result
+/// leaves every development set it is a member of (`set-member` items going absent), so undoing
+/// the Remove puts back exactly the memberships it took. Put back restores the memberships the
+/// change that last removed it took, at their places, in the sets still kept; a member the person
+/// has added again since keeps its place. Ordinary picks and the originals are never touched.
 pub(crate) fn lifecycle(
+    connection: &Connection,
+    result: &AssetId,
     merge: Option<&(MergeId, MergeState)>,
     to: MergeState,
 ) -> Result<Vec<(LibraryItem, Desired)>, Error> {
     let Some((merge_id, now)) = merge else {
         return Ok(Vec::new());
     };
-    if to != MergeState::Active && *now != MergeState::Active {
-        return Ok(Vec::new());
+    let mut changes = Vec::new();
+    if to == MergeState::Active || *now == MergeState::Active {
+        changes.push((
+            LibraryItem::MergeStack {
+                merge_id: merge_id.clone(),
+            },
+            Desired::Value(Some(value(MergeStackValue { state: to })?)),
+        ));
     }
-    Ok(vec![(
-        LibraryItem::MergeStack {
-            merge_id: merge_id.clone(),
-        },
-        Desired::Value(Some(value(MergeStackValue { state: to })?)),
-    )])
+    if to == MergeState::Active {
+        for (set, position) in development_set::taken_by_removal(connection, result)? {
+            changes.push((
+                development_set::item(&set, result),
+                Desired::UnlessPresent(development_set::value_at(position)?),
+            ));
+        }
+    } else {
+        for (set, _) in development_set::memberships_of(connection, result)? {
+            changes.push((development_set::item(&set, result), Desired::Value(None)));
+        }
+    }
+    Ok(changes)
 }
 
 /// The results of `merges`, as `asset.remove` and `asset.restore` take their photographs: what
@@ -729,6 +751,9 @@ fn file_name(path: &Path) -> String {
     )
 }
 
+#[cfg(test)]
+#[path = "hdr_merge_browse.rs"]
+mod hdr_merge_browse;
 #[cfg(test)]
 #[path = "hdr_merge_lifecycle.rs"]
 mod hdr_merge_lifecycle;

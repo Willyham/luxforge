@@ -7,16 +7,18 @@ use super::{
     candidates::{self, Candidates, Needs, Reader},
     caseless, current_stamp,
     filter::Filter,
+    stacks::{self, Arranged, StackExpansions},
 };
 use crate::{
     EditorService, Error,
     catalog_types::{
-        BracketProbe, FileAvailability, FrameFacts, GroupLayout, Grouping, Moment, SortKey,
-        Thresholds, ViewItem, ViewQuery, ViewSelection, ViewSort, ViewSource, ViewStamp,
+        BracketProbe, FileAvailability, FrameFacts, GroupLayout, Grouping, Moment, RowStack,
+        SortKey, Thresholds, ViewFilter, ViewItem, ViewQuery, ViewSelection, ViewSort, ViewSource,
+        ViewStamp,
     },
     organize,
 };
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashMap};
 
 /// One client's evaluated view as the owner holds it: its items in order, 16 bytes each, its
 /// group layout, which a window reads moments from, and its selection, which the client's session
@@ -24,13 +26,17 @@ use std::cmp::Ordering;
 #[derive(Clone, Debug)]
 pub(crate) struct View {
     pub revision: u64,
-    pub over_files: bool,
     pub items: Vec<ViewItem>,
     pub layout: GroupLayout,
     pub selection: ViewSelection,
     /// A later library change or index revision exists: the view still answers for its items,
     /// and the client evaluates it again.
     pub stale: bool,
+    /// The originals collapsed HDR stacks hide: in no position, so no selection names them, but
+    /// items of the view a Develop takes the picks of.
+    pub hidden: Vec<ViewItem>,
+    /// Each stacked row's badge, by item.
+    pub badges: HashMap<ViewItem, RowStack>,
 }
 
 /// What evaluating a query found.
@@ -44,7 +50,11 @@ pub(crate) struct Evaluation {
     pub in_catalog: u32,
     /// Items whose original is not available.
     pub unavailable: u32,
+    /// Photographs in the current development set.
+    pub in_development_set: u32,
     pub stamp: ViewStamp,
+    /// How the view's HDR stacks were arranged.
+    pub stacks: Arranged,
 }
 
 /// What an evaluation reads with: the service, the event cache an event source resolves through,
@@ -90,9 +100,23 @@ impl Probe<'_> {
     }
 }
 
-/// Evaluate `query`. Refused with `validation` for a query no view can answer and a source that
-/// does not exist, and with `resource-limit` for a source past the context's limit.
+/// Evaluate `query` with every HDR stack collapsed. Refused with `validation` for a query no view
+/// can answer and a source that does not exist, and with `resource-limit` for a source past the
+/// context's limit.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the owner evaluates with its clients' stacks")
+)]
 pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation, Error> {
+    evaluate_with(cx, query, &StackExpansions::new())
+}
+
+/// Evaluate `query`, showing each HDR stack as `expansions` says (`super::stacks`).
+pub(crate) fn evaluate_with(
+    cx: Context<'_>,
+    query: &ViewQuery,
+    expansions: &StackExpansions,
+) -> Result<Evaluation, Error> {
     query.validate()?;
     // Stamped before anything is read, so a change made while the view is read marks it stale.
     let stamp = current_stamp(cx.service)?;
@@ -112,8 +136,29 @@ pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation,
     )?;
     let filter = Filter::new(&query.filter, &candidates);
     let mut facts = std::mem::take(&mut candidates.facts);
+    // Every stacked item's facts before filtering: Show all brings back the originals the filter
+    // leaves out.
+    let stacked: HashMap<ViewItem, FrameFacts> = if candidates.stacks.is_empty() {
+        HashMap::new()
+    } else {
+        facts
+            .iter()
+            .filter(|fact| {
+                candidates.stacks.member(fact.item).is_some() || candidates.stacks.leads(fact.item)
+            })
+            .map(|fact| (fact.item, fact.clone()))
+            .collect()
+    };
     facts.retain(|fact| filter.failing(fact, candidates.extra(fact.item)) == 0);
     order(&mut facts, &candidates, query);
+    let (stacks, provenance) = stacks::arrange(
+        &mut facts,
+        &candidates,
+        &stacked,
+        expansions,
+        query.filter != ViewFilter::default(),
+    );
+    candidates.push_inputs(provenance);
     let mut layout = cx.probe.with(cx.service, candidates.over_files, |probe| {
         organize::group(
             &facts,
@@ -124,12 +169,24 @@ pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation,
         )
     })?;
     count_picks(&mut layout, |at| candidates.extra(facts[at].item).picked);
-    let (mut picked, mut in_catalog, mut unavailable) = (0, 0, 0);
+    let (mut picked, mut in_catalog, mut unavailable, mut in_set) = (0, 0, 0, 0);
     for fact in &facts {
         let extra = candidates.extra(fact.item);
-        picked += u32::from(extra.picked);
+        match fact.item {
+            // Picked counts the files a Develop takes; a result's set membership is counted apart.
+            ViewItem::File(_) => picked += u32::from(extra.picked),
+            ViewItem::Photo(row) => in_set += u32::from(candidates.stacks.in_set.contains(&row)),
+            // A provenance row is no item of the source.
+            ViewItem::Input(_) => continue,
+        }
         in_catalog += u32::from(extra.in_catalog);
         unavailable += u32::from(extra.availability != FileAvailability::Available);
+    }
+    // The originals a collapsed stack hides are the view's files too: a Develop takes their picks.
+    for item in &stacks.hidden {
+        if let ViewItem::File(_) = item {
+            picked += u32::from(candidates.extra(*item).picked);
+        }
     }
     Ok(Evaluation {
         items: facts.iter().map(|fact| fact.item).collect(),
@@ -137,7 +194,9 @@ pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation,
         picked,
         in_catalog,
         unavailable,
+        in_development_set: in_set,
         stamp,
+        stacks,
     })
 }
 
@@ -180,8 +239,21 @@ pub(super) fn prepare(
 /// Mark the frames Moments without a pick leaves out: the source's frames are ordered and grouped
 /// Day › Camera › Moment under `thresholds`, whatever the view's own sort and grouping, and a frame
 /// is decided when it is picked or its moment has a picked frame.
+///
+/// An HDR result in the current development set is decided, and so is its bracket: its originals
+/// count as picked here, so their moment is decided whole. A result is not one of the frames
+/// grouped, and one only imported decides nothing.
 fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn BracketProbe) {
     let mut facts = std::mem::take(&mut candidates.facts);
+    let results: Vec<FrameFacts> = if candidates.stacks.is_empty() {
+        Vec::new()
+    } else {
+        let (files, results) = facts
+            .into_iter()
+            .partition(|fact| matches!(fact.item, ViewItem::File(_)));
+        facts = files;
+        results
+    };
     organize::order(
         &mut facts,
         &candidates.names.tables,
@@ -197,11 +269,18 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Brac
     );
     let picked: Vec<bool> = facts
         .iter()
-        .map(|fact| candidates.extra(fact.item).picked)
+        .map(|fact| {
+            candidates.extra(fact.item).picked || candidates.stacks.decided_by_set(fact.item)
+        })
         .collect();
     for (fact, decided) in facts.iter().zip(decided(&picked, &layout.moments)) {
         candidates.extra_mut(fact.item).decided = decided;
     }
+    for result in &results {
+        let extra = candidates.extra_mut(result.item);
+        extra.decided = extra.picked;
+    }
+    facts.extend(results);
     candidates.facts = facts;
 }
 

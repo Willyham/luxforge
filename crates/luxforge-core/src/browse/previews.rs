@@ -38,14 +38,14 @@ mod index {
             .iter()
             .filter_map(|item| match item {
                 ViewItem::File(file) => Some(*file),
-                ViewItem::Photo(_) => None,
+                ViewItem::Photo(_) | ViewItem::Input(_) => None,
             })
             .collect();
         let rows: Vec<i64> = items
             .iter()
             .filter_map(|item| match item {
                 ViewItem::Photo(row) => Some(row.0),
-                ViewItem::File(_) => None,
+                ViewItem::File(_) | ViewItem::Input(_) => None,
             })
             .collect();
         let mut entries: std::collections::HashMap<i64, (AssetId, Option<EntryId>)> =
@@ -86,6 +86,7 @@ mod index {
             .map(|item| match item {
                 ViewItem::File(_) => file_states.next(),
                 ViewItem::Photo(_) => photo_states.next(),
+                ViewItem::Input(_) => Some(PreviewState::Unavailable),
             })
             .map(|state| state.unwrap_or(PreviewState::Pending))
             .collect())
