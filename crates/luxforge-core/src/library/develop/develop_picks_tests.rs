@@ -56,6 +56,17 @@ impl Shot {
         }
     }
 
+    /// A frame from the same camera that records no capture time, told apart by `serial`.
+    pub(crate) fn undated(serial: &str) -> Self {
+        Self {
+            time: String::new(),
+            offset: None,
+            position: None,
+            serial: Some(serial.to_owned()),
+            ..Self::at("")
+        }
+    }
+
     /// The same frame at another place.
     pub(crate) fn in_place(self, lat: f64, lon: f64) -> Self {
         Self {
@@ -144,8 +155,10 @@ fn exif(shot: &Shot) -> Vec<u8> {
         rationals(0x829a, &[(time_num, time_den)]),
         rationals(0x829d, &[f_number]),
         short(0x8827, iso),
-        ascii(0x9003, &shot.time),
     ];
+    if !shot.time.is_empty() {
+        exif_entries.push(ascii(0x9003, &shot.time));
+    }
     if let Some(offset) = &shot.offset {
         exif_entries.push(ascii(0x9011, offset));
     }

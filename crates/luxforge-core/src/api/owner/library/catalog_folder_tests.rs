@@ -1345,3 +1345,52 @@ fn catalog_folder_list_counts_and_years_follow_the_photographs() {
     );
     stop(owner, join);
 }
+
+/// `folder.list` keeps parents before their children and orders siblings by name: years newest
+/// first, then day folders in calendar order, then every other name ignoring case.
+#[test]
+fn catalog_folder_list_orders_years_newest_first_then_days_then_names() {
+    let fixture = Fixture::new("order");
+    let (owner, join) = fixture.start();
+    let client = owner.register();
+    let create = |name: &str, parent: Option<&Value>, request: &str| {
+        let mut params = json!({"name": name, "mutation": envelope(request)});
+        if let Some(parent) = parent {
+            params["parent_id"] = parent.clone();
+        }
+        ok(&owner, client, "folder.create", params)["folder"]["id"].clone()
+    };
+    for (at, name) in ["2024", "Undated", "2026", "2025"].into_iter().enumerate() {
+        create(name, None, &format!("top-{at}"));
+    }
+    let year = folder_id(&owner, client, "2026");
+    for (at, name) in ["Konstanz", "12 Sep", "alps", "3 Sep", "1 Jan", "12 Nov"]
+        .into_iter()
+        .enumerate()
+    {
+        create(name, Some(&year), &format!("in-{at}"));
+    }
+    let order: Vec<(String, Option<String>)> = tree(&owner, client)
+        .into_iter()
+        .map(|(name, parent, ..)| (name, parent))
+        .collect();
+    let named = |name: &str, parent: Option<&str>| (name.to_owned(), parent.map(str::to_owned));
+    assert_eq!(
+        order,
+        [
+            named("2026", None),
+            named("1 Jan", Some("2026")),
+            named("3 Sep", Some("2026")),
+            named("12 Sep", Some("2026")),
+            named("12 Nov", Some("2026")),
+            named("alps", Some("2026")),
+            named("Konstanz", Some("2026")),
+            named("2025", None),
+            named("2024", None),
+            named("Konstanz · Sep 2026", None),
+            named("Travel", None),
+            named("Undated", None),
+        ]
+    );
+    stop(owner, join);
+}
