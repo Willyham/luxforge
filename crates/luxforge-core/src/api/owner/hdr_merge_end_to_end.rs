@@ -328,8 +328,9 @@ impl Merging {
         answered.recv().unwrap()
     }
 
-    /// List the bracket's folder into the index, plan and create its merge into a new catalog
-    /// folder, and wait for it: the plan, the job's result and the recorded provenance.
+    /// List the bracket's folder into the index, plan and create its merge into the folder the plan
+    /// proposes — its year, its place (the folder on disk that names its event) and its day, which
+    /// the merge makes — and wait for it: the plan, the job's result and the recorded provenance.
     fn merge(&self) -> (Value, Value, MergeProvenance) {
         let listed = self.ok(
             "index.refresh",
@@ -338,24 +339,39 @@ impl Merging {
         let report = self.finished(&listed["job_id"]);
         assert_eq!(report["files"], json!(self.paths.len()), "{report}");
         assert_eq!(report["unreadable"], 0, "{report}");
-        let created = self.ok(
-            "folder.create",
-            json!({"name": "Merges", "mutation": {"request_id": "folder", "actor": "test"}}),
-        );
-        let folder_id = created["folder"]["id"].clone();
         let targets = json!({"kind": "paths", "paths": self.paths});
         let plan = self.ok("merge.plan", json!({"targets": targets}));
+        assert_eq!(
+            plan["suggested_folder"],
+            json!({"kind": "place", "name": "bracket"}),
+            "{plan}"
+        );
         let job = self.ok(
             "merge.create",
             json!({
                 "kind": "hdr",
                 "targets": targets,
                 "plan_id": plan["plan_id"],
-                "folder_id": folder_id,
                 "mutation": {"request_id": "merge", "actor": "test"},
             }),
         );
         let result = self.finished(&job["job_id"]);
+        let folders = self.ok("folder.list", json!({}))["folders"].clone();
+        let folder = |id: &Value| {
+            folders
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|folder| &folder["id"] == id)
+                .unwrap_or_else(|| panic!("no folder {id}: {folders}"))
+                .clone()
+        };
+        let day = folder(&result["catalog_folder_id"]);
+        let place = folder(&day["parent_id"]);
+        let year = folder(&place["parent_id"]);
+        assert_eq!(place["name"], "bracket", "{folders}");
+        assert_eq!(year["name"].as_str().unwrap().len(), 4, "{folders}");
+        assert!(year.get("parent_id").is_none(), "{folders}");
         let inspected = self.ok("merge.inspect", json!({"merge_id": result["merge_id"]}));
         let provenance = serde_json::from_value(inspected["provenance"].clone()).unwrap();
         (plan, result, provenance)

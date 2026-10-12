@@ -15,7 +15,7 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
-use super::{ExposureOverride, MergeId, MergeKind};
+use super::{ExposureOverride, FolderChoice, MergeId, MergeKind};
 use crate::{
     AssetId, PresetId, SettingsOrigin,
     api::params::host_params,
@@ -334,7 +334,7 @@ host_params! {
         exposure_overrides: Option<Vec<ExposureOverride>> = json(MERGE_OVERRIDES),
         alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto"),
         deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto"),
-        folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the folder merge.plan proposes"),
+        folder: Option<FolderChoice> = json("{kind: place, name}, {kind: existing, folder_id, days?} or {kind: new, name, parent_id?}, as pick.develop's into names one, resolved for the reference frame's capture day; default the choice merge.plan proposes"),
     }
 }
 

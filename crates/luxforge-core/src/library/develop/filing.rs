@@ -7,9 +7,7 @@
 //! it, recorded there as written (`catalog-folder`) before the photographs in it.
 use crate::{
     Error,
-    catalog_types::{
-        CatalogFolderId, EventSpan, FolderChoice, FolderValue, LibraryItem, LocalDay,
-    },
+    catalog_types::{CatalogFolderId, EventSpan, FolderChoice, FolderValue, LibraryItem, LocalDay},
     editor::library_rows::catalog_folder,
     library::{
         folders, items,

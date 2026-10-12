@@ -173,7 +173,10 @@ impl Scene {
             &Publication {
                 provenance: &provenance,
                 source: &source,
-                catalog_folder_id: &folder,
+                folder: &crate::library::develop::Destination::Existing {
+                    folder_id: folder.clone(),
+                    days: false,
+                },
                 file_name: &name,
                 header: &header(at),
                 place: None,
