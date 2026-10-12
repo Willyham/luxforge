@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Define shared minimap placement, viewport projection and pan conversion using the existing view command.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Deliver pure geometry/model helpers consumed by TASK-003; do not build the widget or change authoritative recipe state.",
