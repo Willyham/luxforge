@@ -17,7 +17,7 @@ use crate::{
     AssetId, DerivedInterpretation, Error, SourceKind,
     artifacts::derived_source::{
         DerivedSourceId, DerivedSourceRead, DerivedSourceWriter, LiveSources, PublishedSource,
-        object_length,
+        SourceClass, object_length,
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -476,32 +476,38 @@ impl EditorService {
 
     /// How a worker reads and verifies the source of the derived photograph `asset_id`: its
     /// recorded identity and manifest length, after checking the root is this catalog's and, by
-    /// stat, that every recorded object is present with its recorded length. Stat and SQL only;
-    /// a missing object is `source-unavailable` naming the source, and a photograph that is not
-    /// derived is `validation`.
+    /// stat, that every recorded object of a resident source is present with its recorded length.
+    /// A paged source's chunks are not statted here: each is verified by what reads it, so a
+    /// damaged one fails only those reads, by its name. Stat and SQL only; a missing object is
+    /// `source-unavailable` naming the source, and a photograph that is not derived is
+    /// `validation`.
     pub(crate) fn derived_source_read(
         &self,
         asset_id: &AssetId,
     ) -> Result<DerivedSourceRead, Error> {
-        let row: Option<(String, i64)> = self
+        let row: Option<(String, i64, u32, u32)> = self
             .connection
             .prepare_cached(
-                "SELECT s.id, s.manifest_bytes FROM asset_sources a
+                "SELECT s.id, s.manifest_bytes, s.width, s.height FROM asset_sources a
                  JOIN derived_sources s ON s.id = a.source_id WHERE a.asset_id=?1",
             )?
-            .query_row([asset_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_row([asset_id.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
             .optional()?;
-        let (id, manifest_bytes) = row.ok_or_else(|| {
+        let (id, manifest_bytes, width, height) = row.ok_or_else(|| {
             Error::validation(format!("asset {asset_id} holds no derived source"))
         })?;
         let id = DerivedSourceId::parse(id)?;
         self.check_root()?;
         let mut objects = vec![(id.sha256().to_owned(), manifest_bytes)];
-        let mut statement = self.connection.prepare_cached(
-            "SELECT sha256, bytes FROM derived_source_chunks WHERE source_id=?1 ORDER BY ordinal",
-        )?;
-        for chunk in statement.query_map([id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))? {
-            objects.push(chunk?);
+        if SourceClass::of(width, height)? == SourceClass::Resident {
+            let mut statement = self.connection.prepare_cached(
+                "SELECT sha256, bytes FROM derived_source_chunks WHERE source_id=?1 ORDER BY ordinal",
+            )?;
+            for chunk in statement.query_map([id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))? {
+                objects.push(chunk?);
+            }
         }
         for (sha256, bytes) in objects {
             match object_length(&self.artifact_root, &sha256)? {

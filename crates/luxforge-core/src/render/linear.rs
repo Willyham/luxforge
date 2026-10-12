@@ -17,7 +17,7 @@ use crate::{
     Cancel, Error, LinearImage, SnapshotId,
     colour::{mat3, srgb},
     modules::{ExactGeometry, Parallelism, Region, Stage},
-    source::{ViewReader, Walk, layout},
+    source::{RENDERED_FRAME, ViewReader, Walk},
 };
 use rayon::prelude::*;
 
@@ -599,9 +599,9 @@ impl PixelDomain for Linear<'_> {
         terminal_pixel(pixel)
     }
 
-    /// The RAW planar limit applies to this float frame exactly as it does to the source's.
+    /// The rendered-frame limit ([`RENDERED_FRAME`]) bounds this float frame, the camera limits.
     fn spatial_frame(stage: Stage, _: bool) -> Result<Vec<f32>, Error> {
-        let (values, _) = layout(stage.width, stage.height)?;
+        let (values, _) = RENDERED_FRAME.layout(stage.width, stage.height)?;
         Ok(vec![0.0_f32; values])
     }
 
@@ -1883,11 +1883,11 @@ mod tests {
     #[test]
     fn raw_planar_bound_is_separate_from_terminal_rgba_bound() {
         // This checks admission arithmetic only; LinearImage is not allocated.
-        assert!(layout(16_000, 8_000).is_ok());
+        assert!(RENDERED_FRAME.layout(16_000, 8_000).is_ok());
         assert!(output_len(16_000, 6_250).is_ok());
         assert!(output_len(16_000, 8_000).is_ok());
         assert!(output_len(16_000, 8_001).is_err());
-        assert!(layout(16_384, 16_384).is_err());
+        assert!(RENDERED_FRAME.layout(16_384, 16_384).is_err());
     }
 
     /// A colour-stage layer reaches the linear path too: the Basic module's units run on the
