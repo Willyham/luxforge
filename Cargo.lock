@@ -2183,6 +2183,7 @@ dependencies = [
  "cc",
  "image",
  "luxforge-core",
+ "luxforge-net",
  "luxforge-testbase",
  "serde_json",
  "sha2",

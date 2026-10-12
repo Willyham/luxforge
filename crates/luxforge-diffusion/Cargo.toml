@@ -22,6 +22,8 @@ serde_json.workspace = true
 cc = { version = "=1.4.7", features = ["parallel"] }
 
 [dev-dependencies]
+# The loopback install test fetches through the real HTTP transport.
+luxforge-net = { path = "../luxforge-net" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 image.workspace = true
 sha2.workspace = true
