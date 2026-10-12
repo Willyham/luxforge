@@ -10,7 +10,11 @@
 //! app's. Overlays are white over a translucent dark under-stroke so they read on any photograph,
 //! and they are never themed: the accent marks only the selected pin, a set source and the gesture
 //! being drafted. Pins and handles keep their point size at every zoom.
-use super::{brush_overlay, mask_canvas::Placement, warped_path::Outline};
+use super::{
+    brush_overlay::{self, Traces},
+    mask_canvas::Placement,
+    warped_path::Outline,
+};
 use crate::{
     app::message::{
         Message,
@@ -135,6 +139,8 @@ pub(crate) struct Interaction {
     last: Option<(ViewPoint, [f64; 2])>,
     /// The pin under the pointer, as last published.
     hovered: Option<String>,
+    /// The figures last traced, so a redraw that leaves their paths alone does not retrace them.
+    traces: Traces,
 }
 
 /// The Corrections overlay. Borrowed from the app for one `view`.
@@ -235,17 +241,6 @@ fn filled(loops: &[Outline]) -> Path {
     })
 }
 
-/// The operation moved to where its first point samples from, for its source outline.
-fn at_source(held: &HeldOperation) -> Option<HeldOperation> {
-    let (source, anchor) = (held.source?, *held.points.first()?);
-    let (dx, dy) = (source[0] - anchor[0], source[1] - anchor[1]);
-    Some(HeldOperation {
-        points: held.points.iter().map(|[x, y]| [x + dx, y + dy]).collect(),
-        source: None,
-        ..held.clone()
-    })
-}
-
 impl CorrectionsCanvas<'_> {
     /// Each stored correction as drawn now: the gesture's live shape in place of the one it edits.
     fn drawn(&self) -> impl Iterator<Item = (&Listed, HeldOperation)> + '_ {
@@ -308,12 +303,12 @@ impl CorrectionsCanvas<'_> {
     }
 
     /// One correction's outline, dashed source outline and arrow.
-    fn figure(&self, frame: &mut Frame, held: &HeldOperation, accent: bool) {
+    fn figure(&self, frame: &mut Frame, held: &HeldOperation, traces: &Traces, accent: bool) {
         let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
-        let outline = brush_overlay::outline(&self.placement, held);
+        let figure = brush_overlay::figure(&self.placement, held, traces);
+        let outline = brush_overlay::merged(figure.loops);
         stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
-        if let Some(source) = at_source(held) {
-            let dashed = brush_overlay::outline(&self.placement, &source);
+        if let Some(dashed) = figure.source {
             stroke_outline(frame, &joined(&dashed), OUTLINE, WHITE, true);
             let arrow = brush_overlay::arrow(&self.placement, held);
             stroke_outline(frame, &arrow.path(), ARROW, WHITE, false);
@@ -560,20 +555,17 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         // The gesture in progress: a faint footprint while its source waits for the release, or
         // its live outline and source.
         if let (true, Some(live)) = (self.data.painting, &self.live) {
-            let loops = brush_overlay::outline_loops(&self.placement, live);
+            let figure = brush_overlay::figure(&self.placement, live, &state.traces);
             if self.data.automatic {
                 frame.fill(
-                    &filled(&loops),
+                    &filled(&figure.loops),
                     Fill {
                         style: Style::Solid(FOOTPRINT),
                         rule: fill::Rule::EvenOdd,
                     },
                 );
             }
-            let outline = Outline {
-                segments: loops.into_iter().flat_map(|one| one.segments).collect(),
-                approximate: false,
-            };
+            let outline = brush_overlay::merged(figure.loops);
             stroke_outline(
                 &mut frame,
                 &joined(&outline),
@@ -581,8 +573,7 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 theme::PHOTO_ANCHOR,
                 false,
             );
-            if let Some(source) = at_source(live) {
-                let dashed = brush_overlay::outline(&self.placement, &source);
+            if let Some(dashed) = figure.source {
                 stroke_outline(
                     &mut frame,
                     &joined(&dashed),
@@ -602,7 +593,7 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 let selected = self.data.selected == Some(listed.operation.as_str());
                 let hovered = self.data.hovered == Some(listed.operation.as_str());
                 if selected || hovered {
-                    self.figure(&mut frame, &held, false);
+                    self.figure(&mut frame, &held, &state.traces, false);
                 }
             }
             for (listed, held) in self.drawn() {
