@@ -93,7 +93,7 @@ The filmstrip gains a selection, with the open photograph always in it:
 | Arrow keys, Escape | Arrow keys step as today and select the new photograph alone; Escape selects only the open photograph |
 | Right press | Opens the menu (below) |
 
-Selected cells draw a quiet accent border and tint, and the open cell keeps its full accent border. The strip's header says "4 of 9 selected" whenever more than one photograph is selected. The selection is the desktop's view state. It is cleared when the set changes, and photographs that leave the set leave the selection.
+Selected cells draw a quiet accent border and tint, and the open cell keeps its full accent border. The strip's header says "4 of 9 selected" whenever more than one photograph is selected. The selection is the desktop's view state. It is cleared when the Develop folder changes, and photographs that leave the filmstrip leave the selection.
 
 With more than one photograph selected, `⌘V` pastes to **all** of them. After the [confirmation](#confirmation-and-report), it sends `batch.apply-settings` with their asset IDs. The open photograph is pasted like the others, and the event sync reads it again, as after a batch preset.
 
@@ -167,13 +167,13 @@ An agent copies and pastes with the same calls. The desktop's clipboard and film
   - chooser captions against capture, Edited, mixed module headings, unavailable and ambiguous rows;
   - copying from a historical preview;
   - each disabled reason;
-  - the filmstrip selection rules in the table above, including set changes;
+  - the filmstrip selection rules in the table above, including Develop folder changes;
   - `⌘V` choosing the open photograph or the selection;
   - Paste from previous with and without a previous photograph;
   - text-field focus keeping the system keys;
   - each request being exactly what an independent JSON client sends.
 - **Rendered.** A `copy-settings` smoke scenario runs in the background bundle over supplied JPEG and RAW fixtures:
-  - copies with `⌘C` and through the chooser, and pastes into the next photograph in the set;
+  - copies with `⌘C` and through the chooser, and pastes into the next photograph in the filmstrip;
   - undoes, pastes from previous, and pastes to a three-photograph filmstrip selection through its confirmation;
   - pastes to a Select selection with a RAW-to-JPEG white balance skip, then opens and reads the report.
 

@@ -412,6 +412,9 @@ pub(crate) struct Inputs<'a> {
     /// A long render's progress, while it earns the bar over the photograph
     /// ([`canvas::render_bar`]).
     pub(crate) render_bar: Option<canvas::RenderBar>,
+    /// A comparison has waited past [`canvas::COMPARE_LOADING_DELAY`] for a picture it needs
+    /// ([`canvas::CompareLoading`]).
+    pub(crate) compare_loading: bool,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a luxforge_core::Error>,
     /// The report the desktop's own preview worker reduced for the displayed frame, with the
@@ -492,8 +495,10 @@ impl Workspace {
         self.tools = tools::derive(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
-        // The panel draws sections unless Mask mode's list has no mask open to bind them to.
-        let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none());
+        // The panel draws sections unless Mask mode's list has no mask open to bind them to, or
+        // the Corrections band stands in for them.
+        let sections_shown =
+            !(self.corrections.active || (self.canvas.mask_panel && self.masks.selected.is_none()));
         self.palette = palette::derive(inputs, &self.tools, sections_shown);
         self.select = select::derive(inputs);
         self.long_work = long_work::derive(inputs);
@@ -516,6 +521,20 @@ impl Workspace {
             inputs.usage,
         );
         self.usage_notice = usage::notice(inputs.usage);
+    }
+
+    /// Whether something is open over the canvas: the palette, the Settings sheet, a menu (a
+    /// popover's or a context menu's) or one of copy settings' chooser, menu, confirmation and
+    /// report. A press on the photograph then closes it rather than painting, so the canvas draws
+    /// no brush cursor and leaves the pointer to the system ([`canvas::CanvasModel::covered`]).
+    pub(crate) fn covers_canvas(&self) -> bool {
+        self.palette.open
+            || self.settings.open.is_some()
+            || self.tools.menu.is_some()
+            || self.copy_settings.menu.is_some()
+            || self.copy_settings.report.is_some()
+            || self.copy_settings.state.confirm.is_some()
+            || self.copy_settings.state.chooser.is_some()
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -857,6 +876,7 @@ mod tests {
                 clients: Some(1),
                 rendering: false,
                 render_bar: None,
+                compare_loading: false,
                 render: Some(status::RenderTime {
                     ms: 41.0,
                     approximate: false,
@@ -3005,6 +3025,13 @@ mod tests {
         assert_eq!(workspace.status.render, "Rendering… 42%");
         assert_eq!(workspace.canvas.render_bar, Some(0.427));
 
+        // A comparison waiting past its delay draws the loading bar over the photograph.
+        assert!(!workspace.canvas.compare_loading);
+        inputs.compare_loading = true;
+        workspace.derive(&inputs);
+        assert!(workspace.canvas.compare_loading);
+        inputs.compare_loading = false;
+
         // A drafted RAW white balance approximated on the developed planes says it is
         // approximate beside its own time.
         let mut inputs = scene.inputs();
@@ -3437,7 +3464,7 @@ mod tests {
         assert_eq!(scene.modules, modules);
     }
 
-    /// The Tone curve section, directly after Basic, is the headerless single-curve case: its one
+    /// The Tone curve section, directly after Presence, is the headerless single-curve case: its one
     /// group draws its curve straight under the band, with no label line of its own (the band
     /// names it), the add-and-remove hint shown, the Points list closed and room for sixteen
     /// points.
@@ -3456,9 +3483,16 @@ mod tests {
             .position(|id| *id == "luxforge.basic")
             .expect("Basic");
         assert_eq!(
-            order.get(basic + 1),
-            Some(&"luxforge.curve"),
-            "the Tone curve follows Basic: {order:?}"
+            order.get(basic..basic + 4),
+            Some(
+                &[
+                    "luxforge.basic",
+                    "luxforge.presence",
+                    "luxforge.curve",
+                    "luxforge.detail"
+                ][..]
+            ),
+            "Basic, Presence, the Tone curve and Detail lead the adjustments: {order:?}"
         );
         let drawn = section(&workspace, "luxforge.curve");
         let [ControlModel::Curve(curve)] = drawn.controls.as_slice() else {
@@ -3730,10 +3764,6 @@ mod tests {
         let mut built_on_demand = 0;
         for (left, right) in from_collapsed.iter().zip(&from_open) {
             assert_eq!(left.section.module_id, right.section.module_id);
-            // The Corrections section has no controls: its band is its mode's.
-            if crate::state::corrections::is_brush_mode(&open.modules, &right.section.module_id) {
-                continue;
-            }
             assert!(right.section.shows_controls());
             assert_eq!(
                 left.controls, right.controls,
@@ -4409,5 +4439,27 @@ mod tests {
         scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
         scene.mask_panel.selected_mask = Some(luxforge_core::MaskId::new());
         assert!(action(&scene).reason.unwrap().contains("global Basic"));
+    }
+}
+
+#[cfg(test)]
+mod covered_tests {
+    use super::*;
+
+    /// The palette, the Settings sheet and a menu cover the canvas, so a brush under them draws no
+    /// cursor of its own; nothing open leaves the canvas uncovered.
+    #[test]
+    fn an_open_palette_sheet_or_menu_covers_the_canvas() {
+        let base = Workspace::default();
+        assert!(!base.covers_canvas());
+        let mut palette = base.clone();
+        palette.palette.open = true;
+        assert!(palette.covers_canvas());
+        let mut settings = base.clone();
+        settings.settings.open = Some(settings::SettingsTab::General);
+        assert!(settings.covers_canvas());
+        let mut menu = base.clone();
+        menu.tools.menu = Some(MenuTarget::Export);
+        assert!(menu.covers_canvas());
     }
 }

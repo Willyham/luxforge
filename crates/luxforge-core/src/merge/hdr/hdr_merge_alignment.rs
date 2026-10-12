@@ -114,7 +114,11 @@ fn refusal(error: Error) -> Refusal {
     let Some(data) = error.data else {
         panic!("a typed refusal, not {}", error.detail);
     };
-    serde_json::from_value(*data).expect("refusal data")
+    let mut data = *data;
+    // The data names the merge's kind beside the typed refusal.
+    assert_eq!(data["kind"], "hdr", "{data}");
+    data.as_object_mut().unwrap().remove("kind");
+    serde_json::from_value(data).expect("refusal data")
 }
 
 /// A bracket of `scene` recorded at `offsets` with `motions` (reference first motion is ignored:

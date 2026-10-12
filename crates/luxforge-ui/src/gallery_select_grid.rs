@@ -722,28 +722,33 @@ fn merge_narrow() -> Element<'static, ()> {
     .into()
 }
 
-/// The selection's merge menu: Merge HDR with its hint, and Merge options… with the frame count;
-/// beside it the same refused, the core's reason as Merge HDR's tooltip.
+/// The selection's merge menu: the HDR group's Merge HDR… with its hint; beside it the same with ⌥
+/// held, without the ellipsis; and the same refused, the core's reason as its tooltip.
 fn merge_menu() -> Element<'static, ()> {
-    let item = |label: &str, trailing: Option<&str>, enabled: bool| {
+    let item = |label: String, enabled: bool| {
         MenuEntry::Item(MenuItem {
             icon: None,
-            label: label.into(),
-            trailing: trailing.map(Into::into),
+            label,
+            trailing: None,
             on_press: enabled.then_some(()),
             reason: (!enabled).then(|| "These frames' exposures do not differ".to_owned()),
         })
     };
-    let entries = |enabled: bool| {
+    let entries = |enabled: bool, option: bool| {
+        let ellipsis = if option { "" } else { "\u{2026}" };
         vec![
-            item("Merge HDR", None, enabled),
+            MenuEntry::Heading("HDR".into()),
+            item(format!("Merge HDR{ellipsis}"), enabled),
             MenuEntry::Hint("Merge the frames into one HDR photograph in the catalog".into()),
-            item("Merge options\u{2026}", Some("3 frames"), true),
         ]
     };
-    iced::widget::row![menu_list(entries(true)), menu_list(entries(false))]
-        .spacing(theme::SPACING * 2.0)
-        .into()
+    iced::widget::row![
+        menu_list(entries(true, false)),
+        menu_list(entries(true, true)),
+        menu_list(entries(false, false))
+    ]
+    .spacing(theme::SPACING * 2.0)
+    .into()
 }
 
 /// The grid's states, in gallery order: four pages, each two columns.

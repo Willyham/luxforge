@@ -575,6 +575,11 @@ fn decimate_to_grid(points: &[[f64; 2]], size_steps: i32) -> Result<Vec<[i32; 2]
 /// Ramer–Douglas–Peucker on grid coordinates at `tolerance` grid steps, iterative so a long captured
 /// path cannot overflow the stack, and comparing squared distances so nothing is decided by a square
 /// root.
+///
+/// A position's distance is to the kept **segment**, not to the infinite line through it: a stroke
+/// painted back and forth along one row has every position on the line between its ends, and
+/// measuring to the line would drop each turn and store a path that no longer reaches where the
+/// pointer went. Measured to the segment, a turn past either end is as far as it overshoots.
 fn reduce(points: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
     if points.len() < 3 {
         return points.to_vec();
@@ -597,13 +602,16 @@ fn reduce(points: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
         for (index, point) in points.iter().enumerate().take(last).skip(first + 1) {
             let (px, py) = (f64::from(point[0]), f64::from(point[1]));
             let (ex, ey) = (px - ax, py - ay);
-            // The perpendicular distance, squared, kept as a ratio so the comparison against the
-            // squared tolerance below needs no division either: `cross² / length²` against `t²` is
-            // `cross²` against `t² · length²`. A degenerate segment falls back to the endpoint
-            // distance, which is the same quantity with `length² = 1`.
-            let distance2 = if length2 > 0.0 {
+            // The squared distance to the segment: the perpendicular one, `cross² / length²`, where
+            // the position projects inside it, and the squared distance to the nearer end where it
+            // projects past one. A degenerate segment takes the distance to its one end.
+            let along = dx * ex + dy * ey;
+            let distance2 = if length2 > 0.0 && along > 0.0 && along < length2 {
                 let cross = dx * ey - dy * ex;
                 cross * cross / length2
+            } else if length2 > 0.0 && along >= length2 {
+                let (fx, fy) = (px - bx, py - by);
+                fx * fx + fy * fy
             } else {
                 ex * ex + ey * ey
             };

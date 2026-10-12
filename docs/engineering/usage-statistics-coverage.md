@@ -199,11 +199,14 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `mask.set-linear` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-luminance-range` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-radial` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
-| `merge.create` | `interaction` `hdr-merge` | When accepted, with no image. A refusal or a retry records nothing; the merge job's terminal outcome records no `operation.end` (open). |
+| `merge.create` | `interaction` `hdr-merge` | When an HDR merge is accepted, with no image; a panorama merge is exempt (no approved event; never counted as `hdr-merge`). A refusal or a retry records nothing; the merge job's terminal outcome records no `operation.end` (open). |
 | `merge.inspect` | Exempt (read) | Reads a merge. |
-| `merge.plan` | Exempt (read) | Plans an HDR merge; its `merge.create` is the operation. |
+| `merge.plan` | Exempt (read) | Plans a merge; its `merge.create` is the operation. |
+| `merge.preview` | Exempt (read) | Draws a merge before it is made, publishing nothing; its `merge.create` (Merge HDR) is the operation and records `hdr-merge`. No preview event exists without the owner's approval. |
+| `merge.preview-close` | Exempt (internal) | Ends a preview session (Cancel on the sheet); nothing was made. |
+| `merge.preview-update` | Exempt (read) | Draws the open preview again for a setting change, each step of a stepper one request; the setting is recorded with the merge it is used for. |
 | `merge.remove` | `interaction` merge-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
-| `merge.rerun` | `interaction` `hdr-merge` | When accepted, as `merge.create`; the job's terminal outcome records no `operation.end` (open). |
+| `merge.rerun` | `interaction` `hdr-merge` | When an HDR merge's rerun is accepted, as `merge.create`; a panorama merge is exempt. The job's terminal outcome records no `operation.end` (open). |
 | `merge.restore` | `interaction` merge-restore | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `module.list` | Exempt (read) | Discovery. |
 | `module.permission.deny` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |

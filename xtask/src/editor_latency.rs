@@ -5634,13 +5634,18 @@ mod tests {
             steps.push(script::Step::tools_scroll(0.0));
             steps
         };
-        // The Crop, Presets and Basic sections sit above the Tone curve, and on a RAW photo the
-        // Look's too, directly above Basic's. The RAW module, between them in the registry,
+        // The Crop, Presets, Basic and Presence sections sit above the Tone curve, and on a RAW
+        // photo the Look's too, directly above Basic's. The RAW module, between them in the registry,
         // declares no controls and so draws no section for either kind of photo; the Look applies
         // to RAW photos only.
         assert_eq!(
             curve_view_steps(&field, SourceTag::Jpeg, false),
-            collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
+            collapsed(&[
+                "luxforge.crop",
+                "luxforge.presets",
+                "luxforge.basic",
+                "luxforge.presence"
+            ])
         );
         assert_eq!(
             curve_view_steps(&field, SourceTag::Raw, false),
@@ -5648,13 +5653,14 @@ mod tests {
                 "luxforge.crop",
                 "luxforge.presets",
                 "luxforge.look",
-                "luxforge.basic"
+                "luxforge.basic",
+                "luxforge.presence"
             ])
         );
         // The mask workspace lists only modules with a maskable effect.
         assert_eq!(
             curve_view_steps(&field, SourceTag::Jpeg, true),
-            collapsed(&["luxforge.basic"])
+            collapsed(&["luxforge.basic", "luxforge.presence"])
         );
         // Every collapsed section is one the registry orders before the module, and the panel
         // lists it: no developer section, and nothing below the module is touched.

@@ -1192,12 +1192,53 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         {"select": "cancel_work"},
         {"select": {"add_folder": "/Volumes/SSD/Card dumps"}},
         {"select": {"merge": {"position": 3}}},
-        {"select": {"merge": {"position": 0}}},
+        {"select": {"merge": {"position": 0, "last_settings": true}}},
         {"select": "merged"},
+        {"select": {"merge_preview": {"deghost": "off"}}},
+        {"select": {"merge_preview": {"alignment": "auto"}}},
+        {"select": {"merge_preview": {"overlay": true}}},
+        {"select": {"merge_preview": "merge"}},
+        {"select": {"merge_preview": "cancel"}},
     ]));
-    assert_eq!(steps[19], Step::Select(SelectStep::Merge { position: 3 }));
-    assert_eq!(steps[20], Step::Select(SelectStep::Merge { position: 0 }));
+    assert_eq!(
+        steps[19],
+        Step::Select(SelectStep::Merge {
+            position: 3,
+            last_settings: false,
+        })
+    );
+    assert_eq!(
+        steps[20],
+        Step::Select(SelectStep::Merge {
+            position: 0,
+            last_settings: true,
+        })
+    );
     assert_eq!(steps[21], Step::Select(SelectStep::Merged));
+    assert_eq!(
+        steps[22],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::Deghost(
+            MergeToggle::Off
+        )))
+    );
+    assert_eq!(
+        steps[23],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::Alignment(
+            MergeToggle::Auto
+        )))
+    );
+    assert_eq!(
+        steps[24],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::Overlay(true)))
+    );
+    assert_eq!(
+        steps[25],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::Merge))
+    );
+    assert_eq!(
+        steps[26],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::Cancel))
+    );
     assert_eq!(
         steps[12],
         Step::Select(SelectStep::Library(LibraryKey::Undo))

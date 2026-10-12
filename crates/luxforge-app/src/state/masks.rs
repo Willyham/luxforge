@@ -903,7 +903,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         selected,
         controls: mask_controls(inputs, enabled && open.is_some()),
         components,
-        kinds: kinds(enabled),
+        kinds: kinds(enabled, inputs.settings.flags.as_ref()),
         modes: rules::MODES
             .iter()
             .map(|mode| mode.as_str().to_owned())
@@ -978,9 +978,15 @@ fn unavailable(components: &[ComponentReport]) -> Option<String> {
 /// The painted kind is listed too, in the host's table order: it declares no geometry and so has no
 /// `mask.create-<kind>`, but choosing it arms the brush, whose first stroke creates the mask or adds
 /// the component through `mask.add-stroke`. A kind that is neither drawn nor typed is not listed at
-/// all, because a menu item has nowhere to say that nothing would happen.
-fn kinds(enabled: bool) -> Vec<KindOption> {
+/// all, because a menu item has nowhere to say that nothing would happen. Nor is a kind behind an
+/// experiment flag that is off ([`luxforge_core::mask::component_kind_experiment`]): the host
+/// would refuse to create it, though the ones already stored are listed and edited as ever.
+fn kinds(enabled: bool, flags: Option<&luxforge_core::flags::FlagList>) -> Vec<KindOption> {
     luxforge_core::mask::component_kinds()
+        .filter(|kind| {
+            luxforge_core::mask::component_kind_experiment(kind)
+                .is_none_or(|flag| super::settings::toggle_on(flags, flag))
+        })
         .filter_map(|kind| {
             let drawable = crate::mask_draft::drawable(kind);
             let typed = luxforge_core::mask::component_geometry_is_defaulted(kind);

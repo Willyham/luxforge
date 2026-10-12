@@ -506,6 +506,41 @@ fn the_tolerance_is_a_share_of_the_radius_and_never_under_two_grid_steps() {
     }
 }
 
+/// A stroke painted back and forth along one row keeps every turn: the reduction measures a
+/// position's distance to the kept segment, not to the line through it, so a run that doubles back
+/// along its own chord is not dropped and the stored path still reaches where the pointer did.
+#[test]
+fn a_stroke_that_doubles_back_keeps_its_turns() {
+    let row = |from: f64, to: f64| {
+        (0..=60).map(move |step| [from + (to - from) * f64::from(step) / 60.0, 0.5])
+    };
+    // Right, back left over the same row, then right again, ending inside the first run; and with a
+    // little vertical wobble, as a hand draws it.
+    let straight: Vec<[f64; 2]> = row(0.2, 0.8)
+        .chain(row(0.8, 0.3))
+        .chain(row(0.3, 0.7))
+        .collect();
+    let wobbly: Vec<[f64; 2]> = straight
+        .iter()
+        .enumerate()
+        .map(|(index, [x, y])| [*x, y + 0.0004 * ((index % 7) as f64 - 3.0) / 3.0])
+        .collect();
+    for path in [straight, wobbly] {
+        for size in [0.002, 0.02, 0.1] {
+            let stored = decimate(&path, size).expect("a legal path");
+            let bound = stored_deviation(size);
+            for point in &path {
+                let distance = distance_to_polyline(*point, &stored);
+                assert!(
+                    distance <= bound,
+                    "{point:?} is {distance:e} from the stored {stored:?} at size {size}"
+                );
+            }
+            assert_eq!(stored, decimate(&stored, size).unwrap(), "idempotent");
+        }
+    }
+}
+
 /// The distance from a point to a polyline, in normalized units. Test arithmetic only: nothing on a
 /// production path takes a square root of a distance.
 fn distance_to_polyline(point: [f64; 2], polyline: &[[f64; 2]]) -> f64 {

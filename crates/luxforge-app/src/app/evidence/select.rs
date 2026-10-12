@@ -88,7 +88,11 @@ impl Editor {
                 );
                 self.await_select(Task::batch([task, scrolled]))
             }
-            SelectStep::Merge { position } => self.merge_step(position),
+            SelectStep::Merge {
+                position,
+                last_settings,
+            } => self.merge_step(position, last_settings),
+            SelectStep::MergePreview(step) => self.merge_preview_step(step),
             SelectStep::Merged => self.merged_step(),
         }
     }

@@ -1750,6 +1750,7 @@ impl Editor {
             && self.preferences.reading.idle()
             && self.themes.listing.idle()
             && !self.settings.reading
+            && self.settings.flag_reads == 0
             && self.theme_settled();
         if followed {
             if let Some(evidence) = &mut self.evidence {
@@ -4435,6 +4436,13 @@ impl Editor {
             Some(Message::View(ViewMessage::SetMode(mode)))
                 if mode != self.session.workspace.mode =>
             {
+                self.await_step(Settle::Session);
+                self.dispatch(Message::Key(event, status))
+            }
+            // The Escape that leaves the Corrections mode waits for the session to follow it.
+            Some(Message::Corrections(
+                crate::app::message::corrections::CorrectionMessage::Escape,
+            )) if self.corrections_active() && self.correction_escape_leaves() => {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }

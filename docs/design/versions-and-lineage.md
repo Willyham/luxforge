@@ -49,11 +49,11 @@ Performance review of the change: it reads, hashes and decodes no original and a
 
 `history.list` answers pages of **rows**, newest first: each entry's `id`, `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent` and `restore_target`, and no stack or parameters. A page leaves out [collapsed](#auto-collapse) entries unless `collapsed: true` asks for them, when each is marked `collapsed: true`; the page's `limit` counts the rows it answers. The rows are read from the entry's own columns without decoding its JSON, so a page costs the same whatever the stacks hold, masks included. `history.inspect` answers one whole entry with its complete stack. The desktop's history panel reads only rows: an open or a change made elsewhere reads the newest page, and its own commit, undo, redo or restore merges the current entry's row into the loaded page instead. When its own edit collapsed an entry, it removes that entry's row from the loaded page and reads the lineage, as after an undo.
 
-## Storage: catalog format 15
+## Storage: catalog format 16
 
 Entry JSON is the authoritative stored recipe snapshot. Beside it each entry's row fields have their own columns — `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent_id` and `restore_target_id` — written from the same entry by the one insert every commit and every import takes, so a history page and a lineage walk read columns only. Both are immutable. The `versions` table holds named references to entries, and `collapsed_entries` the entries [auto-collapse](#auto-collapse) hid, keyed by entry; a trigger refuses deleting a row there, as entries refuse updates. The catalog also holds the [preset library](presets.md#library), the [mask](masking.md) table and content-addressed stroke store, and the catalog's identity with the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. In the request table it holds each asset request's whole answer, so a retried `mask.*` command answers with the identities its first attempt minted. Each asset's source kind tag (`jpeg`, `raw` or `derived`) has a column of its own beside its interpretation, so a list of photographs reads columns only and decodes no interpretation. History inserts name their columns explicitly.
 
-The current catalog format is 15: the collapsed-entry table, the catalog of developed picks ([catalog](catalog.md#storage)), and the derived sources and merges of [HDR merges](hdr-merge.md#durable-derived-source). Beside history the catalog adds these tables:
+The current catalog format is 16: the collapsed-entry table, the catalog of developed picks with no development set ([catalog](catalog.md#storage)), and the derived sources and kind-tagged merges, with provenance format 2, of [HDR merges](hdr-merge.md#durable-derived-source) and, once its provider exists, [panoramas](panorama-merge.md). Beside history the catalog adds these tables:
 
 | Table | Holds |
 | --- | --- |
@@ -78,13 +78,14 @@ A photograph enters the catalog only by being developed (`pick.develop`, [develo
 
 Every earlier format is refused by name and left as it is:
 
+- A format 15 catalog has either kind-tagged merges beside a development set, or untagged merges with no development set: the two were made side by side under one marker.
 - A format 12 catalog has either the catalog's tables or the collapsed-entry table, never both: the two were made side by side under one marker.
 - A format 11 catalog has none of the catalog's tables and no collapsed-entry table.
 - A format 10 catalog has no kind column.
 - A format 9 catalog stores only the mutation result of a request.
 - A format 7 catalog keeps the row fields only inside the entry JSON.
 
-The catalog's index, `<catalog stem>.index/index.sqlite`, is a separate database with a format of its own (`INDEX_FORMAT`, 6). It is opened on first use. It is a cache, so where the catalog refuses, the index is discarded and recreated, never touching the catalog: a mismatched format, a file SQLite cannot read and another catalog's index are all discarded.
+The catalog's index, `<catalog stem>.index/index.sqlite`, is a separate database with a format of its own (`INDEX_FORMAT`, 7). It is opened on first use. It is a cache, so where the catalog refuses, the index is discarded and recreated, never touching the catalog: a mismatched format, a file SQLite cannot read and another catalog's index are all discarded.
 
 An empty, unmarked database is initialized with the current schema. Existing catalogs must use the current format marker. Unsupported or nonempty unmarked catalogs are refused without rewriting their data, with an error directing the user to a new catalog path. Only current shapes are supported during pre-release development.
 

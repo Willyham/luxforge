@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Generalize the merge boundary for a second kind, with HDR behaviour unchanged.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
@@ -103,7 +103,7 @@
     {
       "id": "TASK-002",
       "description": "Deliver the merge preview for HDR: commands, a reusable preview session and the preview sheet that opens first.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],

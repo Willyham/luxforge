@@ -186,7 +186,7 @@
           "label": "Versions and lineage",
           "target": "docs/design/versions-and-lineage.md",
           "relevance": "The current catalog format and its rules.",
-          "locator": "Storage: catalog format 15"
+          "locator": "Storage: catalog format 16"
         }
       ],
       "acceptance_criteria": [

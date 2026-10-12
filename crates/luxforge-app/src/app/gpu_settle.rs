@@ -279,7 +279,13 @@ impl Editor {
     /// frame, the reference's reduction to the view; at 100% or more the view's whole frame of the
     /// current content, which a GPU region frame dissolves into, as the canvas hands it to the
     /// percentage view.
+    /// A content the GPU presents has no CPU frame of its own: the frame under its picture is an
+    /// earlier stack's, or an open's empty one, kept as the surface's base, and nothing settles
+    /// into it.
     fn settle_frame(&self, zoom: SettleZoom) -> Option<u64> {
+        if self.presentation.gpu_presented == Some(self.presentation.presented_content) {
+            return None;
+        }
         let surfaces = self.surfaces();
         match zoom {
             SettleZoom::Percent(value) if value >= 100.0 => surfaces

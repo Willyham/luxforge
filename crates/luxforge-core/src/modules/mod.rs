@@ -87,7 +87,9 @@ pub use controls::{CONTROLS_EFFECT, controls_module};
 pub(crate) use corrections::patch_testing as corrections_patch_testing;
 #[cfg(feature = "qualification")]
 pub use corrections::qualification as corrections_qualification;
-pub use corrections::{CORRECTIONS_EFFECT, RepairInput, StaleCorrection, StaleReason};
+pub use corrections::{
+    CORRECTIONS_EFFECT, RepairInput, SourceFit, StaleCorrection, StaleReason, fit_correction_source,
+};
 pub(crate) use corrections::{
     CorrectionsModule, RepairCarrier, source_identity as corrections_source_identity,
 };

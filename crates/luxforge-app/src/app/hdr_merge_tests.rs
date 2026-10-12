@@ -1,40 +1,52 @@
 //! HDR merges in the Select workspace against a real owner, merging real files through a synthetic
 //! camera (`OwnerHandle::merge_synthetic_frames`): everything after each frame's development is the
-//! production path. A bracket header's Merge HDR and a selection's, the core's refusal said in the
-//! menu, the one pending row with its Cancel and a failure naming its input, the result in the
-//! catalog folder the plan names, leading its collapsed stack with its badge while Select stays
-//! shown, `S` expanding and collapsing it, an original picked as any file is, a merge reused, Remove merge with library undo
+//! production path. The merge preview sheet's requests and revisions beside a JSON client's, its
+//! settings, folder, Cancel and a merge continuing its preview (also one pressed while it
+//! prepares), and ⌥-click merging with the remembered settings; then, ⌥-clicked, a bracket
+//! header's Merge HDR and a selection's, the core's refusal said in the menu, the one pending row
+//! with its Cancel and a failure naming its input, the result in the catalog folder the plan names,
+//! leading its collapsed stack with its badge while Select stays shown, `S` expanding and
+//! collapsing it, an original picked as any file is, a merge reused, Remove merge with library undo
 //! and redo, and Put back merge for a merge in Removed. Each owner call runs as its task would,
 //! through the `*_now` function the task runs, its answer handed back as the task's message; what
 //! the desktop sends is compared with what a second JSON client writes, and every effect is read
 //! back through that client.
 use super::select_owner_tests::{
-    click, evaluate, finish, key, newest_change, pick_of, read_rows, selecting_over, sent, settle,
+    click, evaluate, finish, key, newest_change, pick_of, read_rows, selecting_with_preferences,
+    sent, settle,
 };
 use crate::{
     app::{
         Editor,
-        message::{Message, select::SelectMessage, select_merge::MergeMessage},
-        select_merge::{expanded_now, plan_now, start_now},
+        message::{
+            Message, preferences::PreferenceMessage, select::SelectMessage,
+            select_merge::MergeMessage,
+        },
+        select_merge::{
+            close_now, expanded_now, open_now, picture_now, plan_now, preview_now, start_now,
+        },
         tasks::call,
     },
     state::{
         select::{Block, InfoModel, MomentAction},
         select_merge::{
-            FolderPick, MergeAction, MergeForm, MergeRequest, ev_words, folder_choice, form_model,
+            FolderPick, MergeAction, MergeRequest, PreviewSheet, Toggle, ev_words, folder_choice,
             plan_refusal,
+            sheet::{self, Picture, SheetContext},
         },
     },
 };
 use iced::{Point, Size, keyboard::Modifiers};
 use luxforge_core::{
-    SourceTag, SyntheticFrame,
+    ClientId, SourceTag, SyntheticFrame,
     catalog_types::{
         CameraBody, CaptureTime, CatalogFolderId, Dimensions, ExifOrientation, Exposure,
         FileRecord, FileSignature, FolderChoice, HeaderMetadata, HeaderState, IndexRoot,
-        IndexedFolder, MergePlan, RootKind, RowItem, StackExpansion, StackRole, ViewSource, Volume,
-        VolumeId,
+        IndexedFolder, MergeKind, MergePlan, MergePreview, RootKind, RowItem, StackExpansion,
+        StackRole, ViewSource, Volume, VolumeId,
     },
+    merge::hdr::{AlignmentMode, DeghostMode},
+    preferences::HdrMergePreference,
     seed::{CatalogSeeder, IndexSeeder},
 };
 use luxforge_reference::{
@@ -154,7 +166,9 @@ impl Bench {
     /// The editor over the catalog with the bracket's folder in view, every row read, its owner
     /// merging with the synthetic camera.
     fn open(&self) -> Editor {
-        let (mut editor, _) = selecting_over(self.catalog.clone());
+        // The person's preferences beside the catalog: a merge remembers its settings there.
+        let preferences = self.catalog.with_extension("config");
+        let (mut editor, _) = selecting_with_preferences(self.catalog.clone(), preferences);
         let broken = self.broken.clone();
         editor.owner.merge_synthetic_frames(
             Arc::new(move |path: &Path| frame(path, &broken)),
@@ -318,7 +332,16 @@ fn start(editor: &mut Editor) -> MergeRequest {
         .starting
         .clone()
         .expect("a merge starting");
-    let result = start_now(&editor.owner, editor.client, &request);
+    // A merge from the sheet continues its preview; with ⌥ held there is none.
+    let preview = editor
+        .select
+        .state
+        .merge
+        .sheet
+        .as_ref()
+        .filter(|sheet| sheet.merging)
+        .and_then(|sheet| sheet.preview_id.clone());
+    let result = start_now(&editor.owner, editor.client, &request, preview.as_ref());
     merge(
         editor,
         MergeMessage::Started {
@@ -465,6 +488,8 @@ fn active(editor: &Editor) -> luxforge_core::catalog_types::ViewRow {
 fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder() {
     let bench = Bench::new("pick");
     let mut editor = bench.open();
+    // ⌥ held: each merge action merges at once with the last settings, without the preview.
+    merge(&mut editor, MergeMessage::Option(true));
     let agent = editor.owner.register();
     assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 5);
     let (number, labels) = bracket_header(&editor).expect("the bracket's header");
@@ -518,7 +543,7 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
     let planned = sent_merge(&editor, "merge.plan");
     assert_eq!(
         planned,
-        json!({"targets": {"kind": "files", "file_ids": files}})
+        json!({"kind": "hdr", "targets": {"kind": "files", "file_ids": files}})
     );
     let (plan, _) = call(&editor.owner, agent, "merge.plan", planned).unwrap();
     let plan: MergePlan = serde_json::from_value(plan).unwrap();
@@ -537,26 +562,22 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
     assert!(plan.folder.is_none(), "{plan:?}");
     let created = sent_merge(&editor, "merge.create");
     assert_eq!(created["folder"], json!({"kind": "place", "name": place}));
-    // Merge options… says the place the merge makes; a folder chosen there is sent as itself.
-    let mut form = MergeForm {
-        request: request.clone(),
-        plan: Some(plan.clone()),
-        refusal: None,
-        folders: Vec::new(),
-        folder_menu: false,
-    };
+    // The preview sheet says the place the merge makes; a folder chosen there is sent as itself.
+    let mut sheet = PreviewSheet::new(request.clone(), SheetContext::default(), Vec::new());
+    sheet.planned(plan.clone());
+    let model = sheet::model(&sheet, None);
     assert_eq!(
-        form_model(&form, false).folder,
-        format!("New place \u{201c}{place}\u{201d}")
+        (model.folder.as_str(), model.folder_note),
+        (place.as_str(), Some("new place"))
     );
     let chosen = CatalogFolderId::new();
-    form.request.options.folder = FolderPick::Existing {
+    sheet.request.options.folder = FolderPick::Existing {
         folder_id: chosen.clone(),
         name: "Travel \u{203a} Alps".into(),
     };
-    assert_eq!(form_model(&form, false).folder, "Travel \u{203a} Alps");
+    assert_eq!(sheet::model(&sheet, None).folder, "Travel \u{203a} Alps");
     assert_eq!(
-        folder_choice(&form.request.options, &plan),
+        folder_choice(&sheet.request.options, &plan),
         Some(FolderChoice::Existing {
             folder_id: chosen,
             days: false,
@@ -620,7 +641,7 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
     );
     let stack = leader.stack.clone().expect("the result leads its stack");
     assert_eq!(stack.role, StackRole::Leader);
-    assert_eq!(stack.exposures, 3);
+    assert_eq!((stack.kind, stack.size), (MergeKind::Hdr, 3));
     assert_eq!(stack.collapsed, 3);
     let at = editor.session.browse.selection.active.unwrap();
     assert!(
@@ -716,6 +737,8 @@ fn planned_targets(files: &[Value]) -> Value {
 fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     let bench = Bench::new("selection");
     let mut editor = bench.open();
+    // ⌥ held: each merge action merges at once with the last settings, without the preview.
+    merge(&mut editor, MergeMessage::Option(true));
     let agent = editor.owner.register();
 
     // Two singles of one exposure: the menu's merges say what the core said.
@@ -733,12 +756,13 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .menu
         .clone()
         .expect("the menu");
+    assert_eq!(menu.heading, Some("HDR"));
     assert_eq!(menu.entries[0].label, "Merge HDR");
     assert_eq!(
         menu.entries[0].hint,
         Some("Merge the frames into one HDR photograph in the catalog")
     );
-    assert_eq!(menu.entries[1].label, "Merge options\u{2026}");
+    assert_eq!(menu.entries.len(), 1, "one merge action: {menu:?}");
     assert!(menu.entries[0].action.is_none());
     assert_eq!(menu.entries[0].reason.as_deref(), Some(reason.as_str()));
     act(&mut editor, MergeAction::CloseMenu);
@@ -750,8 +774,8 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     plan(&mut editor);
     let menu = editor.workspace.select.merge.menu.clone().unwrap();
     assert!(menu.entries[0].action.is_some(), "{menu:?}");
-    assert_eq!(menu.entries[1].trailing.as_deref(), Some("3 frames"));
-    act(&mut editor, MergeAction::Start);
+    assert_eq!(menu.entries.len(), 1, "one merge action: {menu:?}");
+    act(&mut editor, MergeAction::Start(MergeKind::Hdr));
     start(&mut editor);
     let record = follow(&mut editor);
     assert_eq!(record["status"], "ready", "{record}");
@@ -793,7 +817,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     extend(&mut editor, first + 2);
     context(&mut editor, first + 2);
     plan(&mut editor);
-    act(&mut editor, MergeAction::Start);
+    act(&mut editor, MergeAction::Start(MergeKind::Hdr));
     start(&mut editor);
     let record = follow(&mut editor);
     assert_eq!(record["status"], "ready", "{record}");
@@ -914,6 +938,8 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
 fn hdr_merge_pending_row_cancels_and_a_failure_names_its_input() {
     let bench = Bench::new("pending");
     let mut editor = bench.open();
+    // ⌥ held: each merge action merges at once with the last settings, without the preview.
+    merge(&mut editor, MergeMessage::Option(true));
     let agent = editor.owner.register();
     let (number, _) = bracket_header(&editor).unwrap();
 
@@ -975,5 +1001,471 @@ fn hdr_merge_pending_row_cancels_and_a_failure_names_its_input() {
     assert_eq!(button, "Dismiss");
     merge(&mut editor, MergeMessage::Pending);
     assert!(pending_row(&editor).is_none());
+    finish(editor, bench.catalog.clone());
+}
+
+// -- The merge preview sheet ------------------------------------------------------------------------
+
+/// Wait on `job` as a `job.wait` reader does, handing each record to `deliver`, until it ends; its
+/// last record.
+fn follow_job(
+    editor: &mut Editor,
+    client: ClientId,
+    job: &str,
+    mut deliver: impl FnMut(&mut Editor, Value),
+) -> Value {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let mut after = None;
+    loop {
+        let (change, record) = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    luxforge_testbase::HANG,
+                    super::job_reads::wait(&editor.owner, client, job, after),
+                )
+                .await
+            })
+            .expect("the job to move")
+            .unwrap();
+        after = Some(change);
+        deliver(editor, record.clone());
+        if !matches!(record["status"].as_str(), Some("queued" | "running")) {
+            return record;
+        }
+    }
+}
+
+/// The open sheet.
+fn sheet(editor: &Editor) -> &PreviewSheet {
+    editor
+        .select
+        .state
+        .merge
+        .sheet
+        .as_ref()
+        .expect("the preview sheet open")
+}
+
+/// Run the sheet's opening, as its owner task does: the plan, then `merge.preview`.
+fn open_preview(editor: &mut Editor) {
+    let (serial, request) = {
+        let sheet = sheet(editor);
+        assert!(sheet.asking, "the sheet's opening in flight");
+        (sheet.serial, sheet.request.clone())
+    };
+    let answer = open_now(&editor.owner, editor.client, &request);
+    merge(
+        editor,
+        MergeMessage::Opened {
+            serial,
+            answer: Box::new(answer),
+        },
+    );
+}
+
+/// Run the `merge.preview-update` the sheet sent, as its owner task does; its parameters.
+fn update_preview(editor: &mut Editor) -> Value {
+    let (serial, sent) = {
+        let sheet = sheet(editor);
+        assert!(sheet.asking, "the sheet's update in flight");
+        (sheet.serial, sheet.sent.last().cloned().unwrap())
+    };
+    assert_eq!(sent["method"], "merge.preview-update");
+    let result = preview_now(
+        &editor.owner,
+        editor.client,
+        "merge.preview-update",
+        sent["params"].clone(),
+    );
+    merge(editor, MergeMessage::Updated { serial, result });
+    sent["params"].clone()
+}
+
+/// Follow the sheet's preview job to its revision, then decode its picture as the update loop
+/// does; the job's last record.
+fn follow_preview(editor: &mut Editor) -> Value {
+    let job = sheet(editor).job.clone().expect("a preview job");
+    let client = editor.client;
+    let record = follow_job(editor, client, &job, |editor, record| {
+        merge(
+            editor,
+            MergeMessage::PreviewWatched {
+                job: job.clone(),
+                result: Ok(record),
+            },
+        );
+    });
+    if let Some(path) = editor.select.merge_picture_wanted.clone() {
+        let result = picture_now(&path);
+        merge(editor, MergeMessage::Picture { path, result });
+    }
+    record
+}
+
+/// A JSON client's own preview of the same frames: `merge.plan`, then `merge.preview` of
+/// `params` with its own plan, followed to its revision.
+fn client_preview(
+    editor: &mut Editor,
+    agent: ClientId,
+    plan: &Value,
+    mut params: Value,
+) -> MergePreview {
+    let (planned, _) = call(&editor.owner, agent, "merge.plan", plan.clone()).unwrap();
+    params["plan_id"] = planned["plan_id"].clone();
+    let (answer, _) = call(&editor.owner, agent, "merge.preview", params).unwrap();
+    let job = answer["job_id"].as_str().unwrap().to_owned();
+    let record = follow_job(editor, agent, &job, |_, _| {});
+    assert_eq!(record["status"], "ready", "{record}");
+    serde_json::from_value(record["result"].clone()).unwrap()
+}
+
+/// The same revision, but for the preview's own identity and picture.
+fn same_revision(desktop: &MergePreview, client: &MergePreview) {
+    assert_eq!(desktop.revision, client.revision);
+    assert_eq!(desktop.kind, client.kind);
+    assert_eq!(desktop.options, client.options);
+    assert_eq!(
+        (desktop.width, desktop.height),
+        (client.width, client.height)
+    );
+    assert_eq!(desktop.diagnostics, client.diagnostics);
+    assert_eq!(desktop.overlays, client.overlays);
+    assert_eq!(desktop.output, client.output);
+    assert_eq!(desktop.refusal, client.refusal);
+}
+
+/// Complete the preference write in flight, as its owner task does.
+fn save_preferences(editor: &mut Editor) {
+    let change = editor
+        .preferences
+        .writing()
+        .cloned()
+        .expect("a preference write in flight");
+    let result = call(
+        &editor.owner,
+        editor.client,
+        "preferences.set",
+        change.params(),
+    )
+    .and_then(|(answer, _)| Ok((crate::state::preferences::parse(answer)?, String::new())));
+    let _ = editor.update(Message::Preferences(PreferenceMessage::Saved(result)));
+}
+
+/// Merge HDR opens the sheet, whose requests are a JSON client's and whose revisions equal that
+/// client's, with the plan's folder; Deghosting Off updates the same preview with the whole
+/// options; the overlay sends nothing; the sheet's Merge continues the preview with its options
+/// into the plan's folder choice, closes the sheet, shows the pending row and remembers the
+/// settings for the next ⌥-click.
+#[test]
+fn merge_preview_sheet_requests_and_revisions_are_a_json_clients() {
+    let bench = Bench::new("preview");
+    let mut editor = bench.open();
+    let agent = editor.owner.register();
+    let (number, _) = bracket_header(&editor).unwrap();
+
+    merge(
+        &mut editor,
+        MergeMessage::Header {
+            moment: number,
+            action: 1,
+        },
+    );
+    assert!(editor.select.state.merge.starting.is_none(), "no merge yet");
+    let model = editor
+        .workspace
+        .select
+        .merge
+        .sheet
+        .clone()
+        .expect("the sheet");
+    assert_eq!(model.title, "Merge HDR \u{b7} 3 exposures");
+    assert!(
+        model.subtitle.starts_with("DSC_0001\u{2013}0003.NEF"),
+        "{}",
+        model.subtitle
+    );
+    assert!(matches!(model.picture, Picture::Preparing { .. }));
+    open_preview(&mut editor);
+    let sent = sheet(&editor).sent.clone();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0]["method"], "merge.plan");
+    assert_eq!(sent[1]["method"], "merge.preview");
+    let plan_params = sent[0]["params"].clone();
+    let preview_params = sent[1]["params"].clone();
+    // What a JSON client writes for this bracket with the defaults.
+    assert_eq!(plan_params["kind"], "hdr");
+    assert!(plan_params.get("hdr").is_none(), "{plan_params}");
+    assert!(preview_params["plan_id"].is_string());
+    assert_eq!(preview_params["targets"], plan_params["targets"]);
+    assert!(
+        sheet(&editor).preview_id.is_none(),
+        "named with its revision"
+    );
+
+    let record = follow_preview(&mut editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    let sheet_now = sheet(&editor).clone();
+    let preview = sheet_now.preview.clone().unwrap();
+    assert_eq!(preview.revision, 1);
+    let path = preview.path.clone().unwrap();
+    assert!(path.is_file(), "{}", path.display());
+    assert_eq!(
+        editor
+            .select
+            .merge_picture
+            .as_ref()
+            .map(|picture| &picture.path),
+        Some(&path)
+    );
+    let ours = client_preview(&mut editor, agent, &plan_params, preview_params.clone());
+    same_revision(&preview, &ours);
+    let model = editor.workspace.select.merge.sheet.clone().unwrap();
+    assert!(model.enabled);
+    assert!(
+        model.status.starts_with("Preview from ") && model.status.contains("-pixel frames"),
+        "{}",
+        model.status
+    );
+    assert_eq!(model.note, Some(sheet::DISPLAY_NOTE));
+    assert_eq!(model.frames.len(), 3);
+    assert_eq!(
+        model
+            .frames
+            .iter()
+            .map(|frame| frame.name.as_str())
+            .collect::<Vec<_>>(),
+        NAMES[..3]
+    );
+    assert!(model.frames[1].reference, "{:?}", model.frames);
+    assert!(
+        model.frames[0].detail.starts_with("\u{2212}2 EV"),
+        "{:?}",
+        model.frames[0]
+    );
+    assert!(
+        model
+            .output
+            .as_deref()
+            .is_some_and(|output| output.contains(" MB"))
+    );
+    // The folder: the place the plan suggests, whose folders the merge makes.
+    let Some(FolderChoice::Place { name: place }) = sheet_now
+        .plan
+        .as_ref()
+        .and_then(|plan| plan.suggested_folder.clone())
+    else {
+        panic!(
+            "a new catalog's merge is filed by place: {:?}",
+            sheet_now.plan
+        );
+    };
+    assert_eq!(
+        (model.folder.as_str(), model.folder_note),
+        (place.as_str(), Some("new place"))
+    );
+
+    // Deghosting Off: the whole options, to the same preview, drawn as its next revision.
+    act(&mut editor, MergeAction::Deghost(Toggle::Off));
+    let params = update_preview(&mut editor);
+    let preview_id = sheet(&editor).preview_id.clone().unwrap();
+    assert_eq!(
+        params,
+        json!({"preview_id": preview_id, "hdr": {"deghost": "off"}})
+    );
+    let record = follow_preview(&mut editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    let updated = sheet(&editor).preview.clone().unwrap();
+    assert_eq!(updated.revision, 2);
+    assert_eq!(updated.preview_id, preview_id);
+    let (answer, _) = call(
+        &editor.owner,
+        agent,
+        "merge.preview-update",
+        json!({"preview_id": ours.preview_id, "hdr": {"deghost": "off"}}),
+    )
+    .unwrap();
+    let job = answer["job_id"].as_str().unwrap().to_owned();
+    let record = follow_job(&mut editor, agent, &job, |_, _| {});
+    let theirs: MergePreview = serde_json::from_value(record["result"].clone()).unwrap();
+    same_revision(&updated, &theirs);
+    assert_eq!(
+        editor
+            .select
+            .merge_picture
+            .as_ref()
+            .map(|picture| &picture.path),
+        updated.path.as_ref()
+    );
+
+    // Show deghost overlay: drawn from the revision's data, nothing sent.
+    let before = sheet(&editor).sent.len();
+    act(&mut editor, MergeAction::Overlay(true));
+    assert_eq!(sheet(&editor).sent.len(), before);
+    assert!(sheet(&editor).overlay);
+
+    // The sheet's Merge: the preview continued with its options, no plan named, into the plan's
+    // folder choice.
+    act(&mut editor, MergeAction::SheetMerge);
+    let request = start(&mut editor);
+    assert_eq!(request.kind, MergeKind::Hdr);
+    let create = sent_merge(&editor, "merge.create");
+    assert_eq!(create["preview_id"], json!(preview_id));
+    assert!(create.get("plan_id").is_none(), "{create}");
+    assert_eq!(create["hdr"], json!({"deghost": "off"}));
+    assert_eq!(create["folder"], json!({"kind": "place", "name": place}));
+    for removed in ["folder_id", "add_to_development_set"] {
+        assert!(create.get(removed).is_none(), "{create}");
+    }
+    assert!(
+        editor.select.state.merge.sheet.is_none(),
+        "the sheet is gone"
+    );
+    assert!(editor.select.merge_picture.is_none());
+    assert!(pending_row(&editor).is_some());
+    // Remembered for the next ⌥-click: its alignment and deghosting.
+    assert_eq!(
+        editor.preferences.applied().unwrap().hdr_merge,
+        Some(HdrMergePreference {
+            alignment: AlignmentMode::Auto,
+            deghost: DeghostMode::Off,
+        })
+    );
+    save_preferences(&mut editor);
+    let (stored, _) = call(&editor.owner, agent, "preferences.read", json!({})).unwrap();
+    assert_eq!(
+        stored["hdr_merge"],
+        json!({"alignment": "auto", "deghost": "off"})
+    );
+    let record = follow(&mut editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    // The preview is merged: it is gone with its merge.
+    assert!(
+        call(
+            &editor.owner,
+            editor.client,
+            "merge.preview-update",
+            json!({"preview_id": preview_id, "hdr": {}}),
+        )
+        .is_err()
+    );
+    let _ = close_now(&editor.owner, agent, json!({"preview_id": ours.preview_id}));
+    settle(&mut editor);
+    finish(editor, bench.catalog.clone());
+}
+
+/// The sheet opens with the remembered settings and its Cancel closes the preview; ⌥-click merges
+/// at once with them, naming the plan and no preview; a merge pressed while the preview still
+/// prepares waits for its revision and continues it.
+#[test]
+fn merge_preview_option_click_merges_with_the_remembered_settings() {
+    let bench = Bench::new("option");
+    let mut editor = bench.open();
+    let agent = editor.owner.register();
+    let (number, _) = bracket_header(&editor).unwrap();
+    let remembered = json!({"alignment": "off", "deghost": "off"});
+    call(
+        &editor.owner,
+        agent,
+        "preferences.set",
+        json!({"hdr_merge": remembered}),
+    )
+    .unwrap();
+    let (stored, _) = call(&editor.owner, editor.client, "preferences.read", json!({})).unwrap();
+    let _ = editor.preferences_read(crate::state::preferences::parse(stored));
+
+    // A plain press opens the sheet with the last settings; Cancel closes its preview.
+    merge(
+        &mut editor,
+        MergeMessage::Header {
+            moment: number,
+            action: 1,
+        },
+    );
+    assert_eq!(sheet(&editor).request.options.alignment, Toggle::Off);
+    assert_eq!(sheet(&editor).request.options.deghost, Toggle::Off);
+    open_preview(&mut editor);
+    assert_eq!(sheet(&editor).sent[1]["params"]["hdr"], remembered);
+    let record = follow_preview(&mut editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    let model = editor.workspace.select.merge.sheet.clone().unwrap();
+    assert!(model.status.ends_with("not aligned"), "{}", model.status);
+    let preview_id = sheet(&editor).preview_id.clone().unwrap();
+    act(&mut editor, MergeAction::SheetClose);
+    assert!(editor.select.state.merge.sheet.is_none());
+    let closed = editor.select.preview_closed.clone().unwrap();
+    assert_eq!(closed, json!({"preview_id": preview_id}));
+    close_now(&editor.owner, editor.client, closed).unwrap();
+    assert!(
+        call(
+            &editor.owner,
+            editor.client,
+            "merge.preview-update",
+            json!({"preview_id": preview_id, "hdr": {}}),
+        )
+        .is_err(),
+        "the preview is closed"
+    );
+
+    // ⌥-click: a merge at once with the last settings, of the plan, no preview opened.
+    merge(&mut editor, MergeMessage::Option(true));
+    merge(
+        &mut editor,
+        MergeMessage::Header {
+            moment: number,
+            action: 1,
+        },
+    );
+    merge(&mut editor, MergeMessage::Option(false));
+    assert!(editor.select.state.merge.sheet.is_none(), "no sheet");
+    start(&mut editor);
+    let plan = sent_merge(&editor, "merge.plan");
+    let create = sent_merge(&editor, "merge.create");
+    assert_eq!(plan["hdr"], remembered);
+    assert_eq!(create["hdr"], remembered);
+    assert!(create["plan_id"].is_string(), "{create}");
+    assert!(create.get("preview_id").is_none(), "{create}");
+    assert!(create["folder"].is_object(), "{create}");
+    let record = follow(&mut editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    settle(&mut editor);
+    finish(editor, bench.catalog.clone());
+}
+
+/// A merge pressed while the preview still reads its frames waits for the preview's revision and
+/// then continues it: one read of the frames, the merge naming the preview.
+#[test]
+fn merge_preview_merge_while_preparing_continues_the_preview() {
+    let bench = Bench::new("preparing");
+    let mut editor = bench.open();
+    let (number, _) = bracket_header(&editor).unwrap();
+    merge(
+        &mut editor,
+        MergeMessage::Header {
+            moment: number,
+            action: 1,
+        },
+    );
+    open_preview(&mut editor);
+    assert!(sheet(&editor).job.is_some() && sheet(&editor).preview_id.is_none());
+    act(&mut editor, MergeAction::SheetMerge);
+    assert!(editor.select.state.merge.starting.is_none(), "it waits");
+    let model = editor.workspace.select.merge.sheet.clone().unwrap();
+    assert!(!model.enabled);
+    assert_eq!(model.reason.as_deref(), Some("Starting the merge\u{2026}"));
+    let record = follow_preview(&mut editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    let preview_id = record["result"]["preview_id"].clone();
+    assert!(editor.select.state.merge.starting.is_some(), "it started");
+    start(&mut editor);
+    let create = sent_merge(&editor, "merge.create");
+    assert_eq!(create["preview_id"], preview_id);
+    assert!(create.get("plan_id").is_none());
+    assert!(editor.select.state.merge.sheet.is_none());
+    let record = follow(&mut editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    settle(&mut editor);
     finish(editor, bench.catalog.clone());
 }

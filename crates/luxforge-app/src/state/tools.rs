@@ -936,7 +936,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
     // A pick taken on a mask keeps the mask workspace: the target stays bound to that mask.
     let masking = crate::state::canvas::mask_workspace(&inputs.session.workspace.mode)
         || inputs.target.is_some();
-    for module in inputs.modules {
+    // The Corrections mode is a tab of its own as Mask mode is: its band replaces the module list,
+    // and no adjustment applies through a correction, so no section follows it.
+    let correcting = inputs.document.state.is_some()
+        && crate::state::corrections::is_brush_mode(inputs.modules, &inputs.session.workspace.mode);
+    let listed: &[ModuleDescriptor] = if correcting { &[] } else { inputs.modules };
+    for module in listed {
         if masking && !module.effects.iter().any(|effect| effect.maskable) {
             continue;
         }
@@ -949,10 +954,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if module.developer && !inputs.developer {
             continue;
         }
-        // The brush workspace's band stands in for its section while its mode is active.
-        if inputs.session.workspace.mode == module.id
-            && crate::state::corrections::is_brush_mode(inputs.modules, &module.id)
-        {
+        // A brush workspace has no section: its band is shown in its mode and nowhere else.
+        if crate::state::corrections::is_brush_mode(inputs.modules, &module.id) {
             continue;
         }
         let target = if module.developer {
@@ -1043,8 +1046,8 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     SectionModel {
         module_id: module.id.clone(),
         title: module.title.clone(),
-        hint: brush_hint(module, inputs).or_else(|| module.hint.clone()),
-        expanded: expanded && !crate::state::corrections::is_brush_mode(inputs.modules, &module.id),
+        hint: module.hint.clone(),
+        expanded,
         active,
         unavailable,
         // The reset is declared, so it is always drawn: a section that cannot edit (a historical
@@ -1071,22 +1074,6 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
                 None => SectionMark::Section,
             }),
     }
-}
-
-/// A brush workspace's collapsed hint: what its layer's provider says of the displayed entry
-/// (`5 corrections`), while the layer holds anything.
-fn brush_hint(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<String> {
-    if !matches!(module.canvas, Some(CanvasInteraction::BrushMask { .. })) {
-        return None;
-    }
-    inputs
-        .document
-        .recipe
-        .as_ref()?
-        .layers
-        .iter()
-        .find(|row| !row.neutral && module.effects.iter().any(|effect| effect.id == row.effect))
-        .map(|row| row.summary.clone())
 }
 
 /// The control models of one module's section: its declared controls, then the host's crop-frame
@@ -1167,14 +1154,11 @@ pub(crate) fn controls_of<'a>(
 
 /// Whether a module has anything of its own to draw: controls, a capability block, or the host's
 /// crop-frame editor its canvas declares. A module with none — the RAW development, whose controls
-/// are Basic's variants — has no section.
+/// are Basic's variants, or Corrections, whose band is its own mode's — has no section.
 pub(crate) fn draws_section(module: &ModuleDescriptor) -> bool {
     !module.controls.is_empty()
         || capabilities::declares(module)
-        || matches!(
-            module.canvas,
-            Some(CanvasInteraction::CropFrame { .. } | CanvasInteraction::BrushMask { .. })
-        )
+        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
 }
 
 /// The controls of the one group a stacked module's controls consist of, when that is their whole

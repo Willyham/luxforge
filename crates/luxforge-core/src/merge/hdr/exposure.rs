@@ -4,11 +4,14 @@
 //! An offset `o` is in stops of exposure: `+1` recorded twice the light of the reference, and
 //! its samples are multiplied by `scale = 2^−o` to reach the reference's brightness.
 //!
-//! - **Metadata.** The settings exposure is `log2(t)` (shutter time; aperture and ISO are equal
-//!   across a valid bracket, so their terms cancel), used when every input records a time. Else
-//!   the recorded bias, when every input records one. Never the sum of the two. Settings and bias
-//!   are contradictory when both are complete and the bias varies but differs from the settings
-//!   by more than [`CONTRADICTION_EV`] for some input (or the settings do not vary at all).
+//! - **Metadata.** The settings exposure is `log2(t · ISO)` (shutter time and ISO, which is gain
+//!   on a RAW sensor signal; the aperture is equal across a valid bracket, so its term cancels),
+//!   used when every input records a time and an ISO, or `log2(t)` when every input records a
+//!   time and none an ISO. Else (some times missing, or an ISO recorded on some inputs and not
+//!   others) the recorded bias, when every input records one; else a measured fit. Never the sum
+//!   of settings and bias. They are contradictory when both are complete and the bias varies but
+//!   differs from the settings by more than [`CONTRADICTION_EV`] for some input (or the settings,
+//!   time and ISO together, do not vary at all).
 //! - **Reference.** The requested input; else the unique input with a zero recorded bias; else
 //!   the median metadata exposure (the lower middle for an even count), capture order breaking
 //!   ties; else, when every input has an override, the one input overridden to 0 EV; else a
@@ -69,7 +72,7 @@ pub struct ExposureOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MetadataSource {
-    /// Shutter time, with equal aperture and ISO.
+    /// Shutter time and ISO (when every input records one), with equal aperture.
     Settings,
     /// The recorded exposure bias.
     Bias,
@@ -194,10 +197,31 @@ pub enum MetadataExposure {
 impl MetadataExposure {
     /// Classify the metadata of a validated bracket.
     pub fn of(frames: &[FrameMetadata]) -> Self {
-        let settings: Option<Vec<f64>> = frames
+        // ISO is gain on the sensor signal: `log2(ISO)` adds to the time's stops when every input
+        // records it, nothing when none does, and a mixture leaves the settings unusable.
+        let isos: Vec<Option<u32>> = frames
             .iter()
-            .map(|frame| frame.exposure.usable_shutter().map(f64::log2))
+            .map(|frame| frame.exposure.usable_iso())
             .collect();
+        let gains: Option<Vec<f64>> = if isos.iter().all(Option::is_none) {
+            Some(vec![0.0; frames.len()])
+        } else {
+            isos.iter()
+                .map(|iso| iso.map(|iso| f64::from(iso).log2()))
+                .collect()
+        };
+        let settings: Option<Vec<f64>> = gains.and_then(|gains| {
+            frames
+                .iter()
+                .zip(gains)
+                .map(|(frame, gain)| {
+                    frame
+                        .exposure
+                        .usable_shutter()
+                        .map(|time| time.log2() + gain)
+                })
+                .collect()
+        });
         let bias: Option<Vec<f64>> = frames
             .iter()
             .map(|frame| frame.exposure.usable_bias())

@@ -1,11 +1,18 @@
 //! The merge lane and `merge.plan`, `merge.create`, `merge.inspect`, `merge.remove`,
 //! `merge.restore` and `merge.rerun` on the owner (`docs/design/hdr-merge.md`, "Jobs, commands and
-//! client state"). The worker's job is `crate::merge::job`; the catalog side, publication and the
-//! stack's lifecycle, is `crate::library::merge`.
+//! client state"; `docs/design/panorama-merge.md`, "Generalizing the merge boundary"). The
+//! worker's job is `crate::merge::job`; the catalog side, publication and the stack's lifecycle,
+//! is `crate::library::merge`.
 //!
-//! - **The lane** is a library lane of its own ([`LaneKind::Merge`]): one worker thread, started
-//!   on the first merge, running one merge while at most [`MERGE_QUEUE`] waits; a further request
-//!   is `resource-limit`, never dropped. A merge job belongs to no client: no selection, view or
+//! - **Kinds.** `merge.plan` and `merge.create` name the [`MergeKind`] they merge, and
+//!   `merge.rerun` may; each kind's options travel under its own name (`hdr`). A kind this build
+//!   registers no provider for (`crate::merge::providers`) is `not-ready` naming that provider,
+//!   answered before the request is parsed ([`kinded`]) so a schema that enumerates only the
+//!   registered kinds does not answer it as `validation`; another kind's options are `validation`.
+//! - **The lane** is a library lane of its own ([`LaneKind::Merge`]) that every kind shares: one
+//!   worker thread, started on the first merge, running one merge while at most [`MERGE_QUEUE`]
+//!   waits; a further request is `resource-limit`, never dropped. Each kind holds its merges to its
+//!   own limits ([`Limits::of`]). A merge job belongs to no client: no selection, view or
 //!   workspace change and no disconnect cancels it, only `job.cancel`.
 //! - **Planning and admission** read only the catalog, the index and one stat an input: the inputs
 //!   in the stack's order (capture order, the request's breaking ties), their header-level
@@ -18,6 +25,10 @@
 //!   collection. A cancel after it finds the job `ready`.
 //! - **An exact active match** is reused as it is: `merge.create` answers its result at once,
 //!   `reused`, and records no library change.
+//! - **Previews** (`merge.preview`, `merge.preview-update`, `merge.preview-close`, and
+//!   `merge.create`'s `preview_id`) are each client's open session beside the lane
+//!   ([`preview::Sessions`], `merge_preview.rs`): preparing occupies the lane, a ready preview's
+//!   spool counts against the kind's ceiling, and a merge of it takes its bracket over.
 //! - **Requests across a restart.** Each admitted request keeps a small marker in its own folder
 //!   under the artifact root (`merges/<key>/request.json`, `key` the SHA-256 of its method, actor
 //!   and request identity), beside the job's spool files. A retry while its job is queued or
@@ -40,13 +51,13 @@ use crate::{
     api::{Origin, announce_once, methods::value},
     artifacts::{RootState, derived_source::PublishedSource, root_state},
     catalog_types::{
-        AssetRowId, CaptureTime, CatalogFolderId, EventSpan, ExposureOverride, FileId,
-        FileSignature, FolderChoice, FolderProposal, HdrParameters, HeaderMetadata, InspectedInput,
-        LocalDay, MergeAnswer, MergeEstimates, MergeId, MergeInspection, MergeKind, MergePlan,
-        MergeProvenance, MergeProvider, MergeRecord, MergeState, PlannedInput, ProviderState,
-        SourceAvailability, Targets, ViewItem, VolumeId,
+        AssetRowId, CaptureTime, CatalogFolderId, EventSpan, FileId, FileSignature, FolderChoice,
+        FolderProposal, HdrOptions, HdrParameters, HeaderMetadata, InspectedInput, LocalDay,
+        MergeAnswer, MergeEstimates, MergeId, MergeInspection, MergeKind, MergeParameters,
+        MergePlan, MergeProvenance, MergeProvider, MergeRecord, MergeState, PlannedInput,
+        ProviderState, SourceAvailability, Targets, ViewItem, VolumeId,
         api::{MergeCreate, MergeInspect, MergePlanParams, MergeRerun, MergeTargets},
-        jobs::HDR_MERGE,
+        jobs::CatalogJob,
         match_key,
     },
     editor::now_ms,
@@ -62,11 +73,11 @@ use crate::{
     },
     merge::{
         hdr::{
-            AlignmentMode, AlignmentOptions, DeghostMode, ExposureOptions, ExposureResolution,
-            FrameMetadata, MAX_INPUTS, MIN_INPUTS, Recording, Refusal, SensorLayout,
-            frame::capture_order, resolve_exposures,
+            AlignmentOptions, ExposureOptions, ExposureResolution, FrameMetadata, Recording,
+            Refusal, SensorLayout, frame::capture_order, resolve_exposures,
         },
         job::{self, Developer, Hooks, JobInput, JobSpec, Limits, Merged, SharedDevelopment},
+        providers,
     },
 };
 use rusqlite::{Connection, OptionalExtension};
@@ -74,7 +85,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -91,27 +102,39 @@ mod hdr_merge_end_to_end;
 mod hdr_merge_job;
 #[cfg(any(test, feature = "test-holds"))]
 pub use frames::SyntheticFrame;
+#[path = "merge_preview.rs"]
+mod preview;
+pub(super) use preview::{
+    PREVIEW_QUEUE, disconnect as disconnect_previews, expire as expire_previews,
+};
+pub(in crate::api) use preview::{merge_preview, merge_preview_close, merge_preview_update};
 
 /// Merges that may wait behind the running one.
 pub(super) const MERGE_QUEUE: usize = 1;
 /// The folder under the artifact root that holds each request's marker and its job's spool.
 const MERGES: &str = "merges";
 const MARKER: &str = "request.json";
-const MARKER_FORMAT: u32 = 1;
+const MARKER_FORMAT: u32 = 2;
 /// The request markers kept: the newest, by when each was made.
 const MAX_MARKERS: usize = 64;
 
-/// The merge lane's state on the owner: its worker lane, the requests its jobs run for, the
-/// provider and development it merges with and the limits it holds them to. Tests replace the
-/// development (no decodable RAW bracket is committed), lower the limits and arrange failures.
+/// The merge lane's state on the owner, shared by every kind: its worker lane, the requests its
+/// jobs run for, each kind's provider and limits, and the development it merges with. Tests
+/// replace a provider and the development (no decodable RAW bracket is committed), lower the
+/// limits and arrange failures.
 pub(super) struct MergeLane {
     pub(super) lane: LibraryLane,
+    /// The merge preview lane, which draws open previews again ([`preview`]).
+    pub(super) updates: LibraryLane,
+    /// Each client's open merge preview.
+    pub(super) previews: preview::Sessions,
     /// Each queued or running job's request.
     live: HashMap<JobId, Live>,
-    /// The HDR provider this build carries, or why there is none.
-    provider: Result<MergeProvider, String>,
+    /// Each kind's provider in this build ([`providers::provider`]), or why there is none.
+    providers: BTreeMap<MergeKind, Result<MergeProvider, String>>,
     developer: Arc<dyn Developer>,
-    limits: Limits,
+    /// Each kind's limits ([`Limits::of`]).
+    limits: BTreeMap<MergeKind, Limits>,
     hooks: Hooks,
     /// Make the next publication's transaction fail with this, after the merge and its result are
     /// written, as a commit refused at its last step would.
@@ -122,41 +145,142 @@ pub(super) struct MergeLane {
 impl MergeLane {
     pub(super) fn new(poster: Poster, board: Arc<ActivityBoard>) -> Self {
         Self {
-            lane: LibraryLane::of_kind(LaneKind::Merge, poster, board),
+            lane: LibraryLane::of_kind(LaneKind::Merge, poster.clone(), board.clone()),
+            updates: LibraryLane::of_kind(LaneKind::Preview, poster, board),
+            previews: preview::Sessions::default(),
             live: HashMap::new(),
-            provider: Ok(job::provider()),
+            providers: MergeKind::ALL
+                .into_iter()
+                .map(|kind| {
+                    let provider =
+                        providers::provider(kind).ok_or_else(|| providers::missing(kind));
+                    (kind, provider)
+                })
+                .collect(),
             developer: Arc::new(SharedDevelopment),
-            limits: Limits::default(),
+            limits: MergeKind::ALL
+                .into_iter()
+                .map(|kind| (kind, Limits::of(kind)))
+                .collect(),
             hooks: Hooks::default(),
             #[cfg(test)]
             publish_fails: None,
         }
     }
 
-    fn provider_state(&self) -> ProviderState {
-        let built = job::provider();
-        match &self.provider {
+    fn provider(&self, kind: MergeKind) -> Result<MergeProvider, String> {
+        self.providers
+            .get(&kind)
+            .cloned()
+            .unwrap_or_else(|| Err(providers::missing(kind)))
+    }
+
+    /// The limits a merge of `kind` is held to.
+    fn limits(&self, kind: MergeKind) -> Limits {
+        self.limits.get(&kind).copied().unwrap_or(Limits::of(kind))
+    }
+
+    /// Replace `kind`'s provider, as a build without it or with another version would carry.
+    #[cfg(test)]
+    pub(super) fn set_provider(
+        &mut self,
+        kind: MergeKind,
+        provider: Result<MergeProvider, String>,
+    ) {
+        self.providers.insert(kind, provider);
+    }
+
+    #[cfg(test)]
+    pub(super) fn limits_mut(&mut self, kind: MergeKind) -> &mut Limits {
+        self.limits.entry(kind).or_insert(Limits::of(kind))
+    }
+
+    fn provider_state(&self, kind: MergeKind) -> ProviderState {
+        match self.provider(kind) {
             Ok(provider) => ProviderState {
-                module: provider.module.clone(),
+                module: provider.module,
                 version: provider.version,
                 available: true,
                 reason: None,
             },
             Err(reason) => ProviderState {
-                module: built.module,
-                version: built.version,
+                module: kind.module().to_owned(),
+                version: providers::provider(kind).map_or(0, |built| built.version),
                 available: false,
-                reason: Some(reason.clone()),
+                reason: Some(reason),
             },
         }
     }
 
-    /// The provider a new merge uses, or `not-ready` naming why there is none.
-    fn available_provider(&self) -> Result<MergeProvider, Error> {
-        self.provider.clone().map_err(|reason| {
-            Error::not_ready(format!("HDR merging is not available: {reason}"))
-                .with_data(json!({"provider": job::PROVIDER_MODULE, "reason": reason}))
-        })
+    /// The provider a new merge of `kind` uses, or `not-ready` naming why there is none.
+    fn available_provider(&self, kind: MergeKind) -> Result<MergeProvider, Error> {
+        self.provider(kind)
+            .map_err(|reason| providers::not_ready(kind, &reason))
+    }
+}
+
+/// Refuse a merge request of a kind this build registers no provider for (`not-ready`, naming it),
+/// or that carries another kind's options (`validation`, naming the field and the kind), before
+/// its parameters are parsed: the schema enumerates only the registered kinds, so the parse would
+/// answer an unregistered one as `validation`. A `kind` that is no kind at all, or none, is left to
+/// the parse. HDR's options that do not parse are refused naming `hdr`.
+pub(in crate::api) fn kinded(params: &Value) -> Result<(), Error> {
+    let Some(kind) = params
+        .get("kind")
+        .and_then(Value::as_str)
+        .and_then(MergeKind::parse)
+    else {
+        return Ok(());
+    };
+    for other in MergeKind::ALL.into_iter().filter(|other| *other != kind) {
+        let field = other.as_str();
+        if params.get(field).is_some_and(|value| !value.is_null()) {
+            return Err(Error::validation(format!(
+                "{field} holds {} options, and this is {} merge",
+                other.noun(),
+                article(kind)
+            ))
+            .with_data(json!({"kind": kind, "field": field})));
+        }
+    }
+    if providers::provider(kind).is_none() {
+        return Err(unregistered(kind));
+    }
+    if let MergeKind::Hdr = kind
+        && let Some(options) = params.get("hdr").filter(|options| !options.is_null())
+    {
+        HdrOptions::deserialize(options).map_err(|error| {
+            Error::validation(format!("hdr: {error}"))
+                .with_data(json!({"kind": kind, "field": "hdr"}))
+        })?;
+    }
+    Ok(())
+}
+
+/// "an HDR", "a panorama".
+fn article(kind: MergeKind) -> String {
+    match kind {
+        MergeKind::Hdr => "an HDR".to_owned(),
+        MergeKind::Panorama => "a panorama".to_owned(),
+    }
+}
+
+/// The refusal of a merge of `kind`, which this build registers no provider for.
+fn unregistered(kind: MergeKind) -> Error {
+    providers::not_ready(kind, &providers::missing(kind))
+}
+
+/// The job a merge of `kind` runs as, or `not-ready` while it has no provider.
+fn job_of(kind: MergeKind) -> Result<&'static CatalogJob, Error> {
+    kind.job().ok_or_else(|| unregistered(kind))
+}
+
+/// The options a request of `kind` names: its `hdr` options for an HDR merge. A kind with no
+/// provider is `not-ready`.
+fn hdr_options(kind: MergeKind, options: Option<HdrOptions>) -> Result<HdrOptions, Error> {
+    match kind {
+        MergeKind::Hdr => Ok(options.unwrap_or_default()),
+        MergeKind::Panorama => Err(unregistered(kind)),
     }
 }
 
@@ -202,15 +326,37 @@ enum Item {
     Row(AssetRowId),
 }
 
-/// The inputs `targets` names, in the stack's order: files by path, index row or selection, and
-/// photographs by identity or selection, each resolved to its original's path. Refused with
-/// `validation` for an unknown item or a merged photograph and with a typed refusal for a count
-/// outside 2–9.
-fn inputs(owner: &Owner, client: ClientId, targets: &Targets) -> Result<Vec<Named>, Error> {
+/// The refusal of `count` inputs for a merge of `kind`, outside its bounds: HDR's typed refusal,
+/// or a validation naming the kind; either names the kind in its data.
+fn input_count(kind: MergeKind, count: usize) -> Error {
+    match kind {
+        MergeKind::Hdr => Refusal::InputCount { count }.into(),
+        MergeKind::Panorama => {
+            let bounds = kind.inputs();
+            Error::validation(format!(
+                "a panorama merge takes {} to {} photos, not {count}",
+                bounds.start(),
+                bounds.end()
+            ))
+            .with_data(json!({"reason": "input-count", "kind": kind, "count": count}))
+        }
+    }
+}
+
+/// The inputs `targets` names for a merge of `kind`, in the stack's order: files by path, index
+/// row or selection, and photographs by identity or selection, each resolved to its original's
+/// path. Refused with `validation` for an unknown item or a merged photograph and with a typed
+/// refusal for a count outside the kind's bounds.
+fn inputs(
+    owner: &Owner,
+    client: ClientId,
+    kind: MergeKind,
+    targets: &Targets,
+) -> Result<Vec<Named>, Error> {
     if let Some(count) = targets.len()
-        && !(MIN_INPUTS..=MAX_INPUTS).contains(&count)
+        && !kind.inputs().contains(&count)
     {
-        return Err(Refusal::InputCount { count }.into());
+        return Err(input_count(kind, count));
     }
     let items: Vec<Item> = match targets {
         Targets::Paths { paths } => paths.iter().cloned().map(Item::Path).collect(),
@@ -231,8 +377,8 @@ fn inputs(owner: &Owner, client: ClientId, targets: &Targets) -> Result<Vec<Name
             })
             .collect::<Result<_, _>>()?,
     };
-    if !(MIN_INPUTS..=MAX_INPUTS).contains(&items.len()) {
-        return Err(Refusal::InputCount { count: items.len() }.into());
+    if !kind.inputs().contains(&items.len()) {
+        return Err(input_count(kind, items.len()));
     }
     let catalog = &owner.service.connection;
     let index = owner.service.index()?;
@@ -431,14 +577,15 @@ fn planned_frames(inputs: &[Named]) -> Vec<FrameMetadata> {
     frames
 }
 
-/// The options a request names, in the stack's positions: the reference and the overrides by
+/// The HDR options a request names, in the stack's positions: the reference and the overrides by
 /// path, each refused with `validation` when it names no input.
 fn parameters(
     inputs: &[Named],
-    reference: Option<&Path>,
-    overrides: Option<&[ExposureOverride]>,
+    options: &HdrOptions,
     alignment: AlignmentOptions,
 ) -> Result<HdrParameters, Error> {
+    let reference = options.reference.as_deref();
+    let overrides = options.exposure_overrides.as_deref();
     let position = |path: &Path| {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         inputs
@@ -479,8 +626,8 @@ fn parameters(
 }
 
 /// A plan's identity: the SHA-256 of its inputs in the stack's order (path, signature and
-/// photograph) and its options.
-fn plan_identity(inputs: &[Named], parameters: &HdrParameters) -> Result<String, Error> {
+/// photograph) and its kind-tagged options.
+fn plan_identity(inputs: &[Named], parameters: &MergeParameters) -> Result<String, Error> {
     let named: Vec<_> = inputs
         .iter()
         .map(|input| (&input.path, &input.signature, &input.asset_id))
@@ -494,7 +641,7 @@ fn plan_identity(inputs: &[Named], parameters: &HdrParameters) -> Result<String,
 fn request_key(
     inputs: &[Named],
     provider: &MergeProvider,
-    parameters: &HdrParameters,
+    parameters: &MergeParameters,
 ) -> Result<Option<String>, Error> {
     let mut signed = Vec::with_capacity(inputs.len());
     for input in inputs {
@@ -503,7 +650,7 @@ fn request_key(
         };
         signed.push((&input.path, signature));
     }
-    match_key(MergeKind::Hdr, provider, signed, parameters).map(Some)
+    match_key(parameters.kind(), provider, signed, parameters).map(Some)
 }
 
 /// The folder a merge proposes: the folder choice a Develop would file its reference frame by.
@@ -602,15 +749,16 @@ fn merges_root(service: &EditorService) -> Result<PathBuf, Error> {
     Ok(root.join(MERGES))
 }
 
-/// What a merge would take, from the headers' size.
+/// What an HDR merge would take, from the headers' size.
 fn estimates(
     lane: &MergeLane,
     inputs: &[Named],
     frames: &[FrameMetadata],
     root: &Path,
 ) -> MergeEstimates {
+    let limits = lane.limits(MergeKind::Hdr);
     let known = frames.first().filter(|frame| frame.width > 0);
-    let available = lane.limits.available.or_else(|| {
+    let available = limits.available.or_else(|| {
         root.ancestors()
             .find(|path| path.exists())
             .and_then(|path| luxforge_process::disk::available_bytes(path).ok())
@@ -621,42 +769,40 @@ fn estimates(
         temp_bytes: known.map(|frame| job::temp_bytes(inputs.len(), frame.width, frame.height)),
         source_bytes: known.map(|frame| u64::from(frame.width) * u64::from(frame.height) * 12),
         available_bytes: available,
-        temp_ceiling_bytes: lane.limits.temp_ceiling,
-        scratch_limit_bytes: lane.limits.scratch,
+        temp_ceiling_bytes: limits.temp_ceiling,
+        scratch_limit_bytes: limits.scratch,
     }
 }
 
-fn alignment(alignment: Option<AlignmentMode>, deghost: Option<DeghostMode>) -> AlignmentOptions {
+fn alignment(options: &HdrOptions) -> AlignmentOptions {
     AlignmentOptions {
-        alignment: alignment.unwrap_or_default(),
-        deghost: deghost.unwrap_or_default(),
+        alignment: options.alignment.unwrap_or_default(),
+        deghost: options.deghost.unwrap_or_default(),
     }
 }
 
 // The methods.
 
 /// `merge.plan`: see [`MergePlan`]. Reads the catalog, the index and one stat an input; refused
-/// only for targets that name no bracket of 2–9 known items.
+/// only for a kind with no provider and targets that name no set of known items the kind takes
+/// (HDR: a bracket of 2–9).
 pub(in crate::api) fn merge_plan(
     owner: &mut Owner,
     call: &Call<'_>,
     params: MergePlanParams,
 ) -> Result<Value, Error> {
-    let inputs = inputs(owner, call.client, &params.targets)?;
-    let parameters = parameters(
-        &inputs,
-        params.reference.as_deref(),
-        params.exposure_overrides.as_deref(),
-        alignment(params.alignment, params.deghost),
-    )?;
+    let kind = params.kind;
+    let options = hdr_options(kind, params.hdr)?;
+    let inputs = inputs(owner, call.client, kind, &params.targets)?;
+    let parameters = parameters(&inputs, &options, alignment(&options))?;
     let frames = planned_frames(&inputs);
     let (suitable, refusal, exposures, needs_fit) =
         match resolve_exposures(&frames, &parameters.exposure) {
             Ok(ExposureResolution::Resolved(exposures)) => (true, None, Some(exposures), false),
             Ok(ExposureResolution::NeedsFit(_)) => (true, None, None, true),
             Err(refusal) => {
-                let message = Error::from(refusal.clone()).detail;
-                let mut refusal = serde_json::to_value(&refusal).unwrap_or(Value::Null);
+                let message = refusal.to_string();
+                let mut refusal = refusal.data();
                 if let Some(object) = refusal.as_object_mut() {
                     object.insert("message".into(), Value::String(message));
                 }
@@ -669,9 +815,10 @@ pub(in crate::api) fn merge_plan(
         proposal(owner, &inputs, reference)?,
     )?;
     let lane = &owner.catalog.merge;
-    let provider = lane.provider_state();
-    let existing = match &lane.provider {
-        Ok(provider) => match request_key(&inputs, provider, &parameters)? {
+    let provider = lane.provider_state(kind);
+    let tagged = MergeParameters::Hdr(parameters);
+    let existing = match lane.provider(kind) {
+        Ok(provider) => match request_key(&inputs, &provider, &tagged)? {
             Some(key) => matching(&owner.service.connection, &key)?,
             None => None,
         },
@@ -683,8 +830,8 @@ pub(in crate::api) fn merge_plan(
     )?;
     let root = merges_root(&owner.service)?;
     let answer = MergePlan {
-        kind: MergeKind::Hdr,
-        plan_id: plan_identity(&inputs, &parameters)?,
+        kind,
+        plan_id: plan_identity(&inputs, &tagged)?,
         inputs: inputs
             .iter()
             .zip(&frames)
@@ -710,33 +857,32 @@ pub(in crate::api) fn merge_plan(
         provider,
         existing,
         claimed,
-        parameters,
+        parameters: tagged,
     };
     value(answer)
 }
 
-/// `merge.create`: admit the request on the owner (see the module documentation) and start an
-/// `hdr-merge` job, answering `{job_id, status, deduplicated}`; its result is a [`MergeAnswer`].
+/// `merge.create`: admit the request on the owner (see the module documentation) and start the
+/// kind's job (`hdr-merge`), answering `{job_id, status, deduplicated}`; its result is a
+/// [`MergeAnswer`].
 pub(in crate::api) fn merge_create(
     owner: &mut Owner,
     call: &Call<'_>,
     params: MergeCreate,
 ) -> Result<Value, Error> {
-    let MergeKind::Hdr = params.kind;
+    let kind = params.kind;
+    let options = hdr_options(kind, params.hdr.clone())?;
+    let job = job_of(kind)?;
     let request = Request::new(&call.request.method, &params.mutation);
     if let Some(answered) = retried(owner, call, request)? {
         return value(answered);
     }
-    let provider = owner.catalog.merge.available_provider()?;
-    let inputs = inputs(owner, call.client, &params.targets)?;
-    let parameters = parameters(
-        &inputs,
-        params.reference.as_deref(),
-        params.exposure_overrides.as_deref(),
-        alignment(params.alignment, params.deghost),
-    )?;
+    let provider = owner.catalog.merge.available_provider(kind)?;
+    let inputs = inputs(owner, call.client, kind, &params.targets)?;
+    let parameters = parameters(&inputs, &options, alignment(&options))?;
+    let tagged = MergeParameters::Hdr(parameters.clone());
     if let Some(plan_id) = &params.plan_id
-        && *plan_id != plan_identity(&inputs, &parameters)?
+        && *plan_id != plan_identity(&inputs, &tagged)?
     {
         return Err(Error::conflict(
             "the inputs or options are no longer what merge.plan planned; plan them again",
@@ -746,7 +892,7 @@ pub(in crate::api) fn merge_create(
     let frames = planned_frames(&inputs);
     resolve_exposures(&frames, &parameters.exposure)?;
     let signed = signed(&inputs)?;
-    let key = request_key(&inputs, &provider, &parameters)?
+    let key = request_key(&inputs, &provider, &tagged)?
         .ok_or_else(|| Error::internal("a signed request has no key"))?;
     if let Some((job_id, _)) = owner
         .catalog
@@ -762,7 +908,7 @@ pub(in crate::api) fn merge_create(
             let answer = recorded_answer(&owner.service.connection, &existing.merge_id, true)?;
             return value(LibraryLane::answered(
                 &mut owner.jobs,
-                &HDR_MERGE,
+                job,
                 None,
                 call.origin.clone(),
                 encode(&answer)?,
@@ -795,7 +941,19 @@ pub(in crate::api) fn merge_create(
     let proposed = proposal(owner, &inputs, reference)?;
     let choice = params.folder.unwrap_or(proposed.choice);
     let folder = Destination::chosen(&owner.service.connection, &choice, proposed.span, now_ms())?;
-    let job_inputs = inputs
+    // A merge of a preview takes its bracket over: the preview's inputs, as it read them.
+    let continuation = match &params.preview_id {
+        Some(preview_id) => Some(preview::continuation(
+            owner,
+            call.client,
+            preview_id,
+            kind,
+            &inputs,
+            &parameters,
+        )?),
+        None => None,
+    };
+    let mut job_inputs: Vec<JobInput> = inputs
         .iter()
         .zip(signed)
         .zip(frames)
@@ -807,11 +965,20 @@ pub(in crate::api) fn merge_create(
             planned,
         })
         .collect();
+    if let Some(continuation) = &continuation
+        && let Some(previewed) = preview::preview_inputs(owner, &continuation.preview_id)
+    {
+        for (input, previewed) in job_inputs.iter_mut().zip(previewed) {
+            input.signature = previewed.signature;
+            input.planned = previewed.planned;
+        }
+    }
     start(
         owner,
         call,
         request,
         Started {
+            kind,
             inputs: job_inputs,
             parameters,
             provider,
@@ -820,22 +987,39 @@ pub(in crate::api) fn merge_create(
             reuse: None,
             key: Some(key),
             mutation: params.mutation.clone(),
+            preview: continuation,
         },
     )
 }
 
 /// `merge.rerun`: merge a recorded merge's exact inputs again, with its recorded options save
 /// those named, into a new result; see the module documentation for what it refuses and reuses.
+/// A `kind` it names must be the merge's.
 pub(in crate::api) fn merge_rerun(
     owner: &mut Owner,
     call: &Call<'_>,
     params: MergeRerun,
 ) -> Result<Value, Error> {
+    if let Some(kind) = params.kind {
+        hdr_options(kind, None)?;
+    }
     let request = Request::new(&call.request.method, &params.mutation);
     if let Some(answered) = retried(owner, call, request)? {
         return value(answered);
     }
     let recorded = record(&owner.service.connection, &params.merge_id)?;
+    if let Some(kind) = params.kind
+        && kind != recorded.kind
+    {
+        return Err(Error::validation(format!(
+            "merge {} is {} merge, not {} one",
+            recorded.merge_id,
+            article(recorded.kind),
+            article(kind)
+        ))
+        .with_data(json!({"kind": recorded.kind, "requested": kind})));
+    }
+    let options = hdr_options(recorded.kind, params.hdr)?;
     let provider = rerun_provider(&owner.catalog.merge, &recorded.provenance)?;
     let provenance = &recorded.provenance;
     for input in &provenance.inputs {
@@ -854,20 +1038,19 @@ pub(in crate::api) fn merge_rerun(
             kind: Some(SourceTag::Raw),
         })
         .collect();
-    let old = &provenance.parameters;
+    let MergeParameters::Hdr(old) = &provenance.parameters;
     let mut parameters = parameters(
         &named,
-        params.reference.as_deref(),
-        params.exposure_overrides.as_deref(),
+        &options,
         AlignmentOptions {
-            alignment: params.alignment.unwrap_or(old.alignment.alignment),
-            deghost: params.deghost.unwrap_or(old.alignment.deghost),
+            alignment: options.alignment.unwrap_or(old.alignment.alignment),
+            deghost: options.deghost.unwrap_or(old.alignment.deghost),
         },
     )?;
-    if params.reference.is_none() {
+    if options.reference.is_none() {
         parameters.exposure.reference = old.exposure.reference;
     }
-    if params.exposure_overrides.is_none() {
+    if options.exposure_overrides.is_none() {
         parameters.exposure.overrides = old.exposure.overrides.clone();
     }
     parameters.fusion = old.fusion;
@@ -904,7 +1087,8 @@ pub(in crate::api) fn merge_rerun(
     };
     // An exact match whose saved source is whole is given to the new result as it is; anything
     // else is merged again.
-    let exact = request_key(&named, &provider, &parameters)?.as_deref()
+    let exact = request_key(&named, &provider, &MergeParameters::Hdr(parameters.clone()))?
+        .as_deref()
         == Some(provenance.match_key()?.as_str());
     let reuse = if exact
         && owner
@@ -936,6 +1120,7 @@ pub(in crate::api) fn merge_rerun(
         call,
         request,
         Started {
+            kind: recorded.kind,
             inputs,
             parameters,
             provider,
@@ -944,6 +1129,7 @@ pub(in crate::api) fn merge_rerun(
             reuse,
             key: None,
             mutation: params.mutation.clone(),
+            preview: None,
         },
     )
 }
@@ -1010,7 +1196,6 @@ pub(in crate::api) fn merge_inspect(
                 None => Ok(()),
             }
         });
-    let (low, high) = recorded.provenance.resolved.exposures.range_ev();
     value(MergeInspection {
         merge_id,
         kind: recorded.kind,
@@ -1020,9 +1205,9 @@ pub(in crate::api) fn merge_inspect(
         created_ms: recorded.created_ms,
         source,
         merged: true,
-        exposure_range_ev: [low, high],
+        exposure_range_ev: recorded.provenance.resolved.exposure_range_ev(),
         parameters: recorded.provenance.parameters.clone(),
-        provider: owner.catalog.merge.provider_state(),
+        provider: owner.catalog.merge.provider_state(recorded.kind),
         rerunnable: rerun.is_ok(),
         rerun_reason: rerun.err().map(|error| error.detail),
         inputs,
@@ -1081,6 +1266,7 @@ fn lifecycle(
 
 /// A merge admitted on the owner, for [`start`].
 struct Started {
+    kind: MergeKind,
     inputs: Vec<JobInput>,
     parameters: HdrParameters,
     provider: MergeProvider,
@@ -1093,6 +1279,8 @@ struct Started {
     /// it runs. None for a rerun, which always makes a new result.
     key: Option<String>,
     mutation: MutationRequest,
+    /// The preview whose bracket the merge takes over.
+    preview: Option<preview::Continuation>,
 }
 
 /// Every input's signature, refused with `source-unavailable` naming the first that is not there.
@@ -1135,10 +1323,10 @@ fn input_unchanged(path: &Path, signature: &FileSignature) -> Result<(), Error> 
     Ok(())
 }
 
-/// The provider a rerun of `provenance` merges with: this build's, which must be the one and the
-/// version that made it.
+/// The provider a rerun of `provenance` merges with: this build's for its kind, which must be the
+/// one and the version that made it.
 fn rerun_provider(lane: &MergeLane, provenance: &MergeProvenance) -> Result<MergeProvider, Error> {
-    let provider = lane.available_provider()?;
+    let provider = lane.available_provider(provenance.kind)?;
     if provider != provenance.provider {
         return Err(Error::incompatible(format!(
             "this merge was made by {} version {}, and this build merges with {} version {}; \
@@ -1153,21 +1341,35 @@ fn rerun_provider(lane: &MergeLane, provenance: &MergeProvenance) -> Result<Merg
     Ok(provider)
 }
 
-/// Queue the admitted merge: refuse it while the lane is full, preflight what the headers say it
-/// will spool, record the request's marker and start the job.
+/// Queue the admitted merge: refuse it while the lane, which every kind shares, is full, preflight
+/// what the headers say it will spool against its kind's limits, record the request's marker and
+/// start the kind's job.
 fn start(
     owner: &mut Owner,
     call: &Call<'_>,
     request: Request<'_>,
     started: Started,
 ) -> Result<Value, Error> {
+    let kind = started.kind;
+    let job_kind = job_of(kind)?;
     let lane = &owner.catalog.merge;
-    if lane.lane.is_full() {
+    let limits = lane.limits(kind);
+    // A merge continuing a preview still preparing waits behind it, outside the bound: it carries
+    // on the preview's work rather than adding its own.
+    let behind = started
+        .preview
+        .as_ref()
+        .and_then(|continuation| continuation.after.clone());
+    if behind.is_none() && lane.lane.is_full() {
         return Err(Error::resource_limit(format!(
             "a merge is running and {MERGE_QUEUE} waits; wait for one to end"
         )));
     }
     let root = merges_root(&owner.service)?;
+    let previews_root = preview::previews_root(owner)?;
+    let pictures_root = preview::pictures_root(owner);
+    let kept = lane.previews.kept();
+    let held = lane.previews.held.clone();
     let key = request_dir(request);
     let spool = root.join(&key);
     let n = started.inputs.len();
@@ -1179,15 +1381,18 @@ fn start(
         crate::atomic_file::file_error("cannot create the merge's folder", error.kind())
     })?;
     if started.reuse.is_none()
+        && started.preview.is_none()
         && width > 0
-        && let Err(error) = lane
-            .limits
-            .preflight(&spool, job::temp_bytes(n, width, height))
+        && let Err(error) = limits.preflight(
+            &spool,
+            job::temp_bytes(n, width, height),
+            held.load(std::sync::atomic::Ordering::SeqCst),
+        )
     {
         let _ = fs::remove_dir_all(&spool);
         return Err(error);
     }
-    write_marker(&spool, request, None)?;
+    write_marker(&spool, kind, request, None)?;
     prune_markers(&root, &lane.live);
     let job_id = JobId::new();
     let spec = JobSpec {
@@ -1197,8 +1402,9 @@ fn start(
         spool: spool.clone(),
         writer: owner.service.derived_source_writer(),
         developer: lane.developer.clone(),
-        limits: lane.limits,
+        limits,
         hooks: lane.hooks.clone(),
+        held,
     };
     let publish = Publish {
         folder: started.folder,
@@ -1209,6 +1415,10 @@ fn start(
     };
     let reuse = started.reuse;
     let matched = started.key;
+    let continuation = started.preview;
+    let slot = continuation
+        .as_ref()
+        .map(|continuation| continuation.slot.clone());
     let detail = format!(
         "{} \u{b7} {n} exposures",
         job::result_name(
@@ -1217,15 +1427,21 @@ fn start(
     );
     let task = Task {
         job_id: job_id.clone(),
-        job: &HDR_MERGE,
+        job: job_kind,
         asset_id: None,
         detail: Some(detail),
         origin: call.origin.clone(),
         work: Box::new(move |context: &JobContext<'_>| {
             job::sweep_orphans(&root, &spool);
-            let merged = match reuse {
-                Some((provenance, source)) => verified(spec, provenance, source, context.control),
-                None => spec.run(context.control),
+            preview::sweep(&previews_root, &pictures_root, &kept);
+            let merged = match (reuse, slot) {
+                (Some((provenance, source)), _) => {
+                    verified(spec, provenance, source, context.control)
+                }
+                (None, Some(slot)) => preview::take(&slot).and_then(|retained| {
+                    spec.run_prepared(retained.prepared, retained.analysis, context.control)
+                }),
+                (None, None) => spec.run(context.control),
             };
             match merged {
                 Ok(merged) => Box::new(move |owner: &mut Owner| publish.commit(owner, merged)),
@@ -1233,7 +1449,19 @@ fn start(
             }
         }),
     };
-    let started = owner.catalog.merge.lane.queue(&mut owner.jobs, task);
+    // The preview is the merge's from now: its spool no longer counts as a preview's, so the
+    // merge's own preflight counts it once, and an update it had is stale.
+    if let Some(continuation) = &continuation {
+        preview::merging(owner, &continuation.preview_id, &job_id);
+    }
+    let started = match behind {
+        Some(after) => Ok(owner
+            .catalog
+            .merge
+            .lane
+            .queue_after(&mut owner.jobs, task, &after)),
+        None => owner.catalog.merge.lane.queue(&mut owner.jobs, task),
+    };
     match started {
         Ok(started) => {
             owner.catalog.merge.live.insert(
@@ -1284,7 +1512,7 @@ fn verified(
         }
     }
     control.set_phase("saving");
-    let reference = provenance.reference();
+    let reference = provenance.reference_input();
     let header = HeaderMetadata {
         camera: reference
             .frame
@@ -1304,7 +1532,7 @@ fn verified(
         place: None,
         volumes,
         provenance: MergeProvenance {
-            parameters: spec.parameters,
+            parameters: MergeParameters::Hdr(spec.parameters),
             ..provenance
         },
         source,
@@ -1405,23 +1633,24 @@ fn recorded_answer(
     reused: bool,
 ) -> Result<MergeAnswer, Error> {
     let MergeRecord {
+        kind,
         result_asset_id,
         source_id,
         provenance,
         ..
     } = record(connection, merge_id)?;
-    let (low, high) = provenance.resolved.exposures.range_ev();
     let photograph = photograph_by(connection, "id", result_asset_id.as_str())?
         .ok_or_else(|| Error::conflict(format!("merge {merge_id}'s result is gone")))?;
     Ok(MergeAnswer {
         merge_id: merge_id.clone(),
+        kind,
         file_name: file_name_of(connection, &result_asset_id),
         result_asset_id,
         source_id,
         catalog_folder_id: photograph.folder,
         merged: true,
         inputs: provenance.inputs.len() as u32,
-        exposure_range_ev: [low, high],
+        exposure_range_ev: provenance.resolved.exposure_range_ev(),
         reused,
         replaced: None,
         change: None,
@@ -1457,12 +1686,13 @@ fn file_name(path: &Path) -> String {
 
 // Requests across a restart.
 
-/// A request's marker: who asked for what and when, and, once its job ended without a result,
-/// the error it ended with.
+/// A request's marker: who asked for what kind of merge and when, and, once its job ended without
+/// a result, the error it ended with.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Marker {
     format: u32,
+    kind: MergeKind,
     method: String,
     actor: String,
     request_id: String,
@@ -1480,9 +1710,15 @@ fn request_dir(request: Request<'_>) -> String {
 
 /// Write `request`'s marker in `folder`: staged beside it and renamed over it, never synced, since
 /// a marker lost with the machine only makes a retry merge again.
-fn write_marker(folder: &Path, request: Request<'_>, ended: Option<JobError>) -> Result<(), Error> {
+fn write_marker(
+    folder: &Path,
+    kind: MergeKind,
+    request: Request<'_>,
+    ended: Option<JobError>,
+) -> Result<(), Error> {
     let marker = Marker {
         format: MARKER_FORMAT,
+        kind,
         method: request.method.to_owned(),
         actor: request.actor.to_owned(),
         request_id: request.request_id.to_owned(),
@@ -1553,7 +1789,7 @@ fn retried(
         answer.deduplicated = true;
         return Ok(Some(LibraryLane::answered(
             &mut owner.jobs,
-            &HDR_MERGE,
+            job_of(answer.kind)?,
             None,
             call.origin.clone(),
             encode(&answer)?,
@@ -1590,7 +1826,7 @@ fn retried(
     };
     Ok(Some(LibraryLane::ended(
         &mut owner.jobs,
-        &HDR_MERGE,
+        job_of(marker.kind)?,
         call.origin.clone(),
         error,
     )))
@@ -1619,9 +1855,11 @@ fn kind_of(code: &str) -> ErrorKind {
     .unwrap_or(ErrorKind::Internal)
 }
 
-/// A merge job ended, however it ended: a published one's marker goes, since the journal answers
-/// its retries; any other's records the error it ended with.
+/// A merge or merge preview job ended, however it ended: the preview it prepared, updated or was
+/// merged from hears of it (`merge_preview.rs`); a published merge's marker goes, since the journal
+/// answers its retries; any other's records the error it ended with.
 pub(super) fn ended(owner: &mut Owner, job_id: &JobId) {
+    preview::ended(owner, job_id);
     let Some(live) = owner.catalog.merge.live.remove(job_id) else {
         return;
     };
@@ -1644,7 +1882,7 @@ pub(super) fn ended(owner: &mut Owner, job_id: &JobId) {
                     actor: &marker.actor,
                     request_id: &marker.request_id,
                 };
-                let _ = write_marker(&folder, request, Some(error));
+                let _ = write_marker(&folder, marker.kind, request, Some(error));
             }
         }
     }

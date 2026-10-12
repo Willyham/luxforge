@@ -1091,6 +1091,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // (blocking on its completion port); macOS delivers on a dispatch queue instead.
             "crates/luxforge-watch/src/linux.rs",
             "crates/luxforge-watch/src/windows.rs",
+            // A closed merge preview's discard: one short thread a session, removing its spool
+            // and pictures off the owner.
+            "crates/luxforge-core/src/api/owner/merge_preview.rs",
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
@@ -1222,6 +1225,9 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-ui/src/gallery_thumbnails.rs",
             "crates/luxforge-app/src/app/decoded_handles.rs",
+            // The merge preview sheet's picture: each revision's JPEG decoded once, its handle
+            // held while the sheet shows it.
+            "crates/luxforge-app/src/app/select_merge.rs",
         ],
         mode: Match::Whole,
         tests: true,

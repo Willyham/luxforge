@@ -11,14 +11,19 @@
 //! `LUXFORGE_TEST_CAMERAS=1`, without which the editor refuses it.
 //!
 //! The first launch, in [`first_plan`] order: `G`; the still bracket's folder, whose header offers
-//! Pick all and Merge HDR; Merge HDR, captured while its pending row shows the job's progress; the
+//! Pick all and Merge HDR; Merge HDR, which opens the merge preview sheet, captured once it draws
+//! the preview; Deghosting turned Off, captured once the new revision is drawn; Show deghost
+//! overlay on; the sheet's Merge, captured while its pending row shows the job's progress; the
 //! merge's end, one collapsed HDR tile, selected, never shown picked, with Select still shown; `S`
 //! expanding the stack; an original clicked and picked with `P`; All photographs, the result
 //! clicked and double-clicked into Develop, showing it from its saved source with its catalog
 //! folder in the filmstrip; one Exposure edit; `merge.inspect` of the open result; back to Select
 //! and the still bracket's folder, the result clicked and Remove merge (`⌫`); `Cmd+Z`,
-//! `Shift+Cmd+Z` and `Cmd+Z` again; then the handheld bracket's folder and Merge HDR, and its end.
-//! Each Select frame records every HDR merge job on the owner's activity board beside the session.
+//! `Shift+Cmd+Z` and `Cmd+Z` again; then the handheld bracket's folder; its preview opened by
+//! Merge HDR, Deghosting put back to Auto and the overlay turned on, showing the moving ball's
+//! regions, and Cancel; then Merge HDR ⌥-clicked, merging at once with the last settings
+//! (Deghosting Off, remembered from the first merge), and its end. Each Select frame records every
+//! HDR merge job on the owner's activity board beside the session.
 //!
 //! The catalog the first launch left is read (`hdr-merge-after-first.json`); the brackets' folder
 //! is renamed, so no original can be read; and the second launch, in [`second_plan`] order, opens
@@ -32,7 +37,9 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, BASIC_EFFECT, ClientId, EditorService, OwnerHandle};
-use luxforge_evidence::{self as script, CatalogStep, DevelopStep, LibraryKey, SelectStep};
+use luxforge_evidence::{
+    self as script, CatalogStep, DevelopStep, LibraryKey, MergePreviewStep, MergeToggle, SelectStep,
+};
 use luxforge_testkit::hdr_bracket::{BracketSpec, write_bracket};
 use std::collections::BTreeSet;
 
@@ -76,7 +83,16 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
     };
     let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
     let key = |name: &str, key: &str| Step::new(name, script::Step::key(key));
-    let merge = |name: &str| select(name, SelectStep::Merge { position: 0 });
+    let merge = |name: &str, last_settings| {
+        select(
+            name,
+            SelectStep::Merge {
+                position: 0,
+                last_settings,
+            },
+        )
+    };
+    let preview = |name: &str, step| select(name, SelectStep::MergePreview(step));
     let click = |name: &str, position| {
         select(
             name,
@@ -91,7 +107,10 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
         Step::opened("opened"),
         key("select", "g"),
         select("still", SelectStep::Folder(folder(STILL)?)),
-        merge("merging"),
+        merge("previewing", false),
+        preview("deghosted", MergePreviewStep::Deghost(MergeToggle::Off)),
+        preview("overlaid", MergePreviewStep::Overlay(true)),
+        preview("merging", MergePreviewStep::Merge),
         select("merged", SelectStep::Merged),
         key("expanded", "s"),
         click("original", 1),
@@ -114,7 +133,14 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
         select("redone", SelectStep::Library(LibraryKey::Redo)),
         select("undone", SelectStep::Library(LibraryKey::Undo)),
         select("handheld", SelectStep::Folder(folder(HANDHELD)?)),
-        merge("importing"),
+        merge("handheld_preview", false),
+        preview(
+            "handheld_deghost",
+            MergePreviewStep::Deghost(MergeToggle::Auto),
+        ),
+        preview("handheld_overlay", MergePreviewStep::Overlay(true)),
+        preview("handheld_cancelled", MergePreviewStep::Cancel),
+        merge("importing", true),
         select("imported", SelectStep::Merged),
     ]))
 }
@@ -252,7 +278,7 @@ fn make(generated: &Path) -> Result<(Value, Vec<PathBuf>)> {
             owner,
             client,
             "merge.plan",
-            json!({"targets": {"kind": "paths", "paths": still}}),
+            json!({"kind": "hdr", "targets": {"kind": "paths", "paths": still}}),
         )
     })?;
     let folder = |name: &str| brackets.join(name);
@@ -475,7 +501,8 @@ fn collapsed_leader(frame: &Frame, name: &str, result: &Value) -> Result {
     ensure(
         row["item"]["asset_id"] == *result
             && row["role"] == "leader"
-            && row["exposures"] == FRAMES
+            && row["kind"] == "hdr"
+            && row["size"] == FRAMES
             && row["collapsed"] == FRAMES
             && row["badge"] == json!(["HDR \u{b7} 3 exposures", "HDR \u{b7} 3", false])
             && row["picked"] == false,
@@ -513,7 +540,67 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("still: the header offers {actions}"),
     )?;
 
-    // Merge HDR: one pending row with the job's progress, nothing hidden yet.
+    // Merge HDR opens the preview sheet: the plan, then the preview, its picture decoded and its
+    // status line the preview's own.
+    let previewing = first.at("previewing")?;
+    let sheet = &select(previewing)["merge"]["sheet"];
+    let methods = |sheet: &Value| -> Vec<String> {
+        sheet["sent"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|sent| sent["method"].as_str().map(str::to_owned))
+            .collect()
+    };
+    ensure(
+        sheet["title"] == "Merge HDR \u{b7} 3 exposures"
+            && sheet["kind"] == "hdr"
+            && sheet["preview_id"].is_string()
+            && sheet["picture"].is_string()
+            && sheet["picture_shown"] == sheet["picture"]
+            && sheet["current"] == true
+            && sheet["refusal"].is_null()
+            && sheet["enabled"] == true
+            && sheet["status"]
+                .as_str()
+                .is_some_and(|status| status.starts_with("Preview from "))
+            && methods(sheet) == ["merge.plan", "merge.preview"]
+            && select(previewing)["merge"]["pending"].is_null(),
+        format!("previewing: the sheet is {sheet}"),
+    )?;
+    let preview_id = sheet["preview_id"].clone();
+    // Deghosting Off: the whole options sent to the same preview, drawn as a newer revision.
+    let deghosted = first.at("deghosted")?;
+    let changed = &select(deghosted)["merge"]["sheet"];
+    let update = changed["sent"]
+        .as_array()
+        .and_then(|sent| sent.last())
+        .cloned()
+        .unwrap_or_default();
+    ensure(
+        changed["deghost"] == "Off"
+            && changed["preview_id"] == preview_id
+            && changed["current"] == true
+            && changed["picture_shown"] == changed["picture"]
+            && changed["revision"].as_u64() > sheet["revision"].as_u64()
+            && update
+                == json!({"method": "merge.preview-update",
+                    "params": {"preview_id": preview_id, "hdr": {"deghost": "off"}}}),
+        format!("deghosted: the sheet is {changed}"),
+    )?;
+    let overlaid = first.at("overlaid")?;
+    let shown = &select(overlaid)["merge"]["sheet"];
+    ensure(
+        shown["overlay"] == true && methods(shown).len() == methods(changed).len(),
+        format!("overlaid: the sheet is {shown}"),
+    )?;
+    checks.note(
+        overlaid,
+        "previewing: the sheet draws the preview and redraws it for a changed setting",
+        json!({"opened": sheet, "deghosted": changed, "overlaid": shown}),
+    );
+
+    // The sheet's Merge: one pending row with the job's progress, nothing hidden yet.
     let merging = first.at("merging")?;
     let pending = &select(merging)["merge"]["pending"];
     let job = pending["job_id"]
@@ -542,7 +629,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         })
         .ok_or_else(|| format!("merging: no merge.create was sent: {sent}"))?;
     ensure(
-        create["params"]["kind"] == "hdr" && create["params"]["mutation"]["actor"] == "desktop",
+        create["params"]["kind"] == "hdr"
+            && create["params"]["mutation"]["actor"] == "desktop"
+            && create["params"]["preview_id"] == preview_id
+            && create["params"].get("plan_id").is_none()
+            && create["params"]["hdr"] == json!({"deghost": "off"})
+            && select(merging)["merge"]["sheet"].is_null(),
         format!("merging: Merge HDR sent {create}"),
     )?;
     // Into the plan's proposal, whose folders the merge makes: nothing but the plan and the merge
@@ -748,7 +840,41 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )?;
     }
 
-    // The handheld bracket's Merge HDR: a second result, in the catalog.
+    // The handheld bracket's preview: Deghosting back to Auto, the moving ball's regions drawn
+    // from the revision's overlay, then Cancel, which closes the preview and merges nothing.
+    let handheld = first.at("handheld_overlay")?;
+    let sheet = &select(handheld)["merge"]["sheet"];
+    let regions = sheet["regions"].as_array().cloned().unwrap_or_default();
+    ensure(
+        sheet["kind"] == "hdr"
+            && sheet["deghost"] == "Auto"
+            && sheet["overlay"] == true
+            && sheet["current"] == true
+            && !regions.is_empty()
+            && regions.iter().all(|label| {
+                label
+                    .as_str()
+                    .is_some_and(|label| label.starts_with("From "))
+            }),
+        format!("handheld_overlay: the sheet is {sheet}"),
+    )?;
+    let cancelled = first.at("handheld_cancelled")?;
+    ensure(
+        select(cancelled)["merge"]["sheet"].is_null()
+            && select(cancelled)["merge"]["closed"] == json!({"preview_id": sheet["preview_id"]})
+            && select(cancelled)["merge"]["pending"].is_null(),
+        format!(
+            "handheld_cancelled: the merge state is {}",
+            select(cancelled)["merge"]
+        ),
+    )?;
+    checks.note(
+        handheld,
+        "handheld_overlay: the deghost overlay labels the moving regions",
+        json!({"regions": regions}),
+    );
+
+    // Merge HDR, ⌥-clicked: a second result at once with the last settings, in the catalog.
     let importing = first.at("importing")?;
     let import_job = select(importing)["merge"]["pending"]["job_id"]
         .as_str()
@@ -762,7 +888,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         })
         .ok_or("importing: no merge.create was sent")?;
     ensure(
-        import_create["params"]["kind"] == "hdr",
+        import_create["params"]["kind"] == "hdr"
+            && import_create["params"]["plan_id"].is_string()
+            && import_create["params"].get("preview_id").is_none()
+            && import_create["params"]["hdr"] == json!({"deghost": "off"})
+            && import_create["params"]["folder"].is_object()
+            && select(importing)["merge"]["sheet"].is_null(),
         format!("importing: Merge HDR sent {import_create}"),
     )?;
     let imported = first.at("imported")?;
@@ -879,7 +1010,7 @@ mod tests {
         let first = first_plan(&expected).unwrap();
         first.validate().unwrap();
         assert!(first.scripted());
-        assert_eq!(first.len(), 23);
+        assert_eq!(first.len(), 30);
         let second = second_plan(
             &json!({"reopen": {"path": "2026 \u{203a} Still \u{203a} 12 Jun", "position": 0}}),
         )

@@ -1,6 +1,6 @@
 # Panorama merges
 
-Status: planned, implementation not authorized. On 2026-10-11 the owner asked for a panorama merge design and chose its scope ([decisions](../decisions.md#panorama-merges)): RAW or JPEG frames; selection only, with no automatic grouping; automatic crop with a Boundary Warp option; and raised source limits, so a panorama is not scaled down to today's 128 MP. The [task plan](../../tasks/library/panorama-merge.json) carries the work.
+Status: planned. Panorama implementation is not authorized; the HDR parts the owner asked to align to this design are the kind-tagged merge boundary (delivered) and the merge preview for HDR (in progress). On 2026-10-11 the owner asked for a panorama merge design and chose its scope ([decisions](../decisions.md#panorama-merges)): RAW or JPEG frames; selection only, with no automatic grouping; automatic crop with a Boundary Warp option; and raised source limits, so a panorama is not scaled down to today's 128 MP. The [task plan](../../tasks/library/panorama-merge.json) carries the work.
 
 ## Boards
 
@@ -73,7 +73,7 @@ The [HDR workflow](hdr-merge.md#grid-workflow) applies with these differences. T
 
 ## The merge preview
 
-Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#panorama-merges)). Like Lightroom's Photo Merge preview, **Merge HDR** and **Merge panorama** open a sheet with a picture of the merge and its settings, rather than merging at once. It replaces HDR's Merge options… sheet. The [boards](#boards) draw it.
+Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#panorama-merges)). Like Lightroom's Photo Merge preview, **Merge HDR** and **Merge panorama** open a sheet with a picture of the merge and its settings, rather than merging at once. For HDR it is [built](hdr-merge.md#in-the-desktop). The [boards](#boards) draw it.
 
 ### What the person sees
 
@@ -96,14 +96,14 @@ Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#
 
 ### Commands
 
-The preview is programmable. The desktop sends only these requests.
+The preview is programmable. The desktop sends only these requests. They are built in the core for HDR, as the [HDR design](hdr-merge.md#the-merge-preview) describes; a panorama preview is `not-ready` until its provider exists. The desktop's HDR sheet is [built on them](hdr-merge.md#in-the-desktop); a panorama's is not.
 
 | Method | Contract |
 | --- | --- |
-| `merge.preview` | `kind`, targets, the kind's options and an optional `plan_id`. Answers a cancellable `merge-preview` job whose result is `{preview_id, kind, path, width, height, diagnostics, overlays, output: {width, height, scale, source_bytes}, refusal?}`. `path` is a display-referred JPEG under the catalog's preview cache. `overlays` is data in the picture's coordinates: motion regions with their source input and exposure (HDR), and the covered region, crop rectangle and frame quadrilaterals (panorama). A client draws them, so an agent reads the same facts. |
-| `merge.preview-update` | `preview_id` and changed options. Answers a new picture and data from the retained proxies, as a short job. Stale updates for the same preview are cancelled. |
-| `merge.preview-close` | Discards a preview and its spool. |
-| `merge.create` | Accepts `preview_id`. When given, the job starts from the preview's spool and registration, its options must equal the preview's latest, and a stale `preview_id` is `conflict`. Without it, the job behaves as today. |
+| `merge.preview` | `kind`, targets, the kind's options and an optional `plan_id`. Answers a cancellable `merge-preview` job whose result is `{preview_id, revision, kind, options, path?, width, height, diagnostics?, overlays?, output?: {width, height, scale, source_bytes}, refusal?}`; a refused revision has no picture, diagnostics or output. `path` is a display-referred JPEG under the catalog's preview cache. `overlays` is data in the picture's coordinates: motion regions with their source input and exposure (HDR), and the covered region, crop rectangle and frame quadrilaterals (panorama). A client draws them, so an agent reads the same facts. |
+| `merge.preview-update` | `preview_id` and the kind's full new options. Answers the next revision from the retained proxies, as a short job. Stale updates for the same preview are cancelled. |
+| `merge.preview-close` | Discards a preview, its spool and its pictures, answering `{preview_id, closed}`. |
+| `merge.create` | Accepts `preview_id`. When given, the job starts from the preview's spool and registration, reading and aligning nothing, and equals a merge without a preview bit for bit. Its options must equal the preview's latest revision's, and a stale `preview_id` is `conflict`. A preview still preparing is continued. Without it, the job behaves as today. |
 
 Each client has at most one open preview; opening another closes the first. A preview occupies the merge lane while it reads and aligns, like a merge. Once ready, its spool stays on disk, counted against the kind's temporary-disk ceiling, until it is merged, closed, or idle for 30 minutes, or until its client disconnects. Its job and spool are cleaned up as a merge's are, including after a restart. A preview never publishes anything and is not a library change.
 
@@ -115,7 +115,7 @@ The owner settled the scope. The numerical algorithms, thresholds, feature detec
 
 - **Count and duplicates.** Accept 2–32 frames. No identity may appear twice, and no RAW and JPEG of one exposure may both be present.
 - **Recording.** Every frame is RAW or every frame is JPEG. A mixed selection is refused naming the first frame of the other kind.
-- **Camera and lens.** Make and model, monochrome/colour, recording mode, upright dimensions and focal length (within 0.1%) must match the first frame. A value recorded on one frame and not another is a mixture; values absent on every frame agree. A merged result is never an input.
+- **Camera and lens.** Make and model, monochrome/colour, recording mode, upright dimensions and focal length (within 1 mm or 2% of the first frame's, whichever is more, as HDR allows a zoom's rounded record) must match the first frame. A value recorded on one frame and not another is a mixture; values absent on every frame agree. A merged result is never an input.
 - **Exposure.** Exposure, aperture and ISO may differ: panoramas are often shot in automatic exposure. Exposures more than 3 EV apart are refused as a bracket, not a panorama.
 - **A bracket.** After registration, two frames registered to within 2% of the frame's diagonal of each other, overlapping at least 90%, are refused as "the same view; merge HDR instead", naming both frames.
 
@@ -229,7 +229,9 @@ No component holds level 0 whole. The measurement task reports the real peaks; n
 
 ## Generalizing the merge boundary
 
-HDR's boundary was built for one kind. A panorama needs these changes. They also change the [HDR design](hdr-merge.md)'s stored shapes and commands, which are updated when they land.
+HDR's boundary was built for one kind. A panorama needs these changes. They also change the [HDR design](hdr-merge.md)'s stored shapes and commands, which describe them.
+
+The kinds, stack members, provenance, catalog format, commands, lane, ceilings, usage exemption and desktop words below are implemented, and so are the [merge preview](#the-merge-preview)'s commands for HDR. This build registers HDR's provider alone (`crates/luxforge-core/src/merge/providers.rs`): schemas list `hdr` as the only `kind`, a panorama request is refused `not-ready` naming `luxforge.panorama`, there are no panorama options, and a panorama merge's provenance, which no build writes yet, is read as `incompatible` while browse still shows its stack.
 
 - **Kinds.** `MergeKind` gains `Panorama` (`"panorama"`). `merges.kind` accepts it, and browse reads it rather than refusing it as `incompatible`.
 - **Stack members.** `merge_inputs.offset_ev` becomes nullable: HDR members keep their EV offset, while panorama members have none and carry their position in the stack's order. Browse's reference ordinal comes from the provenance's reference, not from the zero offset.

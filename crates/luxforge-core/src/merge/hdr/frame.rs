@@ -16,9 +16,16 @@ pub const MIN_INPUTS: usize = 2;
 /// The most inputs a merge accepts.
 pub const MAX_INPUTS: usize = 9;
 
-/// Two recorded f-numbers or focal lengths are the same setting within this relative difference:
-/// EXIF rationals of one setting compare equal, and a zoom's recorded millimetre does not drift.
+/// Two recorded f-numbers are the same setting within this relative difference: EXIF rationals of
+/// one setting compare equal.
 const SAME_SETTING: f64 = 1e-3;
+/// A recorded focal length is the first input's within this many millimetres, or within
+/// [`FOCAL_TOLERANCE_RELATIVE`] of it when that is more: a zoom records its focal length rounded,
+/// often to whole millimetres, so frames of one unmoved zoom can record 60, 60 and 59 mm.
+/// Registration is rigid, so a frame whose framing really differs is refused there.
+pub const FOCAL_TOLERANCE_MM: f64 = 1.0;
+/// The relative part of the focal-length tolerance: 2% of the first input's focal length.
+pub const FOCAL_TOLERANCE_RELATIVE: f64 = 0.02;
 /// Two recorded shutter times or biases are the same exposure within this relative (time) or
 /// absolute (EV) difference.
 const SAME_EXPOSURE: f64 = 1e-6;
@@ -85,6 +92,11 @@ impl ExposureSettings {
     pub(crate) fn usable_shutter(&self) -> Option<f64> {
         self.shutter_s
             .filter(|time| time.is_finite() && *time > 0.0)
+    }
+
+    /// The ISO when it is positive.
+    pub(crate) fn usable_iso(&self) -> Option<u32> {
+        self.iso.filter(|iso| *iso > 0)
     }
 
     /// The bias when it is finite.
@@ -160,9 +172,8 @@ pub enum Refusal {
     MixedAperture {
         input: usize,
     },
-    MixedIso {
-        input: usize,
-    },
+    /// A focal length further from the first input's than [`FOCAL_TOLERANCE_MM`] or
+    /// [`FOCAL_TOLERANCE_RELATIVE`] allows, or recorded on one and not the other.
     MixedFocalLength {
         input: usize,
     },
@@ -278,7 +289,6 @@ impl fmt::Display for Refusal {
             Self::MixedAperture { input } => {
                 write!(f, "input {} uses a different aperture", n(input))
             }
-            Self::MixedIso { input } => write!(f, "input {} uses a different ISO", n(input)),
             Self::MixedFocalLength { input } => {
                 write!(f, "input {} uses a different focal length", n(input))
             }
@@ -381,18 +391,27 @@ impl fmt::Display for Refusal {
     }
 }
 
+impl Refusal {
+    /// The typed refusal as a refusal's data carries it: its `reason` and the inputs it names,
+    /// with the merge kind it refuses, `hdr`.
+    pub fn data(&self) -> serde_json::Value {
+        let mut data = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        if let Some(object) = data.as_object_mut() {
+            object.insert("kind".into(), "hdr".into());
+        }
+        data
+    }
+}
+
 impl From<Refusal> for Error {
     /// A refusal is the request's fault: RAW-only is an unsupported input, everything else a
-    /// validation failure. `data` carries the typed refusal.
+    /// validation failure. `data` carries the typed refusal and its kind ([`Refusal::data`]).
     fn from(refusal: Refusal) -> Self {
         let error = match refusal {
             Refusal::RawOnly { .. } => Error::unsupported_input(refusal.to_string()),
             _ => Error::validation(refusal.to_string()),
         };
-        match serde_json::to_value(&refusal) {
-            Ok(data) => error.with_data(data),
-            Err(_) => error,
-        }
+        error.with_data(refusal.data())
     }
 }
 
@@ -418,6 +437,12 @@ fn same_relative(tolerance: f64) -> impl Fn(f64, f64) -> bool {
     move |a, b| (a - b).abs() <= tolerance * a.abs().max(b.abs())
 }
 
+/// Whether `focal` is the same focal length as the first input's `first`: within
+/// [`FOCAL_TOLERANCE_MM`] or [`FOCAL_TOLERANCE_RELATIVE`] of it, whichever is more.
+fn same_focal(focal: f64, first: f64) -> bool {
+    (focal - first).abs() <= FOCAL_TOLERANCE_MM.max(FOCAL_TOLERANCE_RELATIVE * first.abs())
+}
+
 /// Whether two inputs of different recordings are one exposure: one body, one recorded instant
 /// and the same shutter, aperture, ISO and bias. Without a recorded instant this cannot be told,
 /// and such frames are not called duplicates.
@@ -437,9 +462,11 @@ fn same_exposure(a: &FrameMetadata, b: &FrameMetadata) -> bool {
 
 /// Whether `frames` can be merged at all, before any exposure is resolved: the input count, no
 /// repeated file, no RAW+JPEG pair of one exposure, RAW only, then one body, recording mode,
-/// colour interpretation, upright dimensions, aperture, ISO and focal length, each compared with
-/// the first input. An unrecorded value differs from a recorded one; inputs that all lack a value
-/// (an unknown body, a manual lens) agree.
+/// colour interpretation, upright dimensions, aperture and focal length (within
+/// [`FOCAL_TOLERANCE_MM`] or [`FOCAL_TOLERANCE_RELATIVE`]), each compared with the first input. An
+/// unrecorded value differs from a recorded one; inputs that all lack a value (an unknown body, a
+/// manual lens) agree. ISO may vary: auto ISO changes it within a camera's bracket, and exposure
+/// resolution counts it as gain ([`super::MetadataExposure`]).
 pub fn validate_bracket(frames: &[FrameMetadata]) -> Result<(), Refusal> {
     if !(MIN_INPUTS..=MAX_INPUTS).contains(&frames.len()) {
         return Err(Refusal::InputCount {
@@ -487,10 +514,7 @@ pub fn validate_bracket(frames: &[FrameMetadata]) -> Result<(), Refusal> {
         if !same_option(e.f_number, e0.f_number, same_relative(SAME_SETTING)) {
             return Err(Refusal::MixedAperture { input });
         }
-        if e.iso != e0.iso {
-            return Err(Refusal::MixedIso { input });
-        }
-        if !same_option(e.focal_mm, e0.focal_mm, same_relative(SAME_SETTING)) {
+        if !same_option(e.focal_mm, e0.focal_mm, same_focal) {
             return Err(Refusal::MixedFocalLength { input });
         }
     }

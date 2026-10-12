@@ -206,6 +206,19 @@ fn cases((width, height): (u32, u32)) -> Vec<(&'static str, Vec<Operation>)> {
         ),
         ("heal stroke", vec![heal(&stroke, 7.0, [4.0, 16.0])]),
         (
+            "heal stroke brushed back and forth",
+            vec![heal(
+                &[
+                    [0.15 * w, 0.5 * h],
+                    [0.8 * w, 0.5 * h],
+                    [0.25 * w, 0.52 * h],
+                    [0.7 * w, 0.5 * h],
+                ],
+                9.0,
+                [0.0, 30.0],
+            )],
+        ),
+        (
             "heal at the frame edge",
             vec![heal(&[[4.0, 0.5 * h]], 20.0, [60.0, 0.0])],
         ),
