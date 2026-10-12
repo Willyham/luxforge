@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
-description = "The harness's generative runtime: stable-diffusion.cpp and ggml built from vendored, pinned sources with the cc crate, behind a minimal C ABI."
+description = "The harness's generative runtime: luxforge-diffusion's vendored stable-diffusion.cpp and ggml and its binding, compiled from that crate's files."
 links = "luxforge_sdcpp"
 build = "build.rs"
 
@@ -14,5 +14,5 @@ build = "build.rs"
 cc = { version = "=1.5.1", features = ["parallel"] }
 
 [lints.rust]
-# The C ABI is the crate's whole purpose; every unsafe block is in src/lib.rs.
+# The C ABI is the crate's whole purpose; every unsafe block is in luxforge-diffusion's src/native.rs.
 unsafe_op_in_unsafe_fn = "deny"

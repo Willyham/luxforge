@@ -67,6 +67,7 @@ impl CapabilityHost {
             resident_bytes,
             backends,
             precision,
+            with,
         } = &capability.kind
         else {
             return Err(Error::internal(format!(
@@ -74,45 +75,55 @@ impl CapabilityHost {
                 capability.id
             )));
         };
-        let declared = descriptor.resource(resource).ok_or_else(|| {
-            Error::internal(format!(
-                "capability {} names an undeclared resource",
-                capability.id
-            ))
-        })?;
-        let row = self
-            .resource_rows(jobs, descriptor)
-            .into_iter()
-            .find(|row| &row.id == resource);
-        let path = match row {
-            Some(row) if row.state == ResourceState::Installed && row.path.is_some() => {
-                row.path.unwrap_or_default()
-            }
-            row => {
-                return Ok(Err(Requirement {
+        let rows = self.resource_rows(jobs, descriptor);
+        // The installed file of one declared resource, or the requirement it leaves unmet.
+        let installed = |id: &String| -> Result<Result<ModelFile, Requirement>, Error> {
+            let declared = descriptor.resource(id).ok_or_else(|| {
+                Error::internal(format!(
+                    "capability {} names an undeclared resource",
+                    capability.id
+                ))
+            })?;
+            let row = rows.iter().find(|row| &row.id == id);
+            Ok(match row {
+                Some(row) if row.state == ResourceState::Installed && row.path.is_some() => {
+                    Ok(ModelFile::new(
+                        ModelIdentity {
+                            id: id.clone(),
+                            version: declared.version.clone(),
+                            sha256: declared.sha256.clone(),
+                        },
+                        row.path.clone().unwrap_or_default(),
+                    ))
+                }
+                row => Err(Requirement {
                     kind: RequirementKind::Resource,
-                    id: resource.clone(),
+                    id: id.clone(),
                     state: row
                         .map_or(ResourceState::NotInstalled, |row| row.state)
                         .name()
                         .into(),
-                }));
-            }
+                }),
+            })
         };
+        let file = match installed(resource)? {
+            Ok(file) => file,
+            Err(missing) => return Ok(Err(missing)),
+        };
+        let mut companions = Vec::with_capacity(with.len());
+        for companion in with {
+            match installed(companion)? {
+                Ok(file) => companions.push(file),
+                Err(missing) => return Ok(Err(missing)),
+            }
+        }
         Ok(Ok(LoadRequest {
             module_id: descriptor.id.clone(),
             resource_id: resource.clone(),
             capability_id: capability.id.clone(),
             model: *model,
             resident_bytes: *resident_bytes,
-            file: ModelFile::new(
-                ModelIdentity {
-                    id: resource.clone(),
-                    version: declared.version.clone(),
-                    sha256: declared.sha256.clone(),
-                },
-                path,
-            ),
+            file: file.with_companions(companions),
             options: OpenOptions {
                 backends: backends.clone(),
                 precision: *precision,

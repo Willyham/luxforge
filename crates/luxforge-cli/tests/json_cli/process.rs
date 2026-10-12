@@ -235,10 +235,7 @@ fn test_modules_are_served_only_with_developer() {
     let (ordinary, ordinary_developer, _) = listed(&[]);
     assert!(ordinary_developer.is_empty(), "{ordinary_developer:?}");
     let (developer, developer_ids, generated) = listed(&["--developer"]);
-    assert_eq!(
-        developer_ids,
-        ["luxforge.controls", "luxforge.candidates", "luxforge.ai"]
-    );
+    assert_eq!(developer_ids, ["luxforge.controls", "luxforge.candidates"]);
     assert!(
         generated.contains(&"edit.set-controls".to_owned()),
         "{generated:?}"

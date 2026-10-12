@@ -547,10 +547,10 @@ fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
 }
 
 /// A painted selection and Generate send the tier's fill request, the one Copy as JSON copies; the
-/// ring shows while it runs and three candidates fill the strip, the first chosen and previewed on
-/// the canvas. An independent client sending the same request gets the same pixels.
+/// ring shows while it runs and its one candidate (owner, 2026-10-11) fills the strip, chosen and
+/// previewed on the canvas. An independent client sending the same request gets the same pixels.
 #[test]
-fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates() {
+fn generate_sends_the_copied_request_and_fills_the_strip_with_one_candidate() {
     let mut filling = Filling::opened();
     filling.ready();
     filling.paint();
@@ -604,13 +604,13 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates()
     let model = filling.model();
     assert_eq!(model.running, None);
     assert_eq!(filling.editor.generation_lock(), None);
-    assert_eq!(model.strip.len(), 3, "{:?}", model.strip);
+    assert_eq!(model.strip.len(), 1, "{:?}", model.strip);
     assert!(model.strip.iter().all(|cell| cell.state == "live"));
-    assert!(model.strip[0].chosen, "the first candidate is chosen");
+    assert!(model.strip[0].chosen, "the candidate is chosen");
     assert!(model.can_accept && model.can_regenerate);
     assert_eq!(
         filling.editor.status.text,
-        "3 candidates \u{b7} choose one and Accept"
+        "1 candidate \u{b7} Accept it, or Regenerate for another"
     );
     for cell in &model.strip {
         assert!(
@@ -630,7 +630,7 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates()
     let (agent_job, _) = call(&filling.owner(), filling.agent, TASK, params).unwrap();
     let agent_job = agent_job["job_id"].as_str().unwrap().to_owned();
     assert_eq!(filling.finished(&agent_job)["status"], "ready");
-    for candidate in 0..3u8 {
+    for candidate in 0..1u8 {
         assert_eq!(
             filling.agent_preview(&agent_job, candidate),
             filling.agent_preview(&job, candidate),
@@ -639,11 +639,11 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_three_candidates()
     }
 }
 
-/// Regenerate asks again from the newest job's next seed and adds three more to the strip; the
-/// earlier candidates stay. Choosing one previews it on the canvas and Accept commits exactly it:
+/// Regenerate asks again from the newest job's next seed and adds one more to the strip; the
+/// earlier candidate stays. Choosing one previews it on the canvas and Accept commits exactly it:
 /// one history entry, and the selection and strip are cleared.
 #[test]
-fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() {
+fn regenerate_adds_one_and_accept_commits_the_chosen_candidate_as_one_entry() {
     let mut filling = Filling::opened();
     filling.ready();
     filling.paint();
@@ -669,19 +669,24 @@ fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() 
     filling.poll(&second);
     filling.read_previews();
     let model = filling.model();
-    assert_eq!(model.strip.len(), 6, "{:?}", model.strip);
-    assert_eq!(model.strip[3].job_id, second);
+    assert_eq!(model.strip.len(), 2, "{:?}", model.strip);
+    assert_eq!(model.strip[1].job_id, second);
 
-    // Choose the second job's last candidate: the canvas previews it.
+    // Choose the first job's candidate, then the second's: the canvas previews it.
+    filling.remove(RemoveMessage::Candidate {
+        job_id: first.clone(),
+        candidate: 0,
+    });
+    assert!(filling.model().strip[0].chosen);
     filling.remove(RemoveMessage::Candidate {
         job_id: second.clone(),
-        candidate: 2,
+        candidate: 0,
     });
-    assert!(filling.model().strip[5].chosen);
+    assert!(filling.model().strip[1].chosen);
     let chosen = filling
         .editor
         .remove_images()
-        .image(&second, 2)
+        .image(&second, 0)
         .unwrap()
         .id();
     let (preview, _) = filling.editor.remove_canvas().unwrap().preview.unwrap();
@@ -693,7 +698,7 @@ fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() 
     let copied = filling.copy(RemoveRequest::Preview);
     assert_eq!(
         copied,
-        json!({"method": "job.read-candidate", "params": {"job_id": second, "candidate": 2, "part": "preview"}})
+        json!({"method": "job.read-candidate", "params": {"job_id": second, "candidate": 0, "part": "preview"}})
     );
 
     let before = filling.history().len();
@@ -703,7 +708,7 @@ fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() 
     same_request(copied, &sent);
     assert_eq!(sent.0, "edit.accept-correction-patch");
     assert_eq!(sent.1["job_id"], second);
-    assert_eq!(sent.1["candidate"], 2);
+    assert_eq!(sent.1["candidate"], 0);
     assert!(filling.model().accepting);
     filling.run_accept();
     let history = filling.history();
@@ -718,7 +723,7 @@ fn regenerate_adds_three_and_accept_commits_the_chosen_candidate_as_one_entry() 
     assert!(filling.editor.remove_canvas().unwrap().preview.is_none());
     // The candidate accepted is the one the agent reads as accepted.
     let record = filling.api("job.read", json!({"job_id": second}));
-    assert_eq!(record["candidates"][2]["state"], "accepted", "{record}");
+    assert_eq!(record["candidates"][0]["state"], "accepted", "{record}");
 }
 
 /// A prompt makes the action Replace. Without the text encoder the field offers its download and

@@ -1,7 +1,8 @@
 //! The Generative tier over `luxforge-json`'s pipe, as an agent drives it: discover the task, turn
 //! the flag on, install the developer generator under its grant, Generate, list and read the
-//! candidates, Regenerate, accept one, undo and redo, then reopen the catalog in a release-mode
-//! process, with no `luxforge.ai` and no generator, and render the accepted patch.
+//! candidate, Regenerate, accept one, undo and redo, then reopen the catalog in a process without
+//! `--developer`, which serves no developer model and offers no installed generator, and render the
+//! accepted patch.
 use luxforge_testbase::paths;
 use luxforge_testkit::JsonProcess;
 use serde_json::{Value, json};
@@ -107,13 +108,13 @@ fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_mode
         sample(&mut client, &asset, centre.0, centre.1),
     );
 
-    // Generate.
+    // Generate: one candidate (owner, 2026-10-11).
     let queued = client.call(TASK, fill(7, "generate"));
     let first = client.settle("job.read", &queued["job_id"]);
     assert_eq!(first["status"], "ready", "{first}");
-    assert_eq!(first["result"]["result"]["seeds"], json!([7, 8, 9]));
+    assert_eq!(first["result"]["result"]["seeds"], json!([7]));
     let candidates = first["candidates"].as_array().unwrap();
-    assert_eq!(candidates.len(), 3);
+    assert_eq!(candidates.len(), 1);
     assert!(
         candidates
             .iter()
@@ -129,7 +130,7 @@ fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_mode
     let next = first["result"]["result"]["next_seed"].as_u64().unwrap();
     let again = client.call(TASK, fill(next, "regenerate"));
     let second = client.settle("job.read", &again["job_id"]);
-    assert_eq!(second["result"]["result"]["seeds"], json!([10, 11, 12]));
+    assert_eq!(second["result"]["result"]["seeds"], json!([8]));
     let first = client.call("job.read", json!({"job_id": queued["job_id"]}));
     assert!(
         first["candidates"]
@@ -143,7 +144,7 @@ fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_mode
     let accept = edit_mutation(&mut client, &asset, "accept");
     let accepted = client.call(
         "edit.accept-correction-patch",
-        json!({"asset_id": asset, "job_id": again["job_id"], "candidate": 2, "mutation": accept}),
+        json!({"asset_id": asset, "job_id": again["job_id"], "candidate": 0, "mutation": accept}),
     );
     assert_eq!(accepted["outcome"], "applied", "{accepted}");
     let after = sample(&mut client, &asset, centre.0, centre.1);
@@ -158,10 +159,19 @@ fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_mode
     assert_eq!(sample(&mut client, &asset, centre.0, centre.1), after);
     client.finish();
 
-    // A release-mode process has no luxforge.ai and no generator, and renders the patch.
+    // A process without --developer serves no developer model, so no generator is installed, and
+    // it renders the patch.
     let mut reopened = start(false);
-    let schema = reopened.call("schema.list", json!({}));
-    assert!(schema["methods"][TASK].is_null());
+    let status = reopened.call("module.status", json!({"module_id": "luxforge.ai"}));
+    assert_eq!(status["fill_tiers"][0]["offered"], false, "{status}");
+    assert!(
+        status["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["id"] != "fake-generator"),
+        "{status}"
+    );
     assert_eq!(sample(&mut reopened, &asset, centre.0, centre.1), after);
     reopened.finish();
     let _ = std::fs::remove_dir_all(data_root);

@@ -26,6 +26,10 @@ pub struct Disclosure {
     /// Where data goes, or where a download comes from: an origin or a URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
+    /// The other origins a download's further files come from, when any is not the
+    /// destination's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub further_origins: Vec<String>,
     /// What is read, sent or downloaded, in words.
     pub data: String,
     /// How many bytes are read, sent or downloaded, when known.
@@ -58,6 +62,7 @@ impl Disclosure {
             module: module.title.clone(),
             purpose: capability.purpose.clone(),
             destination: None,
+            further_origins: Vec::new(),
             data,
             bytes: None,
             storage: None,
@@ -71,8 +76,9 @@ impl Disclosure {
     }
 }
 
-/// `download-artifact`: the pinned URL, the resource and its version, the size of every file
-/// together, where it is installed and its licence; for a model, its trade-off, the use
+/// `download-artifact`: the pinned URL and any other origin a further file comes from, the
+/// resource and its version, the size of every file together, where it is installed and its
+/// licence; for a model, its trade-off, the use
 /// restriction when its licence has one, and what it needs of the machine. Resources are free to
 /// download. Nothing is said of a model's training data.
 pub(crate) fn download_disclosure(
@@ -90,8 +96,30 @@ pub(crate) fn download_disclosure(
             further + 1
         ),
     };
+    let origin = |url: &str| {
+        super::endpoint::parse_endpoint(
+            url,
+            &[
+                super::endpoint::EndpointClass::Remote,
+                super::endpoint::EndpointClass::Loopback,
+            ],
+        )
+        .map(|endpoint| endpoint.origin())
+        .ok()
+    };
+    let own = origin(&resource.url);
+    let mut further_origins: Vec<String> = Vec::new();
+    for file in &resource.files {
+        if let Some(served) = origin(&file.url)
+            && Some(&served) != own.as_ref()
+            && !further_origins.contains(&served)
+        {
+            further_origins.push(served);
+        }
+    }
     Disclosure {
         destination: Some(resource.url.clone()),
+        further_origins,
         bytes: Some(resource.total_bytes()),
         storage: Some(install_dir.display().to_string()),
         license: Some(resource.license.clone()),

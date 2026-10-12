@@ -2110,6 +2110,7 @@ dependencies = [
  "image",
  "luxforge-cli",
  "luxforge-core",
+ "luxforge-diffusion",
  "luxforge-evidence",
  "luxforge-gpu",
  "luxforge-input",
@@ -2131,6 +2132,7 @@ name = "luxforge-cli"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-diffusion",
  "luxforge-net",
  "luxforge-onnx",
  "luxforge-reference",
@@ -2172,6 +2174,19 @@ dependencies = [
  "uuid",
  "winapi-util",
  "zeroize",
+]
+
+[[package]]
+name = "luxforge-diffusion"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "image",
+ "luxforge-core",
+ "luxforge-net",
+ "luxforge-testbase",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

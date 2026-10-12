@@ -7,8 +7,8 @@
 //! and its Download; the fake generator's grant and install go through the API as any client's
 //! would. A stroke across the boundary of two quadrants is the selection; Generate is captured
 //! while it runs (the ring and the status bar's progress), Escape cancels it, Generate runs to its
-//! strip of three, a candidate is chosen and previewed on the canvas, and Regenerate adds three.
-//! A second client accepts the desktop's newest job's first candidate. A prompt makes the action
+//! one candidate (owner, 2026-10-11), Regenerate adds one more, and the first is chosen again and
+//! previewed on the canvas. A second client accepts the desktop's newest job's candidate. A prompt makes the action
 //! Replace and offers the text encoder's download, which goes through the consent notice; Replace
 //! then runs and Accept commits it. The fill of a flat-coloured context is that context's mean, so
 //! a fill across two quadrants is legible in the capture: the left quadrant's colour inside the
@@ -24,7 +24,7 @@ use luxforge_evidence::{
 };
 
 pub const SCENARIO: &str = "generative";
-pub const ABOUT: &str = "Remove in the Corrections band on the developer fake models: the flag and model reasons, a painted selection, Generate's progress and Cancel, a strip of three, a chosen candidate's preview, Regenerate, a second client's accept, a prompt's Replace with the text encoder's consented download, and Accept";
+pub const ABOUT: &str = "Remove in the Corrections band on the developer fake models: the flag and model reasons, a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate's preview, a second client's accept, a prompt's Replace with the text encoder's consented download, and Accept";
 
 /// The developer AI module, which serves the fill tiers and their fake models.
 const AI: &str = "luxforge.ai";
@@ -119,14 +119,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .status_starts("Generation cancelled"),
         Step::new("generated", remove(RemoveStep::Generate(RemoveUntil::Done)))
             .commits(0)
-            .status_starts("3 candidates"),
-        Step::new("chosen", remove(RemoveStep::Candidate(1))).commits(0),
+            .status_starts("1 candidate"),
         Step::new(
             "regenerated",
             remove(RemoveStep::Regenerate(RemoveUntil::Done)),
         )
         .commits(0)
-        .status_starts("3 candidates"),
+        .status_starts("1 candidate"),
+        Step::new("chosen", remove(RemoveStep::Candidate(0))).commits(0),
         // A second client accepts a candidate the desktop generated.
         Step::new(
             "agent-accepted",
@@ -146,7 +146,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("encoder-installed", ai(CapabilityAction::Consent(true))).commits(0),
         Step::new("replaced", remove(RemoveStep::Generate(RemoveUntil::Done)))
             .commits(0)
-            .status_starts("3 candidates"),
+            .status_starts("1 candidate"),
         Step::new("accepted", remove(RemoveStep::Accept))
             .commits(1)
             .label(format!("Add Replace \"{PROMPT}\" 2"))
@@ -235,19 +235,19 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         .cloned()
         .unwrap_or_default();
     ensure(
-        strip.len() == 3 && strip[0]["chosen"] == json!(true),
+        strip.len() == 1 && strip[0]["chosen"] == json!(true),
         format!("Generate's strip: {}", band(generated)),
     )?;
     ensure(
-        record(generated)["previews"].as_array().map(Vec::len) == Some(3),
+        record(generated)["previews"].as_array().map(Vec::len) == Some(1),
         format!("Each preview read once: {}", record(generated)),
     )?;
     // The chosen candidate is previewed on the canvas: inside the selection the left quadrant's
     // colour becomes a mix of both quadrants', and outside it nothing changes.
     let chosen = launch.at("chosen")?;
     ensure(
-        band(chosen)["strip"][1]["chosen"] == json!(true),
-        format!("The second candidate chosen: {}", band(chosen)),
+        band(chosen)["strip"][0]["chosen"] == json!(true),
+        format!("The first candidate chosen again: {}", band(chosen)),
     )?;
     checks.compare(
         chosen,
@@ -269,11 +269,11 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         .cloned()
         .unwrap_or_default();
     ensure(
-        band(regenerated)["strip"].as_array().map(Vec::len) == Some(6)
+        band(regenerated)["strip"].as_array().map(Vec::len) == Some(2)
             && jobs.len() == 3
             && jobs[2]["seed"] == jobs[1]["next_seed"],
         format!(
-            "Regenerate adds three from the next seed: {}",
+            "Regenerate adds one from the next seed: {}",
             record(regenerated)
         ),
     )?;

@@ -1,7 +1,7 @@
 //! The `luxforge.ai` module's descriptor, its request and the hooks the capability host calls.
 use super::{
     generative,
-    models::{DEVELOPER_MODELS, GenerativeModel},
+    models::{DEVELOPER_MODELS, GenerativeModel, PRODUCT_MODELS},
     selection::{EFFECT_POINTS, EFFECT_RADIUS, SELECTION_POINTS, SELECTION_RADIUS, Selection},
 };
 use crate::{
@@ -30,8 +30,9 @@ pub(crate) const FILL_GENERATIVE: &str = "fill-generative";
 pub(crate) const GENERATIVE_FLAG: &str = crate::flags::AI_GENERATIVE;
 /// The tier's name, as `module.status` and a candidate's provenance give it.
 pub(crate) const GENERATIVE_TIER: &str = "generative";
-/// Candidates one Generate makes by default, and at most.
-pub(crate) const DEFAULT_CANDIDATES: u32 = 3;
+/// Candidates one Generate makes by default, and at most. One at a time (owner, 2026-10-11): a
+/// local candidate takes about two minutes, so Generate makes one and Regenerate adds one.
+pub(crate) const DEFAULT_CANDIDATES: u32 = 1;
 pub(crate) const MAX_CANDIDATES: u32 = crate::artifacts::candidates::MAX_JOB_CANDIDATES as u32;
 /// The largest seed a request names: the largest integer a JSON number holds exactly.
 pub(crate) const MAX_SEED: u64 = (1 << 53) - 1;
@@ -92,25 +93,21 @@ impl FillRequest {
         })
     }
 
-    /// The capabilities the request uses: its model's runtime, and the text encoder's install
-    /// capability when it has a prompt, so a missing text encoder is an unmet requirement.
+    /// The capabilities the request uses: its model's runtime and, with a prompt, what loads the
+    /// text encoder, so a missing text encoder is an unmet requirement.
     fn uses(&self) -> Result<Vec<String>, Error> {
-        let mut uses = vec![self.model.runtime.to_owned()];
-        if self.prompt.is_some() {
-            let encoder = self.model.text_encoder.ok_or_else(|| {
-                Error::validation(format!(
-                    "model {} takes no prompt: it has no text encoder",
-                    self.model.id
-                ))
-            })?;
-            uses.push(encoder.download.to_owned());
-        }
-        Ok(uses)
+        let uses = self.model.uses(self.prompt.is_some()).ok_or_else(|| {
+            Error::validation(format!(
+                "model {} takes no prompt: it has no text encoder",
+                self.model.id
+            ))
+        })?;
+        Ok(uses.into_iter().map(str::to_owned).collect())
     }
 }
 
-/// The AI editing module. Registered in developer runs only while its one model is the developer
-/// fake (see [`super::models`]).
+/// The AI editing module: the qualified model in every run, and the developer fake before it in a
+/// developer run (see [`super::models`]). The `ai.generative` flag gates the tier.
 pub(crate) struct AiModule {
     descriptor: ModuleDescriptor,
     models: &'static [GenerativeModel],
@@ -119,9 +116,20 @@ pub(crate) struct AiModule {
 }
 
 impl AiModule {
+    /// The module a run serves: the developer models in a developer run, the product models
+    /// otherwise.
+    pub(crate) fn for_run(developer: bool) -> Self {
+        Self::with_models(if developer {
+            DEVELOPER_MODELS
+        } else {
+            PRODUCT_MODELS
+        })
+    }
+
     /// The module with the developer models.
+    #[cfg(test)]
     pub(crate) fn developer() -> Self {
-        Self::with_models(DEVELOPER_MODELS)
+        Self::for_run(true)
     }
 
     /// The developer module whose jobs pass `gate` after publishing each candidate.
@@ -140,14 +148,18 @@ impl AiModule {
             capabilities.extend(model.capabilities());
             resources.extend(model.files().map(|file| file.descriptor()));
         }
-        let uses = models
-            .iter()
-            .flat_map(|model| {
-                std::iter::once(model.runtime)
-                    .chain(model.text_encoder.map(|encoder| encoder.download))
-            })
-            .map(str::to_owned)
-            .collect();
+        let mut uses: Vec<String> = Vec::new();
+        for model in models {
+            for used in [false, true]
+                .into_iter()
+                .filter_map(|prompt| model.uses(prompt))
+                .flatten()
+            {
+                if !uses.iter().any(|known| known == used) {
+                    uses.push(used.to_owned());
+                }
+            }
+        }
         let radius = |name: &str, notes: &str| {
             ParameterDescriptor::number(
                 name,
@@ -193,7 +205,10 @@ impl AiModule {
                 id: AI_MODULE.into(),
                 title: "AI editing".into(),
                 hint: Some("Generative fill over the Corrections band's brush".into()),
-                developer: true,
+                developer: false,
+                // Its section holds the model cards, which the Models tab also lists: it starts
+                // collapsed, so a launch reads nothing for it until it is opened.
+                collapsed: true,
                 tasks: vec![task],
                 capabilities,
                 resources,
@@ -251,8 +266,9 @@ impl ToolModule for AiModule {
 }
 
 impl CapabilityModule for AiModule {
-    /// A model file must be exactly its pinned bytes: the developer files are fixtures, and a
-    /// qualified model's format check joins with it.
+    /// A developer fixture must be exactly its pinned bytes; a published model file must open as
+    /// its declared format (`super::formats`), read from its first bytes only. The install has
+    /// already checked every file's length and SHA-256.
     fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
         let file = self
             .models
@@ -260,16 +276,27 @@ impl CapabilityModule for AiModule {
             .flat_map(GenerativeModel::files)
             .find(|file| file.resource == resource_id)
             .ok_or_else(|| Error::validation(format!("unknown resource {resource_id}")))?;
-        let bytes = std::fs::read(path).map_err(|error| {
-            Error::file_access(format!("reading staged {resource_id}: {error}"))
-        })?;
-        if bytes != file.bytes {
-            return Err(Error::validation(format!(
-                "{resource_id} is not a {} file",
-                file.format
-            )));
+        if file.published.is_none() {
+            let bytes = std::fs::read(path).map_err(|error| {
+                Error::file_access(format!("reading staged {resource_id}: {error}"))
+            })?;
+            if bytes != file.bytes {
+                return Err(Error::validation(format!(
+                    "{resource_id} is not a {} file",
+                    file.format
+                )));
+            }
+            return Ok(());
         }
-        Ok(())
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let format = file.format_of(name).ok_or_else(|| {
+            Error::validation(format!("resource {resource_id} declares no file {name}"))
+        })?;
+        super::formats::check(path, format)
+            .map_err(|detail| Error::validation(format!("{resource_id} file {name}: {detail}")))
     }
 
     fn run_task(

@@ -9,7 +9,9 @@
 //!    stage is smaller than it. The square's inside is read through the host-planned reference read
 //!    of the repair stage's input, a band of rows at a time, and area-averaged in linear light to
 //!    the model's native side (Catmull-Rom when the square is smaller). A model pixel any covered
-//!    stage pixel contributed to is in the hole, which the model's input zeroes.
+//!    stage pixel contributed to is in the hole. The model's input keeps what the region covers,
+//!    so a model that is shown the object (klein's outlined reference) sees it; a model that must
+//!    not see it replaces the hole itself, as its mask marks it.
 //! 2. **Encode** ([`encode`]). Linear light becomes the model's display-referred input through the
 //!    sRGB transfer function over the context's range, with its recorded inverse.
 //! 3. **Model.** The generator fills the hole at its native side.
@@ -19,7 +21,9 @@
 //!    answer lost, from the candidate's seed.
 //! 6. **Blend** ([`blend`]). A push-pull seam correction meets the input's colour and tone at the
 //!    edge, then a Laplacian pyramid carries detail across it band by band. What the region covers
-//!    enters neither.
+//!    enters neither. A Replace skips both (owner, 2026-10-11): carrying the edge's difference into
+//!    a new object leaves a lighter box or halo around it, so it composites over the region's own
+//!    feathered edge.
 //! 7. **Patch.** The candidate is the tight bounds of the coverage: the blended fill decoded to
 //!    linear light where coverage is above zero and the input's own value where it is zero, with
 //!    the coverage as its alpha, so the repair stage's composite `in + c · (patch − in)` copies
@@ -208,7 +212,8 @@ pub(crate) struct Context {
     pub(crate) plan: FillPlan,
     pub(crate) coverage: Coverage,
     pub(crate) encoding: Encoding,
-    /// The model's input, `n × n` interleaved RGB, display-referred `0..=1`, the hole zeroed.
+    /// The model's input, `n × n` interleaved RGB, display-referred `0..=1`, the region's content
+    /// included: the mask says what to fill.
     pub(crate) model_image: Vec<f32>,
     /// The model's mask, `n × n`: 1 in the hole, 0 elsewhere.
     pub(crate) model_mask: Vec<f32>,
@@ -310,13 +315,9 @@ impl Context {
             }
         }
         let mut model_image = Vec::with_capacity(n * n * 3);
-        for (p, &hole) in reduced.pixels.iter().zip(&reduced.hole) {
+        for p in &reduced.pixels {
             for &v in p {
-                model_image.push(if hole == 0 {
-                    encoding.code(v) / 255.0
-                } else {
-                    0.0
-                });
+                model_image.push(encoding.code(v) / 255.0);
             }
         }
         let model_mask = reduced.hole.iter().map(|&h| f32::from(h)).collect();
@@ -335,8 +336,20 @@ impl Context {
     }
 
     /// The candidate a model answered `generated` with (`n × n` interleaved RGB, display-referred),
-    /// its grain drawn from `seed`.
+    /// its grain drawn from `seed`, blended into its surroundings.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn finish(&self, generated: &[f32], seed: u64) -> Result<Finished, Error> {
+        self.finish_with(generated, seed, true)
+    }
+
+    /// [`Self::finish`], with the seam correction and the detail blend only when `blend` is set: a
+    /// Replace composites over the region's own feathered edge.
+    pub(crate) fn finish_with(
+        &self,
+        generated: &[f32],
+        seed: u64,
+        blend: bool,
+    ) -> Result<Finished, Error> {
         let FillPlan {
             crop,
             n,
@@ -393,24 +406,27 @@ impl Context {
             }
         }
 
-        let seam_band = blend::seam_correction(
-            &mut fill,
-            &self.input,
-            area,
-            window,
-            &cov,
-            &crop,
-            &self.hole,
-            n,
-            scale,
-        );
-        let correction = blend::pyramid_correction(&fill, &self.input, area, window, &cov, levels);
-        for c in 0..3 {
-            for (v, d) in fill.c[c].iter_mut().zip(&correction.c[c]) {
-                *v += d;
+        let mut seam_band = 0;
+        if blend {
+            seam_band = blend::seam_correction(
+                &mut fill,
+                &self.input,
+                area,
+                window,
+                &cov,
+                &crop,
+                &self.hole,
+                n,
+                scale,
+            );
+            let correction =
+                blend::pyramid_correction(&fill, &self.input, area, window, &cov, levels);
+            for c in 0..3 {
+                for (v, d) in fill.c[c].iter_mut().zip(&correction.c[c]) {
+                    *v += d;
+                }
             }
         }
-        drop(correction);
 
         let bounds = self.coverage.bounds();
         let pixels = bounds.pixels() as usize;
