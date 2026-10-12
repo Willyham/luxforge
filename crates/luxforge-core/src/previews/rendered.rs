@@ -784,6 +784,13 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
     let target = match &request.target {
         RenderTarget::File(target) => target.as_ref(),
         RenderTarget::Derived(read) => {
+            use crate::artifacts::derived_source::{SourceClass, paged_source::no_whole_frame};
+            // A paged source's previews render from its resident level once that path does
+            // (TASK-005 of the panorama plan); until then they are refused by name, before its
+            // overview is read.
+            if SourceClass::of(asset.width, asset.height)? == SourceClass::Paged {
+                return Err(no_whole_frame("a rendered preview", &read.id));
+            }
             // The stored source, verified chunk by chunk: a missing or damaged object is
             // `source-unavailable` naming the source and the chunk, and nothing is rendered.
             let work = SourceWork::Derived {
@@ -791,13 +798,19 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
                 read: Box::new(read.clone()),
                 first_open: None,
             };
-            let Prepared::Derived(_, derived, _) = work
+            let derived = match work
                 .run(&[], cancel.flag())
                 .map_err(|error| cancelled_or(cancel, error))?
-            else {
-                return Err(Error::internal(
-                    "a derived source's work prepared something else",
-                ));
+            {
+                Prepared::Derived(_, derived, _) => derived,
+                Prepared::Paged(_, paged, _) => {
+                    return Err(no_whole_frame("a rendered preview", paged.source.id()));
+                }
+                _ => {
+                    return Err(Error::internal(
+                        "a derived source's work prepared something else",
+                    ));
+                }
             };
             let source = PreviewSource::Raw {
                 image: derived.linear,
@@ -860,7 +873,7 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
                 settings: LinearSettings::default(),
             }
         }
-        PreparedSource::Derived(_) => {
+        PreparedSource::Derived(_) | PreparedSource::Paged(_) => {
             return Err(Error::internal("a file's work prepared a derived source"));
         }
     };

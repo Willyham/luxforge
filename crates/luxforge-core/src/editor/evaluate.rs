@@ -786,7 +786,7 @@ impl EditorService {
 /// for a JPEG and a derived source, which has no sensor. Shares the retained mosaic.
 pub(super) fn sensor_of(prepared: &PreparedSource) -> Option<Arc<dyn crate::tiles::SensorClip>> {
     match prepared {
-        PreparedSource::Jpeg(_) | PreparedSource::Derived(_) => None,
+        PreparedSource::Jpeg(_) | PreparedSource::Derived(_) | PreparedSource::Paged(_) => None,
         PreparedSource::Raw(raw) => Some(raw.sensor.clone() as Arc<dyn crate::tiles::SensorClip>),
     }
 }
@@ -816,6 +816,14 @@ pub(super) fn source_of(
             image: derived.linear,
             settings: crate::LinearSettings::default(),
         }),
+        // A paged source has no whole frame to evaluate; the editor, previews and export read its
+        // levels and windows once their paths do (TASK-004, TASK-005 of the panorama plan).
+        PreparedSource::Paged(paged) => Err(
+            crate::artifacts::derived_source::paged_source::no_whole_frame(
+                "evaluating a recipe",
+                paged.source.id(),
+            ),
+        ),
     }
 }
 

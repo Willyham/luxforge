@@ -8,12 +8,20 @@
 //! - **Chunks** of at most 1024 × 1024 pixels, [`CHUNK_SIDE`], tiling the frame row by row: the
 //!   chunk's red plane, row by row, then its green and blue planes, each sample an IEEE-754 binary32
 //!   in little-endian byte order, uncompressed. A full chunk is 12 MiB; no chunk passes
-//!   [`MAX_CHUNK_BYTES`] and no source holds more than [`MAX_CHUNKS`].
-//! - One **manifest**, a small JSON document of format [`SOURCE_MANIFEST_FORMAT`] naming the
-//!   dimensions, the colour interpretation (linear sRGB primaries, D65 white, linear transfer), the
-//!   sample encoding, the chunk layout and side, an optional crop within the reference frame, and
-//!   each chunk's rectangle, length and SHA-256. The source's identity is the SHA-256 of the
-//!   manifest's bytes, so it names exactly one content.
+//!   [`MAX_CHUNK_BYTES`].
+//! - One **manifest**, a small JSON document naming the dimensions, the colour interpretation
+//!   (linear sRGB primaries, D65 white, linear transfer), the sample encoding, the chunk layout and
+//!   side, an optional crop within the reference frame, and each chunk's rectangle, length and
+//!   SHA-256. The source's identity is the SHA-256 of the manifest's bytes, so it names exactly
+//!   one content.
+//!
+//! A source is of one of two classes, which follow from its dimensions alone ([`SourceClass`]). A
+//! **resident** source lies within the camera limits (`crate::source::RESIDENT_DERIVED_SOURCE`),
+//! holds at most [`MAX_CHUNKS`] chunks under a manifest of format [`RESIDENT_MANIFEST_FORMAT`], and
+//! is prepared whole into one [`LinearImage`], as every HDR result is. A **paged** source is larger,
+//! up to 65,000 pixels a side and 512 megapixels (`crate::source::PAGED_DERIVED_SOURCE`); its
+//! manifest, of format [`paged_source::PAGED_MANIFEST_FORMAT`], lists a pyramid of levels, and it is
+//! never allocated whole ([`paged_source`]). Any other shape is `incompatible` and kept.
 //!
 //! Writing, reading and collecting run here, on a worker. A writer stages each object in the
 //! shared `tmp/`, syncs it and renames it into `sources/`, then writes the manifest last and syncs
@@ -25,9 +33,13 @@
 //! (`crate::editor` `derived_source`), and a collection removes only objects nothing retains and no
 //! writer of this process published.
 // A derived photograph's preparation reads through here. The HDR merge's publication
-// (`docs/design/hdr-merge.md`) writes through here; until it does, only
-// the tests and the qualification harness call the writer.
+// (`docs/design/hdr-merge.md`) writes through here; the paged writer and reader serve the panorama
+// merge and the paged rendering paths, which build on them.
 #![cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod paged_source;
+
+pub(crate) use paged_source::PagedSource;
+
 use super::{
     lock,
     store::{RootState, TEMPORARY, root_state},
@@ -35,7 +47,7 @@ use super::{
 use crate::{
     Error,
     atomic_file::{self, file_error},
-    source::{LinearImage, layout},
+    source::{LinearImage, PAGED_DERIVED_SOURCE, RESIDENT_DERIVED_SOURCE},
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
@@ -54,14 +66,16 @@ use std::{
 pub(crate) const SOURCES: &str = "sources";
 /// The side of a full chunk, in pixels.
 pub(crate) const CHUNK_SIDE: u32 = 1024;
-/// The most chunks one source may hold: a 16,384-pixel square at [`CHUNK_SIDE`].
+/// The most chunks one resident source may hold: a 16,384-pixel square at [`CHUNK_SIDE`].
 pub(crate) const MAX_CHUNKS: usize = 256;
 /// The largest chunk object: 16 MiB, above the 12 MiB of a full RGB chunk.
 pub(crate) const MAX_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
-/// The current manifest shape. Any other marker is refused by name and left as it is.
-pub(crate) const SOURCE_MANIFEST_FORMAT: u32 = 1;
-/// The largest manifest: 256 chunk entries are about 36 KiB.
-pub(crate) const MAX_SOURCE_MANIFEST_BYTES: u64 = 64 * 1024;
+/// A resident source's manifest shape: one grid of chunks. A paged source's is
+/// [`paged_source::PAGED_MANIFEST_FORMAT`]; any other marker is refused by name and left as it is.
+pub(crate) const RESIDENT_MANIFEST_FORMAT: u32 = 1;
+/// The largest manifest of either format: a resident source's 256 chunk entries are about 36 KiB,
+/// a paged source's at most 5,462 about 750 KiB.
+pub(crate) const MAX_SOURCE_MANIFEST_BYTES: u64 = 1024 * 1024;
 const PREFIX: &str = "source-";
 /// Bytes per stored sample: one little-endian binary32.
 const SAMPLE_BYTES: u64 = 4;
@@ -202,21 +216,31 @@ pub(crate) struct ChunkRect {
 }
 
 impl ChunkRect {
-    fn pixels(self) -> usize {
+    pub(crate) fn pixels(self) -> usize {
         self.width as usize * self.height as usize
     }
 
     /// The chunk's stored length: three planes of binary32 samples.
-    fn bytes(self) -> u64 {
+    pub(crate) fn bytes(self) -> u64 {
         self.pixels() as u64 * 3 * SAMPLE_BYTES
     }
 }
 
-/// The chunks a `width` × `height` source is stored in, row by row and left to right, after the
-/// dimensions pass the linear-source bound (16,384 pixels a side, 128 megapixels, 1.5 GiB).
+/// The chunks a `width` × `height` resident source is stored in, row by row and left to right,
+/// after the dimensions pass the resident bound (16,384 pixels a side, 128 megapixels, 1.5 GiB).
 pub(crate) fn chunk_grid(width: u32, height: u32) -> Result<Vec<ChunkRect>, Error> {
-    layout(width, height)?;
-    let mut grid = Vec::new();
+    RESIDENT_DERIVED_SOURCE.check(width, height)?;
+    let grid = grid_of(width, height);
+    debug_assert!(grid.len() <= MAX_CHUNKS && grid.iter().all(|c| c.bytes() <= MAX_CHUNK_BYTES));
+    Ok(grid)
+}
+
+/// The [`CHUNK_SIDE`] grid of any `width` × `height` plane, row by row and left to right, of
+/// dimensions a caller already bounded.
+pub(crate) fn grid_of(width: u32, height: u32) -> Vec<ChunkRect> {
+    let mut grid = Vec::with_capacity(
+        width.div_ceil(CHUNK_SIDE) as usize * height.div_ceil(CHUNK_SIDE) as usize,
+    );
     for y in (0..height).step_by(CHUNK_SIDE as usize) {
         for x in (0..width).step_by(CHUNK_SIDE as usize) {
             grid.push(ChunkRect {
@@ -227,12 +251,45 @@ pub(crate) fn chunk_grid(width: u32, height: u32) -> Result<Vec<ChunkRect>, Erro
             });
         }
     }
-    debug_assert!(grid.len() <= MAX_CHUNKS && grid.iter().all(|c| c.bytes() <= MAX_CHUNK_BYTES));
-    Ok(grid)
+    grid
 }
 
-/// The manifest as stored, its marker first. `deny_unknown_fields` and the closed enumerations make
-/// every other shape `incompatible`.
+/// Which way a derived source is stored and prepared, from its dimensions alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceClass {
+    /// Within the camera limits: one grid under a format 1 manifest, prepared whole.
+    Resident,
+    /// Past them, within the paged limits: a pyramid under a format 2 manifest, read in pages.
+    Paged,
+}
+
+impl SourceClass {
+    /// The class of a `width` × `height` source: resident within the resident bound, paged past
+    /// it within the paged bound, refused past that (`resource-limit`) or when empty
+    /// (`validation`).
+    pub(crate) fn of(width: u32, height: u32) -> Result<Self, Error> {
+        if RESIDENT_DERIVED_SOURCE.check(width, height).is_ok() {
+            return Ok(Self::Resident);
+        }
+        PAGED_DERIVED_SOURCE.check(width, height)?;
+        Ok(Self::Paged)
+    }
+}
+
+/// Every chunk a `width` × `height` source stores, in the order its manifest and the catalog list
+/// them: a resident source's grid, or a paged source's levels one after another, each row by row.
+pub(crate) fn stored_chunks(width: u32, height: u32) -> Result<Vec<ChunkRect>, Error> {
+    match SourceClass::of(width, height)? {
+        SourceClass::Resident => chunk_grid(width, height),
+        SourceClass::Paged => Ok(paged_source::level_shapes(width, height)
+            .into_iter()
+            .flat_map(|(width, height)| grid_of(width, height))
+            .collect()),
+    }
+}
+
+/// A resident source's manifest as stored, its marker first. `deny_unknown_fields` and the closed
+/// enumerations make every other shape `incompatible`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceManifest {
@@ -248,9 +305,11 @@ struct SourceManifest {
     chunks: Vec<ChunkEntry>,
 }
 
+/// One chunk as a manifest lists it: its rectangle in its level's pixels, its stored length and
+/// the SHA-256 that names its object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChunkEntry {
+pub(crate) struct ChunkEntry {
     x: u32,
     y: u32,
     width: u32,
@@ -259,56 +318,99 @@ struct ChunkEntry {
     sha256: String,
 }
 
+impl ChunkEntry {
+    fn new(rect: ChunkRect, sha256: String) -> Self {
+        Self {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            bytes: rect.bytes(),
+            sha256,
+        }
+    }
+
+    pub(crate) fn rect(&self) -> ChunkRect {
+        ChunkRect {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+/// The refusal of a manifest's contents, which leaves the source as it is.
+fn incompatible_manifest(id: &DerivedSourceId, reason: impl std::fmt::Display) -> Error {
+    Error::incompatible(format!(
+        "derived source {id} manifest {reason}; the source is kept unchanged"
+    ))
+}
+
+/// Whether `entries` lie exactly on `grid`, each with its place's length and a well-formed hash,
+/// naming the first that does not by `name(ordinal)`. A hash is a name under `sources/` and
+/// nothing else, so no entry can reach outside it.
+fn check_entries(
+    entries: &[ChunkEntry],
+    grid: &[ChunkRect],
+    name: impl Fn(usize) -> String,
+) -> Result<(), String> {
+    if entries.len() != grid.len() {
+        return Err(format!(
+            "lists {} chunks where its dimensions need {}",
+            entries.len(),
+            grid.len()
+        ));
+    }
+    for (ordinal, (entry, rect)) in entries.iter().zip(grid).enumerate() {
+        if entry.rect() != *rect || entry.bytes != rect.bytes() || entry.bytes > MAX_CHUNK_BYTES {
+            return Err(format!(
+                "{} does not match its place in the grid",
+                name(ordinal)
+            ));
+        }
+        if !is_sha256(&entry.sha256) {
+            return Err(format!("{} does not name a SHA-256", name(ordinal)));
+        }
+    }
+    Ok(())
+}
+
 impl SourceManifest {
-    /// Everything the shape cannot say: the dimensions within the source bound, the chunk side,
+    /// Everything the shape cannot say: the dimensions within the resident bound, the chunk side,
     /// the crop within its reference, and the chunks exactly the grid, each with its length and a
-    /// well-formed hash. A hash is a name under `sources/` and nothing else, so no entry can reach
-    /// outside it.
-    fn check(&self, id: &DerivedSourceId) -> Result<Vec<ChunkRect>, Error> {
-        let incompatible = |reason: String| {
-            Error::incompatible(format!(
-                "derived source {id} manifest {reason}; the source is kept unchanged"
-            ))
-        };
+    /// well-formed hash.
+    fn check(self, id: &DerivedSourceId) -> Result<VerifiedManifest, Error> {
         if self.chunk_side != CHUNK_SIDE {
-            return Err(incompatible(format!(
-                "uses {} pixel chunks, not {CHUNK_SIDE}",
-                self.chunk_side
-            )));
+            return Err(incompatible_manifest(
+                id,
+                format!("uses {} pixel chunks, not {CHUNK_SIDE}", self.chunk_side),
+            ));
         }
         let grid = chunk_grid(self.width, self.height).map_err(|error| {
-            incompatible(format!("dimensions are out of bounds ({})", error.detail))
+            incompatible_manifest(
+                id,
+                format!("dimensions are out of bounds ({})", error.detail),
+            )
         })?;
         if let Some(crop) = self.crop {
             check_crop(crop, self.width, self.height)
-                .map_err(|error| incompatible(error.detail))?;
+                .map_err(|error| incompatible_manifest(id, error.detail))?;
         }
-        if self.chunks.len() != grid.len() || self.chunks.len() > MAX_CHUNKS {
-            return Err(incompatible(format!(
-                "lists {} chunks where its dimensions need {}",
-                self.chunks.len(),
-                grid.len()
-            )));
-        }
-        for (ordinal, (entry, rect)) in self.chunks.iter().zip(&grid).enumerate() {
-            let listed = ChunkRect {
-                x: entry.x,
-                y: entry.y,
-                width: entry.width,
-                height: entry.height,
-            };
-            if listed != *rect || entry.bytes != rect.bytes() || entry.bytes > MAX_CHUNK_BYTES {
-                return Err(incompatible(format!(
-                    "chunk {ordinal} does not match its place in the grid"
-                )));
-            }
-            if !is_sha256(&entry.sha256) {
-                return Err(incompatible(format!(
-                    "chunk {ordinal} does not name a SHA-256"
-                )));
-            }
-        }
-        Ok(grid)
+        check_entries(&self.chunks, &grid, |ordinal| format!("chunk {ordinal}"))
+            .map_err(|reason| incompatible_manifest(id, reason))?;
+        Ok(VerifiedManifest {
+            class: SourceClass::Resident,
+            width: self.width,
+            height: self.height,
+            colour: self.colour,
+            crop: self.crop,
+            levels: vec![VerifiedLevel {
+                width: self.width,
+                height: self.height,
+                chunks: self.chunks,
+            }],
+        })
     }
 }
 
@@ -367,10 +469,16 @@ impl PublishedSource {
         self.chunks.iter().map(|chunk| chunk.bytes).sum()
     }
 
-    /// A record is only accepted whole: the dimensions within the source bound, a chunk for each
-    /// place in the grid with that place's length and a well-formed hash, and a bounded manifest.
+    /// Which way the source is stored and prepared.
+    pub(crate) fn class(&self) -> Result<SourceClass, Error> {
+        SourceClass::of(self.width, self.height)
+    }
+
+    /// A record is only accepted whole: the dimensions within the paged bound, a chunk for each
+    /// place the source stores ([`stored_chunks`]: a resident source's grid, or every level of a
+    /// paged one) with that place's length and a well-formed hash, and a bounded manifest.
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        let grid = chunk_grid(self.width, self.height)?;
+        let grid = stored_chunks(self.width, self.height)?;
         let chunks_fit = self.chunks.len() == grid.len()
             && self
                 .chunks
@@ -511,9 +619,10 @@ fn object_holds(root: &Path, sha256: &str, bytes: &[u8]) -> Result<bool, Error> 
 /// The writer's boundaries, which a test may make fail ([`fail::at`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
-    /// Writing or syncing chunk `n`'s staged file.
+    /// Writing or syncing chunk `n`'s staged file: `n` counts the source's stored chunks in
+    /// manifest order, a paged source's level 0 first and then each further level.
     StageChunk(usize),
-    /// Renaming chunk `n` into `sources/`.
+    /// Renaming chunk `n` into `sources/`, counted as [`Self::StageChunk`] counts.
     RenameChunk(usize),
     /// Writing or syncing the staged manifest.
     StageManifest,
@@ -640,6 +749,10 @@ impl DerivedSourceWriter {
     /// its three planes — `width × height` red values row by row, then green, then blue — to write
     /// in full; so a caller that streams its result never holds more than one chunk here.
     ///
+    /// The source's class follows from its dimensions ([`SourceClass`]): a resident source is
+    /// written as below; a paged one is written through [`Self::begin_paged`], `fill` handed its
+    /// level-0 chunks in grid order, and its further levels built after them.
+    ///
     /// The root is claimed on first use as an artifact write claims it, and a root that is another
     /// catalog's is `incompatible`. Each chunk is encoded, refused with `validation` if any sample
     /// is not finite, hashed, staged in `tmp/`, synced and renamed to `sources/<sha256>`, so the
@@ -659,16 +772,30 @@ impl DerivedSourceWriter {
         cancel: &AtomicBool,
         mut fill: impl FnMut(ChunkRect, &mut [f32]) -> Result<(), Error>,
     ) -> Result<PublishedSource, Error> {
+        if SourceClass::of(width, height)? == SourceClass::Paged {
+            let mut write = self.begin_paged(width, height, crop, cancel)?;
+            let grid = write.grid().to_vec();
+            let largest = grid.first().map_or(0, |rect| rect.pixels());
+            let mut samples = vec![0.0_f32; 3 * largest];
+            for (ordinal, rect) in grid.into_iter().enumerate() {
+                cancelled(cancel)?;
+                let planes = &mut samples[..3 * rect.pixels()];
+                fill(rect, planes)?;
+                write.put(ordinal, planes, cancel)?;
+                #[cfg(test)]
+                paged_source::scratch::record(
+                    (samples.capacity() * 4 + write.encoded.capacity()) as u64,
+                );
+            }
+            drop(samples);
+            return write.finish(cancel);
+        }
         let grid = chunk_grid(width, height)?;
         if let Some(crop) = crop {
             check_crop(crop, width, height)?;
         }
         cancelled(cancel)?;
-        self.artifacts.prepare_root()?;
-        let sources = self.root.join(SOURCES);
-        fs::create_dir_all(&sources)
-            .map_err(|error| file_error("cannot create derived source directory", error.kind()))?;
-        sources_dir(&self.root)?;
+        let sources = self.claim_sources()?;
         let largest = grid.first().map_or(0, |rect| rect.pixels());
         let mut samples = vec![0.0_f32; 3 * largest];
         let mut encoded: Vec<u8> = Vec::with_capacity(3 * largest * SAMPLE_BYTES as usize);
@@ -677,35 +804,12 @@ impl DerivedSourceWriter {
             cancelled(cancel)?;
             let planes = &mut samples[..3 * rect.pixels()];
             fill(*rect, planes)?;
-            encoded.clear();
-            for value in planes.iter() {
-                if !value.is_finite() {
-                    return Err(Error::validation(format!(
-                        "derived source chunk at {},{} holds a non-finite value",
-                        rect.x, rect.y
-                    )));
-                }
-                encoded.extend_from_slice(&value.to_le_bytes());
-            }
-            let sha256 = sha256_hex(&encoded);
-            self.publish(
-                &sha256,
-                &encoded,
-                [Step::StageChunk(ordinal), Step::RenameChunk(ordinal)],
-            )?;
-            entries.push(ChunkEntry {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-                bytes: rect.bytes(),
-                sha256,
-            });
+            entries.push(self.put_chunk(*rect, planes, ordinal, &mut encoded)?);
         }
         drop((samples, encoded));
         cancelled(cancel)?;
         let manifest = SourceManifest {
-            format: SOURCE_MANIFEST_FORMAT,
+            format: RESIDENT_MANIFEST_FORMAT,
             width,
             height,
             colour: DerivedColour::LinearSrgbD65,
@@ -718,21 +822,10 @@ impl DerivedSourceWriter {
         let bytes = serde_json::to_vec(&manifest).map_err(|error| {
             Error::internal(format!("cannot encode a source manifest: {error}"))
         })?;
-        if bytes.len() as u64 > MAX_SOURCE_MANIFEST_BYTES {
-            return Err(Error::resource_limit(format!(
-                "a derived source manifest of {} bytes exceeds {MAX_SOURCE_MANIFEST_BYTES}",
-                bytes.len()
-            )));
-        }
-        let sha256 = sha256_hex(&bytes);
-        let id = DerivedSourceId::for_hash(&sha256)?;
-        self.publish(&sha256, &bytes, [Step::StageManifest, Step::RenameManifest])?;
-        inject(Step::SyncDirectory)
-            .and_then(|()| atomic_file::sync_dir(&sources))
-            .map_err(|error| file_error("cannot publish derived source", error.kind()))?;
+        let (id, manifest_bytes) = self.publish_manifest(&sources, &bytes)?;
         Ok(PublishedSource {
             id,
-            manifest_bytes: bytes.len() as u64,
+            manifest_bytes,
             width,
             height,
             colour: DerivedColour::LinearSrgbD65,
@@ -747,6 +840,68 @@ impl DerivedSourceWriter {
         })
     }
 
+    /// Claim the root as an artifact write claims it, and make `sources/` a directory of its own.
+    fn claim_sources(&self) -> Result<PathBuf, Error> {
+        self.artifacts.prepare_root()?;
+        let sources = self.root.join(SOURCES);
+        fs::create_dir_all(&sources)
+            .map_err(|error| file_error("cannot create derived source directory", error.kind()))?;
+        sources_dir(&self.root)?;
+        Ok(sources)
+    }
+
+    /// Encode, hash and publish one chunk at `rect` from its three `planes`, the `ordinal`th of
+    /// the source's stored chunks (which the failure injection names), refusing a non-finite
+    /// sample with `validation`; `encoded` is the caller's reusable scratch.
+    fn put_chunk(
+        &self,
+        rect: ChunkRect,
+        planes: &[f32],
+        ordinal: usize,
+        encoded: &mut Vec<u8>,
+    ) -> Result<ChunkEntry, Error> {
+        if !planes.iter().all(|value| value.is_finite()) {
+            return Err(Error::validation(format!(
+                "derived source chunk at {},{} holds a non-finite value",
+                rect.x, rect.y
+            )));
+        }
+        encoded.clear();
+        encoded.resize(planes.len() * SAMPLE_BYTES as usize, 0);
+        for (bytes, value) in encoded.chunks_exact_mut(SAMPLE_BYTES as usize).zip(planes) {
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+        let sha256 = sha256_hex(encoded);
+        self.publish(
+            &sha256,
+            encoded,
+            [Step::StageChunk(ordinal), Step::RenameChunk(ordinal)],
+        )?;
+        Ok(ChunkEntry::new(rect, sha256))
+    }
+
+    /// Publish a manifest's `bytes` last, then sync `sources/` once, so every rename before it is
+    /// durable; answers the source's identity and the manifest's length.
+    fn publish_manifest(
+        &self,
+        sources: &Path,
+        bytes: &[u8],
+    ) -> Result<(DerivedSourceId, u64), Error> {
+        if bytes.len() as u64 > MAX_SOURCE_MANIFEST_BYTES {
+            return Err(Error::resource_limit(format!(
+                "a derived source manifest of {} bytes exceeds {MAX_SOURCE_MANIFEST_BYTES}",
+                bytes.len()
+            )));
+        }
+        let sha256 = sha256_hex(bytes);
+        let id = DerivedSourceId::for_hash(&sha256)?;
+        self.publish(&sha256, bytes, [Step::StageManifest, Step::RenameManifest])?;
+        inject(Step::SyncDirectory)
+            .and_then(|()| atomic_file::sync_dir(sources))
+            .map_err(|error| file_error("cannot publish derived source", error.kind()))?;
+        Ok((id, bytes.len() as u64))
+    }
+
     /// [`Self::write_with`] over whole planes already in memory: `planes` is `width × height` red
     /// values row by row, then green, then blue, as a [`LinearImage`] holds them.
     pub(crate) fn write_planes(
@@ -757,7 +912,7 @@ impl DerivedSourceWriter {
         crop: Option<ReferenceCrop>,
         cancel: &AtomicBool,
     ) -> Result<PublishedSource, Error> {
-        let (values, plane) = layout(width, height)?;
+        let (values, plane) = PAGED_DERIVED_SOURCE.layout(width, height)?;
         if planes.len() != values {
             return Err(Error::validation(format!(
                 "a {width} × {height} derived source needs {values} planar values"
@@ -823,36 +978,67 @@ pub(crate) struct DerivedSourceRead {
     pub(crate) manifest_bytes: u64,
 }
 
-/// A source's manifest whose hash, shape and bounds a worker checked.
+/// A source's manifest whose hash, shape and bounds a worker checked: its class, dimensions,
+/// colour and crop, and its levels — a resident source's one grid, or a paged source's pyramid,
+/// level 0 first.
 #[derive(Clone, Debug)]
 pub(crate) struct VerifiedManifest {
-    manifest: SourceManifest,
-    grid: Vec<ChunkRect>,
+    class: SourceClass,
+    width: u32,
+    height: u32,
+    colour: DerivedColour,
+    crop: Option<ReferenceCrop>,
+    levels: Vec<VerifiedLevel>,
+}
+
+/// One level of a verified manifest: its dimensions and its chunks, exactly its grid.
+#[derive(Clone, Debug)]
+pub(crate) struct VerifiedLevel {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) chunks: Vec<ChunkEntry>,
 }
 
 impl VerifiedManifest {
+    pub(crate) fn class(&self) -> SourceClass {
+        self.class
+    }
+
     pub(crate) fn width(&self) -> u32 {
-        self.manifest.width
+        self.width
     }
 
     pub(crate) fn height(&self) -> u32 {
-        self.manifest.height
+        self.height
     }
 
     pub(crate) fn colour(&self) -> DerivedColour {
-        self.manifest.colour
+        self.colour
     }
 
     pub(crate) fn crop(&self) -> Option<ReferenceCrop> {
-        self.manifest.crop
+        self.crop
     }
 
-    /// Each chunk's hash, in manifest order.
+    /// The levels, level 0 first: one for a resident source.
+    pub(crate) fn levels(&self) -> &[VerifiedLevel] {
+        &self.levels
+    }
+
+    /// Each chunk's hash, in manifest order: every level's, level 0 first.
     pub(crate) fn chunk_hashes(&self) -> impl Iterator<Item = &str> {
-        self.manifest
-            .chunks
+        self.levels
             .iter()
-            .map(|entry| entry.sha256.as_str())
+            .flat_map(|level| level.chunks.iter().map(|entry| entry.sha256.as_str()))
+    }
+
+    /// How an error names chunk `ordinal` of `level`: `chunk <n>` for a resident source's one
+    /// grid, `level <l> chunk <n>` for a paged source's.
+    pub(crate) fn chunk_name(&self, level: usize, ordinal: usize) -> String {
+        match self.class {
+            SourceClass::Resident => format!("chunk {ordinal}"),
+            SourceClass::Paged => format!("level {level} chunk {ordinal}"),
+        }
     }
 }
 
@@ -873,10 +1059,11 @@ fn check_root(read: &DerivedSourceRead) -> Result<(), Error> {
 }
 
 /// Read and verify one source's manifest: the root is this catalog's, the object a file of its own
-/// with the recorded length and the hash its identity names, and the document the current format
-/// and shape with every bound and chunk place checked. A missing manifest is `source-unavailable:
-/// derived source <id> is missing`, another length or hash `... is corrupt`, another format or
-/// shape `incompatible`; nothing is ever rewritten. Worker work: at most 64 KiB.
+/// with the recorded length and the hash its identity names, and the document a known format and
+/// shape with every bound and chunk place checked — format 1 for a resident source, format 2 for a
+/// paged one. A missing manifest is `source-unavailable: derived source <id> is missing`, another
+/// length or hash `... is corrupt`, another format or shape `incompatible`; nothing is ever
+/// rewritten. Worker work: at most 1 MiB.
 pub(crate) fn read_manifest(read: &DerivedSourceRead) -> Result<VerifiedManifest, Error> {
     let id = &read.id;
     let missing = || Error::source_unavailable(format!("derived source {id} is missing"));
@@ -906,79 +1093,158 @@ pub(crate) fn read_manifest(read: &DerivedSourceRead) -> Result<VerifiedManifest
     if !whole || sha256_hex(&bytes) != id.sha256() {
         return Err(corrupt());
     }
-    let manifest = parse_manifest(id, &bytes)?;
-    let grid = manifest.check(id)?;
-    Ok(VerifiedManifest { manifest, grid })
+    parse_manifest(id, &bytes)
 }
 
 /// The manifest document: its marker first, so a format this build does not know is named as
-/// such, then the current shape.
-fn parse_manifest(id: &DerivedSourceId, bytes: &[u8]) -> Result<SourceManifest, Error> {
-    let incompatible = |reason: String| {
-        Error::incompatible(format!(
-            "derived source {id} manifest {reason}; the source is kept unchanged"
-        ))
-    };
+/// such, then that format's shape.
+fn parse_manifest(id: &DerivedSourceId, bytes: &[u8]) -> Result<VerifiedManifest, Error> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|error| incompatible(format!("is not valid JSON ({error})")))?;
+        .map_err(|error| incompatible_manifest(id, format!("is not valid JSON ({error})")))?;
+    let shape = |error: serde_json::Error| {
+        incompatible_manifest(id, format!("is not a source manifest ({error})"))
+    };
     match value.get("format").and_then(serde_json::Value::as_u64) {
-        Some(format) if format == u64::from(SOURCE_MANIFEST_FORMAT) => {}
-        Some(format) => return Err(incompatible(format!("format {format} is not supported"))),
-        None => return Err(incompatible("has no format marker".into())),
+        Some(format) if format == u64::from(RESIDENT_MANIFEST_FORMAT) => {
+            serde_json::from_value::<SourceManifest>(value)
+                .map_err(shape)?
+                .check(id)
+        }
+        Some(format) if format == u64::from(paged_source::PAGED_MANIFEST_FORMAT) => {
+            serde_json::from_value::<paged_source::PagedManifest>(value)
+                .map_err(shape)?
+                .check(id)
+        }
+        Some(format) => Err(incompatible_manifest(
+            id,
+            format!("format {format} is not supported"),
+        )),
+        None => Err(incompatible_manifest(id, "has no format marker")),
     }
-    serde_json::from_value(value)
-        .map_err(|error| incompatible(format!("is not a source manifest ({error})")))
 }
 
-/// Read and verify a whole derived source into one [`LinearImage`] allocation: the manifest
-/// ([`read_manifest`]), then each chunk in turn through one reusable 12 MiB buffer — a file of its
-/// own, of the listed length and hash, every sample finite — copied into its place in the planes.
-/// A missing chunk is `source-unavailable: derived source <id> chunk <n> is missing`, another
-/// length, hash or a non-finite sample `... is corrupt`; cancellation is checked between chunks.
-/// The image is the source's identity view, fingerprinted with the source identity; negative
-/// values and values above one are kept exactly. Worker work: one full frame of planes, at most
-/// 1.5 GiB, which the caller accounts for, and one chunk of scratch.
+/// What reading one object against its manifest entry found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObjectRead {
+    /// The object holds exactly the listed bytes, now in the buffer.
+    Verified,
+    Missing,
+    /// Another length or hash.
+    Corrupt,
+}
+
+/// Read the object `entry` names under `root` into `buffer` and check it against the entry: a file
+/// of its own, of the listed length and hash. Never follows a link. Worker work: one chunk, at
+/// most 16 MiB.
+pub(crate) fn read_object(
+    root: &Path,
+    entry: &ChunkEntry,
+    buffer: &mut Vec<u8>,
+) -> Result<ObjectRead, Error> {
+    match object_length(root, &entry.sha256)? {
+        None => return Ok(ObjectRead::Missing),
+        Some(length) if length != entry.bytes => return Ok(ObjectRead::Corrupt),
+        Some(_) => {}
+    }
+    let mut file = match File::open(source_object_path(root, &entry.sha256)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ObjectRead::Missing),
+        Err(error) => return Err(file_error("cannot read derived source", error.kind())),
+        Ok(file) => file,
+    };
+    buffer.resize(entry.bytes as usize, 0);
+    let whole = read_exactly(&mut file, buffer)
+        .map_err(|error| file_error("cannot read derived source", error.kind()))?;
+    Ok(if whole && sha256_hex(buffer) == entry.sha256 {
+        ObjectRead::Verified
+    } else {
+        ObjectRead::Corrupt
+    })
+}
+
+/// Read and verify the chunk `entry` of the source `read` names, which errors call `name`, into
+/// `buffer` ([`read_object`]). A missing object is
+/// `source-unavailable: derived source <id> <name> is missing`, another length or hash
+/// `... is corrupt`; nothing is rewritten.
+pub(crate) fn read_chunk(
+    read: &DerivedSourceRead,
+    name: &str,
+    entry: &ChunkEntry,
+    buffer: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let id = &read.id;
+    match read_object(&read.root, entry, buffer)? {
+        ObjectRead::Verified => Ok(()),
+        ObjectRead::Missing => Err(Error::source_unavailable(format!(
+            "derived source {id} {name} is missing"
+        ))),
+        ObjectRead::Corrupt => Err(corrupt_chunk(id, name)),
+    }
+}
+
+/// The refusal of a chunk whose bytes are not the ones its manifest names, or not finite samples.
+pub(crate) fn corrupt_chunk(id: &DerivedSourceId, name: &str) -> Error {
+    Error::source_unavailable(format!("derived source {id} {name} is corrupt"))
+}
+
+/// One stored sample, little-endian binary32, as a finite value; `None` when it is not finite.
+#[inline]
+pub(crate) fn decode_sample(bytes: &[u8]) -> Option<f32> {
+    let value = f32::from_le_bytes(bytes.try_into().ok()?);
+    value.is_finite().then_some(value)
+}
+
+/// Decode a verified chunk's stored samples, little-endian binary32, into `values`, replacing what
+/// it held, and answer whether every one is finite.
+pub(crate) fn decode_samples(bytes: &[u8], values: &mut Vec<f32>) -> bool {
+    values.clear();
+    values.extend(
+        bytes
+            .chunks_exact(SAMPLE_BYTES as usize)
+            .map(|sample| f32::from_le_bytes(sample.try_into().expect("four bytes a sample"))),
+    );
+    values.iter().all(|value| value.is_finite())
+}
+
+/// Read and verify a whole resident derived source into one [`LinearImage`] allocation: the
+/// manifest ([`read_manifest`]), then each chunk in turn through one reusable 12 MiB buffer — a
+/// file of its own, of the listed length and hash, every sample finite — copied into its place in
+/// the planes. A missing chunk is `source-unavailable: derived source <id> chunk <n> is missing`,
+/// another length, hash or a non-finite sample `... is corrupt`; cancellation is checked between
+/// chunks. The image is the source's identity view, fingerprinted with the source identity;
+/// negative values and values above one are kept exactly. A paged source has no whole frame and is
+/// refused (`resource-limit`) before any chunk is read: it is prepared through
+/// [`prepare_derived`]. Worker work: one full frame of planes, at most 1.5 GiB, which the caller
+/// accounts for, and one chunk of scratch.
 pub(crate) fn read_derived_source(
     read: &DerivedSourceRead,
     cancel: &AtomicBool,
 ) -> Result<LinearImage, Error> {
     cancelled(cancel)?;
     let verified = read_manifest(read)?;
-    let (width, height) = (verified.width(), verified.height());
-    let (values, plane) = layout(width, height)?;
+    read_resident(read, &verified, cancel)
+}
+
+/// [`read_derived_source`] after its manifest is read.
+fn read_resident(
+    read: &DerivedSourceRead,
+    verified: &VerifiedManifest,
+    cancel: &AtomicBool,
+) -> Result<LinearImage, Error> {
     let id = &read.id;
+    if verified.class == SourceClass::Paged {
+        return Err(paged_source::no_whole_frame("reading the whole frame", id));
+    }
+    let (width, height) = (verified.width(), verified.height());
+    let (values, plane) = RESIDENT_DERIVED_SOURCE.layout(width, height)?;
     // Every value is written below, chunk by chunk, before the planes are adopted; a zeroed
     // allocation only faults its pages in as they are written.
     let mut planes = vec![0.0_f32; values];
     let mut buffer = Vec::new();
-    for (ordinal, (entry, rect)) in verified
-        .manifest
-        .chunks
-        .iter()
-        .zip(&verified.grid)
-        .enumerate()
-    {
+    for (ordinal, entry) in verified.levels[0].chunks.iter().enumerate() {
         cancelled(cancel)?;
-        let missing =
-            || Error::source_unavailable(format!("derived source {id} chunk {ordinal} is missing"));
-        let corrupt =
-            || Error::source_unavailable(format!("derived source {id} chunk {ordinal} is corrupt"));
-        match object_length(&read.root, &entry.sha256)? {
-            None => return Err(missing()),
-            Some(length) if length != entry.bytes => return Err(corrupt()),
-            Some(_) => {}
-        }
-        let mut file = match File::open(source_object_path(&read.root, &entry.sha256)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(missing()),
-            Err(error) => return Err(file_error("cannot read derived source", error.kind())),
-            Ok(file) => file,
-        };
-        buffer.resize(entry.bytes as usize, 0);
-        let whole = read_exactly(&mut file, &mut buffer)
-            .map_err(|error| file_error("cannot read derived source", error.kind()))?;
-        if !whole || sha256_hex(&buffer) != entry.sha256 {
-            return Err(corrupt());
-        }
+        let name = verified.chunk_name(0, ordinal);
+        read_chunk(read, &name, entry, &mut buffer)?;
+        let rect = entry.rect();
         let (columns, rows) = (rect.width as usize, rect.height as usize);
         let row_bytes = columns * SAMPLE_BYTES as usize;
         for channel in 0..3 {
@@ -991,17 +1257,38 @@ pub(crate) fn read_derived_source(
                     .iter_mut()
                     .zip(buffer[from..from + row_bytes].chunks_exact(SAMPLE_BYTES as usize))
                 {
-                    let decoded =
-                        f32::from_le_bytes(sample.try_into().expect("four bytes a sample"));
-                    if !decoded.is_finite() {
-                        return Err(corrupt());
-                    }
-                    *value = decoded;
+                    *value = decode_sample(sample).ok_or_else(|| corrupt_chunk(id, &name))?;
                 }
             }
         }
     }
     LinearImage::from_validated_planes(width, height, planes, id.as_str().to_owned())
+}
+
+/// A derived source as its preparation reads it: a resident source's whole planes, or a paged
+/// source's manifest and smallest level, its other levels read on demand.
+#[derive(Debug)]
+pub(crate) enum PreparedDerived {
+    Resident(LinearImage),
+    Paged(Box<PagedSource>),
+}
+
+/// Prepare a derived source on a worker: read and verify its manifest ([`read_manifest`]), then
+/// either read a resident source whole ([`read_derived_source`]) or open a paged one
+/// ([`PagedSource::open`]), which reads its smallest level and never allocates level 0 whole.
+pub(crate) fn prepare_derived(
+    read: &DerivedSourceRead,
+    cancel: &AtomicBool,
+) -> Result<PreparedDerived, Error> {
+    cancelled(cancel)?;
+    let verified = read_manifest(read)?;
+    match verified.class {
+        SourceClass::Resident => {
+            read_resident(read, &verified, cancel).map(PreparedDerived::Resident)
+        }
+        SourceClass::Paged => PagedSource::open(read.clone(), verified, cancel)
+            .map(|source| PreparedDerived::Paged(Box::new(source))),
+    }
 }
 
 /// Remove every object in `sources/` that `keep` does not name and no writer of this process
@@ -1498,8 +1785,13 @@ mod tests {
         };
         let cases: Vec<(serde_json::Value, &str)> = vec![
             (
+                changed(&|m| m["format"] = 3.into()),
+                "format 3 is not supported",
+            ),
+            // A resident grid under the paged marker is neither shape.
+            (
                 changed(&|m| m["format"] = 2.into()),
-                "format 2 is not supported",
+                "is not a source manifest",
             ),
             (
                 changed(&|m| {
