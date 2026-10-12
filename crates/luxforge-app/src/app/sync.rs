@@ -262,6 +262,12 @@ impl Editor {
                             sync.themes,
                             sync.usage,
                         );
+                        let updates = if sync.updates {
+                            self.read_updates()
+                        } else {
+                            Task::none()
+                        };
+                        let flags = Task::batch([flags, updates]);
                         let strip = match sync.library {
                             Some(sequence) => self.develop_library_changed(sequence),
                             None => Task::none(),

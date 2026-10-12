@@ -12,6 +12,7 @@ mod select;
 mod select_catalog;
 mod select_merge;
 mod select_missing;
+mod update;
 mod usage;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
@@ -568,6 +569,10 @@ pub(crate) enum Settle {
     UsageNotice,
     /// The usage statistics consent's read, or its last outstanding write, answered.
     Usage,
+    /// The update offer is on screen.
+    UpdateOffer,
+    /// An update step's call answered, or was refused.
+    Update,
     /// The Corrections workspace has finished what a step started: its draft ended or was refused,
     /// its request answered, and its list and pins describe the entry on screen.
     Corrections,
@@ -611,6 +616,8 @@ impl Settle {
             Self::DevelopAhead => "develop_ahead",
             Self::UsageNotice => "usage_notice",
             Self::Usage => "usage",
+            Self::UpdateOffer => "update_offer",
+            Self::Update => "update",
             Self::Corrections => "corrections",
         }
     }
@@ -1422,6 +1429,7 @@ impl Editor {
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
             Step::Usage(step) => self.usage_step(step),
+            Step::Update(step) => self.update_step(step),
             Step::Wait { ms } => self.wait_step(ms),
             Step::Open { path } => self.open_step(path),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
@@ -4549,6 +4557,7 @@ impl Editor {
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
             PaletteAction::Theme(id) => self.arm_theme_settle(id),
+            PaletteAction::CheckForUpdates => self.await_step(Settle::Update),
             PaletteAction::Host(_) => self.await_step(Settle::Quiet),
             // A reveal is local view state, unless it has to show the tools panel first.
             PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
@@ -5343,6 +5352,12 @@ impl Editor {
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
             Outcome::UsageNotice => self.settle_step(Settle::UsageNotice, by),
             Outcome::UsageAnswered => self.settle_step(Settle::Usage, by),
+            Outcome::UpdateOffer => {
+                if self.workspace_update_offered() {
+                    self.settle_step(Settle::UpdateOffer, by);
+                }
+            }
+            Outcome::UpdateAnswered => self.settle_step(Settle::Update, by),
             // A theme chosen is drawn by a read and stored by a write, which answer in either
             // order: the step settles on whichever lands last.
             Outcome::PreferencesWritten | Outcome::ThemeDrawn => {

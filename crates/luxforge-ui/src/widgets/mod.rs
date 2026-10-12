@@ -99,7 +99,8 @@ pub use histogram::{
 };
 pub use hover_panel::hover_panel;
 pub use icon_button::{
-    Icon, IconButtonModel, header_icon_button, icon_button, title_bar_icon_button, with_tooltip,
+    Icon, IconButtonModel, header_icon_button, icon, icon_button, title_bar_icon_button,
+    with_tooltip,
 };
 pub use inline_menu::inline_menu;
 pub use inline_notice::inline_notice;
@@ -199,7 +200,6 @@ pub(crate) use coverage_thumbnail::coverage_thumbnail;
 pub(crate) use double_click::double_click;
 pub(crate) use floating_bar::floating_bar;
 pub(crate) use histogram::clip_triangle;
-pub(crate) use icon_button::icon;
 pub(crate) use popover::POPOVER_GAP;
 pub(crate) use section_header::section_header;
 pub(crate) use text::value_text;

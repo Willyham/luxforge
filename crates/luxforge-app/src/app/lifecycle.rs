@@ -156,6 +156,8 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     // streams through it, and the renderer report names it the window's adapter once known.
     let tiles = super::gpu_tiles::launch(launch);
     let host = host_config(&config, tiles);
+    // An evidence launch's scripted update port, in place of the platform's (`--update-fixture`).
+    let host = super::update_fixture::installed(config.update_fixture.as_ref(), host);
     // The notice and the Privacy tab exist exactly where the host can act on them.
     config.usage_eligible = host.usage_consent.eligibility().is_eligible();
     // The process's statistics supervisor, for an eligible launch only, registered before the

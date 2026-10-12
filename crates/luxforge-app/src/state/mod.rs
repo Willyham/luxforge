@@ -36,6 +36,7 @@ pub(crate) mod themes;
 pub(crate) mod title;
 pub(crate) mod tools;
 pub(crate) mod unsupported_catalog;
+pub(crate) mod update;
 pub(crate) mod usage;
 
 use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};
@@ -403,6 +404,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) settings: &'a settings::Settings,
     /// Usage statistics: the startup notice and the Privacy tab.
     pub(crate) usage: &'a usage::Usage,
+    /// Automatic updates: the offer and Settings › General's Updates group.
+    pub(crate) updates: &'a update::Updates,
     /// The person's preferences and the writes outstanding.
     pub(crate) preferences: &'a preferences::PreferenceWriter,
     /// The theme library and the theme on screen.
@@ -491,6 +494,8 @@ pub(crate) struct Workspace {
     pub(crate) settings: settings::SettingsModel,
     /// The usage statistics startup notice, while it is on screen.
     pub(crate) usage_notice: Option<usage::UsageNotice>,
+    /// The update offer, while there is one to show.
+    pub(crate) update_notice: Option<update::UpdateNotice>,
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
@@ -545,8 +550,10 @@ impl Workspace {
                 modules: inputs.modules,
                 capabilities: inputs.capabilities,
             },
+            inputs.updates,
         );
         self.usage_notice = usage::notice(inputs.usage);
+        self.update_notice = update::notice(inputs.updates);
     }
 
     /// Whether something is open over the canvas: the palette, the Settings sheet, a menu (a
@@ -744,6 +751,7 @@ mod tests {
         palette: palette::Palette,
         settings: settings::Settings,
         usage: usage::Usage,
+        updates: update::Updates,
         preferences: preferences::PreferenceWriter,
         themes: themes::Themes,
         version_form: VersionForm,
@@ -794,6 +802,7 @@ mod tests {
                 palette: palette::Palette::default(),
                 settings: settings::Settings::default(),
                 usage: usage::Usage::default(),
+                updates: update::Updates::default(),
                 preferences: preferences::PreferenceWriter::default(),
                 themes: themes::Themes::default(),
                 version_form: VersionForm::default(),
@@ -897,6 +906,7 @@ mod tests {
                 palette: &self.palette,
                 settings: &self.settings,
                 usage: &self.usage,
+                updates: &self.updates,
                 preferences: &self.preferences,
                 themes: &self.themes,
                 version_form: &self.version_form,

@@ -257,6 +257,8 @@ pub enum Step {
     /// Usage statistics: the startup notice and the Settings sheet's Privacy tab. See
     /// [`UsageStep`].
     Usage(UsageStep),
+    /// Automatic updates: the offer and Settings › General's Updates group. See [`UpdateStep`].
+    Update(UpdateStep),
     /// Change General rows of the Settings sheet as their own controls do, and wait for the
     /// desktop's preference writer to answer: each field a row shows, with a value its control
     /// offers — a boolean for a switch, an option's value for a choice. `{"preference":
@@ -452,6 +454,7 @@ impl Step {
             Self::ThemeImportOmarchy { path } => text(path, "theme_import_omarchy path"),
             Self::Flag { id, .. } => text(id, "flag id"),
             Self::Usage(step) => step.validate(),
+            Self::Update(_) => Ok(()),
             Self::Preference(fields) => {
                 if fields.is_empty() {
                     return Err("preference needs at least one field".into());
@@ -1626,6 +1629,47 @@ impl UsageStep {
                 }
             }
             _ => Ok(()),
+        }
+    }
+}
+
+/// One step on automatic updates, spelled `{"update": "offer"}`, `{"update": "check"}` or
+/// `{"update": {"notice": "later"}}`:
+///
+/// - `offer` waits until the update offer is on screen, as a check the update port made at launch
+///   brings it through the event sync, then captures; an offer already shown is captured at once.
+/// - `check` presses Settings › General's Check now, as the palette's Check for Updates does, and
+///   captures once `update.check` has answered.
+/// - `notice` presses one of the offer's buttons — `release_notes`, `install`, `download`, `later`
+///   or `skip` — and captures once its call has answered; the offer must show that button.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum UpdateStep {
+    Offer,
+    Check,
+    Notice(UpdateButton),
+}
+
+/// One of the update offer's buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateButton {
+    ReleaseNotes,
+    Install,
+    Download,
+    Later,
+    Skip,
+}
+
+impl UpdateButton {
+    /// The name the step and a frame's state use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReleaseNotes => "release_notes",
+            Self::Install => "install",
+            Self::Download => "download",
+            Self::Later => "later",
+            Self::Skip => "skip",
         }
     }
 }

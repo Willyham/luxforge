@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; and the [Linux payload updater](#linux-the-payload-updater) with its desktop port. A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism and the update interface are not built yet, and the feed route and production key are not in place, so no build updates itself today.
+Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; and the [desktop's offer, Settings group and palette entry](#the-desktop). A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism, the move into Applications and feed publication are not built yet, and the feed route and production key are not in place, so no build updates itself today.
 
 ## Outcome and scope
 
@@ -225,23 +225,28 @@ Automatic installation, when the person turns it on, downloads in the background
 
 All update interface is Luxforge's own, themed like the rest of the workspace. On macOS that means a custom Sparkle user driver, not Sparkle's standard windows.
 
-- **The offer.** A found update appears as a non-modal notice in the workspace: "Luxforge 0.2.0 is available", with Release notes, Install and relaunch, Later and Skip this version.
-  - It shows download progress.
-  - It never takes focus or covers the photograph's controls.
-  - Later hides it until the next check.
-  - Release notes open the GitHub release through the existing checked HTTPS opener.
-- **A catalog format change.** The offer says the new version needs a new catalog. Your current catalog stays as it is, and the version you have now keeps opening it.
-- **Settings › General, an Updates group:**
-  - the current version;
-  - Check for updates automatically;
-  - Install updates automatically, disabled while checks are off;
-  - Check now, with the last check's time and outcome;
-  - one line saying that checks contact `api.luxforge.app` and send only the app version.
+The desktop decides nothing about updates: it shows what `update.status` reports and every control sends one command. It reads the status at launch, whenever the event sync sees an `update.*`, preference or flag event, when the Settings sheet opens and after its own update preference is saved. Every read and call runs off the update loop.
 
-  A build without an updater shows the reason instead of the controls.
-- **The palette** gains Check for Updates.
+- **The offer.** An available, unskipped update from a mechanism that is not `unavailable` appears as a non-modal card at the bottom of the workspace, above the usage statistics notice where both show and in Select as well as Develop. It takes no focus and holds no key, and it sits between the side panels above the tool strip, so it covers none of the photograph's controls. It reads "Luxforge 0.2.0 is available", with Release notes, Install and relaunch, Later and Skip this version.
+  - While the update downloads it says "Downloading… 45%" over a progress bar (the received size while the length is unknown); once verified it says "Downloaded and ready to install."; an update that installs automatically adds "It installs when you next quit Luxforge."
+  - Release notes opens the release page through the checked HTTPS opener.
+  - Install and relaunch sends `update.install`. An accepted install says Luxforge quits and relaunches when it is ready, and leaves only Release notes. A refusal is shown in the card: `conflict` names the running work from `data.jobs` ("Installing waits until this work finishes: an export."), `not-ready` gives its reason in words.
+  - Later sends nothing. It hides the offer until the next check ends, whatever its outcome.
+  - Skip this version sends `update.skip` with the offered version; the offer goes at once.
+  - Install and Skip wait while either is being answered.
+  - A Check now or Check for Updates adds "Checking for updates…" to an offer already shown; a scheduled check shows nothing.
+- **A catalog format change.** The offer's first line says: "This version needs a new catalog. Your current catalog stays as it is, and the version you have now keeps opening it."
+- **A notify-only Linux installation** (`linux-notify`) says it cannot replace itself and offers Download, which opens the release page, in place of Release notes and Install and relaunch.
+- **Settings › General, an Updates group,** first on the tab:
+  - the current version, with the build when there is one ("Luxforge 0.2.0 (build 42)");
+  - Check now, which sends `update.check`, with the last check's time and outcome ("Last checked 3 minutes ago: found Luxforge 0.2.0", or "Not checked yet") and a failed check's reason;
+  - Check for updates automatically (`update_checks`), with the line "Checks contact api.luxforge.app and send only the app version.";
+  - Install updates automatically (`update_install_automatically`), disabled while checks are off.
 
-Layout and wording are delegated, within the [develop workspace](develop-workspace.md)'s visual language.
+  The switches write through `preferences.set` like the other General rows. When the mechanism is `unavailable` the group shows the version and the reason in plain words instead of the controls, with a sentence for each `UnavailableReason` and a general one for a reason this build does not know.
+- **The palette** gains Check for Updates, which sends `update.check` and reports the outcome in the status bar.
+
+An evidence launch scripts what the port reports with `--update-fixture FILE` ([development](../engineering/development.md#evidence-scripts)), and the `update` evidence step waits for the offer, presses Check now or presses one of the offer's buttons.
 
 ## macOS: Sparkle
 

@@ -37,6 +37,7 @@ pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
 pub(crate) mod unsupported_catalog;
+pub(crate) mod update;
 pub(crate) mod usage;
 pub(crate) mod view;
 pub(crate) mod visibility;
@@ -77,6 +78,8 @@ pub(crate) enum Message {
     Settings(settings::SettingsMessage),
     /// Usage statistics: the startup notice and the Privacy tab.
     Usage(usage::UsageMessage),
+    /// Automatic updates: the offer, the Updates group and Check for Updates.
+    Update(update::UpdateMessage),
     /// An owner answer to the desktop's preference writer or to a read of the preferences.
     Preferences(preferences::PreferenceMessage),
     /// One Appearance-tab gesture or theme library answer.

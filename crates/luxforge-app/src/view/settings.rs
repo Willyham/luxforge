@@ -8,7 +8,7 @@
 use crate::{
     app::message::{
         Message, capability::CapabilityMessage, settings::SettingsMessage, theme::ThemeMessage,
-        usage::UsageMessage, view::ViewMessage,
+        update::UpdateMessage, usage::UsageMessage, view::ViewMessage,
     },
     state::{
         MenuTarget,
@@ -16,6 +16,7 @@ use crate::{
         preferences::{GeneralControl, GeneralRow, GeneralValue},
         settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
         themes::{FolderLine, ThemeRow},
+        update::{self as updates, UpdatesGroup},
         usage::{self as statistics, PrivacyModel},
     },
 };
@@ -563,7 +564,7 @@ fn swatch<'a>(colour: Color) -> Element<'a, Message> {
 }
 
 fn general(model: &SettingsModel) -> Element<'_, Message> {
-    let mut content = column![title("General")]
+    let mut content = column![title("General"), updates_group(&model.updates)]
         .spacing(theme::SPACING)
         .width(Length::Fill);
     if let Some(error) = &model.preferences_error {
@@ -580,6 +581,79 @@ fn general(model: &SettingsModel) -> Element<'_, Message> {
             .push(general_row(preference));
     }
     content.into()
+}
+
+/// The Updates group, first in General: the version this is, then the two switches, Check now
+/// with the last check's time and outcome, and what a check sends; or, for an installation that
+/// does not update itself, why, in place of the controls.
+fn updates_group(group: &UpdatesGroup) -> Element<'_, Message> {
+    let mut content = column![section_label("Updates")]
+        .spacing(theme::SPACING)
+        .width(Length::Fill);
+    let mut version = column![label(group.version.clone())]
+        .spacing(theme::ROW_SPACING)
+        .width(Length::Fill);
+    if let Some(reason) = &group.unavailable {
+        version = version.push(caption(reason.clone()));
+        return content.push(version).into();
+    }
+    if group.loading {
+        version = version.push(caption("Reading the update status\u{2026}"));
+        return content.push(version).into();
+    }
+    version = version.push(caption(if group.checking {
+        updates::CHECKING.to_owned()
+    } else {
+        group.last_check.clone()
+    }));
+    if let Some(error) = &group.error {
+        version = version.push(error_caption(error.clone()));
+    }
+    let check = text_button(
+        updates::CHECK_NOW,
+        ButtonTone::Control,
+        ButtonSize::Compact,
+        (!group.checking).then_some(Message::Update(UpdateMessage::Check)),
+    );
+    content = content.push(
+        row![version, check]
+            .spacing(theme::SPACING * 2.0)
+            .align_y(Alignment::Start),
+    );
+    let checks = row![
+        column![label(updates::CHECKS), caption(updates::DISCLOSURE)]
+            .spacing(theme::ROW_SPACING)
+            .width(Length::Fill),
+        switch(
+            &ToggleModel {
+                label: updates::CHECKS.into(),
+                on: group.checks,
+                enabled: true,
+            },
+            |on| Message::Update(UpdateMessage::SetChecks(on)),
+        ),
+    ]
+    .spacing(theme::SPACING * 2.0)
+    .align_y(Alignment::Start);
+    let install = row![
+        column![
+            label(updates::INSTALL_AUTOMATICALLY),
+            caption(updates::INSTALL_DESCRIPTION)
+        ]
+        .spacing(theme::ROW_SPACING)
+        .width(Length::Fill),
+        switch(
+            &ToggleModel {
+                label: updates::INSTALL_AUTOMATICALLY.into(),
+                on: group.install_automatically,
+                enabled: group.install_enabled,
+            },
+            |on| Message::Update(UpdateMessage::SetInstallAutomatically(on)),
+        ),
+    ]
+    .spacing(theme::SPACING * 2.0)
+    .align_y(Alignment::Start);
+    content.push(checks).push(install).into()
 }
 
 /// One preference: its title and description, and on the trailing side the control its kind

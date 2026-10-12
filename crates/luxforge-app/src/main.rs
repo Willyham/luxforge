@@ -101,6 +101,10 @@ struct Config {
     /// `--evidence-unsupported-catalog`: the choice an evidence run takes on the unsupported-catalog
     /// sheet once the sheet is captured. Evidence runs only.
     unsupported_choice: Option<state::unsupported_catalog::Choice>,
+    /// `--update-fixture`: a scripted update port in place of the platform's, for an evidence
+    /// run's captures of the update offer and Settings › General's Updates group. Evidence runs
+    /// only; see `app/update_fixture.rs`.
+    update_fixture: Option<app::update_fixture::UpdateFixture>,
 }
 
 impl Config {
@@ -274,6 +278,14 @@ fn arguments() -> Result<Config, String> {
                         .ok_or("--evidence-unsupported-catalog requires start or quit")?,
                 );
             }
+            Some("--update-fixture") => {
+                let path = PathBuf::from(
+                    args.next()
+                        .ok_or("--update-fixture requires a path")?
+                        .to_owned(),
+                );
+                config.update_fixture = Some(app::update_fixture::UpdateFixture::read(&path)?);
+            }
             Some("--hidden-window") => config.hidden = true,
             Some("--evidence-gpu-identity") => config.gpu_identity = true,
             Some("--no-gpu-render") => config.no_gpu_render = true,
@@ -313,7 +325,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--no-gpu-render] [--software-adapter] [--window-size WIDTH HEIGHT] [--hidden-window] [--usage-test-receiver URL] [--evidence-config DIRECTORY] [--evidence-catalog CATALOG] [--evidence-unsupported-catalog start|quit]\n       Luxforge --gpu-adapters\n--no-gpu-render refuses the GPU stage for this launch, as on a machine whose graphics adapter cannot run it: every frame is drawn by the reference renderer, and the session and the status bar say so. On a host whose only graphics adapter is a software one (lavapipe, WARP), the GPU stage is refused the same way until the software adapter is adopted; --software-adapter draws through it on that adapter for this launch, and the session and the status bar name it. --gpu-adapters prints the graphics adapters wgpu offers the renderer, one JSON object a line, and exits.\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\n--usage-test-receiver, in evidence mode only, gives the launch explicit usage statistics test eligibility with a loopback receiver (http on localhost, 127.0.0.0/8 or [::1] with a port): it shows the startup notice and Settings › Privacy, and sends nothing until someone opts in in that run's own isolated preferences; its statistics worker reports a fixed test release and runs on a clock evidence script steps can move forward.\n--evidence-config, in evidence mode only, keeps an earlier evidence run's host/config directory as this run's configuration, so what one launch stored, such as its usage statistics choice, is what the next one reads.\n--evidence-catalog, in evidence mode only, opens CATALOG as the run's remembered catalog instead of one inside its evidence directory; when this version refuses it as another version's, the run captures the unsupported-catalog sheet, then takes the choice --evidence-unsupported-catalog names, Start a new catalog (start) or Quit (quit), and fails without one.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
+                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--no-gpu-render] [--software-adapter] [--window-size WIDTH HEIGHT] [--hidden-window] [--usage-test-receiver URL] [--evidence-config DIRECTORY] [--evidence-catalog CATALOG] [--evidence-unsupported-catalog start|quit] [--update-fixture FILE]\n       Luxforge --gpu-adapters\n--no-gpu-render refuses the GPU stage for this launch, as on a machine whose graphics adapter cannot run it: every frame is drawn by the reference renderer, and the session and the status bar say so. On a host whose only graphics adapter is a software one (lavapipe, WARP), the GPU stage is refused the same way until the software adapter is adopted; --software-adapter draws through it on that adapter for this launch, and the session and the status bar name it. --gpu-adapters prints the graphics adapters wgpu offers the renderer, one JSON object a line, and exits.\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\n--usage-test-receiver, in evidence mode only, gives the launch explicit usage statistics test eligibility with a loopback receiver (http on localhost, 127.0.0.0/8 or [::1] with a port): it shows the startup notice and Settings › Privacy, and sends nothing until someone opts in in that run's own isolated preferences; its statistics worker reports a fixed test release and runs on a clock evidence script steps can move forward.\n--update-fixture, in evidence mode only, replaces the platform's update port with one scripted by the JSON file: the mechanism, what each check finds, the download's progress or readiness and a refusal of the next install; it contacts no feed and installs nothing.\n--evidence-config, in evidence mode only, keeps an earlier evidence run's host/config directory as this run's configuration, so what one launch stored, such as its usage statistics choice, is what the next one reads.\n--evidence-catalog, in evidence mode only, opens CATALOG as the run's remembered catalog instead of one inside its evidence directory; when this version refuses it as another version's, the run captures the unsupported-catalog sheet, then takes the choice --evidence-unsupported-catalog names, Start a new catalog (start) or Quit (quit), and fails without one.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
                 );
                 std::process::exit(0)
             }
@@ -362,6 +374,10 @@ fn arguments() -> Result<Config, String> {
     }
     if config.evidence_catalog.is_some() && config.catalog.is_some() {
         return Err("--evidence-catalog and --catalog name two catalogs".into());
+    }
+    // A scripted update port stands in for the platform's only where frames are captured.
+    if config.update_fixture.is_some() && config.evidence.is_none() {
+        return Err("--update-fixture requires --evidence-dir".into());
     }
     // Test eligibility belongs to an isolated configuration, which only an evidence run keeps.
     if config.usage_receiver.is_some() && config.evidence.is_none() {

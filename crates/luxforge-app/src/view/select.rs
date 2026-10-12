@@ -217,6 +217,15 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         }
         None => screen,
     };
+    // The update offer, over the bottom of the window as in Develop, under any sheet.
+    let screen = match &model.update_notice {
+        Some(offer) => stack![
+            screen,
+            crate::view::usage::layer(vec![crate::view::update::card(offer)], false)
+        ]
+        .into(),
+        None => screen,
+    };
     if let Some(sheet) = crate::view::copy_settings::confirmation(&model.copy_settings) {
         stack![screen, sheet].into()
     } else {

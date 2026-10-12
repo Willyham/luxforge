@@ -209,7 +209,11 @@ pub(crate) mod thumbnails;
 pub(crate) mod unsupported_catalog;
 #[cfg(test)]
 mod unsupported_catalog_tests;
+pub(crate) mod update;
+pub(crate) mod update_fixture;
 pub(crate) mod update_port;
+#[cfg(test)]
+mod update_tests;
 pub(crate) mod usage;
 pub(crate) mod usage_device;
 #[cfg(test)]
@@ -526,6 +530,8 @@ pub(crate) struct Editor {
     /// The window visibility last reported to the usage statistics supervisor
     /// ([`usage_supervisor`]), once the native gate is ready.
     pub(crate) usage_reported_presented: Option<bool>,
+    /// Automatic updates: the status as last read, the calls in flight and Later ([`update`]).
+    pub(crate) updates: state::update::Updates,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -572,7 +578,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 30] = [
+const AFTER_MESSAGE: [AfterMessage; 31] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -603,6 +609,7 @@ const AFTER_MESSAGE: [AfterMessage; 30] = [
     drawn_frames::after_message,
     themes::after_message,
     usage::after_message,
+    update::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -617,7 +624,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 16] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 17] = [
     keymap::subscription,
     view_state::subscription,
     visibility::subscription,
@@ -751,6 +758,7 @@ impl Editor {
             },
             usage_image: Default::default(),
             usage_reported_presented: None,
+            updates: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -849,6 +857,8 @@ impl Editor {
         let themes = editor.list_themes();
         // The flags, for what a live flag gates outside the Settings sheet.
         let flags = editor.read_flag_values(false);
+        // The update status, off the update loop: an offer waits for nothing the first frame needs.
+        let updates = editor.read_updates();
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
                 Some(path) => editor.open_queued(path, initial_import),
@@ -875,6 +885,7 @@ impl Editor {
                 presets,
                 themes,
                 flags,
+                updates,
                 first,
             ]),
         )
@@ -1086,6 +1097,7 @@ impl Editor {
     pub(crate) fn inputs(&self) -> state::Inputs<'_> {
         state::Inputs {
             usage: &self.usage,
+            updates: &self.updates,
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -1216,6 +1228,7 @@ impl Editor {
             Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
             Message::Usage(message) => self.usage_update(message),
+            Message::Update(message) => self.update_message(message),
             Message::Preferences(message) => self.preferences_update(message),
             Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),

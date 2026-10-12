@@ -98,6 +98,7 @@ impl Editor {
         let change = self.preferences.answered(answer).unwrap_or_default();
         self.apply_display_preferences();
         let mut read = Task::none();
+        let saved = refused.is_none();
         match refused {
             // Only a change the core announces has an event for the sync to skip; a remembered
             // field's request id would only crowd the bounded list of the desktop's own requests.
@@ -121,13 +122,22 @@ impl Editor {
                 read = self.read_preferences();
             }
         }
+        // The update policy follows the Updates group's switches: the status they leave is read
+        // again, as the event sync reads it for another client's change.
+        let updates = if saved
+            && (change.sets("update_checks") || change.sets("update_install_automatically"))
+        {
+            self.read_updates()
+        } else {
+            Task::none()
+        };
         if self.preferences.idle() {
             if self.preferences.closing {
                 return self.close();
             }
             self.outcome(Outcome::PreferencesWritten);
         }
-        Task::batch([read, self.write_preferences()])
+        Task::batch([read, updates, self.write_preferences()])
     }
 
     /// Read the preferences again, for another client's change or to put back what a refused

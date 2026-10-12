@@ -1539,3 +1539,32 @@ fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
         refused(json!([script]), expected);
     }
 }
+
+#[test]
+fn update_steps_round_trip_and_refuse_what_they_do_not_take() {
+    let steps = round_trip(json!([
+        {"update": "offer"},
+        {"update": "check"},
+        {"update": {"notice": "release_notes"}},
+        {"update": {"notice": "install"}},
+        {"update": {"notice": "download"}},
+        {"update": {"notice": "later"}},
+        {"update": {"notice": "skip"}},
+    ]));
+    assert_eq!(steps[0], Step::from(UpdateStep::Offer));
+    assert_eq!(steps[1], Step::from(UpdateStep::Check));
+    assert_eq!(
+        steps[5],
+        Step::from(UpdateStep::Notice(UpdateButton::Later))
+    );
+    assert_eq!(UpdateButton::ReleaseNotes.as_str(), "release_notes");
+    for (script, expected) in [
+        (json!({"update": "install"}), "unknown variant `install`"),
+        (
+            json!({"update": {"notice": "relaunch"}}),
+            "unknown variant `relaunch`",
+        ),
+    ] {
+        refused(json!([script]), expected);
+    }
+}

@@ -589,7 +589,10 @@ mod tests {
                 .map(|flag| flag.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(false), ["developer", RANGE_MASKS, AI_GENERATIVE, PRERELEASE_CHANNEL]);
+        assert_eq!(
+            ids(false),
+            ["developer", RANGE_MASKS, AI_GENERATIVE, PRERELEASE_CHANNEL]
+        );
         assert_eq!(
             ids(true),
             [
