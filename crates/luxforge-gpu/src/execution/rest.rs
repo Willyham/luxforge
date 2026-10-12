@@ -1327,7 +1327,7 @@ impl Executor {
             super::overview::OverviewHeld::Parts(Box::new(overview.reduce.parts)),
             overview.bytes,
         );
-        slot.overview_yielded = Some((overview.version, fallback.clone()));
+        slot.overview_yielded = Some((overview.version, *fallback));
         slot.waiting = true;
         slot.retirement_waits += 1;
         true
