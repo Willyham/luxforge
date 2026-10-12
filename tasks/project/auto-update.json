@@ -3,12 +3,12 @@
   "plan_id": "auto-update",
   "title": "Automatic updates on macOS and Linux",
   "objective": "Released Luxforge finds, verifies and installs its newer releases from day one: Sparkle on macOS with a drag-to-Applications disk image and a move into Applications, an in-house payload updater on Linux, one signed feed per target on the backend API under api.luxforge.app/v1/updates/, update.* commands and preferences, and a clean launch past a catalog the new version cannot open.",
-  "context_summary": "Owner decisions of 2026-10-12, recorded in the design and decisions: no launcher; Sparkle 2 on macOS; in-house Linux updater with notify-only fallback; Windows later on the same feed, key and commands; feeds served by the one backend API under https://api.luxforge.app/v1/updates/; check automatically by default and offer, with automatic installation off by default; the catalog format was reset to 1 and catalog migrations are required from 1.0.0 onwards, so until then a catalog-format-changing update is flagged and never installed automatically. Implementation is not authorized by this plan. Routine layout, wording, module and command naming, the update store and publication mechanism, and disk image appearance are delegated within the design. Owner inputs: generating and storing the update key, the production API with its update store and publication credential, release-candidate tags and an authorized foreground clean-install session; they affect only the final qualification task. Implementation never creates, reads or exports production keys, pushes tags or deploys the backend. Use the roadmap's high-tier model minimum and re-review current main before each task.",
+  "context_summary": "Owner decisions of 2026-10-12, recorded in the design and decisions: no launcher; Sparkle 2 on macOS; in-house Linux updater with notify-only fallback; Windows later on the same feed, key and commands; feeds served by the one backend API under https://api.luxforge.app/v1/updates/; check automatically by default and offer, with automatic installation off by default; the catalog format was reset to 1 and catalog migrations are required from 1.0.0 onwards, so until then a catalog-format-changing update is flagged and never installed automatically. The owner authorized implementation on 2026-10-12, Linux first and then macOS. Routine layout, wording, module and command naming, the update store and publication mechanism, and disk image appearance are delegated within the design. Owner inputs: generating and storing the update key, the production API with its update store and publication credential, release-candidate tags and an authorized foreground clean-install session; they affect only the final qualification task. Implementation never creates, reads or exports production keys, pushes tags or deploys the backend. Use the roadmap's high-tier model minimum and re-review current main before each task.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Define the update feed and per-release update records, and build their signing and feed generation in xtask.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Add release/update.json with the feed base URL https://api.luxforge.app/v1/updates/ (the backend API route, beside /v1/usage/batches) and the update public key (absent until the operator commits it); it is the single source for the macOS SUPublicEDKey and the Linux compiled constant.",
@@ -63,7 +63,7 @@
     {
       "id": "TASK-002",
       "description": "Add the core update model: the update port, update.* commands, update preferences and the pre-release channel flag.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The core owns state, commands and preferences; a host port in HostConfig performs the platform mechanism. luxforge-json and development builds have no port and report unavailable with a reason.",
@@ -131,7 +131,7 @@
     {
       "id": "TASK-003",
       "description": "Let the desktop launch past an unsupported remembered catalog and offer a new one.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Today a refused remembered catalog fails the launch (crates/luxforge-app/src/app/lifecycle.rs). Instead open the window with a sheet naming the refused catalog's format and the current one, with Start a new catalog and Quit, and a releases-page link through the checked HTTPS opener.",
