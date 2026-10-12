@@ -80,7 +80,7 @@ Everything below is removed, with no compatibility path:
 - `in_development_set` in views, rows and `stack.inspect`, and the view stamp's set revision;
 - the usage statistics features for adding to and removing from the set.
 
-The catalog format is 16, which also holds the kind-tagged merges of [HDR merges](hdr-merge.md#durable-derived-source) ([storage](versions-and-lineage.md#storage-catalog-format-16)); a catalog of format 15 or earlier is refused with the existing "choose a new catalog path".
+The catalog format is 1, which also holds the kind-tagged merges of [HDR merges](hdr-merge.md#durable-derived-source) ([storage](versions-and-lineage.md#storage-the-catalog-format)); a catalog of any other format is refused with the existing "choose a new catalog path".
 
 ## Delegated choices
 

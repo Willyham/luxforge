@@ -247,7 +247,7 @@ The kinds, stack members, provenance, catalog format, commands, lane, ceilings, 
   - the warp mesh and crop.
 
   `match_key` hashes kind-tagged parameters. `MergeInput.frame` keeps the shared header fields, with exposure as recorded.
-- **Catalog format.** Format 16 carries these shapes. Earlier catalogs are refused; there are no migrations. The HDR design's stored-shape paragraphs are updated in the same change.
+- **Catalog format.** The current catalog format (1) carries these shapes. Other formats are refused; there are no migrations before the first public release. The HDR design's stored-shape paragraphs are updated in the same change.
 - **Commands.** `merge.plan`, `merge.create` and `merge.rerun` take `kind` (`hdr` or `panorama`; `merge.plan` requires it). Kind-specific options live under `hdr` or `panorama`, and a field of the other kind is refused as `validation`. HDR's existing top-level option fields move under `hdr` in the same change. Input bounds are per kind (HDR 2–9, panorama 2–32). Refusals are typed per provider, and their messages name the kind.
 - **Jobs.** The job kinds are `hdr-merge` and `panorama-merge`. They share one merge lane: one running merge of either kind and one waiting, with a further request refused as `resource-limit`. Stages are named per kind. A panorama's are `reading`, `matching`, `stitching` and `saving`.
 - **Spool reads.** The spool is shared, and both kinds read it by bands rather than one seek and read a row. This is the read pattern behind HDR's measured 60 MP × 9 fusion limit, and HDR's fusion benefits from it too. A panorama's spool may hold proxies' features and seam maps beside the frames.
