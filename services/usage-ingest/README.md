@@ -12,6 +12,9 @@ no embedded secret, no disk, no database and no IP-based state. DNS, certificate
 deployment are outside it; put it behind a reverse proxy that does not log client addresses,
 headers or bodies.
 
+Given an update store (`LUXFORGE_INGEST_UPDATES_DIR`), it also serves the API's update feeds,
+`GET /v1/updates/<target>/appcast.xml`, as static content ([below](#update-feeds)).
+
 ## Build, test, run
 
 From the repository root (agents use `tools/cargo-cached`; plain `cargo` works the same):
@@ -56,6 +59,26 @@ The wire format counts nesting depth as "at most 4"; its schema has a deepest va
 inside a GPU object inside `gpus` inside `device` inside the envelope) at the fifth container, so
 this service allows five containers deep and refuses a sixth before parsing.
 
+## Update feeds
+
+With `LUXFORGE_INGEST_UPDATES_DIR` set, `GET` and `HEAD /v1/updates/<target>/appcast.xml`, for
+`macos-arm64`, `linux-x86_64` and `windows-x86_64`, are answered from `<dir>/<target>/appcast.xml`
+([design](../../docs/design/auto-update.md#publishing-and-serving-the-feeds)). The directory is
+normally the update store's `current` link, which `services/usage-statistics/install-feeds.py`
+replaces at each publication; the service only reads it.
+
+| Request | Status |
+| --- | --- |
+| A target whose feed exists | `200`, the file, `Content-Type: application/rss+xml; charset=utf-8`, `Cache-Control: public, max-age=900` (`HEAD`: no body, same length) |
+| A target with no feed, a feed over 4 MiB, or any query string | `404` |
+| Another method (`Allow: GET, HEAD`) | `405` |
+
+Without the setting the route does not exist and every such path is `404`. A feed is read again only
+when its file changes (length, time or inode), so at most one copy of each target's feed is held in
+memory; the read runs off the async workers. The global and per-installation limits are the statistics
+route's and do not apply; the connection cap and the request timeout do. No request header is read.
+`tests/updates.rs` covers the route.
+
 ## Rows
 
 Each accepted batch makes two POSTs of `application/x-ndjson` to the collector, each tried once and
@@ -96,6 +119,7 @@ Environment variables; only the first is required. A bad value stops startup nam
 | `LUXFORGE_INGEST_FORWARD_TIMEOUT_SECS` | `5` | Longest one request to the collector |
 | `LUXFORGE_INGEST_STATS_INTERVAL_SECS` | `60` | How often the aggregate counters are logged |
 | `LUXFORGE_INGEST_RETRY_AFTER_SECS` | `30` | `Retry-After` for a full queue |
+| `LUXFORGE_INGEST_UPDATES_DIR` | none | The update store whose `<target>/appcast.xml` files the feed route serves; unset, there is no feed route |
 
 ## Privacy
 
@@ -103,6 +127,7 @@ The service never reads a peer address (the accept loop discards it), sets no tr
 one, and reads no header but `Content-Type` and `Content-Length`. The per-installation limiter is
 in memory, keyed by the validated installation ID only, allocated after size, shape and global
 admission, and forgets an entry within 15 minutes. It logs two fixed messages and one line of
-aggregate counters (`accepted`, `bad_request`, `payload_too_large`, `limited_global`, and so on);
+aggregate counters (`accepted`, `bad_request`, `payload_too_large`, `limited_global`, `feeds_served`,
+`feeds_missing`, and so on);
 no header, body, rejection reason, identifier or address. The tests capture the log and check this
 against sentinel addresses, headers and IDs. Shut down with Ctrl-C; whatever is queued is dropped.

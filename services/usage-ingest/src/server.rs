@@ -1,11 +1,13 @@
-//! The HTTP front: one route, `POST /v1/usage/batches`, and nothing else.
+//! The HTTP front: the statistics route, `POST /v1/usage/batches`, and, given an update store, the
+//! feed route, `GET`/`HEAD /v1/updates/<target>/appcast.xml`; nothing else.
 //!
-//! Order of refusal, cheapest first: path (`404`), method (`405`), content type (`415`), a declared
+//! Statistics order of refusal, cheapest first: path (`404`), method (`405`), content type (`415`), a declared
 //! length over the cap (`413`), global admission (`429`), the body read under the cap (`413`), the
 //! strict decode (`400`), the optional per-ID limit (`429`), the forwarding queue (`429`). The peer
 //! address is never read: the accept loop discards it, and no function here is handed a socket
 //! after that. No request header is read except `Content-Type` and `Content-Length`, and none is
-//! passed on.
+//! passed on. A feed request is answered from [`Feeds`] with no header read at all; the limits
+//! other than the connection cap and the request timeout touch only the statistics route.
 
 use crate::config::Config;
 use crate::diag::{Counters, Diagnostics, Sink};
@@ -13,11 +15,12 @@ use crate::forward::{self, Collector, Queue};
 use crate::limits::{Clock, Global, IdLimiter, IdVerdict};
 use crate::registry::Registry;
 use crate::rows;
+use crate::updates::{self, Feeds};
 use crate::wire::{self, MAX_BODY};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, RETRY_AFTER};
+use hyper::header::{ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, RETRY_AFTER};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -32,7 +35,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-/// The only route.
+/// The statistics route.
 pub const ROUTE: &str = "/v1/usage/batches";
 
 /// How many refusals may be answered at once, and for how long each is held.
@@ -49,6 +52,7 @@ struct Shared {
     diag: Arc<Diagnostics>,
     clock: Arc<dyn Clock>,
     retry_after_secs: u64,
+    feeds: Option<Arc<Feeds>>,
 }
 
 /// A running service. Dropping it stops the listener; call [`Server::shutdown`] to wait for it.
@@ -96,6 +100,7 @@ impl Server {
             diag: diag.clone(),
             clock,
             retry_after_secs: config.retry_after_secs,
+            feeds: config.updates_dir.map(|dir| Arc::new(Feeds::new(dir))),
         });
         let (stop, stopped) = watch::channel(false);
         let accept = tokio::spawn(accept_loop(
@@ -275,8 +280,57 @@ async fn read_capped(body: Incoming, limit: usize) -> Result<Option<Vec<u8>>, ()
     Ok(Some(bytes))
 }
 
+/// A feed: `200` with the store's file, `404` when there is none, `405` for another method.
+async fn feed(
+    shared: &Shared,
+    feeds: &Arc<Feeds>,
+    target: &'static str,
+    method: &Method,
+) -> Response<Full<Bytes>> {
+    let counters = &shared.diag.counters;
+    if method != Method::GET && method != Method::HEAD {
+        Counters::bump(&counters.method_not_allowed);
+        let mut response = reply(StatusCode::METHOD_NOT_ALLOWED, "method not allowed", None);
+        response
+            .headers_mut()
+            .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
+        return response;
+    }
+    let feeds = feeds.clone();
+    let Ok(Some(bytes)) = tokio::task::spawn_blocking(move || feeds.read(target)).await else {
+        Counters::bump(&counters.feeds_missing);
+        return reply(StatusCode::NOT_FOUND, "not found", None);
+    };
+    Counters::bump(&counters.feeds_served);
+    let length = bytes.len();
+    let body = if method == Method::HEAD {
+        Bytes::new()
+    } else {
+        bytes
+    };
+    let mut response = Response::new(Full::new(body));
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(updates::CONTENT_TYPE),
+    );
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(updates::CACHE_CONTROL),
+    );
+    headers.insert(CONTENT_LENGTH, length.into());
+    response
+}
+
 async fn route(shared: &Shared, request: Request<Incoming>) -> Response<Full<Bytes>> {
     let counters = &shared.diag.counters;
+    if let (Some(feeds), Some(target), None) = (
+        &shared.feeds,
+        updates::target(request.uri().path()),
+        request.uri().query(),
+    ) {
+        return feed(shared, feeds, target, request.method()).await;
+    }
     if request.uri().path() != ROUTE || request.uri().query().is_some() {
         Counters::bump(&counters.not_found);
         return reply(StatusCode::NOT_FOUND, "not found", None);

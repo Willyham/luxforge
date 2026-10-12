@@ -36,6 +36,11 @@ services:
       LUXFORGE_INGEST_ID_INTERVAL_SECS: ${LUXFORGE_INGRESS_ID_INTERVAL_SECS:-20}
       LUXFORGE_INGEST_ID_BURST: ${LUXFORGE_INGRESS_ID_BURST:-5}
       LUXFORGE_INGEST_STATS_INTERVAL_SECS: ${LUXFORGE_INGRESS_STATS_INTERVAL_SECS:-60}
+      # The update feeds, GET /v1/updates/<target>/appcast.xml, from the update store that
+      # install-feeds.py fills (README: the update feeds). Read-only; the ingress never writes it.
+      LUXFORGE_INGEST_UPDATES_DIR: /srv/updates/current
+    volumes:
+      - ${LUXFORGE_UPDATE_STORE:-./update-store}:/srv/updates:ro
     ports:
       - "127.0.0.1:${LUXFORGE_INGRESS_PORT:-8080}:8080"
     networks: [edge, collector]

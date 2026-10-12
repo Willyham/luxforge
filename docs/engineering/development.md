@@ -828,6 +828,8 @@ A development build reports updates as `unavailable` with `development-build` an
 
 The payload must look like a release one. Copy the debug `luxforge` into a directory with a `build.json` naming a `version`, a `build_number` and the target `x86_64-unknown-linux-gnu`, and run it from there; a binary without one stays unavailable. Hidden, evidence and test-receiver launches ignore the variables, and release builds and other platforms never read them, so a release build only ever uses the feed and key it was compiled with.
 
+To serve a feed as the API does, write one with `cargo xtask update-feed --deploy NEW_FILE.tar`, install it with `services/usage-statistics/install-feeds.py STORE`, and run the usage statistics ingress with `LUXFORGE_INGEST_UPDATES_DIR=STORE/current`; the feed is then at `http://LISTEN/v1/updates/linux-x86_64/appcast.xml` ([publishing and serving the feeds](../design/auto-update.md#publishing-and-serving-the-feeds)).
+
 ### Browsing the component gallery
 
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in

@@ -2619,6 +2619,12 @@ pub fn check(root: &Path) -> Result {
         services(root)?
     );
     println!("PASS {}", crate::onnxruntime::check(root)?);
+    println!(
+        "PASS {} workflow(s): pinned actions, stated and least permissions, {} scoped secret(s) \
+         each in one script step",
+        crate::workflows::check(root)?,
+        crate::workflows::SCOPED_SECRETS.len()
+    );
     Ok(())
 }
 #[cfg(test)]

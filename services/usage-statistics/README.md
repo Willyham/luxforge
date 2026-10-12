@@ -32,6 +32,7 @@ flowchart LR
 | `clickhouse/` | `initdb/001-schema.sql` (tables and views), `config.d/privacy.xml`, `users.d/users.xml` |
 | `grafana/` | `Dockerfile` (plugin baked in), `provisioning/`, and the five dashboards in `dashboards/` |
 | `test.sh`, `tests/` | The stack test and the client test (below), with the stack test's synthetic scenario |
+| `install-feeds.py` | The update store's installer: the publication key's forced command, which installs a deploy archive of the update feeds ([design](../../docs/design/auto-update.md#publishing-and-serving-the-feeds), [deployment](DEPLOYMENT.md#16-the-update-feed-route)) |
 | `probe.sh`, `probe.py` | The synthetic live-endpoint probe: sends only generated data to a base URL and checks the statuses, limits and replies ([checks](DEPLOYMENT.md#12-run-the-synthetic-live-probe)) |
 | `scan-logs.py` | Searches captured logs or table dumps for given values and for any IP address literal ([use](DEPLOYMENT.md#10-check-every-hop-for-addresses-and-request-data)) |
 | `DEPLOYMENT.md` | The activation checklist for `api.luxforge.app` |
@@ -85,6 +86,17 @@ Stop and delete everything, including the stored rows:
 
 ```sh
 docker compose down --volumes
+```
+
+The ingress also serves the update feeds from the update store, `./update-store` unless `.env` sets
+`LUXFORGE_UPDATE_STORE`, mounted read-only. Create the directory before starting the stack, so Docker
+does not create it as root, and install a deploy archive into it (one that
+`cargo xtask update-feed --deploy` wrote, or an **Update feeds** run's `update-feeds` artifact):
+
+```sh
+mkdir -p update-store
+python3 -I install-feeds.py update-store < luxforge-update-feeds.tar
+curl -sS -D - http://127.0.0.1:8080/v1/updates/linux-x86_64/appcast.xml
 ```
 
 `down` without `--volumes` keeps the `clickhouse-data` volume, so rows survive a restart until their
@@ -222,12 +234,14 @@ The scenario alone (`tools/cargo-cached xtask smoke --scenario usage-backend --o
 only the client's side, and only with `LUXFORGE_USAGE_INGRESS` naming a loopback ingress; it is in no
 `verify` tier, so nothing ordinary needs Docker.
 
-Two more tests need no Docker and run in seconds: `python3 -I tests/probe_test.py` runs the probe
+Three more tests need no Docker and run in seconds: `python3 -I tests/probe_test.py` runs the probe
 against a fake ingress in this process (a good endpoint, where its desktop-shaped batch carries exactly
 the desktop's header fields, and one each of a redirect, a leaked header, a long reply, a missing `405`,
 a missing `413` and a missing limiter, which it must fail; TLS against a throwaway certificate when
 `openssl` is present, reported as skipped when it is not; the refusal of the production domain) and
-`python3 -I tests/scan_logs_test.py` tests `scan-logs.py`.
+`python3 -I tests/scan_logs_test.py` tests `scan-logs.py`, and `python3 -I tests/install_feeds_test.py`
+tests `install-feeds.py` (installation, the link swap and pruning, and every refusal leaving the store
+unchanged).
 
 ## Privacy configuration, hop by hop
 

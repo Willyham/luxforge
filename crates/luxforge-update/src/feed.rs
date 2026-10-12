@@ -68,7 +68,8 @@ pub struct Feeds {
 /// Generates every target's appcast: [`Target::RELEASED`] and any target a record names.
 ///
 /// Refused with a named error: a malformed record; two records for one tag or one version; a
-/// record signed by another key than the committed one; build numbers that do not strictly rise
+/// record that is not withdrawn but is signed by another key than the committed one (a retired key's
+/// releases are withdrawn); build numbers that do not strictly rise
 /// with SemVer order within a target (every record counts, withdrawn or not listed, since a person
 /// may have installed it); and a listed archive whose release or asset is not published, or is
 /// published with another length. Left out with a note: a withdrawn release and a macOS archive
@@ -78,9 +79,11 @@ pub fn generate(inputs: &FeedInputs) -> Result<Feeds> {
     let mut records = Vec::with_capacity(inputs.records.len());
     for record in inputs.records {
         record.validate()?;
-        if inputs
-            .public_key
-            .is_some_and(|key| *key != record.public_key)
+        let withdrawn = inputs.withdrawn.iter().any(|w| w.tag == record.tag);
+        if !withdrawn
+            && inputs
+                .public_key
+                .is_some_and(|key| *key != record.public_key)
         {
             return Err(Error::RecordKeyMismatch {
                 tag: record.tag.clone(),

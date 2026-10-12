@@ -5422,6 +5422,7 @@ dependencies = [
  "semver",
  "serde_json",
  "sha2",
+ "tar",
  "tempfile",
  "time",
  "zeroize",
