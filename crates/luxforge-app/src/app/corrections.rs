@@ -913,7 +913,8 @@ impl Editor {
     /// Whether Escape with no draft open has nothing left to put down here, and so leaves the
     /// mode, which asks the session to follow.
     pub(crate) fn correction_escape_leaves(&self) -> bool {
-        self.correction_reads.held.is_none()
+        !self.remove_escape_holds()
+            && self.correction_reads.held.is_none()
             && self.corrections.notice.is_none()
             && self.corrections.selected.is_none()
             && matches!(self.corrections.source, crate::brush::SourceChoice::Auto)
