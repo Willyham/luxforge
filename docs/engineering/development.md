@@ -506,7 +506,8 @@ the attributes above that line. That listing is unstable, so `check` asks for it
 bare one resolves where the macro is used. `luxforge-test-macros` depends on no crate, which the
 repository check enforces, so every crate's tests may name it, even those of crates that may name
 no other workspace crate. The quick tier runs `check --quick`, and every other tier and CI the
-whole `check`. Mark a new test `#[slow]` when it reaches that bound, after making it as cheap as what it proves
+whole `check`. The repository check refuses a function named `slow_…`, the old way of
+marking one, which `check` no longer reads. Mark a new test `#[slow]` when it reaches that bound, after making it as cheap as what it proves
 allows. To read every test's time in a binary, run it with libtest's unstable timing report, as a
 diagnostic: `RUSTC_BOOTSTRAP=1 BINARY -Z unstable-options --format json --report-time` in the
 package directory. A slow test runs by hand like any other: plain `cargo test` leaves

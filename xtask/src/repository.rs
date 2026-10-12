@@ -1267,6 +1267,20 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "the project is Luxforge; its old working name does not come back",
     },
+    // A slow test is marked, not named: `check --quick` reads `#[slow]` and nothing else, so a
+    // test named the old way would silently join the quick tier.
+    SourceRule {
+        name: "slow-tests-are-marked",
+        tokens: &["fn slow_"],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &["xtask/src/repository.rs"],
+        mode: Match::Prefix,
+        tests: true,
+        once: false,
+        reason: "a slow test keeps its name and is marked #[slow] (luxforge-test-macros), which is \
+                 what check --quick leaves out; name any other function without the slow_ prefix",
+    },
 ];
 
 /// The manifest tables a dependency rule reads. A target-specific table
@@ -4477,6 +4491,39 @@ fn frame() {}
                 ),
             ],
             "old working name",
+        );
+    }
+
+    #[test]
+    fn a_slow_test_is_marked_rather_than_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-core/src/sweep.rs",
+                    "#[test]\n#[slow]\nfn every_code_round_trips() {}\nfn a_slow_path() {}\n",
+                ),
+                ("xtask/src/check.rs", "fn marked_slow_tests() {}\n"),
+            ],
+        );
+        assert_eq!(read(root, &["slow-tests-are-marked"]).unwrap(), (2, 0));
+        refuses_each(
+            root,
+            "slow-tests-are-marked",
+            &[
+                (
+                    "crates/luxforge-core/src/sweep.rs",
+                    "#[cfg(test)]\nmod tests {\n    #[test]\n    fn slow_sweep() {}\n}\n",
+                ),
+                (
+                    "crates/luxforge-ui/tests/grid.rs",
+                    "#[test]\nfn slow_grid() {}\n",
+                ),
+                ("xtask/src/check.rs", "fn slow_helper() {}\n"),
+            ],
+            "marked #[slow]",
         );
     }
 
