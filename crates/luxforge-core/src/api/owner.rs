@@ -927,8 +927,9 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
 }
 
 /// One source task's work on the worker: the service's own preparation ([`SourceWork::run`]), or a
-/// collection's removal of files. A developed RAW's linear planes hold a lease on the worker's
-/// memory gate until they are released.
+/// collection's removal of files. A developed RAW's linear planes, and a paged derived source's
+/// overview, chunk cache and resident level, hold a lease on the worker's memory gate until they
+/// are released.
 fn run_source_task(
     kind: SourceTaskKind,
     reads: &[ArtifactRead],
@@ -940,6 +941,9 @@ fn run_source_task(
             let mut prepared = work.run(reads, cancel)?;
             if let Some(linear) = prepared.linear_mut() {
                 linear.hold(gate.lease());
+            }
+            if let Some(paged) = prepared.paged_mut() {
+                paged.hold(gate);
             }
             Ok(SourceResult::Prepared(Box::new(prepared)))
         }
