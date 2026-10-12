@@ -87,19 +87,20 @@ The output size is computed from the frozen entry's output stage, after orientat
 
 The export still freezes the entry, renders through the owner's tile service with the reference renderer as fallback, encodes as the bands arrive where the format allows it, and publishes without replacement ([behavior](export.md#behavior)). Two new outputs join the existing full-size 8-bit export.
 
-**Resized output.** The stage is resampled in linear light by a separable Lanczos-3 filter whose support scales with the reduction, then clamped and encoded once to the output.
-- *The reference renderer* resamples its exact whole frame on a worker. Exact-buffer tests hold it against a stepwise reference.
-- *On the GPU tile worker*, resampling is the stream's final staged sweep: the content stage is drawn into stage textures, as a staged stack's sweeps already are, and the resample sweep cuts the output bands from them. A stage whose textures do not fit `GPU_TILE_BUDGET` is the reference's (`tiles-budget`), as today.
+**Resized output.** The stage is resampled in linear light by a separable Lanczos-3 filter whose support scales with the reduction (`luxforge_core::tiles::lanczos_taps`), then clamped and encoded once to the output. Both renderers resample the stage's terminal values clamped to `[0, 1]`, as the 16-bit terminal holds them, so ringing past white is clamped once more after the filter.
+- *The reference renderer* (`luxforge_core::tiles::reference_output`) stands in for the exact frame: a full-size 8-bit output is that frame itself, uncopied; any other output is cut from the stage's terminal encoded once at 16 bits (six bytes a pixel), resampled in `f64` in bands of 16 output rows on the shared pool and encoded once at the output's depth. Exact-buffer tests hold it against a stepwise reference.
+- *On the GPU tile worker*, the stream's tiles draw their linear values into the whole output stage, held in `Rgba32Float` beside any staged sweep's stage textures, and the resample sweep reads it in cuts of at most 256 output rows: each cut's window is copied out, summed across and down by the same taps in `f32`, clamped and encoded once, and read back at the output's depth, two cuts in flight and the cancellation checked between them. The held stage and the largest cut are charged to `GPU_TILE_BUDGET` less the stream's read reserve before anything is created; a stage that does not fit is the reference's (`tiles-budget`), which renders the whole export again, never mixing renderers. An output pixel whose taps a cut's window cannot hold, at reductions past about 340 times, is the reference's (`texture-limit`).
 - *Resize then encode.* Resizing happens before encoding, so the encoder never sees the full-size stage.
+- *The full-size 8-bit stream* is unchanged: its tiles' own codes, never held or resampled.
 
-**16-bit output** (TIFF only). The output encoding produces 16-bit sRGB once, instead of 8-bit. The GPU's bands are read back at 16 bits per channel. The reference converts its frame once to 16-bit.
+**16-bit output** (TIFF only). The output encoding produces 16-bit sRGB once, instead of 8-bit. The reference encodes its terminal once at 16 bits. The GPU draws a full-size 16-bit output through the same held stage, each cut's taps a single weight of one, encodes it by the core's 16-bit thresholds and reads its bands back at 16 bits per channel.
 
 **Tolerances.** The owner asked that each of these outputs declare its tolerance when designed. This design declares them as follows; any cell that misses its limit is a defect to fix, not a reason to loosen the limit:
 - *Resized output.* Judged against the reference export resized by the reference resampler, within the display limit of the stack's class: the four statistics over every pixel. A linear resampling filter does not add new error classes.
 - *16-bit output.* Judged against the reference's 16-bit export, within the same class limits. ΔE00 is computed from the 16-bit values, so the limit is in the same perceptual units.
 - *Sharpened output.* Judged against the reference's sharpened export, within the spatial class's limit.
 
-Each output becomes a `gpu-qualification` export kind on the corpus.
+Each output is a `gpu-qualification` export kind on the corpus: `export-resized` and `export-16bit` beside `export`; the sharpened output's kind comes with output sharpening.
 
 **Output sharpening.** This is the second delivery. It is applied after resizing, at the final pixel size, to luminance only, in the encoded (gamma) domain, so it adds no colour fringes. Its radius follows the medium and the output density: Screen uses a small radius; Matte and Glossy derive theirs from the density, Matte the stronger. Low, Standard and High scale the amount. The kernel and constants are the implementer's, calibrated by eye on the corpus. Like resizing, it has a CPU reference unit with exact fixtures and a GPU program as the last sweep. It is an export setting, never a recipe layer: Detail's capture sharpening remains the recipe's.
 
