@@ -7,7 +7,7 @@
 //! same time, each in its package's directory as Cargo runs it, and prints one line per binary as
 //! it finishes. A failing binary's whole output is printed after the rest.
 //!
-//! A quick run leaves out every test marked `#[slow]` ([`slow_tests`]), and the doctests, and says
+//! A quick run leaves out every test marked `#[slow]` ([`marked_slow_tests`]), and the doctests, and says
 //! how many tests it left out. The whole run leaves out nothing.
 use crate::*;
 use std::{
@@ -90,7 +90,7 @@ fn build(root: &Path) -> Result<Vec<Binary>> {
 /// is one of the attribute lines above that line. libtest's JSON is unstable, so the listing is
 /// asked for with `RUSTC_BOOTSTRAP`; the toolchain is pinned, and a listing this cannot read
 /// fails the run rather than letting it leave nothing out.
-fn slow_tests(root: &Path, listing: &str) -> Result<Vec<String>> {
+fn marked_slow_tests(root: &Path, listing: &str) -> Result<Vec<String>> {
     let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut slow = Vec::new();
     let mut read = false;
@@ -204,7 +204,7 @@ fn run_one(root: &Path, binary: &Binary, quick: bool) -> Outcome {
                 return outcome;
             }
         };
-        let slow = match slow_tests(root, &listed) {
+        let slow = match marked_slow_tests(root, &listed) {
             Ok(slow) => slow,
             Err(e) => {
                 outcome.counts = e.to_string();
@@ -455,9 +455,12 @@ mod tests {
             event("tests::sweep", 3),
             event("tests::quick", 6)
         );
-        assert_eq!(slow_tests(root.path(), &listing).unwrap(), ["tests::sweep"]);
+        assert_eq!(
+            marked_slow_tests(root.path(), &listing).unwrap(),
+            ["tests::sweep"]
+        );
         let bare = r#"{ "type": "test", "event": "discovered", "name": "tests::quick" }"#;
-        assert!(slow_tests(root.path(), bare).is_err());
-        assert!(slow_tests(root.path(), "tests::quick: test").is_err());
+        assert!(marked_slow_tests(root.path(), bare).is_err());
+        assert!(marked_slow_tests(root.path(), "tests::quick: test").is_err());
     }
 }
