@@ -19,7 +19,7 @@ use crate::{
     },
     view::{
         Surfaces,
-        canvas_view::CanvasView,
+        canvas_view::{CanvasView, scrolled_origin},
         corrections_canvas::CorrectionsCanvas,
         crop_canvas::{CropCanvas, Mode},
         mask_canvas::{MaskCanvas, Placement},
@@ -1257,8 +1257,7 @@ pub(crate) fn drawn_photo(
                 return None;
             }
             let axis = |start: f32, available: f32, content: f32, offset: f32| {
-                start + ((available - content).max(0.0) / 2.0)
-                    - offset.clamp(0.0, (content - available).max(0.0))
+                start + scrolled_origin(content, available, offset)
             };
             Some(Rectangle::new(
                 Point::new(
