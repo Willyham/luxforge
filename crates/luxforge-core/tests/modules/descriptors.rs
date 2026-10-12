@@ -313,6 +313,22 @@ fn schema_list_names_developer_only_methods_only_in_developer_mode() {
         assert!(developer.contains_key(method), "{method} in developer mode");
     }
     for (method, schema) in &ordinary {
+        // A developer run also offers the developer models, so the generative task's `model`
+        // choice gains them first and nothing else of its schema changes.
+        if method == "task.fill-generative" {
+            let mut expected = schema.clone();
+            let model = expected["parameters"]
+                .as_array_mut()
+                .expect("parameters")
+                .iter_mut()
+                .find(|parameter| parameter["name"] == "model")
+                .expect("a model parameter");
+            let mut options = vec![json!("fake-generator")];
+            options.extend(model["options"].as_array().expect("model options").clone());
+            model["options"] = Value::Array(options);
+            assert_eq!(developer.get(method), Some(&expected), "{method}");
+            continue;
+        }
         assert_eq!(developer.get(method), Some(schema), "{method}");
     }
     assert_eq!(developer.len(), ordinary.len() + generated.len());
