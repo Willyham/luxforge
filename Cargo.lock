@@ -2114,6 +2114,7 @@ dependencies = [
  "luxforge-evidence",
  "luxforge-gpu",
  "luxforge-input",
+ "luxforge-install",
  "luxforge-net",
  "luxforge-onnx",
  "luxforge-reference",
@@ -2228,6 +2229,17 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "raw-window-handle",
+]
+
+[[package]]
+name = "luxforge-install"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "luxforge-test-macros",
+ "luxforge-testbase",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

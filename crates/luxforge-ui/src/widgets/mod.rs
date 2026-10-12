@@ -116,7 +116,7 @@ pub use metric_row::{MetricRowModel, metric_row};
 pub use mode_control::{CombineMode, ModeControlModel, mode_control};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
 pub use notched_slider::{NotchedSliderModel, StepKeys, arrow_step, notched_panel, notched_slider};
-pub use notice_card::{NoticeCardModel, Tone, notice_card};
+pub use notice_card::{NoticeCardModel, Tone, notice_card, notice_card_with};
 pub use number_field::{
     NumberFieldModel, ValueEdit, boxed_input, channel_row, compact_number_field, label_line,
     number_field, value_input,

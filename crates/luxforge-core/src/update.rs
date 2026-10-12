@@ -536,7 +536,10 @@ pub trait UpdatePort: Send + Sync {
 
     /// Move the app into Applications and relaunch it from there, through the same quit path as
     /// [`Self::request_install`]. Only called when [`PortStatus::can_move_to_applications`].
-    fn move_to_applications(&self) -> Result<(), Error>;
+    /// `replace` is the person's confirmation that a Luxforge already in the destination may go
+    /// to the Trash; without it, a port refuses a move that would replace one with a `conflict`
+    /// whose `data.reason` is `existing-app` and whose `data.path` names it.
+    fn move_to_applications(&self, replace: bool) -> Result<(), Error>;
 }
 
 /// A port for a desktop that must not update itself: [`Updater::Unavailable`] with its reason, so
@@ -584,7 +587,7 @@ impl UpdatePort for UnavailablePort {
 
     fn skip(&self, _: &str) {}
 
-    fn move_to_applications(&self) -> Result<(), Error> {
+    fn move_to_applications(&self, _: bool) -> Result<(), Error> {
         Err(Error::not_ready(
             "this installation cannot move into Applications",
         ))

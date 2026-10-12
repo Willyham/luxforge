@@ -388,16 +388,40 @@ impl Editor {
         self.owner.stop();
         let join = self.owner_join.take();
         let log = self.log.diagnostics.take();
+        // A relaunch or an update's install waits for the catalog to close: it runs once the
+        // owner's thread has joined, and its outcome is the log's last event.
+        let after = super::relaunch::take();
+        let line = after.as_ref().map(|_| {
+            (
+                self.log.run_id.clone(),
+                self.log.started,
+                self.activity.requested,
+            )
+        });
         Task::perform(
             async move {
-                if let Some(log) = log {
-                    log.finish();
-                }
+                let Some(after) = after else {
+                    if let Some(log) = log {
+                        log.finish();
+                    }
+                    if let Some(join) = join {
+                        let _ = join.join();
+                    }
+                    // The catalog is closed: a staged update may now replace the app, and one
+                    // the person asked for starts the new version in place of this process.
+                    super::update_port::at_quit();
+                    return;
+                };
                 if let Some(join) = join {
                     let _ = join.join();
                 }
-                // The catalog is closed: a staged update may now replace the app, and one the
-                // person asked for starts the new version in place of this process.
+                let detail = super::relaunch::run(after);
+                if let Some(log) = log {
+                    if let Some((run_id, started, request)) = line {
+                        log.event(json!({"event":"after_close","run_id":run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"request_id":request,"generation":request,"detail":detail}));
+                    }
+                    log.finish();
+                }
                 super::update_port::at_quit();
             },
             |_| (),

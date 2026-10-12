@@ -403,12 +403,19 @@ pub(in crate::api) fn skip(
     }))
 }
 
+host_params! {
+    pub(in crate::api) struct UpdateMove {
+        mutation: MutationRequest,
+        replace: Option<bool> = boolean().default(false).notes("the person confirmed that a Luxforge already in the destination may be moved to the Trash; without it such a move is refused as conflict with data.reason existing-app and data.path"),
+    }
+}
+
 /// `update.move-to-applications`: validated here, carried out by the port, which relaunches through
 /// the same quit path as an install.
 pub(in crate::api) fn move_to_applications(
     owner: &mut Owner,
     call: &Call<'_>,
-    _: UpdateRequest,
+    params: UpdateMove,
 ) -> Result<Value, Error> {
     permission(owner, call, "moving into Applications")?;
     let port = port(owner).filter(|port| port.status().can_move_to_applications);
@@ -419,6 +426,6 @@ pub(in crate::api) fn move_to_applications(
         );
     };
     running_jobs(owner, "moving into Applications")?;
-    port.move_to_applications()?;
+    port.move_to_applications(params.replace.unwrap_or(false))?;
     Ok(json!({ "outcome": "requested", "status": status(owner) }))
 }

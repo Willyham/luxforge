@@ -57,6 +57,16 @@ pub fn notice_card<'a, M: Clone + 'a>(
     model: &NoticeCardModel,
     actions: Vec<(String, M)>,
 ) -> Element<'a, M> {
+    notice_card_with(model, actions, None)
+}
+
+/// A [`notice_card`] with `footer` under its body, such as the move question's Don't ask again
+/// switch, in the column the title and body share.
+pub fn notice_card_with<'a, M: Clone + 'a>(
+    model: &NoticeCardModel,
+    actions: Vec<(String, M)>,
+    footer: Option<Element<'a, M>>,
+) -> Element<'a, M> {
     let header = text(model.title.clone())
         .size(theme::SIZE_NOTICE_TITLE)
         .font(theme::FONT_SEMIBOLD)
@@ -64,6 +74,11 @@ pub fn notice_card<'a, M: Clone + 'a>(
     let body = text(model.body.clone())
         .size(theme::SIZE_NOTICE_BODY)
         .style(theme::ink(Token::TextSecondary));
+
+    let mut text_column = column![header, body].spacing(2.0).width(Length::Fill);
+    if let Some(footer) = footer {
+        text_column = text_column.push(footer);
+    }
 
     let count = actions.len();
     let mut action_row = Row::new()
@@ -85,7 +100,7 @@ pub fn notice_card<'a, M: Clone + 'a>(
 
     let content = row![
         icon(model.icon, theme::ICON_SIZE, model.tone.ink()),
-        column![header, body].spacing(2.0).width(Length::Fill),
+        text_column,
         action_row,
     ]
     .spacing(theme::NOTICE_SPACING)

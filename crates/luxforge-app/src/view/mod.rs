@@ -24,6 +24,7 @@ pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
+pub(crate) mod move_to_applications;
 pub(crate) mod palette;
 pub(crate) mod query_choice;
 pub(crate) mod select;
@@ -218,7 +219,8 @@ pub(crate) fn workspace<'a>(
     if let Some(sheet) = copy_settings::confirmation(&model.copy_settings) {
         layers = layers.push(sheet);
     }
-    // The update offer and the usage statistics notice sit under the palette and the sheets,
+    // The update offer, the move question and the usage statistics notice sit under the palette
+    // and the sheets,
     // which a claimed usage notice waits for anyway.
     if let Some(notices) = notices(model, model.develop.strip.is_some()) {
         layers = layers.push(notices);
@@ -232,13 +234,15 @@ pub(crate) fn workspace<'a>(
     layers.into()
 }
 
-/// The workspace's notices over the bottom of the workspace: the update offer above the usage
-/// statistics notice. `None` while neither is up.
+/// The workspace's notices over the bottom of the workspace: the update offer, the move into
+/// Applications question and the usage statistics notice, top to bottom. The move question waits
+/// for the usage notice, so those two never show together. `None` while none is up.
 fn notices(model: &Workspace, filmstrip: bool) -> Option<Element<'_, Message>> {
     let cards: Vec<Element<'_, Message>> = model
         .update_notice
         .iter()
         .map(update::card)
+        .chain(model.move_notice.iter().map(move_to_applications::card))
         .chain(model.usage_notice.iter().map(usage::card))
         .collect();
     (!cards.is_empty()).then(|| usage::layer(cards, filmstrip))

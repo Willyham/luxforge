@@ -21,6 +21,7 @@ luxforge-diffusion = { path = "../luxforge-diffusion" }
 luxforge-update = { path = "../luxforge-update" }
 luxforge-ui = { path = "../luxforge-ui" }
 luxforge-input = { path = "../luxforge-input" }
+luxforge-install = { path = "../luxforge-install" }
 iced.workspace = true
 wgpu.workspace = true
 image.workspace = true

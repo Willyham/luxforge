@@ -111,12 +111,15 @@ preferences! {
     /// An update downloads in the background and installs at the next ordinary quit, while checks
     /// are on.
     update_install_automatically: bool,
+    /// A macOS release build launched outside Applications asks to move itself there; the
+    /// question's Don't ask again turns it off.
+    update_ask_to_move: bool,
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
-/// shows, the theme the Appearance tab chooses and the Updates group's two switches. The rest are
-/// the desktop's own bookkeeping and announce nothing.
-pub(crate) const ANNOUNCED: [&str; 10] = [
+/// shows, the theme the Appearance tab chooses, the Updates group's two switches and the move
+/// question's Don't ask again. The rest are the desktop's own bookkeeping and announce nothing.
+pub(crate) const ANNOUNCED: [&str; 11] = [
     "auto_collapse_history",
     "auto_lens_profile",
     "raw_look",
@@ -127,6 +130,7 @@ pub(crate) const ANNOUNCED: [&str; 10] = [
     "theme",
     "update_checks",
     "update_install_automatically",
+    "update_ask_to_move",
 ];
 
 impl PreferenceChange {

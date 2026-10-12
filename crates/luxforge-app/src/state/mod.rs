@@ -16,6 +16,7 @@ pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod masks;
 pub(crate) mod models;
+pub(crate) mod move_to_applications;
 pub(crate) mod number;
 pub(crate) mod palette;
 pub(crate) mod panel;
@@ -496,6 +497,8 @@ pub(crate) struct Workspace {
     pub(crate) usage_notice: Option<usage::UsageNotice>,
     /// The update offer, while there is one to show.
     pub(crate) update_notice: Option<update::UpdateNotice>,
+    /// The move into Applications question, while it is on screen.
+    pub(crate) move_notice: Option<move_to_applications::MoveNotice>,
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,

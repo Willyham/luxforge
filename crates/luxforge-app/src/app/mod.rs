@@ -134,6 +134,9 @@ pub(crate) mod message;
 pub(crate) mod motion;
 #[cfg(test)]
 mod motion_tests;
+pub(crate) mod move_to_applications;
+#[cfg(test)]
+mod move_to_applications_tests;
 pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
@@ -161,6 +164,7 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+mod relaunch;
 mod remembered;
 #[cfg(test)]
 mod remembered_tests;
@@ -532,6 +536,9 @@ pub(crate) struct Editor {
     pub(crate) usage_reported_presented: Option<bool>,
     /// Automatic updates: the status as last read, the calls in flight and Later ([`update`]).
     pub(crate) updates: state::update::Updates,
+    /// The question a macOS release build asks when it runs outside Applications
+    /// ([`move_to_applications`]).
+    pub(crate) move_question: state::move_to_applications::MoveQuestion,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -578,7 +585,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 31] = [
+const AFTER_MESSAGE: [AfterMessage; 32] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -610,6 +617,7 @@ const AFTER_MESSAGE: [AfterMessage; 31] = [
     themes::after_message,
     usage::after_message,
     update::after_message,
+    move_to_applications::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -624,7 +632,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 17] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 18] = [
     keymap::subscription,
     view_state::subscription,
     visibility::subscription,
@@ -642,6 +650,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 17] = [
     long_work::subscription,
     palette::subscription,
     update_port::subscription,
+    relaunch::subscription,
 ];
 
 /// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the
@@ -671,6 +680,15 @@ impl Editor {
         // The desktop's own client may grant module permissions: it does so only after the person
         // presses Allow in its consent notice.
         let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
+        // Decided once: a person-launched macOS release build asks to move into Applications, and
+        // an evidence run asks only when told to, so the question can be captured.
+        let asker = state::move_to_applications::Asker::of(
+            option_env!("LUXFORGE_RELEASE_VERSION").is_some(),
+            cfg!(target_os = "macos"),
+            config.hidden,
+            config.evidence.is_some(),
+            config.evidence_move,
+        );
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
             let mut evidence = Evidence::new(dir, queue, std::mem::take(&mut config.script));
@@ -759,6 +777,7 @@ impl Editor {
             usage_image: Default::default(),
             usage_reported_presented: None,
             updates: Default::default(),
+            move_question: state::move_to_applications::MoveQuestion::new(asker),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -1075,6 +1094,7 @@ impl Editor {
         let inputs = self.inputs();
         workspace.derive(&inputs);
         workspace.copy_settings = self.copy_model();
+        workspace.move_notice = state::move_to_applications::notice(&self.move_question);
         workspace.canvas.covered = workspace.covers_canvas();
         for entry in &mut workspace.palette.entries {
             if let state::palette::PaletteAction::Host(command) = entry.action {
@@ -1237,6 +1257,7 @@ impl Editor {
             Message::Select(message) => self.select_update(message),
             Message::LongWork(message) => self.long_work_update(message),
             Message::Develop(message) => self.develop_update(message),
+            Message::MoveToApplications(message) => self.move_update(message),
             // An answer the sheet asked for before this catalog opened, such as the releases
             // page's opener, arriving after it did.
             Message::UnsupportedCatalog(_) => Task::none(),

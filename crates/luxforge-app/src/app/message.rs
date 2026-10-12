@@ -20,6 +20,7 @@ pub(crate) mod history;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask;
+pub(crate) mod move_to_applications;
 pub(crate) mod overlay;
 pub(crate) mod palette;
 pub(crate) mod performance;
@@ -98,6 +99,8 @@ pub(crate) enum Message {
     Develop(develop::DevelopMessage),
     /// The unsupported-catalog sheet, shown before any catalog is open; the editor never sees one.
     UnsupportedCatalog(unsupported_catalog::UnsupportedCatalogMessage),
+    /// The question a macOS release build asks when it runs outside Applications.
+    MoveToApplications(move_to_applications::MoveMessage),
     Close,
 }
 

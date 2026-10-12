@@ -298,7 +298,7 @@ impl UpdatePort for FixturePort {
 
     fn skip(&self, _: &str) {}
 
-    fn move_to_applications(&self) -> Result<(), Error> {
+    fn move_to_applications(&self, _replace: bool) -> Result<(), Error> {
         Err(Error::not_ready(
             "this installation cannot move into Applications",
         ))

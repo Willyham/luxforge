@@ -17,6 +17,8 @@ RAW files the editor opens. Phone HEIC and Apple ProRAW support remain unqualifi
 
 There are no published downloads yet. Initial [v0.1 release preparation](design/release-v0.1.md) targets Apple silicon macOS and x86-64 Linux together; [`cargo xtask release TAG`](engineering/releases.md) requires clean synchronized main and passes quick checks before pushing a tag; its hosted builds automatically publish pre-release build candidates, optionally signed/notarized on macOS. Public distribution and native installation qualification remain open. The instructions below run a developer build.
 
+**Installing on macOS.** A macOS build comes as a disk image (`.dmg`). Open it, and drag **Luxforge** onto the **Applications** folder shown beside it; then eject the disk image and open Luxforge from Applications. Luxforge can only update itself from Applications. If you open it straight from the disk image, or from anywhere else such as Downloads, it asks once the workspace is ready: **Move Luxforge to Applications?** (see [Updates](#updates)).
+
 macOS is the primary platform. Linux has automated build and functional checks; native desktop qualification remains open. Windows support will come later, and Windows CI is disabled. See [platform status](engineering/platforms.md).
 
 After [developer setup](engineering/development.md), start an optimized build with a catalog and an optional original:
@@ -254,7 +256,9 @@ Luxforge will check for and install its own updates once each platform's updater
 
 When a newer version is found, a small card at the bottom of the workspace says **Luxforge 0.2.0 is available**, with **Release notes**, **Install and relaunch**, **Later** and **Skip this version**. It never takes focus, so you can keep editing around it. It shows the download's progress and says when the update is ready. **Later** hides it until the next check, and **Skip this version** stops offering that version; a later one is offered again. If an export or another long job is running, Install and relaunch says which and waits for you to try again. A version that needs a new catalog says so: your current catalog stays as it is, and the version you have now keeps opening it. On a Linux installation that cannot replace itself, the card offers **Download**, which opens the release page, instead of installing.
 
-Agents and scripts read the same state with `update.status` and act with `update.check`, `update.install` and `update.skip`; the two switches are the `update_checks` and `update_install_automatically` preferences of `preferences.set`.
+**Moving into Applications (macOS).** A release build you open from a disk image, a read-only volume, or anywhere outside `/Applications` and `~/Applications` asks once its workspace is ready, in a small card at the bottom of the workspace: **Move Luxforge to Applications?** "Luxforge can only update itself from the Applications folder." **Move and relaunch** copies Luxforge into `/Applications` (or `~/Applications` when you cannot write to `/Applications`), checks the copy's signature, quits the ordinary way so your catalog closes cleanly, and opens Luxforge from its new place; the copy you opened goes to the Trash, or its disk image is ejected. If a Luxforge is already in Applications, it asks before moving that one to the Trash. If the move fails, the card says why and nothing has changed. **Not now** leaves it where it is; turn on **Don't ask again** first and it stops asking. Development builds and automated launches never ask.
+
+Agents and scripts read the same state with `update.status` and act with `update.check`, `update.install`, `update.skip` and `update.move-to-applications`; the two switches are the `update_checks` and `update_install_automatically` preferences of `preferences.set`, and Don't ask again is `update_ask_to_move`.
 
 ### Developer components gallery
 

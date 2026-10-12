@@ -59,6 +59,7 @@ mod mask_range_smoke;
 mod mask_smoke;
 mod minify_smoke;
 mod mixer_smoke;
+mod move_to_applications_smoke;
 mod no_gpu_render_smoke;
 mod package;
 mod performance_smoke;
