@@ -385,7 +385,7 @@ fn gpu_rest_an_exhausted_budget_refuses_the_overview_and_not_the_picture() {
         let picture = fits(&mut surface, &rest_of(&with), least)
             .unwrap_or_else(|fallback| panic!("{what}: the picture refused: {fallback:?}"));
         let refused = match &picture.overview {
-            Some(Err(fallback @ GpuFallback::BudgetExceeded { .. })) => Some(fallback.clone()),
+            Some(Err(fallback @ GpuFallback::BudgetExceeded { .. })) => Some(*fallback),
             Some(Ok(_)) if what != "Basic" => None,
             other => panic!("{what}: the overview at {least} bytes: {other:?}"),
         };

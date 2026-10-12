@@ -359,15 +359,15 @@ impl Overviews {
     }
 
     fn drop_pending(&mut self) {
-        if let Some(pending) = self.pending.take() {
-            if pending.renderer == Renderer::Reference {
-                if let Some((version, cancel)) = &self.reducing
-                    && *version == pending.version
-                {
-                    cancel.cancel();
-                }
-                self.upload = None;
+        if let Some(pending) = self.pending.take()
+            && pending.renderer == Renderer::Reference
+        {
+            if let Some((version, cancel)) = &self.reducing
+                && *version == pending.version
+            {
+                cancel.cancel();
             }
+            self.upload = None;
         }
     }
 
@@ -625,10 +625,10 @@ impl Overviews {
             },
             stage: made.key.stage,
         };
-        if let Some(settled) = &self.settled {
-            if Some(&settled.key) == desired.key.as_ref() {
-                return MinimapOverview::Ready(shown(settled));
-            }
+        if let Some(settled) = &self.settled
+            && Some(&settled.key) == desired.key.as_ref()
+        {
+            return MinimapOverview::Ready(shown(settled));
         }
         if let Some((key, reason)) = &self.unavailable
             && Some(key) == desired.key.as_ref()
