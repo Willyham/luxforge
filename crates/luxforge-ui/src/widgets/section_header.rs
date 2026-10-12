@@ -1,9 +1,10 @@
-//! A module section: its band (the header row on the Bar surface) and, when expanded, its body.
+//! A module section: its band (the header row on the module band surface) and, when expanded, its
+//! body.
 //!
 //! The band is the module level of the tools panel's hierarchy: a 1 px border above, then a row of
-//! [`theme::MODULE_HEADER_HEIGHT`] on the Bar surface carrying the disclosure, the title, the
-//! accent dot for a non-neutral module, and either the hint (collapsed) or the module reset
-//! (expanded). It is the same height expanded or collapsed, so the panel does not jump. An
+//! [`theme::MODULE_HEADER_HEIGHT`] on [`theme::Derived::ModuleBand`] carrying the disclosure, the
+//! [`theme::SIZE_MODULE_TITLE`] title in the bright text, the accent dot for a non-neutral module,
+//! and either the hint (collapsed) or the module reset (expanded). It is the same height expanded or collapsed, so the panel does not jump. An
 //! unavailable module's band shows its reason in the clipping red and does not expand. A band bound
 //! to a mask carries that mask's name as an accent scope chip before its reset, collapsed or
 //! expanded, so a slider under it never reads as a global one.
@@ -62,6 +63,17 @@ pub(crate) fn expanded_section_height(rows: f32, count: usize) -> f32 {
         + theme::SECTION_PADDING.bottom
 }
 
+/// A band's title: 14 pt semibold, a step over every other title and in the bright text, so a
+/// module reads above the groups and controls under it.
+fn band_title<'a, M: 'a>(title: String, color: Token) -> Element<'a, M> {
+    text(title)
+        .size(theme::SIZE_MODULE_TITLE)
+        .font(theme::FONT_SEMIBOLD)
+        .wrapping(Wrapping::None)
+        .style(theme::ink(color))
+        .into()
+}
+
 /// Renders one section header: the border above and the band.
 pub(crate) fn section_header<'a, M: Clone + 'a>(
     model: &SectionHeaderModel,
@@ -77,16 +89,12 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
     let title_color = if model.unavailable.is_some() {
         Token::TextSecondary
     } else {
-        Token::Text
+        Token::TextBright
     };
 
     let mut leading = row![
         icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
-        text(model.title.clone())
-            .size(theme::SIZE_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .wrapping(Wrapping::None)
-            .style(theme::ink(title_color)),
+        band_title(model.title.clone(), title_color),
     ]
     .spacing(theme::MODULE_HEADER_SPACING)
     .align_y(Alignment::Center);
@@ -187,11 +195,7 @@ pub fn band_header<'a, M: Clone + 'a>(
     };
     let mut leading = row![
         icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
-        text(title.to_owned())
-            .size(theme::SIZE_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .wrapping(Wrapping::None)
-            .style(theme::ink(Token::Text)),
+        band_title(title.to_owned(), Token::TextBright),
     ]
     .spacing(theme::MODULE_HEADER_SPACING)
     .align_y(Alignment::Center);
@@ -247,11 +251,7 @@ pub fn band_header_with_reset<'a, M: Clone + 'a>(
     };
     let mut leading = row![
         icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
-        text(title.to_owned())
-            .size(theme::SIZE_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .wrapping(Wrapping::None)
-            .style(theme::ink(Token::Text)),
+        band_title(title.to_owned(), Token::TextBright),
     ]
     .spacing(theme::MODULE_HEADER_SPACING)
     .align_y(Alignment::Center);
@@ -452,7 +452,7 @@ mod tests {
                 ),
             14,
         );
-        assert_eq!(basic, 465.0);
+        assert_eq!(basic, 477.0);
         // Transforms: its icon row alone, the first and last row of the body, as Crop's idle
         // button row is.
         let transforms = expanded_section_height(
