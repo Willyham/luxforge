@@ -313,9 +313,10 @@ pub struct PlannedInput {
     pub frame: FrameMetadata,
 }
 
-/// Where a merge's result goes: an existing catalog folder and why it was proposed — the folder
-/// made from the inputs' event (`event`), the one every catalog photograph among the inputs is in
-/// (`inputs`), the reference photograph's (`reference`), or the request's own (`requested`).
+/// Where a merge's result goes, when the folder is in the catalog already: the folder the
+/// proposal names (`existing`: one an earlier Develop of the reference's event made, or the folder
+/// its folder on disk's photographs went into), or the day folder of its year and place
+/// (`place`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FolderProposal {
@@ -382,11 +383,8 @@ pub struct MergePlan {
     pub parameters: HdrParameters,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<FolderProposal>,
-    /// Why no existing folder is proposed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folder_reason: Option<String>,
-    /// The new folder the inputs' event would make, which `folder.create` makes before the merge
-    /// names it.
+    /// The folder choice a Develop would file the reference frame by, when it would make a folder
+    /// for the reference's capture day: `merge.create`'s default, which makes those folders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_folder: Option<super::FolderChoice>,
     pub estimates: MergeEstimates,

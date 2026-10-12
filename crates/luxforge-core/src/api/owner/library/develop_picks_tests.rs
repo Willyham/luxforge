@@ -1614,9 +1614,12 @@ fn develop_picks_into_sends_each_event_to_the_folder_it_names() {
     );
 }
 
+/// A photograph's file name and its folder's path.
+type Filed = (String, String);
+
 /// The catalog folder tree as each folder's path ("2026 › Konstanz › 12 Sep") and count, in
 /// `folder.list`'s order, and each photograph's folder path by its file name.
-fn filed(harness: &Harness) -> (Vec<(String, u64)>, Vec<(String, String)>) {
+fn filed(harness: &Harness) -> (Vec<(String, u64)>, Vec<Filed>) {
     let folders = harness.ok("folder.list", json!({}))["folders"].clone();
     let folders = folders.as_array().unwrap();
     let path_of = |id: &str| {

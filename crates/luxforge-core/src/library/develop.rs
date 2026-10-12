@@ -39,12 +39,12 @@ pub(crate) mod send_back;
 pub(crate) mod develop_picks_tests;
 
 pub(crate) use commit::{Decided, Refused, decide, failure, write};
+pub(crate) use filing::{Destination, file_one, made_from};
 #[allow(
     unused_imports,
     reason = "`plan.rs` reads frames through its module; nothing outside `develop` reads it"
 )]
 pub(crate) use frames::{Frames, frames};
-pub(crate) use filing::{Destination, file_one};
 pub(crate) use plan::{Plan, PlannedFile, destinations, plan};
 pub(crate) use read::{ReadFile, from_copy, read};
 
