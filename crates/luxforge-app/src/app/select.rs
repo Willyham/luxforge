@@ -884,6 +884,26 @@ impl Editor {
         }
     }
 
+    /// With no file requested at launch, an empty catalog starts in Select. Use the same counts
+    /// and workspace entry path as the Catalog sources and the workspace switch.
+    pub(super) fn startup_workspace(&mut self) -> Task<Message> {
+        match counts_now(&self.owner, self.client) {
+            Ok(counts) if counts.photographs == 0 => {
+                // Keep any launch diagnostic already in the status line.
+                let status = self.status.text.clone();
+                let task = self.switch_workspace(Shown::Select);
+                self.status.text = status;
+                self.select.state.counts = Some(counts);
+                task
+            }
+            Ok(_) => Task::none(),
+            Err(reason) => {
+                self.status.text = format!("Could not read catalog counts: {reason}");
+                Task::none()
+            }
+        }
+    }
+
     /// Switch workspaces. Nothing is committed, discarded or paused, and each keeps its state;
     /// Select is refused while a Develop draft is open, through the one start refusal.
     fn switch_workspace(&mut self, shown: Shown) -> Task<Message> {
