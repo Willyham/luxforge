@@ -1,10 +1,11 @@
 //! Develop's filmstrip, as the development-set board draws it (`.fstrip`, `.fthumb`): a 92 pt strip
-//! under the canvas holding the development set — a header with the previous and next buttons, the
-//! set's name and a caption, and a row of cells, the active one outlined in the accent.
+//! under the canvas holding the Develop folder's photographs — a header with the previous and next
+//! buttons, the folder's path and a caption, and a row of cells, the active one outlined in the
+//! accent.
 //!
 //! Cells take the caller's image handles, made once and held, and the strip draws only the
-//! caller's window of the set ([`crate::visible_window`], [`filmstrip_capacity`]), whatever the
-//! set's size.
+//! caller's window of the photographs ([`crate::visible_window`], [`filmstrip_capacity`]), however
+//! many there are.
 
 use super::icon_button::{Icon, IconButtonModel, sized_icon_button};
 use super::loupe::fitted_image;
@@ -15,21 +16,22 @@ use iced::widget::text::Wrapping;
 use iced::widget::{Row, Space, button, column, container, row, text, tooltip};
 use iced::{Alignment, Length, Padding};
 
-/// Plain data for the filmstrip: the set's name and a window of its photographs.
+/// Plain data for the filmstrip: the folder's path and a window of its photographs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilmstripModel {
-    /// The set's name: `Development set`.
+    /// The folder's path: `2026 › Konstanz`.
     pub title: String,
-    /// A right-aligned caption; `None` shows the active photograph's place in the set (`3 of 18`).
+    /// A right-aligned caption; `None` shows the active photograph's place in the strip
+    /// (`3 of 18`).
     pub caption: Option<String>,
-    /// The cells to draw, in order; photograph `first + i` of the set is `cells[i]`, `None` while
+    /// The cells to draw, in order; photograph `first + i` of the strip is `cells[i]`, `None` while
     /// its preview is not read yet.
     pub cells: Vec<Option<Handle>>,
-    /// The set's index of `cells[0]`, from 0.
+    /// The strip's index of `cells[0]`, from 0.
     pub first: usize,
-    /// How many photographs the set holds.
+    /// How many photographs the strip holds.
     pub total: usize,
-    /// The set's index of the photograph Develop shows.
+    /// The strip's index of the photograph Develop shows.
     pub active: Option<usize>,
     /// Selection flags for the visible cells.
     pub selected: Vec<bool>,
@@ -143,7 +145,7 @@ impl<'a, M: 'a, Theme, Renderer: iced::advanced::renderer::Renderer>
 }
 
 /// Renders the filmstrip, [`theme::FILMSTRIP_HEIGHT`] tall and filling its width. Pressing a cell
-/// publishes `on_select` with its index in the set; a header button whose message is `None` is
+/// publishes `on_select` with its index in the strip; a header button whose message is `None` is
 /// disabled.
 pub fn filmstrip<'a, M: Clone + 'a>(
     model: &FilmstripModel,
@@ -272,7 +274,7 @@ fn step_button<'a, M: Clone + 'a>(glyph: Icon, label: &str, on_press: Option<M>)
 }
 
 /// The header's right-aligned caption: the caller's, or else the active photograph's place in the
-/// set, or nothing when no photograph is active.
+/// strip, or nothing when no photograph is active.
 pub(crate) fn filmstrip_caption(model: &FilmstripModel) -> Option<String> {
     model.caption.clone().or_else(|| {
         model
@@ -444,7 +446,7 @@ mod tests {
 
     fn model(caption: Option<&str>, active: Option<usize>) -> FilmstripModel {
         FilmstripModel {
-            title: "Development set".into(),
+            title: "2026 \u{203a} Konstanz".into(),
             caption: caption.map(Into::into),
             cells: vec![None; 3],
             first: 40,

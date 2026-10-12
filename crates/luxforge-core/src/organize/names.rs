@@ -311,7 +311,7 @@ fn folder_name(folder: &Path) -> String {
 
 /// A folder's name when a person gave it, without a leading date; none for a camera's folder
 /// (`DCIM`, or DCF's three digits and five characters, `100NZ8_1`) or a name that is only a date.
-pub(super) fn user_folder_name(folder: &Path) -> Option<String> {
+pub(crate) fn user_folder_name(folder: &Path) -> Option<String> {
     let name = folder.file_name()?.to_string_lossy();
     let name = name.trim();
     if name.eq_ignore_ascii_case("DCIM") || is_dcf_folder(name) || name.chars().all(date_char) {

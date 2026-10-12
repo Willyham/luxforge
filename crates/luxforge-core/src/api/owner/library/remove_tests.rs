@@ -623,7 +623,8 @@ fn removed_photographs_leave_every_other_view_and_count_and_put_back_returns_the
     let harness = Harness::new("views");
     let paths = harness.photos(4);
     let assets = harness.develop("develop", &paths);
-    let folder = harness.ok("folder.list", json!({}))["folders"][0]["id"].clone();
+    // The folder Develop filed them in.
+    let folder = json!(harness.strings("SELECT catalog_folder_id FROM assets ORDER BY row_id")[0]);
     let best = harness.ok(
         "folder.create",
         json!({"name": "Best", "parent_id": folder, "mutation": envelope("best")}),
@@ -725,8 +726,9 @@ fn removed_photographs_leave_every_other_view_and_count_and_put_back_returns_the
         .iter()
         .map(|folder| (folder["name"].clone(), folder["count"].clone()))
         .collect();
-    assert_eq!(counts[1], (json!("Best"), json!(0)), "{counts:?}");
-    assert_eq!(counts[0].1, json!(2), "{counts:?}");
+    // 2026 › Konstanz › 12 Sep, which Develop filed them in, and Best inside it.
+    assert_eq!(counts[3], (json!("Best"), json!(0)), "{counts:?}");
+    assert_eq!(counts[2], (json!("12 Sep"), json!(2)), "{counts:?}");
     let portfolio_count = during["collections"]["collections"]
         .as_array()
         .unwrap()
@@ -777,14 +779,14 @@ fn remove_empty_is_forbidden_without_permission_authority() {
     let emptied = harness.empty("empty-1");
     assert_eq!(
         emptied,
-        json!({"outcome": "applied", "deleted": 1, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "applied", "deleted": 1, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     assert_eq!(harness.events_after(sequence), ["catalog.empty-removed"]);
     let after_first = harness.sequence();
     let retried = harness.empty("empty-1");
     assert_eq!(
         retried,
-        json!({"outcome": "applied", "deleted": 1, "remaining": 0, "deduplicated": true})
+        json!({"outcome": "applied", "deleted": 1, "merges": 0, "remaining": 0, "deduplicated": true})
     );
     assert_eq!(harness.sequence(), after_first, "a retry records no event");
     let counts = harness.counts();
@@ -796,7 +798,7 @@ fn remove_empty_is_forbidden_without_permission_authority() {
     let nothing = harness.empty("empty-2");
     assert_eq!(
         nothing,
-        json!({"outcome": "no-op", "deleted": 0, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "no-op", "deleted": 0, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     assert_eq!(harness.sequence(), after_first);
     // An edit client is refused even with nothing to delete.
@@ -964,7 +966,7 @@ fn remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_and_a
     assert_eq!(cached, 0, "the preview cache forgets an emptied photograph");
     assert_eq!(
         emptied,
-        json!({"outcome": "applied", "deleted": 2, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "applied", "deleted": 2, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     assert_eq!(harness.events_after(sequence), ["catalog.empty-removed"]);
     for gone in [k0, k1] {

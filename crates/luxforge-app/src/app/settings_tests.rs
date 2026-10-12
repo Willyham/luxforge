@@ -14,7 +14,7 @@ use iced::{
     event::Status,
     keyboard::{self, Key, Modifiers, key::Named},
 };
-use luxforge_core::flags::FlagList;
+use luxforge_core::flags::{FlagList, RANGE_MASKS};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
@@ -126,7 +126,7 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
         .collect();
     assert_eq!(
         ids,
-        ["developer", "ai.generative", "proof.choice", "proof.number"]
+        ["developer", RANGE_MASKS, "ai.generative", "proof.choice", "proof.number"]
     );
 
     set(&mut editor, "proof.choice", Some(json!("second")));
@@ -360,6 +360,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
         flags: true,
         preferences: false,
         themes: false,
+        library: None,
         usage: false,
         own: Vec::new(),
     };

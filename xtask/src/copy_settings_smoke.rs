@@ -4,7 +4,9 @@ use crate::{
     smoke::Scenario,
     *,
 };
-use luxforge_evidence::{self as script, CopySettingsStep as Copy, DevelopStep, SelectStep};
+use luxforge_evidence::{
+    self as script, CatalogStep, CopySettingsStep as Copy, DevelopStep, SelectStep, SelectWorkspace,
+};
 const EXPECTED: &str = "copy-settings-expected.json";
 
 fn plan(expected: &Value) -> Plan {
@@ -15,16 +17,12 @@ fn plan(expected: &Value) -> Plan {
     let mut steps = vec![
         Step::opened("opened"),
         Step::new("select", script::Step::key("g")),
-        Step::new("all", SelectStep::Source("All photographs".into())),
+        // The photographs' catalog folder pressed, then `D`: Develop on its first photograph.
         Step::new(
-            "first",
-            SelectStep::Click {
-                position: 0,
-                shift: false,
-                command: false,
-            },
+            "folder",
+            script::Step::Catalog(CatalogStep::Source(crate::filmstrip_smoke::FOLDER.into())),
         ),
-        develop("open", DevelopStep::Active),
+        Step::new("open", SelectStep::Switch(SelectWorkspace::Develop)),
         Step::new(
             "source-exposure",
             script::Step::call("edit.set-basic", json!({"exposure":0.6})),
@@ -80,7 +78,9 @@ fn plan(expected: &Value) -> Plan {
         copy("select-source-copied", Copy::Copy),
         Step::new("select-again", script::Step::key("g")),
     ]);
-    if let Some(raw) = rows.iter().position(|row| row["raw"] == true) {
+    // Select shows the folder newest first: the RAW photograph's place there.
+    let shown = expected["select_rows"].as_array().unwrap();
+    if let Some(raw) = shown.iter().position(|row| row["raw"] == true) {
         steps.extend([
             Step::new(
                 "raw-active",
@@ -316,7 +316,9 @@ mod tests {
             let rows: Vec<_> = (0..count)
                 .map(|index| json!({"file_name":format!("{index}.jpg"),"raw":index == 3}))
                 .collect();
-            plan(&json!({"rows":rows})).validate().unwrap();
+            plan(&json!({"rows":rows,"select_rows":rows}))
+                .validate()
+                .unwrap();
         }
     }
 }

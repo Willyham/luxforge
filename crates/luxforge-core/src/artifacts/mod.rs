@@ -8,7 +8,10 @@
 pub(crate) mod candidates;
 #[cfg(test)]
 mod candidates_tests;
+pub(crate) mod derived_source;
 mod store;
+
+pub use derived_source::{DerivedColour, DerivedInterpretation, DerivedSourceId, ReferenceCrop};
 
 pub use candidates::{
     CandidatePart, CandidateRead, CandidateState, PATCH_FORMAT, PREVIEW_FORMAT, PreviewSize,

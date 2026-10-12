@@ -47,8 +47,8 @@ const PRESET: &str = "Warm";
 /// The run's scratch folder the batch export writes into, in its output directory.
 pub const EXPORT: &str = "batch-export";
 /// What the run renames it to, and the generated folder it nests it in.
-const RENAMED: &str = "Swiss trip";
-const NEST_IN: &str = "Travel";
+pub(crate) const RENAMED: &str = "Swiss trip";
+pub(crate) const NEST_IN: &str = "Travel";
 /// The generated folder a photograph is moved to, and the collection five are added to.
 const MOVE_TO: &str = "Bodensee";
 const ADD_TO: &str = "Print order";

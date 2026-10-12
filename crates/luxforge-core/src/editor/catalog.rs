@@ -11,28 +11,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 13 is the union of two changes made side by side as format 12. The catalog of developed
-/// picks (`docs/design/catalog.md`): the volumes picks and photographs live on, picks, indexed
-/// folders, catalog folders, each asset's catalog folder, source folder, volume, file name, develop
-/// time, removal and availability with its capture row, collections and their members, and the
-/// append-only journal of library changes. An asset's `row_id` is an `INTEGER PRIMARY KEY`, the
-/// stable 8-byte key views hold ([`crate::AssetRowId`]). And the entries auto-collapse hid, in a
-/// table of their own beside the entries that stay as they were written, so a history page leaves
-/// them out without changing any entry. Neither format 12 holds the other's tables, so both are
-/// refused. Format 11 stored each asset's source kind tag in a column of its own beside the
-/// interpretation, so a list of photographs reads columns only and decodes no interpretation.
-/// Format 10 stored each asset request's whole answer in the request table — for a `mask.*`
-/// command the label it committed and the mask and component it addressed or minted beside the mutation
-/// result — so a retry answers with the identities the first attempt created. Format 9 kept each
-/// entry's history row — its label, actor, timestamp and restore target, beside the sequence, action
-/// and undo parent format 7 already held — in the entry's own columns, so a page of history rows
-/// decodes no entry. Format 7 was the merged shape: the mask table a recipe
-/// carries and the layer's mask reference, the content-addressed stroke store a painted path is
-/// kept in — so no catalog ever holds embedded stroke points — the preset library, and the
-/// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
-/// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
-/// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 13;
+/// Format 1 holds the design's storage: assets with their source kind and catalog columns, entries
+/// with their history rows, the requests with their whole answers, the mask table and the
+/// content-addressed stroke store, the preset library, the catalog's identity with the
+/// derived-artifact tables, the catalog of developed picks with its journal, the entries
+/// auto-collapse hid, the derived sources ([`DERIVED_SOURCE_SCHEMA`]) and kind-tagged merges
+/// ([`MERGE_SCHEMA`]). A catalog is marked by [`CATALOG_APPLICATION_ID`] as well as its format, so
+/// a database without the mark is not taken for one. Every other marker, earlier or later, is
+/// refused by name and left as it is; choose a new catalog path.
+pub(crate) const CATALOG_FORMAT: i64 = 1;
+/// SQLite's `application_id` for a Luxforge catalog, `LXFC`.
+pub(crate) const CATALOG_APPLICATION_ID: i64 = 0x4C58_4643;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -106,6 +95,17 @@ pub(super) fn lock(connection: &Connection) -> Result<i64, Error> {
          COMMIT;",
     )?;
     Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+/// Refuse a database of the current format that does not carry [`CATALOG_APPLICATION_ID`].
+pub(super) fn require_application_id(connection: &Connection) -> Result<(), Error> {
+    let id: i64 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if id != CATALOG_APPLICATION_ID {
+        return Err(Error::incompatible(
+            "database is not marked as a Luxforge catalog; choose a new catalog path",
+        ));
+    }
+    Ok(())
 }
 
 /// Refuse an unmarked database that holds anything: only an empty one becomes a catalog.
@@ -244,6 +244,9 @@ impl EditorService {
                  CREATE TRIGGER artifact_refs_are_permanent BEFORE DELETE ON artifact_refs BEGIN
                     SELECT RAISE(ABORT, 'artifact references are permanent');
                  END;
+                 {DERIVED_SOURCE_SCHEMA}
+                 {MERGE_SCHEMA}
+                 PRAGMA application_id={CATALOG_APPLICATION_ID};
                  PRAGMA user_version={CATALOG_FORMAT};"
             ))?;
             tx.execute(
@@ -255,9 +258,119 @@ impl EditorService {
     }
 }
 
+/// The derived sources (`docs/design/hdr-merge.md#durable-derived-source`), apart from the
+/// derived artifacts and their entry references:
+///
+/// - `derived_sources` records each published source by its identity, the SHA-256 of its manifest,
+///   with the manifest's length, its dimensions, colour and chunk count; `derived_source_chunks`
+///   is the manifest-chunk references, each chunk's place, hash and length, so a collection knows
+///   every object a source retains without reading its manifest. Neither row ever changes.
+/// - `asset_sources` is the asset-source reference: the one source a derived photograph reads,
+///   never replaced and never deleted except with the photograph's whole record by emptying
+///   Removed. It is what retains a source, whatever the photograph's visibility.
+const DERIVED_SOURCE_SCHEMA: &str = "
+    CREATE TABLE derived_sources (
+        id TEXT PRIMARY KEY,
+        manifest_bytes INTEGER NOT NULL CHECK (manifest_bytes > 0),
+        width INTEGER NOT NULL CHECK (width > 0),
+        height INTEGER NOT NULL CHECK (height > 0),
+        colour TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL CHECK (chunk_count BETWEEN 1 AND 256),
+        created_ms INTEGER NOT NULL
+    );
+    CREATE TABLE derived_source_chunks (
+        source_id TEXT NOT NULL REFERENCES derived_sources(id),
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        sha256 TEXT NOT NULL,
+        bytes INTEGER NOT NULL CHECK (bytes > 0),
+        PRIMARY KEY (source_id, ordinal)
+    ) WITHOUT ROWID;
+    CREATE INDEX derived_source_chunks_by_hash ON derived_source_chunks(sha256);
+    CREATE TABLE asset_sources (
+        asset_id TEXT PRIMARY KEY REFERENCES assets(id),
+        source_id TEXT NOT NULL REFERENCES derived_sources(id)
+    ) WITHOUT ROWID;
+    CREATE INDEX asset_sources_by_source ON asset_sources(source_id);
+    CREATE TRIGGER derived_sources_are_immutable BEFORE UPDATE ON derived_sources BEGIN
+        SELECT RAISE(ABORT, 'derived sources are immutable');
+    END;
+    CREATE TRIGGER derived_source_chunks_are_immutable BEFORE UPDATE ON derived_source_chunks
+    BEGIN
+        SELECT RAISE(ABORT, 'derived sources are immutable');
+    END;
+    CREATE TRIGGER asset_sources_are_immutable BEFORE UPDATE ON asset_sources BEGIN
+        SELECT RAISE(ABORT, 'a photograph keeps its derived source');
+    END;
+    CREATE TRIGGER asset_sources_are_permanent BEFORE DELETE ON asset_sources BEGIN
+        SELECT RAISE(ABORT, 'asset source references are permanent');
+    END;";
+
+/// The merges of every kind (`docs/design/hdr-merge.md`, "The stack and the originals";
+/// `docs/design/panorama-merge.md`, "Generalizing the merge boundary"), apart from the index, so
+/// removing or rebuilding it changes none of them:
+///
+/// - `merges` records each merge once and for good: its kind (`hdr` or `panorama`), its result
+///   photograph, the derived source that photograph holds, the exact-match key
+///   ([`MergeProvenance::match_key`]) and the whole provenance document. `merge_inputs` is its
+///   stack's members, the exact inputs in the stack's order with the photograph each was, if any
+///   (no foreign key: emptying Removed may delete that photograph, and the provenance stays) and
+///   its EV offset, null for a kind whose inputs have none. Neither row changes.
+/// - `merge_stacks` is the merge's state, `active`, `removed` or `undone`, which the journal's
+///   `merge-stack` item reads and writes; `stack_claims` holds each input path an active stack
+///   claims, one stack a path, so a second active stack over any input is refused by the schema
+///   as well as by name.
+/// - Only emptying Removed deletes a merge, with its result's whole record.
+///
+/// [`MergeProvenance::match_key`]: crate::catalog_types::MergeProvenance::match_key
+const MERGE_SCHEMA: &str = "
+    CREATE TABLE merges (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('hdr', 'panorama')),
+        result_asset_id TEXT NOT NULL UNIQUE REFERENCES assets(id),
+        source_id TEXT NOT NULL REFERENCES derived_sources(id),
+        match_key TEXT NOT NULL,
+        provenance_json TEXT NOT NULL,
+        created_ms INTEGER NOT NULL
+    );
+    CREATE INDEX merges_by_match ON merges(match_key);
+    CREATE TABLE merge_inputs (
+        merge_id TEXT NOT NULL REFERENCES merges(id),
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        path TEXT NOT NULL,
+        asset_id TEXT,
+        offset_ev REAL,
+        PRIMARY KEY (merge_id, ordinal)
+    ) WITHOUT ROWID;
+    CREATE INDEX merge_inputs_by_path ON merge_inputs(path);
+    CREATE INDEX merge_inputs_by_asset ON merge_inputs(asset_id) WHERE asset_id IS NOT NULL;
+    CREATE TABLE merge_stacks (
+        merge_id TEXT PRIMARY KEY REFERENCES merges(id),
+        state TEXT NOT NULL CHECK (state IN ('active', 'removed', 'undone'))
+    ) WITHOUT ROWID;
+    CREATE TABLE stack_claims (
+        path TEXT PRIMARY KEY,
+        merge_id TEXT NOT NULL REFERENCES merges(id)
+    ) WITHOUT ROWID;
+    CREATE INDEX stack_claims_by_merge ON stack_claims(merge_id);
+    CREATE TRIGGER merges_are_immutable BEFORE UPDATE ON merges BEGIN
+        SELECT RAISE(ABORT, 'merge provenance is immutable');
+    END;
+    CREATE TRIGGER merges_are_permanent BEFORE DELETE ON merges BEGIN
+        SELECT RAISE(ABORT, 'merges are permanent');
+    END;
+    CREATE TRIGGER merge_inputs_are_immutable BEFORE UPDATE ON merge_inputs BEGIN
+        SELECT RAISE(ABORT, 'merge provenance is immutable');
+    END;
+    CREATE TRIGGER merge_inputs_are_permanent BEFORE DELETE ON merge_inputs BEGIN
+        SELECT RAISE(ABORT, 'merges are permanent');
+    END;
+    CREATE TRIGGER merge_stacks_are_permanent BEFORE DELETE ON merge_stacks BEGIN
+        SELECT RAISE(ABORT, 'merges are permanent');
+    END;";
+
 /// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
 /// catalog columns and capture rows, collections, picks, indexed folders and the library journal
-/// (`docs/design/versions-and-lineage.md#storage-catalog-format-13`).
+/// (`docs/design/versions-and-lineage.md#storage-the-catalog-format`).
 ///
 /// - An asset's `row_id` is its `INTEGER PRIMARY KEY`: stable for the catalog's life, the 8-byte key
 ///   a view holds, and what `capture` and `collection_members` key on, so a view over a million
@@ -308,7 +421,7 @@ const LIBRARY_SCHEMA: &str = "
         width INTEGER NOT NULL,
         height INTEGER NOT NULL,
         source_json TEXT NOT NULL,
-        source_kind TEXT NOT NULL CHECK (source_kind IN ('jpeg', 'raw')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('jpeg', 'raw', 'derived')),
         catalog_folder_id TEXT NOT NULL REFERENCES catalog_folders(id),
         source_folder TEXT NOT NULL,
         volume_id TEXT NOT NULL REFERENCES volumes(id),
@@ -454,7 +567,7 @@ const LIBRARY_SCHEMA: &str = "
         ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
         item_kind TEXT NOT NULL CHECK (item_kind IN ('pick', 'asset-folder', 'asset-removal',
             'asset-source', 'catalog-folder', 'collection', 'membership', 'indexed-folder',
-            'developed-asset')),
+            'developed-asset', 'merge-stack')),
         item_key TEXT NOT NULL,
         before_json TEXT,
         after_json TEXT,
@@ -850,13 +963,13 @@ impl EditorService {
     }
 
     /// Empty Removed (`catalog.empty-removed`): at most `limit` removed photographs' records, with
-    /// the strokes and artifact rows nothing left names, deleted in one catalog transaction
-    /// ([`crate::library::remove::empty`]). Once it commits, each deleted photograph is forgotten —
-    /// its cached head and entries and its prepared source — as is each deleted artifact's
-    /// verified bytes. Answers what it deleted and, when it deleted an artifact row, the collection
-    /// that removes those artifacts' files on the source worker, as `artifact.collect` plans one:
-    /// every artifact the catalog still records, and every one published while this service is
-    /// open, is kept.
+    /// the strokes, artifact rows and derived sources nothing left names, deleted in one catalog
+    /// transaction ([`crate::library::remove::empty`]). Once it commits, each deleted photograph is
+    /// forgotten — its cached head and entries and its prepared source — as is each deleted
+    /// artifact's verified bytes. Answers what it deleted and, when it deleted an artifact or
+    /// source row, the collection that removes those objects on the source worker, as
+    /// `artifact.collect` plans one: every artifact and source object the catalog still records,
+    /// and every one published while this service is open, is kept.
     pub(crate) fn empty_removed(
         &mut self,
         limit: usize,
@@ -868,18 +981,16 @@ impl EditorService {
         Error,
     > {
         let live = self.live_artifacts.clone();
+        let live_sources = self.live_sources.clone();
         let (emptied, keep) = write(&mut self.connection, |tx| {
-            let emptied = crate::library::remove::empty(tx, &live, limit)?;
-            let keep = if emptied.artifacts.is_empty() {
+            let emptied = crate::library::remove::empty(tx, &live, &live_sources, limit)?;
+            let keep = if emptied.artifacts.is_empty() && emptied.sources.is_empty() {
                 None
             } else {
-                let mut statement = tx.prepare_cached("SELECT id FROM artifacts")?;
-                let ids = statement.query_map([], |row| row.get::<_, String>(0))?;
-                let mut keep = std::collections::HashSet::new();
-                for id in ids {
-                    keep.insert(crate::artifacts::ArtifactId::parse(id?)?);
-                }
-                Some(keep)
+                Some((
+                    artifact_store::recorded_artifact_ids(tx)?,
+                    super::derived_source::retained_source_objects(tx)?,
+                ))
             };
             Ok((emptied, keep))
         })?;
@@ -891,12 +1002,15 @@ impl EditorService {
             prepared.remove(artifact);
         }
         drop(prepared);
-        let collection = keep.map(|keep| crate::artifacts::Collection {
+        let collection = keep.map(|(keep, keep_sources)| crate::artifacts::Collection {
             root: self.artifact_root.clone(),
             catalog_id: self.catalog_id.clone(),
             keep,
             live,
             rows: emptied.artifacts.len(),
+            keep_sources,
+            live_sources,
+            source_rows: emptied.sources.len(),
             candidates: self.candidates.clone(),
         });
         Ok((emptied, collection))
@@ -982,24 +1096,29 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 13 with every table, index and trigger of the
-    /// design's storage, the catalog's and auto-collapse's both, and makes no index directory until
-    /// the index is first used.
+    /// An empty database initializes as format 1, marked as a Luxforge catalog, with every table, index and trigger of the
+    /// design's storage, the catalog's, auto-collapse's, the derived sources' and the merges'
+    /// alike, and makes no index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-13.sqlite");
+        let catalog = temp("format-1.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 13);
-        assert_eq!(CATALOG_FORMAT, 13);
+        assert_eq!(format, 1);
+        assert_eq!(CATALOG_FORMAT, 1);
+        let application_id: i64 = connection
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .unwrap();
+        assert_eq!(application_id, CATALOG_APPLICATION_ID);
         assert_eq!(
             schema_names(connection, "table"),
             [
                 "artifact_refs",
                 "artifacts",
+                "asset_sources",
                 "asset_state",
                 "assets",
                 "capture",
@@ -1008,13 +1127,19 @@ mod tests {
                 "collapsed_entries",
                 "collection_members",
                 "collections",
+                "derived_source_chunks",
+                "derived_sources",
                 "entries",
                 "indexed_folders",
                 "library_change_rows",
                 "library_changes",
+                "merge_inputs",
+                "merge_stacks",
+                "merges",
                 "picks",
                 "presets",
                 "requests",
+                "stack_claims",
                 "strokes",
                 "versions",
                 "volumes",
@@ -1024,6 +1149,7 @@ mod tests {
             schema_names(connection, "index"),
             [
                 "artifact_refs_by_artifact",
+                "asset_sources_by_source",
                 "assets_by_availability",
                 "assets_by_developed",
                 "assets_by_file_name",
@@ -1043,29 +1169,43 @@ mod tests {
                 "collection_members_by_asset",
                 "collection_names",
                 "collections_by_parent",
+                "derived_source_chunks_by_hash",
                 "library_change_rows_by_item",
                 "library_changes_by_client",
                 "library_changes_by_request",
                 "library_changes_redone",
                 "library_changes_undone",
+                "merge_inputs_by_asset",
+                "merge_inputs_by_path",
+                "merges_by_match",
                 "picks_by_identity",
                 "picks_by_volume",
+                "stack_claims_by_merge",
             ]
         );
         assert_eq!(
             schema_names(connection, "trigger"),
             [
                 "artifact_refs_are_permanent",
+                "asset_sources_are_immutable",
+                "asset_sources_are_permanent",
                 "collapsed_entries_are_permanent",
                 "collections_keep_their_kind",
                 "collections_move_into_groups",
                 "collections_nest_in_groups",
+                "derived_source_chunks_are_immutable",
+                "derived_sources_are_immutable",
                 "entries_are_immutable",
                 "library_change_rows_are_immutable",
                 "library_change_rows_are_permanent",
                 "library_changes_are_immutable",
                 "library_changes_are_permanent",
                 "members_join_plain_collections",
+                "merge_inputs_are_immutable",
+                "merge_inputs_are_permanent",
+                "merge_stacks_are_permanent",
+                "merges_are_immutable",
+                "merges_are_permanent",
                 "strokes_are_immutable",
             ]
         );
@@ -1084,13 +1224,12 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Format 12 — the catalog of developed picks without the collapsed-entry table, or the
-    /// collapsed-entry table without the catalog's tables — format 11, every earlier marker and a
-    /// future one are refused by name and left exactly as they are, with no artifact or index
-    /// directory made for them.
+    /// Every marker but the current one — the earlier development formats up to 16 and a future one
+    /// alike — is refused by name and left exactly as it is, with no artifact or index directory
+    /// made for it.
     #[test]
-    fn catalog_format_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
-        for marker in [0, 11, 12, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
+    fn catalog_format_any_other_marker_is_refused_by_name_unchanged() {
+        for marker in [0, 2, 15, 16, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();
@@ -1130,6 +1269,28 @@ mod tests {
             );
             std::fs::remove_file(catalog).unwrap();
         }
+    }
+
+    /// A current-format database without the catalog's application mark — a development catalog
+    /// from before the format was reset to 1 — is refused and keeps every byte.
+    #[test]
+    fn catalog_format_one_without_the_application_mark_is_refused_unchanged() {
+        let catalog = temp("unmarked-format-1.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        service.import(&fixture()).unwrap();
+        drop(service);
+        let connection = Connection::open(&catalog).unwrap();
+        connection.pragma_update(None, "application_id", 0).unwrap();
+        drop(connection);
+        let before = std::fs::read(&catalog).unwrap();
+        let error = EditorService::open(&catalog).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            "database is not marked as a Luxforge catalog; choose a new catalog path"
+        );
+        assert_eq!(std::fs::read(&catalog).unwrap(), before);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     /// The single-file import puts its photograph into the top-level catalog folder named after

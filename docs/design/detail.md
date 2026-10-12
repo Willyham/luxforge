@@ -130,7 +130,7 @@ Module `luxforge.detail`, title "Detail", hint "Judge fine detail at 100%", coll
 
 Every field except `radius` declares `zero: 0`, and `radius` declares none; all ranges are unsigned, so labels are unsigned. `luminance` does not collide with other modules' fields because preset settings are keyed per action. History labels name the group: "Sharpening", "Sharpen radius", "Sharpen detail", "Sharpen masking", "Luminance noise", "Luminance noise detail", "Colour noise", "Colour noise detail"; group resets "Reset Sharpening" and "Reset Noise reduction"; module reset "Reset Detail".
 
-The panel sits after Tone curve and before Presence; Sharpening precedes Noise reduction visually, independent of processing order. It uses the existing number controls, per-control, group and module resets, scope chip, keyboard and numeric editing and Copy as JSON. Ancillary fields stay editable while their strength is zero. There is no Alt-drag special preview: Option already changes the numeric step.
+The panel sits after Tone curve and before the colour mixer; Sharpening precedes Noise reduction visually, independent of processing order. It uses the existing number controls, per-control, group and module resets, scope chip, keyboard and numeric editing and Copy as JSON. Ancillary fields stay editable while their strength is zero. There is no Alt-drag special preview: Option already changes the numeric step.
 
 ## Compile context
 

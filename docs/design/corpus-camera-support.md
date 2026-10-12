@@ -62,7 +62,8 @@ photographic qualification remain open.
 
 ## Implemented interpretation
 
-The embedded catalog has 259 exact identities and 316 recording modes. The
+The embedded catalog has 259 exact camera identities and 316 recording modes,
+besides the synthetic HDR test body ([profiles](raw-camera-profiles.md)). The
 341 retained files cover 258 identities and 315 modes; the owner-only Air 2S
 fixture supplies the remaining profile/mode. Every retained source passes the
 strict frozen M4 repeat, including all pre-existing references. The independent

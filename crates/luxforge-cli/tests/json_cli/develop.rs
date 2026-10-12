@@ -70,7 +70,7 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     assert_eq!(picked["outcome"], "applied", "{picked}");
     assert_eq!(picks(&mut client).len(), 3);
 
-    // Plan them: one event (the folder's undated files, since nothing indexed them), a new folder
+    // Plan them: one event (the folder's undated files, since nothing indexed them), its place
     // named after their folder on disk, nothing removable or offline.
     let plan = client.call("pick.plan", json!({"targets": targets}));
     assert_eq!(plan["count"], 3, "{plan}");
@@ -80,8 +80,9 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     assert_eq!(events[0]["name"], "Undated · Konstanz");
     assert_eq!(
         events[0]["folder"],
-        json!({"kind": "new", "name": "Konstanz"})
+        json!({"kind": "place", "name": "Konstanz"})
     );
+    assert_eq!(events[0]["undated"], 3, "{plan}");
 
     // Develop them into the plan's folder, as a job read with job.read.
     let started = client.call(
@@ -118,8 +119,11 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     );
     assert_eq!(photographs(&mut client), 3);
     let folders = client.call("folder.list", json!({}))["folders"].clone();
-    assert_eq!(folders[0]["name"], "Konstanz");
-    assert_eq!(folders[0]["count"], 3);
+    // The fixtures record no capture time: Undated › Konstanz.
+    assert_eq!(folders[0]["name"], "Undated");
+    assert_eq!(folders[1]["name"], "Konstanz");
+    assert_eq!(folders[1]["parent_id"], folders[0]["id"]);
+    assert_eq!(folders[1]["count"], 3);
     // Retried, it answers the first job and changes nothing.
     let retried = client.call(
         "pick.develop",

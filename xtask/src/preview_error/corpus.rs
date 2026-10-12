@@ -3,11 +3,14 @@
 //! 100%. This module reads it and holds it to its own rules; it measures nothing.
 //! `cargo xtask gpu-qualification` measures it ([`crate::gpu_qualification`]).
 //!
-//! A source is a generated JPEG, a RAW photograph or an explicit gap. A generated JPEG names its
-//! file under `fixtures/generated/` and the SHA-256 `cargo xtask generate-fixtures` writes it with.
-//! A RAW source names its id in the private RAW manifest (`--manifest FILE`, read through the one
-//! reader, [`raw::manifest`]) and repeats that entry's SHA-256, so a manifest that has moved on is
-//! noticed. A source with no hash carries a `gap` that says why, never a made-up hash. A recipe is
+//! A source is a generated JPEG, a RAW photograph, a synthetic derived source or an explicit gap.
+//! A generated JPEG names its file under `fixtures/generated/` and the SHA-256 `cargo xtask
+//! generate-fixtures` writes it with. A RAW source names its id in the private RAW manifest
+//! (`--manifest FILE`, read through the one reader, [`raw::manifest`]) and repeats that entry's
+//! SHA-256, so a manifest that has moved on is noticed. A synthetic derived source — an HDR
+//! merge's result, stored as a derived photograph by the harness (`docs/design/hdr-merge.md`) —
+//! has no file: it names its generator, [`luxforge_testkit::derived::planes`], and records the
+//! SHA-256 of the planes it makes at its dimensions, which every host can check. A source with no hash carries a `gap` that says why, never a made-up hash. A recipe is
 //! a list of evidence-script steps over the sources it names, in a class that says which limits it
 //! is held to.
 //!
@@ -46,7 +49,7 @@ const DEVELOPER_DESCRIPTORS: &str = "fixtures/modules/developer-descriptors.json
 pub const VIEWS: [&str; 4] = ["fit", "33%", "50%", "100%"];
 
 /// The sources the design names; the corpus must hold each.
-const REQUIRED_SOURCES: [&str; 7] = [
+const REQUIRED_SOURCES: [&str; 8] = [
     "jpeg-24mp",
     "jpeg-60mp",
     "zone-plate",
@@ -54,7 +57,11 @@ const REQUIRED_SOURCES: [&str; 7] = [
     "raw-z6",
     "raw-x100vi",
     "raw-air2s",
+    "derived-merge",
 ];
+
+/// What a synthetic derived source's `generator` names: the one generator of its planes.
+const DERIVED_GENERATOR: &str = "luxforge_testkit::derived::planes";
 
 /// Every recipe family and the class its limits come from: pointwise for the colour units, masks,
 /// the vignette and geometry under a colour edit, spatial for Presence, Detail, Clone, Heal and the
@@ -124,6 +131,7 @@ struct View {
 enum Kind {
     GeneratedJpeg,
     Raw,
+    SyntheticDerived,
 }
 
 impl Kind {
@@ -131,6 +139,7 @@ impl Kind {
         match self {
             Self::GeneratedJpeg => "generated-jpeg",
             Self::Raw => "raw",
+            Self::SyntheticDerived => "synthetic-derived",
         }
     }
 }
@@ -144,7 +153,8 @@ struct Source {
     dimensions: [u32; 2],
     /// A generated JPEG's file, relative to the checkout.
     path: Option<String>,
-    /// The command that writes it.
+    /// The command that writes a generated JPEG, or the function that makes a synthetic derived
+    /// source's planes.
     generator: Option<String>,
     /// A RAW source's id in the private RAW manifest.
     manifest_id: Option<String>,
@@ -282,6 +292,11 @@ impl Corpus {
                             .manifest_id
                             .as_deref()
                             .is_some_and(|manifest_id| !manifest_id.is_empty())
+                }
+                Kind::SyntheticDerived => {
+                    source.path.is_none()
+                        && source.manifest_id.is_none()
+                        && source.generator.as_deref() == Some(DERIVED_GENERATOR)
                 }
             };
             ensure(
@@ -437,13 +452,19 @@ impl Corpus {
                                 .unwrap_or_default();
                             let path = generated.join(name);
                             if path.is_file() {
-                                Ok(path)
+                                Ok(Found::File(path))
                             } else {
                                 Err(format!(
                                     "{} is not generated on this host (cargo xtask generate-fixtures)",
                                     path.display()
                                 ))
                             }
+                        }
+                        Kind::SyntheticDerived => {
+                            let [width, height] = source.dimensions;
+                            Ok(Found::Planes(luxforge_testkit::derived::sha256(
+                                &luxforge_testkit::derived::planes(width, height),
+                            )))
                         }
                         Kind::Raw => match &manifest {
                             None => {
@@ -467,7 +488,7 @@ impl Corpus {
                                     ),
                                 )?;
                                 if path.is_file() {
-                                    Ok(path)
+                                    Ok(Found::File(path))
                                 } else {
                                     Err(format!("{} is not on this host", path.display()))
                                 }
@@ -475,7 +496,7 @@ impl Corpus {
                         },
                     };
                     match found {
-                        Ok(path) => {
+                        Ok(Found::File(path)) => {
                             let actual = crate::hash(&path)?;
                             ensure(
                                 actual == *hash,
@@ -485,6 +506,19 @@ impl Corpus {
                                 ),
                             )?;
                             ("verified", format!("SHA-256 of {} matches", path.display()))
+                        }
+                        Ok(Found::Planes(actual)) => {
+                            ensure(
+                                actual == *hash,
+                                format!(
+                                    "Source {id}: {DERIVED_GENERATOR} makes planes of SHA-256 \
+                                     {actual}, the corpus {hash}"
+                                ),
+                            )?;
+                            (
+                                "verified",
+                                format!("SHA-256 of the planes {DERIVED_GENERATOR} makes matches"),
+                            )
                         }
                         Err(reason) => ("unresolved", reason),
                     }
@@ -511,6 +545,12 @@ impl Corpus {
             "counts": {"verified": verified, "gap": gaps, "unresolved": unresolved},
         }))
     }
+}
+
+/// What resolving one source found: its file, or the digest of a synthetic source's planes.
+enum Found {
+    File(PathBuf),
+    Planes(String),
 }
 
 /// One recipe call against the committed descriptors: a method that exists, only parameters it
@@ -1158,8 +1198,9 @@ mod tests {
         let report = corpus.resolve(&root.join(GENERATED), None).unwrap();
         assert_eq!(
             report["counts"],
-            json!({"verified": 0, "gap": 0, "unresolved": 8}),
-            "five generated files and three RAWs are not checked here"
+            json!({"verified": 1, "gap": 0, "unresolved": 8}),
+            "five generated files and three RAWs are not checked here; the synthetic derived \
+             source is made and checked on every host"
         );
         let error = run(root, Args(vec![])).unwrap_err();
         assert!(

@@ -37,6 +37,9 @@ mod gpu_qualification;
 mod grade_align;
 mod grade_performance;
 mod grading_smoke;
+mod hdr_merge_measure;
+mod hdr_merge_smoke;
+mod hdr_merge_view_smoke;
 mod histogram_smoke;
 mod information_smoke;
 mod inspect_dng;
@@ -797,6 +800,83 @@ fn main_result() -> Result {
                     binary,
                     corpus,
                     card,
+                    only,
+                },
+            )?;
+        }
+        "hdr-merge-measure" => {
+            // A worker the run started: its job, and no lock, which the run holds.
+            if let Some(job) = a.value("--worker")? {
+                a.done()?;
+                hdr_merge_measure::worker::run(&absolute(&root, Path::new(&job)))?;
+                return Ok(());
+            }
+            let out = absolute(&root, &a.path("--output")?);
+            let scale = a
+                .value("--scale")?
+                .map(|scale| hdr_merge_measure::Scale::parse(&scale.to_string_lossy()))
+                .transpose()?
+                .unwrap_or(hdr_merge_measure::Scale::Full);
+            let workloads = match a.value("--workloads")? {
+                Some(list) => list
+                    .to_string_lossy()
+                    .split(',')
+                    .map(hdr_merge_measure::Workload::parse)
+                    .collect::<Result<Vec<_>>>()?,
+                None => hdr_merge_measure::Workload::DEFAULT.to_vec(),
+            };
+            let mut count = |flag: &str, default: usize| -> Result<usize> {
+                Ok(a.value(flag)?
+                    .map(|value| value.to_string_lossy().parse::<usize>())
+                    .transpose()?
+                    .unwrap_or(default))
+            };
+            let cold = count("--cold", 3)?;
+            let warm = count("--warm", 5)?;
+            let cancellations = count("--cancellations", 3)?;
+            let rounds = count("--rounds", 10)?;
+            let binary = a
+                .value("--binary")?
+                .map(|path| absolute(&root, Path::new(&path)))
+                .map_or_else(|| binary(&root), Ok)?;
+            let mut natural = Vec::new();
+            while let Some(folder) = a.value("--natural")? {
+                natural.push(absolute(&root, Path::new(&folder)));
+            }
+            let only = a
+                .value("--only")?
+                .map(|steps| -> Result<Vec<String>> {
+                    steps
+                        .to_string_lossy()
+                        .split(',')
+                        .map(|step| {
+                            ensure(
+                                hdr_merge_measure::STEPS.contains(&step),
+                                format!(
+                                    "--only takes {}, not {step}",
+                                    hdr_merge_measure::STEPS.join(", ")
+                                ),
+                            )?;
+                            Ok(step.to_owned())
+                        })
+                        .collect()
+                })
+                .transpose()?;
+            a.done()?;
+            // Timing runs never overlap, whether they were started by `verify` or by hand.
+            let _gate = launch::TimingGate::acquire()?;
+            hdr_merge_measure::run(
+                &root,
+                &out,
+                &hdr_merge_measure::Options {
+                    scale,
+                    workloads,
+                    cold,
+                    warm,
+                    cancellations,
+                    rounds,
+                    binary,
+                    natural,
                     only,
                 },
             )?;

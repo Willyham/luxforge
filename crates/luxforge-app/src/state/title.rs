@@ -90,6 +90,10 @@ pub(crate) struct TitleBarModel {
     /// Both clipping overlays are on, so the bar's Clipping toggle reads as selected. `J` and this
     /// button drive the pair together; the two triangles drive them one at a time.
     pub(crate) clipping_on: bool,
+    /// The thirds overlay is on, so the bar's Thirds toggle reads as selected.
+    pub(crate) thirds_on: bool,
+    /// The Information readout is on, so the bar's Information toggle reads as selected.
+    pub(crate) information_on: bool,
     /// The window fills the screen, so the bar starts at its ordinary inset: macOS hides the
     /// traffic lights there.
     pub(crate) fullscreen: bool,
@@ -164,7 +168,7 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
 /// The dimensions and the source's format, as far as the core reports them. The core names the
 /// format of the source it decoded and no colour space, so none is shown.
 fn identity(inputs: &Inputs<'_>) -> Option<String> {
-    // A cached preview drawn while a photograph of the development set prepares is the preview's
+    // A cached preview drawn while a photograph of the filmstrip prepares is the preview's
     // size, not the photograph's: nothing is said until its render is on screen.
     if inputs.develop.preview.is_some() {
         return None;
@@ -175,9 +179,33 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
         identity.push_str(match state.asset.source {
             SourceKind::Jpeg => " \u{b7} JPEG",
             SourceKind::Raw { .. } => " \u{b7} RAW",
+            SourceKind::Derived { .. } => " \u{b7} Derived",
         });
     }
     Some(identity)
+}
+
+/// The name the title bar gives the open photograph: its original's file name, or, for a derived
+/// photograph (an HDR merge's result), which has no original, the name the catalog gives it as the
+/// filmstrip lists it ("DSC_0001 HDR"), never its source's internal locator.
+pub(crate) fn document_name(
+    asset: &luxforge_core::AssetRecord,
+    strip: Option<&super::develop::Filmstrip>,
+) -> Option<String> {
+    if matches!(asset.source, SourceKind::Derived { .. })
+        && let Some(photo) = strip.and_then(|strip| {
+            strip
+                .photos
+                .iter()
+                .find(|photo| photo.asset_id == asset.id && !photo.name.is_empty())
+        })
+    {
+        return Some(photo.name.clone());
+    }
+    asset
+        .locator
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
@@ -193,18 +221,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         can_open_gallery: inputs.developer
             && inputs.gallery_refusal.is_none()
             && !inputs.compare_held,
-        // While a photograph of the development set is being switched to, its name.
+        // While a photograph of the filmstrip is being switched to, its name.
         file_name: inputs
             .document
             .state
             .as_ref()
-            .and_then(|state| {
-                state
-                    .asset
-                    .locator
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
+            .and_then(|state| document_name(&state.asset, inputs.develop.strip.as_ref()))
             .or_else(|| inputs.develop.switching.clone()),
         identity: identity(inputs),
         zoom_text: inputs.view_state.zoom.clone(),
@@ -250,6 +272,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         compare_held: inputs.compare_held,
         clipping_on: inputs.session.workspace.clip_shadows
             && inputs.session.workspace.clip_highlights,
+        thirds_on: inputs.session.workspace.thirds,
+        information_on: inputs.session.workspace.information,
         fullscreen: inputs.view_state.fullscreen,
     }
 }
@@ -302,5 +326,63 @@ mod tests {
         assert_eq!(step_stop(&ZOOM_STOPS, 1200.0, 1), None);
         assert_eq!(step_stop(&ZOOM_STOPS, 50.0, -1), None);
         assert_eq!(step_stop(&ZOOM_STOPS, 18.0, -1), None);
+    }
+
+    /// A merged photograph, whose locator is its derived source's internal name, is titled with
+    /// the name the filmstrip lists for it; a photograph with an original keeps its file's
+    /// name, and a merged one the strip does not list falls back to the locator's.
+    #[test]
+    fn a_merged_photograph_is_titled_with_its_catalog_name_not_its_locator() {
+        use super::super::develop::{Filmstrip, StripPhoto};
+        use luxforge_core::{
+            AssetId, AssetRecord, DerivedColour, DerivedInterpretation, DerivedSourceId,
+        };
+        let id = AssetId::new();
+        let record = |source, locator: &str| AssetRecord {
+            id: id.clone(),
+            source_root: "/".into(),
+            locator: locator.into(),
+            fingerprint: String::new(),
+            file_identity: String::new(),
+            byte_len: 0,
+            width: 600,
+            height: 400,
+            source,
+        };
+        let derived = SourceKind::Derived {
+            interpretation: DerivedInterpretation {
+                source_id: DerivedSourceId::parse(format!("source-{}", "a".repeat(64))).unwrap(),
+                width: 600,
+                height: 400,
+                colour: DerivedColour::LinearSrgbD65,
+            },
+        };
+        let merged = record(derived, &format!("derived:{id}"));
+        let set = Filmstrip::new(
+            1,
+            vec![
+                StripPhoto {
+                    asset_id: AssetId::new(),
+                    kind: None,
+                    name: "DSC_0002.NEF".into(),
+                },
+                StripPhoto {
+                    asset_id: id.clone(),
+                    kind: Some(luxforge_core::SourceTag::Derived),
+                    name: "DSC_0001 HDR".into(),
+                },
+            ],
+            1,
+        );
+        assert_eq!(
+            document_name(&merged, Some(&set)).as_deref(),
+            Some("DSC_0001 HDR")
+        );
+        assert_eq!(document_name(&merged, None), Some(format!("derived:{id}")));
+        let jpeg = record(SourceKind::Jpeg, "/photos/DSC_0003.JPG");
+        assert_eq!(
+            document_name(&jpeg, Some(&set)).as_deref(),
+            Some("DSC_0003.JPG")
+        );
     }
 }

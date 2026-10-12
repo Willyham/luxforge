@@ -264,6 +264,9 @@ impl Library {
             kind: match file.kind {
                 SourceTag::Jpeg => SeedKind::Jpeg,
                 SourceTag::Raw => SeedKind::Raw,
+                SourceTag::Derived => {
+                    return Err("a generated file is never a derived source".into());
+                }
             },
             locator: file.path.clone(),
             fingerprint,

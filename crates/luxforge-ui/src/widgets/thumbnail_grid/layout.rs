@@ -41,9 +41,10 @@ pub enum MomentKind {
 
 /// A moment row's header: its kind, its title and detail on the left ("Burst", "6 frames in
 /// 1.4 s"), and on the right how many are picked, the evidence of a bracket as a neutral tag
-/// ("from metadata", "from previews") and a small action button ("Pick all 3"). Text that does not
-/// fit ends in an ellipsis; when even the right-hand parts do not fit, the tag goes first, then the
-/// pick count, then the action.
+/// ("from metadata", "from previews") and small action buttons ("Pick all 3", "Merge HDR"), left
+/// to right. Text that does not fit ends in an ellipsis; when even the
+/// right-hand parts do not fit, the tag goes first, then the pick count, then the ordinary actions
+/// from the left, then the primary one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MomentHeader {
     pub kind: MomentKind,
@@ -51,12 +52,50 @@ pub struct MomentHeader {
     pub detail: String,
     pub evidence: Option<String>,
     pub picked: Option<String>,
-    pub action: Option<String>,
+    pub actions: Vec<HeaderAction>,
 }
 
-/// One piece of the view's structure, in order. Moments and singles consume items; headings
-/// consume none.
+/// One of a moment header's buttons: its label and whether it is the header's primary action,
+/// drawn in the accent and the last to give way.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderAction {
+    pub label: String,
+    pub primary: bool,
+}
+
+impl HeaderAction {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            primary: false,
+        }
+    }
+
+    pub fn primary(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            primary: true,
+        }
+    }
+}
+
+/// A full-width row for work that will add an item to the view but has not yet: a merge in
+/// progress ("Merging HDR · 3 exposures", "Reading 2 of 3"), with its progress, when known, as a
+/// bar along its bottom and an action button at its right ("Cancel"). It consumes no items.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingRow {
+    pub title: String,
+    pub detail: String,
+    /// Done, from 0 to 1; `None` while unknown.
+    pub progress: Option<f32>,
+    pub action: Option<String>,
+    /// Whether it ended without its item: the detail names why, in the warning colour.
+    pub failed: bool,
+}
+
+/// One piece of the view's structure, in order. Moments and singles consume items; headings and
+/// pending rows consume none.
+#[derive(Debug, Clone, PartialEq)]
 pub enum GridBlock {
     Day(GridHeading),
     /// A camera heading. Its title is drawn capitalised, as a section label is.
@@ -70,6 +109,8 @@ pub enum GridBlock {
     },
     /// This many single frames, one cell each.
     Singles(u32),
+    /// A row of work in progress, a line of its own.
+    Pending(PendingRow),
 }
 
 /// The grid's sizes. Each preset takes the cell width a size slider asks for; the photograph's
@@ -98,6 +139,8 @@ pub struct GridMetrics {
     /// A day heading's and a camera heading's line.
     pub day_heading: f32,
     pub camera_heading: f32,
+    /// A pending row's height.
+    pub pending_row: f32,
     /// The content's inset at the sides and under the last line, and over a first line of cells.
     pub side_inset: f32,
     pub bottom_inset: f32,
@@ -176,6 +219,7 @@ impl GridMetrics {
             camera_heading: theme::CAMERA_HEADING_TOP
                 + theme::CAMERA_HEADING_LINE
                 + theme::CAMERA_HEADING_BOTTOM,
+            pending_row: theme::PENDING_ROW_HEIGHT,
             side_inset: theme::THUMB_GRID_SIDE_INSET,
             bottom_inset: theme::THUMB_GRID_BOTTOM_INSET,
             top_inset: theme::THUMB_GRID_TOP_INSET,
@@ -219,9 +263,11 @@ pub enum GridHit {
     /// A cell, with its first item and span.
     Cell { cell: u32, item: u32, span: u32 },
     /// A moment row's header. `moment` counts the view's moments in order, collapsed ones
-    /// included. The header's action button is inside it; the widget, which measures the header's
-    /// text, tells a press on the button apart ([`crate::ThumbnailGrid::on_moment_action`]).
+    /// included. The header's action buttons are inside it; the widget, which measures the
+    /// header's text, tells a press on a button apart ([`crate::ThumbnailGrid::on_moment_action`]).
     MomentHeader { moment: u32 },
+    /// A pending row; `pending` counts the view's pending rows in order.
+    Pending { pending: u32 },
 }
 
 /// A direction to move the active cell in.
@@ -249,6 +295,8 @@ pub(crate) enum LineKind {
     Cells,
     /// The heading of this block.
     Heading(u32),
+    /// The pending row of this block, its `cell_top` the row's top.
+    Pending(u32),
 }
 
 /// One horizontal band of the content: a heading, or a line of cells. `top..bottom` is the band;
@@ -415,7 +463,28 @@ impl GridLayout {
             Target::Header(frame) => Some(GridHit::MomentHeader {
                 moment: self.frames[frame as usize].moment,
             }),
+            Target::Pending(block) => Some(GridHit::Pending {
+                pending: self.pending_number(block),
+            }),
         }
+    }
+
+    /// The pending row of `block` (a pending block's index) counted among the view's pending rows.
+    pub(crate) fn pending_number(&self, block: u32) -> u32 {
+        self.blocks[..block as usize]
+            .iter()
+            .filter(|block| matches!(block, GridBlock::Pending(_)))
+            .count() as u32
+    }
+
+    /// The rectangle of a pending row on `line`, in content coordinates.
+    pub(crate) fn pending_rect(&self, line: &Line) -> Rectangle {
+        let left = self.metrics.side_inset;
+        let right = left.max(self.width - self.metrics.side_inset);
+        Rectangle::new(
+            Point::new(left, line.cell_top),
+            Size::new(right - left, self.metrics.pending_row),
+        )
     }
 
     /// The scroll offset closest to `scroll` that shows `item`'s cell whole — with its moment's
@@ -521,8 +590,18 @@ impl GridLayout {
     pub(crate) fn hit_detail(&self, point: Point) -> Option<Target> {
         let after = self.lines.partition_point(|line| line.top <= point.y);
         let line = &self.lines[after.checked_sub(1)?];
-        if point.y >= line.bottom || line.kind != LineKind::Cells {
+        if point.y >= line.bottom {
             return None;
+        }
+        match line.kind {
+            LineKind::Cells => {}
+            LineKind::Pending(block) => {
+                return self
+                    .pending_rect(line)
+                    .contains(point)
+                    .then_some(Target::Pending(block));
+            }
+            LineKind::Heading(_) => return None,
         }
         for frame in line.frames.clone() {
             if self.frames[frame as usize]
@@ -544,12 +623,13 @@ impl GridLayout {
     }
 }
 
-/// What a point is over, as the widget needs it: a cell, or the header of a frame (an index into
-/// the frames).
+/// What a point is over, as the widget needs it: a cell, the header of a frame (an index into
+/// the frames), or a pending row (its block).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Target {
     Cell(u32),
     Header(u32),
+    Pending(u32),
 }
 
 fn finite(value: f32) -> f32 {
@@ -607,6 +687,7 @@ impl<'l> Flow<'l> {
                         flow.single(1);
                     }
                 }
+                GridBlock::Pending(_) => flow.pending(index as u32),
                 GridBlock::Moment {
                     frames, collapsed, ..
                 } => {
@@ -658,6 +739,25 @@ impl<'l> Flow<'l> {
         });
         self.y += height;
         self.after_cells = false;
+    }
+
+    /// A pending row: a line of its own, spaced from lines of cells as they are from each other.
+    fn pending(&mut self, block: u32) {
+        self.close();
+        let metrics = self.metrics();
+        let top = self.next_top();
+        let cells = self.layout.cells.len() as u32;
+        let frames = self.layout.frames.len() as u32;
+        self.layout.lines.push(Line {
+            top,
+            bottom: top + metrics.pending_row,
+            cell_top: top,
+            cells: cells..cells,
+            frames: frames..frames,
+            kind: LineKind::Pending(block),
+        });
+        self.y = top + metrics.pending_row;
+        self.after_cells = true;
     }
 
     /// Places a block `width` wide on the open line if it fits there, or first starts a new line,

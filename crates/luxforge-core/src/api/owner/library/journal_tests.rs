@@ -557,12 +557,13 @@ fn catalog_info_reports_the_counts_behind_the_catalog_sources_and_the_journal() 
     assert_eq!(info["path"], json!(fixture.catalog));
     assert_eq!(
         (&info["format"], &info["index_format"]),
-        (&json!(13), &json!(crate::INDEX_FORMAT))
+        (&json!(1), &json!(crate::INDEX_FORMAT))
     );
     assert_eq!(
         info["counts"],
         json!({
-            "photographs": 0, "recently_developed": 0, "removed": 0, "unavailable": 0,
+            "photographs": 0, "recently_developed": 0, "removed": 0, "removed_merges": 0,
+            "unavailable": 0,
             "folders": 0, "collections": 0, "picks": 2, "indexed_folders": 0,
             "library_changes": 1,
         })

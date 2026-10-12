@@ -1776,8 +1776,9 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
             }
         }
     }
-    // A view that draws the stage at its own size, and one at 100%: the view's plan is the picture
-    // at rest, and the tiles, the same at every view, are the histogram's alone, reduced to none.
+    // A view that draws the stage at its own size, and one at 100% of a stage the backdrop's bounds
+    // hold whole: the view's plan is the picture at rest, and the tiles, the same at every view, are
+    // the histogram's alone, reduced to none.
     let evaluation = committed(RenderContext::new(), vec![basic(json!({"exposure": 0.5}))]);
     let fit = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
     let Some(Ok(reduced)) = fit.tiles else {
@@ -1809,6 +1810,60 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
             "{view:?}: the tiles Fit reduces"
         );
     }
+}
+
+/// At 100% and above a stage larger than [`crate::REST_BACKDROP_BOUNDS`] has its tiles reduced to
+/// the backdrop the view's region is drawn over: the tiles Fit reduces, fitted to the backdrop's
+/// bounds, and the same for every region and magnification, so a pan or a change of zoom keeps
+/// them.
+#[test]
+fn at_100_percent_the_tiles_are_reduced_to_the_backdrop_whatever_the_region() {
+    let (width, height) = (3000u32, 2000u32);
+    let source = PreviewSource::Jpeg(SourceImage {
+        width,
+        height,
+        rgba: vec![128u8; (width * height * 4) as usize].into(),
+        fingerprint: "sha256:gpu-backdrop-fixture".into(),
+        orientation: 1,
+        capture: Default::default(),
+    });
+    let evaluation = committed_over(
+        RenderContext::new(),
+        source,
+        vec![basic(json!({"exposure": 0.5}))],
+    );
+    let fit = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
+    let Some(Ok(reduced)) = fit.tiles else {
+        panic!("tiles at Fit");
+    };
+    let mut planned = Vec::new();
+    for (x0, y0, magnification) in [(0, 0, 1.0), (900, 700, 1.0), (1200, 300, 2.0)] {
+        let view = GpuView::Region {
+            rect: crate::Region {
+                x0,
+                y0,
+                width: 1200,
+                height: 800,
+            },
+            magnification,
+        };
+        let rest = crate::render::gpu::plan_rest(&evaluation, view).unwrap();
+        let Some(Ok(tiles)) = rest.tiles else {
+            panic!("the tiles at {view:?}: {:?}", rest.tiles);
+        };
+        let backdrop = tiles.reduction.as_ref().expect("reduced to the backdrop");
+        assert_eq!(backdrop.view, (2048, 1365), "{view:?}");
+        assert_eq!(
+            (&tiles.plan, &tiles.tiles, tiles.output),
+            (&reduced.plan, &reduced.tiles, reduced.output),
+            "{view:?}: the tiles Fit reduces"
+        );
+        planned.push(tiles);
+    }
+    assert!(
+        planned.windows(2).all(|pair| pair[0] == pair[1]),
+        "the same tiles at every region and magnification"
+    );
 }
 
 /// A picture at rest of a Dehaze stack is planned at once, nothing rendered or stored: its tiles'

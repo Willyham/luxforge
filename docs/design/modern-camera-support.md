@@ -32,7 +32,8 @@ with guessed entries or bypass required corrections to admit a model.
 
 ## Current evidence
 
-The catalog contains 259 exact camera/phone profiles and 316 recording modes.
+The catalog contains 259 exact camera/phone profiles and 316 recording modes,
+besides the synthetic HDR test body.
 All 341 retained CC0 samples pass source preservation, full unpacked integer
 hashes, metadata and finite as-shot/development checks. They cover 258 exact
 identities and 315 modes; the owner Air 2S original supplies the remaining

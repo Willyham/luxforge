@@ -28,7 +28,7 @@
 //!    `catalog_probes`: the grid's scrolling, the loupe's keys and the focus check, each figure
 //!    `not_measured` or `skipped` only with its reason, such as no RAW corpus), and the Develop
 //!    switch ([`develop_switch`]): the frames from `→` until the next photograph's cached preview
-//!    is drawn, over a development set of generated JPEGs, at most [`develop_switch::MAX_SAMPLES`]
+//!    is drawn, over a catalog folder of generated JPEGs, at most [`develop_switch::MAX_SAMPLES`]
 //!    samples in its one launch.
 //!
 //! Every step is one release editor or one in-process core; editor launches are background-only
@@ -105,7 +105,7 @@ pub struct Options {
 }
 
 /// The commit the run measured, and whether the tree had uncommitted changes.
-fn git(root: &Path) -> Value {
+pub(crate) fn git(root: &Path) -> Value {
     let sha = output(root, "git", &["rev-parse", "HEAD"])
         .ok()
         .map(|sha| sha.trim().to_owned());
@@ -121,7 +121,7 @@ fn git(root: &Path) -> Value {
 
 /// The host: its model, processor, logical CPUs, memory and operating system, each null where
 /// the platform cannot say.
-fn host(root: &Path) -> Value {
+pub(crate) fn host(root: &Path) -> Value {
     let read = |program: &str, args: &[&str]| {
         output(root, program, args)
             .ok()

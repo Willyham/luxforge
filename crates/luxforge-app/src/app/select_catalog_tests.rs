@@ -386,17 +386,23 @@ fn catalog_browse_queries_counts_and_a_smart_collection_on_a_real_owner() {
         .iter()
         .map(|row| row.name.as_str())
         .collect();
+    // The folder tree from the top level in `folder.list`'s order, Lake closed under Bodensee: no
+    // top-level folder is a year, and none is the Develop folder.
     assert_eq!(
         names,
         [
-            "2026",
+            "Bodensee",
             "Brighton \u{b7} Sep 2026",
             "Konstanz \u{b7} Sep 2026",
-            "2025",
-            "Empty",
             "Unsorted"
         ]
     );
+    assert_eq!(
+        sources.folders[0].count.as_deref(),
+        Some("1"),
+        "a folder counts its subfolders' photographs"
+    );
+    assert_eq!(sources.folders[0].open, Some(false));
     let collections: Vec<&str> = sources
         .collections
         .iter()
@@ -1328,7 +1334,7 @@ fn catalog_browse_removes_puts_back_and_empties_removed_on_a_real_owner() {
     assert_eq!(calls[0]["params"]["mutation"]["actor"], "desktop");
     assert_eq!(
         calls[0]["answer"],
-        json!({"outcome": "applied", "deleted": 1, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "applied", "deleted": 1, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     // The journal holds the library changes; emptying is none.
     let methods: Vec<Value> = journal(&editor, agent)
@@ -1455,5 +1461,110 @@ fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batc
     )));
     settle(&mut editor);
     assert!(editor.paste_refusal(false).is_some());
+    finish(editor, catalog);
+}
+
+/// Pressing a folder views it with its subfolders and makes it the Develop folder, whose path the
+/// list opens; `D` then reads it on a client of its own and opens Develop on its first photograph,
+/// exactly the photographs an agent reads of it, its path the filmstrip's title.
+#[test]
+fn catalog_browse_a_folder_pressed_is_viewed_whole_and_developed() {
+    use crate::app::{
+        develop::{folder_strip_now, strip_query},
+        message::develop::DevelopMessage,
+    };
+    use luxforge_core::catalog_types::ViewSource;
+    let (mut editor, catalog, agent) = catalog_editor();
+    let row = |editor: &Editor, name: &str| {
+        editor
+            .workspace
+            .select
+            .catalog
+            .sources
+            .folders
+            .iter()
+            .find(|row| row.name == name)
+            .cloned()
+    };
+    assert!(row(&editor, "Lake").is_none(), "closed under Bodensee");
+
+    // Lake viewed: it is the Develop folder, and the list opens its path.
+    act(
+        &mut editor,
+        CatalogAction::View(ViewSource::CatalogFolder {
+            folder_id: folder_id("lake000001"),
+            subfolders: true,
+        }),
+    );
+    settle(&mut editor);
+    assert_eq!(editor.develop_folder(), Some(&folder_id("lake000001")));
+    assert_eq!(row(&editor, "Bodensee").unwrap().open, Some(true));
+    assert!(row(&editor, "Lake").is_some_and(|lake| lake.selected && lake.indent == 1));
+
+    // Bodensee pressed: viewed with Lake's photograph, and the Develop folder.
+    let press = row(&editor, "Bodensee").unwrap().press.unwrap();
+    assert_eq!(
+        press,
+        CatalogAction::View(ViewSource::CatalogFolder {
+            folder_id: folder_id("bodensee01"),
+            subfolders: true,
+        })
+    );
+    act(&mut editor, press);
+    settle(&mut editor);
+    assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 1);
+    assert_eq!(editor.develop_folder(), Some(&folder_id("bodensee01")));
+    assert!(editor.workspace.develop.can_enter);
+
+    // `D`: read, then Develop on the folder's first photograph.
+    let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Develop)));
+    assert!(editor.select_shown(), "shown once the folder is read");
+    let serial = editor.develop.strip_serial;
+    let result = folder_strip_now(&editor.owner, &folder_id("bodensee01"));
+    let _ = editor.update(Message::Develop(DevelopMessage::StripRead {
+        serial,
+        result,
+    }));
+    assert!(!editor.select_shown());
+    let strip = editor.develop.state.strip.clone().expect("the strip");
+    assert_eq!(strip.path, ["Bodensee"]);
+    assert_eq!(strip.active, Some(0));
+    assert_eq!(
+        editor.develop.switch.as_ref().map(|switch| &switch.asset),
+        Some(&strip.photos[0].asset_id)
+    );
+    ask(
+        &editor,
+        agent,
+        "browse.view",
+        serde_json::to_value(strip_query(&folder_id("bodensee01"))).unwrap(),
+    );
+    let rows = ask(
+        &editor,
+        agent,
+        "browse.rows",
+        json!({"from": 0, "count": 10}),
+    );
+    let rows: luxforge_core::catalog_types::ViewRows = serde_json::from_value(rows).unwrap();
+    let agents: Vec<_> = rows.rows.iter().map(|row| row.item.clone()).collect();
+    assert_eq!(
+        agents,
+        strip
+            .photos
+            .iter()
+            .map(|photo| luxforge_core::catalog_types::RowItem::Photo {
+                asset_id: photo.asset_id.clone(),
+            })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        editor
+            .workspace
+            .develop
+            .strip
+            .as_ref()
+            .map(|model| model.title.as_str()),
+        Some("Bodensee")
+    );
     finish(editor, catalog);
 }

@@ -56,6 +56,10 @@ mod catalog;
 mod catalog_tests;
 #[cfg(test)]
 mod corrections_tests;
+#[cfg(test)]
+mod derived_source_tests;
+#[cfg(test)]
+mod experiment_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
@@ -66,6 +70,9 @@ pub(super) mod files;
 #[cfg(test)]
 mod first_open_tests;
 pub(super) mod library;
+pub(super) mod merge;
+#[cfg(any(test, feature = "test-holds"))]
+pub use merge::SyntheticFrame;
 #[cfg(test)]
 mod original_tests;
 mod parked;
@@ -537,6 +544,9 @@ impl SourceTaskKind {
     fn job(&self) -> (JobKind, Option<AssetId>) {
         match self {
             Self::Prepare(SourceWork::File { .. }) => (JobKind::Prepare, None),
+            Self::Prepare(SourceWork::Derived { asset_id, .. }) => {
+                (JobKind::Prepare, Some(asset_id.clone()))
+            }
             Self::Prepare(SourceWork::Develop(request)) => {
                 (JobKind::Develop, Some(request.asset_id.clone()))
             }
@@ -642,6 +652,18 @@ impl SourceQueue {
                     sensor,
                 )
             }
+            // A derived source is named by its identity, which names its content: two requests for
+            // one photograph's source are one read.
+            SourceWork::Derived { asset_id, read, .. } => (
+                SourceFlightKey {
+                    path: asset_id.as_str().into(),
+                    signature: None,
+                    expected_fingerprint: Some(read.id.to_string()),
+                    gains_bits: None,
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
             SourceWork::Develop(request) => {
                 let key = SourceFlightKey {
                     path: request.asset_id.as_str().into(),
@@ -770,8 +792,11 @@ impl SourceQueue {
         client: ClientId,
         state: EditorState,
     ) -> Result<JobId, Error> {
-        // The original must still be there with a readable signature, as for queued work.
-        EditorService::request_signature(&state.asset.locator)?;
+        // The original must still be there with a readable signature, as for queued work. A
+        // derived photograph has no file: the cache answered only while its source is stored.
+        if state.asset.source.derived().is_none() {
+            EditorService::request_signature(&state.asset.locator)?;
+        }
         let id = JobId::new();
         jobs.open_finished(
             Opened {
@@ -852,6 +877,13 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned()),
             asset_id: None,
+            job_id: Some(task.id.to_string()),
+        },
+        SourceTaskKind::Prepare(SourceWork::Derived { asset_id, .. }) => ActivitySpec {
+            kind: "source.prepare",
+            label: "Reading saved source",
+            detail: None,
+            asset_id: Some(asset_id.clone()),
             job_id: Some(task.id.to_string()),
         },
         SourceTaskKind::Prepare(SourceWork::Develop(request)) => ActivitySpec {
@@ -1613,6 +1645,8 @@ fn owner_loop(
         owner.expire_event_waits();
         owner.wake_job_waits();
         owner.host.runtime().release_idle();
+        // A merge preview left idle closes on the same wake-up.
+        merge::expire_previews(&mut owner);
         let message = match owner.next_event_deadline() {
             None => match receiver.recv() {
                 Ok(message) => message,
@@ -2122,6 +2156,24 @@ impl Owner {
         ));
     }
 
+    /// Why `action` may not run now: it creates a component of a kind behind an experiment flag
+    /// ([`crate::mask::commands::experiment`]) and that flag, read live from the person's
+    /// preferences or as this host forced it, is off. A `not-ready` refusal whose `data.flag` names
+    /// the flag, so a client can say which switch turns it on.
+    fn experiment_refusal(&self, action: &str) -> Option<Error> {
+        let (flag, kind) = crate::mask::commands::experiment(action)?;
+        if crate::flags::live_toggle(&self.host.preferences, self.host.launch_flags(), flag) {
+            return None;
+        }
+        Some(
+            Error::not_ready(format!(
+                "{} masks are an experiment that is off: turn on the flag {flag} to create one",
+                crate::mask::kind_menu_title(kind)
+            ))
+            .with_data(json!({ "flag": flag })),
+        )
+    }
+
     /// `request` is the call's own, which a service handler may take values out of rather than copy
     /// ([`methods::ServiceHandler`]); it is whole again whenever the call parks a read.
     fn answer(&mut self, client: ClientId, request: &mut ApiRequest) -> Result<Planned, Error> {
@@ -2167,6 +2219,16 @@ impl Owner {
         // A selection the index's revision alone left stale is the selection still.
         if request.params["targets"]["kind"] == "selection" {
             views::freshen_selection(self, client)?;
+        }
+        // A new component of a kind behind an experiment flag that is off, asked for directly or
+        // as a draft's action, is refused naming the flag; editing what exists is not.
+        let action = match &method {
+            methods::Method::Action(action_id) => Some(action_id.as_str()),
+            _ if request.method == "draft.begin" => request.params["action"].as_str(),
+            _ => None,
+        };
+        if let Some(refusal) = action.and_then(|action| self.experiment_refusal(action)) {
+            return Err(refusal);
         }
         // An action that accepts a candidate pins and publishes it before it commits ([`accept`]).
         if let methods::Method::Action(action_id) = &method
@@ -2345,6 +2407,7 @@ impl Owner {
             .map(|held| held.wait.deadline)
             .chain(self.job_waits.iter().filter_map(|held| held.deadline))
             .chain(self.host.runtime().next_deadline())
+            .chain(self.catalog.merge.previews.next_idle())
             .min()
     }
 
@@ -2650,6 +2713,7 @@ impl Owner {
         self.job_waits.retain(|held| held.client != client);
         self.jobs
             .watched_jobs(self.job_waits.iter().map(|held| &held.job));
+        merge::disconnect_previews(self, client);
         self.catalog.disconnect(client, &mut self.jobs);
     }
 
@@ -3052,6 +3116,7 @@ host_params! {
         brush: Option<Option<Value>> = json("{size, feather, flow}, each within the range mask.add-stroke declares for it; null resets it to the neutral brush"),
         window: Option<Option<Value>> = json("{width, height, x, y} in the system's points: width and height within 320..=16384 and a finite position; null resets it to the default frame"),
         export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
+        hdr_merge: Option<Option<Value>> = json("{alignment, deghost}, each auto or off: the remembered settings of the last HDR merge, which the desktop's option-click merges with; null resets it to the defaults"),
         theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
     }
 }
@@ -3091,6 +3156,7 @@ pub(super) fn preferences_set(
         brush: decoded("brush", params.brush)?,
         window: decoded("window", params.window)?,
         export_folder: params.export_folder,
+        hdr_merge: decoded("hdr_merge", params.hdr_merge)?,
         theme: match params.theme {
             // Luxforge Dark is the default, so choosing it removes the stored choice.
             Some(Some(id)) if id == crate::theme::LUXFORGE_DARK_ID => Some(None),
@@ -3276,6 +3342,21 @@ mod tests {
         let response = send(owner, client, id, method, params);
         assert!(response.error.is_none(), "{id}: {:?}", response.error);
         response.result.expect("a result")
+    }
+
+    /// An owner that forces the range mask experiment on, for a test that creates a range mask.
+    fn start_with_range_masks(catalog: &Path) -> Result<(OwnerHandle, JoinHandle<()>), Error> {
+        OwnerHandle::start_with_host(
+            catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            HostConfig {
+                launch_flags: crate::flags::LaunchFlags::resolve(
+                    None,
+                    &[(crate::flags::RANGE_MASKS, json!(true), "test")],
+                ),
+                ..HostConfig::unconfigured()
+            },
+        )
     }
 
     /// A fresh request envelope, so every call is a new request.
@@ -6919,7 +7000,20 @@ mod tests {
                 "http://127.0.0.1:9",
             )))
             .unwrap();
-        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        // The range mask experiment on, so a range kind's create is answered on its fields rather
+        // than refused for the flag first.
+        let (owner, join) = OwnerHandle::start_with_host(
+            &catalog,
+            Arc::new(registry),
+            HostConfig {
+                launch_flags: crate::flags::LaunchFlags::resolve(
+                    None,
+                    &[(crate::flags::RANGE_MASKS, json!(true), "test")],
+                ),
+                ..HostConfig::unconfigured()
+            },
+        )
+        .unwrap();
         let client = owner.register();
         let schema = ok(&owner, client, "schema", "schema.list", json!({}));
         let listed = schema["methods"].as_object().expect("the methods");
@@ -8218,7 +8312,7 @@ mod tests {
     #[test]
     fn restoration_mask_sample_input_equals_the_direct_range_input() {
         let catalog = temp("detail-range-input.sqlite");
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) = start_with_range_masks(&catalog).unwrap();
         let client = owner.register();
         let state = import_asset(&owner, client, &fixture());
         let asset = state["asset"]["id"].clone();
@@ -8473,7 +8567,7 @@ mod tests {
                 )
                 .encode_image(&image::RgbImage::from_pixel(64, 48, image::Rgb([code; 3])))
                 .unwrap();
-                let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+                let (owner, join) = start_with_range_masks(&catalog).unwrap();
                 let client = owner.register();
                 let state = import_asset(&owner, client, &image);
                 let asset = state["asset"]["id"].clone();

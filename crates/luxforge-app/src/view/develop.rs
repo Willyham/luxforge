@@ -1,4 +1,4 @@
-//! Developing picks and the development set ([event board](../../../../docs/design/catalog/event.png),
+//! Developing picks and the filmstrip ([event board](../../../../docs/design/catalog/event.png),
 //! [development-set board](../../../../docs/design/catalog/development-set.png)): Develop N in
 //! Select's title bar and its confirmation under it, and Develop's filmstrip under the canvas,
 //! drawn from `state/develop.rs`'s model.
@@ -177,8 +177,9 @@ pub(crate) fn confirmation(model: &ConfirmModel) -> Element<'_, Message> {
     .into()
 }
 
-/// One event's folder: its label when there are several, the new folder's name field or the
-/// existing folder chosen, with its tag, and Or add to an existing folder with its menu.
+/// One event's folder: its label when there are several, the place's name field — the existing
+/// folder's name while one is chosen — with its tag, the folders its picks go into beneath, and Or
+/// add to an existing folder with its menu.
 fn event_row(index: usize, event: &EventRow) -> Element<'_, Message> {
     let mut column = Column::new().spacing(6.0);
     if let Some(label) = &event.label {
@@ -188,40 +189,33 @@ fn event_row(index: usize, event: &EventRow) -> Element<'_, Message> {
                 .style(theme::ink(Token::TextSecondary)),
         );
     }
-    let folder: Element<'_, Message> = match (&event.field, &event.existing) {
-        (Some(name), _) => text_input("Catalog folder name", name)
-            .id(name_field(index))
-            .on_input(move |text| develop(DevelopMessage::Name { event: index, text }))
-            .on_submit(develop(DevelopMessage::Confirm))
-            .size(theme::SIZE_NOTICE_BODY + 1.0)
-            .line_height(LineHeight::Absolute((NAME_HEIGHT - 10.0).into()))
-            .padding(Padding {
-                top: 4.0,
-                right: 10.0,
-                bottom: 4.0,
-                left: 10.0,
-            })
-            .width(Length::Fill)
-            .style(theme::text_input_style(false))
-            .into(),
-        (None, Some(existing)) => container(
-            text(existing.clone())
-                .size(theme::SIZE_NOTICE_BODY + 1.0)
-                .style(theme::ink(Token::Text))
-                .wrapping(text::Wrapping::None),
-        )
-        .padding([0.0, 10.0])
-        .center_y(Length::Fixed(NAME_HEIGHT))
+    let folder = text_input("Place name", &event.field)
+        .id(name_field(index))
+        .on_input(move |text| develop(DevelopMessage::Name { event: index, text }))
+        .on_submit(develop(DevelopMessage::Confirm))
+        .size(theme::SIZE_NOTICE_BODY + 1.0)
+        .line_height(LineHeight::Absolute((NAME_HEIGHT - 10.0).into()))
+        .padding(Padding {
+            top: 4.0,
+            right: 10.0,
+            bottom: 4.0,
+            left: 10.0,
+        })
         .width(Length::Fill)
-        .style(theme::tag_surface(theme::RADIUS))
-        .into(),
-        (None, None) => Space::new().into(),
-    };
+        .style(theme::text_input_style(false));
     column = column.push(
         row![folder, source_tag(event.tag.to_owned())]
             .spacing(6.0)
             .align_y(Alignment::Center),
     );
+    for line in &event.folders {
+        column = column.push(
+            text(line.clone())
+                .size(theme::SIZE_CAPTION)
+                .style(theme::ink(Token::TextSecondary))
+                .wrapping(text::Wrapping::None),
+        );
+    }
     let open = event.menu.is_some();
     column = column.push(labelled_button(
         &LabelledButtonModel {
@@ -327,32 +321,30 @@ mod tests {
     use super::*;
     use crate::state::develop::{ConfirmModel, DevelopModel, EventRow};
 
-    /// Every state of the confirmation and Develop N builds: one event or several, a new folder or
-    /// an existing one with its menu open, the copies offered, a refusal, and busy.
+    /// Every state of the confirmation and Develop N builds: one event or several, a place or an
+    /// existing folder with its menu open, the copies offered, a refusal, and busy.
     #[test]
     fn filmstrip_and_confirmation_views_build() {
-        let event = |field: Option<&str>, menu: bool| EventRow {
+        let event = |place: bool, menu: bool| EventRow {
             label: Some("Konstanz \u{b7} Sep 2026 \u{b7} 12 picks".into()),
-            field: field.map(Into::into),
-            existing: field.is_none().then(|| "Travel \u{203a} Alps".into()),
-            tag: if field.is_some() {
-                "new folder"
+            field: if place { "Konstanz" } else { "Alps" }.into(),
+            existing: (!place).then(|| "Travel \u{203a} Alps".into()),
+            folders: vec![if place {
+                "2026 \u{203a} Konstanz \u{203a} 12 Sep, 13 Sep".into()
             } else {
-                "existing folder"
-            },
+                "Travel \u{203a} Alps".into()
+            }],
+            tag: if place { "place" } else { "existing folder" },
             menu: menu.then(Vec::new),
         };
         let model = ConfirmModel {
             title: "Develop 18 picks".into(),
             from: "from Konstanz".into(),
             heading: "Into catalog folders".into(),
-            events: vec![
-                event(Some("Konstanz \u{b7} Sep 2026"), false),
-                event(None, true),
-            ],
+            events: vec![event(true, false), event(false, true)],
             notes: vec!["12 picks are on NIKON Z 8.".into()],
             copies: Some(true),
-            refusal: Some("Name the new catalog folder".into()),
+            refusal: Some("Name the place".into()),
         };
         let _ = confirmation(&model);
         for busy in [None, Some((7, 18))] {

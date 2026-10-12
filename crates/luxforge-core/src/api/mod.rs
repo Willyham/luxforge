@@ -12,6 +12,8 @@ mod owner;
 mod transport;
 
 pub use methods::schemas;
+#[cfg(any(test, feature = "test-holds"))]
+pub use owner::SyntheticFrame;
 pub use owner::{
     ClientId, EventWake, JobMonitorStats, MAX_EVENT_WAIT_MS, OwnerHandle, PIXEL_READ_REQUIRED,
     PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,

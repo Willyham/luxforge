@@ -22,6 +22,16 @@ use luxforge_core::{
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 
+/// A toggle's value as the host last answered it: what the host forced, else the person's stored
+/// value or the default. Off before the first `flags.list` answers and for a flag it does not
+/// list, which is the safe reading of an experiment.
+pub(crate) fn toggle_on(flags: Option<&FlagList>, id: &str) -> bool {
+    flags
+        .and_then(|flags| flags.flag(id))
+        .and_then(|flag| flag.active.as_ref().unwrap_or(&flag.value).as_bool())
+        .unwrap_or(false)
+}
+
 /// One tab of the sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
@@ -93,6 +103,9 @@ pub(crate) struct Settings {
     pub(crate) flags: Option<FlagList>,
     /// A read of the flags and the preferences is in flight.
     pub(crate) reading: bool,
+    /// Reads of the flags alone in flight that follow a change another client made, which an
+    /// evidence `agent` step waits for.
+    pub(crate) flag_reads: usize,
     /// Why the last read or write of the flags failed, until the next one succeeds.
     pub(crate) error: Option<String>,
     /// The flag write in flight. Writes go one at a time, in the order they were made.

@@ -706,6 +706,7 @@ fn drag_tick_benchmark() {
         id: "jpeg-24mp".to_owned(),
         path: generated.join("24mp.jpg"),
         raw: false,
+        derived: None,
     };
     assert!(
         source.path.is_file(),

@@ -250,7 +250,7 @@ impl CapabilityHost {
         // Every unmet requirement, listed together before anything else is asked.
         let mut missing = Vec::new();
         for flag in &needs.flags {
-            if !crate::flags::toggle(&self.preferences, flag)? {
+            if !crate::flags::live_toggle(&self.preferences, self.launch_flags(), flag) {
                 missing.push(Requirement {
                     kind: RequirementKind::Flag,
                     id: (*flag).to_owned(),

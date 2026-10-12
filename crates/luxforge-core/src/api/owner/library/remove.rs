@@ -22,29 +22,30 @@ use crate::{
 };
 use serde_json::Value;
 
-/// `asset.remove`: move the photographs `targets` names to Removed as one library change. Their
-/// retained sample grids are released with it.
+/// `asset.remove`: move the photographs `targets` names to Removed as one library change, a merge's
+/// result with its stack deactivated. Their retained sample grids are released with it.
 pub(in crate::api) fn asset_remove(
     owner: &mut Owner,
     call: &Call<'_>,
     params: AssetTargets,
 ) -> Result<Value, Error> {
     let context = owner.service.render_context().clone();
-    targeted(owner, call, &params, |assets| {
+    targeted(owner, call, &params, |connection, assets| {
         for (asset, _) in &assets {
             context.release_grids(asset);
         }
-        remove::remove(assets, now_ms())
+        remove::remove(connection, assets, now_ms())
     })
 }
 
-/// `asset.restore`: put the photographs `targets` names back, as one library change.
+/// `asset.restore`: put the photographs `targets` names back, as one library change, a merge's
+/// result with its stack active again.
 pub(in crate::api) fn asset_restore(
     owner: &mut Owner,
     call: &Call<'_>,
     params: AssetTargets,
 ) -> Result<Value, Error> {
-    targeted(owner, call, &params, |assets| Ok(remove::restore(assets)))
+    targeted(owner, call, &params, remove::restore)
 }
 
 /// Answer a retry from the journal, or resolve `targets` to photographs, plan the change and
@@ -53,7 +54,7 @@ fn targeted(
     owner: &mut Owner,
     call: &Call<'_>,
     params: &AssetTargets,
-    plan: impl FnOnce(Vec<(AssetId, AssetRowId)>) -> Result<Planned, Error>,
+    plan: impl FnOnce(&rusqlite::Connection, Vec<(AssetId, AssetRowId)>) -> Result<Planned, Error>,
 ) -> Result<Value, Error> {
     let request = Request::new(&call.request.method, &params.mutation);
     if let Some(answer) = retried(owner, request)? {
@@ -62,7 +63,7 @@ fn targeted(
     let assets = targets::assets(&owner.service, &params.targets, || {
         selected(owner, call.client)
     })?;
-    let planned = plan(assets)?;
+    let planned = plan(&owner.service.connection, assets)?;
     value(change(owner, &call.origin, |tx| {
         planned.apply(tx, request)
     })?)
@@ -87,7 +88,10 @@ pub(in crate::api) fn catalog_empty_removed(
     }
     let (emptied, collection) = owner.service.empty_removed(MAX_LIBRARY_BATCH)?;
     let Emptied {
-        assets, remaining, ..
+        assets,
+        merges,
+        remaining,
+        ..
     } = &emptied;
     if !assets.is_empty() {
         announce_once(&mut owner.announced, &call.origin);
@@ -112,6 +116,7 @@ pub(in crate::api) fn catalog_empty_removed(
             MutationOutcome::Applied
         },
         deleted: u32::try_from(assets.len()).unwrap_or(u32::MAX),
+        merges: u32::try_from(*merges).unwrap_or(u32::MAX),
         remaining: u32::try_from(*remaining).unwrap_or(u32::MAX),
         deduplicated: false,
     })

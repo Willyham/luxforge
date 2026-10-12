@@ -351,6 +351,13 @@ fn add(
         None if context.previewing() => return Ok(None),
         None => (automatic(context, &stroke)?, Origin::Auto),
     };
+    // A source is kept inside the frame: a sent one that would leave it moves inward.
+    let offset = geometry::checked_offset(geometry::fit_offset(
+        destination,
+        offset,
+        stage,
+        geometry::SourceFit::Clamp,
+    ))?;
     geometry::check_footprints(&stroke, offset, stage)?;
     let id = u32::try_from(current.next).expect("next was checked against the last number");
     let mut next = current.clone();
@@ -456,6 +463,20 @@ fn update(
             )
         }
     };
+    // A change of where or how large the correction is, or of its source, keeps the source inside
+    // the frame, moving it inward where it would leave; a change of numbers or kind moves nothing.
+    let stage = content(context, index)?;
+    let offset =
+        if parameters.contains_key("points") || radius.is_some() || source(parameters).is_some() {
+            geometry::checked_offset(geometry::fit_offset(
+                geometry::footprint(&stroke, stage),
+                offset,
+                stage,
+                geometry::SourceFit::Clamp,
+            ))?
+        } else {
+            offset
+        };
     let changed = Brush {
         id: operation.id,
         kind: kind(parameters)?.unwrap_or(operation.kind),
@@ -468,7 +489,7 @@ fn update(
     if changed == *operation {
         return Ok(None);
     }
-    geometry::check_footprints(&stroke, offset, content(context, index)?)?;
+    geometry::check_footprints(&stroke, offset, stage)?;
     if changed.stroke != operation.stroke {
         fresh.insert(stroke);
     }

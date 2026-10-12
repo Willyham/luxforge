@@ -87,6 +87,7 @@ pub(crate) fn frames(
                 None => None,
             };
             read.frames.push(FrameFacts {
+                merged: false,
                 item: ViewItem::File(FileId(row.get(0)?)),
                 folder: index,
                 name: row.get::<_, String>(1)?.into(),
@@ -113,6 +114,7 @@ pub(crate) fn frames(
             .tables
             .folder(path.parent().unwrap_or(Path::new("")).to_path_buf());
         read.frames.push(FrameFacts {
+            merged: false,
             item: unlisted_item(at),
             folder,
             name: path

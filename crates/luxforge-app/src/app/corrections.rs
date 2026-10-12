@@ -24,7 +24,7 @@ use crate::{
     },
     brush::{
         BrushBinding, BrushGesture, BrushSettings, ContentMap, Displayed, Handle, HandleEdit,
-        MapRefusal, Modifiers, Moved, Released, StrokeCapture, ViewPoint,
+        MapRefusal, Modifiers, Moved, Released, SourceChoice, StrokeCapture, ViewPoint,
     },
     state::corrections::{
         self as model, CorrectionNotice, CorrectionTyping, DraftingCorrection, Listed, ListingBody,
@@ -54,6 +54,10 @@ pub(crate) enum CorrectionOp {
         source: Option<[f64; 2]>,
         /// The source was set by the window's choice or a `⌘`-drag rather than picked on release.
         set: bool,
+        /// The source carries the offset an earlier press measured from the window's set source,
+        /// so by an edge it turns to the other side to stay inside the frame rather than only
+        /// moving inward ([`luxforge_core::SourceFit::Turn`]).
+        kept: bool,
     },
     /// A pin, source or size-handle drag of one stored correction.
     Handle(HandleEdit),
@@ -111,18 +115,65 @@ impl CorrectionGesture {
         target
     }
 
+    /// Where an add's source is placed now: its set source, kept inside the frame for the path as
+    /// it stands by the core's rule, turned to the other side when it carries a kept offset. The
+    /// core stores a sent source by the same rule, so what is drawn is what commits.
+    fn placed_source(&self) -> Option<[f64; 2]> {
+        let CorrectionOp::Add {
+            path,
+            settings,
+            source,
+            kept,
+            ..
+        } = &self.op
+        else {
+            return None;
+        };
+        let source = (*source)?;
+        let fit = if *kept {
+            luxforge_core::SourceFit::Turn
+        } else {
+            luxforge_core::SourceFit::Clamp
+        };
+        Some(
+            self.content
+                .zip(path.posted(settings.radius).ok())
+                .and_then(|(content, points)| {
+                    luxforge_core::fit_correction_source(
+                        &points,
+                        settings.radius,
+                        source,
+                        content,
+                        fit,
+                    )
+                })
+                .unwrap_or(source),
+        )
+    }
+
+    /// `held`'s source kept inside the frame at its path and radius, as the core keeps an edited
+    /// correction's source when it stores the edit.
+    fn held_inside(&self, mut held: crate::brush::HeldOperation) -> crate::brush::HeldOperation {
+        if let (Some(source), Some(content)) = (held.source, self.content) {
+            held.source = luxforge_core::fit_correction_source(
+                &held.points,
+                held.radius,
+                source,
+                content,
+                luxforge_core::SourceFit::Clamp,
+            )
+            .or(held.source);
+        }
+        held
+    }
+
     /// The fields the gesture would commit now, or why it has none. A handle drag that changed
     /// nothing has none and no error.
     pub(crate) fn fields(&self) -> Result<Option<Value>, luxforge_core::Error> {
         match &self.op {
-            CorrectionOp::Add {
-                path,
-                settings,
-                source,
-                ..
-            } => self
+            CorrectionOp::Add { path, settings, .. } => self
                 .binding
-                .add_fields(settings, path, *source)
+                .add_fields(settings, path, self.placed_source())
                 .map(|fields| Some(Value::Object(fields))),
             CorrectionOp::Handle(edit) => Ok(self
                 .binding
@@ -163,16 +214,11 @@ impl CorrectionGesture {
     /// source, or the edited operation as the drag has changed it.
     pub(crate) fn drawn(&self, listed: Option<&Listed>) -> Option<crate::brush::HeldOperation> {
         match &self.op {
-            CorrectionOp::Add {
-                path,
-                settings,
-                source,
-                ..
-            } => Some(crate::brush::HeldOperation {
+            CorrectionOp::Add { path, settings, .. } => Some(crate::brush::HeldOperation {
                 operation: String::new(),
                 points: path.posted(settings.radius).ok()?.to_vec(),
                 radius: settings.radius,
-                source: *source,
+                source: self.placed_source(),
             }),
             CorrectionOp::Handle(edit) => {
                 let mut held = listed?.held();
@@ -182,14 +228,14 @@ impl CorrectionGesture {
                     Some(crate::brush::HandleChange::Radius(radius)) => held.radius = radius,
                     None => {}
                 }
-                Some(held)
+                Some(self.held_inside(held))
             }
             CorrectionOp::Field { field, value, .. } => {
                 let mut held = listed?.held();
                 if field == &self.binding.radius {
                     held.radius = *value;
                 }
-                Some(held)
+                Some(self.held_inside(held))
             }
         }
     }
@@ -197,15 +243,13 @@ impl CorrectionGesture {
     /// The draft bar's and status bar's words for it.
     pub(crate) fn describe(&self) -> DraftingCorrection {
         let (verb, source) = match &self.op {
-            CorrectionOp::Add {
-                source, set, path, ..
-            } => (
+            CorrectionOp::Add { set, path, .. } => (
                 if path.captured() > 1 {
                     "painting"
                 } else {
                     "placing"
                 },
-                match (source, set, path.first()) {
+                match (&self.placed_source(), set, path.first()) {
                     (Some(source), true, Some(anchor)) => format!(
                         "from the set source {}",
                         offset_phrase(anchor, *source, self.content)
@@ -866,6 +910,15 @@ impl Editor {
         self.correction_select(Some(list[next].clone()));
     }
 
+    /// Whether Escape with no draft open has nothing left to put down here, and so leaves the
+    /// mode, which asks the session to follow.
+    pub(crate) fn correction_escape_leaves(&self) -> bool {
+        self.correction_reads.held.is_none()
+            && self.corrections.notice.is_none()
+            && self.corrections.selected.is_none()
+            && matches!(self.corrections.source, crate::brush::SourceChoice::Auto)
+    }
+
     /// Escape with no draft open, one level at a time: put the press held before its draft down,
     /// then deselect, then clear a set source, then leave the mode.
     fn correction_escape(&mut self) -> Task<Message> {
@@ -955,12 +1008,10 @@ impl Editor {
                     .unwrap_or(1.0);
                 self.correction_reads.held = Some(Box::new(CorrectionGesture {
                     binding,
-                    op: CorrectionOp::Handle(HandleEdit::begin(
-                        handle,
-                        listed.held(),
-                        content,
-                        aspect,
-                    )),
+                    op: CorrectionOp::Handle(
+                        HandleEdit::begin(handle, listed.held(), content, aspect)
+                            .within(content_size),
+                    ),
                     name: listed.name.clone(),
                     kind: listed.kind.clone(),
                     content: content_size,
@@ -993,6 +1044,7 @@ impl Editor {
                     settings,
                     source: None,
                     set: true,
+                    kept: false,
                 },
                 name,
                 kind,
@@ -1006,9 +1058,15 @@ impl Editor {
         }
         let path = press.path().clone();
         let mut choice = self.corrections.source;
+        // An offset an earlier press measured is carried to this one; a pulled source or the set
+        // point itself is a position.
+        let mut kept = false;
         let source = match (press.pulled(), path.first()) {
             (Some(pulled), _) => Some(pulled),
-            (None, Some(anchor)) if !modifiers.command => choice.source_for(anchor),
+            (None, Some(anchor)) if !modifiers.command => {
+                kept = matches!(choice, SourceChoice::Offset(_));
+                choice.source_for(anchor)
+            }
             _ => None,
         };
         let gesture = CorrectionGesture {
@@ -1019,6 +1077,7 @@ impl Editor {
                 settings,
                 set: source.is_some(),
                 source,
+                kept,
             },
             name,
             kind,
@@ -1076,7 +1135,11 @@ impl Editor {
             return Task::none();
         };
         let CorrectionOp::Add {
-            path, source, set, ..
+            path,
+            source,
+            set,
+            kept,
+            ..
         } = &mut gesture.op
         else {
             return Task::none();
@@ -1086,6 +1149,7 @@ impl Editor {
         };
         *source = choice.source_for(anchor);
         *set = true;
+        *kept = false;
         self.corrections.source = choice;
         self.corrections.notice = None;
         let changed = self.drive(Event::Changed);
@@ -1133,6 +1197,7 @@ impl Editor {
                 press: Some(press),
                 path,
                 source,
+                kept,
                 ..
             } => match press.moved(view, content) {
                 Moved::Nothing => false,
@@ -1142,6 +1207,7 @@ impl Editor {
                 }
                 Moved::Source(pulled) => {
                     *source = Some(pulled);
+                    *kept = false;
                     true
                 }
             },
@@ -1187,6 +1253,7 @@ impl Editor {
                 path,
                 source,
                 set,
+                kept,
                 ..
             } => {
                 let Some(held) = press.take() else {
@@ -1202,6 +1269,7 @@ impl Editor {
                     if let Some(pulled) = pulled {
                         *source = Some(pulled);
                         *set = true;
+                        *kept = false;
                     }
                 }
             }

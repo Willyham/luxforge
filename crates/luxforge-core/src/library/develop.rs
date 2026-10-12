@@ -16,7 +16,8 @@
 //! 3. **Commit** on the owner, in batches (`commit.rs`): the first batch one file, so Develop can
 //!    show it at once, then up to [`BATCH_FILES`] files or [`BATCH_TIME`], never across an event.
 //!    Each batch is one library change, a part of the Develop's request
-//!    ([`journal::apply_part`](super::journal::apply_part)): the folder it needs, its new
+//!    ([`journal::apply_part`](super::journal::apply_part)): the folders it needs, each of its new
+//!    photographs filed by its own capture day (`filing.rs`: year, place and day), its new
 //!    photographs (`developed-asset`, written by the lane and recorded as written), relinked
 //!    originals (`asset-source`) and the committed picks cleared. A file is linked to the
 //!    photograph that already has its bytes, relinks a photograph whose original is not there when
@@ -28,6 +29,7 @@
 //! A cancel stops between files: committed batches stay, whole, and nothing of the batch being
 //! gathered is written. A file that fails is reported and stays picked. Originals are only read.
 mod commit;
+mod filing;
 mod frames;
 mod plan;
 mod read;
@@ -37,22 +39,23 @@ pub(crate) mod send_back;
 pub(crate) mod develop_picks_tests;
 
 pub(crate) use commit::{Decided, Refused, decide, failure, write};
+pub(crate) use filing::{Destination, file_one, made_from};
 #[allow(
     unused_imports,
     reason = "`plan.rs` reads frames through its module; nothing outside `develop` reads it"
 )]
 pub(crate) use frames::{Frames, frames};
-pub(crate) use plan::{Destination, Plan, PlannedFile, destinations, plan};
+pub(crate) use plan::{Plan, PlannedFile, destinations, plan};
 pub(crate) use read::{ReadFile, from_copy, read};
 
 use super::{availability::SYSTEM_ACTOR, journal::Request, locate::Phase};
 use crate::{
-    EditorService, EditorState, Error, JobId,
+    AssetId, EditorService, EditorState, Error, JobId,
     catalog_types::{
         CatalogFolderId, DevelopOutcome, DevelopReport, DevelopedPick, FolderValue,
         LibraryChangeDetail, LibraryItem, MomentId,
     },
-    editor::now_ms,
+    editor::{library_rows, now_ms},
     jobs::JobControl,
 };
 use rusqlite::OptionalExtension;
@@ -95,7 +98,10 @@ impl EditorService {
             .query_row([&name], |row| row.get(0))
             .optional()?;
         let destination = match existing {
-            Some(id) => Destination::Existing(CatalogFolderId::parse(id)?),
+            Some(id) => Destination::Existing {
+                folder_id: CatalogFolderId::parse(id)?,
+                days: false,
+            },
             None => Destination::New {
                 folder: FolderValue {
                     id: CatalogFolderId::new(),
@@ -119,7 +125,7 @@ impl EditorService {
         }
         let asset = decided
             .first()
-            .map(|decided| decided.reported().asset_id)
+            .map(|decided| decided.asset_id().clone())
             .ok_or_else(|| Error::internal("a developed file was neither committed nor refused"))?;
         let request_id = JobId::new().to_string();
         let request = Request {
@@ -208,7 +214,11 @@ pub(crate) fn develop_file(
 /// a change created (`developed-asset`) or relinked (`asset-source`), with the pick it cleared
 /// after it; a copy developed in a pick's place is its `used`. A pick linked to a photograph
 /// already in the catalog records no photograph, so it is not listed; nothing failed is either.
-pub(crate) fn recorded_report(parts: &[LibraryChangeDetail]) -> DevelopReport {
+/// Each photograph's `folder_id` is the one `folder_of` answers, the folder it is in now.
+pub(crate) fn recorded_report(
+    parts: &[LibraryChangeDetail],
+    folder_of: impl Fn(&AssetId) -> Result<CatalogFolderId, Error>,
+) -> Result<DevelopReport, Error> {
     let mut report = DevelopReport::default();
     for part in parts {
         report.changes.push(part.change.sequence);
@@ -240,15 +250,30 @@ pub(crate) fn recorded_report(parts: &[LibraryChangeDetail]) -> DevelopReport {
             };
             if let Some((asset_id, path, outcome)) = developed {
                 report.developed.extend(pending.take());
+                let folder_id = folder_of(&asset_id)?;
                 pending = Some(DevelopedPick {
                     path,
                     used: None,
                     asset_id,
                     outcome,
+                    folder_id,
                 });
             }
         }
         report.developed.extend(pending);
     }
-    report
+    Ok(report)
+}
+
+/// The catalog folder a developed photograph is in now, for its Develop's report.
+pub(crate) fn folder_of(
+    connection: &rusqlite::Connection,
+    asset: &AssetId,
+) -> Result<CatalogFolderId, Error> {
+    library_rows::asset_folder(connection, asset)?.ok_or_else(|| {
+        Error::internal(format!(
+            "the developed photograph {} is not in the catalog",
+            asset.as_str()
+        ))
+    })
 }

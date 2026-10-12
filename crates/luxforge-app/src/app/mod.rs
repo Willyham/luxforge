@@ -40,6 +40,8 @@ pub(crate) mod cpu_proxy;
 #[cfg(test)]
 mod cpu_proxy_tests;
 pub(crate) mod crop;
+#[cfg(test)]
+mod derived_source_tests;
 pub(crate) mod develop;
 pub(crate) mod draft;
 mod drawn_frames;
@@ -105,6 +107,8 @@ pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
 #[cfg(test)]
 mod gpu_settle_tests;
+#[cfg(test)]
+mod hdr_merge_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -173,6 +177,7 @@ pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
 mod select_folders_tests;
+pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 #[cfg(test)]
 mod select_missing_tests;
@@ -272,6 +277,9 @@ pub(crate) struct Activity {
     /// The bar over the photograph while a long render's exact phase runs, kept from one
     /// derivation to the next so it stays until that phase ends ([`state::canvas::render_bar`]).
     pub(crate) render_bar: Option<state::canvas::RenderBar>,
+    /// When the comparison began waiting for a picture it needs, which shows the loading bar over
+    /// the photograph once the wait outlasts its delay ([`state::canvas::CompareLoading`]).
+    pub(crate) compare_loading: state::canvas::CompareLoading,
 }
 
 impl Activity {
@@ -290,6 +298,7 @@ impl Activity {
             request_started: Instant::now(),
             render: None,
             render_bar: None,
+            compare_loading: state::canvas::CompareLoading::default(),
         }
     }
 }
@@ -487,8 +496,8 @@ pub(crate) struct Editor {
     pub(crate) select: select::Select,
     /// Long-running work: the watch on the owner's activity board and what it last read.
     pub(crate) long_work: long_work::LongWork,
-    /// Developing picks and the development set: Develop N's confirmation, the set and its
-    /// filmstrip, and the large previews a move draws first.
+    /// Developing picks and the Develop folder: Develop N's confirmation, the filmstrip and moving
+    /// through it, and the large previews a move draws first.
     pub(crate) develop: develop::Develop,
     /// GPU display/analysis resources for committed and drafted content, and the warm
     /// list of the committed stack.
@@ -787,7 +796,7 @@ impl Editor {
         editor.apply_display_preferences();
         editor.event(
             "startup",
-            || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
+            || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"test_cameras":luxforge_core::test_cameras_admitted(),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));
@@ -833,6 +842,8 @@ impl Editor {
         // The theme library, which the palette's theme entries and the Appearance tab list, off
         // the update loop: the first frame needs only the active theme, read above.
         let themes = editor.list_themes();
+        // The flags, for what a live flag gates outside the Settings sheet.
+        let flags = editor.read_flag_values(false);
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
                 Some(path) => editor.open_queued(path, initial_import),
@@ -858,6 +869,7 @@ impl Editor {
                 modules,
                 presets,
                 themes,
+                flags,
                 first,
             ]),
         )
@@ -1015,6 +1027,9 @@ impl Editor {
         // whenever a message arrives, and nothing polls it.
         self.activity.render_bar =
             state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
+        self.activity
+            .compare_loading
+            .observe(self.comparison_pending(), Instant::now());
         if self.select.state.shown == state::select::Shown::Develop {
             let source = self
                 .document
@@ -1044,6 +1059,7 @@ impl Editor {
         let inputs = self.inputs();
         workspace.derive(&inputs);
         workspace.copy_settings = self.copy_model();
+        workspace.canvas.covered = workspace.covers_canvas();
         for entry in &mut workspace.palette.entries {
             if let state::palette::PaletteAction::Host(command) = entry.action {
                 entry.refusal = command.refusal(&workspace.copy_settings);
@@ -1137,6 +1153,7 @@ impl Editor {
             // under the frame on screen, marked rendering, short of the threshold.
             rest_compiling: self.gpu_rest_compiling() && !self.gpu_compile_deadline(),
             render_bar: self.activity.render_bar,
+            compare_loading: self.activity.compare_loading.shown(Instant::now()),
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.shown_analysis(),
             // While a draft is open the counts plotted are updating unless they are an exact
@@ -1374,6 +1391,11 @@ impl Editor {
                     content: &self.select.state.content,
                     images: self.select.previews.grid(&self.select.state.rows),
                     loupe: self.loupe_images(),
+                    merge_picture: self
+                        .select
+                        .merge_picture
+                        .as_ref()
+                        .map(|picture| &picture.handle),
                 },
             ),
             None => view::workspace(
@@ -1452,8 +1474,9 @@ impl Editor {
                 || self.select.state.indexed_menu.is_some()
                 || self.select.state.forget.is_some(),
             loupe_open: self.loupe_open(),
+            merge_sheet_open: self.select_shown() && self.select.state.merge.sheet.is_some(),
             develop_confirm: self.develop.state.confirm.is_some(),
-            development_set: self.develop.state.set.is_some(),
+            filmstrip: self.develop.state.strip.is_some(),
             copy_settings_modal: if self.view_state.copy_settings.confirm.is_some() {
                 Some(keymap::CopySettingsModal::Confirm)
             } else if self.view_state.copy_settings.chooser.is_some() {

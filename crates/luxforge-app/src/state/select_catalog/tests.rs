@@ -1,6 +1,6 @@
 //! The catalog's view model against synthetic owner answers: the query each chip, column value and
 //! search makes (and nothing else), the requests each organizing gesture sends as an agent writes
-//! them, the folders by year and the collections, the Metadata browser's columns and counts, the
+//! them, the folder tree and the collections, the Metadata browser's columns and counts, the
 //! filter bar's conditions and count, the folder and collection menus, and the batch form.
 use super::*;
 use crate::state::select::{SelectionModel, Shown};
@@ -137,6 +137,8 @@ fn summary_of(query: ViewQuery, count: u32) -> ViewSummary {
         picked: 0,
         in_catalog: count,
         unavailable: 0,
+        stacks: 0,
+        collapsed: 0,
         groups: GroupLayout::default(),
         library_sequence: LibraryChangeSeq(4),
         index_revision: 1,
@@ -174,6 +176,8 @@ fn photo_row(position: u32, folder: &str, collections: &[&str], edited: bool) ->
         collections: collections.iter().map(|id| collection_id(id)).collect(),
         availability: FileAvailability::Available,
         preview: PreviewState::Pending,
+        stack: None,
+        reason: None,
     }
 }
 
@@ -407,15 +411,44 @@ fn catalog_browse_requests_are_what_an_agent_writes() {
     assert_eq!(CatalogGesture::CreateGroup.method(), "collection.create");
 }
 
-/// The folders are listed under their years, newest first, then Undated and Empty: a top-level
-/// folder under the earliest year in it or its subfolders, counting them all, its subfolders under
-/// it once opened; the newest year is open by default, and a year closes.
+/// The folders Develop N files picks under, as `folder.list` answers them, parents first and
+/// siblings in its order: 2026 › Konstanz › 12 Sep and 13 Sep, and 2026 › Sa Pa; 2025 › Bodensee
+/// with Lake and Reichenau; then a folder of undated photographs and an empty one, by name.
+fn year_tree() -> CatalogFolders {
+    CatalogFolders {
+        folders: vec![
+            folder("year202600", "2026", None, 0, None),
+            folder("konstanz01", "Konstanz", Some("year202600"), 0, None),
+            folder("day0912001", "12 Sep", Some("konstanz01"), 10, Some(2026)),
+            folder("day0913001", "13 Sep", Some("konstanz01"), 8, Some(2026)),
+            folder("sapa000001", "Sa Pa", Some("year202600"), 6, Some(2026)),
+            folder("year202500", "2025", None, 0, None),
+            folder("bodensee01", "Bodensee", Some("year202500"), 0, None),
+            folder("lake000001", "Lake", Some("bodensee01"), 12, Some(2025)),
+            folder(
+                "reichenau1",
+                "Reichenau",
+                Some("bodensee01"),
+                212,
+                Some(2025),
+            ),
+            folder("empty00001", "Empty for now", None, 0, None),
+            folder("undated001", "From Anna", None, 4, None),
+        ],
+    }
+}
+
+/// The folders are the catalog's folder tree from the top level, in `folder.list`'s order, each
+/// counting its subfolders: no computed years, and an undated or empty folder listed like any
+/// other. The newest year folder is open by default, and so is the path to the Develop folder; a
+/// folder the person opened or closed stays so.
 #[test]
-fn catalog_browse_folders_are_listed_by_year() {
+fn catalog_browse_folders_are_listed_as_the_folder_tree() {
     let mut state = catalog_state(ViewSource::CatalogFolder {
         folder_id: folder_id("konstanz01"),
         subfolders: true,
     });
+    state.catalog.folders = Some(year_tree());
     let names = |sources: &CatalogSources| {
         sources
             .folders
@@ -427,52 +460,76 @@ fn catalog_browse_folders_are_listed_by_year() {
     assert_eq!(
         names(&sources),
         vec![
-            ("2026".into(), 0, None, Some(true)),
-            (
-                "Brighton \u{b7} Sep 2026".into(),
-                1,
-                Some("31".into()),
-                None
-            ),
-            (
-                "Konstanz \u{b7} Sep 2026".into(),
-                1,
-                Some("18".into()),
-                None
-            ),
-            ("Sa Pa \u{b7} Sep 2026".into(), 1, Some("6".into()), None),
-            ("2025".into(), 0, None, Some(false)),
-            ("Undated".into(), 0, None, Some(false)),
-            ("Empty".into(), 0, None, Some(true)),
-            ("Empty for now".into(), 1, None, None),
+            ("2026".into(), 0, Some("24".into()), Some(true)),
+            ("Konstanz".into(), 1, Some("18".into()), Some(false)),
+            ("Sa Pa".into(), 1, Some("6".into()), None),
+            ("2025".into(), 0, Some("224".into()), Some(false)),
+            ("Empty for now".into(), 0, None, None),
+            ("From Anna".into(), 0, Some("4".into()), None),
         ]
     );
-    assert!(sources.folders[2].selected, "the folder viewed is selected");
-    assert_eq!(
-        sources.folders[2].press,
-        Some(CatalogAction::View(ViewSource::CatalogFolder {
-            folder_id: folder_id("konstanz01"),
-            subfolders: true,
-        }))
+    assert!(
+        sources
+            .folders
+            .iter()
+            .all(|row| row.icon == CatalogIcon::Folder)
     );
-    // 2025 opened: Bodensee counts its subfolders, and opens to them.
-    state.catalog.years.insert(YearGroup::Year(2025), true);
-    state.catalog.years.insert(YearGroup::Year(2026), false);
-    state.catalog.open_folders.insert(folder_id("bodensee01"));
+    assert!(sources.folders[1].selected, "the folder viewed is selected");
+    assert_eq!(
+        sources.folders[0].press,
+        Some(CatalogAction::View(ViewSource::CatalogFolder {
+            folder_id: folder_id("year202600"),
+            subfolders: true,
+        })),
+        "a year is pressed to view it with its subfolders"
+    );
+    assert_eq!(
+        sources.folders[0].toggle,
+        Some(CatalogAction::ToggleFolder(folder_id("year202600")))
+    );
+    // The path to the Develop folder opens with it: 2025 and Bodensee to Lake.
+    state.catalog.develop_folder = Some(folder_id("lake000001"));
+    assert!(folder_open(&state.catalog, &folder_id("year202500")));
+    assert!(folder_open(&state.catalog, &folder_id("bodensee01")));
+    assert!(!folder_open(&state.catalog, &folder_id("lake000001")));
     let sources = super::sources(&state);
     assert_eq!(
-        names(&sources)[..5],
+        names(&sources)[3..7],
         [
-            ("2026".into(), 0, None, Some(false)),
-            ("2025".into(), 0, None, Some(true)),
+            ("2025".into(), 0, Some("224".into()), Some(true)),
             ("Bodensee".into(), 1, Some("224".into()), Some(true)),
             ("Lake".into(), 2, Some("12".into()), None),
-            (
-                "Reichenau \u{b7} Aug 2025".into(),
-                2,
-                Some("212".into()),
-                None
-            ),
+            ("Reichenau".into(), 2, Some("212".into()), None),
+        ]
+    );
+    // The person's own choice holds over the default: 2026 closed, Konstanz opened.
+    state
+        .catalog
+        .folders_open
+        .insert(folder_id("year202600"), false);
+    state
+        .catalog
+        .folders_open
+        .insert(folder_id("konstanz01"), true);
+    let sources = super::sources(&state);
+    assert_eq!(
+        names(&sources)[..2],
+        [
+            ("2026".into(), 0, Some("24".into()), Some(false)),
+            ("2025".into(), 0, Some("224".into()), Some(true)),
+        ]
+    );
+    state
+        .catalog
+        .folders_open
+        .insert(folder_id("year202600"), true);
+    assert_eq!(
+        names(&super::sources(&state))[..4],
+        [
+            ("2026".into(), 0, Some("24".into()), Some(true)),
+            ("Konstanz".into(), 1, Some("18".into()), Some(true)),
+            ("12 Sep".into(), 2, Some("10".into()), None),
+            ("13 Sep".into(), 2, Some("8".into()), None),
         ]
     );
     // The collections: the group open over what it holds, the smart one and the plain one.
@@ -552,7 +609,6 @@ fn catalog_browse_a_smart_collection_is_viewed_as_saved() {
 #[test]
 fn catalog_browse_folder_menus_offer_what_the_owner_accepts() {
     let mut state = catalog_state(ViewSource::AllPhotographs);
-    state.catalog.years.insert(YearGroup::Year(2025), true);
     let menu_of = |state: &SelectState, name: &str| {
         super::sources(state)
             .folders
@@ -584,7 +640,10 @@ fn catalog_browse_folder_menus_offer_what_the_owner_accepts() {
     assert!(!labels.iter().any(|label| label.starts_with("Bodensee")));
     assert!(labels.contains(&"Konstanz \u{b7} Sep 2026"));
     state.catalog.menu = Some(CatalogMenu::FolderMove(folder_id("lake000001")));
-    state.catalog.open_folders.insert(folder_id("bodensee01"));
+    state
+        .catalog
+        .folders_open
+        .insert(folder_id("bodensee01"), true);
     let menu = menu_of(&state, "Lake");
     assert_eq!(
         menu[0].action,

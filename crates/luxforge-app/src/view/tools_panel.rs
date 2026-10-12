@@ -161,6 +161,8 @@ fn is_marked(control: &ControlModel, mark: Option<&RevealKey>) -> bool {
 /// While Mask mode is active the Masks panel replaces the module list, and the sections under it are
 /// the maskable modules' own, bound to the open mask — the design's recorded default P8, and the one
 /// thing that makes a masked adjustment the delivered control rather than a second implementation.
+/// While the Corrections mode is active its band replaces the module list in the same place, with
+/// nothing under it; outside that mode Corrections has no section at all.
 pub(crate) fn tools_panel<'a>(
     model: &'a ToolsModel,
     plot: &'a HistogramModel,
@@ -186,12 +188,18 @@ pub(crate) fn tools_panel<'a>(
     // The histogram sits above the first module section with no header of its own, as the Develop
     // workspace layout reserves.
     panel = panel.push(inspector(plot));
-    // The Corrections band sits where the Masks band does in Mask mode, followed by the sections.
+    // The Corrections mode is a tab of its own, as Mask mode is: its band sits where the Masks band
+    // does and replaces the module list, since no adjustment applies through a correction.
     if corrections.active {
         panel = panel.push(crate::view::corrections_panel::corrections_band(
             corrections,
             remove,
         ));
+        return scrollable(steady_bottom(panel))
+            .id(scroll_id())
+            .direction(theme::panel_scrollbar())
+            .height(Length::Fill)
+            .into();
     }
     if masking {
         panel = panel.push(crate::view::masks_panel::masks_panel(masks, menu, plot));

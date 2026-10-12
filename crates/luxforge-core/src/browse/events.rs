@@ -276,7 +276,7 @@ fn compute(
     let set = organize::events(&frames, &names.tables, thresholds, places);
     let file_of = |at: &u32| match frames[*at as usize].item {
         ViewItem::File(file) => file,
-        ViewItem::Photo(_) => unreachable!("events are over files"),
+        ViewItem::Photo(_) | ViewItem::Input(_) => unreachable!("events are over files"),
     };
     // Every file with the event (as computed) and month it is counted under.
     let mut by_file: Vec<(FileId, u32, Option<Month>)> = Vec::with_capacity(frames.len());

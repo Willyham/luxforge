@@ -38,7 +38,19 @@ impl Fixture {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
         std::fs::copy(fixture, &source).unwrap();
-        let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
+        // The value-based cases create range masks, which the host forces on as an experiment.
+        let (owner, join) = OwnerHandle::start_with_host(
+            &dir.join("catalog.sqlite"),
+            std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
+            luxforge_core::HostConfig {
+                launch_flags: luxforge_core::flags::LaunchFlags::resolve(
+                    None,
+                    &[(luxforge_core::flags::RANGE_MASKS, json!(true), "test")],
+                ),
+                ..luxforge_core::HostConfig::unconfigured()
+            },
+        )
+        .unwrap();
         let client = owner.register();
         let asset_value = luxforge_testkit::client::open(&owner, client, &source, "test")
             .expect("the fixture opens")["asset"]["id"]

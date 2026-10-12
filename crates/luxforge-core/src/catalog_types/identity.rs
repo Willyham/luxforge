@@ -218,15 +218,39 @@ impl MomentId {
 #[serde(transparent)]
 pub struct LibraryChangeSeq(pub u64);
 
-/// One entry of a client's view as the owner holds it: a file of the index or a developed
-/// photograph, 16 bytes, so a view of 10,000 files is 160 KB and a view of 1,000,000 photographs 16
-/// MB. A window, a range selection, the loupe's next frame and the filmstrip's neighbours read it
-/// with no query. Never serialized: public rows name a file by `file_id` and `path` and a photograph
-/// by `asset_id`.
+/// One entry of a client's view as the owner holds it: a file of the index, a developed
+/// photograph, or an original of an expanded HDR stack that is neither in the view's source (a
+/// provenance row), 16 bytes, so a view of 10,000 files is 160 KB and a view of 1,000,000
+/// photographs 16 MB. A window, a range selection, the loupe's next frame and the filmstrip's
+/// neighbours read it with no query. Never serialized: public rows name a file by `file_id` and
+/// `path`, a photograph by `asset_id` and an original by `merge_id` and `ordinal`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ViewItem {
     File(FileId),
     Photo(AssetRowId),
+    Input(StackInputKey),
+}
+
+/// A stack's original as a view item: its result's row and its ordinal in the stack, packed into
+/// one integer (`row << 4 | ordinal`, a stack holding at most 9). Durable as the result's row and
+/// the merge's inputs are, never an index row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StackInputKey(i64);
+
+impl StackInputKey {
+    pub fn new(result: AssetRowId, ordinal: u32) -> Self {
+        debug_assert!(ordinal < 16);
+        Self(result.0 << 4 | i64::from(ordinal & 15))
+    }
+
+    /// The row of the stack's result.
+    pub fn result(self) -> AssetRowId {
+        AssetRowId(self.0 >> 4)
+    }
+
+    pub fn ordinal(self) -> u32 {
+        (self.0 & 15) as u32
+    }
 }
 
 const _: () = assert!(std::mem::size_of::<ViewItem>() == 16);
@@ -248,6 +272,8 @@ mod tests {
     fn a_view_item_is_sixteen_bytes() {
         assert_eq!(std::mem::size_of::<ViewItem>(), 16);
         assert_eq!(std::mem::size_of::<Option<ViewItem>>(), 16);
+        let key = StackInputKey::new(AssetRowId(123_456), 8);
+        assert_eq!((key.result(), key.ordinal()), (AssetRowId(123_456), 8));
     }
 
     #[test]

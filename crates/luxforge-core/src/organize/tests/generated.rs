@@ -92,6 +92,7 @@ fn read_images(images: &Path) -> (Frames, HashMap<ViewItem, Truth>, Value) {
             path.display()
         );
         frames.frames.push(FrameFacts {
+            merged: false,
             item,
             folder: frames.tables.folder(path.parent().unwrap().to_path_buf()),
             name: path.file_name().unwrap().to_string_lossy().into(),
@@ -360,6 +361,7 @@ fn read_index(index: &Path) -> (Frames, HashMap<ViewItem, PathBuf>) {
         let item = ViewItem::File(FileId(row.get(0).unwrap()));
         paths.insert(item, PathBuf::from(row.get::<_, String>(1).unwrap()));
         frames.frames.push(FrameFacts {
+            merged: false,
             item,
             folder: frames
                 .tables

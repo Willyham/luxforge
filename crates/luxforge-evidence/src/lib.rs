@@ -26,7 +26,7 @@ pub use corrections::{
     CorrectionHandle, CorrectionStep, DragStep as CorrectionDrag, PressModifier, PressStep,
     RemoveStep, RemoveUntil, RowFieldStep,
 };
-pub use develop::{DevelopStep, SetStep};
+pub use develop::{DevelopStep, StripStep};
 pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
@@ -309,7 +309,7 @@ pub enum Step {
     /// browser and Info panel.
     Catalog(CatalogStep),
     /// One gesture on developing picks — Develop N's confirmation, `D` — or on Develop's
-    /// development set.
+    /// filmstrip.
     Develop(DevelopStep),
     /// One gesture on the Corrections workspace: a press on the photograph, a handle drag or a
     /// band control.
@@ -2407,6 +2407,22 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// `"cancel_work"` presses Cancel on the Performance section's first such row and waits until the
 /// job has ended on the activity board, the view that waited on it has heard, and the section has
 /// read the board again.
+///
+/// HDR merges: `{"merge": {"position": 0}}` presses the Merge HDR action of the bracket holding
+/// that view position, as its header does. It opens the merge preview sheet and is captured once
+/// the sheet draws the preview's revision, its picture decoded, or fails with the sheet's refusal.
+/// With `"last_settings": true` it is ⌥-clicked: the merge starts at once with the last HDR
+/// merge's settings, and it is captured once the merge's pending row shows the job's first
+/// progress, or fails with the reason when the merge is refused or has already ended.
+/// `{"merge_preview": {"alignment": "off"}}` (`"deghost"`, each `"auto"` or `"off"`) changes the
+/// open sheet's setting and is captured once the revision of the new settings is drawn;
+/// `{"merge_preview": {"overlay": true}}` turns Show deghost overlay on or off, captured at once;
+/// `{"merge_preview": "merge"}` presses the sheet's Merge and is captured as a header's ⌥-click
+/// is; `{"merge_preview": "cancel"}` presses Cancel and is captured once the sheet is gone and its
+/// preview closed. `"merged"` is captured once the merge this
+/// desktop started has ended ready and the view it read again holds its result, selected, with
+/// nothing Select asked for still in flight, its previews among it; a failed
+/// or cancelled merge fails it with the row's words.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectStep {
@@ -2442,6 +2458,32 @@ pub enum SelectStep {
     ContinueInBackground,
     CancelWork,
     AddFolder(String),
+    Merge {
+        position: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        last_settings: bool,
+    },
+    MergePreview(MergePreviewStep),
+    Merged,
+}
+
+/// A gesture on the open merge preview sheet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum MergePreviewStep {
+    Alignment(MergeToggle),
+    Deghost(MergeToggle),
+    Overlay(bool),
+    Merge,
+    Cancel,
+}
+
+/// Alignment's or deghosting's choice on the sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeToggle {
+    Auto,
+    Off,
 }
 
 /// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.
@@ -2504,7 +2546,10 @@ impl SelectStep {
             | Self::Library(_)
             | Self::PickAll { .. }
             | Self::ContinueInBackground
-            | Self::CancelWork => Ok(()),
+            | Self::CancelWork
+            | Self::Merge { .. }
+            | Self::MergePreview(_)
+            | Self::Merged => Ok(()),
         }
     }
 }

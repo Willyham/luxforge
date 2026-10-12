@@ -5693,6 +5693,77 @@ The run's own owner, with no GPU, exported the warped entry through `export.plan
 
 Interaction latency, render, sample and export times, memory and idle cost with a correction stack have not been measured. The owner set the timing, memory and idle runs aside on 2026-10-11, along with the `gpu-qualification` rerun of the 60 MP far-source Heal stack and the gate run of the `repair-patch` family; none was run, and a skipped measurement is not a pass. `verify --tier full --manifest` would run `editor-latency --mode corrections` on the 24 and 60 MP JPEGs and each manifest RAW.
 
+## HDR merges, measured on the M4
+
+What an HDR merge costs at photo size ([acceptance](../design/hdr-merge.md#evidence-and-acceptance)): synthetic handheld brackets of a moving ball (`luxforge_testkit::hdr_bracket` at 6000 × 4000 and 9504 × 6336, 16-bit Bayer DNGs of a RAW test camera, ±2 EV steps for three frames and 1 EV steps for nine), merged through the JSON API by an in-process owner over a new catalog, the reference renderer and no GPU client in the process. The merge itself is CPU work; the GPU is not involved.
+
+**Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, internal SSD at 92% full, release xtask at `6f9afcf5` (the merge path as on main `81761afb`) and the release editor (SHA-256 `22e9b7ed…`) for the drag. Measured 11 October 2026 with `hdr-merge-measure` ([development](../engineering/development.md)) behind the host timing lock, with other agents' work on the host. 24 MP × 3 and 60 MP × 9 were timed at one-minute loads of 2.5 to 9.7, briefly 12.3 during the 60 MP × 9 editor work, and 60 MP × 3 at 5.3 to 10.9. 24 MP × 9 was timed only at 12.5 to 45, so its times are unreliable and stand only as an upper bound; so are the reopen times of 24 MP × 3 and 60 MP × 9, taken at 18 to 35. Memory, disk and object figures do not depend on load and were the same in every run. Cold is a worker process's first merge, its own owner and catalog new; warm is a later merge in the same process, each into a new catalog. Neither purges the operating system's file cache, which the brackets were just written into.
+
+**Statistics.** Nearest-rank p50 / p95, 3 cold and 5 warm merges per workload; stages from the job's phases on the activity board, so reading runs from the request.
+
+| Merge stage, cold · warm, p50 / p95 ms | 24 MP × 3 | 60 MP × 3 (load 5.3 to 10.9) | 24 MP × 9 (load 12.5 to 45) | 60 MP × 9 |
+| --- | --- | --- | --- | --- |
+| Total | 2207 / 2213 · 2175 / 2206 | 5674 / 6381 · 5658 / 5802 | 9295 / 14026 · 10753 / 15856 | 53482 / 64345 · 52085 / 58488 |
+| Reading: each input read, hashed, developed and spooled | 843 / 884 · 817 / 827 | 2248 / 2501 · 2149 / 2263 | 3909 / 4408 · 3180 / 3755 | 6472 / 6882 · 6883 / 7554 |
+| One input of those | 283 / 308 · 271 / 279 | 743 / 859 · 716 / 761 | 418 / 543 · 345 / 453 | 725 / 787 · 762 / 843 |
+| Aligning: proxies, registration, motion | 162 / 164 · 158 / 160 | 155 / 177 · 150 / 159 | 847 / 1354 · 885 / 1283 | 603 / 615 · 617 / 683 |
+| Merging: fusion, chunk by chunk | 1151 / 1168 · 1158 / 1193 | 3199 / 3655 · 3296 / 3498 | 4710 / 8029 · 5522 / 12043 | 46298 / 56676 · 44244 / 50054 |
+| Saving | 34 / 34 · 36 / 38 | 49 / 70 · 46 / 61 | 159 / 235 · 182 / 193 | 170 / 173 · 293 / 341 |
+
+- **60 MP × 9 fusion was bound by its spool reads.** When measured, fusion read each input's window of a chunk back from its spool one row at a time (it now reads in bands of up to 8 MiB, not yet measured), about 20 KB a read at this width. One more cold merge, sampled every 3 s: through its 61 s of merging, the worker used 16 to 47% of one core while the disk served 7,200 to 8,500 reads a second at 134 to 215 MB/s. The 7.1 GiB of spool is not reliably still in the file cache when fusion reads it. Across this run and a busier one earlier the same day (one-minute load 15 to 33), the 16 merges' merging took either 9.9 to 24.0 s (7 merges, one of them in the quiet run) or 40.6 to 56.7 s (9 merges), whatever the load. That fits the spool being cached or not. So a 60 MP × 9 merge takes between about 17 s and 64 s on this Mac. The three-frame and 24 MP workloads were not seen to vary this way.
+
+| Memory and disk, cold and warm alike, in every run | 24 MP × 3 | 24 MP × 9 | 60 MP × 3 | 60 MP × 9 |
+| --- | --- | --- | --- | --- |
+| Accounted scratch at its peak, against the 256 MiB limit | 104.4 MiB | 188.4 MiB | 103.9 MiB | 187.9 MiB |
+| The one development held outside it | 276.5 MiB | 276.5 MiB | 692.0 MiB | 692.0 MiB |
+| Temporary spool at its peak, against the 16 GiB ceiling (14 bytes a pixel an input) | 961 MiB | 2,884 MiB | 2,412 MiB | 7,236 MiB |
+| Spool files left after success or cancellation (cold, warm and cancelled merges) | 0 | 0 | 0 | 0 |
+| The saved result under the catalog's artifacts: chunks and manifest | 270.2 MiB | 269.2 MiB | 678.0 MiB | 675.4 MiB |
+| Process footprint at its largest while merging, cold p50 / p95 (sampled every 100 ms) | 575 / 578 MiB | 739 / 743 MiB | 1,195 / 1,199 MiB | 1,350 / 1,358 MiB |
+| Peak footprint of the warm worker over its whole life (every merge, cancellation and the editor work beside them; this depends on how much editor work ran, 1,421 MiB at 60 MP × 9 in the busier run) | 760 MiB | 839 MiB | 1,345 MiB | 1,595 MiB |
+
+The footprint is the process's physical footprint from `resources.read`, which also holds the owner, the catalog and the allocator's retained pages. It grows with frame size, and from three frames to nine only by the scratch and 70 to 80 MiB more: no full frame is retained per input. The largest footprint is 194 to 470 MiB more than the scratch peak and the development together. These measurements do not attribute that difference, and they make no total-memory bound claim.
+
+| Cancellation: `job.cancel` to the job's end, p50 / max ms (3 each; every one cancelled, nothing published) | 24 MP × 3 | 60 MP × 3 | 60 MP × 9 |
+| --- | --- | --- | --- |
+| While reading the second input | 2.4 / 3.0 | 5.9 / 7.5 | 4.5 / 8.6 |
+| As alignment begins | 8.9 / 12.0 | 42.5 / 47.1 | 155 / 178 |
+| Half way through the chunks | 20.6 / 23.0 | 56.6 / 60.2 | 233 / 249 |
+| As the last chunk is written | 20.0 / 21.3 | 38.2 / 52.2 | 383 / 423 |
+
+At 24 MP × 9 (load 12.5 to 45) cancellation took at most 5, 120, 133 and 63 ms.
+
+| Reopen and redo, each workload | 24 MP | 60 MP |
+| --- | --- | --- |
+| HDR merge activity through undo, redo, reopening, preparation and export, with the inputs moved away | 0 | 0 |
+| `library.undo` / `library.redo` of the merge's creation, after reopening, p50 / max ms | 4.8 to 5.3 / 9.0 · 4.9 to 5.0 / 11.1 | 5.0 to 8.9 / 9.8 · 5.0 to 5.2 / 13.4 |
+| `source.prepare` of the result: its chunks read and verified into one frame | 215 to 220 ms | 518 to 737 ms |
+| The footprint that preparation adds: the frame | 282 MiB | 688 to 691 MiB |
+| `export.jpeg` of the result, reference renderer | 101 to 110 ms | 206 to 210 ms |
+
+Each reopen merged copies of the bracket and undid and redid the merge in its own process. It then moved the copies away and reopened the catalog in a new process: `merge.inspect` reported every input missing and the source available. Through undo, redo, preparation and export no HDR merge began, progressed or ended on the activity board, and the objects under `sources/` and the merges' working folders were unchanged. With the inputs gone, nothing could read one.
+
+| Editor work through the same owner, reference renderer, p50 / p95 ms: idle · beside a merge | 24 MP × 3 | 60 MP × 9 |
+| --- | --- | --- |
+| `browse.rows` of 200 over a view of 1,000 JPEGs | 0.7 / 0.7 · 0.6 / 0.7 | 0.6 / 0.8 · 0.7 / 2.2 (max 9.4) |
+| `render.sample` of a prepared 24 MP JPEG | 0.0 / 0.5 · 0.0 / 0.1 | 0.1 / 0.5 · 0.1 / 0.7 (max 11.1) |
+| `edit.set-basic` commit | 4.8 / 8.1 · 4.9 / 7.0 | 5.5 / 10.7 · 5.5 / 10.2 (max 92.0) |
+| `export.jpeg` of it | 103.6 / 105.2 · 96.3 / 119.6 | 110.2 / 110.2 · 110.1 / 218.0 (max 308) |
+| The merge they ran beside, against warm alone (p50) | 2,316 against 2,175 | 74,126 against 52,085 |
+
+There were 10 idle samples of each operation. Beside a merge there were 23 of each at 24 MP and about 500 at 60 MP (load up to 12.3 at its end), counting only those that ended while the merge still ran, so a 60 MP export ran beside it back to back throughout. At 24 MP × 9 and 60 MP × 3, browse, sample and commit beside a merge were no slower than idle at p95. Editing beside a merge keeps its own times; the merge takes longer.
+
+| `editor-latency --mode drag`, Basic exposure at Fit on the 24 MP JPEG, input to presented frame, 30 inputs, p50 / p95 / max ms | Quiet run (load 7.0 to 9.7) |
+| --- | --- |
+| Alone | 8.4 / 8.7 / 9.4 |
+| While another process merged 60 MP × 9 | 8.9 / 25.3 / 56.2 |
+
+The drag fell within that merge's reading stage, the decoding and development of its inputs, its most CPU-intensive. A drag during fusion, and one in the same process as the merge, are not measured.
+
+**Natural brackets.** The private manifest's sources are three single RAWs, from a Z6, an X100VI and an Air 2S. Indexed read only into a new catalog, they formed no bracket in Select. Natural-bracket quality (motion, seams, colour, highlights, shadows and crop losses on real brackets) is unqualified.
+
+**Outstanding.** GPU allocations while the editor shows a merged result are not measured, because the worker has no GPU client and `resources.read` reports GPU memory unavailable. Also outstanding are 24 MP × 9 times on a quiet host, a drag during fusion, the fusion spool reads above, and Windows and Linux.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

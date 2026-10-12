@@ -372,12 +372,17 @@ pub(crate) fn upright(row: &ViewRow) -> Option<Dimensions> {
 }
 
 /// The preview item a row's frame is read as: a file's, or a developed photograph's current entry.
+/// An HDR stack's original outside the view is read as its file; one the index does not list names
+/// no index row, which `preview.read` refuses, and the frame says its preview is unavailable.
 pub(crate) fn preview_item(row: &ViewRow) -> PreviewItem {
     match &row.item {
         RowItem::File { file_id } => PreviewItem::File { file_id: *file_id },
         RowItem::Photo { asset_id } => PreviewItem::Photo {
             asset_id: asset_id.clone(),
             entry_id: None,
+        },
+        RowItem::Input { file_id, .. } => PreviewItem::File {
+            file_id: file_id.unwrap_or(luxforge_core::catalog_types::FileId(-1)),
         },
     }
 }
@@ -1050,6 +1055,8 @@ mod tests {
             picked: 0,
             in_catalog: 0,
             unavailable: 0,
+            stacks: 0,
+            collapsed: 0,
             groups: GroupLayout {
                 moments: moments
                     .iter()
@@ -1128,6 +1135,8 @@ mod tests {
             collections: Vec::new(),
             availability: FileAvailability::Available,
             preview: PreviewState::Ready,
+            stack: None,
+            reason: None,
         }
     }
 

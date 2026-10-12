@@ -102,15 +102,34 @@ impl Editor {
                 // the library then; list it again beside the photo all the same, so the section
                 // a newly opened photograph shows is the library as it stands.
                 let opened = result.is_ok();
+                let filed = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|refresh| refresh.folder.clone());
                 let refreshed = self.dispatch(Message::Sync(SyncMessage::Refreshed(result)));
                 if !opened {
+                    if self.develop.file_open == Some(generation) {
+                        self.develop.file_open = None;
+                    }
                     return refreshed;
                 }
                 // An open is what happened even when it is the photograph already on screen.
                 if let Some(state) = &self.document.state {
-                    self.status.happened = Some(state::status::Happened::opened(state));
+                    let name = state::title::document_name(
+                        &state.asset,
+                        self.develop.state.strip.as_ref(),
+                    );
+                    self.status.happened =
+                        Some(state::status::Happened::opened(state).naming(name));
                 }
-                return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
+                // A file opened: the catalog folder its Develop filed it in becomes the Develop
+                // folder.
+                let folder = self.develop_file_opened(generation, filed);
+                return Task::batch([
+                    refreshed,
+                    folder,
+                    presets_task(self.owner.clone(), self.client),
+                ]);
             }
             SyncMessage::Refreshed(result) => {
                 // Overtaken by a selection or a state this desktop already holds: whatever
@@ -243,10 +262,14 @@ impl Editor {
                             sync.themes,
                             sync.usage,
                         );
+                        let strip = match sync.library {
+                            Some(sequence) => self.develop_library_changed(sequence),
+                            None => Task::none(),
+                        };
                         if sync.capabilities {
-                            return Task::batch([flags, tiers, self.reload_capabilities()]);
+                            return Task::batch([flags, tiers, strip, self.reload_capabilities()]);
                         }
-                        return Task::batch([flags, tiers]);
+                        return Task::batch([flags, tiers, strip]);
                     }
                     Err(error) => self.status.text = format!("Live refresh failed: {error}"),
                 }
@@ -294,6 +317,7 @@ impl Editor {
     ) -> Task<Message> {
         if let Some(reason) = self.mask_tool_refusal() {
             self.status.text = reason;
+            self.develop.reopen = false;
             return Task::none();
         }
         self.controls.ui.analysis_serial += 1;
@@ -302,9 +326,9 @@ impl Editor {
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;
         }
-        // A file opened is opened alone: Develop has no development set for it.
-        self.develop_opened_alone();
         let generation = self.activity.requested;
+        // A file opened leaves the Develop folder for its own, once it answers.
+        self.develop_file_opening(generation);
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
         // the image for this newer open request.
@@ -459,7 +483,13 @@ impl Editor {
             &refresh.state,
             known,
             refresh.collapsed.is_some(),
-        );
+        )
+        .map(|happened| {
+            happened.naming(state::title::document_name(
+                &refresh.state.asset,
+                self.develop.state.strip.as_ref(),
+            ))
+        });
         // A composite that skipped settings says so beside what it did, and one that applied
         // nothing at all says that, since no entry moved to say anything else.
         self.status.skipped = (!refresh.skipped.is_empty()).then(|| {

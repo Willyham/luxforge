@@ -1,6 +1,6 @@
 //! The catalog in the Select workspace ([catalog design](../../../../docs/design/catalog.md#the-catalog),
 //! [catalog board](../../../../docs/design/catalog/catalog.png)): the Catalog sources'
-//! folders by year and collections, the filter bar over the catalog (search, Kind and Edited, the
+//! folder tree and collections, the filter bar over the catalog (search, Kind and Edited, the
 //! metadata conditions and the view's count), the Metadata browser, Save as smart collection…, and
 //! the Info panel over photographs — one photograph's Organize band, or the batch form. Like every
 //! view model it names no framework type, no widget and no view.
@@ -48,26 +48,6 @@ pub(crate) const BATCH_NOTE: &str = "Each photograph gets its own history entry;
     take the change is listed, not skipped silently.";
 
 // -- What the catalog seam holds -------------------------------------------------------------------
-
-/// A year the sources panel groups catalog folders under: a top-level folder's is the capture year
-/// of the earliest photograph in it or its subfolders. A folder whose photographs are all undated,
-/// and an empty one, have none.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum YearGroup {
-    Year(i32),
-    Undated,
-    Empty,
-}
-
-impl YearGroup {
-    pub(crate) fn label(self) -> String {
-        match self {
-            Self::Year(year) => year.to_string(),
-            Self::Undated => "Undated".to_owned(),
-            Self::Empty => "Empty".to_owned(),
-        }
-    }
-}
 
 /// A menu of the catalog's, open under what opened it. Only one is open at a time, with Select's
 /// own chip and sort menus closed.
@@ -286,7 +266,7 @@ pub(crate) struct SourceTotal {
 
 /// What the catalog seam holds that its model reads: what the owner last answered for the folders
 /// and collections, and the desktop's own view state — the Metadata browser, the search text, which
-/// years, folders and groups are open, the menu open and a name being typed.
+/// folders and groups are open, the Develop folder, the menu open and a name being typed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CatalogState {
     /// `folder.list` as last answered, read with the catalog's counts.
@@ -301,10 +281,13 @@ pub(crate) struct CatalogState {
     pub(crate) search: String,
     /// The source the search text belongs to; choosing another starts from its own query's text.
     pub(crate) searched: Option<ViewSource>,
-    /// Years whose disclosure the person changed from the default (the newest open).
-    pub(crate) years: BTreeMap<YearGroup, bool>,
-    /// Catalog folders opened to their subfolders.
-    pub(crate) open_folders: BTreeSet<CatalogFolderId>,
+    /// Catalog folders whose disclosure the person changed from the default: the newest year
+    /// folder and the path to the Develop folder open, every other folder closed.
+    pub(crate) folders_open: BTreeMap<CatalogFolderId, bool>,
+    /// The Develop folder: the catalog folder Develop holds, with its subfolders, last chosen by
+    /// viewing it here, a double-click on one of its photographs, a Develop N or a file opened.
+    /// The desktop's own view state, like the workspace shown; `None` until one is chosen.
+    pub(crate) develop_folder: Option<CatalogFolderId>,
     /// Collection groups closed; a group is open by default.
     pub(crate) closed_groups: BTreeSet<CollectionId>,
     pub(crate) menu: Option<CatalogMenu>,
@@ -374,7 +357,6 @@ pub(crate) enum CatalogChange {
 pub(crate) enum CatalogAction {
     /// View a catalog folder or collection.
     View(ViewSource),
-    ToggleYear(YearGroup),
     ToggleFolder(CatalogFolderId),
     ToggleGroup(CollectionId),
     /// Open a menu, or close the one open.
@@ -725,7 +707,7 @@ pub(crate) fn selected_names(
         .filter_map(|position| row_at(state, position))
         .filter_map(|row| match &row.item {
             RowItem::Photo { asset_id } => Some((asset_id.clone(), row.file_name.clone())),
-            RowItem::File { .. } => None,
+            RowItem::File { .. } | RowItem::Input { .. } => None,
         })
         .collect()
 }
@@ -857,8 +839,6 @@ pub(crate) fn dates_label(range: DateRange) -> String {
 /// A catalog source row's glyph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CatalogIcon {
-    /// A year that groups folders.
-    Year,
     Folder,
     Collection,
     Smart,
@@ -871,7 +851,7 @@ pub(crate) struct CatalogRow {
     pub(crate) icon: CatalogIcon,
     pub(crate) name: String,
     pub(crate) count: Option<String>,
-    /// Nesting under its year or group: one level in, and one more per parent folder.
+    /// Nesting under its parent folder or group: one level per parent.
     pub(crate) indent: u8,
     /// `Some(open)` for a row that opens.
     pub(crate) open: Option<bool>,
@@ -951,7 +931,7 @@ impl ActionChoice {
 /// originals.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CatalogSources {
-    /// The years, each with its top-level folders and their open subfolders under it.
+    /// The folder tree from the top level, each open folder with its subfolders under it.
     pub(crate) folders: Vec<CatalogRow>,
     pub(crate) collections: Vec<CatalogRow>,
     /// Said in place of the rows while they are read, or when they cannot be.
@@ -1577,19 +1557,15 @@ impl<'a> FolderTree<'a> {
         ordered
     }
 
-    /// The photographs in `folder` and its subfolders, and the earliest capture year among them.
-    fn subtree(&self, folder: &'a CatalogFolder) -> (u32, Option<i32>) {
-        let (mut count, mut year) = (0u32, None::<i32>);
+    /// The photographs in `folder` and its subfolders.
+    fn subtree(&self, folder: &'a CatalogFolder) -> u32 {
+        let mut count = 0u32;
         let mut stack = vec![folder];
         while let Some(at) = stack.pop() {
             count = count.saturating_add(at.count);
-            year = match (year, at.year) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
             stack.extend(self.children(Some(&at.id)).iter().copied());
         }
-        (count, year)
+        count
     }
 
     /// Whether `folder` is `ancestor` or inside it.
@@ -1628,15 +1604,6 @@ impl<'a> FolderTree<'a> {
         }
         names.reverse();
         names.join(" \u{203a} ")
-    }
-}
-
-/// The year group of a top-level folder, from its subtree.
-fn year_group(count: u32, year: Option<i32>) -> YearGroup {
-    match (year, count) {
-        (Some(year), _) => YearGroup::Year(year),
-        (None, 0) => YearGroup::Empty,
-        (None, _) => YearGroup::Undated,
     }
 }
 
@@ -1708,9 +1675,9 @@ pub(crate) fn sources(state: &SelectState) -> CatalogSources {
     }
 }
 
-/// The years, newest first and then Undated and Empty, each opening to its top-level folders and
-/// each folder to its subfolders. A new folder's name is typed at the top of the list, or under the
-/// folder it goes into.
+/// The catalog folder tree from the top level, in `folder.list`'s order, each folder opening to its
+/// subfolders. A new folder's name is typed at the top of the list, or under the folder it goes
+/// into.
 fn folder_rows(
     catalog: &CatalogState,
     list: &CatalogFolders,
@@ -1718,58 +1685,84 @@ fn folder_rows(
     rows: &mut Vec<CatalogRow>,
 ) {
     let tree = FolderTree::of(list);
+    let opened = OpenByDefault::of(&tree, catalog.develop_folder.as_ref());
     rows.extend(new_folder_row(catalog, None, 0));
-    let mut groups: BTreeMap<std::cmp::Reverse<YearGroupOrder>, Vec<(&CatalogFolder, u32)>> =
-        BTreeMap::new();
     for folder in tree.children(None) {
-        let (count, year) = tree.subtree(folder);
-        groups
-            .entry(std::cmp::Reverse(YearGroupOrder(year_group(count, year))))
-            .or_default()
-            .push((folder, count));
-    }
-    let newest = groups.keys().next().map(|key| key.0.0);
-    for (key, top) in groups {
-        let group = key.0.0;
-        let open = catalog
-            .years
-            .get(&group)
-            .copied()
-            .unwrap_or(Some(group) == newest || group == YearGroup::Empty);
-        rows.push(CatalogRow {
-            open: Some(open),
-            press: Some(CatalogAction::ToggleYear(group)),
-            toggle: Some(CatalogAction::ToggleYear(group)),
-            ..CatalogRow::new(CatalogIcon::Year, group.label(), 0)
-        });
-        if !open {
-            continue;
-        }
-        for (folder, count) in top {
-            push_folder(catalog, &tree, folder, count, 1, viewing, rows);
-        }
-    }
-}
-
-/// The order years are listed in, reversed: the newest year first, then Undated and Empty last.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct YearGroupOrder(YearGroup);
-
-impl PartialOrd for YearGroupOrder {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for YearGroupOrder {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let rank = |group: YearGroup| match group {
-            YearGroup::Year(year) => (2, year),
-            YearGroup::Undated => (1, 0),
-            YearGroup::Empty => (0, 0),
+        let count = tree.subtree(folder);
+        let at = Placed {
+            folder,
+            count,
+            indent: 0,
         };
-        rank(self.0).cmp(&rank(other.0))
+        push_folder(catalog, &tree, &opened, at, viewing, rows);
     }
+}
+
+/// The folders open by default: the newest year folder, the top-level folder whose name is the
+/// largest four-digit year, and every folder on the path to the Develop folder.
+struct OpenByDefault<'a> {
+    year: Option<&'a CatalogFolderId>,
+    path: Vec<&'a CatalogFolderId>,
+}
+
+impl<'a> OpenByDefault<'a> {
+    fn of(tree: &FolderTree<'a>, develop: Option<&CatalogFolderId>) -> Self {
+        let year = tree
+            .children(None)
+            .iter()
+            .filter_map(|folder| year_name(&folder.name).map(|year| (year, &folder.id)))
+            .max_by_key(|(year, _)| *year)
+            .map(|(_, id)| id);
+        let mut path = Vec::new();
+        let mut at = develop
+            .and_then(|id| tree.by_id.get(id))
+            .and_then(|folder| folder.parent_id.as_ref());
+        while let Some(id) = at {
+            let Some(folder) = tree.by_id.get(id) else {
+                break;
+            };
+            if path.len() > tree.by_id.len() {
+                break;
+            }
+            path.push(&folder.id);
+            at = folder.parent_id.as_ref();
+        }
+        Self { year, path }
+    }
+
+    fn open(&self, folder: &CatalogFolderId) -> bool {
+        self.year == Some(folder) || self.path.contains(&folder)
+    }
+}
+
+/// The year a folder's name is, when it is four digits ("2026").
+fn year_name(name: &str) -> Option<u16> {
+    if name.len() == 4 && name.bytes().all(|byte| byte.is_ascii_digit()) {
+        name.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Whether the folder's subfolders are shown, as the sources panel draws it: the person's own
+/// choice, or else the default.
+pub(crate) fn folder_open(catalog: &CatalogState, folder: &CatalogFolderId) -> bool {
+    if let Some(open) = catalog.folders_open.get(folder) {
+        return *open;
+    }
+    let Some(list) = &catalog.folders else {
+        return false;
+    };
+    let tree = FolderTree::of(list);
+    OpenByDefault::of(&tree, catalog.develop_folder.as_ref()).open(folder)
+}
+
+/// A folder as the list places it: with its count, its subfolders' included, and its indent.
+#[derive(Clone, Copy)]
+struct Placed<'a> {
+    folder: &'a CatalogFolder,
+    count: u32,
+    indent: u8,
 }
 
 /// The row of a new folder whose name is being typed, when it goes into `parent`.
@@ -1791,14 +1784,22 @@ fn new_folder_row(
 fn push_folder<'a>(
     catalog: &CatalogState,
     tree: &FolderTree<'a>,
-    folder: &'a CatalogFolder,
-    count: u32,
-    indent: u8,
+    opened: &OpenByDefault<'a>,
+    at: Placed<'a>,
     viewing: Option<&ViewSource>,
     rows: &mut Vec<CatalogRow>,
 ) {
+    let Placed {
+        folder,
+        count,
+        indent,
+    } = at;
     let children = tree.children(Some(&folder.id));
-    let open = catalog.open_folders.contains(&folder.id);
+    let open = catalog
+        .folders_open
+        .get(&folder.id)
+        .copied()
+        .unwrap_or_else(|| opened.open(&folder.id));
     let source = ViewSource::CatalogFolder {
         folder_id: folder.id.clone(),
         subfolders: true,
@@ -1834,16 +1835,12 @@ fn push_folder<'a>(
     }
     if open || naming_inside {
         for child in children {
-            let (count, _) = tree.subtree(child);
-            push_folder(
-                catalog,
-                tree,
-                child,
-                count,
-                indent.saturating_add(1),
-                viewing,
-                rows,
-            );
+            let at = Placed {
+                folder: child,
+                count: tree.subtree(child),
+                indent: indent.saturating_add(1),
+            };
+            push_folder(catalog, tree, opened, at, viewing, rows);
         }
     }
 }

@@ -6,7 +6,7 @@ Copy settings reads chosen adjustment groups from one photograph into a settings
 
 ## Boards
 
-Proposed boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [copy-settings/html](copy-settings/html/index.html). The photographs are the Develop and catalog boards' own; the values, names and times are illustrative.
+Proposed boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [copy-settings/html](copy-settings/html/index.html). The photographs are the Develop and catalog boards' own; the values, names and times are illustrative. The filmstrip's header reads "Development set", drawn before the filmstrip held the Develop folder; it is now the folder's path.
 
 | Board | Shows |
 | --- | --- |
@@ -89,11 +89,11 @@ The filmstrip gains a selection, with the open photograph always in it:
 | Click | Opens the photograph and selects it alone, as today |
 | `⌘`-click | Adds or removes a photograph other than the open one, without opening it |
 | `⇧`-click | Selects the range from the open photograph to the clicked one, without opening it |
-| `⌘A` (focus not in a text field) | Selects the whole development set |
+| `⌘A` (focus not in a text field) | Selects the whole filmstrip |
 | Arrow keys, Escape | Arrow keys step as today and select the new photograph alone; Escape selects only the open photograph |
 | Right press | Opens the menu (below) |
 
-Selected cells draw a quiet accent border and tint, and the open cell keeps its full accent border. The strip's header says "4 of 9 selected" whenever more than one photograph is selected. The selection is the desktop's view state. It is cleared when the set changes, and photographs that leave the set leave the selection.
+Selected cells draw a quiet accent border and tint, and the open cell keeps its full accent border. The strip's header says "4 of 9 selected" whenever more than one photograph is selected. The selection is the desktop's view state. It is cleared when the Develop folder changes, and photographs that leave the filmstrip leave the selection.
 
 With more than one photograph selected, `⌘V` pastes to **all** of them. After the [confirmation](#confirmation-and-report), it sends `batch.apply-settings` with their asset IDs. The open photograph is pasted like the others, and the event sync reads it again, as after a batch preset.
 
@@ -121,7 +121,7 @@ Text fields keep their own `⌘C`, `⌘V` and `⌘A`. These bindings apply only 
 | `⇧⌘C` | Copy settings… (the chooser) | Same, for the active photograph |
 | `⌘V` | Paste into the open photograph, or to the filmstrip selection when it holds more than one | Paste to the selection |
 | `⌥⌘V` | Paste from previous into the open photograph | Not bound |
-| `⌘A` | Select the whole development set in the filmstrip | Unchanged (select all) |
+| `⌘A` | Select the whole filmstrip | Unchanged (select all) |
 
 The title bar gains **Copy** and **Paste** icon buttons before Undo, in both workspaces. Copy opens the chooser, because a press is the deliberate gesture that should show what is copied. The command palette lists Copy settings, Copy settings…, Paste settings (with the target count when more than one photograph is selected) and Paste settings from previous photograph, each disabled with its reason when it cannot run.
 
@@ -148,7 +148,7 @@ An agent copies and pastes with the same calls. The desktop's clipboard and film
 
 - **Owner and UI threads.** Captures, pastes and batch submissions run as owner tasks off the update loop, except the Select paste naming `{kind: selection}`, which is synchronous in the gesture's update as every selection-target library request is ([performance rule 12](../engineering/performance-rules.md#rules)). Nothing is computed in `view()`.
 - **No new renders.** Capture reads payloads only. A paste into the open photograph costs the ordinary commit and one preview job. A batch costs one `edit.apply-settings` per photograph.
-- **Bounds.** A clipboard is one settings set within the existing 16-action and 64-field bounds, about a kilobyte. The filmstrip selection is at most the development set's size. A batch is bounded by `MAX_LIBRARY_BATCH`.
+- **Bounds.** A clipboard is one settings set within the existing 16-action and 64-field bounds, about a kilobyte. The filmstrip selection is at most the filmstrip's size, the Develop folder's at most 100,000 photographs. A batch is bounded by `MAX_LIBRARY_BATCH`.
 - **Source preservation.** A paste writes only recipe history entries. Originals are untouched, and an unavailable module refuses the paste explicitly rather than silently dropping its effect.
 
 ## Acceptance
@@ -167,13 +167,13 @@ An agent copies and pastes with the same calls. The desktop's clipboard and film
   - chooser captions against capture, Edited, mixed module headings, unavailable and ambiguous rows;
   - copying from a historical preview;
   - each disabled reason;
-  - the filmstrip selection rules in the table above, including set changes;
+  - the filmstrip selection rules in the table above, including Develop folder changes;
   - `⌘V` choosing the open photograph or the selection;
   - Paste from previous with and without a previous photograph;
   - text-field focus keeping the system keys;
   - each request being exactly what an independent JSON client sends.
 - **Rendered.** A `copy-settings` smoke scenario runs in the background bundle over supplied JPEG and RAW fixtures:
-  - copies with `⌘C` and through the chooser, and pastes into the next photograph in the set;
+  - copies with `⌘C` and through the chooser, and pastes into the next photograph in the filmstrip;
   - undoes, pastes from previous, and pastes to a three-photograph filmstrip selection through its confirmation;
   - pastes to a Select selection with a RAW-to-JPEG white balance skip, then opens and reads the report.
 

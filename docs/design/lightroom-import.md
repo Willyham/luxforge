@@ -106,7 +106,7 @@ A mask some of whose adjustments are unsupported keeps the rest. A mask with no 
 
 ### Organization
 
-- **Catalog folders come from events** ([L4](#decided)), as they do when picks are developed ([developing picks](catalog.md#developing-picks)). The import adds the folders of the photographs it brings in to the index first, so their events are computed as Select computes them; each photograph goes into its event's catalog folder, an existing one when the event already has one, and otherwise a new one named as Develop names it ("Konstanz · Sep 2026"). Lightroom's own folder path is kept in the import record and is not a catalog folder.
+- **Catalog folders come from events** ([L4](#decided)), as they do when picks are developed ([developing picks](catalog.md#developing-picks)). The import adds the folders of the photographs it brings in to the index first, so their events are computed as Select computes them; each photograph goes where Develop would file it: the folder an earlier Develop made from its event, with a folder for its day, and otherwise its year, place and day ("2026 › Konstanz › 12 Sep"). Lightroom's own folder path is kept in the import record and is not a catalog folder.
 - **Collections and collection sets** become collections and collection groups of the same names and nesting. Smart collections are listed in the report and not imported ([L10](#decided)).
 - **Picks** carry over by being imported ([L1](#decided)); **rejects** are not imported.
 - **Ratings and colour labels** become plain collections in a group named "From Lightroom" ("★★★★ and above", "Red label") ([L2](#decided)).

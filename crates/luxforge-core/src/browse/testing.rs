@@ -1207,7 +1207,7 @@ impl Fixture {
                     .iter()
                     .map(|at| match frames[*at as usize].item {
                         ViewItem::File(file) => file,
-                        ViewItem::Photo(_) => unreachable!(),
+                        ViewItem::Photo(_) | ViewItem::Input(_) => unreachable!(),
                     })
                     .collect();
                 files.sort();
@@ -1438,6 +1438,7 @@ pub(crate) fn frames(read: &[Item], items: &[Item]) -> (Vec<FrameFacts>, FrameTa
     let frames = items
         .iter()
         .map(|item| FrameFacts {
+            merged: false,
             item: item.item,
             folder: tables.folder(item.folder.clone().into()),
             name: item.name.clone().into(),

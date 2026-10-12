@@ -136,7 +136,7 @@ fn largest_difference(left: &[u8], right: &[u8]) -> u8 {
 /// (`staged`), quantizes a spatial operation's output, or folds a mask in `f64`, and where a
 /// perspective warp's homography is evaluated in `f32`, as the CPU's map is in `f64`; two through a
 /// lens warp's grid.
-fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
+pub(super) fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
     if plan.geometry.needs_grid() {
         2
     } else if plan.geometry.clamps

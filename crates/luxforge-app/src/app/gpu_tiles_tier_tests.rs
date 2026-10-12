@@ -209,7 +209,7 @@ fn presence_fixture() -> image::RgbImage {
 
 /// `candidate` against `reference`, two tiers as the render worker draws them before encoding,
 /// by the preview error statistics over every pixel.
-fn against(candidate: &Raster, reference: &Raster) -> Statistics {
+pub(super) fn against(candidate: &Raster, reference: &Raster) -> Statistics {
     assert_eq!(
         (candidate.width, candidate.height),
         (reference.width, reference.height)

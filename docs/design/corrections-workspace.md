@@ -28,9 +28,9 @@ Boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is als
 
 ## Entering and leaving
 
-Corrections is a mode-strip entry after Mask, with the healing icon and the tooltip "Corrections (Q)". The module's canvas declaration names icon `heal` and shortcut `q`; `Q` is Lightroom's letter, and the [AI editing design](ai-editing.md#the-flow) already proposes it. It can also be entered from the palette, or by expanding the Corrections section from the tools panel.
+Corrections is a mode-strip entry after Mask, with the healing icon and the tooltip "Corrections (Q)". The module's canvas declaration names icon `heal` and shortcut `q`; `Q` is Lightroom's letter, and the [AI editing design](ai-editing.md#the-flow) already proposes it. It can also be entered from the palette.
 
-While the mode is active, the tools panel shows the **Corrections band** under the histogram, expanded, followed by the other sections as usual. This is where the Masks band sits in Mask mode. Outside the mode, the Corrections section sits collapsed in its registry place with the hint `5 corrections`. Pins and outlines are drawn only in the mode, and the corrections render everywhere.
+The mode is a tab of its own, as Mask mode is. While it is active, the tools panel shows the **Corrections band** under the histogram, where the Masks band sits in Mask mode, and the band replaces the module sections: no adjustment applies through a correction, so nothing is drawn under it. Leaving the mode hides the band and brings the sections back. Outside the mode Corrections has no section in the tools panel; the status bar's stale-patch count, the API and the corrections' pixels do not need one. Pins and outlines are drawn only in the mode, and the corrections render everywhere.
 
 The mode is left with `Q`, another mode, or Escape once Escape has nothing else to undo (see [keys](#keys)). Leaving the mode with a stroke held cancels the stroke first.
 
@@ -38,7 +38,7 @@ The mode is left with `Q`, another mode, or Escape once Escape has nothing else 
 
 ### Adding
 
-The brush is always in hand. The cursor is the brush's outer circle with a dashed inner circle at the feather's start and a `+` at its centre.
+The brush is always in hand. The cursor is the brush's outer circle with a dashed inner circle at the feather's start and a `+` at its centre. It is drawn only over the canvas with nothing open over it: over the palette, the Settings sheet or a menu, and anywhere while one of them is open, the pointer is the system's arrow and no brush is drawn, as for the mask brush.
 
 - **Click** (the pointer moves less than 3 pt before release): adds a **spot**, a one-point path at the current size.
 - **Drag**: paints a **stroke**. Capture uses the shared path grid. Release commits one entry, and Escape while the button is down discards the stroke.
@@ -52,6 +52,7 @@ A new correction is selected when it commits, so its source is visible immediate
 ### Setting a source
 
 - **`⌥`-click** (Alt elsewhere) sets the source for new corrections, as in Photoshop. While `⌥` is held, the cursor becomes the source crosshair at brush size, and pins ignore the press. The next press stores the offset from the source to its own position. Following presses keep that offset, which is what cloning a pattern across several strokes needs. While painting, an accent crosshair at the offset follows the brush and shows exactly what is sampled.
+- **A source stays on the photograph.** Every source's whole footprint lies inside the content frame, a stage pixel in from each edge (the footprint's part inside the frame, where it is wider than the frame). A kept offset carried to a press by an edge or a corner turns to the other side on each axis where it would leave, keeping its distance from the destination, and moves inward where the other side does not hold it either; the crosshair and the live source show where it lands. A source placed at a position (the first press after an `⌥`-click, a `⌘`-drag) moves inward just far enough. The core owns the rule (`luxforge_core::fit_correction_source`, `SourceFit::Turn` and `Clamp`) and stores a sent source by it, so the overlay draws the source where it commits. The frame is the content stage the repair reads, before crop and geometry, so a source can lie in a part a crop hides or, at a percentage zoom, outside the view.
 - The band's **Source** control shows **Auto** or **Set** with the offset (`150 px above`). Choosing **Auto**, or pressing Escape with nothing selected and no press held, clears it.
 - Shift is not a source key. Both reference applications use it for straight lines, and it does the same here.
 
@@ -61,15 +62,15 @@ Every correction has a **pin**: a 12 pt white ring on a translucent dark fill. A
 
 The **selected** correction shows:
 
-- **Its outline** (white), the envelope of the painted path at its radius.
+- **Its outline** (white), the edge of the area its coverage covers: the union of the brush's capsules along the stored path, traced over the distance to the path, so a stroke brushed back over itself has the outline of one pass and a hole it encloses is outlined too. The faint footprint of an automatic add fills the same area once.
 - **Its source** (dashed white) with a smaller hollow source pin, and the arrow from source to destination.
 - **A size handle** (white square) on the right of a spot's outline. A stroke is resized from its row.
 
 Drags, each one draft and one entry on release (`Move Heal 5`, `Move Heal 5 source`, `Resize Heal 2`), and a release that moved nothing writes nothing:
 
 - **Pin**: moves the destination by translating its whole path. The source stays where it is and the offset changes, as in Lightroom. This keeps a carefully chosen source in place while the repair is nudged.
-- **Source pin or dashed outline**: moves the source. The correction's source becomes a set source.
-- **Size handle**: changes a spot's radius about its centre.
+- **Source pin or dashed outline**: moves the source, which stops with its whole footprint inside the frame. The correction's source becomes a set source.
+- **Size handle**: changes a spot's radius about its centre; a source the larger footprint would push past the frame moves inward, as it does for the row's Size.
 
 Hit order is the selected correction's handles, then pins from the top of the stack down. A press anywhere else adds. Pins within 9 pt of the pointer catch it, and when two overlap the topmost wins; `↑`/`↓` reach the other. `⌥` and `⌘` presses bypass pins. With pins hidden (`H`), there are no hit targets and every press adds.
 

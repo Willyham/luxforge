@@ -43,7 +43,7 @@ use std::{
 
 /// The linked providers a run serves, in the order a registry lists them, which is the order a
 /// client's tools panel draws their sections in: crop first, then presets (which owns no layer),
-/// Corrections, RAW, the RAW look, Basic, Tone curve, Detail, Presence, the colour mixer, lens
+/// Corrections, RAW, the RAW look, Basic, Presence, Tone curve, Detail, the colour mixer, lens
 /// correction, perspective, the vignette, the controls proof, the candidate proof and AI editing
 /// (`luxforge.ai`, which draws no section). The list is a presentation order, not the pipeline's: a
 /// layer's place in a stack is its effect's declared stage and order, so the look's section sits
@@ -59,9 +59,9 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(RawModule::new()),
         Arc::new(LookModule::new()),
         Arc::new(BasicModule::new()),
+        Arc::new(PresenceModule::new()),
         Arc::new(CurveModule::new()),
         Arc::new(DetailModule::new()),
-        Arc::new(PresenceModule::new()),
         Arc::new(MixerModule::new()),
         Arc::new(LensModule::new()),
         Arc::new(PerspectiveModule::new()),

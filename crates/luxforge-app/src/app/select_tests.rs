@@ -49,6 +49,8 @@ fn summary(count: u32) -> ViewSummary {
         picked: 0,
         in_catalog: 0,
         unavailable: 0,
+        stacks: 0,
+        collapsed: 0,
         groups: GroupLayout {
             days: vec![DayGroup {
                 day: LocalDay::from_ymd(2026, 9, 12),
@@ -224,8 +226,11 @@ fn workspace_keys_respect_empty_develop_set_and_text_capture() {
         ));
         assert!(editor.select_shown(), "holding must not repeat the action");
         let _ = editor.update(press("d", Status::Ignored));
-        assert!(editor.select_shown(), "D needs a folder or loaded set");
-        assert!(editor.status.text.contains("Pick a catalog folder"));
+        assert!(
+            editor.select_shown(),
+            "D needs a folder or an open photograph"
+        );
+        assert_eq!(editor.status.text, "Choose a catalog folder to develop");
         assert!(editor.develop.state.confirm.is_none());
         assert!(!editor.develop.state.planning);
         assert!(
@@ -828,7 +833,7 @@ fn a_stale_select_view_is_evaluated_again_after_a_wake() {
     assert_eq!(editor.select.scroll, reveal);
 
     // While Develop is shown a wake reads nothing until Select is shown again. This scene
-    // supplies no development set, so set up that workspace directly.
+    // chooses no Develop folder, so set up that workspace directly.
     drop(editor.show_develop_workspace());
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
     assert!(!editor.select.check.in_flight());
@@ -886,7 +891,7 @@ fn select_methods_the_owner_refuses_leave_the_workspace_usable() {
     assert!(editor.left_panel_shown());
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Develop)));
     assert!(editor.select_shown());
-    assert!(editor.status.text.contains("Pick a catalog folder"));
+    assert_eq!(editor.status.text, "Choose a catalog folder to develop");
     // An evaluation overtaken by a newer one is dropped.
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
     let _ = editor.update(Message::Select(SelectMessage::Source(ViewSource::Removed)));

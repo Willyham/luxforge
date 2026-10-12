@@ -107,6 +107,31 @@ impl SourceChoice {
             Self::Offset([dx, dy]) => Some([pointer[0] + dx, pointer[1] + dy]),
         }
     }
+
+    /// [`Self::crosshair`] where a press of `radius` at the pointer would sample, on a content
+    /// stage of `content` pixels: a kept offset is carried as the press carries it, inside the
+    /// frame and turned to the other side by an edge ([`luxforge_core::SourceFit::Turn`]).
+    pub(crate) fn crosshair_within(
+        &self,
+        pointer: [f64; 2],
+        radius: f64,
+        content: (u32, u32),
+    ) -> Option<[f64; 2]> {
+        let source = self.crosshair(pointer)?;
+        if !matches!(self, Self::Offset(_)) {
+            return Some(source);
+        }
+        Some(
+            luxforge_core::fit_correction_source(
+                &[pointer],
+                radius,
+                source,
+                content,
+                luxforge_core::SourceFit::Turn,
+            )
+            .unwrap_or(source),
+        )
+    }
 }
 
 /// What a press that caught no target is.
@@ -303,6 +328,8 @@ pub(crate) struct HandleEdit {
     pointer: [f64; 2],
     /// The content stage's `W/H`: a radius is in units of its height on both axes.
     aspect: f64,
+    /// The content stage's size, when known: a dragged source stops inside its frame.
+    frame: Option<(u32, u32)>,
 }
 
 impl HandleEdit {
@@ -313,7 +340,15 @@ impl HandleEdit {
             press,
             pointer: press,
             aspect,
+            frame: None,
         }
+    }
+
+    /// The drag over a content stage of `frame` pixels: a source dragged towards an edge stops
+    /// with its whole footprint inside, as the core stores it ([`luxforge_core::SourceFit::Clamp`]).
+    pub(crate) fn within(mut self, frame: Option<(u32, u32)>) -> Self {
+        self.frame = frame;
+        self
     }
 
     pub(crate) fn drag(&mut self, content: [f64; 2]) {
@@ -359,8 +394,19 @@ impl HandleEdit {
                 ))
             }
             Handle::Source => {
-                let [x, y] = self.held.source?;
-                (dx != 0.0 || dy != 0.0).then_some(HandleChange::Source([x + dx, y + dy]))
+                let held = self.held.source?;
+                let mut source = [held[0] + dx, held[1] + dy];
+                if let Some(frame) = self.frame {
+                    source = luxforge_core::fit_correction_source(
+                        &self.held.points,
+                        self.held.radius,
+                        source,
+                        frame,
+                        luxforge_core::SourceFit::Clamp,
+                    )
+                    .unwrap_or(source);
+                }
+                (source != held).then_some(HandleChange::Source(source))
             }
             Handle::Size => {
                 // By the difference from the press, so a press slightly off the handle never

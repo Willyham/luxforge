@@ -57,7 +57,7 @@ use super::{
 };
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
-    ProxyBounds, ProxyIdentity, ProxyPlan, Recipe, SourceTag,
+    ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
     mask_field::MaskSampling,
     modules::{MAX_MASKED_SPATIAL_LAYERS, Region, Stage},
     render::{Compiled, spatial::prefix_hash, window::WindowPlan},
@@ -855,8 +855,9 @@ pub struct GpuRest {
     /// draws the output stage smaller than it is, are reduced to the view's size as the picture at
     /// rest process-first ([`RestTiles::reduction`]); or why the GPU cannot draw them. Where the
     /// view draws the output stage at its own size or larger, the picture at rest is
-    /// [`Self::view`]'s plan and the tiles are the counts' alone. `None` only from a caller that
-    /// plans no tiles.
+    /// [`Self::view`]'s plan, and at 100% and above the tiles are reduced to the backdrop that
+    /// plan's region is drawn over ([`REST_BACKDROP_BOUNDS`]), the counts' alone where those
+    /// bounds do not reduce the stage. `None` only from a caller that plans no tiles.
     pub tiles: Option<Result<Box<RestTiles>, GpuFallback>>,
 }
 
@@ -938,8 +939,9 @@ pub struct RestTiles {
     /// The output stage the tiles cover.
     pub output: Stage,
     /// Where the view draws the output stage smaller than it is, the reduction of the tiles to the
-    /// view's size, the picture at rest; `None` where it draws the stage at its own size or larger,
-    /// at 100% and above among them, whose tiles are the counts' alone.
+    /// view's size, the picture at rest; at 100% and above, the reduction to the backdrop the
+    /// view's region is drawn over ([`REST_BACKDROP_BOUNDS`]); `None` where neither reduces the
+    /// stage, whose tiles are the counts' alone.
     pub reduction: Option<RestReduction>,
     /// The source every tile's boundary is cut from, and how its texels are held.
     pub source: ProxyIdentity,
@@ -978,6 +980,16 @@ impl RestTiles {
             .then_some(&self.plan.geometry)
     }
 }
+
+/// The display bounds a picture at rest planned at 100% and above is reduced to: the backdrop the
+/// view's region is drawn over wherever the region does not cover the view, as when a pan reveals
+/// an edge before the region's plan lands ([`RestTiles::reduction`]). The same for every region
+/// and magnification, so a pan or a change of zoom keeps the tiles; at most 2048 × 2048, whose
+/// accumulator takes at most 64 MiB.
+pub const REST_BACKDROP_BOUNDS: ProxyBounds = ProxyBounds {
+    width: 2048,
+    height: 2048,
+};
 
 /// `output` fitted to `bounds` when the bounds draw it smaller: its size at the scale the view
 /// draws it at.
@@ -1509,19 +1521,20 @@ pub(crate) fn staged_light_fallback(
 /// says ([`GpuRest`]): every stack has one, the empty stack and a stack of geometry alone included,
 /// since it is planned from the source; and its tiles at full resolution, which the histogram and
 /// clipping counts are reduced from at every view and which at Fit and below 100% are the picture
-/// at rest. `O(layers)` on the catalog owner and `O(tiles × segments)` for its tiles, no pixel
-/// read.
+/// at rest, at 100% and above the backdrop under its region. `O(layers)` on the catalog owner and
+/// `O(tiles × segments)` for its tiles, no pixel read.
 pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRest, Error> {
     let recipe = evaluation.recipe();
     let fit = FitStage::of_view(evaluation, view)?;
     let request = fit.request();
     let planned = planned_preview(evaluation, &fit, recipe, request, None, None)?;
-    // Reduced to the view where it draws the stage smaller than it is; the counts' alone elsewhere.
+    // Reduced to the view where it draws the stage smaller than it is; at 100% and above to the
+    // backdrop the view's region is drawn over; the counts' alone where neither reduces the stage.
     // Within the rest's share beside the view plan, whose slot stays held while the tiles are drawn.
     let sizing = RestSizing::Beside(view_bytes(&planned));
     let reduced = match view {
         GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, sizing)?,
-        GpuView::Region { .. } => None,
+        GpuView::Region { .. } => plan_rest_tiles(evaluation, REST_BACKDROP_BOUNDS, sizing)?,
     };
     let tiles = Some(match reduced {
         Some(tiles) => tiles,
@@ -1861,11 +1874,9 @@ pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<G
     };
     const COLOUR: &[EffectStage] = &[EffectStage::Color, EffectStage::Finish];
     const SPATIAL: &[EffectStage] = &[EffectStage::Restoration, EffectStage::Spatial];
-    // A module that does not apply to the photo's kind (the look on a JPEG) is never dragged.
-    let kind = match evaluation.source() {
-        crate::PreviewSource::Raw { .. } => SourceTag::Raw,
-        crate::PreviewSource::Jpeg(_) => SourceTag::Jpeg,
-    };
+    // A module that does not apply to the photo's kind (the look on a JPEG or a derived photo) is
+    // never dragged.
+    let kind = evaluation.kind();
     // The first drag of each field-patch module of `stages` the stack does not hold unmasked: the
     // stack it is planned over, with the neutral layer its first commit would insert, and where.
     let firsts = |stages: &[EffectStage]| -> Vec<(Recipe, usize)> {

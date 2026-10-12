@@ -56,6 +56,17 @@ impl Shot {
         }
     }
 
+    /// A frame from the same camera that records no capture time, told apart by `serial`.
+    pub(crate) fn undated(serial: &str) -> Self {
+        Self {
+            time: String::new(),
+            offset: None,
+            position: None,
+            serial: Some(serial.to_owned()),
+            ..Self::at("")
+        }
+    }
+
     /// The same frame at another place.
     pub(crate) fn in_place(self, lat: f64, lon: f64) -> Self {
         Self {
@@ -144,8 +155,10 @@ fn exif(shot: &Shot) -> Vec<u8> {
         rationals(0x829a, &[(time_num, time_den)]),
         rationals(0x829d, &[f_number]),
         short(0x8827, iso),
-        ascii(0x9003, &shot.time),
     ];
+    if !shot.time.is_empty() {
+        exif_entries.push(ascii(0x9003, &shot.time));
+    }
     if let Some(offset) = &shot.offset {
         exif_entries.push(ascii(0x9011, offset));
     }
@@ -374,10 +387,14 @@ fn develop_picks_read_refuses_what_cannot_be_developed() {
 
 /// A report rebuilt from recorded changes pairs each photograph a change created or relinked with
 /// the pick it cleared after it — a copy developed in its pick's place is its `used` — and leaves
-/// out a pick linked to a photograph already in the catalog.
+/// out a pick linked to a photograph already in the catalog; each is in the folder it is in now.
 #[test]
 fn develop_picks_recorded_report_pairs_each_photograph_with_its_pick() {
     let (created, copied, relinked) = (AssetId::new(), AssetId::new(), AssetId::new());
+    let (day, other) = (
+        crate::catalog_types::CatalogFolderId::new(),
+        crate::catalog_types::CatalogFolderId::new(),
+    );
     let pick = |path: &str| LibraryChangeRow {
         item: LibraryItem::Pick { path: path.into() },
         before: Some(json!({"path": path})),
@@ -405,32 +422,42 @@ fn develop_picks_recorded_report_pairs_each_photograph_with_its_pick() {
         before: None,
         after: Some(json!({"path": path})),
     };
-    let report = recorded_report(&[
-        part(4, vec![developed(&created, "/a/1.jpg"), pick("/a/1.jpg")]),
-        part(
-            5,
-            vec![
-                developed(&copied, "/copy/2.jpg"),
-                pick("/card/2.jpg"),
-                pick("/a/linked.jpg"),
-                LibraryChangeRow {
-                    item: LibraryItem::AssetSource {
-                        asset_id: relinked.clone(),
+    let report = recorded_report(
+        &[
+            part(4, vec![developed(&created, "/a/1.jpg"), pick("/a/1.jpg")]),
+            part(
+                5,
+                vec![
+                    developed(&copied, "/copy/2.jpg"),
+                    pick("/card/2.jpg"),
+                    pick("/a/linked.jpg"),
+                    LibraryChangeRow {
+                        item: LibraryItem::AssetSource {
+                            asset_id: relinked.clone(),
+                        },
+                        before: Some(json!({"locator": "/old/3.jpg"})),
+                        after: Some(json!({"locator": "/a/3.jpg"})),
                     },
-                    before: Some(json!({"locator": "/old/3.jpg"})),
-                    after: Some(json!({"locator": "/a/3.jpg"})),
-                },
-                pick("/a/3.jpg"),
-            ],
-        ),
-    ]);
+                    pick("/a/3.jpg"),
+                ],
+            ),
+        ],
+        |asset| {
+            Ok(if *asset == relinked {
+                other.clone()
+            } else {
+                day.clone()
+            })
+        },
+    )
+    .unwrap();
     assert_eq!(report.changes, [LibraryChangeSeq(4), LibraryChangeSeq(5)]);
     assert_eq!(
         serde_json::to_value(&report.developed).unwrap(),
         json!([
-            {"path": "/a/1.jpg", "asset_id": created, "outcome": "created"},
-            {"path": "/card/2.jpg", "used": "/copy/2.jpg", "asset_id": copied, "outcome": "created"},
-            {"path": "/a/3.jpg", "asset_id": relinked, "outcome": "relinked"},
+            {"path": "/a/1.jpg", "asset_id": created, "outcome": "created", "folder_id": day},
+            {"path": "/card/2.jpg", "used": "/copy/2.jpg", "asset_id": copied, "outcome": "created", "folder_id": day},
+            {"path": "/a/3.jpg", "asset_id": relinked, "outcome": "relinked", "folder_id": other},
         ])
     );
     assert!(report.failed.is_empty());

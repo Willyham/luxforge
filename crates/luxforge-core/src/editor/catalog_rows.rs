@@ -170,8 +170,8 @@ pub(crate) fn insert_capture(
 }
 
 /// An asset's capture row as header metadata and its place, or none when it has no row. The
-/// thumbnail is the index's, never the catalog's, so it is always absent here.
-#[cfg(test)]
+/// thumbnail is the index's, never the catalog's, so it is always absent here. A merge plans a
+/// catalog photograph's frame from it when the index does not list its file.
 pub(crate) fn capture_of(
     connection: &Connection,
     row: AssetRowId,
@@ -563,24 +563,29 @@ pub(crate) mod library_rows {
         ])
     }
 
-    /// What keeps a photograph from being sent back, as its refusal says it: history beyond its
-    /// Original entry, a named version, or a collection it is in; none for a photograph that holds
-    /// only its Original. Three indexed counts.
+    /// What keeps a photograph from being sent back, as its refusal says it: a derived source it
+    /// holds (a merge's result, which leaves the catalog only by Remove merge or the merge's own
+    /// undo, never by a Develop's), history beyond its Original entry, a named version, or a
+    /// collection it is in; none for a photograph that holds only its Original. Four indexed
+    /// counts.
     pub(crate) fn kept_by(
         connection: &Connection,
         asset: &AssetId,
     ) -> Result<Option<&'static str>, Error> {
-        let (entries, versions, memberships): (i64, i64, i64) = connection
+        let (derived, entries, versions, memberships): (bool, i64, i64, i64) = connection
             .prepare_cached(
-                "SELECT (SELECT count(*) FROM entries WHERE asset_id = ?1),
+                "SELECT EXISTS(SELECT 1 FROM asset_sources WHERE asset_id = ?1),
+                     (SELECT count(*) FROM entries WHERE asset_id = ?1),
                      (SELECT count(*) FROM versions WHERE asset_id = ?1),
                      (SELECT count(*) FROM collection_members m
                          JOIN assets a ON a.row_id = m.asset_row WHERE a.id = ?1)",
             )?
             .query_row([asset.as_str()], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?;
-        Ok(if entries > 1 {
+        Ok(if derived {
+            Some("is a merged photograph")
+        } else if entries > 1 {
             Some("has been edited since it was developed")
         } else if versions > 0 {
             Some("has a named version")
@@ -618,12 +623,14 @@ pub(crate) mod library_rows {
             .execute([id])
     }
 
-    /// Delete the whole catalog record of each of `assets` — its entries' artifact references,
-    /// versions, state row, request log, collapsed entries, collection memberships, capture row,
-    /// entries and asset row — one statement per table for them all, answering how many asset rows
-    /// went. Only emptying Removed calls it, with the artifact references' and collapsed entries'
-    /// permanence lifted for it (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
-    /// recorded of them.
+    /// Delete the whole catalog record of each of `assets` — the merge it is the result of, with
+    /// its provenance, inputs, stack state and claims, its entries' artifact references,
+    /// versions, state row, request log, derived source reference, collapsed entries, collection
+    /// memberships, capture row, entries and asset row — one statement per table for them all,
+    /// answering how many asset rows went. Only emptying Removed calls it, with the artifact and
+    /// asset-source references', the merges' and collapsed entries' permanence lifted for it
+    /// (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
+    /// recorded of them. A merge one of them was an input of keeps its provenance.
     pub(crate) fn delete_photographs(
         tx: &Transaction<'_>,
         assets: &[AssetId],
@@ -631,6 +638,17 @@ pub(crate) mod library_rows {
         let ids = serde_json::to_string(assets)
             .map_err(|error| Error::internal(format!("cannot encode photographs: {error}")))?;
         const THESE: &str = "(SELECT value FROM json_each(?1))";
+        for table in ["stack_claims", "merge_stacks", "merge_inputs"] {
+            tx.prepare_cached(&format!(
+                "DELETE FROM {table}
+                 WHERE merge_id IN (SELECT id FROM merges WHERE result_asset_id IN {THESE})"
+            ))?
+            .execute([&ids])?;
+        }
+        tx.prepare_cached(&format!(
+            "DELETE FROM merges WHERE result_asset_id IN {THESE}"
+        ))?
+        .execute([&ids])?;
         // The entries' references and their collapsed marks, both keyed by entry.
         for table in ["artifact_refs", "collapsed_entries"] {
             tx.prepare_cached(&format!(
@@ -639,7 +657,7 @@ pub(crate) mod library_rows {
             ))?
             .execute([&ids])?;
         }
-        for table in ["versions", "asset_state", "requests"] {
+        for table in ["versions", "asset_state", "requests", "asset_sources"] {
             tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id IN {THESE}"))?
                 .execute([&ids])?;
         }
@@ -654,6 +672,18 @@ pub(crate) mod library_rows {
         Ok(tx
             .prepare_cached(&format!("DELETE FROM assets WHERE id IN {THESE}"))?
             .execute([&ids])?)
+    }
+
+    /// The photograph's name as a person reads it (`assets.file_name`): its original's file name,
+    /// or a merge's result's own name; none for a photograph the catalog does not hold.
+    pub(crate) fn file_name(
+        connection: &Connection,
+        asset: &AssetId,
+    ) -> Result<Option<String>, Error> {
+        Ok(connection
+            .prepare_cached("SELECT file_name FROM assets WHERE id = ?1")?
+            .query_row([asset.as_str()], |row| row.get(0))
+            .optional()?)
     }
 
     /// Whether the catalog holds the photograph `asset`.

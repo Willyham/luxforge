@@ -273,10 +273,7 @@ impl DeferredRead {
                 }))
             }
             PixelRead::Query { id, parameters } => {
-                let kind = match evaluation.source() {
-                    PreviewSource::Jpeg(_) => crate::SourceTag::Jpeg,
-                    PreviewSource::Raw { .. } => crate::SourceTag::Raw,
-                };
+                let kind = evaluation.kind();
                 let read = PixelRead::Query {
                     id: id.clone(),
                     parameters: parameters.clone(),
@@ -354,7 +351,8 @@ impl EditorService {
                 recipe.clone(),
                 None,
             )
-            .with_sensor(sensor),
+            .with_sensor(sensor)
+            .of_kind(asset.source.tag()),
             query: id.into(),
             parameters,
             mask: None,
@@ -478,7 +476,8 @@ impl EditorService {
             recipe.clone(),
             None,
         )
-        .with_sensor(sensor);
+        .with_sensor(sensor)
+        .of_kind(asset.source.tag());
         self.pixel_reads.borrow_mut().deferred = Some(DeferredRead {
             read,
             key,
@@ -583,7 +582,8 @@ impl EditorService {
                 recipe,
                 None,
             )
-            .with_sensor(sensor),
+            .with_sensor(sensor)
+            .of_kind(state.asset.source.tag()),
             query: query_id.to_owned(),
             parameters: checked,
             mask,

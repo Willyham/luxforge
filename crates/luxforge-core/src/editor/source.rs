@@ -7,13 +7,19 @@ use super::{
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Preparation, PreparationNeeds,
     Snapshot,
-    artifacts::{self, ArtifactRead, VerifiedArtifact},
+    artifacts::{
+        self, ArtifactRead, VerifiedArtifact,
+        derived_source::{DerivedSourceRead, read_derived_source},
+    },
     atomic_file::file_error,
     catalog_types::HeaderMetadata,
     export::CaptureMetadata,
     library::availability,
     open_source_bytes, read_bounded_file,
-    source::{PreparedSource, RawPreparation, RawPrepared, SecondDevelopment, decode_source},
+    source::{
+        DerivedPrepared, PreparedSource, RawPreparation, RawPrepared, SecondDevelopment,
+        decode_source,
+    },
 };
 use luxforge_raw::RawSource;
 use rusqlite::params;
@@ -80,7 +86,7 @@ impl SourceKind {
     /// decoding or developing another one.
     pub fn uses_original_development(&self, recipe: &crate::Recipe) -> Result<bool, Error> {
         match self {
-            Self::Jpeg => Ok(true),
+            Self::Jpeg | Self::Derived { .. } => Ok(true),
             Self::Raw { metadata } => Ok(raw_gains(metadata, recipe)? == metadata.as_shot_gains),
         }
     }
@@ -161,8 +167,12 @@ pub(crate) fn original_signature(asset: &AssetRecord) -> Result<SourceSignature,
 impl EditorService {
     /// The signature an asset's original has now. Refused as `source-unavailable`, naming why, when
     /// the file is gone or is no longer the file that was developed ([`availability::refusal`]);
-    /// only then is the catalog read, the volume looked at and the observation recorded.
+    /// only then is the catalog read, the volume looked at and the observation recorded. A derived
+    /// photograph's is its stored source's ([`Self::derived_signature`]): it has no file.
     fn original_signature(&self, asset: &AssetRecord) -> Result<SourceSignature, Error> {
+        if let Some(interpretation) = asset.source.derived() {
+            return self.derived_signature(asset, interpretation);
+        }
         current_signature(asset)
             .map_err(|changed| availability::refusal(&self.connection, asset, changed))
     }
@@ -188,6 +198,13 @@ impl FilePreparation {
                 metadata: metadata.0.as_ref().clone(),
                 gains: raw_gains(metadata, recipe)?,
             }),
+            // A derived source has no original file: its preparation reads its stored source
+            // ([`SourceWork::Derived`]).
+            SourceKind::Derived { .. } => {
+                return Err(Error::internal(
+                    "a derived photograph has no original file to prepare",
+                ));
+            }
         };
         Ok(Self {
             asset_id: asset.id.clone(),
@@ -315,6 +332,17 @@ pub(crate) enum SourceWork {
         /// owner can plan its first-open actions without waiting.
         first_open: Option<Arc<crate::ModuleRegistry>>,
     },
+    /// Read and verify a derived photograph's stored source into one allocation of linear planes
+    /// (`crate::artifacts::derived_source::read_derived_source`), its fingerprint, the source's
+    /// identity, checked against the photograph's when it is adopted. Nothing else is read: no
+    /// file of an input it was made from.
+    Derived {
+        asset_id: AssetId,
+        read: Box<DerivedSourceRead>,
+        /// As [`Self::File`]'s: for a photograph whose head has never moved, the registry whose
+        /// first-open readiness the worker awaits.
+        first_open: Option<Arc<crate::ModuleRegistry>>,
+    },
     /// Redevelop the cached RAW mosaic at new gains.
     Develop(Box<RawDevelopment>),
     /// The asset's source is already prepared; only its artifacts need reading.
@@ -351,6 +379,7 @@ impl Completion {
 /// What one source job prepared, for [`EditorService::complete_preparation`] to adopt.
 pub(crate) enum Prepared {
     File(PreparedFile, Vec<VerifiedArtifact>),
+    Derived(AssetId, DerivedPrepared, Vec<VerifiedArtifact>),
     Develop(RawDevelopment, RawPrepared, Vec<VerifiedArtifact>),
     Artifacts(AssetId, Vec<VerifiedArtifact>),
 }
@@ -386,10 +415,13 @@ impl SourceWork {
         })
     }
 
-    /// Whether the work allocates a RAW's float planes, so it waits for earlier planes to be
-    /// released first. Artifact work allocates none.
+    /// Whether the work allocates a source's planes — a RAW's float planes or a derived source's —
+    /// so it waits for earlier planes to be released first. Artifact work allocates none.
     pub(crate) fn decodes(&self) -> bool {
-        matches!(self, Self::File { .. } | Self::Develop(_))
+        matches!(
+            self,
+            Self::File { .. } | Self::Derived { .. } | Self::Develop(_)
+        )
     }
 
     /// Whether the work redevelops the cached mosaic, so the development it replaces may be
@@ -432,6 +464,21 @@ impl SourceWork {
                 }
                 Ok(Prepared::File(prepared, read()?))
             }
+            Self::Derived {
+                asset_id,
+                read: source,
+                first_open,
+            } => {
+                let linear = read_derived_source(&source, cancel)?;
+                if let Some(registry) = first_open {
+                    registry.await_first_open();
+                }
+                let prepared = DerivedPrepared {
+                    linear,
+                    capture: Arc::default(),
+                };
+                Ok(Prepared::Derived(asset_id, prepared, read()?))
+            }
             Self::Develop(request) => {
                 let developed = RawPrepared::develop(
                     request.sensor.clone(),
@@ -464,14 +511,16 @@ impl SourceWork {
 }
 
 impl Prepared {
-    /// The developed RAW planes this preparation allocated, if any, so the source worker can hold
-    /// them against its memory gate.
+    /// The developed RAW planes or the derived source's planes this preparation allocated, if any,
+    /// so the source worker can hold them against its memory gate.
     pub(crate) fn linear_mut(&mut self) -> Option<&mut crate::LinearImage> {
         let raw = match self {
             Self::File(file, _) => match &mut file.source {
                 PreparedSource::Raw(raw) => raw,
                 PreparedSource::Jpeg(_) => return None,
+                PreparedSource::Derived(derived) => return Some(&mut derived.linear),
             },
+            Self::Derived(_, derived, _) => return Some(&mut derived.linear),
             Self::Develop(_, raw, _) => raw,
             Self::Artifacts(..) => return None,
         };
@@ -639,10 +688,12 @@ impl EditorService {
         };
         let capture = cached.then(|| {
             let cache = self.source_cache.borrow();
-            match &cache.as_ref().expect("verified cached source").source {
-                PreparedSource::Jpeg(source) => source.capture.information(),
-                PreparedSource::Raw(source) => source.capture.information(),
-            }
+            cache
+                .as_ref()
+                .expect("verified cached source")
+                .source
+                .capture()
+                .information()
         });
         Ok(json!({
             "asset_id": asset_id,
@@ -747,10 +798,18 @@ impl EditorService {
     /// memory gate ([`SecondDevelopment::evict`]); every other one is dropped. Preview jobs may
     /// still hold the old Arc; the worker's memory gate waits for those to finish.
     pub(crate) fn evict_development(&self, retain: bool) {
-        if let Some(cached) = self.source_cache.borrow_mut().as_mut()
-            && let PreparedSource::Raw(raw) = &mut cached.source
+        let mut cache = self.source_cache.borrow_mut();
+        match cache
+            .as_mut()
+            .map(|cached| (&mut cached.source, &mut cached.second))
         {
-            cached.second.evict(raw.gains, &mut raw.linear, retain);
+            Some((PreparedSource::Raw(raw), second)) => {
+                second.evict(raw.gains, &mut raw.linear, retain);
+            }
+            // A derived source's planes are the whole source: it goes, and is read again when it
+            // is next asked for.
+            Some((PreparedSource::Derived(_), _)) => *cache = None,
+            Some((PreparedSource::Jpeg(_), _)) | None => {}
         }
     }
 
@@ -840,6 +899,14 @@ impl EditorService {
                         == *wanted
                 }) || cached.second.matches_identity(wanted)
             }
+            PreparedSource::Derived(derived) => {
+                crate::PreviewSource::Raw {
+                    image: derived.linear.clone(),
+                    settings: crate::LinearSettings::default(),
+                }
+                .identity()
+                    == *wanted
+            }
         })
     }
 
@@ -860,14 +927,27 @@ impl EditorService {
         let reads = self.artifact_reads(&needs.artifacts)?;
         let Some(state) = self.cached_state(asset_id)? else {
             let state = self.state(asset_id)?;
-            let target = self.file_preparation(asset_id, Some(&needs.entry_id))?;
-            let mut work = SourceWork::file_or_read(&state.asset.locator, target, read)?;
             // A photograph whose head has never moved is asked for its first-open actions when
             // this completes ([`Self::first_open`]); the worker waits for what they read.
-            if state.revision == 0
-                && let SourceWork::File { first_open, .. } = &mut work
+            let first_open = (state.revision == 0).then(|| self.registry.clone());
+            if state.asset.source.derived().is_some() {
+                // The entry is admitted as one of the photograph's kind, as a file's is, before
+                // its stored source is read.
+                self.saved_entry(asset_id, Some(&needs.entry_id))?;
+                let work = SourceWork::Derived {
+                    asset_id: asset_id.clone(),
+                    read: Box::new(self.derived_source_read(asset_id)?),
+                    first_open,
+                };
+                return Ok(Preparing::Work(work, reads));
+            }
+            let target = self.file_preparation(asset_id, Some(&needs.entry_id))?;
+            let mut work = SourceWork::file_or_read(&state.asset.locator, target, read)?;
+            if let SourceWork::File {
+                first_open: waits, ..
+            } = &mut work
             {
-                *first_open = Some(self.registry.clone());
+                *waits = first_open;
             }
             return Ok(Preparing::Work(work, reads));
         };
@@ -915,6 +995,9 @@ impl EditorService {
     pub(crate) fn complete_preparation(&mut self, prepared: Prepared) -> Result<Completion, Error> {
         let (completed, verified) = match prepared {
             Prepared::File(file, verified) => (self.adopt_original(file)?, verified),
+            Prepared::Derived(asset_id, derived, verified) => {
+                (self.adopt_derived(&asset_id, derived)?, verified)
+            }
             Prepared::Develop(request, developed, verified) => (
                 Completion::of(self.install_development(&request, developed)?),
                 verified,
@@ -975,6 +1058,53 @@ impl EditorService {
             asset_id: state.asset.id.clone(),
             signature,
             source,
+            second: SecondDevelopment::default(),
+        }));
+        if state.revision != 0 {
+            return Ok(Completion::of(state));
+        }
+        let first_open = self.first_open(&state.asset.id);
+        let state = if first_open.iter().any(|report| report.entry_id.is_some()) {
+            self.state(&state.asset.id)?
+        } else {
+            state
+        };
+        Ok(Completion { state, first_open })
+    }
+
+    /// Adopt a derived photograph's source into the verified cache once a worker has read and
+    /// verified its stored objects: the planes must be the source the photograph records, by
+    /// identity and dimensions, and its manifest still there ([`Self::derived_signature`]). A
+    /// photograph whose head has never moved then has its first-open actions committed, as an
+    /// original's does ([`Self::adopt_original`]).
+    fn adopt_derived(
+        &mut self,
+        asset_id: &AssetId,
+        prepared: DerivedPrepared,
+    ) -> Result<Completion, Error> {
+        let state = self.state(asset_id)?;
+        let Some(interpretation) = state.asset.source.derived() else {
+            return Err(Error::incompatible(
+                "the photograph is no longer a derived one",
+            ));
+        };
+        let linear = &prepared.linear;
+        let size = (linear.width(), linear.height());
+        if linear.fingerprint() != interpretation.source_id.as_str()
+            || state.asset.fingerprint != interpretation.source_id.as_str()
+            || size != (interpretation.width, interpretation.height)
+            || size != (state.asset.width, state.asset.height)
+        {
+            return Err(Error::incompatible(format!(
+                "derived source {} is not the source its photograph records",
+                interpretation.source_id
+            )));
+        }
+        let signature = self.derived_signature(&state.asset, interpretation)?;
+        self.source_cache.replace(Some(CachedSource {
+            asset_id: state.asset.id.clone(),
+            signature,
+            source: PreparedSource::Derived(prepared),
             second: SecondDevelopment::default(),
         }));
         if state.revision != 0 {
@@ -1122,7 +1252,7 @@ pub(crate) fn original_recipe(
             )?;
             Some(metadata)
         }
-        SourceKind::Jpeg => None,
+        SourceKind::Jpeg | SourceKind::Derived { .. } => None,
     };
     let context = crate::OriginalContext {
         source: source.tag(),
@@ -1213,11 +1343,11 @@ impl EditorService {
         recipe: &crate::Recipe,
     ) -> Result<PreparedSource, Error> {
         let signature = self.original_signature(asset)?;
-        let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
-        let max_source_bytes = if raw_source {
-            luxforge_raw::MAX_SOURCE_BYTES as u64
-        } else {
-            crate::source::MAX_JPEG_BYTES as u64
+        let max_source_bytes = match &asset.source {
+            SourceKind::Raw { .. } => luxforge_raw::MAX_SOURCE_BYTES as u64,
+            SourceKind::Jpeg => crate::source::MAX_JPEG_BYTES as u64,
+            // Bounded by the stored shape's own limits, which its reader enforces.
+            SourceKind::Derived { .. } => u64::MAX,
         };
         if signature.byte_len > max_source_bytes {
             return Err(Error::source_unavailable(
@@ -1304,6 +1434,8 @@ fn validate_lens_optics(
         let ledger = match &asset.source {
             SourceKind::Jpeg => crate::SourceOptics::jpeg_ledger(),
             SourceKind::Raw { metadata } => luxforge_raw::optical_ledger(metadata),
+            // Its corrections were baked when it was made; nothing corrects them again.
+            SourceKind::Derived { .. } => crate::SourceOptics::derived_ledger(),
         };
         if ledger.distortion.status == OpticalStatus::Applied {
             return Err(Error::incompatible(format!(
@@ -1528,7 +1660,7 @@ fn development_gains(
     recipe: &crate::Recipe,
 ) -> Result<Option<[f32; 3]>, Error> {
     match &asset.source {
-        SourceKind::Jpeg => Ok(None),
+        SourceKind::Jpeg | SourceKind::Derived { .. } => Ok(None),
         SourceKind::Raw { metadata } => raw_gains(metadata, recipe).map(Some),
     }
 }
@@ -2135,7 +2267,7 @@ mod tests {
         };
         let metadata = match &state.asset.source {
             SourceKind::Raw { metadata } => metadata.clone(),
-            SourceKind::Jpeg => panic!("a RAW asset"),
+            SourceKind::Jpeg | SourceKind::Derived { .. } => panic!("a RAW asset"),
         };
         // A temperature drafted from As shot keeps the camera's as-shot tint.
         let [_, as_shot_tint] =

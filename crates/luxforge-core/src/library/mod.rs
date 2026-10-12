@@ -30,6 +30,8 @@
 //!   sending back.
 //! - `batch.rs`: applying a preset to, and exporting, many photographs as one job.
 //! - `remove.rs`: removing photographs to Removed, putting them back, and emptying Removed.
+//! - `merge.rs`: publishing a merge's result with its provenance and stack, the stack's state as a
+//!   journal item, one active stack per input, exact-match reuse.
 pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;
@@ -66,6 +68,10 @@ pub(crate) mod missing;
 pub(crate) mod remove;
 #[cfg(test)]
 mod remove_tests;
+
+// Merges.
+/// Merge publication, provenance, stacks and their lifecycle.
+pub(crate) mod merge;
 
 // Batch preset and export.
 /// Batch preset and export: what both share, the naming, and the report as it grows.

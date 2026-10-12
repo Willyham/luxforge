@@ -106,7 +106,8 @@ pub(crate) struct Observed {
 }
 
 /// The photographs `assets` names, with what the catalog records of each and its volume, grouped
-/// by volume. On the owner: one indexed read per photograph.
+/// by volume, leaving out merged photographs, which have no original to look at. On the owner: one
+/// indexed read per photograph.
 pub(crate) fn plan(
     connection: &Connection,
     assets: &[(AssetId, AssetRowId)],
@@ -114,7 +115,7 @@ pub(crate) fn plan(
     let mut statement = connection.prepare_cached(
         "SELECT a.locator, a.source_folder, a.volume_id, a.file_identity, a.byte_len,
              a.fingerprint, a.availability, v.mount_point, v.label, v.removable, v.platform_id,
-             v.last_seen_ms
+             v.last_seen_ms, a.source_kind
          FROM assets a LEFT JOIN volumes v ON v.id = a.volume_id WHERE a.row_id = ?1",
     )?;
     let mut plan = Plan::default();
@@ -135,6 +136,7 @@ pub(crate) fn plan(
                     row.get::<_, Option<bool>>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, String>(12)?,
                 ))
             })
             .optional()?
@@ -152,7 +154,13 @@ pub(crate) fn plan(
             removable,
             platform_id,
             last_seen_ms,
+            kind,
         ) = read;
+        // A merged photograph's derived locator names no file: there is nothing to look at, and
+        // its availability is the merge's durable source's, never an original's.
+        if kind == "derived" {
+            continue;
+        }
         let volume_id = VolumeId::parse(volume_id)?;
         let volume = match (mount_point, label, removable, last_seen_ms) {
             (Some(mount_point), Some(label), Some(removable), Some(last_seen_ms)) => Some(Volume {

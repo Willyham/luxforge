@@ -15,7 +15,9 @@ use crate::app::{
     select::session_now,
     tasks::{call, owner_task, request},
 };
-use crate::state::select::{Block, PickFilter, QueryChange, SelectMenu, Shown, SourcePress};
+use crate::state::select::{
+    Block, MomentAction, PickFilter, QueryChange, SelectMenu, Shown, SourcePress,
+};
 use iced::Task;
 use luxforge_core::{MutationRequest, catalog_types::RowItem};
 use luxforge_evidence::{
@@ -86,6 +88,12 @@ impl Editor {
                 );
                 self.await_select(Task::batch([task, scrolled]))
             }
+            SelectStep::Merge {
+                position,
+                last_settings,
+            } => self.merge_step(position, last_settings),
+            SelectStep::MergePreview(step) => self.merge_preview_step(step),
+            SelectStep::Merged => self.merged_step(),
         }
     }
 
@@ -199,7 +207,12 @@ impl Editor {
             .blocks
             .iter()
             .filter_map(|block| match block {
-                Block::Moment { index, action, .. } => Some((*index, action.is_some())),
+                Block::Moment { index, actions, .. } => Some((
+                    *index,
+                    actions
+                        .iter()
+                        .any(|action| matches!(action, MomentAction::PickAll(_))),
+                )),
                 _ => None,
             })
             .enumerate()
@@ -344,6 +357,11 @@ impl Editor {
                         "position {position} is a developed photograph, not a file to pick"
                     ));
                 }
+                Some(RowItem::Input { .. }) => {
+                    return self.fail_step(format!(
+                        "position {position} is an HDR stack's original outside the view"
+                    ));
+                }
                 None => {
                     return self.fail_step(format!("position {position}'s row has not been read"));
                 }
@@ -416,6 +434,7 @@ impl Editor {
             Err(error) => json!({ "owner_browse_error": error }),
         };
         self.note_step(owner);
+        self.note_step(self.owner_merges());
         if std::mem::take(&mut self.select.evidence_indexed) {
             let indexed = match call(&self.owner, self.client, "index.folders", json!({})) {
                 Ok((folders, _)) => json!({ "owner_indexed": folders }),
@@ -424,5 +443,22 @@ impl Editor {
             self.note_step(indexed);
         }
         self.settle_step(Settle::Select, by);
+    }
+
+    /// The owner's own answers a merge's frames are checked against: every HDR merge on the
+    /// activity board, running or recent, by job (`activity.list`).
+    pub(super) fn owner_merges(&self) -> Value {
+        let merges = match call(&self.owner, self.client, "activity.list", json!({})) {
+            Ok((board, _)) => json!(
+                ["active", "recent"]
+                    .into_iter()
+                    .flat_map(|list| board[list].as_array().cloned().unwrap_or_default())
+                    .filter(|entry| entry["kind"] == "merge.hdr")
+                    .map(|entry| json!({"job_id": entry["job_id"], "outcome": entry["outcome"]}))
+                    .collect::<Vec<_>>()
+            ),
+            Err(error) => json!({ "error": error }),
+        };
+        json!({ "owner_merge_jobs": merges })
     }
 }

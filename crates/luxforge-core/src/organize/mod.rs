@@ -26,7 +26,7 @@ mod names;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use names::Gazetteer;
+pub(crate) use names::{Gazetteer, user_folder_name};
 
 /// Sort `frames` into the order a view shows them under `grouping`, earliest first, or the reverse
 /// when `descending`; undated frames come last either way, by folder and file name.
