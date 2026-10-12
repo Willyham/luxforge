@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Define the update feed and per-release update records, and build their signing and feed generation in xtask.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Add release/update.json with the feed base URL https://api.luxforge.app/v1/updates/ (the backend API route, beside /v1/usage/batches) and the update public key (absent until the operator commits it); it is the single source for the macOS SUPublicEDKey and the Linux compiled constant.",
