@@ -243,7 +243,7 @@
     {
       "id": "TASK-005",
       "description": "Build the Linux payload updater and its desktop port.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -424,7 +424,7 @@
     {
       "id": "TASK-008",
       "description": "Offer to move Luxforge into Applications on macOS.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002"
       ],
