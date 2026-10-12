@@ -148,7 +148,7 @@ pub(crate) fn develop_and_prepare(
 ) -> (AssetId, String) {
     use crate::app::tasks::{developed_photograph, prepare_photograph, queue_import};
     let queued = queue_import(owner, client, fixture).expect("a Develop");
-    let asset = developed_photograph(owner, client, queued.job_id()).expect("the Develop");
+    let (asset, _) = developed_photograph(owner, client, queued.job_id()).expect("the Develop");
     let job = prepare_photograph(owner, client, &asset).expect("a preparation");
     (asset, job)
 }
@@ -287,6 +287,7 @@ pub(crate) fn refresh_for(
     truncated: bool,
 ) -> Refresh {
     Refresh {
+        folder: None,
         capture: None,
         state: EditorState {
             asset: AssetRecord {

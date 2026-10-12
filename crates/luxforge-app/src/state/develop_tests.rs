@@ -318,6 +318,7 @@ fn developed(name: &str, asset: &AssetId, used: Option<&str>) -> DevelopedPick {
         used: used.map(PathBuf::from),
         asset_id: asset.clone(),
         outcome: DevelopOutcome::Created,
+        folder_id: CatalogFolderId::new(),
     }
 }
 
