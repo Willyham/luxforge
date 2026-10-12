@@ -2353,6 +2353,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "luxforge-update"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "memmap2",
+ "ring",
+ "roxmltree",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "luxforge-watch"
 version = "0.0.0"
 dependencies = [
