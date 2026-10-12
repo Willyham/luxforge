@@ -583,7 +583,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][2]["options"][1],
+            text["flags"][3]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -622,7 +622,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][2]["id"], "proof.choice",
+            listed["flags"][3]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -630,7 +630,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][2]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][3]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",
