@@ -96,14 +96,14 @@ Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#
 
 ### Commands
 
-The preview is programmable. The desktop sends only these requests.
+The preview is programmable. The desktop sends only these requests. They are built in the core for HDR, as the [HDR design](hdr-merge.md#the-merge-preview) describes; a panorama preview is `not-ready` until its provider exists, and the desktop sheet is not built yet.
 
 | Method | Contract |
 | --- | --- |
-| `merge.preview` | `kind`, targets, the kind's options and an optional `plan_id`. Answers a cancellable `merge-preview` job whose result is `{preview_id, kind, path, width, height, diagnostics, overlays, output: {width, height, scale, source_bytes}, refusal?}`. `path` is a display-referred JPEG under the catalog's preview cache. `overlays` is data in the picture's coordinates: motion regions with their source input and exposure (HDR), and the covered region, crop rectangle and frame quadrilaterals (panorama). A client draws them, so an agent reads the same facts. |
-| `merge.preview-update` | `preview_id` and changed options. Answers a new picture and data from the retained proxies, as a short job. Stale updates for the same preview are cancelled. |
-| `merge.preview-close` | Discards a preview and its spool. |
-| `merge.create` | Accepts `preview_id`. When given, the job starts from the preview's spool and registration, its options must equal the preview's latest, and a stale `preview_id` is `conflict`. Without it, the job behaves as today. |
+| `merge.preview` | `kind`, targets, the kind's options and an optional `plan_id`. Answers a cancellable `merge-preview` job whose result is `{preview_id, revision, kind, options, path?, width, height, diagnostics?, overlays?, output?: {width, height, scale, source_bytes}, refusal?}`; a refused revision has no picture, diagnostics or output. `path` is a display-referred JPEG under the catalog's preview cache. `overlays` is data in the picture's coordinates: motion regions with their source input and exposure (HDR), and the covered region, crop rectangle and frame quadrilaterals (panorama). A client draws them, so an agent reads the same facts. |
+| `merge.preview-update` | `preview_id` and the kind's full new options. Answers the next revision from the retained proxies, as a short job. Stale updates for the same preview are cancelled. |
+| `merge.preview-close` | Discards a preview, its spool and its pictures, answering `{preview_id, closed}`. |
+| `merge.create` | Accepts `preview_id`. When given, the job starts from the preview's spool and registration, reading and aligning nothing, and equals a merge without a preview bit for bit. Its options must equal the preview's latest revision's, and a stale `preview_id` is `conflict`. A preview still preparing is continued. Without it, the job behaves as today. |
 
 Each client has at most one open preview; opening another closes the first. A preview occupies the merge lane while it reads and aligns, like a merge. Once ready, its spool stays on disk, counted against the kind's temporary-disk ceiling, until it is merged, closed, or idle for 30 minutes, or until its client disconnects. Its job and spool are cleaned up as a merge's are, including after a restart. A preview never publishes anything and is not a library change.
 
@@ -231,7 +231,7 @@ No component holds level 0 whole. The measurement task reports the real peaks; n
 
 HDR's boundary was built for one kind. A panorama needs these changes. They also change the [HDR design](hdr-merge.md)'s stored shapes and commands, which describe them.
 
-The kinds, stack members, provenance, catalog format, commands, lane, ceilings, usage exemption and desktop words below are implemented. This build registers HDR's provider alone (`crates/luxforge-core/src/merge/providers.rs`): schemas list `hdr` as the only `kind`, a panorama request is refused `not-ready` naming `luxforge.panorama`, there are no panorama options, and a panorama merge's provenance, which no build writes yet, is read as `incompatible` while browse still shows its stack.
+The kinds, stack members, provenance, catalog format, commands, lane, ceilings, usage exemption and desktop words below are implemented, and so are the [merge preview](#the-merge-preview)'s commands for HDR. This build registers HDR's provider alone (`crates/luxforge-core/src/merge/providers.rs`): schemas list `hdr` as the only `kind`, a panorama request is refused `not-ready` naming `luxforge.panorama`, there are no panorama options, and a panorama merge's provenance, which no build writes yet, is read as `incompatible` while browse still shows its stack.
 
 - **Kinds.** `MergeKind` gains `Panorama` (`"panorama"`). `merges.kind` accepts it, and browse reads it rather than refusing it as `incompatible`.
 - **Stack members.** `merge_inputs.offset_ev` becomes nullable: HDR members keep their EV offset, while panorama members have none and carry their position in the stack's order. Browse's reference ordinal comes from the provenance's reference, not from the zero offset.
