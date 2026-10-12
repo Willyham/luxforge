@@ -108,9 +108,9 @@ RAW editing is implemented with initial native M4 verification. Its [design](../
 - A plan holds its own behavior, context, acceptance and tests. Link Markdown specifications or code for context and describe required capabilities by name. Never link another task plan or mention its IDs.
 - Keep IDs stable during routine updates. Statuses describe actual work; completing a task needs the evidence its acceptance asks for. A planning edit never completes implementation.
 - Keep context concise and current. No planning-change logs.
-- A task's `test_strategy.commands` are its acceptance checks, run once when the task is complete, not after each step. Put timing commands in the task that completes the feature, or in a task whose subject is performance, so a plan measures once.
+- A task's `test_strategy.commands` are its acceptance checks, run once when the task is complete, not after each step. Put timing commands in the task that completes the feature, or in a task whose subject is performance, so a plan measures once. When several agents' work is integrated, a task's updates to the shared documents (feature status, the user guide, the roadmap, the development guide and this README) are the integrator's, made once per feature from the implementers' hand-offs, even when the task's acceptance names them ([agent quickstart](../docs/engineering/agent-quickstart.md#docs)).
 - Create or update plans for substantial coordinated work, or when asked. Research, reviews, diagnostics, documentation maintenance and small contained changes do not need a plan.
-- A new plan goes in its area folder. When a validated plan gains a `ready` task, or its last ready task starts or finishes, update the roadmap's [ready to implement](../docs/plan.md#ready-to-implement) list in the same change.
+- A new plan goes in its area folder. When a validated plan gains a `ready` task, or its last ready task starts or finishes, update the roadmap's [ready to implement](../docs/plan.md#ready-to-implement) list in the same change, or at integration when an integrator merges the work.
 - Completed plans are deleted, not archived. Their outcome lives in the specs and feature status.
 
 ## Validation

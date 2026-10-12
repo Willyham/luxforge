@@ -233,7 +233,8 @@ timing run elsewhere on the host. Run each check where its answer can change wha
 | Stage | Run |
 | --- | --- |
 | Editing | The tests for the code you are changing: `cargo test -p CRATE FILTER`, narrowed to one binary with `--lib` or `--test NAME`. For a rendered change, the one smoke scenario that covers it, against a current release build. Nothing whole-suite and nothing timed. |
-| Change complete: code, tests and docs | `verify --tier quick`, once, before handing off. After a failure, fix it and rerun only what failed (the named test or the one scenario), then `quick` once more. |
+| Change complete: code, tests and docs | `fmt --all`, `xtask check-repository` and Clippy on each crate you changed (`clippy --locked -p CRATE --all-targets -- -D warnings`), then `verify --tier quick`, once, before handing off. After a failure your change caused, fix it and rerun only what failed (the named test or the one scenario), then `quick` once more. A failure it cannot have caused is reported as failed, by name, and neither investigated nor rerun. |
+| Documentation only | No tier: `xtask check-repository`, `xtask lint` and `fmt --all -- --check`. |
 | Integration point | `rendered` for a change touching rendering or the UI; `timing` for a change under `crates/` that can affect cost. |
 | Milestone claim | `full`, with `--manifest`. |
 | Release | `gpu-qualification` with `--manifest`, the release gate: `full` runs it after its scenarios. |
@@ -397,33 +398,9 @@ and a re-exported procedural macro reading a changed, untracked file. Run them w
 cache wrapper or policy, followed by the finished-work quick tier. Linux uses the same wrapper
 with its own native compilers; Windows uses ordinary Cargo pending a native wrapper check.
 
-Local Apple-silicon build measurements, Rust 1.94.0, dev opt-level 1, offline dependency sources,
-fresh target directories, `cargo build --locked -p luxforge-raw --timings`:
-
-| Configuration | Build wall time | RAW native build-script time |
-| --- | ---: | ---: |
-| Serial native compilation, no compiler cache | 82.2 s | 72.1 s |
-| Parallel native compilation, no compiler cache | 18.7 s | 13.1 s |
-| Parallel compilation, initially empty sccache | 27.0 s | 17.3 s |
-| Parallel compilation, separate checkout, fully populated sccache | 9.5 s | 4.8 s |
-
-These are individual local observations on a shared host, not quiet-host distributions or
-whole-workspace/CI speed claims.
-The cache experiment used two source-identical checkout directories, their own empty `target/`
-directories, sccache 0.18.0, `SCCACHE_BASEDIRS` for both roots and native
-`-ffile-prefix-map`/`-fdebug-prefix-map` flags mapping each root to the same path. The first cross-checkout build took
-9.5 s with 176 C/C++ and 55 Rust cache hits; after fully populating the cache, a fresh rebuild in
-that second checkout hit all 176 C/C++, 61 Rust and one assembly compilations. Build scripts,
-uncacheable compilations and workspace incremental compilation still ran. Cache overhead makes
-the first cached build slower; reuse is the benefit.
-
-The build-scheduling change adds no original reads, hashes or decodes, runtime buffers, point
-renders, owner/UI work, desktop messages, timers, polls or subscriptions. Rendering code and
-arithmetic flags are unchanged; existing RAW exact-buffer tests verify the resulting build.
-No 24 MP editor runtime comparison was made or runtime speed gain claimed: the measured cost is
-compilation. The experimental compiler cache was external to the editor, keyed by compiler, inputs and
-flags with that experimental path normalization, with a 10 GiB disk bound; the fully populated
-RAW experiment retained 55 MiB, with its hit counts and rebuild cost above.
+Parallel native compilation and the compiler cache stay because they cut the RAW crate's build
+time. Judge a change to either by building `cargo build --locked -p luxforge-raw --timings` in
+fresh target directories before and after.
 
 ### The build volume and build slots
 
@@ -704,18 +681,9 @@ the components either way: an ordinary failure when any component failed or time
 The command never opens a frame. Read a capture as an image only for a failed scenario or a design
 review.
 
-Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
-shared with other work at one-minute load averages between 4 and 13: `quick`, with nothing to
-rebuild, 3.9 to 6.5 s at load averages of 5 to 19, of which the test binaries are 2.3 to 3.5 s; before
-the tests [skipped the disk flush](#tests-skip-the-disk-flush) it was 6.8 to 7.3 s at load averages
-of 1 to 2. The whole `check` took 33 s at a load average around 35. `rendered` a measured 27-scenario workload with 36 editor launches taking 28 s of wall clock
-through the pool against 82 s of their own summed elapsed time, the four `mask-*` scenarios the
-longest of them at 4 to 12 s each; `timing` 70 s with the default sample counts, of which `measure` is
-48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
-manifest adds one `raw-editor` smoke run per manifest source, two launches each, plus one `raw-panel`
-smoke run per manifest source and one RAW `performance` smoke run over the first source. On a run whose
-`measure` started at a load average of 8.33, that component's rows and target verdicts came back
-`unreliable` while the two components below the threshold still gave verdicts.
+Every run's `summary.json` records each component's elapsed time; read a tier's cost there. With
+nothing to rebuild, `quick` takes about 50 s on the owner's M4. The core's and the desktop's
+library test binaries bound it.
 
 ### Rendered scenario cost: why every scenario stays in `rendered`
 
@@ -1774,13 +1742,8 @@ Rules for any UI or image check:
 
 ## Agent loop
 
-1. Read the applicable spec and task, including any owner-decision gates.
-2. Run `doctor` once in a new checkout or worktree.
-3. While implementing, run the tests for the code you are changing and nothing whole-suite or timed, as [when to verify](#when-to-verify) sets out.
-4. When the change is complete, run `verify --tier quick` once. For UI or image changes, also run the smoke scenarios the change touches or the `rendered` tier, and inspect the captures as images; for a change to what the GPU draws, run `gpu-qualification` over the stacks it touches.
-   On macOS, use the background harness or `develop --background` for every automated GUI launch; use the live API and renderer readbacks to drive and inspect it. Only perform foreground interaction checks when the owner explicitly requests them.
-5. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and, once the feature is complete, run `editor-performance` on a generated 24 MP input in release, or the `timing` tier.
-6. Report exact commands, artifact paths, results and unsupported cases. Update task and feature status only when acceptance is met.
+The [agent quickstart](agent-quickstart.md) is the loop: builds, the edit-loop tests, the checks
+before hand-off, doc ownership and the hand-off report.
 
 ## Packaging
 
