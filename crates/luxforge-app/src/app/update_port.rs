@@ -1,14 +1,22 @@
 //! The desktop's update port (`docs/design/auto-update.md`): which mechanism a launch gets, and
 //! the Linux payload updater's port, [`LinuxPayloadPort`], which carries out the core's `update.*`
-//! commands with `luxforge_update::payload`.
+//! commands with `luxforge_update::payload`. The macOS port is Sparkle's
+//! ([`super::sparkle_port`]).
 //!
-//! **Selection** ([`select`]). A Linux release build (one compiled with `LUXFORGE_RELEASE_VERSION`)
-//! launched by a person gets the payload port, with the feed base URL and public key of the
-//! `release/update.json` it was compiled with; without a committed key it reports `no-update-key`.
-//! Every other launch gets an [`UnavailablePort`]: development and test builds, and hidden,
-//! evidence and test-receiver launches, which is how smoke, verify and background runs start, so
-//! none of them ever contacts the real feed. A debug Linux build may be pointed at a local feed and
-//! key for a manual test ([`DEV_FEED`], [`DEV_KEY`]); a release build never reads them.
+//! **Selection** ([`select`]). A release build (one compiled with `LUXFORGE_RELEASE_VERSION`)
+//! launched by a person gets its platform's port, with the `release/update.json` it was compiled
+//! with; without a committed key it reports `no-update-key`. On Linux that is the payload port,
+//! with the configuration's feed base URL and key. On macOS it is the Sparkle port, when the app
+//! runs from a bundle that embeds `Sparkle.framework` and names `SUPublicEDKey` (the bundle
+//! `release-build` makes) and the [`LocationCheck`] places the bundle in Applications; outside
+//! them it reports `outside-applications`. Every other launch gets an [`UnavailablePort`]:
+//! development and test builds, and hidden, evidence and test-receiver launches, which is how
+//! smoke, verify and background runs start, so none of them ever contacts the real feed. A debug
+//! Linux build may be pointed at a local feed and key for a manual test ([`DEV_FEED`],
+//! [`DEV_KEY`]); a release build never reads them. The one automated launch that gets Sparkle is
+//! the end-to-end update journey's: a release build in a bundle whose `Info.plist` sets
+//! [`JOURNEY_KEY`], which only `cargo xtask update-journey` writes, and whose window stays hidden
+//! ([`journey_launch`]).
 //!
 //! **The port.** Every [`UpdatePort`] call returns at once. One worker thread runs checks: one
 //! shortly after launch, then one every day while `update_checks` is on, and each `update.check`.
@@ -22,7 +30,7 @@
 //! closed, does it call [`at_quit`], which swaps the payload and execs the new executable with the
 //! launch's arguments. An update the policy installs automatically is swapped at an ordinary quit
 //! without relaunching. Quitting cancels a check or download still running.
-use super::{Editor, message::Message, waker::Signal};
+use super::{Editor, message::Message, sparkle_port::SparklePort, waker::Signal};
 use crate::Config;
 use iced::Subscription;
 use luxforge_core::{
@@ -86,6 +94,12 @@ const ARCHIVE_ORIGINS: [&str; 3] = [
 /// The `data.reason` of a refusal from an installation that can only offer the release page.
 const NOTIFY_ONLY: &str = "notify-only";
 
+/// The `Info.plist` key, set to true, that marks a bundle of the end-to-end update journey
+/// (`cargo xtask update-journey`): a background-only release bundle that updates itself from a
+/// loopback feed signed with a test key. Its launches, automated as they are, get the Sparkle port
+/// whatever the location check says, and keep their window hidden.
+pub(crate) const JOURNEY_KEY: &str = "LuxforgeUpdateJourney";
+
 /// What a launch's update port is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Choice {
@@ -95,6 +109,55 @@ enum Choice {
         key: PublicKey,
         classes: &'static [EndpointClass],
     },
+    Sparkle,
+}
+
+/// Where a macOS app bundle runs, as far as updating it goes. The move into Applications
+/// (`docs/design/auto-update.md#moving-into-applications`) supplies the real classification; until
+/// it is wired in, every bundle counts as in Applications.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Placement {
+    /// In `/Applications` or `~/Applications`, on a writable volume, not translocated.
+    #[default]
+    Applications,
+    /// Translocated, on a disk image or read-only volume, or elsewhere: it cannot replace itself.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the move into Applications supplies the check that reports it"
+        )
+    )]
+    Outside,
+}
+
+/// Classifies the running bundle's location ([`Placement`]), injected so that the move into
+/// Applications can supply its own.
+pub(crate) type LocationCheck = Arc<dyn Fn(&std::path::Path) -> Placement + Send + Sync>;
+
+/// The location check until the move into Applications provides one: every bundle is in place.
+pub(crate) fn in_applications() -> LocationCheck {
+    Arc::new(|_| Placement::default())
+}
+
+/// The platform a launch runs on, and on macOS what its bundle holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Platform {
+    Linux,
+    Macos(Bundle),
+    Other,
+}
+
+/// What the running macOS bundle holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Bundle {
+    /// It embeds `Contents/Frameworks/Sparkle.framework`.
+    framework: bool,
+    /// Its `Info.plist` names `SUPublicEDKey`.
+    key: bool,
+    /// Its `Info.plist` sets [`JOURNEY_KEY`].
+    journey: bool,
+    placement: Placement,
 }
 
 /// A development feed and key from the environment.
@@ -117,15 +180,24 @@ fn dev_feed(feed: Option<OsString>, key: Option<OsString>) -> Option<DevFeed> {
     })
 }
 
-/// The choice for a launch: a release build or not, launched by a person or automated, on Linux or
-/// not, with the embedded configuration and any development feed.
+/// The choice for a launch: a release build or not, launched by a person or automated, on which
+/// platform, with the embedded configuration and any development feed.
 fn choose(
     release: bool,
     automated: bool,
-    linux: bool,
+    platform: Platform,
     embedded: &str,
     development: Option<DevFeed>,
 ) -> Choice {
+    if let Platform::Macos(bundle) = platform
+        && release
+        && bundle.journey
+        && bundle.framework
+        && bundle.key
+    {
+        // The end-to-end update journey's background bundles, which carry a test key.
+        return Choice::Sparkle;
+    }
     if automated {
         return Choice::Unavailable(UnavailableReason::DevelopmentBuild);
     }
@@ -137,19 +209,31 @@ fn choose(
         else {
             return Choice::Unavailable(UnavailableReason::NoUpdateKey);
         };
-        if !linux {
-            // macOS updates through Sparkle, whose port is selected here once it is built
-            // (`docs/design/auto-update.md#macos-sparkle`); Windows has no updater yet.
-            return Choice::Unavailable(UnavailableReason::DevelopmentBuild);
-        }
-        return Choice::Payload {
-            feed_base_url,
-            key,
-            classes: &[EndpointClass::Remote],
+        return match platform {
+            Platform::Linux => Choice::Payload {
+                feed_base_url,
+                key,
+                classes: &[EndpointClass::Remote],
+            },
+            // A release binary outside the bundle `release-build` makes, such as one `cargo`
+            // built with the release version, is a development build.
+            Platform::Macos(bundle) if !bundle.framework => {
+                Choice::Unavailable(UnavailableReason::DevelopmentBuild)
+            }
+            Platform::Macos(bundle) if !bundle.key => {
+                Choice::Unavailable(UnavailableReason::NoUpdateKey)
+            }
+            Platform::Macos(Bundle {
+                placement: Placement::Outside,
+                ..
+            }) => Choice::Unavailable(UnavailableReason::OutsideApplications),
+            Platform::Macos(_) => Choice::Sparkle,
+            // Windows has no updater yet.
+            Platform::Other => Choice::Unavailable(UnavailableReason::DevelopmentBuild),
         };
     }
     match development {
-        Some(DevFeed { feed_base_url, key }) if linux => Choice::Payload {
+        Some(DevFeed { feed_base_url, key }) if platform == Platform::Linux => Choice::Payload {
             feed_base_url,
             key,
             classes: &[EndpointClass::Remote, EndpointClass::Loopback],
@@ -158,9 +242,66 @@ fn choose(
     }
 }
 
-/// The update port for this launch ([module documentation](self)). A payload port it creates is
-/// also the one [`at_quit`] installs through.
+/// The running macOS bundle, when the executable runs from one, and what it holds.
+fn running_bundle(location: &LocationCheck) -> Option<(PathBuf, Bundle)> {
+    let executable = std::env::current_exe().ok()?;
+    let path = luxforge_sparkle::bundle_of(&executable)?;
+    let named = |key: &str| luxforge_sparkle::info_value(key).is_some_and(|v| !v.is_empty());
+    let bundle = Bundle {
+        framework: luxforge_sparkle::framework_present(&path),
+        key: named("SUPublicEDKey"),
+        journey: luxforge_sparkle::info_value(JOURNEY_KEY).as_deref() == Some("1"),
+        placement: location(&path),
+    };
+    Some((path, bundle))
+}
+
+/// Whether this launch is one of the end-to-end update journey's ([`JOURNEY_KEY`]): a release
+/// build on macOS whose bundle sets the key. Such a launch keeps its window hidden, the relaunch
+/// Sparkle makes included, which no argument can ask for.
+pub(crate) fn journey_launch() -> bool {
+    RELEASE_VERSION.is_some()
+        && cfg!(target_os = "macos")
+        && luxforge_sparkle::info_value(JOURNEY_KEY).as_deref() == Some("1")
+}
+
+/// The build number a macOS bundle states (`CFBundleVersion`).
+fn bundle_build() -> Option<u64> {
+    luxforge_sparkle::info_value("CFBundleVersion")?.parse().ok()
+}
+
+/// The core's view of an item Sparkle found. An item without a readable `luxforge:catalogFormat`
+/// counts as a catalog format change, so it is never installed automatically.
+pub(crate) fn feed_update_from(item: &luxforge_sparkle::Item) -> FeedUpdate {
+    FeedUpdate {
+        version: item
+            .version
+            .chars()
+            .take(luxforge_core::update::MAX_VERSION_LEN)
+            .collect(),
+        build: item.build.parse().unwrap_or(0),
+        notes_url: item.link.clone(),
+        catalog_format: item
+            .catalog_format
+            .as_deref()
+            .and_then(|format| format.parse().ok())
+            .unwrap_or(-1),
+        prerelease: item.channel.as_deref() == Channel::Prerelease.sparkle_name(),
+    }
+}
+
+/// The update port for this launch ([module documentation](self)), with every bundle counted as in
+/// Applications. A payload or Sparkle port it creates is also the one [`at_quit`] installs through.
 pub(super) fn select(config: &Config, transport: Arc<dyn Transport>) -> Arc<dyn UpdatePort> {
+    select_with(config, transport, in_applications())
+}
+
+/// [`select`] with the location check that classifies a macOS bundle.
+pub(super) fn select_with(
+    config: &Config,
+    transport: Arc<dyn Transport>,
+    location: LocationCheck,
+) -> Arc<dyn UpdatePort> {
     let automated = config.hidden || config.evidence.is_some() || config.usage_receiver.is_some();
     let linux = cfg!(target_os = "linux");
     let development = if cfg!(debug_assertions) && linux {
@@ -169,6 +310,18 @@ pub(super) fn select(config: &Config, transport: Arc<dyn Transport>) -> Arc<dyn 
         None
     };
     let release = RELEASE_VERSION.is_some() && !cfg!(test);
+    let bundle = if cfg!(target_os = "macos") && release {
+        running_bundle(&location)
+    } else {
+        None
+    };
+    let platform = if linux {
+        Platform::Linux
+    } else if cfg!(target_os = "macos") {
+        Platform::Macos(bundle.as_ref().map(|(_, held)| *held).unwrap_or_default())
+    } else {
+        Platform::Other
+    };
     let located = || {
         std::env::current_exe()
             .ok()
@@ -177,7 +330,7 @@ pub(super) fn select(config: &Config, transport: Arc<dyn Transport>) -> Arc<dyn 
     match choose(
         release,
         automated,
-        linux,
+        platform,
         RELEASE_UPDATE_CONFIG,
         development,
     ) {
@@ -185,10 +338,33 @@ pub(super) fn select(config: &Config, transport: Arc<dyn Transport>) -> Arc<dyn 
             reason,
             build: if release && linux {
                 located().map(|payload| payload.build().build)
+            } else if bundle.is_some() {
+                bundle_build()
             } else {
                 None
             },
         }),
+        Choice::Sparkle => {
+            let Some((path, _)) = bundle else {
+                return Arc::new(UnavailablePort::new(UnavailableReason::DevelopmentBuild));
+            };
+            let (port, listener) =
+                SparklePort::new(bundle_build(), Arc::new(|| quit_signal().post()));
+            match luxforge_sparkle::Sparkle::start(&path, listener) {
+                Ok(sparkle) => port.drive(Arc::new(sparkle)),
+                Err(error) => {
+                    // A bundle whose framework cannot load updates nothing, and says so as a
+                    // development build does.
+                    eprintln!("Luxforge's updater could not start: {error}");
+                    return Arc::new(UnavailablePort {
+                        reason: UnavailableReason::DevelopmentBuild,
+                        build: bundle_build(),
+                    });
+                }
+            }
+            let _ = SPARKLE.set(port.clone());
+            port
+        }
         Choice::Payload {
             feed_base_url,
             key,
@@ -222,6 +398,8 @@ pub(super) fn select(config: &Config, transport: Arc<dyn Transport>) -> Arc<dyn 
 
 /// The payload port this launch installs through at quit, when it has one.
 static INSTALLED: OnceLock<Arc<LinuxPayloadPort>> = OnceLock::new();
+/// The Sparkle port this launch installs through at quit, when it has one.
+static SPARKLE: OnceLock<Arc<SparklePort>> = OnceLock::new();
 /// The port's request for the ordinary quit path.
 static QUIT: OnceLock<Signal<Message>> = OnceLock::new();
 
@@ -230,20 +408,33 @@ fn quit_signal() -> &'static Signal<Message> {
 }
 
 /// The port's quit request, carried into the update loop as [`Message::Close`]. Only a launch with
-/// a payload port listens; the blocked stream has no timer.
+/// a payload or Sparkle port listens; the blocked stream has no timer.
 pub(super) fn subscription(_: &Editor) -> Subscription<Message> {
-    if INSTALLED.get().is_some() {
+    if INSTALLED.get().is_some() || SPARKLE.get().is_some() {
         Subscription::run(|| quit_signal().stream())
     } else {
         Subscription::none()
     }
 }
 
-/// The end of the quit path, after the catalog owner has joined: install a staged update the person
-/// asked for, or one the policy installs automatically, and exec the new version for the first.
-/// Returns when there is nothing to install, after an automatic install, or when the relaunch
-/// failed; the app then exits as usual.
+/// The end of the quit path, after the catalog owner has joined, on the runtime's blocking pool:
+/// install a staged update the person asked for, or one the policy installs automatically, and
+/// start the new version for the first. On Linux the payload is swapped and the new executable
+/// exec'd. On macOS Sparkle's installer is told to go ahead, and this waits until it has taken the
+/// update: the installer replaces the app once this process has exited, then starts the new
+/// version. Returns when there is nothing to install, after an automatic install, or when the
+/// relaunch failed; the app then exits as usual.
 pub(super) fn at_quit() {
+    if let Some(port) = SPARKLE.get() {
+        let outcome = port.at_quit(
+            super::sparkle_port::INSTALL_WAIT,
+            super::sparkle_port::CANCEL_WAIT,
+        );
+        if let AtQuit::Failed(why) = outcome {
+            eprintln!("Luxforge could not install its update: {why}");
+        }
+        return;
+    }
     let Some(port) = INSTALLED.get() else {
         return;
     };

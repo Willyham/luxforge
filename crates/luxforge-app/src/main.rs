@@ -210,7 +210,12 @@ impl Config {
 }
 
 fn arguments() -> Result<Config, String> {
-    let mut config = Config::default();
+    let mut config = Config {
+        // The end-to-end update journey's bundles never show a window, the relaunch Sparkle
+        // makes without arguments included.
+        hidden: app::update_port::journey_launch(),
+        ..Config::default()
+    };
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {

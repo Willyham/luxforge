@@ -19,6 +19,7 @@ luxforge-net = { path = "../luxforge-net" }
 luxforge-onnx = { path = "../luxforge-onnx" }
 luxforge-diffusion = { path = "../luxforge-diffusion" }
 luxforge-update = { path = "../luxforge-update" }
+luxforge-sparkle = { path = "../luxforge-sparkle" }
 luxforge-ui = { path = "../luxforge-ui" }
 luxforge-input = { path = "../luxforge-input" }
 luxforge-install = { path = "../luxforge-install" }

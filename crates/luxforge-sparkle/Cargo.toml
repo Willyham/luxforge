@@ -1,0 +1,30 @@
+[package]
+name = "luxforge-sparkle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The macOS bridge to Sparkle 2 (`docs/design/auto-update.md#macos-sparkle`): it loads the
+# `Sparkle.framework` a release bundle embeds at run time, so nothing links it and a development or
+# test build without it builds, tests and runs; drives one `SPUUpdater` on AppKit's main thread with
+# a user driver and a delegate written here, which show no window; and hands every event to a
+# listener as plain Rust values. It depends on no workspace crate, which `cargo xtask
+# check-repository` enforces; the desktop adapts it to the core's update port. Every package is
+# already in the lockfile and pinned to the version it resolves to, as `luxforge-input` pins them.
+[dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSArray", "NSDictionary", "NSSet", "NSError", "NSBundle", "NSURL", "NSUserDefaults", "NSValue", "block2"] }
+block2 = "=0.6.2"
+# `objc2` is the feature `dispatch2` already resolves with in the lockfile.
+dispatch2 = { workspace = true, features = ["objc2"] }
+
+# Only this boundary sends Objective-C messages to the dynamically loaded framework and implements
+# its protocols. Its public API passes owned Rust values, never native pointers, and holds no
+# editing, catalog or update state of its own: the desktop's port decides everything.
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"

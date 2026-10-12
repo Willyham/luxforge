@@ -203,6 +203,14 @@ impl Drop for Owner {
     }
 }
 
+/// A macOS bundle as `release-build` makes it, with the update key.
+const RELEASED: Bundle = Bundle {
+    framework: true,
+    key: true,
+    journey: false,
+    placement: Placement::Applications,
+};
+
 #[test]
 fn only_a_release_launched_by_a_person_on_linux_with_a_key_gets_the_payload_port() {
     let key = testing::test_key().public_key();
@@ -215,36 +223,120 @@ fn only_a_release_launched_by_a_person_on_linux_with_a_key_gets_the_payload_port
         key,
         classes: &[EndpointClass::Remote],
     };
-    assert_eq!(choose(true, false, true, &keyed, None), payload);
+    assert_eq!(choose(true, false, Platform::Linux, &keyed, None), payload);
     let development = UnavailableReason::DevelopmentBuild;
-    for (release, automated, linux) in [
-        (true, true, true),
-        (false, false, true),
-        (false, true, true),
-        (false, false, false),
+    for (release, automated, platform) in [
+        (true, true, Platform::Linux),
+        (false, false, Platform::Linux),
+        (false, true, Platform::Linux),
+        (false, false, Platform::Other),
+        (true, false, Platform::Other),
+        (false, false, Platform::Macos(RELEASED)),
+        (true, true, Platform::Macos(RELEASED)),
     ] {
         assert_eq!(
-            choose(release, automated, linux, &keyed, None),
+            choose(release, automated, platform, &keyed, None),
             Choice::Unavailable(development),
-            "release {release}, automated {automated}, linux {linux}"
+            "release {release}, automated {automated}, {platform:?}"
         );
     }
-    // macOS is Sparkle's, which this port does not provide.
-    assert_eq!(
-        choose(true, false, false, &keyed, None),
-        Choice::Unavailable(development)
-    );
     // The checked-in configuration commits no key yet, so a release reports it on every platform.
-    for linux in [true, false] {
+    for platform in [Platform::Linux, Platform::Macos(RELEASED), Platform::Other] {
         assert_eq!(
-            choose(true, false, linux, RELEASE_UPDATE_CONFIG, None),
-            Choice::Unavailable(UnavailableReason::NoUpdateKey)
+            choose(true, false, platform, RELEASE_UPDATE_CONFIG, None),
+            Choice::Unavailable(UnavailableReason::NoUpdateKey),
+            "{platform:?}"
         );
     }
     let embedded = UpdateConfig::parse(RELEASE_UPDATE_CONFIG).unwrap();
     assert_eq!(
         embedded.feed_base_url,
         "https://api.luxforge.app/v1/updates/"
+    );
+}
+
+#[test]
+fn only_a_release_bundle_with_sparkle_and_a_key_in_place_gets_the_sparkle_port() {
+    let key = testing::test_key().public_key();
+    let keyed = format!(
+        r#"{{"feed_base_url": "https://api.luxforge.app/v1/updates/", "public_key": "{}"}}"#,
+        key.to_base64()
+    );
+    let macos = |bundle| choose(true, false, Platform::Macos(bundle), &keyed, None);
+    assert_eq!(macos(RELEASED), Choice::Sparkle);
+    // A release binary outside `release-build`'s bundle, such as `cargo run` with the version.
+    assert_eq!(
+        macos(Bundle {
+            framework: false,
+            ..RELEASED
+        }),
+        Choice::Unavailable(UnavailableReason::DevelopmentBuild)
+    );
+    assert_eq!(
+        macos(Bundle {
+            key: false,
+            ..RELEASED
+        }),
+        Choice::Unavailable(UnavailableReason::NoUpdateKey)
+    );
+    let outside = Bundle {
+        placement: Placement::Outside,
+        ..RELEASED
+    };
+    assert_eq!(
+        macos(outside),
+        Choice::Unavailable(UnavailableReason::OutsideApplications)
+    );
+    // The injected location check decides the placement.
+    let check: LocationCheck = Arc::new(|path: &std::path::Path| {
+        if path.starts_with("/Applications") {
+            Placement::Applications
+        } else {
+            Placement::Outside
+        }
+    });
+    assert_eq!(
+        check(std::path::Path::new("/Volumes/Luxforge/Luxforge.app")),
+        Placement::Outside
+    );
+    assert_eq!(
+        in_applications()(std::path::Path::new("/tmp/Luxforge.app")),
+        Placement::Applications
+    );
+    // The update journey's bundles carry a test key and run hidden, as automated launches do;
+    // they alone take Sparkle while automated, and only from a release bundle with both.
+    let journey = Bundle {
+        journey: true,
+        ..RELEASED
+    };
+    assert_eq!(
+        choose(
+            true,
+            true,
+            Platform::Macos(journey),
+            RELEASE_UPDATE_CONFIG,
+            None
+        ),
+        Choice::Sparkle
+    );
+    for bundle in [
+        Bundle {
+            framework: false,
+            ..journey
+        },
+        Bundle {
+            key: false,
+            ..journey
+        },
+    ] {
+        assert_ne!(
+            choose(true, true, Platform::Macos(bundle), &keyed, None),
+            Choice::Sparkle
+        );
+    }
+    assert_eq!(
+        choose(false, true, Platform::Macos(journey), &keyed, None),
+        Choice::Unavailable(UnavailableReason::DevelopmentBuild)
     );
 }
 
@@ -257,7 +349,7 @@ fn a_development_feed_is_honoured_only_in_a_development_build_on_linux() {
         choose(
             false,
             false,
-            true,
+            Platform::Linux,
             RELEASE_UPDATE_CONFIG,
             Some(local.clone())
         ),
@@ -268,23 +360,24 @@ fn a_development_feed_is_honoured_only_in_a_development_build_on_linux() {
         }
     );
     // Never in a release build, an automated launch or off Linux.
-    for (release, automated, linux) in [
-        (true, false, true),
-        (false, true, true),
-        (false, false, false),
+    for (release, automated, platform) in [
+        (true, false, Platform::Linux),
+        (false, true, Platform::Linux),
+        (false, false, Platform::Other),
+        (false, false, Platform::Macos(RELEASED)),
     ] {
         assert!(
             !matches!(
                 choose(
                     release,
                     automated,
-                    linux,
+                    platform,
                     RELEASE_UPDATE_CONFIG,
                     Some(local.clone())
                 ),
                 Choice::Payload { .. }
             ),
-            "release {release}, automated {automated}, linux {linux}"
+            "release {release}, automated {automated}, {platform:?}"
         );
     }
     for (feed, key) in [
