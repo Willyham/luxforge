@@ -1,0 +1,9 @@
+# Embedded Sparkle framework
+
+The macOS release bundle embeds Sparkle 2.10.0's prebuilt `Sparkle.framework` under `Luxforge.app/Contents/Frameworks/`, with its `Autoupdate` tool and `Updater.app`, and without its XPC services. The desktop loads it at run time through this crate's bridge (`crates/luxforge-sparkle`); no binary links it, and development builds, the CLIs and Linux never contain it. Nothing is downloaded at run time other than the update feed and archives Sparkle itself fetches.
+
+| Component | Exact upstream | Built | License / notices |
+| --- | --- | --- | --- |
+| Sparkle 2.10.0 | `sparkle-project/Sparkle`, tag `2.10.0` (commit `eef1a539a373c1f1a320624b1130fc5de7b2e100`); the official release archive `https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz` (16,319,840 bytes, SHA-256 `c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c`) | The archive's universal `Sparkle.framework`, as Sparkle's maintainers built and signed it. `cargo xtask release-build` fetches the archive into `target/sparkle/`, refuses it unless its length and SHA-256 match (`xtask/src/sparkle.rs`), extracts it, copies the framework with its symbolic links and removes `XPCServices`; `release-sign` re-signs the nested code with the release identity | MIT, with the external licences Sparkle bundles (bsdiff/bspatch BSD-2-Clause, sais-lite MIT, orlp/ed25519 Zlib, `SUSignatureVerifier.m` MIT and the others listed in it) in its `LICENSE` (`notices/sparkle-2.10.0/LICENSE`, identical to the archive's and the tag's). `cargo xtask inventory` copies it, on macOS, under `native/sparkle-2.10.0/` |
+
+The archive's own code signature and Sparkle's release provenance are not verified beyond the pinned hash. Manual license and native review remains deferred; this file records provenance, not a completed audit.

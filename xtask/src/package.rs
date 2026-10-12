@@ -93,6 +93,27 @@ fn native_onnxruntime_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the embedded Sparkle framework's provenance (`luxforge-sparkle`'s) and its licence, with
+/// the external licences it lists, beside the other native notices. Only the macOS bundle holds it.
+fn native_sparkle_notices(root: &Path, out: &Path) -> Result {
+    let source = root.join("crates/luxforge-sparkle");
+    let notices = [
+        ("THIRD_PARTY.md", "luxforge-sparkle/THIRD_PARTY.md"),
+        ("notices/sparkle-2.10.0/LICENSE", "sparkle-2.10.0/LICENSE"),
+    ];
+    for (from, to) in notices {
+        let input = source.join(from);
+        ensure(
+            input.is_file(),
+            format!("Missing Sparkle notice: {}", input.display()),
+        )?;
+        let destination = out.join("native").join(to);
+        fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+        fs::copy(input, destination)?;
+    }
+    Ok(())
+}
+
 /// Copies the generative runtime's provenance (`luxforge-diffusion`'s) and the licences of
 /// stable-diffusion.cpp, ggml and the third-party sources stable-diffusion.cpp bundles, from the
 /// vendored trees the build compiles. The packaged binary links them only on macOS and Linux.
@@ -265,13 +286,15 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     native_jpeg_notices(root, out)?;
     native_onnxruntime_notices(root, out)?;
     native_diffusion_notices(root, out)?;
+    let macos = target == crate::release_build::TARGETS[0].0;
+    if macos {
+        native_sparkle_notices(root, out)?;
+    }
     bundled_font_notices(root, out)?;
     bundled_theme_notices(root, out)?;
     bundled_data_notices(root, out)?;
     lens_resources(root, &out.join("data/lensfun"))?;
-    write_json(
-        &out.join("dependencies.json"),
-        &json!({
+    let mut dependencies = json!({
             "target":target,
             "packages":packages,
             "native_sources":[
@@ -387,8 +410,22 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                 "modifications":"None"
             }],
             "review_status":"Inventory only; manual license, native and asset reviews deferred"
-        }),
-    )?;
+        });
+    if macos {
+        dependencies["native_sources"]
+            .as_array_mut()
+            .ok_or("Native sources")?
+            .push(json!({
+                "name":"Sparkle",
+                "version":crate::sparkle::VERSION,
+                "revision":crate::sparkle::REVISION,
+                "selected_license":"MIT (bundled bsdiff BSD-2-Clause, sais-lite MIT, ed25519 Zlib and others listed in LICENSE)",
+                "notices":"native/sparkle-2.10.0",
+                "provenance":"native/luxforge-sparkle/THIRD_PARTY.md",
+                "build":"The official release archive's prebuilt Sparkle.framework, pinned by SHA-256, without XPC services; embedded in the macOS bundle only and loaded at run time"
+            }));
+    }
+    write_json(&out.join("dependencies.json"), &dependencies)?;
     println!("Inventory: {} configured packages", packages.len());
     Ok(())
 }
@@ -570,6 +607,20 @@ mod tests {
         );
         let provenance = fs::read_to_string(native.join("luxforge-onnx/THIRD_PARTY.md")).unwrap();
         assert!(provenance.contains("not a completed audit"));
+    }
+    #[test]
+    fn copies_the_sparkle_licence() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        native_sparkle_notices(root, tmp.path()).unwrap();
+        let native = tmp.path().join("native");
+        let licence = fs::read_to_string(native.join("sparkle-2.10.0/LICENSE")).unwrap();
+        assert!(licence.contains("Andy Matuschak"));
+        assert!(licence.contains("EXTERNAL LICENSES"));
+        let provenance =
+            fs::read_to_string(native.join("luxforge-sparkle/THIRD_PARTY.md")).unwrap();
+        assert!(provenance.contains(crate::sparkle::SHA256));
+        assert!(provenance.contains(crate::sparkle::REVISION));
     }
     #[test]
     fn copies_the_generative_runtime_licences() {

@@ -79,6 +79,7 @@ mod select_catalog_smoke;
 mod select_smoke;
 mod settings_smoke;
 mod smoke;
+mod sparkle;
 mod stats;
 mod theme_smoke;
 mod unsupported_catalog_smoke;
