@@ -19,6 +19,7 @@ pub(crate) mod presets;
 pub(crate) mod publish;
 pub(crate) mod settings;
 pub(crate) mod tiff;
+pub(crate) mod webp;
 
 pub use metadata::{CaptureInfo, CaptureMetadata};
 
