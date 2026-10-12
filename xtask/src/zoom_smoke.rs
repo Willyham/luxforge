@@ -1286,17 +1286,19 @@ fn check_minimap(
         )?;
         *grab = None;
     }
-    // Over a tool, nothing but the view changed: the draft as it was, no layer moved.
-    if index > 0 && over != Over::Nothing && !matches!(kind, Kind::Tool(_)) {
-        let previous = &frames[index - 1];
-        ensure(
-            frame.draft() == previous.draft() && state["recipe"] == previous["state"]["recipe"],
-            format!(
-                "a minimap gesture changed the draft or the recipe: {} became {}",
-                previous.draft(),
-                frame.draft()
-            ),
-        )?;
+    // A gesture changed nothing but the view: the crop or mask draft as it was, the stack and the
+    // masks unchanged, Compare's divider where it was.
+    if let Kind::Minimap(_) = kind {
+        let previous = &frames[index - 1]["state"];
+        for field in ["draft", "mask_draft", "stack", "masks", "comparison", "compare"] {
+            ensure(
+                state[field] == previous[field],
+                format!(
+                    "a minimap gesture changed {field}: {} became {}",
+                    previous[field], state[field]
+                ),
+            )?;
+        }
     }
     if kind == Kind::Tool(Tool::Escape) {
         let previous = &frames[index - 1];
