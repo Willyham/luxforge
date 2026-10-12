@@ -1,27 +1,30 @@
-//! The `filmstrip` smoke scenario: moving through Develop's development set across JPEG and RAW
-//! photographs, in the real editor at 1440 × 900.
+//! The `filmstrip` smoke scenario: moving through the Develop folder's filmstrip across JPEG and
+//! RAW photographs, in the real editor at 1440 × 900.
 //!
 //! The run generates real JPEGs (`generate-catalog --images 120`) and copies three of them —
 //! the darkest, the brightest and the one between, by the middle of the picture, so each frame's
 //! picture can be told from its neighbours' — into a scratch folder, with a copy of the RAW file
 //! `--source` names when one is given (the user's file is hashed before and after, and never
-//! touched). It develops them into a new catalog with `pick.develop` and asks the core for the
-//! catalog view the frames are checked against (`filmstrip-expected.json`). Without a RAW source
+//! touched). It develops them into a new catalog with `pick.develop`, moves them into one catalog
+//! folder, `Filmstrip`, with `asset.move`, and asks the core for the view of that folder the
+//! filmstrip reads — its photographs with its subfolders', captured oldest first — which the
+//! frames are checked against (`filmstrip-expected.json`). Without a RAW source
 //! the RAW photograph's steps are not run, and the run records them pending, never passed.
 //!
 //! The editor opens that catalog with nothing open. Its frames, in [`plan`] order: `G` showing
-//! Select; All photographs; the first photograph double-clicked, which opens Develop on it with the
-//! view's photographs as the development set; then for each next photograph, the neighbours' large
+//! Select; the `Filmstrip` catalog folder pressed, which makes it the Develop folder; `D`, which
+//! opens Develop on its first photograph with its photographs in the filmstrip; then for each next
+//! photograph, the neighbours' large
 //! previews decoded, `→` captured in the frame after the key, and the photograph's exact render;
 //! `←` the same; a press on the filmstrip's first cell; and the filmstrip collapsed and expanded
 //! with `Cmd+Option+F`.
 //!
-//! Each frame is checked against the core's view: the set is its photographs in order, the active
+//! Each frame is checked against the core's view: the strip is its photographs in order, the active
 //! one the step moved to, the preview drawn that photograph's own (by asset and entry) and drawn in
 //! the frame after the key, and the open photograph the one moved to. What the capture shows is
 //! read back: the picture's middle against the photograph's own large preview, decoded
 //! independently from the cache after the run (`filmstrip-after.json`), and nearer its own than
-//! any other photograph's of the set.
+//! any other photograph's of the folder.
 use crate::{
     generate_catalog,
     scenario::{Checked, Checks, Frame, Launch, Plan, Run, Step, Tolerance, plan::only},
@@ -29,14 +32,17 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, ClientId, EditorService, OwnerHandle};
-use luxforge_evidence::{self as script, DevelopStep, SelectStep, StripStep};
+use luxforge_evidence::{
+    self as script, CatalogStep, DevelopStep, SelectStep, SelectWorkspace, StripStep,
+};
 
 pub const SCENARIO: &str = "filmstrip";
 /// What `reproduce.md` says the run does before it launches.
 pub const NOTE: &str = "The run first generates real JPEGs with `cargo xtask generate-catalog \
     --images 120 --seed 1`, copies three of them, and a copy of the RAW file `--source` names when \
     one is given, into a scratch folder, develops them into `generated/catalog.sqlite` with \
-    `pick.develop`, asks the core for the catalog view the frames are checked against \
+    `pick.develop`, moves them into the catalog folder `Filmstrip` with `asset.move`, asks the \
+    core for the view of that folder the frames are checked against \
     (`filmstrip-expected.json`) and launches the editor over that catalog with `--catalog`; after \
     the run it reads each photograph's large preview from the cache (`filmstrip-after.json`). \
     Without a RAW source the RAW steps are recorded pending.";
@@ -44,31 +50,27 @@ pub const GENERATED: &str = "generated";
 pub const EXPECTED: &str = "filmstrip-expected.json";
 pub const AFTER: &str = "filmstrip-after.json";
 const SEED: u64 = 1;
+/// The catalog folder the photographs are moved into, which Develop holds.
+pub(crate) const FOLDER: &str = "Filmstrip";
 const IMAGES: u32 = 120;
 /// How far a patch of the drawn picture may be from the same patch of its large preview, in 8-bit
 /// codes of luminance: the decoders differ in rounding and the picture is resampled to the screen.
 const DRAWN_TOLERANCE: f64 = 10.0;
 
-/// Every frame, in order, for a set of `count` photographs.
+/// Every frame, in order, for a folder of `count` photographs.
 pub fn plan(count: usize) -> Plan {
     let develop = |name: &str, step: DevelopStep| Step::new(name, script::Step::Develop(step));
     let mut steps = vec![
         Step::opened("opened"),
         Step::new("select", script::Step::key("g")),
         Step::new(
-            "all",
-            script::Step::Select(SelectStep::Source("All photographs".into())),
-        )
-        .status_starts("All photographs"),
-        Step::new(
-            "first",
-            script::Step::Select(SelectStep::Click {
-                position: 0,
-                shift: false,
-                command: false,
-            }),
+            "folder",
+            script::Step::Catalog(CatalogStep::Source(FOLDER.into())),
         ),
-        develop("open", DevelopStep::Active),
+        Step::new(
+            "open",
+            script::Step::Select(SelectStep::Switch(SelectWorkspace::Develop)),
+        ),
     ];
     for at in 1..count {
         steps.push(develop(&format!("ready-{at}"), DevelopStep::Ready));
@@ -240,35 +242,57 @@ pub(crate) fn make(generated: &Path, raw: Option<&Path>) -> Result<Value> {
                 format!("The setup could not develop {}: {settled}", path.display()),
             )?;
         }
-        let view = ask(
+        let folder = ask(
             owner,
             client,
-            "browse.view",
-            // As Select views the catalog: newest first, ungrouped.
-            json!({"source": {"kind": "all-photographs"},
-                "sort": {"key": "capture-time", "descending": true}, "grouping": "none"}),
-        )?;
-        let count = view["count"].as_u64().ok_or("no count")?;
-        let rows = ask(
+            "folder.create",
+            json!({"name": FOLDER,
+                "mutation": {"request_id": "setup-folder", "actor": "setup"}}),
+        )?["folder"]["id"]
+            .clone();
+        ask(
             owner,
             client,
-            "browse.rows",
-            json!({"from": 0, "count": count}),
+            "asset.move",
+            json!({"targets": {"kind": "paths", "paths": files}, "folder_id": folder,
+                "mutation": {"request_id": "setup-move", "actor": "setup"}}),
         )?;
-        let rows: Vec<Value> = rows["rows"]
-            .as_array()
-            .ok_or("no rows")?
-            .iter()
-            .map(|row| {
-                let raw = raw_copy
-                    .as_ref()
-                    .is_some_and(|copy| row["path"] == json!(copy.canonicalize().ok()));
-                json!({"position": row["position"], "asset_id": row["asset_id"],
-                    "file_name": row["file_name"], "kind": row["kind"], "raw": raw})
-            })
-            .collect();
+        // The folder's photographs as `sort` orders them: the filmstrip's order, and Select's.
+        let read = |descending: bool| -> Result<Vec<Value>> {
+            let view = ask(
+                owner,
+                client,
+                "browse.view",
+                json!({"source": {"kind": "catalog-folder", "folder_id": folder, "subfolders": true},
+                    "sort": {"key": "capture-time", "descending": descending},
+                    "grouping": "none"}),
+            )?;
+            let count = view["count"].as_u64().ok_or("no count")?;
+            let rows = ask(
+                owner,
+                client,
+                "browse.rows",
+                json!({"from": 0, "count": count}),
+            )?;
+            Ok(rows["rows"]
+                .as_array()
+                .ok_or("no rows")?
+                .iter()
+                .map(|row| {
+                    let raw = raw_copy
+                        .as_ref()
+                        .is_some_and(|copy| row["path"] == json!(copy.canonicalize().ok()));
+                    json!({"position": row["position"], "asset_id": row["asset_id"],
+                        "file_name": row["file_name"], "kind": row["kind"], "raw": raw})
+                })
+                .collect())
+        };
+        // As the filmstrip reads the Develop folder: with its subfolders, oldest first.
+        let rows = read(false)?;
+        // As Select views a catalog folder: newest first, ungrouped.
+        let select_rows = read(true)?;
         Ok(
-            json!({"rows": rows, "raw": raw_copy.map(|copy| copy.file_name().map(|name| name.to_string_lossy().into_owned()))}),
+            json!({"rows": rows, "select_rows": select_rows, "folder": FOLDER, "raw": raw_copy.map(|copy| copy.file_name().map(|name| name.to_string_lossy().into_owned()))}),
         )
     })
 }
@@ -418,7 +442,7 @@ fn own_picture(checks: &mut Checks, frame: &Frame, name: &str, at: usize, own: &
     Ok(())
 }
 
-/// A frame after a move to photograph `at`: the set's active photograph is it, and its cached
+/// A frame after a move to photograph `at`: the strip's active photograph is it, and its cached
 /// preview, `cached` says, was drawn in the frame after the key, as the surface's own record of the
 /// frame it first drew it in says. The capture shows that preview — of its asset, drawn — or, once
 /// a small original has opened before the capture, the photograph's render.
@@ -433,10 +457,10 @@ fn moved(
 ) -> Result {
     let state = develop(frame);
     ensure(
-        state["set"]["active"] == at,
+        state["filmstrip"]["active"] == at,
         format!(
-            "{name}: the set's active photograph is {}",
-            state["set"]["active"]
+            "{name}: the strip's active photograph is {}",
+            state["filmstrip"]["active"]
         ),
     )?;
     let (preview, timing) = (&state["preview"], &state["timing"]);
@@ -498,7 +522,7 @@ fn open(
     ensure(
         state["document"]["asset_id"] == assets[at]
             && state["preview"].is_null()
-            && state["set"]["active"] == at,
+            && state["filmstrip"]["active"] == at,
         format!(
             "{name}: {} open, preview {}",
             state["document"], state["preview"]
@@ -520,16 +544,31 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let own = own_luminances(run, &expected, &after)?;
     let count = assets.len();
 
-    // D over All photographs: Develop on the first, with the view's photographs as the set.
+    // The folder pressed is the Develop folder; D opens Develop on its first photograph, with the
+    // folder's photographs in the strip.
+    let pressed = launch.at("folder")?;
     let opened = launch.at("open")?;
     let state = develop(opened);
     ensure(
+        develop(pressed)["folder"].is_string() && state["folder"] == develop(pressed)["folder"],
+        format!(
+            "folder: the Develop folder is {}, then {}",
+            develop(pressed)["folder"],
+            state["folder"]
+        ),
+    )?;
+    ensure(
         opened.state()["select"]["shown"] == "develop"
-            && state["set"]["assets"] == json!(assets)
-            && state["set"]["reading"] == false
+            && state["filmstrip"]["folder"] == state["folder"]
+            && state["filmstrip"]["path"] == json!([FOLDER])
+            && state["filmstrip"]["assets"] == json!(assets)
+            && state["filmstrip"]["reading"] == false
             && state["filmstrip_shown"] == true
             && state["strip"]["total"] == count,
-        format!("open: the set is {}, the view {assets:?}", state["set"]),
+        format!(
+            "open: the strip is {}, the folder {assets:?}",
+            state["filmstrip"]
+        ),
     )?;
     open(&mut checks, opened, "open", 0, &assets, &own)?;
     for at in 1..count {
@@ -606,7 +645,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .ok_or_else(|| format!("The view holds no RAW photograph {name}"))?;
         checks.note(
             opened,
-            &format!("the RAW photograph {name} is photograph {at} of the set"),
+            &format!("the RAW photograph {name} is photograph {at} of the folder"),
             json!({"position": at}),
         );
     }
@@ -623,7 +662,7 @@ mod tests {
 
     #[test]
     fn the_filmstrip_plan_is_well_formed() {
-        for (count, steps) in [(3, 18), (4, 21)] {
+        for (count, steps) in [(3, 17), (4, 20)] {
             let plan = plan(count);
             plan.validate().unwrap();
             assert_eq!(plan.len(), steps);

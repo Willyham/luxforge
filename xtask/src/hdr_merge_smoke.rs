@@ -31,9 +31,7 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, BASIC_EFFECT, ClientId, EditorService, OwnerHandle};
-use luxforge_evidence::{
-    self as script, CatalogStep, DevelopStep, LibraryKey, SelectStep,
-};
+use luxforge_evidence::{self as script, CatalogStep, DevelopStep, LibraryKey, SelectStep};
 use luxforge_testkit::hdr_bracket::{BracketSpec, write_bracket};
 use std::collections::BTreeSet;
 
@@ -494,11 +492,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let still = first.at("still")?;
     let actions = &select(still)["headers"]["actions"];
     ensure(
-        actions
-            == &json!([[
-                0,
-                [format!("Pick all {FRAMES}"), "Merge HDR"]
-            ]])
+        actions == &json!([[0, [format!("Pick all {FRAMES}"), "Merge HDR"]]])
             && select(still)["count"] == FRAMES
             && stacks(still).is_empty(),
         format!("still: the header offers {actions}"),
@@ -533,8 +527,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         })
         .ok_or_else(|| format!("merging: no merge.create was sent: {sent}"))?;
     ensure(
-        create["params"]["kind"] == "hdr"
-            && create["params"]["mutation"]["actor"] == "desktop",
+        create["params"]["kind"] == "hdr" && create["params"]["mutation"]["actor"] == "desktop",
         format!("merging: Merge HDR sent {create}"),
     )?;
     checks.note(
