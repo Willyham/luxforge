@@ -662,6 +662,7 @@ impl Presentation {
             compare_change: None,
             compare_rest: None,
             overview: None,
+            minimap: None,
         }
     }
 

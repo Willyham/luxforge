@@ -112,6 +112,10 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
         layers.push(information);
     }
     layers.push(strip(model));
+    // The minimap is the topmost layer: a press on it is its own before anything under it sees it.
+    if let Some(minimap) = surfaces.minimap {
+        layers.push(super::minimap::layer(minimap));
+    }
     stack(layers)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1704,6 +1708,7 @@ mod tests {
             compare_change: None,
             compare_rest: None,
             overview: None,
+            minimap: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Plain,

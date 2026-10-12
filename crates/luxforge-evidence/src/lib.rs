@@ -19,6 +19,7 @@ mod build;
 mod catalog;
 mod corrections;
 mod develop;
+mod minimap;
 mod missing;
 
 pub use catalog::{CatalogStep, FacetColumn};
@@ -27,6 +28,7 @@ pub use corrections::{
     RemoveStep, RemoveUntil, RowFieldStep,
 };
 pub use develop::{DevelopStep, StripStep};
+pub use minimap::{MinimapPoint, MinimapStep};
 pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
@@ -316,6 +318,8 @@ pub enum Step {
     /// One gesture on the Corrections workspace: a press on the photograph, a handle drag or a
     /// band control.
     Correction(CorrectionStep),
+    /// One gesture on the high-zoom minimap ([`MinimapStep`]).
+    Minimap(MinimapStep),
 }
 
 impl Step {
@@ -507,6 +511,7 @@ impl Step {
                     Err(format!("wait ms takes an integer from 1 to {MAX_WAIT_MS}"))
                 }
             }
+            Self::Minimap(step) => step.validate(),
             Self::Pan { x, y } => {
                 unit(f64::from(*x), "pan x")?;
                 unit(f64::from(*y), "pan y")

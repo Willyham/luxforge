@@ -24,8 +24,7 @@ pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
-// Read only by its tests until the canvas draws the minimap over it.
-#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod minimap;
 pub(crate) mod minimap_geometry;
 pub(crate) mod move_to_applications;
 pub(crate) mod palette;
@@ -134,6 +133,8 @@ pub(crate) struct Surfaces<'a> {
     /// The minimap overviews the photograph's surface may keep, handed with every frame that
     /// draws it ([`crate::app::overview`]).
     pub(crate) overview: Option<&'a luxforge_ui::OverviewWant>,
+    /// The high-zoom minimap's card, when the canvas shows one ([`crate::app::minimap`]).
+    pub(crate) minimap: Option<minimap::MinimapModel>,
 }
 
 impl Surfaces<'_> {
