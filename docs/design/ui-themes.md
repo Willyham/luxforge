@@ -56,7 +56,7 @@ A theme declares roles. Every colour the widgets draw is a role, a token derived
 | --- | --- | --- |
 | `background` | `#202023` | Panel: the side panels, the status bar and the Settings sheet; the origin of the surface ramp |
 | `surround` | `#19191b` | Canvas: behind the histogram plot, and around the photograph when the canvas background is Theme; held near-neutral |
-| `surface` | `#232326` | Bar: the title bar, floating strips, notices and module bands |
+| `surface` | `#232326` | Bar: the title bar, floating strips and notices |
 | `control` | `#2c2c31` | Buttons, chips and text fields |
 | `text` | `#e8e8ea` | Primary text |
 | `text_secondary` | `#a8a8ae` | Secondary text |
@@ -105,7 +105,7 @@ The token names are the API's, and the widget crate's palette has a field of the
 | --- | --- | --- | --- |
 | `surround` | `#19191b` | `CANVAS` | Behind the histogram plot; around the photograph when the canvas background is Theme |
 | `background` | `#202023` | `PANEL` | Side panels, status bar, Settings sheet |
-| `surface` | `#232326` | `BAR` | Title bar, floating strips, notices, module bands |
+| `surface` | `#232326` | `BAR` | Title bar, floating strips, notices |
 | `control` | `#2c2c31` | `CONTROL` | Buttons, chips, text fields |
 | `text` | `#e8e8ea` | `TEXT_PRIMARY` | Primary text |
 | `text_secondary` | `#a8a8ae` | `TEXT_SECONDARY` | Secondary text |
@@ -113,7 +113,7 @@ The token names are the API's, and the widget crate's palette has a field of the
 | `accent` | `#e2b46a` | `ACCENT` | State marks |
 | `accent_ink` | `#1a1408` | `PRIMARY_INK` | Ink on the accent |
 | `error` | `#e5534b` | `CLIPPING_HIGHLIGHT` where it marks an invalid value or failure | Invalid values, unavailable reasons |
-| `text_label` | `#c9c9ce` | `TEXT_LABEL` | Slider and field labels |
+| `text_label` | `#c9c9ce` | `TEXT_LABEL` | Labels; a slider's, field's or toggle's is mixed from it (below) |
 | `text_faint` | `#55555c` | `TEXT_FAINT`, `CLIP_TRIANGLE_REST` | A finished job's duration; an empty clipping triangle |
 | `text_bright` | `#f0f0f2` | `TEXT_BRIGHT` | A notice's title, the file name |
 | `text_identity` | `#8a8a90` | `TEXT_IDENTITY` | The title bar's dimensions and format |
@@ -156,6 +156,8 @@ The token names are the API's, and the widget crate's palette has a field of the
 The fixed colours keep their constants and are not tokens: `CANVAS` as the canvas background's Dark choice, `CANVAS_BLACK` and `CANVAS_GREY`; the clipping colours, `CLIPPING_BOTH` and the overlay palette; the mask overlay tints; the histogram channels; `TEMPERATURE_RAIL`, `TINT_RAIL` and every declared rail; `GUIDE`, `RENDER_BAR_TRACK` and the compare and mask canvases' `PHOTO_HANDLE`, `PHOTO_HANDLE_OUTLINE`, `PHOTO_GRIP`, `PHOTO_LABEL` and `PHOTO_ANCHOR`, drawn over the photograph; `AGENT_CONNECTED`; `SWATCH_OUTLINE`; the coverage thumbnail's black `THUMBNAIL_BACKGROUND`, which is the mask's own zero; the mask glyphs' `MASK_GLYPH_OUTLINE` and `MASK_GLYPH_PHOTO`; and the black `CHROME_SHADOW` and `MENU_SHADOW`.
 
 The [catalog](catalog.md)'s Select, Missing originals and filmstrip chrome draws 21 more colours that are not tokens: its cell grounds, moment rows, filter chips, facet rows, sheet and group rules and the like. Each is one mix of two tokens in encoded sRGB, the derivation's own rule, fitted so Luxforge Dark draws the catalog boards' value: 18 exactly and three (the Select bar's rule, the sheet footer's rule and a group's outline) one code off in one channel (`luxforge_ui::theme::Derived`). They follow every theme as the tokens they mix do; a theme cannot set one, and the API does not list them. What the grid draws over a photograph (the pick's ring, the badges' plates and their light text, the pointer's region box) is fixed, as the compare and mask canvases' marks are, and a verified original's green is fixed with `AGENT_CONNECTED`.
+
+The tools panel draws three more the same way, fitted exactly to the Module panels board: a module band is the background 90% toward the control (`#2b2b30`), a sub-group's capitals are the secondary text 24% toward the control (`#8a8a90`), and a slider's, field's or toggle's label is the label tier 52% toward the secondary text (`#b8b8bd`). Each sits a step from its neighbours in the module, group and control hierarchy, and a light theme's darker control makes its bands a step darker than its panel.
 
 Luxforge Dark's palette in the widget crate is built from these values exactly, alpha included, so it draws what the constants drew. The desktop draws that palette whenever Luxforge Dark is active, and builds any other theme's palette from the core's resolved tokens. A desktop test holds the core's Luxforge Dark within one code per channel of the widget crate's.
 

@@ -207,6 +207,8 @@ pub const FONT_FILES: [&[u8]; 2] = [
 pub const SIZE_CONTROL: f32 = 12.0;
 /// Semibold module and section titles.
 pub const SIZE_TITLE: f32 = 13.0;
+/// A module band's title: a step over [`SIZE_TITLE`], so a module reads above its groups and rows.
+pub const SIZE_MODULE_TITLE: f32 = 14.0;
 /// Captions.
 pub const SIZE_CAPTION: f32 = 11.0;
 /// Capitalised section labels.
@@ -270,7 +272,7 @@ pub const ROW_SPACING: f32 = 2.0;
 /// A sub-group header row.
 pub const GROUP_HEADER_HEIGHT: f32 = 24.0;
 /// The margin above a sub-group header, on top of [`ROW_SPACING`].
-pub const GROUP_MARGIN: f32 = 4.0;
+pub const GROUP_MARGIN: f32 = 8.0;
 /// Between a group header's disclosure and its label.
 pub const GROUP_HEADER_SPACING: f32 = 7.0;
 /// Between a group header's label, rule and caption.
@@ -1963,11 +1965,13 @@ pub fn disclosure_color(theme: &Theme, hovered: bool) -> Color {
     }
 }
 
-/// A module band's surface: the Bar colour, flat, in every state. The band is a disclosure, so
-/// it keeps one colour rather than flashing a hover fill across the panel.
+/// A module band's surface: [`Derived::ModuleBand`], flat, in every state. The band is a
+/// disclosure, so it keeps one colour rather than flashing a hover fill across the panel.
 pub fn button_band(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
-        background: Some(Background::Color(theme.palette().surface)),
+        background: Some(Background::Color(
+            Derived::ModuleBand.resolve(theme.palette()),
+        )),
         text_color: text_color_for(theme, status),
         border: Border::default(),
         shadow: Shadow::default(),
@@ -2567,6 +2571,7 @@ mod tests {
     fn type_sizes_match_the_visual_language_table() {
         assert_eq!(SIZE_CONTROL, 12.0);
         assert_eq!(SIZE_TITLE, 13.0);
+        assert_eq!(SIZE_MODULE_TITLE, 14.0);
         assert_eq!(SIZE_CAPTION, 11.0);
         assert_eq!(SIZE_SECTION_LABEL, 10.5);
     }
@@ -2640,7 +2645,7 @@ mod tests {
             ),
             (4.0, 12.0, 10.0, 12.0)
         );
-        assert_eq!((GROUP_HEADER_HEIGHT, GROUP_MARGIN), (24.0, 4.0));
+        assert_eq!((GROUP_HEADER_HEIGHT, GROUP_MARGIN), (24.0, 8.0));
         assert_eq!(
             (SLIDER_LABEL_HEIGHT, SLIDER_GAP, SLIDER_RAIL_HEIGHT),
             (14.0, 2.0, 12.0)
@@ -3454,7 +3459,10 @@ mod tests {
         );
         assert_eq!(button_selected(&theme, active).text_color, p.accent);
         assert_eq!(swatch_open(&theme, active).border.color, p.accent);
-        assert_eq!(button_band(&theme, active).background, colour(p.surface));
+        assert_eq!(
+            button_band(&theme, active).background,
+            colour(Derived::ModuleBand.resolve(&p))
+        );
         assert_eq!(button_control(&theme, active).background, colour(p.control));
         assert_eq!(button_field(&theme, active).background, colour(p.control));
         assert_eq!(

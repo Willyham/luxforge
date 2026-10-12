@@ -849,12 +849,12 @@ impl Editor {
                 Some(path) => editor.open_queued(path, initial_import),
                 None => {
                     evidence.capture_pending = true;
-                    Task::none()
+                    editor.startup_workspace()
                 }
             },
             None => initial
                 .map(|path| editor.open_queued(path, initial_import))
-                .unwrap_or_else(Task::none),
+                .unwrap_or_else(|| editor.startup_workspace()),
         };
         editor.rederive();
         (

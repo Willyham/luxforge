@@ -51,6 +51,17 @@ Answer each item in the commit or plan for any change under `crates/`, once, for
 - What did `editor-performance` report on 24 MP before and after, and where is that recorded with its scope?
 - Which exact-buffer tests hold the reference renderer to a stepwise reference for new effects; which reference-buffer comparisons hold what the GPU renders to the reference within the declared tolerance (`cargo xtask gpu-qualification`, the release gate, for every output kind and view the change touches); and which tests prove buffer sharing where sharing is claimed?
 
+### Catalog startup review
+
+With no file requested at launch, the desktop reads the existing `catalog.info` once before its
+first frame to choose Select when the active photograph count is zero. That request reads SQL
+counts and cache file sizes; it reads, hashes and decodes no original. Entering Select uses the
+existing source, event and count tasks. No `asset.state`, history read, photo preview or upload is
+added, and no frame allocation, pixel query, timer, subscription or cache changes. The owner does
+only its existing catalog bookkeeping. Image buffers and rendering are unchanged, so renderer
+comparison and sharing tests are not affected. No performance improvement is claimed; the
+24 MP editing workload does not measure this startup choice, and no timing run is taken.
+
 ### Image information review
 
 The information overlay reads only the document's capture projection, selected recipe output stage and live crop geometry. `source.inspect` projects validated EXIF from the signature-verified prepared source; the desktop adds one inspection on open after preparation and keeps its small result per photo. The existing metadata reader bounds ASCII fields to 1024 bytes and each source's retained metadata to one EXIF segment. No new full-frame allocation, pixel query, render, source decode or cache is added. The owner projects small metadata fields only. Toggling makes one `workspace.set` call and a session adoption, with no `asset.state`, history refresh, preview job or upload; no timers or subscriptions are added. Each visible view derives bounded text from the same inputs; no performance improvement is claimed. Native smoke checks raster version, texture writes and preview generation across a toggle, and metadata tests exercise exact values through independent EXIF fixtures. The general 24 MP editor-performance workload does not measure this overlay's text-layout cost.
