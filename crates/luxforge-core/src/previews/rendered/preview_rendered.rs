@@ -1090,6 +1090,38 @@ fn a_render_cancelled_inside_its_stream_answers_cancelled() {
     assert_eq!(tiles.sent(), 0, "the stream ended before its first band");
 }
 
+/// A paged derived photograph's rendered previews are refused by name, `resource-limit` saying it
+/// has no whole frame, before any part of its source is read.
+#[test]
+fn paged_source_previews_are_refused_by_name_before_any_read() {
+    use crate::artifacts::derived_source::{merged_planes, payload_work};
+    let path = copied_fixture("rendered-paged", "orientation-1.jpg");
+    let mut service = EditorService::open(&paths::temp_catalog("rendered-paged")).unwrap();
+    service.import(&path).unwrap();
+    let (width, height) = (16_390, 3);
+    let asset = service
+        .publish_planes(
+            "merge.panorama",
+            width,
+            height,
+            &merged_planes(width, height),
+        )
+        .unwrap();
+    payload_work::take();
+    let request = plan_render(&service, &asset, None, &BOTH).unwrap();
+    let refused = render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::ResourceLimit, "{refused}");
+    let id = service.derived_source_read(&asset).unwrap().id;
+    assert_eq!(
+        refused.detail,
+        format!(
+            "a rendered preview is not available for paged derived source {id}, which has no \
+             whole frame; it is read through its levels and windows"
+        )
+    );
+    assert_eq!(payload_work::take(), 0, "nothing of the source was read");
+}
+
 /// A derived photograph (an HDR merge's result) has no original file and no camera preview: its
 /// tiers are rendered from its stored source, read and verified chunk by chunk off the editor's
 /// cache and never handed back, and they are the editor's own exact render, area-averaged for the

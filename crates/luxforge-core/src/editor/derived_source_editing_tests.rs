@@ -414,3 +414,99 @@ fn a_derived_source_renders_every_stack_as_its_planes_in_memory_do() {
     drop(service);
     fs::remove_dir_all(directory).unwrap();
 }
+
+/// A paged photograph prepares on the source worker from its manifest and overview alone, held on
+/// the plane gate; the cache holds it as a paged source whose windows read the stored values; a
+/// recipe evaluation, a render and a sample refuse it by name rather than allocate its whole frame,
+/// while its history reads; and evicting it releases the gate.
+#[test]
+fn paged_source_photograph_prepares_its_overview_and_refuses_whole_frame_paths() {
+    let directory = directory("paged");
+    let (_, mut service, _) = catalog(&directory);
+    let (width, height) = (16_390, 5);
+    let values = scene(width, height);
+    let asset = service
+        .publish_planes("merge.panorama", width, height, &values)
+        .unwrap();
+    payload_work::take();
+    original_work::take();
+    let state = service.state(&asset).unwrap();
+    let source_id = state.asset.source.derived().unwrap().source_id.clone();
+    assert_eq!((state.asset.width, state.asset.height), (width, height));
+
+    let gate = Arc::new(PlaneGate::default());
+    let needs = service.entry_needs(&asset, None).unwrap();
+    let Preparing::Work(work, reads) = service.preparation(&needs).unwrap() else {
+        panic!("a cold paged source is work");
+    };
+    assert!(
+        work.decodes(),
+        "it allocates its overview, so it waits on the gate"
+    );
+    let mut prepared = work.run(&reads, &never()).unwrap();
+    assert_eq!(
+        payload_work::take(),
+        1 + 3,
+        "the manifest and the overview's three chunks"
+    );
+    assert_eq!(original_work::take(), (0, 0));
+    assert!(prepared.linear_mut().is_none(), "no whole frame");
+    prepared.paged_mut().expect("a paged source").hold(&gate);
+    assert_eq!(gate.counted(), 2, "the overview and the chunk cache");
+    service.complete_preparation(prepared).unwrap();
+    let state = service.state(&asset).unwrap();
+    let crate::source::PreparedSource::Paged(paged) = service
+        .verified_prepared(&state.asset, &state.current_entry.snapshot.recipe)
+        .unwrap()
+    else {
+        panic!("a paged photograph prepares a paged source");
+    };
+    assert_eq!(paged.source.id(), &source_id);
+    let window = paged
+        .source
+        .window(
+            crate::artifacts::derived_source::paged_source::WindowRequest {
+                level: 0,
+                rect: [16_000, 1, 390, 3],
+                halo: 0,
+            },
+            &never(),
+        )
+        .unwrap();
+    let plane = (width * height) as usize;
+    let expected: Vec<f32> = (0..3)
+        .flat_map(|channel| {
+            (1..4).flat_map(move |y| {
+                (16_000..width).map(move |x| (channel, (y * width + x) as usize))
+            })
+        })
+        .map(|(channel, at)| values[channel * plane + at])
+        .collect();
+    assert!(same_bits(&window.planes, &expected));
+    assert_eq!(
+        payload_work::take(),
+        2,
+        "the two level-0 chunks the window touches"
+    );
+    drop(paged);
+
+    let refused = |error: Error| {
+        assert_eq!(error.kind, ErrorKind::ResourceLimit, "{error}");
+        assert!(
+            error
+                .detail
+                .contains(&format!("paged derived source {source_id}"))
+                && error.detail.contains("no whole frame"),
+            "{error}"
+        );
+    };
+    refused(service.render_current(&asset).unwrap_err());
+    let entry = state.current_entry.id.clone();
+    refused(service.sample_entry(&asset, &entry, 3, 2).unwrap_err());
+    service.history(&asset, None, 10).unwrap();
+    assert_eq!(payload_work::take(), 0, "no refusal read a chunk");
+    service.evict_development(false);
+    assert_eq!(gate.counted(), 0, "evicted, its leases are released");
+    drop(service);
+    fs::remove_dir_all(directory).unwrap();
+}
