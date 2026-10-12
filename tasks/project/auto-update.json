@@ -299,7 +299,7 @@
     {
       "id": "TASK-006",
       "description": "Embed Sparkle in the macOS release bundle and bridge it to the update port with a custom user driver.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
