@@ -39,7 +39,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 ### In progress
 
-[High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)): the owner asked on 2026-10-12 for the plan to be built. The geometry, the bounded overview and the widget (TASK-001 to TASK-003) are implemented, with a passing background zoom journey on generated 24 MP and 60 MP JPEGs; TASK-004 qualification and documentation is in progress.
+[High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)): the owner asked on 2026-10-12 for the plan to be built. The minimap is implemented and documented, with a passing background zoom journey on generated 24 MP and 60 MP JPEGs. TASK-004 remains in progress for the GPU corpus qualification, RAW/resize/recovery rendered coverage and photo-sized M4 measurements, which have not been run.
 
 [Auto tone](../tasks/editing/auto-tone.json) is implemented, with owner M4/corpus qualification outstanding: bounded sampling, the solver, API, desktop controls, presets and the local fitting rig. The owner's Lightroom exports and review come after delivery.
 
