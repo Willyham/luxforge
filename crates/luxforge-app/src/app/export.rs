@@ -2,15 +2,17 @@
 //!
 //! The desktop holds no export logic. One chain of owner requests runs off the update loop:
 //! `export.plan` for the displayed entry's suggested name (the fixed After entry during slider
-//! comparison), the native save dialog in the folder that plan suggests — the remembered export
-//! folder, or the original's — and `export.jpeg` for that entry with the chosen destination, asked
-//! again once the source is prepared when the owner answers `preparation-required`. The job then
+//! comparison), the native save dialog in the folder that plan suggests — the last export's
+//! folder, or the original's — and `export.write` for that entry with the chosen destination,
+//! asked again once the source is prepared when the owner answers `preparation-required`. Both
+//! send today's settings ([`export_settings`]): a full-size quality-90 JPEG at 4:4:4, with
+//! metadata as Keep metadata says and this window's density. The job then
 //! runs on the core's export lane, and the desktop reads it with `job.read` until it ends, through
 //! a reader that exists only while this window's export is queued or running (performance rule 8)
 //! and sends the desktop a message only when the job's record changes or the job ends
 //! ([`job_reads`]). The status bar says what happened; the Performance section lists the running
 //! job from `activity.list` like any other. Once an export whose destination the dialog chose
-//! succeeds, its folder is stored as the remembered export folder.
+//! succeeds, its settings are stored as the last export (`export_last`).
 //!
 //! The title bar's two exports send no `reference`, so the core's export lane renders them on the
 //! GPU where it can; the palette's Export reference render… sends `reference: true` through the
@@ -23,7 +25,7 @@
 //! An entry holding stale frozen patches (`docs/design/corrections.md`, "Input identity") is
 //! refused `conflict` with `data.code` `stale-unacknowledged` until an export acknowledges exactly
 //! them. The desktop never acknowledges on its own: it holds the choice and says on the canvas
-//! which patches are stale and why, and **Export anyway** sends `export.jpeg` again, as a request
+//! which patches are stale and why, and **Export anyway** sends `export.write` again, as a request
 //! of its own, with `acknowledge_stale` naming that entry and exactly those patches; **Cancel**
 //! lets it go. A commit between the two makes the owner refuse the old acknowledgement, which is
 //! held and offered again in the same way.
@@ -39,14 +41,16 @@ use crate::state::MenuTarget;
 use iced::{Subscription, Task, futures::stream::BoxStream};
 #[cfg(test)]
 use luxforge_core::jobs::JOB_READ;
-use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle};
+use luxforge_core::{
+    AssetId, ClientId, EntryId, ErrorKind, ExportFolder, ExportSettings, MetadataLevel, OwnerHandle,
+};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// How many times `export.jpeg` is asked again after its source was prepared.
+/// How many times `export.write` is asked again after its source was prepared.
 const PREPARATION_RETRIES: usize = 4;
 
-/// What the plan answered and where the export goes: everything `export.jpeg` needs.
+/// What the plan answered and where the export goes: everything `export.write` needs.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ExportChoice {
     pub(crate) asset_id: AssetId,
@@ -121,14 +125,14 @@ pub(crate) struct ExportRun {
     pub(crate) reference: bool,
     /// The destination's file name, once the dialog has chosen it.
     pub(crate) file_name: Option<String>,
-    /// The core's job, once `export.jpeg` has queued it.
+    /// The core's job, once `export.write` has queued it.
     pub(crate) job_id: Option<String>,
     /// The save dialog chooses the destination, rather than an evidence step.
     pub(crate) dialog: bool,
-    /// The folder the save dialog chose, stored as the remembered export folder once the export
-    /// succeeds. `None` for a destination given any other way.
+    /// The folder the save dialog chose, whose export's settings are stored as the last export
+    /// once it succeeds. `None` for a destination given any other way.
     pub(crate) folder: Option<PathBuf>,
-    /// What `export.jpeg` was sent, kept so a refusal for stale patches can hold it.
+    /// What `export.write` was sent, kept so a refusal for stale patches can hold it.
     pub(crate) choice: Option<Box<ExportChoice>>,
 }
 
@@ -222,6 +226,14 @@ impl Editor {
             .or_else(|| self.displayed_entry())
     }
 
+    /// The last export's folder, which the next export's plan suggests while it is still a folder.
+    pub(crate) fn export_last_folder(&self) -> Option<PathBuf> {
+        match self.preferences.applied()?.export_last?.settings.folder {
+            ExportFolder::Path(folder) => Some(folder),
+            ExportFolder::Original => None,
+        }
+    }
+
     /// Start exporting the displayed saved entry, or the comparison's fixed After entry, through
     /// the reference renderer when `reference` asks for it. `destination` bypasses the save dialog,
     /// for an evidence step; without it the dialog chooses.
@@ -256,6 +268,7 @@ impl Editor {
             choice: None,
         });
         let pixels_per_inch = screen_pixels_per_inch(self.view_state.system_scale_factor);
+        let last_folder = self.export_last_folder();
         self.event(
             "export_started",
             || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"reference":reference,"pixels_per_inch":pixels_per_inch,"dialog":destination.is_none()}),
@@ -268,6 +281,7 @@ impl Editor {
                 keep_metadata,
                 pixels_per_inch,
                 reference,
+                last_folder,
             },
             original,
             destination,
@@ -314,7 +328,7 @@ impl Editor {
         match result {
             Ok(answer) => {
                 let Some(job_id) = answer["job_id"].as_str().map(str::to_owned) else {
-                    let error = "export.jpeg answered no job".to_owned();
+                    let error = "export.write answered no job".to_owned();
                     self.export_finished(format!("Export failed: {error}"), Some(&error), None);
                     return Task::none();
                 };
@@ -392,10 +406,14 @@ impl Editor {
                     result["height"].as_u64().unwrap_or(0),
                     result["bytes"].as_u64().unwrap_or(0),
                 );
-                let folder = self.export.run.as_ref().and_then(|run| run.folder.clone());
+                // Only an export whose destination the person chose in the save dialog is
+                // remembered, with the settings it was written with.
+                let last = self.export.run.as_ref().and_then(|run| {
+                    run.folder.as_ref()?;
+                    Some(export_settings(run.choice.as_deref()?))
+                });
                 self.export_finished(status, None, Some(record));
-                // Only a destination the person chose in the save dialog is remembered.
-                return self.remember_export_folder(folder);
+                return self.remember_export_last(last);
             }
             Some("cancelled") => {
                 self.export_finished("Export cancelled".into(), None, Some(record));
@@ -506,11 +524,57 @@ impl Editor {
 }
 
 /// What an export asks for beside its entry and destination.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Options {
     keep_metadata: bool,
     pixels_per_inch: Option<u16>,
     reference: bool,
+    /// The last export's folder, which the plan suggests when it still exists.
+    last_folder: Option<PathBuf>,
+}
+
+/// The suffix the desktop's suggested names carry: `<stem>-edited.jpg`.
+const SUFFIX: &str = "-edited";
+
+/// The settings the desktop's export is planned with: today's export, with metadata as Keep
+/// metadata says and this window's density, suggested in the last export's folder when it is still
+/// a folder and in the original's otherwise.
+pub(crate) fn plan_settings(
+    keep_metadata: bool,
+    pixels_per_inch: Option<u16>,
+    last_folder: Option<&Path>,
+) -> ExportSettings {
+    ExportSettings {
+        pixels_per_inch,
+        folder: last_folder
+            .filter(|folder| folder.is_dir())
+            .map_or(ExportFolder::Original, |folder| {
+                ExportFolder::Path(folder.to_path_buf())
+            }),
+        suffix: SUFFIX.into(),
+        ..ExportSettings::baseline(metadata_level(keep_metadata))
+    }
+}
+
+/// The metadata level Keep metadata asks for: every supported field, or none.
+fn metadata_level(keep_metadata: bool) -> MetadataLevel {
+    if keep_metadata {
+        MetadataLevel::All
+    } else {
+        MetadataLevel::None
+    }
+}
+
+/// The settings one choice is written with: today's export into the chosen destination's folder,
+/// with metadata as Keep metadata says and the choice's density.
+pub(crate) fn export_settings(choice: &ExportChoice) -> ExportSettings {
+    ExportSettings {
+        pixels_per_inch: choice.pixels_per_inch,
+        folder: super::remembered::export_folder(&choice.destination)
+            .map_or(ExportFolder::Original, ExportFolder::Path),
+        suffix: SUFFIX.into(),
+        ..ExportSettings::baseline(metadata_level(choice.keep_metadata))
+    }
 }
 
 /// The plan as an evidence step records it: everything but the suggested path, whose directory is
@@ -606,9 +670,14 @@ fn plan_task(
         keep_metadata,
         pixels_per_inch,
         reference,
+        last_folder,
     } = options;
     let target = (asset_id.clone(), entry_id.clone());
-    owner_work(move || plan_now(&owner, client, &asset_id, &entry_id)).then(move |plan| {
+    owner_work(move || {
+        let settings = plan_settings(keep_metadata, pixels_per_inch, last_folder.as_deref());
+        plan_now(&owner, client, &asset_id, &entry_id, &settings)
+    })
+    .then(move |plan| {
         let (asset_id, entry_id) = target.clone();
         let original = original.clone();
         let destination = destination.clone();
@@ -647,7 +716,7 @@ fn plan_task(
     })
 }
 
-/// `export.jpeg` for the chosen destination. One press is one request: asking again after the
+/// `export.write` for the chosen destination. One press is one request: asking again after the
 /// source was prepared keeps its request id, so the core answers a retry that did land from its
 /// stored answer and writes no second file.
 fn send_task(owner: OwnerHandle, client: ClientId, choice: ExportChoice) -> Task<Message> {
@@ -657,32 +726,32 @@ fn send_task(owner: OwnerHandle, client: ClientId, choice: ExportChoice) -> Task
     )
 }
 
-/// `export.plan` for one entry, blocking this thread until the owner answers.
+/// `export.plan` for one entry with `settings`, blocking this thread until the owner answers.
 pub(crate) fn plan_now(
     owner: &OwnerHandle,
     client: ClientId,
     asset_id: &AssetId,
     entry_id: &EntryId,
+    settings: &ExportSettings,
 ) -> Result<Value, String> {
     call(
         owner,
         client,
         "export.plan",
-        json!({"asset_id": asset_id, "entry_id": entry_id}),
+        json!({"asset_id": asset_id, "entry_id": entry_id, "settings": settings}),
     )
     .map(|(plan, _)| plan)
 }
 
-/// `export.jpeg`'s parameters for one choice, under a new request id: `reference: true` only for a
+/// `export.write`'s parameters for one choice, under a new request id: `reference: true` only for a
 /// choice that asks for the reference renderer's export, as an API client asks for it, and no
 /// `reference` for any other.
 pub(crate) fn export_params(choice: &ExportChoice) -> Value {
     let mut params = json!({
         "asset_id": choice.asset_id,
         "entry_id": choice.entry_id,
+        "settings": export_settings(choice),
         "destination": choice.destination,
-        "keep_metadata": choice.keep_metadata,
-        "pixels_per_inch": choice.pixels_per_inch,
         "mutation": request(),
     });
     if choice.reference {
@@ -694,7 +763,7 @@ pub(crate) fn export_params(choice: &ExportChoice) -> Value {
     params
 }
 
-/// `export.jpeg` for one choice ([`export_params`]), waiting for the source and asking again, under
+/// `export.write` for one choice ([`export_params`]), waiting for the source and asking again, under
 /// one request id, when the owner answers `preparation-required`.
 pub(crate) fn send_now(
     owner: &OwnerHandle,
@@ -704,7 +773,7 @@ pub(crate) fn send_now(
     let params = export_params(choice);
     let mut attempt = 0;
     loop {
-        match call_detailed(owner, client, "export.jpeg", params.clone()) {
+        match call_detailed(owner, client, "export.write", params.clone()) {
             Err(error)
                 if error.code == ErrorKind::PreparationRequired.code()
                     && attempt < PREPARATION_RETRIES =>

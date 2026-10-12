@@ -1063,7 +1063,11 @@ fn catalog_browse_removal_and_batch_requests_are_what_an_agent_writes() {
     );
     assert_eq!(
         batch_export_params(Path::new("/Users/me/Exports"), &m),
-        json!({"targets": {"kind": "selection"}, "destination": "/Users/me/Exports", "mutation": envelope})
+        json!({"targets": {"kind": "selection"}, "settings": {
+            "format": "jpeg", "size": {"fit": "full"}, "quality": 90, "optimise": false,
+            "chroma": "444", "limit_bytes": null, "sharpen": null, "metadata": "none",
+            "pixels_per_inch": null, "folder": {"path": "/Users/me/Exports"}, "suffix": "-edited",
+        }, "mutation": envelope})
     );
     assert_eq!(CatalogGesture::Remove.method(), "asset.remove");
     assert_eq!(CatalogGesture::Restore.method(), "asset.restore");
@@ -1566,7 +1570,7 @@ fn catalog_batch_export_report_offers_export_anyway_for_exactly_its_stale_photog
         params,
         json!({
             "targets": {"kind": "assets", "asset_ids": [asset(1)]},
-            "destination": "/x",
+            "settings": batch_settings(Path::new("/x")),
             "acknowledge_stale": [{"asset_id": asset(1), "entry_id": entry,
                                    "operations": ["correction-3", "correction-5"]}],
             "mutation": {"request_id": "r", "actor": "luxforge-desktop"},

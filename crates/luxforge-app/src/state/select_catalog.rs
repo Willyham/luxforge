@@ -665,9 +665,19 @@ pub(crate) fn batch_preset_params(preset: &PresetId, mutation: &MutationRequest)
 }
 
 /// `batch.export`'s parameters: the selection, exported into the existing folder `destination`
-/// with the export's own settings.
+/// with [`batch_settings`].
 pub(crate) fn batch_export_params(destination: &Path, mutation: &MutationRequest) -> Value {
-    json!({"targets": selection(), "destination": destination, "mutation": mutation})
+    json!({"targets": selection(), "settings": batch_settings(destination), "mutation": mutation})
+}
+
+/// The settings Select's Export… writes with: today's export — a full-size quality-90 JPEG at
+/// 4:4:4 with no metadata — into `folder`, each file named `<stem>-edited.jpg`.
+pub(crate) fn batch_settings(folder: &Path) -> luxforge_core::ExportSettings {
+    luxforge_core::ExportSettings {
+        folder: luxforge_core::ExportFolder::Path(folder.to_path_buf()),
+        suffix: "-edited".into(),
+        ..luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)
+    }
 }
 
 /// `catalog.empty-removed`'s parameters. Each call is a request of its own: a call that finds
@@ -1465,7 +1475,7 @@ pub(crate) fn export_anyway_params(
         folder.clone(),
         json!({
             "targets": {"kind": "assets", "asset_ids": stale.iter().map(|skip| &skip.asset_id).collect::<Vec<_>>()},
-            "destination": folder,
+            "settings": batch_settings(folder),
             "acknowledge_stale": acknowledgements,
             "mutation": mutation,
         }),

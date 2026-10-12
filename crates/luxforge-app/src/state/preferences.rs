@@ -12,8 +12,8 @@ use crate::coalesce::Coalesce;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
-        BrushPreference, CanvasBackground, CatalogSelection, HdrMergePreference, INTERFACE_SIZES,
-        RawLook, WindowFrame, WorkspacePreference,
+        BrushPreference, CanvasBackground, CatalogSelection, ExportLast, HdrMergePreference,
+        INTERFACE_SIZES, RawLook, WindowFrame, WorkspacePreference,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -97,8 +97,8 @@ preferences! {
     brush: Option<BrushPreference>,
     /// The remembered window frame, or `None` for the system's placement.
     window: Option<WindowFrame>,
-    /// The folder `export.plan` suggests, or `None` for the original's.
-    export_folder: Option<PathBuf>,
+    /// The last export the person started, whose folder `export.plan` suggests, or `None`.
+    export_last: Option<ExportLast>,
     /// The last HDR merge's alignment and deghosting, which ⌥-click merges with, or `None` for
     /// the defaults.
     hdr_merge: Option<HdrMergePreference>,
@@ -712,7 +712,7 @@ mod tests {
                           "clip_shadows": false, "clip_highlights": false},
             "brush": null,
             "window": null,
-            "export_folder": null,
+            "export_last": null,
             "hdr_merge": null,
             "theme": "luxforge.dark",
             "update_checks": true,

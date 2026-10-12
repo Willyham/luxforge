@@ -95,7 +95,7 @@ pub(crate) enum PaletteAction {
     Restore,
     Compare,
     /// Export the displayed entry as a JPEG, choosing where in the save dialog; through the
-    /// reference renderer, `export.jpeg`'s `reference: true`, when `reference` asks for it.
+    /// reference renderer, `export.write`'s `reference: true`, when `reference` asks for it.
     Export {
         keep_metadata: bool,
         reference: bool,
@@ -254,7 +254,7 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             .map(|(label, keep_metadata)| {
                 (
                     (*label).to_owned(),
-                    "export.jpeg".to_owned(),
+                    "export.write".to_owned(),
                     PaletteAction::Export {
                         keep_metadata: *keep_metadata,
                         reference: false,
@@ -262,11 +262,11 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
                 )
             }),
     );
-    // The reference renderer's export, which only the palette offers: `export.jpeg` with
+    // The reference renderer's export, which only the palette offers: `export.write` with
     // `reference: true`, as an API client asks for it.
     entries.push((
         REFERENCE_EXPORT.to_owned(),
-        "export.jpeg".to_owned(),
+        "export.write".to_owned(),
         PaletteAction::Export {
             keep_metadata: false,
             reference: true,

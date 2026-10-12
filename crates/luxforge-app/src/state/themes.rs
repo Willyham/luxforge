@@ -463,7 +463,7 @@ mod tests {
             "canvas_background": "theme", "interface_size": 100, "catalog": null,
             "workspace": {"state_panel": true, "tools_panel": true, "thirds": false,
                           "clip_shadows": false, "clip_highlights": false},
-            "brush": null, "window": null, "export_folder": null, "hdr_merge": null, "theme": theme,
+            "brush": null, "window": null, "export_last": null, "hdr_merge": null, "theme": theme,
             "update_checks": true, "update_install_automatically": false
         })))
     }

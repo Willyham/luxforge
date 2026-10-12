@@ -1177,7 +1177,8 @@ fn catalog_browse_applies_a_preset_and_exports_the_selection_on_a_real_owner() {
         batch_sent(&editor),
         (
             "batch.export".to_owned(),
-            json!({"targets": {"kind": "selection"}, "destination": folder})
+            json!({"targets": {"kind": "selection"},
+                   "settings": crate::state::select_catalog::batch_settings(&folder)})
         )
     );
     settle(&mut editor);

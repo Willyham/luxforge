@@ -30,7 +30,7 @@ fn start(editor: &mut Editor, keep_metadata: bool) {
 }
 
 /// The plan answered and the dialog chose `/tmp/<name>`: the status names the file, and
-/// `export.jpeg` is what the returned task would send.
+/// `export.write` is what the returned task would send.
 fn chosen(editor: &mut Editor, name: &str) {
     let state = editor
         .document
@@ -473,7 +473,7 @@ fn a_destination_that_exists_is_refused_in_the_status_bar() {
 }
 
 /// The palette lists the title bar's two exports and the reference renderer's, which only it
-/// offers, each for `export.jpeg`; running the reference entry starts the same chain as the menu's
+/// offers, each for `export.write`; running the reference entry starts the same chain as the menu's
 /// items, marked as asking for the reference renderer.
 #[test]
 fn the_palette_lists_every_export_for_export_jpeg() {
@@ -505,15 +505,15 @@ fn the_palette_lists_every_export_for_export_jpeg() {
     assert_eq!(
         exports,
         vec![
-            ("Export JPEG\u{2026}", "export.jpeg", export(false, false)),
+            ("Export JPEG\u{2026}", "export.write", export(false, false)),
             (
                 "Export JPEG, keep metadata\u{2026}",
-                "export.jpeg",
+                "export.write",
                 export(true, false)
             ),
             (
                 "Export reference render\u{2026}",
-                "export.jpeg",
+                "export.write",
                 export(false, true)
             ),
         ]
@@ -549,7 +549,7 @@ fn the_palette_lists_every_export_for_export_jpeg() {
 /// requested where it was asked for.
 #[test]
 fn the_reference_export_sends_reference_true_and_the_others_none() {
-    use super::export::{export_params, plan_now, read_now, send_now};
+    use super::export::{export_params, plan_now, plan_settings, read_now, send_now};
     let dir = luxforge_testbase::paths::temp_dir("reference-export");
     let catalog = dir.join("catalog.sqlite");
     let (mut editor, asset, _) = super::testing::real_photo(&catalog);
@@ -561,7 +561,14 @@ fn the_reference_export_sends_reference_true_and_the_others_none() {
             editor.export.run.as_ref().map(|run| run.reference),
             Some(reference)
         );
-        let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
+        let plan = plan_now(
+            &editor.owner,
+            editor.client,
+            &asset,
+            &entry,
+            &plan_settings(false, None, None),
+        )
+        .unwrap();
         let choice = ExportChoice {
             asset_id: asset.clone(),
             entry_id: entry.clone(),
@@ -616,7 +623,7 @@ fn the_reference_export_sends_reference_true_and_the_others_none() {
 #[test]
 fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
     use super::{
-        export::{export_reads, plan_now, send_now},
+        export::{export_params, export_reads, plan_now, plan_settings, send_now},
         job_reads::Reader,
     };
     let catalog = std::env::temp_dir().join(format!(
@@ -633,7 +640,14 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
     let export_once = |editor: &mut Editor| {
         let _ = editor.export_start(true, false, Some(destination.clone()));
         assert!(editor.export.active(), "{}", editor.status.text);
-        let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
+        let plan = plan_now(
+            &editor.owner,
+            editor.client,
+            &asset,
+            &entry,
+            &plan_settings(false, None, None),
+        )
+        .unwrap();
         assert_eq!(plan["entry_id"], json!(entry));
         let choice = ExportChoice {
             asset_id: asset.clone(),
@@ -645,6 +659,15 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
             plan,
             acknowledge_stale: None,
         };
+        // Today's export, keeping metadata at this window's density, into the chosen folder.
+        assert_eq!(
+            export_params(&choice)["settings"],
+            json!({
+                "format": "jpeg", "size": {"fit": "full"}, "quality": 90, "optimise": false,
+                "chroma": "444", "limit_bytes": null, "sharpen": null, "metadata": "all",
+                "pixels_per_inch": 144, "folder": {"path": folder}, "suffix": "-edited",
+            })
+        );
         let queued = send_now(&editor.owner, editor.client, &choice);
         let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
             choice,
@@ -722,7 +745,7 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
 #[test]
 fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
     use super::{
-        export::{plan_now, send_now},
+        export::{plan_now, plan_settings, send_now},
         message::{history::HistoryMessage, preview::PreviewMessage},
         testing::{let_go, real_photo, run_commit, slide},
     };
@@ -793,7 +816,14 @@ fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
     let _ = editor.export_start(false, false, Some(destination.clone()));
     assert!(editor.export.active());
     let target = editor.export_entry().unwrap();
-    let plan = plan_now(&editor.owner, editor.client, &asset, &target).unwrap();
+    let plan = plan_now(
+        &editor.owner,
+        editor.client,
+        &asset,
+        &target,
+        &plan_settings(false, None, None),
+    )
+    .unwrap();
     assert_eq!(
         plan["entry_id"],
         json!(edited_entry),
