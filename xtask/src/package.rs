@@ -93,6 +93,42 @@ fn native_onnxruntime_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the generative runtime's provenance (`luxforge-diffusion`'s) and the licences of
+/// stable-diffusion.cpp, ggml and the third-party sources stable-diffusion.cpp bundles, from the
+/// vendored trees the build compiles. The packaged binary links them only on macOS and Linux.
+fn native_diffusion_notices(root: &Path, out: &Path) -> Result {
+    let source = root.join("crates/luxforge-diffusion");
+    let sd = "vendor/stable-diffusion.cpp-1b0ba108";
+    let notices = [
+        ("THIRD_PARTY.md".to_owned(), "luxforge-diffusion/THIRD_PARTY.md"),
+        (format!("{sd}/LICENSE"), "stable-diffusion.cpp-1b0ba108/LICENSE"),
+        (
+            format!("{sd}/thirdparty/LICENSE.darts_clone.txt"),
+            "stable-diffusion.cpp-1b0ba108/thirdparty/LICENSE.darts_clone.txt",
+        ),
+        (
+            format!("{sd}/thirdparty/oniguruma/COPYING"),
+            "stable-diffusion.cpp-1b0ba108/thirdparty/oniguruma/COPYING",
+        ),
+        (
+            format!("{sd}/thirdparty/utf8proc/LICENSE.md"),
+            "stable-diffusion.cpp-1b0ba108/thirdparty/utf8proc/LICENSE.md",
+        ),
+        ("vendor/ggml-d25b121c/LICENSE".to_owned(), "ggml-d25b121c/LICENSE"),
+    ];
+    for (from, to) in notices {
+        let input = source.join(&from);
+        ensure(
+            input.is_file(),
+            format!("Missing generative runtime notice: {}", input.display()),
+        )?;
+        let destination = out.join("native").join(to);
+        fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+        fs::copy(input, destination)?;
+    }
+    Ok(())
+}
+
 /// Copies the bundled UI font's provenance and its SIL Open Font License beside the other notices.
 fn bundled_font_notices(root: &Path, out: &Path) -> Result {
     let source = root.join("crates/luxforge-ui");
@@ -219,6 +255,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     native_raw_notices(root, out)?;
     native_jpeg_notices(root, out)?;
     native_onnxruntime_notices(root, out)?;
+    native_diffusion_notices(root, out)?;
     bundled_font_notices(root, out)?;
     bundled_theme_notices(root, out)?;
     bundled_data_notices(root, out)?;
@@ -278,6 +315,24 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "notices":"native/onnxruntime-1.28.0",
                     "provenance":"native/luxforge-onnx/THIRD_PARTY.md",
                     "build":"pyke's attested prebuilt static archive (pykeio/ort-artifacts 25d68de6) pinned by SHA-256; Core ML provider on macOS, DirectML on Windows, CPU on Linux"
+                },
+                {
+                    "name":"stable-diffusion.cpp",
+                    "version":"master-956-1b0ba10",
+                    "revision":"1b0ba10893f4e2e0656103011fc1c4645a02a734",
+                    "selected_license":"MIT (bundled third-party sources: nlohmann/json MIT, zip Unlicense, miniz MIT, darts-clone BSD-2-Clause, Oniguruma BSD-2-Clause, utf8proc MIT)",
+                    "notices":"native/stable-diffusion.cpp-1b0ba108",
+                    "provenance":"native/luxforge-diffusion/THIRD_PARTY.md",
+                    "build":"Bundled source subset built with cc and one staged patch; macOS and Linux only, not Windows"
+                },
+                {
+                    "name":"ggml",
+                    "version":"0.25.3",
+                    "revision":"d25b121ce1d6ae0c7e62ad080460d9fc1e46dd93",
+                    "selected_license":"MIT",
+                    "notices":"native/ggml-d25b121c",
+                    "provenance":"native/luxforge-diffusion/THIRD_PARTY.md",
+                    "build":"Bundled source built with cc; Metal and CPU backends on macOS, CPU on Linux"
                 }
             ],
             "native_provenance":"native/luxforge-raw/THIRD_PARTY.md",
@@ -506,6 +561,29 @@ mod tests {
         );
         let provenance = fs::read_to_string(native.join("luxforge-onnx/THIRD_PARTY.md")).unwrap();
         assert!(provenance.contains("not a completed audit"));
+    }
+    #[test]
+    fn copies_the_generative_runtime_licences() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        native_diffusion_notices(root, tmp.path()).unwrap();
+        let native = tmp.path().join("native");
+        for licence in [
+            "stable-diffusion.cpp-1b0ba108/LICENSE",
+            "ggml-d25b121c/LICENSE",
+        ] {
+            let text = fs::read_to_string(native.join(licence)).unwrap();
+            assert!(text.contains("MIT License"), "{licence}");
+        }
+        assert!(
+            native
+                .join("stable-diffusion.cpp-1b0ba108/thirdparty/oniguruma/COPYING")
+                .is_file()
+        );
+        let provenance =
+            fs::read_to_string(native.join("luxforge-diffusion/THIRD_PARTY.md")).unwrap();
+        assert!(provenance.contains("1b0ba10893f4e2e0656103011fc1c4645a02a734"));
+        assert!(provenance.contains("d25b121ce1d6ae0c7e62ad080460d9fc1e46dd93"));
     }
     #[test]
     fn copies_the_bundled_font_licence() {
