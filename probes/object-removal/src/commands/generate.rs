@@ -26,14 +26,16 @@ pub const USAGE: &str = "  generate --candidate lama|moebius|klein-q4|klein-q8|k
            (--case ID[,ID...]|all | --image IMG --mask MASK.png) --out DIR [--size N] [--seeds N] [--seed S]
            [--prompt TEXT] [--encoder q4|q8 | --condition FILE] [--record-condition FILE] [--steps N]
            [--lora-strength F] [--reference none|outlined|masked] [--reference-size N] [--tag T] [--backend B] [--threads N] [--margin F] [--no-blend]
-           [--models DIR] [--gen-models DIR] [--corpus DIR] [--public DIR]
+           [--models DIR] [--gen-models DIR] [--corpus DIR] [--public DIR] [--dump-input]
                                            fill each case with N candidates in sequence (seeds S, S+1, ...)
                                            inside the Fast fill's crop, grain, blend and composite; score
                                            each against the clean image and write the crops, the scores,
                                            the load and per-candidate times and the host's load to DIR.
                                            klein needs --encoder (Qwen3-4B, recording with
                                            --record-condition) or --condition (a recorded encoding, no
-                                           text encoder loaded)";
+                                           text encoder loaded); --dump-input writes klein's model
+                                           input beside each candidate (NAME-input.png and
+                                           NAME-input-hole.png)";
 
 /// The host's load, as `uptime` reports it.
 pub fn host_load() -> String {
@@ -91,6 +93,12 @@ enum Model {
 }
 
 impl Model {
+    fn set_dump(&mut self, path: Option<PathBuf>) {
+        if let Model::Klein(k) = self {
+            k.dump = path;
+        }
+    }
+
     fn set_seed(&mut self, seed: u64) {
         match self {
             Model::Lama(..) => {}
@@ -152,6 +160,7 @@ pub fn run(mut a: Args) -> Result<(), String> {
     let threads: i32 = a.parsed("--threads")?.unwrap_or(0);
     let margin: Option<f32> = a.parsed("--margin")?;
     let no_blend = a.flag("--no-blend");
+    let dump_input = a.flag("--dump-input");
     let models_dir = models::directory(a.path("--models")?);
     let gen_dir = models::generative_directory(a.path("--gen-models")?);
     let dirs = Dirs::new(a.path("--corpus")?, a.path("--public")?);
@@ -322,6 +331,9 @@ pub fn run(mut a: Args) -> Result<(), String> {
         for seed in first_seed..first_seed + seeds {
             model.set_seed(seed);
             params.seed = seed;
+            model.set_dump(
+                dump_input.then(|| dir.join(format!("{label}-s{seed}-input.png"))),
+            );
             let t = Instant::now();
             let (result, report, details) = model.fill(&job.image, &job.region, &params)?;
             let total_ms = t.elapsed().as_secs_f64() * 1e3;

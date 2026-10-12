@@ -367,6 +367,10 @@ pub struct Klein {
     pub steps: i32,
     pub seed: u64,
     pub step_ms: Vec<f64>,
+    /// Where to write the next fill's model input: the crop's RGB codes with the object (as PNG)
+    /// and, beside it with `-hole` before the extension, the hole at 255. The editor's
+    /// `luxforge-diffusion` tests feed these to its generator to reproduce this candidate.
+    pub dump: Option<PathBuf>,
 }
 
 impl Klein {
@@ -412,6 +416,7 @@ impl Klein {
                 steps: 4,
                 seed: 0,
                 step_ms: Vec::new(),
+                dump: None,
             },
             start.elapsed(),
         ))
@@ -481,6 +486,19 @@ impl Inpaint for Klein {
             return Err(format!(
                 "klein takes sizes that are multiples of 16, not {n}"
             ));
+        }
+        if let Some(path) = &self.dump {
+            let side = n as u32;
+            crate::image::Rgb8::new(side, side, init_rgb(input, false)).save_png(path)?;
+            let hole: Vec<u8> = input
+                .hole
+                .iter()
+                .flat_map(|&h| [if h != 0 { 255 } else { 0 }; 3])
+                .collect();
+            crate::image::Rgb8::new(side, side, hole).save_png(&path.with_file_name(format!(
+                "{}-hole.png",
+                path.file_stem().unwrap_or_default().to_string_lossy()
+            )))?;
         }
         let init = init_rgb(input, true);
         let mask: Vec<u8> = input

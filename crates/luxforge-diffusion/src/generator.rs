@@ -165,31 +165,39 @@ impl KleinGenerator {
         &self.files
     }
 
-    /// Refuse what this generator cannot run before anything is allocated.
-    fn admit(&self, request: &GenerateRequest<'_>) -> Result<(), Error> {
-        request.check()?;
-        let (width, height) = (request.width, request.height);
-        if width > MAX_SIDE || height > MAX_SIDE {
-            return Err(Error::resource_limit(format!(
-                "a klein generation is at most {MAX_SIDE} px a side, the size its memory budget was measured at, not {width}x{height}"
-            ))
-            .with_data(json!({"limit": "generation-side", "max_side": MAX_SIDE})));
-        }
-        if width % 16 != 0 || height % 16 != 0 {
-            return Err(Error::validation(format!(
-                "klein generates sizes that are multiples of 16, not {width}x{height}"
-            )));
-        }
-        match request.conditioning {
-            Conditioning::Prompt(_) if !self.encodes_prompts() => Err(Error::incompatible(
-                format!("model {} was opened without its text encoder and takes no prompt", self.model.id),
-            )),
-            Conditioning::Embedding(tensor) => Err(Error::incompatible(format!(
-                "klein takes the removal conditioning it was installed with or a prompt, not embedding {}",
-                tensor.name()
-            ))),
-            _ => Ok(()),
-        }
+}
+
+/// Refuse what a klein generator cannot run, before anything is allocated: a request the port
+/// refuses, a side past [`MAX_SIDE`] (`resource-limit`, data `limit: generation-side`), a side
+/// that is not a multiple of 16, a prompt to a generator opened without its text encoder, and an
+/// embedding.
+pub(crate) fn admit(
+    request: &GenerateRequest<'_>,
+    encodes_prompts: bool,
+    model: &str,
+) -> Result<(), Error> {
+    request.check()?;
+    let (width, height) = (request.width, request.height);
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return Err(Error::resource_limit(format!(
+            "a klein generation is at most {MAX_SIDE} px a side, the size its memory budget was measured at, not {width}x{height}"
+        ))
+        .with_data(json!({"limit": "generation-side", "max_side": MAX_SIDE})));
+    }
+    if width % 16 != 0 || height % 16 != 0 {
+        return Err(Error::validation(format!(
+            "klein generates sizes that are multiples of 16, not {width}x{height}"
+        )));
+    }
+    match request.conditioning {
+        Conditioning::Prompt(_) if !encodes_prompts => Err(Error::incompatible(format!(
+            "model {model} was opened without its text encoder and takes no prompt"
+        ))),
+        Conditioning::Embedding(tensor) => Err(Error::incompatible(format!(
+            "klein takes the removal conditioning it was installed with or a prompt, not embedding {}",
+            tensor.name()
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -246,7 +254,7 @@ impl Generator for KleinGenerator {
         progress: &mut dyn FnMut(StepProgress),
         cancel: &Cancel,
     ) -> Result<Generated, Error> {
-        self.admit(request)?;
+        admit(request, self.encodes_prompts(), &self.model.id)?;
         cancel.check()?;
         #[cfg(luxforge_sdcpp)]
         {

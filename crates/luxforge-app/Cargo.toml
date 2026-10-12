@@ -17,6 +17,7 @@ luxforge-gpu = { path = "../luxforge-gpu" }
 luxforge-evidence = { path = "../luxforge-evidence" }
 luxforge-net = { path = "../luxforge-net" }
 luxforge-onnx = { path = "../luxforge-onnx" }
+luxforge-diffusion = { path = "../luxforge-diffusion" }
 luxforge-ui = { path = "../luxforge-ui" }
 luxforge-input = { path = "../luxforge-input" }
 iced.workspace = true
