@@ -1,0 +1,27 @@
+[package]
+name = "luxforge-webp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The one crate that names libwebp. It depends on no workspace crate outside its tests;
+# `luxforge-core` alone depends on it, which `cargo xtask check-repository` enforces.
+[dependencies]
+libwebp-sys.workspace = true
+
+[dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
+# An independent WebP decoder for the tests.
+image-webp.workspace = true
+# The process's peak physical footprint, which the footprint test binary reads around one encode.
+luxforge-process = { path = "../luxforge-process" }
+
+# `unsafe` is allowed by name only on the functions in `encode.rs` that call libwebp (the encode
+# session, its progress hook and output writer, and the mux), each block beside its `SAFETY:`
+# comment. The crate denies `unsafe` everywhere else, and the rest of the workspace keeps its
+# forbid(unsafe_code) policy.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
