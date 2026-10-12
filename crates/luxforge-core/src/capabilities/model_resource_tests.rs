@@ -414,7 +414,11 @@ fn a_further_file_from_another_origin_is_disclosed_and_installed_with_the_resour
     let refused = owner.fail(INSTALL, json!({"module_id": MODULE, "resource_id": MODEL}));
     assert_eq!(refused.code, "consent-required");
     let disclosure = &refused.data.as_ref().unwrap()["consent"]["disclosure"];
-    assert_eq!(disclosure["further_origins"], json!([RELEASES]), "{disclosure}");
+    assert_eq!(
+        disclosure["further_origins"],
+        json!([RELEASES]),
+        "{disclosure}"
+    );
     grant(&owner, "segmenter-download", MODEL);
     assert_eq!(install(&owner, MODEL)["status"], json!("ready"));
     assert_eq!(

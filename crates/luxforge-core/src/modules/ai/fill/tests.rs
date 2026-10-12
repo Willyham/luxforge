@@ -875,7 +875,10 @@ fn the_seam_correction_takes_out_a_colour_offset() {
     // And every pixel the coverage leaves is still the input's own.
     for (i, &c) in replaced.coverage.iter().enumerate() {
         if c == 0.0 {
-            assert_eq!(replaced.linear[i * 3..i * 3 + 3], candidate.linear[i * 3..i * 3 + 3]);
+            assert_eq!(
+                replaced.linear[i * 3..i * 3 + 3],
+                candidate.linear[i * 3..i * 3 + 3]
+            );
         }
     }
 }

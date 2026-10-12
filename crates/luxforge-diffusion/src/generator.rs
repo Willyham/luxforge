@@ -57,8 +57,10 @@ pub fn outlined(rgb: &[u8], hole: &[bool], width: usize, height: usize) -> Vec<u
     let (x1, y1) = ((x1 + pad).min(width - 1), (y1 + pad).min(height - 1));
     for y in y0..=y1 {
         for x in x0..=x1 {
-            let edge =
-                x < x0 + thickness || x + thickness > x1 || y < y0 + thickness || y + thickness > y1;
+            let edge = x < x0 + thickness
+                || x + thickness > x1
+                || y < y0 + thickness
+                || y + thickness > y1;
             if edge {
                 out[(y * width + x) * 3..(y * width + x) * 3 + 3].copy_from_slice(&[255, 0, 0]);
             }
@@ -128,7 +130,9 @@ impl KleinGenerator {
                 threads: 0,
                 flash_attn: true,
             })
-            .map_err(|detail| Error::incompatible(detail).with_data(json!({"model": identity.id})))?;
+            .map_err(|detail| {
+                Error::incompatible(detail).with_data(json!({"model": identity.id}))
+            })?;
             context
                 .supply_condition(LORA_PROMPT, Some(&files.conditioning))
                 .map_err(Error::incompatible)?;
@@ -164,7 +168,6 @@ impl KleinGenerator {
     pub fn files(&self) -> &Files {
         &self.files
     }
-
 }
 
 /// Refuse what a klein generator cannot run, before anything is allocated: a request the port
@@ -217,7 +220,11 @@ pub(crate) fn inputs(request: &GenerateRequest<'_>) -> Inputs {
         .iter()
         .map(|value| (value * 255.0).round().clamp(0.0, 255.0) as u8)
         .collect();
-    let hole: Vec<bool> = request.mask.iter().map(|coverage| *coverage > 0.0).collect();
+    let hole: Vec<bool> = request
+        .mask
+        .iter()
+        .map(|coverage| *coverage > 0.0)
+        .collect();
     let reference = outlined(&rgb, &hole, width, height);
     let mut init = rgb;
     for (i, _) in hole.iter().enumerate().filter(|(_, h)| **h) {
@@ -268,7 +275,9 @@ impl Generator for KleinGenerator {
                 ),
             };
             let steps = request.steps;
-            let _one = GENERATING.lock().unwrap_or_else(|poison| poison.into_inner());
+            let _one = GENERATING
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             cancel.check()?;
             let mut context = self
                 .context

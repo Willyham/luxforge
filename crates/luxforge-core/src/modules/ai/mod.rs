@@ -4,8 +4,8 @@
 //! Corrections' `edit.accept-correction-patch`; this module adds no accept path, candidate store
 //! or repair stage of its own.
 pub(crate) mod fill;
-mod generative;
 mod formats;
+mod generative;
 mod models;
 mod module;
 mod selection;
