@@ -2,7 +2,7 @@
 //! panel's hierarchy.
 //!
 //! A row of [`theme::GROUP_HEADER_HEIGHT`] with [`theme::GROUP_MARGIN`] above: the disclosure and
-//! the label in 11 pt semibold secondary text, then a hairline rule running to the state caption
+//! the label in 10.5 pt semibold capitals, then a hairline rule running to the state caption
 //! (Original, or Custom in the accent) and the group's reset. A collapsed group keeps its header
 //! and drops the rule. The disclosure and the reset are each focusable: Space or Enter on the
 //! disclosure toggles the group, and on the reset resets it.
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn a_group_header_is_its_row_and_margin() {
-        assert_eq!(sub_group_header_height(), 28.0);
+        assert_eq!(sub_group_header_height(), 32.0);
     }
 
     #[test]

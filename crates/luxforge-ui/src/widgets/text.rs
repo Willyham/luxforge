@@ -1,7 +1,7 @@
 //! Text helpers at the sizes and colours the visual language defines.
 
 use crate::Element;
-use crate::theme::{self, Token};
+use crate::theme::{self, Derived, Token};
 use iced::Length;
 use iced::alignment::Horizontal;
 use iced::widget::text::{LineHeight, Wrapping};
@@ -76,7 +76,7 @@ pub(crate) fn value_text<'a, M: Clone + 'a>(content: impl Into<String>) -> Eleme
     .into()
 }
 
-/// A control's label on its label line: 12 pt in the label colour, one line
+/// A control's label on its label line: 12 pt in [`Derived::ControlLabel`], one line
 /// [`theme::SLIDER_LABEL_HEIGHT`] tall, so a slider row keeps its pitch.
 pub(crate) fn control_label<'a>(
     content: impl Into<String>,
@@ -86,18 +86,21 @@ pub(crate) fn control_label<'a>(
         .size(theme::SIZE_CONTROL)
         .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
         .style(theme::ink(if enabled {
-            Token::TextLabel
+            theme::Ink::Derived(Derived::ControlLabel)
         } else {
-            Token::TextTertiary
+            theme::Ink::Token(Token::TextTertiary)
         }))
 }
 
-/// 11 pt semibold secondary text in sentence case: a sub-group's label (White balance, Tone).
+/// A sub-group's label (WHITE BALANCE, TONE): the section label's 10.5 pt semibold capitals in
+/// [`Derived::GroupLabel`], so a group reads by its shape between the band's title and the
+/// sentence-case control labels under it. As for [`section_label`], the boards' tracking is not
+/// drawn.
 pub(crate) fn group_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
-    text(content.into())
-        .size(theme::SIZE_CAPTION)
+    text(content.into().to_uppercase())
+        .size(theme::SIZE_SECTION_LABEL)
         .font(theme::FONT_SEMIBOLD)
-        .style(theme::ink(Token::TextSecondary))
+        .style(theme::ink(Derived::GroupLabel))
         .wrapping(Wrapping::None)
         .into()
 }

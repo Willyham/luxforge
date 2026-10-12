@@ -250,7 +250,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "empty",
-        about: "The editor with nothing open",
+        about: "An empty catalog opening in Select",
         launches: &[LaunchSpec {
             plan: |_| Plan::new(vec![Step::opened("empty")]),
             ..APP
@@ -1612,6 +1612,10 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
             "Wrong requested generation",
         )?;
         if matches!(scenario, "empty" | "invalid") {
+            ensure(
+                state["select"]["shown"] == if empty { "select" } else { "develop" },
+                "Wrong startup workspace",
+            )?;
             ensure(
                 state["phase"] == if empty { "empty" } else { "error" }
                     && state["displayed_generation"] == 0,
