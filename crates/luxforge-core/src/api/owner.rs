@@ -3050,6 +3050,7 @@ host_params! {
         brush: Option<Option<Value>> = json("{size, feather, flow}, each within the range mask.add-stroke declares for it; null resets it to the neutral brush"),
         window: Option<Option<Value>> = json("{width, height, x, y} in the system's points: width and height within 320..=16384 and a finite position; null resets it to the default frame"),
         export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
+        hdr_merge: Option<Option<Value>> = json("{alignment, deghost}, each auto or off: the remembered settings of the last HDR merge, which the desktop's option-click merges with; null resets it to the defaults"),
         theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
     }
 }
@@ -3089,6 +3090,7 @@ pub(super) fn preferences_set(
         brush: decoded("brush", params.brush)?,
         window: decoded("window", params.window)?,
         export_folder: params.export_folder,
+        hdr_merge: decoded("hdr_merge", params.hdr_merge)?,
         theme: match params.theme {
             // Luxforge Dark is the default, so choosing it removes the stored choice.
             Some(Some(id)) if id == crate::theme::LUXFORGE_DARK_ID => Some(None),
