@@ -2694,7 +2694,7 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
 /// The panel refuses rather than silently coercing, and says why each time: a first component that
 /// is not an add, and a list that has reached its declared limit.
 #[test]
-fn the_panel_refuses_a_first_component_that_is_not_add_and_a_list_at_its_limit() {
+fn slow_the_panel_refuses_a_first_component_that_is_not_add_and_a_list_at_its_limit() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.draw_mask();
@@ -3207,7 +3207,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
 /// frame of its own pending, its evidence reporting the fields it sent. A move into the cell before
 /// it decimates nothing and sends nothing. The stroke still commits one entry.
 #[test]
-fn a_long_stroke_builds_its_fields_once_per_move_and_reads_drained_between_moves() {
+fn slow_a_long_stroke_builds_its_fields_once_per_move_and_reads_drained_between_moves() {
     use crate::mask_draft::brush_counts;
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
@@ -3840,7 +3840,7 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
 /// target for both a colour and a spatial action. The owner accepted a set before cancellation;
 /// delivering that answer afterwards cannot resurrect its draft or queued photograph.
 #[test]
-fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() {
+fn slow_cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() {
     use crate::app::testing::{attach_log, logged};
     for (action, method, parameter, committed, candidate) in [
         ("set-basic", "edit.set-basic", "exposure", 0.3, 0.9),
@@ -4465,7 +4465,7 @@ fn the_brush_in_hand_is_put_down_by_done_and_when_its_component_is_gone() {
 /// A brush that has painted holds a stroke of its own, so a commit elsewhere during it shows the
 /// Changed elsewhere notice with Discard and Reapply, and nothing is rebased behind its back.
 #[test]
-fn a_painted_brush_changed_elsewhere_shows_the_notice() {
+fn slow_a_painted_brush_changed_elsewhere_shows_the_notice() {
     for perspective in [false, true] {
         for reapply in [false, true] {
             let mut masking = Masking::opened();
@@ -5110,7 +5110,7 @@ fn an_evidence_tint_colour_choice_preserves_automatic_coverage() {
 /// A source/coverage completion may beat workspace.set. Evidence changes the local presentation
 /// choice first, exactly as the UI does, so a held old-colour/mode grid cannot settle that step.
 #[test]
-fn an_evidence_overlay_choice_rejects_a_grid_that_beats_its_session_answer() {
+fn slow_an_evidence_overlay_choice_rejects_a_grid_that_beats_its_session_answer() {
     use crate::app::{
         evidence::Settle,
         testing::{attach_script, evidence},
@@ -6198,7 +6198,7 @@ fn a_mask_bound_only_to_a_curve_shows_the_scope_chip_on_the_tone_curve_band() {
 /// masked one is placed after — and not the masked curve's own points, which change its output and
 /// not its input.
 #[test]
-fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
+fn slow_the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
     use luxforge_core::{Cancel, PreviewRequest};
 
     let mut masking = Masking::opened();

@@ -577,7 +577,7 @@ mod tests {
         checksum = \"cf211e3776eea6aec988552fa118dd746d70e1b1e5e244058d1c98015f3e5872\"\n";
 
     #[test]
-    fn the_repositorys_own_pins_hold() {
+    fn slow_the_repositorys_own_pins_hold() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         check(&root).unwrap();
     }

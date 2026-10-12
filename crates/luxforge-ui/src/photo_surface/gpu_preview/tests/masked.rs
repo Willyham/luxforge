@@ -4,10 +4,7 @@
 //! for the tests; the core's own, one per mask kind, are qualified against their CPU fields by the
 //! desktop's tests (`cargo test -p luxforge-app gpu_mask`).
 use super::*;
-use crate::photo_surface::gpu_preview::{
-    mask::changed_ranges,
-    qualification::{self, Qualifier},
-};
+use crate::photo_surface::gpu_preview::{mask::changed_ranges, qualification};
 
 // ---- Test programs ----------------------------------------------------------------------------
 
@@ -144,6 +141,7 @@ fn plan_of(boundary: GpuBoundary, steps: Vec<GpuStep>) -> GpuPlan {
 
 #[test]
 fn a_masked_step_assembles_its_coverage_once_and_validates() {
+    luxforge_gpu::qualification::install_reference_encoding();
     let first = masked(
         vec![scale(0.5), swap(true)],
         coverage(
@@ -328,9 +326,9 @@ fn a_tick_writes_only_the_chunks_of_the_blocks_that_changed() {
 /// black boundary, against the CPU's fold of the same component values in `f64`: every mode, every
 /// inversion, the whole mask's inversion and the amount.
 #[test]
-fn the_algebra_inversions_and_amount_compose_as_the_cpus() {
-    let test = "the_algebra_inversions_and_amount_compose_as_the_cpus";
-    let Some(qualifier) = Qualifier::headless(test) else {
+fn slow_the_algebra_inversions_and_amount_compose_as_the_cpus() {
+    let test = "slow_the_algebra_inversions_and_amount_compose_as_the_cpus";
+    let Some(qualifier) = qualifier(test) else {
         return;
     };
     eprintln!("{test}: {}", qualifier.adapter());
@@ -398,7 +396,7 @@ fn the_algebra_inversions_and_amount_compose_as_the_cpus() {
 #[test]
 fn the_supersample_is_the_mean_over_the_doubled_stage() {
     let test = "the_supersample_is_the_mean_over_the_doubled_stage";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = qualifier(test) else {
         return;
     };
     let side = 32u32;
@@ -455,7 +453,7 @@ fn the_supersample_is_the_mean_over_the_doubled_stage() {
 #[test]
 fn outside_the_bounds_and_where_coverage_is_zero_the_input_is_untouched() {
     let test = "outside_the_bounds_and_where_coverage_is_zero_the_input_is_untouched";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = qualifier(test) else {
         return;
     };
     let side = 48u32;
@@ -504,7 +502,7 @@ fn outside_the_bounds_and_where_coverage_is_zero_the_input_is_untouched() {
 #[test]
 fn the_blend_and_a_value_based_component_read_the_operations_own_input() {
     let test = "the_blend_and_a_value_based_component_read_the_operations_own_input";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = qualifier(test) else {
         return;
     };
     let side = 32u32;

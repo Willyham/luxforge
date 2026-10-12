@@ -966,7 +966,7 @@ mod tests {
     /// with nothing shared, beside a stroke that is shared: the entry resolves the held stroke, is
     /// not kept when the other is missing, and asks the store for the other each time it is read.
     #[test]
-    fn a_missing_or_corrupt_stroke_no_cached_entry_holds_is_still_refused() {
+    fn slow_a_missing_or_corrupt_stroke_no_cached_entry_holds_is_still_refused() {
         for corrupt in [false, true] {
             let dir = temp("entry-cache-shared-broken-stroke");
             std::fs::create_dir_all(&dir).unwrap();

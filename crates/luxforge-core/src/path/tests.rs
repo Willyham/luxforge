@@ -342,7 +342,7 @@ fn sine(rng: &mut Rng, count: usize) -> Vec<[f64; 2]> {
 /// So the stroke the desktop posts after each pointer event is the one whole-path decimation posts,
 /// bit for bit, and its content address and its coverage are unchanged.
 #[test]
-fn a_capture_taken_one_position_at_a_time_decimates_as_the_whole_path_does() {
+fn slow_a_capture_taken_one_position_at_a_time_decimates_as_the_whole_path_does() {
     let mut rng = Rng(0x0005_ca97);
     for case in 0..240 {
         let size = if case % 4 == 3 {

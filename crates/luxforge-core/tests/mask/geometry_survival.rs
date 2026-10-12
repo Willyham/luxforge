@@ -240,7 +240,7 @@ fn settled(map: &[bool], width: u32, height: u32, x: u32, y: u32, reach: i64) ->
 }
 
 #[test]
-fn a_mask_lands_on_the_same_content_pixels_through_every_delivered_tail() {
+fn slow_a_mask_lands_on_the_same_content_pixels_through_every_delivered_tail() {
     // The footprint with no tail at all: which content pixels the masked layer changes.
     let mut base = Fixture::open("content");
     let plain_content = base.render();

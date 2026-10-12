@@ -1667,7 +1667,7 @@ mod tests {
     /// pull reads: the rendered frame is the point evaluator's at every pixel, each chunk's rows
     /// are bit for bit the pulled ones, and so are a neighbourhood read and a spatial input.
     #[test]
-    fn rows_through_every_view_and_exact_geometry_are_the_pulled_pixels() {
+    fn slow_rows_through_every_view_and_exact_geometry_are_the_pulled_pixels() {
         let registry = ModuleRegistry::developer();
         let source = distinct(41, 29);
         for orientation in 1..=8 {
@@ -1719,7 +1719,7 @@ mod tests {
     /// rows as the per-pixel pull reads it, in the frame's rows and in a neighbourhood or spatial
     /// input read from it, under portrait and landscape source views.
     #[test]
-    fn rows_from_a_spatial_frame_through_exact_geometry_are_the_pulled_pixels() {
+    fn slow_rows_from_a_spatial_frame_through_exact_geometry_are_the_pulled_pixels() {
         let registry = ModuleRegistry::developer();
         let source = distinct(41, 29);
         for orientation in [1, 3, 6, 7] {

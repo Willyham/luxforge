@@ -180,7 +180,7 @@ fn unwarmed(links: &[Vec<String>], warmed: &[Vec<String>]) -> usize {
 /// through its drafted layer, a light link of its own, so each Basic candidate takes two links: here
 /// the drags of the first nine Basic layers are warmed and the last eight left out.
 #[test]
-fn the_warm_list_holds_a_drag_of_each_of_sixteen_masked_spatial_layers() {
+fn slow_the_warm_list_holds_a_drag_of_each_of_sixteen_masked_spatial_layers() {
     let stack = sixteen(false);
     let context = RenderContext::new();
     let (plans, links) = warmed(&stack, &context);
@@ -253,7 +253,7 @@ fn the_warm_list_holds_a_drag_of_each_of_sixteen_masked_spatial_layers() {
 /// curve and the colour mixer likewise, and the vignette's, after every Dehaze layer, its drafted
 /// link alone.
 #[test]
-fn past_its_bound_the_warm_list_keeps_every_spatial_drag_and_leaves_out_colour_ones() {
+fn slow_past_its_bound_the_warm_list_keeps_every_spatial_drag_and_leaves_out_colour_ones() {
     let stack = sixteen(true);
     let context = RenderContext::new();
     let (plans, links) = warmed(&stack, &context);

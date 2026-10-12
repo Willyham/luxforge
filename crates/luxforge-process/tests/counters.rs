@@ -76,7 +76,7 @@ fn thread_cpu_ns() -> u64 {
 /// at least that, less the coarsest counter's rounding. The thread's own clock decides how long it
 /// spins, so a loaded host that gives it less of each second makes the test slower, never failed.
 #[test]
-fn cpu_time_grows_by_the_work_of_another_thread() {
+fn slow_cpu_time_grows_by_the_work_of_another_thread() {
     const WORK: u64 = 200_000_000;
     let mut sampler = Sampler::new();
     let before = sampler
@@ -160,7 +160,7 @@ fn gpu_allocations_are_unavailable_until_enabled() {
 /// A read that opens nothing reports allocations only once an ordinary read has opened the device,
 /// and reads them from it afterwards, as the statistics sampler relies on.
 #[test]
-fn a_read_that_opens_nothing_reads_allocations_only_from_an_opened_device() {
+fn slow_a_read_that_opens_nothing_reads_allocations_only_from_an_opened_device() {
     let mut sampler = Sampler::new();
     sampler.enable_gpu_allocations();
     let before = sampler.read_opening_nothing().gpu;
@@ -201,7 +201,7 @@ const STALLED: Duration = Duration::from_millis(500);
 /// an Apple GPU has and a multiple of their command buffers' own GPU start and end times.
 #[cfg(target_os = "macos")]
 #[test]
-fn a_metal_dispatch_raises_gpu_time_and_allocations() {
+fn slow_a_metal_dispatch_raises_gpu_time_and_allocations() {
     let mut sampler = Sampler::new();
     sampler.enable_gpu_allocations();
     let first = sampler.read().gpu;

@@ -477,7 +477,7 @@ fn reopened_render(catalog: &Path, asset: &crate::AssetId) -> Result<Raster, cra
 }
 
 #[test]
-fn a_reopened_patch_renders_without_a_producer_and_missing_or_corrupt_bytes_are_named() {
+fn slow_a_reopened_patch_renders_without_a_producer_and_missing_or_corrupt_bytes_are_named() {
     let mut session = Session::new("patch-reopen.sqlite");
     let (_, artifact) = add_patch(
         &mut session.service,

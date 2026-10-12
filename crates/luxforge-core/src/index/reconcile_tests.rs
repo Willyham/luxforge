@@ -299,7 +299,7 @@ impl Drop for Linked {
 /// read and 51,200 `lstat`s.
 #[cfg(unix)]
 #[test]
-fn hard_links_are_each_their_own_row_found_at_a_cost_linear_in_the_files() {
+fn slow_hard_links_are_each_their_own_row_found_at_a_cost_linear_in_the_files() {
     const LINKS: usize = 2_000;
     const MORE: usize = 1_100;
     let mut tree = Linked::new("reconcile-links", LINKS, 500);
@@ -367,7 +367,7 @@ fn hard_links_are_each_their_own_row_found_at_a_cost_linear_in_the_files() {
 /// other row stays where it was. Each row with the three identities is read once at most.
 #[cfg(unix)]
 #[test]
-fn a_move_or_a_rename_among_hard_links_carries_its_row() {
+fn slow_a_move_or_a_rename_among_hard_links_carries_its_row() {
     const LINKS: usize = 400;
     let mut tree = Linked::new("reconcile-link-moves", LINKS, 100);
     let root = tree.root.clone();

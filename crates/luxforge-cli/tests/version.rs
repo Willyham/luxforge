@@ -1,6 +1,6 @@
 //! A version request must finish without a catalog or JSON input/live session.
 #[test]
-fn both_command_lines_report_the_same_compiled_version_without_a_catalog() {
+fn slow_both_command_lines_report_the_same_compiled_version_without_a_catalog() {
     for (name, binary) in [
         ("luxforge-json", env!("CARGO_BIN_EXE_luxforge-json")),
         ("luxforge-ctl", env!("CARGO_BIN_EXE_luxforge-ctl")),

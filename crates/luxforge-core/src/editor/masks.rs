@@ -818,7 +818,7 @@ mod tests {
     /// evaluation path refuses it by name, the stack stays readable and its stored bytes do not
     /// change. The host cannot write such a stack in the first place, which is asserted here too.
     #[test]
-    fn a_stored_layer_naming_a_missing_mask_is_refused_on_every_path_and_left_as_it_is() {
+    fn slow_a_stored_layer_naming_a_missing_mask_is_refused_on_every_path_and_left_as_it_is() {
         let catalog = temp("dangling-mask.sqlite");
         let mut service =
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
@@ -1355,7 +1355,7 @@ mod tests {
     /// decimates before it posts and an agent that posts the path it captured reach the same stored
     /// stroke — the same address, and therefore the same coverage.
     #[test]
-    fn a_decimated_path_and_the_path_it_came_from_are_the_same_stored_stroke() {
+    fn slow_a_decimated_path_and_the_path_it_came_from_are_the_same_stored_stroke() {
         // A path a pointer produces: many positions along a straight run, which decimation at the
         // stroke's own radius reduces to its two ends.
         let captured: Vec<[f64; 2]> = (0..=64)

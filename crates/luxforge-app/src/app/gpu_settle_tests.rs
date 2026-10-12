@@ -95,7 +95,7 @@ fn gpu_drag(editor: &mut Editor, values: &[f64]) {
 /// replaces the GPU frame on screen through a dissolve from the drawn tick's revision to that
 /// frame; it runs to its end, after which the next message lets it go.
 #[test]
-fn gpu_settle_a_commit_dissolves_from_the_gpu_frame_to_the_committed_frame() {
+fn slow_gpu_settle_a_commit_dissolves_from_the_gpu_frame_to_the_committed_frame() {
     let catalog = catalog("commit");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.rest_off = true;
@@ -293,7 +293,7 @@ fn gpu_settle_compare_draws_both_sides_on_the_gpu_and_hands_after_back() {
 /// revision replaces the GPU frame through a dissolve, the plan held behind it; the next tick,
 /// drawn on the GPU, is an input that cancels it.
 #[test]
-fn gpu_settle_a_cpu_frame_of_the_draft_dissolves_and_the_next_tick_cancels_it() {
+fn slow_gpu_settle_a_cpu_frame_of_the_draft_dissolves_and_the_next_tick_cancels_it() {
     let catalog = catalog("held");
     let (mut editor, _, _) = real_photo(&catalog);
     gpu_drag(&mut editor, &[0.2, 0.35]);
@@ -542,7 +542,7 @@ fn gpu_settle_below_100_percent_a_commit_dissolves_into_the_proxy_and_a_pan_canc
 /// plan held behind it; a change of zoom cancels it, and a dissolve that runs to its end is let go
 /// by the next message.
 #[test]
-fn gpu_settle_at_a_percentage_zoom_the_drafts_region_dissolves_and_a_zoom_cancels_it() {
+fn slow_gpu_settle_at_a_percentage_zoom_the_drafts_region_dissolves_and_a_zoom_cancels_it() {
     let catalog = catalog("percent-held");
     let (mut editor, _, _) = real_photo(&catalog);
     zoomed(&mut editor);

@@ -764,7 +764,7 @@ fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
 }
 
 #[test]
-fn a_silent_server_hits_the_read_deadline() {
+fn slow_a_silent_server_hits_the_read_deadline() {
     let stall = Stall::new();
     let gate = stall.gate();
     let server = TestServer::http(move |_, _| gate.pass()).unwrap();
@@ -785,7 +785,7 @@ fn a_silent_server_hits_the_read_deadline() {
 }
 
 #[test]
-fn a_trickling_server_hits_the_total_deadline() {
+fn slow_a_trickling_server_hits_the_total_deadline() {
     let (told, received) = mpsc::channel();
     let received = Mutex::new(received);
     // One byte at a time, each once the client has read the one before, so the body keeps
@@ -840,7 +840,7 @@ fn cancelling_a_stalled_body_returns_cancelled_promptly() {
 }
 
 #[test]
-fn connection_attempts_share_the_request_deadline() {
+fn slow_connection_attempts_share_the_request_deadline() {
     /// Waits out every attempt's whole timeout and then fails, recording each timeout it was given.
     #[derive(Default)]
     struct Stalled(Mutex<Vec<Duration>>);
@@ -1222,7 +1222,7 @@ fn cancelling_a_stalled_tls_handshake_shuts_its_socket_down_promptly() {
 }
 
 #[test]
-fn a_stalled_tls_read_hits_the_idle_timeout() {
+fn slow_a_stalled_tls_read_hits_the_idle_timeout() {
     for bytes in [
         &b"HTTP/1.1 200 OK\r\n"[..],
         b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789",

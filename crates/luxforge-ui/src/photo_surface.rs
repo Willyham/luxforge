@@ -3711,7 +3711,7 @@ mod tests {
     /// partition the raster exactly, and whose textures overlap each neighbour by the one pixel the
     /// linear filter reads across a seam.
     #[test]
-    fn a_large_raster_is_cut_into_tiles_that_fit_and_partition_it() {
+    fn slow_a_large_raster_is_cut_into_tiles_that_fit_and_partition_it() {
         for (size, limit, grid) in [
             ((10000, 6000), LIMIT, (2, 1)),
             ((9504, 6336), LIMIT, (2, 1)),
@@ -4524,7 +4524,8 @@ mod gpu_surface_tests {
     /// view would draw them. One set of slots and uniforms for both would draw whichever was
     /// prepared last in both places and upload both every frame.
     #[test]
-    fn two_surfaces_keep_their_own_textures_and_uniforms_and_closing_one_releases_only_its_slots() {
+    fn slow_two_surfaces_keep_their_own_textures_and_uniforms_and_closing_one_releases_only_its_slots()
+     {
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
@@ -4922,7 +4923,7 @@ mod gpu_surface_tests {
     /// written through an sRGB view. A side of one texel repeats its edge, and an odd side drops
     /// its last texel as the GPU's own chains do.
     #[test]
-    fn each_mip_level_is_the_linear_light_mean_of_the_level_above_for_both_texture_formats() {
+    fn slow_each_mip_level_is_the_linear_light_mean_of_the_level_above_for_both_texture_formats() {
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
@@ -5004,7 +5005,7 @@ mod gpu_surface_tests {
     }
 
     #[test]
-    fn deferred_full_upload_draws_a_stale_photo_then_progresses_on_retirement() {
+    fn slow_deferred_full_upload_draws_a_stale_photo_then_progresses_on_retirement() {
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
@@ -5060,7 +5061,7 @@ mod gpu_surface_tests {
     }
 
     #[test]
-    fn stale_fit_photo_suppresses_new_overlay_until_replacement_arrives() {
+    fn slow_stale_fit_photo_suppresses_new_overlay_until_replacement_arrives() {
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
@@ -5186,7 +5187,7 @@ mod gpu_surface_tests {
 
     /// At Fit a proxy of new dimensions (rotation, crop, refit) replaces a small proxy.
     #[test]
-    fn review_a_fit_proxy_of_new_dimensions_is_drawn_in_the_frame_it_arrives() {
+    fn slow_review_a_fit_proxy_of_new_dimensions_is_drawn_in_the_frame_it_arrives() {
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;

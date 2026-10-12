@@ -53,9 +53,9 @@ fn layered(effects: &[&str], payloads: &[Value], masks: &[Mask]) -> Recipe {
 /// is the whole evaluation's, bit for bit, both reading one light, and so it is with the poison
 /// on; each tick's passes are pinned link by link.
 #[test]
-fn gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does() {
+fn slow_gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does() {
     let test =
-        "gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does";
+        "slow_gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does";
     let Some(qualifier) = headless(test) else {
         return;
     };
@@ -160,8 +160,8 @@ fn gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluati
 /// input moved. Each light its light link's, computed from the whole stage; every frame the whole
 /// evaluation's, bit for bit, and so with the poison on.
 #[test]
-fn gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote() {
-    let test = "gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote";
+fn slow_gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote() {
+    let test = "slow_gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote";
     let Some(qualifier) = headless(test) else {
         return;
     };

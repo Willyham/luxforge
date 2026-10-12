@@ -760,7 +760,7 @@ fn units(scale: SamplingScale) -> Vec<(String, Unit)> {
 }
 
 #[test]
-fn detail_units_match_the_reference_bit_for_bit() {
+fn slow_detail_units_match_the_reference_bit_for_bit() {
     let mut rng = SplitMix64(0x0DE7_A11C);
     let scales = [
         [1.0, 1.0],
@@ -1024,7 +1024,7 @@ fn input_region(rng: &mut SplitMix64, held: Region, stage: Stage) -> Region {
 }
 
 #[test]
-fn detail_limiter_matches_the_frozen_limiter_bit_for_bit() {
+fn slow_detail_limiter_matches_the_frozen_limiter_bit_for_bit() {
     let mut rng = SplitMix64(0x0011_D17E);
     let units = sharpenings(SamplingScale { x: 1.0, y: 1.0 });
     // How many pixels' windows are flat, how many the limiter takes over the window's high and
@@ -1082,7 +1082,7 @@ fn detail_limiter_matches_the_frozen_limiter_bit_for_bit() {
 }
 
 #[test]
-fn detail_sharpening_last_pass_matches_the_frozen_pass_bit_for_bit() {
+fn slow_detail_sharpening_last_pass_matches_the_frozen_pass_bit_for_bit() {
     let mut rng = SplitMix64(0x5A4E_F115);
     let units = sharpenings(SamplingScale { x: 1.0, y: 1.0 });
     for (width, height) in LAST_PASS_STAGES {
@@ -1252,7 +1252,7 @@ fn detail_oklab_planes_match_the_frozen_conversion_bit_for_bit() {
 /// and last pass are the frozen ones: real blurs and guides, with the guide passed as the blur at
 /// Radius 1, over tiles on every edge, at every corner and clear of them.
 #[test]
-fn detail_sharpening_at_every_radius_matches_the_reference_bit_for_bit() {
+fn slow_detail_sharpening_at_every_radius_matches_the_reference_bit_for_bit() {
     let mut rng = SplitMix64(0x0A11_4AD1);
     for scale in [[1.0, 1.0], [0.51, 0.37]] {
         let scale = SamplingScale {

@@ -589,7 +589,7 @@ fn catalog_browse_queries_counts_and_a_smart_collection_on_a_real_owner() {
 /// merged and deleted, a collection made and renamed, each one library change of this desktop's
 /// sent as an agent writes it, listed again once it lands, and undone with `Cmd+Z`.
 #[test]
-fn catalog_browse_folders_and_collections_are_organized_on_a_real_owner() {
+fn slow_catalog_browse_folders_and_collections_are_organized_on_a_real_owner() {
     let (mut editor, catalog, agent) = catalog_editor();
     let list = |editor: &Editor| {
         editor
@@ -1224,7 +1224,7 @@ fn catalog_browse_applies_a_preset_and_exports_the_selection_on_a_real_owner() {
 /// again, then deletes what Removed holds with `catalog.empty-removed`, which the counts say and
 /// the journal does not record.
 #[test]
-fn catalog_browse_removes_puts_back_and_empties_removed_on_a_real_owner() {
+fn slow_catalog_browse_removes_puts_back_and_empties_removed_on_a_real_owner() {
     let (mut editor, catalog, agent) = catalog_editor();
     let _ = editor.update(Message::Select(SelectMessage::Source(
         luxforge_core::catalog_types::ViewSource::AllPhotographs,

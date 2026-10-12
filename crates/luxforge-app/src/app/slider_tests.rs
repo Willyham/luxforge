@@ -423,7 +423,7 @@ fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produ
 /// answer brings the as-shot equivalent, never the 6504 K and 0 nothing set. Exposure and a JPEG's
 /// Temperature, which declare no reset, still reset to their declared defaults.
 #[test]
-fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
+fn slow_a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
     let listed = serde_json::to_value(descriptors()).unwrap();
     let as_shot = json!({"action": "set-raw", "preset": {"white-balance": "as-shot"}});
     for (action, parameter) in [("set-raw", "temperature"), ("set-raw", "tint")] {

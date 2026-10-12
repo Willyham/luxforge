@@ -727,7 +727,7 @@ pub fn check(root: &Path) -> Result {
 mod tests {
     use super::*;
     #[test]
-    fn golden_corpus() {
+    fn slow_golden_corpus() {
         check(&root().unwrap()).unwrap();
     }
 
@@ -754,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_is_safe_to_run_twice_and_produces_byte_identical_files() {
+    fn slow_generation_is_safe_to_run_twice_and_produces_byte_identical_files() {
         let t = tempfile::tempdir().unwrap();
         let table = tiny_table();
         generate_table(&table, t.path()).unwrap();
@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_fills_only_what_is_missing() {
+    fn slow_generation_fills_only_what_is_missing() {
         let t = tempfile::tempdir().unwrap();
         let table = tiny_table();
         generate_table(&table, t.path()).unwrap();
@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_refuses_a_hash_mismatch_rather_than_overwriting_it() {
+    fn slow_generation_refuses_a_hash_mismatch_rather_than_overwriting_it() {
         let t = tempfile::tempdir().unwrap();
         let table = tiny_table();
         generate_table(&table, t.path()).unwrap();
@@ -854,7 +854,7 @@ mod tests {
     /// The ramp runs from black in the first column to white in the last through every code, and
     /// the patches are the orientation fixture's quadrant colours in its order.
     #[test]
-    fn the_tone_ramp_holds_every_code_and_the_quadrant_colours() {
+    fn slow_the_tone_ramp_holds_every_code_and_the_quadrant_colours() {
         let (w, h) = TONE_RAMP_FIXTURE;
         let img = tone_ramp(w, h);
         assert_eq!(img.get_pixel(0, 0).0, [0; 3]);

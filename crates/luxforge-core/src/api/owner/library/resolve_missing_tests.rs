@@ -250,7 +250,7 @@ fn row(rows: &[Value], index: usize) -> (String, Value) {
 /// answers the first change, undo points every photograph back and redo forward again, and no file
 /// is written.
 #[test]
-fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
+fn slow_a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
     let harness = Harness::new("moved");
     let card = harness.dir.join("card").join("2026-09-12");
     let names = ["DSC_0001.jpg", "DSC_0002.jpg", "DSC_0003.jpg"];
@@ -408,7 +408,7 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
 /// what was verified and free: a pair naming a file of other bytes, or a claimed file, refuses the
 /// whole request, naming it, and changes nothing; the chosen identical copy is relinked.
 #[test]
-fn each_photograph_gets_its_own_result_and_only_what_was_verified_relinks() {
+fn slow_each_photograph_gets_its_own_result_and_only_what_was_verified_relinks() {
     let harness = Harness::new("results");
     let card = harness.dir.join("card");
     let search = harness.dir.join("search");
@@ -561,7 +561,7 @@ fn each_photograph_gets_its_own_result_and_only_what_was_verified_relinks() {
 /// of missing and replaced), and a folder whose every file was replaced. A photograph nothing has
 /// checked yet is listed once a refusal records it.
 #[test]
-fn missing_originals_are_grouped_by_source_folder_with_each_reason() {
+fn slow_missing_originals_are_grouped_by_source_folder_with_each_reason() {
     let harness = Harness::new("groups");
     let photos = harness.dir.join("photos");
     let layout = [
@@ -799,7 +799,7 @@ fn a_cancelled_search_shows_its_progress_and_changes_nothing() {
 /// was; a file searched again is relinked. Malformed requests are refused before anything is
 /// looked at.
 #[test]
-fn a_relink_of_what_changed_since_its_search_changes_nothing() {
+fn slow_a_relink_of_what_changed_since_its_search_changes_nothing() {
     let harness = Harness::new("changed-since");
     let card = harness.dir.join("card");
     let search = harness.dir.join("search");
@@ -951,7 +951,7 @@ fn a_search_names_one_readable_folder_and_what_to_look_for() {
 /// original is found on the image and relinked onto that volume.
 #[cfg(target_os = "macos")]
 #[test]
-fn a_detached_disk_image_is_volume_offline_and_a_search_on_it_fails_cleanly() {
+fn slow_a_detached_disk_image_is_volume_offline_and_a_search_on_it_fails_cleanly() {
     use crate::library::test_disk::DiskImage;
 
     let harness = Harness::new("disk-image");

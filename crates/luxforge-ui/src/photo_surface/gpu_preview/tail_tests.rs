@@ -2,7 +2,8 @@
 //! arithmetic on the CPU: an affine tail's taps, clamps and blend, a windowed boundary, a grid
 //! that holds an affine map, a JPEG's quantizing segments, steps at the output pixel, and the
 //! output codes the CPU's quantizer gives every value.
-use super::qualification::{Qualifier, boundary, held};
+use super::qualification::{boundary, held};
+use super::tests::qualifier;
 use super::*;
 use luxforge_gpu_types::PlaneSize as PlaneExtent;
 
@@ -123,7 +124,7 @@ fn compare(drawn: &[[u8; 4]], expected: &[[u8; 3]]) -> (u8, usize) {
 /// past both ends and NaN, through the identity program over a one-row boundary.
 #[test]
 fn the_output_codes_are_the_cpu_quantizers() {
-    let Some(qualifier) = Qualifier::headless("the_output_codes_are_the_cpu_quantizers") else {
+    let Some(qualifier) = qualifier("the_output_codes_are_the_cpu_quantizers") else {
         return;
     };
     // Each threshold, and the half floats just below and above it, which the boundary can hold.
@@ -166,7 +167,7 @@ type AffineCase = (&'static str, (u32, u32), [u32; 4], (u32, u32), [f32; 6], u8)
 /// boundary that holds a window of its stage is read at the window's origin.
 #[test]
 fn an_affine_tail_draws_the_reference_blend() {
-    let Some(qualifier) = Qualifier::headless("an_affine_tail_draws_the_reference_blend") else {
+    let Some(qualifier) = qualifier("an_affine_tail_draws_the_reference_blend") else {
         return;
     };
     let (width, height) = (64, 48);
@@ -255,7 +256,7 @@ fn an_affine_tail_draws_the_reference_blend() {
 /// A coordinate grid that holds an affine map draws what the affine tail draws, within a code.
 #[test]
 fn a_grid_tail_interpolates_its_nodes() {
-    let Some(qualifier) = Qualifier::headless("a_grid_tail_interpolates_its_nodes") else {
+    let Some(qualifier) = qualifier("a_grid_tail_interpolates_its_nodes") else {
         return;
     };
     let (width, height) = (64, 48);
@@ -314,8 +315,8 @@ fn a_grid_tail_interpolates_its_nodes() {
 /// it, within a code, on its own and over a window of the stage; with no perspective in it, it draws
 /// what the affine tail draws.
 #[test]
-fn a_projective_tail_draws_the_reference_blend() {
-    let Some(qualifier) = Qualifier::headless("a_projective_tail_draws_the_reference_blend") else {
+fn slow_a_projective_tail_draws_the_reference_blend() {
+    let Some(qualifier) = qualifier("slow_a_projective_tail_draws_the_reference_blend") else {
         return;
     };
     let (width, height) = (64, 48);
@@ -400,8 +401,8 @@ fn a_projective_tail_draws_the_reference_blend() {
 /// A quantizing tail writes the content pass's result as codes and decodes them, and quantizes its
 /// own blend, as a JPEG's segments do; a step after the tail runs at the output pixel.
 #[test]
-fn a_quantizing_tail_and_an_output_step() {
-    let Some(qualifier) = Qualifier::headless("a_quantizing_tail_and_an_output_step") else {
+fn slow_a_quantizing_tail_and_an_output_step() {
+    let Some(qualifier) = qualifier("slow_a_quantizing_tail_and_an_output_step") else {
         return;
     };
     let (width, height) = (64, 48);
@@ -454,9 +455,7 @@ fn a_quantizing_tail_and_an_output_step() {
 /// moves nothing it covers.
 #[test]
 fn a_masked_step_after_the_tail_covers_the_output_pixel() {
-    let Some(qualifier) =
-        Qualifier::headless("a_masked_step_after_the_tail_covers_the_output_pixel")
-    else {
+    let Some(qualifier) = qualifier("a_masked_step_after_the_tail_covers_the_output_pixel") else {
         return;
     };
     let (width, height) = (64, 48);
@@ -525,7 +524,7 @@ fn a_masked_step_after_the_tail_covers_the_output_pixel() {
 /// either sees the output pixel's whole-stage coordinate.
 #[test]
 fn a_region_draws_its_rectangle_of_the_stage() {
-    let Some(qualifier) = Qualifier::headless("a_region_draws_its_rectangle_of_the_stage") else {
+    let Some(qualifier) = qualifier("a_region_draws_its_rectangle_of_the_stage") else {
         return;
     };
     let (width, height) = (40, 30);
@@ -614,9 +613,7 @@ fn toward_zero(value: f32) -> f32 {
 /// signs, bit for bit.
 #[test]
 fn a_raw_linear_tail_preserves_f32_intermediate_values() {
-    let Some(qualifier) =
-        Qualifier::headless("a_raw_linear_tail_preserves_f32_intermediate_values")
-    else {
+    let Some(qualifier) = qualifier("a_raw_linear_tail_preserves_f32_intermediate_values") else {
         return;
     };
     let (width, height) = (256, 64);
@@ -671,7 +668,7 @@ fn a_raw_linear_tail_preserves_f32_intermediate_values() {
 /// the plane, shown by the frame's apply.
 #[test]
 fn a_half_planes_texels_are_the_nearest_half() {
-    let Some(qualifier) = Qualifier::headless("a_half_planes_texels_are_the_nearest_half") else {
+    let Some(qualifier) = qualifier("a_half_planes_texels_are_the_nearest_half") else {
         return;
     };
     let (width, height) = (256, 64);

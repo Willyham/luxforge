@@ -433,7 +433,7 @@ fn full_hue_slider_moves_a_centre_the_reach_of_the_way_to_its_neighbour() {
 /// Fritsch-Carlson condition that makes each cubic segment strictly
 /// increasing — for all 5^8 five-level combinations.
 #[test]
-fn hue_warp_satisfies_the_fritsch_carlson_conditions_for_every_combination() {
+fn slow_hue_warp_satisfies_the_fritsch_carlson_conditions_for_every_combination() {
     let floor = 1.0 - HUE_REACH;
     for params in five_level_combinations() {
         let warp = HueWarp::new(&params);

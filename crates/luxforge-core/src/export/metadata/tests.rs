@@ -531,7 +531,7 @@ fn malformed_structures_yield_empty_or_partial_metadata() {
 }
 
 #[test]
-fn truncated_and_corrupted_inputs_never_panic_and_always_write_a_readable_payload() {
+fn slow_truncated_and_corrupted_inputs_never_panic_and_always_write_a_readable_payload() {
     let mut input = kept();
     input.extend(excluded());
     let check = |metadata: CaptureMetadata| {

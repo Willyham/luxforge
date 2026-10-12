@@ -318,8 +318,8 @@ fn the_counters_are_derived_from_the_classes_as_the_reducer_derives_them() {
 /// combination of endpoints, over 64 × 64 workgroups. The GPU counts each bin and counter as the
 /// reference does, and a second reduction of the same codes counts the same again.
 #[test]
-fn the_gpu_counts_every_rgb_triple_as_the_reference_does_and_again() {
-    let test = "the_gpu_counts_every_rgb_triple_as_the_reference_does_and_again";
+fn slow_the_gpu_counts_every_rgb_triple_as_the_reference_does_and_again() {
+    let test = "slow_the_gpu_counts_every_rgb_triple_as_the_reference_does_and_again";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -349,8 +349,8 @@ fn the_gpu_counts_every_rgb_triple_as_the_reference_does_and_again() {
 /// Every combination of channel endpoints and inner codes, each a different number of times, in a
 /// frame 97 texels wide, wider than a workgroup's 64: each counter as the reference counts it.
 #[test]
-fn clipped_pixels_of_every_channel_combination_are_counted_exactly() {
-    let test = "clipped_pixels_of_every_channel_combination_are_counted_exactly";
+fn slow_clipped_pixels_of_every_channel_combination_are_counted_exactly() {
+    let test = "slow_clipped_pixels_of_every_channel_combination_are_counted_exactly";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -388,8 +388,8 @@ fn clipped_pixels_of_every_channel_combination_are_counted_exactly() {
 /// corner and one texel, each counted as the reference counts that rectangle, while every texel
 /// around them is [`POISON`].
 #[test]
-fn a_rectangle_counts_its_own_texels_and_never_one_outside() {
-    let test = "a_rectangle_counts_its_own_texels_and_never_one_outside";
+fn slow_a_rectangle_counts_its_own_texels_and_never_one_outside() {
+    let test = "slow_a_rectangle_counts_its_own_texels_and_never_one_outside";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -438,8 +438,8 @@ fn a_rectangle_counts_its_own_texels_and_never_one_outside() {
 /// a submission each, the sum of the tiles is the whole stage's counts, as the reference counts
 /// them and as the GPU counts the stage in one texture, whatever the order.
 #[test]
-fn a_stage_in_tiles_counts_what_the_whole_stage_does_in_any_order() {
-    let test = "a_stage_in_tiles_counts_what_the_whole_stage_does_in_any_order";
+fn slow_a_stage_in_tiles_counts_what_the_whole_stage_does_in_any_order() {
+    let test = "slow_a_stage_in_tiles_counts_what_the_whole_stage_does_in_any_order";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -482,8 +482,8 @@ fn a_stage_in_tiles_counts_what_the_whole_stage_does_in_any_order() {
 /// A texture as wide, then as tall, as the device allows — 8,192 texels under the default limits,
 /// the toolkit's — counts every texel: the table's last value names its width or height.
 #[test]
-fn a_texture_at_the_device_limit_counts_every_texel() {
-    let test = "a_texture_at_the_device_limit_counts_every_texel";
+fn slow_a_texture_at_the_device_limit_counts_every_texel() {
+    let test = "slow_a_texture_at_the_device_limit_counts_every_texel";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -507,8 +507,8 @@ fn a_texture_at_the_device_limit_counts_every_texel() {
 /// readback's staging copy while the GPU holds it; both return to zero through the retirement
 /// worker; and a budget that cannot hold the reduction, or its staging copy, refuses it by name.
 #[test]
-fn the_reduction_is_charged_to_the_budget_and_released() {
-    let test = "the_reduction_is_charged_to_the_budget_and_released";
+fn slow_the_reduction_is_charged_to_the_budget_and_released() {
+    let test = "slow_the_reduction_is_charged_to_the_budget_and_released";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -568,8 +568,8 @@ fn the_reduction_is_charged_to_the_budget_and_released() {
 /// rectangle outside its texture or past the pixel limit: each is refused by name with nothing
 /// encoded, so the reduction's next readback counts only the tile it was given.
 #[test]
-fn what_cannot_be_counted_exactly_is_refused_and_encodes_nothing() {
-    let test = "what_cannot_be_counted_exactly_is_refused_and_encodes_nothing";
+fn slow_what_cannot_be_counted_exactly_is_refused_and_encodes_nothing() {
+    let test = "slow_what_cannot_be_counted_exactly_is_refused_and_encodes_nothing";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -659,8 +659,8 @@ fn what_cannot_be_counted_exactly_is_refused_and_encodes_nothing() {
 /// readback's bins then do not add up to the pixels reduced since the clear, and it answers that,
 /// never the counts.
 #[test]
-fn counts_that_do_not_add_up_are_refused_never_read() {
-    let test = "counts_that_do_not_add_up_are_refused_never_read";
+fn slow_counts_that_do_not_add_up_are_refused_never_read() {
+    let test = "slow_counts_that_do_not_add_up_are_refused_never_read";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -693,8 +693,8 @@ fn counts_that_do_not_add_up_are_refused_never_read() {
 /// readback's handle answering the loss at once, and no reduction is created. A readback finished
 /// before the loss still answers its own counts.
 #[test]
-fn a_lost_device_answers_an_error_never_counts() {
-    let test = "a_lost_device_answers_an_error_never_counts";
+fn slow_a_lost_device_answers_an_error_never_counts() {
+    let test = "slow_a_lost_device_answers_an_error_never_counts";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -728,8 +728,8 @@ fn a_lost_device_answers_an_error_never_counts() {
 
 /// A launch that refused the GPU stage has no reduction either: the counts stay the reference's.
 #[test]
-fn a_refused_stage_has_no_reduction() {
-    let test = "a_refused_stage_has_no_reduction";
+fn slow_a_refused_stage_has_no_reduction() {
+    let test = "slow_a_refused_stage_has_no_reduction";
     let Some((device, queue)) = headless(test) else {
         return;
     };

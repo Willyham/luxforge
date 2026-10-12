@@ -99,7 +99,7 @@ fn section_angle(editor: &Editor) -> Value {
 }
 
 #[test]
-fn crop_focus_restores_all_disclosures_on_cancel_noop_and_failed_stage() {
+fn slow_crop_focus_restores_all_disclosures_on_cancel_noop_and_failed_stage() {
     for exit in ["cancel", "noop", "failed-stage"] {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
         editor

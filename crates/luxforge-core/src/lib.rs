@@ -742,7 +742,7 @@ pub mod qualification {
         /// follows exactly, it is the exact light at every factor. And a restoration layer left
         /// out leaves the stack without it, bit for bit.
         #[test]
-        fn a_twin_light_reads_the_earlier_twin_light_and_can_leave_restoration_out() {
+        fn slow_a_twin_light_reads_the_earlier_twin_light_and_can_leave_restoration_out() {
             let registry = ModuleRegistry::builtin();
             let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
             let mut mask = crate::Mask::new("Mask 1");
@@ -831,7 +831,7 @@ pub mod qualification {
         /// of a whole workspace do: the twin's light at full resolution is the stack's own exact
         /// light every time, and at 16 the same light every time.
         #[test]
-        fn a_capture_reads_only_its_own_render_while_others_render_beside_it() {
+        fn slow_a_capture_reads_only_its_own_render_while_others_render_beside_it() {
             let registry = ModuleRegistry::builtin();
             let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
             let recipe = Recipe {

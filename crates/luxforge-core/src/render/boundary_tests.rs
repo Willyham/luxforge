@@ -300,7 +300,7 @@ fn a_boundary_of_another_compilation_is_refused() {
 /// origin: before Detail, whose input is a colour layer's output, and before Presence, whose input
 /// is Detail's output.
 #[test]
-fn a_region_boundary_holds_the_gpus_halo_and_the_whole_stages_input() {
+fn slow_a_region_boundary_holds_the_gpus_halo_and_the_whole_stages_input() {
     use super::Entry;
     let registry = ModuleRegistry::builtin();
     let (width, height) = (1536, 1100);

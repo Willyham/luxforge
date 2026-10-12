@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_error_corpus_command_is_incomplete_not_a_pass_when_a_source_is_unresolved() {
+    fn slow_preview_error_corpus_command_is_incomplete_not_a_pass_when_a_source_is_unresolved() {
         // A checkout holding only the corpus and its descriptors: nothing generated, no manifest.
         let (real, _) = committed();
         let tmp = tempfile::tempdir().unwrap();

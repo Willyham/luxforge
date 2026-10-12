@@ -772,7 +772,7 @@ fn missing(index: &mut IndexDb, root: &Path, count: usize) -> Vec<FileId> {
 /// At most 20,000 tasks wait: a view that would pass it queues nothing, and a request past it is
 /// refused with `resource-limit`.
 #[test]
-fn preview_cache_owner_refuses_past_the_queue_bound() {
+fn slow_preview_cache_owner_refuses_past_the_queue_bound() {
     let mut setup = Setup::new("preview-owner-bound");
     let root = setup.root.clone();
     let files = missing(&mut setup.index, &root, 20_003);

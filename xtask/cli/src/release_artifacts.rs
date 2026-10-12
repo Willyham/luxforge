@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn assembly_requires_both_matching_clean_targets_and_checksums_final_files() {
+    fn slow_assembly_requires_both_matching_clean_targets_and_checksums_final_files() {
         let root = crate::root().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let tag = ReleaseTag::parse("v0.1").unwrap();

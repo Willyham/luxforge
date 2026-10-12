@@ -147,9 +147,9 @@ fn gpu_preview_the_largest_plan_and_a_warm_list_fit_the_compile_cache() {
 /// planes. Every link compiles, and the slot holding the stack at a 24 MP photograph's full-screen
 /// Fit stage on a JPEG fits the GPU-preview budget, at about 1.01 GB.
 #[test]
-fn gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluation_does() {
+fn slow_gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluation_does() {
     let test =
-        "gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluation_does";
+        "slow_gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluation_does";
     let Some(qualifier) = headless(test) else {
         return;
     };
@@ -334,12 +334,12 @@ fn desktop_mask(
 /// link for each layer. A drag of one draws on the GPU once compiled: every link of its plan
 /// compiles, and its ticks are the whole evaluation's, bit for bit, the poison on too.
 #[test]
-fn gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed() {
+fn slow_gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed() {
     use crate::app::gpu_preview::SurfaceReport;
     use crate::app::gpu_window_tests::deliver_until;
     use crate::app::message::{Message, draft::DraftMessage};
     use crate::app::testing::{finish, range_masks_config, real_photo_launched, slide};
-    let test = "gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed";
+    let test = "slow_gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed";
     let catalog = std::env::temp_dir().join(format!(
         "luxforge-gpu-sixteen-{}.sqlite",
         std::process::id()

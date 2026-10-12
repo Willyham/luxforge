@@ -928,7 +928,7 @@ fn linear_to_code(linear: f64) -> u32 {
 /// The delivered cell cap bounds the grid however large the stage is, and the request that would
 /// exceed it is refused before any work starts.
 #[test]
-fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
+fn slow_the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
     let f = Fixture::open("cap");
     let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);

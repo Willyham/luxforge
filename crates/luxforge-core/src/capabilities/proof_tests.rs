@@ -378,7 +378,7 @@ fn assert_tint_renders(
 }
 
 #[test]
-fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_reopen() {
+fn slow_the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_reopen() {
     let fixture = Fixture::new("proof-journey");
     let assets = fixture.import();
     let owner = fixture.start();

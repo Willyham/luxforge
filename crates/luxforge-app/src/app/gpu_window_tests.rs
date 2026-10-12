@@ -156,9 +156,9 @@ fn crop(rect: [f64; 4]) -> Layer {
 /// affine, a projective and a lens warp's tail, on both formats, over the planner's window of
 /// crops in the middle and at each corner of the stage, and over each window grown to every edge.
 #[test]
-fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
+fn slow_gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
     let Some(qualifier) =
-        headless("gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame")
+        headless("slow_gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame")
     else {
         return;
     };
@@ -346,9 +346,9 @@ fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
 /// Texture and Clarity under a straightened crop, on both formats, within 2 × 10⁻³ in linear light
 /// and the pointwise limits.
 #[test]
-fn gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
+fn slow_gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
     let Some(qualifier) =
-        headless("gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame")
+        headless("slow_gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame")
     else {
         return;
     };
@@ -773,9 +773,9 @@ fn at_100(editor: &mut Editor) {
 /// (`texture_charge`). The chain's own charge is the same over the steps the desktop converts with
 /// no boundary as over those the surface is handed.
 #[test]
-fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
+fn slow_gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
     use luxforge_gpu::chain_charge;
-    let test = "gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge";
+    let test = "slow_gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge";
     let Some(qualifier) = headless(test) else {
         return;
     };
@@ -953,7 +953,7 @@ fn written(name: &str, width: u32, height: u32) -> std::path::PathBuf {
 /// at that stage at this zoom; the picture at rest after its release is the region's, its own plan
 /// at full scale.
 #[test]
-fn gpu_window_a_region_past_the_budget_draws_the_reduced_stage_scaled_to_the_view() {
+fn slow_gpu_window_a_region_past_the_budget_draws_the_reduced_stage_scaled_to_the_view() {
     use super::gpu_preview_tests::surface_ready;
     let catalog = catalog("softer");
     let photograph = written("softer", 3000, 2000);

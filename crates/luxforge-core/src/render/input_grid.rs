@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_input_grid_equals_the_exact_prefix_on_both_domains_at_dense_and_sparse_cells() {
+    fn slow_detail_input_grid_equals_the_exact_prefix_on_both_domains_at_dense_and_sparse_cells() {
         let registry = ModuleRegistry::builtin();
         let jpeg = source();
         let recipe = recipe();
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_input_grid_tracks_warped_content_cells_and_lens_only_cache_changes() {
+    fn slow_detail_input_grid_tracks_warped_content_cells_and_lens_only_cache_changes() {
         let registry = ModuleRegistry::builtin();
         let jpeg = source();
         let context = RenderContext::new();
@@ -794,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_input_grid_uses_the_full_recipe_byte_boundary_width() {
+    fn slow_detail_input_grid_uses_the_full_recipe_byte_boundary_width() {
         let registry = ModuleRegistry::developer();
         let jpeg = source();
         let context = RenderContext::new();

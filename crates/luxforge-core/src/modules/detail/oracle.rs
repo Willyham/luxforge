@@ -403,7 +403,7 @@ fn detail_constants_are_bit_identical_and_greys_stay_neutral() {
 }
 
 #[test]
-fn detail_multi_unit_tiles_match_whole_frame_bit_for_bit_and_reuse_scratch() {
+fn slow_detail_multi_unit_tiles_match_whole_frame_bit_for_bit_and_reuse_scratch() {
     let stage = Stage {
         width: 97,
         height: 61,

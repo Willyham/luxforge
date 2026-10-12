@@ -366,8 +366,8 @@ fn held_codes(rgba: &[u8]) -> Vec<[u8; 3]> {
 /// output, each frame of which draws the output and then the rest output at the share, and once the
 /// dissolve has run its course the rest output alone is the photograph.
 #[test]
-fn a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it() {
-    let test = "a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it";
+fn slow_a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it() {
+    let test = "slow_a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -441,8 +441,8 @@ fn a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it() {
 /// holding only that tile's own window is the tile drawn from the whole source, bit for bit, each
 /// pixel the identity's code of its own.
 #[test]
-fn a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws() {
-    let test = "a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws";
+fn slow_a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws() {
+    let test = "slow_a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws";
     let Some((device, queue)) = headless(test) else {
         return;
     };

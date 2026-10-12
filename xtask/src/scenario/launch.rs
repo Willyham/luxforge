@@ -1320,7 +1320,7 @@ mod tests {
     /// with no exit code, returns and keeps what the watcher recorded, and an ordinary launch
     /// records itself by its data root.
     #[test]
-    fn a_launch_its_watcher_stops_is_listed_as_stopped() {
+    fn slow_a_launch_its_watcher_stops_is_listed_as_stopped() {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("run");
         let mut run = Run::tool(
@@ -1426,7 +1426,7 @@ mod tests {
     /// unsuccessfully is the run's failure. The test binary refuses the editor's flags, so it is a
     /// process that starts and fails.
     #[test]
-    fn a_started_launch_is_listed_with_its_exit_code() {
+    fn slow_a_started_launch_is_listed_with_its_exit_code() {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("run");
         let bin = std::env::current_exe().unwrap();
@@ -1454,7 +1454,7 @@ mod tests {
         assert!(out.join("launch1.log").is_file());
     }
 
-    /// Run only as [`a_launch_environment_reaches_the_process`]'s child: passes only when the
+    /// Run only as [`slow_a_launch_environment_reaches_the_process`]'s child: passes only when the
     /// test cameras variable reached it.
     #[test]
     #[ignore]
@@ -1465,7 +1465,7 @@ mod tests {
     /// A launch's environment reaches the process the background bundle starts, and only that
     /// launch's.
     #[test]
-    fn a_launch_environment_reaches_the_process() {
+    fn slow_a_launch_environment_reaches_the_process() {
         let tmp = tempfile::tempdir().unwrap();
         let child = |env: &[(String, String)]| {
             let mut child = spawn_with(

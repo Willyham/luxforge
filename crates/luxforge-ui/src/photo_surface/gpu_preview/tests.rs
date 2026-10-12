@@ -77,9 +77,18 @@ pub(super) fn headless(test: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
     headless_with(test, wgpu::Limits::default())
 }
 
+/// A qualifier on this host's default adapter, or `None` after printing the skip, with the test
+/// reference's output encoding installed as [`headless`] installs it.
+pub(super) fn qualifier(test: &str) -> Option<luxforge_gpu::qualification::Qualifier> {
+    luxforge_gpu::qualification::install_reference_encoding();
+    luxforge_gpu::qualification::Qualifier::headless(test)
+}
+
 /// [`headless`] at `limits`, through the one headless device the qualification code makes
-/// ([`super::headless::device`]).
+/// ([`super::headless::device`]). Every test installs the test reference's output encoding before
+/// it draws, rather than relying on another test to have installed it first.
 fn headless_with(test: &str, limits: wgpu::Limits) -> Option<(wgpu::Device, wgpu::Queue)> {
+    luxforge_gpu::qualification::install_reference_encoding();
     let (device, queue, adapter) = super::headless::device(test, limits)?;
     eprintln!("{test}: adapter {adapter:?}");
     Some((device, queue))

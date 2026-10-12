@@ -368,7 +368,7 @@
         "Prove against the working whole-frame CPU renderer within the declared GPU tolerance, and exact neutral bypass separately. A selected comparison has its scope recorded; complete working-feature verification is TASK-009. Independent reference refinement comes later in TASK-010.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
         "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
-        "Completed: grade.wgsl registered as lf_mixer_grade, warmed and planned with the HSL program; gpu_colour_grade_meets_the_pointwise_limits passes on a native Apple M2 (not the owner's M4); four grading recipes added to the GPU corpus."
+        "Completed: grade.wgsl registered as lf_mixer_grade, warmed and planned with the HSL program; slow_gpu_colour_grade_meets_the_pointwise_limits passes on a native Apple M2 (not the owner's M4); four grading recipes added to the GPU corpus."
       ],
       "context_links": [
         {

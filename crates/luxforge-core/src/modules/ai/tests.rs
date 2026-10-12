@@ -300,7 +300,7 @@ impl Ai for Owner {
 }
 
 #[test]
-fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
+fn slow_generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     let fixture = Fixture::new("journey");
     let [asset, _] = fixture.assets.clone();
     let owner = fixture.ready();
@@ -461,7 +461,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
 }
 
 #[test]
-fn a_cancel_mid_generation_leaves_the_recipe_untouched_and_publishes_nothing() {
+fn slow_a_cancel_mid_generation_leaves_the_recipe_untouched_and_publishes_nothing() {
     let fixture = Fixture::new("cancel");
     let [asset, _] = fixture.assets.clone();
     let owner = fixture.ready();
@@ -492,7 +492,7 @@ fn a_cancel_mid_generation_leaves_the_recipe_untouched_and_publishes_nothing() {
 }
 
 #[test]
-fn a_running_fill_locks_its_photograph_only_and_a_cancel_releases_it() {
+fn slow_a_running_fill_locks_its_photograph_only_and_a_cancel_releases_it() {
     let fixture = Fixture::new("lock");
     let [asset, other] = fixture.assets.clone();
     let owner = fixture.ready();
@@ -549,7 +549,7 @@ fn a_running_fill_locks_its_photograph_only_and_a_cancel_releases_it() {
 }
 
 #[test]
-fn every_refusal_is_named_and_generates_nothing() {
+fn slow_every_refusal_is_named_and_generates_nothing() {
     let fixture = Fixture::new("refusals");
     let [asset, _] = fixture.assets.clone();
     let owner = fixture.start();

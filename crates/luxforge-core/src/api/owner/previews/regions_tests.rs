@@ -504,7 +504,7 @@ fn preview_region_owner_answers_a_photograph_as_its_original() {
 /// `resource-limit`, at once; a rectangle starting outside its frame fails its job with
 /// `validation`.
 #[test]
-fn preview_region_owner_keeps_each_errors_kind() {
+fn slow_preview_region_owner_keeps_each_errors_kind() {
     let mut setup = Setup::new("preview-region-owner-errors");
     let (broken, _) = setup.file("BROKEN.JPG", &broken_jpeg(), SourceTag::Jpeg);
     let (not_jpeg, _) = setup.file("NOT.JPG", b"not a JPEG\n", SourceTag::Jpeg);

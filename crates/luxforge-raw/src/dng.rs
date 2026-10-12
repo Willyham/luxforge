@@ -1854,7 +1854,7 @@ mod tests {
     }
 
     #[test]
-    fn correction_rows_match_serial_bits_and_preserve_sensor_borders() {
+    fn slow_correction_rows_match_serial_bits_and_preserve_sensor_borders() {
         let cancel = AtomicBool::new(false);
         for (width, height) in [(17, 13), (513, 257), (1001, 1003)] {
             let (mut correction, original) = row_fixture(width, height);
@@ -1910,7 +1910,7 @@ mod tests {
     /// keep the bits they had before the RAW preparation clean-ups. Captured
     /// on the owner's M4; elsewhere serial and pooled are still compared above.
     #[test]
-    fn corrected_planes_keep_their_pinned_bits() {
+    fn slow_corrected_planes_keep_their_pinned_bits() {
         use sha2::{Digest, Sha256};
         let cancel = AtomicBool::new(false);
         let mut digests = Vec::new();

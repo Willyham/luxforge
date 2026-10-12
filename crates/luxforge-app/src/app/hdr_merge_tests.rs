@@ -485,7 +485,7 @@ fn active(editor: &Editor) -> luxforge_core::catalog_types::ViewRow {
 /// collapses it through the owner; an original is picked as any file is, and only that pick is
 /// Develop N's.
 #[test]
-fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder() {
+fn slow_hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder() {
     let bench = Bench::new("pick");
     let mut editor = bench.open();
     // ⌥ held: each merge action merges at once with the last settings, without the preview.
@@ -734,7 +734,7 @@ fn planned_targets(files: &[Value]) -> Value {
 /// again reuse the result; Remove merge shows the originals again, and library undo and redo move
 /// the merge, edited, back and forth, legibly; a merge found in Removed is offered back.
 #[test]
-fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
+fn slow_hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     let bench = Bench::new("selection");
     let mut editor = bench.open();
     // ⌥ held: each merge action merges at once with the last settings, without the preview.
@@ -1160,7 +1160,7 @@ fn save_preferences(editor: &mut Editor) {
 /// into the plan's folder choice, closes the sheet, shows the pending row and remembers the
 /// settings for the next ⌥-click.
 #[test]
-fn merge_preview_sheet_requests_and_revisions_are_a_json_clients() {
+fn slow_merge_preview_sheet_requests_and_revisions_are_a_json_clients() {
     let bench = Bench::new("preview");
     let mut editor = bench.open();
     let agent = editor.owner.register();
@@ -1360,7 +1360,7 @@ fn merge_preview_sheet_requests_and_revisions_are_a_json_clients() {
 /// at once with them, naming the plan and no preview; a merge pressed while the preview still
 /// prepares waits for its revision and continues it.
 #[test]
-fn merge_preview_option_click_merges_with_the_remembered_settings() {
+fn slow_merge_preview_option_click_merges_with_the_remembered_settings() {
     let bench = Bench::new("option");
     let mut editor = bench.open();
     let agent = editor.owner.register();
@@ -1437,7 +1437,7 @@ fn merge_preview_option_click_merges_with_the_remembered_settings() {
 /// A merge pressed while the preview still reads its frames waits for the preview's revision and
 /// then continues it: one read of the frames, the merge naming the preview.
 #[test]
-fn merge_preview_merge_while_preparing_continues_the_preview() {
+fn slow_merge_preview_merge_while_preparing_continues_the_preview() {
     let bench = Bench::new("preparing");
     let mut editor = bench.open();
     let (number, _) = bracket_header(&editor).unwrap();

@@ -10,7 +10,7 @@ use serde_json::json;
 use std::{fs, sync::Arc};
 
 #[test]
-fn controls_query_choice_is_described_and_selects_through_the_json_service() {
+fn slow_controls_query_choice_is_described_and_selects_through_the_json_service() {
     let mut registry = ModuleRegistry::builtin();
     registry.register(Arc::new(controls_module())).unwrap();
     let catalog = paths::temp_catalog("controls-query-choice");

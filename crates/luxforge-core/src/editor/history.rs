@@ -1360,7 +1360,7 @@ mod tests {
     /// has lost, which a registry check alone admits, and a stack whose provider this build does
     /// not have. Nothing is written, and undo still reaches the refused stack.
     #[test]
-    fn restore_refuses_a_stack_exactly_as_a_commit_of_it_is_refused() {
+    fn slow_restore_refuses_a_stack_exactly_as_a_commit_of_it_is_refused() {
         /// Restore `target` over the current entry, then commit its stack through the commit path,
         /// and return both refusals after checking that neither wrote anything.
         fn refusals(service: &mut EditorService, asset: &AssetId, target: &EntryId) -> [Error; 2] {

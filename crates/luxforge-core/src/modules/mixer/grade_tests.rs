@@ -523,7 +523,7 @@ fn global_ignores_blending_and_balance() {
 /// four luminance amounts at -100, 0 and +100, at the narrowest and widest Blending and both
 /// Balance extremes, sampled in `f32` exactly as the pixel path evaluates it.
 #[test]
-fn grade_luminance_is_monotone_for_every_extreme_combination() {
+fn slow_grade_luminance_is_monotone_for_every_extreme_combination() {
     for combination in 0..3usize.pow(4) {
         let mut code = combination;
         let amounts: [f64; 4] = std::array::from_fn(|_| {

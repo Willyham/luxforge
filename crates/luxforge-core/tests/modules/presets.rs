@@ -135,7 +135,7 @@ fn assert_refused(
 /// under its own identity, label and parameters, and its stack and pixels equal the same fields
 /// sent through the four `edit.set-*` actions one by one on a fresh asset.
 #[test]
-fn a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
+fn slow_a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
     let (mut service, asset, path) = opened("one-entry", None);
     let sent = json!({"settings": soft_film(), "origin": {"kind": "preset", "name": "Soft film", "preset_id": "preset-000000001"}});
     let (before, count) = (revision(&service, &asset), entries(&service, &asset));
@@ -806,7 +806,7 @@ fn preset_amount_uses_module_defaults_and_validates_whole_sets() {
 }
 
 #[test]
-fn preset_amount_reference_buffers_match_direct_patches_and_preserve_originals() {
+fn slow_preset_amount_reference_buffers_match_direct_patches_and_preserve_originals() {
     let source_before = fs::read(jpeg()).unwrap();
     for amount in [0.0, 50.0, 100.0, 200.0] {
         let (mut service, asset, path) = opened("amount", None);
@@ -917,7 +917,7 @@ fn targets(recipe: &Recipe) -> Vec<(String, Value, Option<MaskId>)> {
 /// the masked layer keeps its identity, place and payload, and the stack is exactly what the
 /// direct action writes from the same starting stack. A draft of the preset resolves the same way.
 #[test]
-fn a_preset_on_a_masked_photo_edits_the_global_layer_as_the_direct_action_does() {
+fn slow_a_preset_on_a_masked_photo_edits_the_global_layer_as_the_direct_action_does() {
     for global in [true, false] {
         let (mut service, asset, path) = opened("masked", None);
         let mask = masked_basic(&mut service, &asset, global);

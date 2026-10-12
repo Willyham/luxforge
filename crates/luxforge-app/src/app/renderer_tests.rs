@@ -337,7 +337,7 @@ fn fallback_a_device_lost_mid_gesture_lets_the_held_boundary_go() {
 /// asked for at launch, is taken the same way once the stage is checked. A later name changes
 /// nothing, and a launch that refused the stage names nothing.
 #[test]
-fn the_tile_worker_is_named_the_windows_adapter_once_the_stage_is_checked() {
+fn slow_the_tile_worker_is_named_the_windows_adapter_once_the_stage_is_checked() {
     use super::{gpu_tiles::GpuTiles, renderer::WindowAdapter};
     use luxforge_core::tiles::{TileFallback, TileService, TileStatus, TileUnavailable};
     let pending = TileStatus::Reference(Some(TileFallback::Unavailable(TileUnavailable::Pending)));

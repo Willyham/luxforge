@@ -187,7 +187,7 @@ fn slow_an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
 /// order, reaches the lane.
 #[cfg(target_os = "macos")]
 #[test]
-fn a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
+fn slow_a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
     let fixture = Fixture::new("watch-late-rename");
     let owner = fixture.owner();
     let client = owner.register();
@@ -263,7 +263,7 @@ fn a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
 /// is that link moved, as a rename is.)
 #[cfg(unix)]
 #[test]
-fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
+fn slow_an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     const LINKS: usize = 300;
     let fixture = Fixture::new("watch-links");
     let owner = fixture.owner();
@@ -608,7 +608,7 @@ fn slow_a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_i
 /// the lane started has found it, with no client asking about the disk; opened again with more on
 /// the card, it is reconciled again.
 #[test]
-fn a_card_mounted_as_the_catalog_opens_is_listed() {
+fn slow_a_card_mounted_as_the_catalog_opens_is_listed() {
     let mut fixture = Fixture::new("watch-card-at-open");
     let (table, card, drive) = mounts(&fixture);
     {
@@ -870,7 +870,7 @@ fn slow_a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_a
 /// is gone from `card.list` at once, its roots offline, and an indexed folder on it no longer
 /// watched.
 #[test]
-fn a_card_mounted_is_listed_and_a_volume_taken_out_goes_offline() {
+fn slow_a_card_mounted_is_listed_and_a_volume_taken_out_goes_offline() {
     let fixture = Fixture::new("watch-volumes");
     let owner = fixture.owner();
     let client = owner.register();
@@ -1005,7 +1005,7 @@ fn every_listing_records_one_event_as_it_ends() {
 /// Stopping the owner with the watcher following a folder stops the watcher and joins every lane
 /// thread.
 #[test]
-fn stopping_with_the_watcher_running_joins_cleanly() {
+fn slow_stopping_with_the_watcher_running_joins_cleanly() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let mut fixture = Fixture::new("watch-stop");
     let photos = fixture.dir.join("photos");

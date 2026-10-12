@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_tone_fit_recovers_perturbed_picture_targets_from_synthetic_exports() {
+    fn slow_auto_tone_fit_recovers_perturbed_picture_targets_from_synthetic_exports() {
         let temp = Scratch::new().unwrap();
         let registry = ModuleRegistry::builtin();
         let known = AutoToneTargets {
@@ -579,7 +579,7 @@ mod tests {
         );
     }
     #[test]
-    fn auto_tone_fit_accepts_repository_photos_with_standin_exports_and_records_holdout() {
+    fn slow_auto_tone_fit_accepts_repository_photos_with_standin_exports_and_records_holdout() {
         let temp = Scratch::new().unwrap();
         let xmp = temp.path.join("standin.xmp");
         fs::write(&xmp, r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:AutoTone="True" crs:Exposure2012="0" crs:Contrast2012="0" crs:Highlights2012="0" crs:Shadows2012="0" crs:Whites2012="0" crs:Blacks2012="0" crs:Vibrance="0" crs:Saturation="0"/></rdf:RDF></x:xmpmeta>"#).unwrap();

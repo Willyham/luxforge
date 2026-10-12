@@ -968,7 +968,7 @@ mod tests {
     }
 
     #[test]
-    fn orientation_carries_perspective_and_crop_in_one_action() {
+    fn slow_orientation_carries_perspective_and_crop_in_one_action() {
         use crate::{Orientation, Transform};
         let orientations: Vec<_> = [false, true]
             .into_iter()

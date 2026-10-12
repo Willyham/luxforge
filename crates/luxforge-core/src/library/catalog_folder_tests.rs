@@ -45,7 +45,7 @@ fn photographs(service: &mut EditorService, folder: &CatalogFolderId, from: usiz
 }
 
 #[test]
-fn catalog_folder_merges_and_collection_deletes_past_the_batch_limit_are_refused_whole() {
+fn slow_catalog_folder_merges_and_collection_deletes_past_the_batch_limit_are_refused_whole() {
     let path = temp_path("catalog-folder-limit.sqlite");
     let _ = std::fs::remove_file(&path);
     let mut service = EditorService::open(&path).unwrap();

@@ -767,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn every_rgb_triple_reduces_exactly_as_the_frozen_reference() {
+    fn slow_every_rgb_triple_reduces_exactly_as_the_frozen_reference() {
         // The whole 8-bit RGB domain, one pixel per (r, g, b) triple: 2^24 pixels, 4096 x 4096,
         // 256 worker chunks in the parallel path. Alpha varies and is never consulted. The whole
         // `Report` is compared, so a one-count difference in any bin or counter fails.

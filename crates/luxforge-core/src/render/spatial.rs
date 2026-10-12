@@ -3132,7 +3132,7 @@ mod tests {
     /// small tiles and of the wide ones fixed, and every read, on either side of a wide tile's
     /// seam and a small one's, is the rendered byte.
     #[test]
-    fn a_wide_halo_renders_in_wide_tiles_and_reads_equal_it_on_both_paths() {
+    fn slow_a_wide_halo_renders_in_wide_tiles_and_reads_equal_it_on_both_paths() {
         use crate::render::limits::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
         let registry = spatial_registry();
         // Wider and taller than one wide tile, above the parallel threshold.
@@ -4971,7 +4971,7 @@ mod tests {
     /// on the pool; one whose window is as wide as the pool does all of that serially. Both paths
     /// give the same frame to the byte.
     #[test]
-    fn a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
+    fn slow_a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
         let registry = spatial_registry();
         // Forced past the parallel threshold, in 16 px tiles so that a window as wide as the pool
         // exists whatever the pool's size.

@@ -255,8 +255,8 @@ fn a_light_links_steps_name_its_light() {
 
 /// A light that changes runs again the passes that read it, and nothing else.
 #[test]
-fn a_light_that_changes_runs_again_what_reads_it() {
-    let test = "a_light_that_changes_runs_again_what_reads_it";
+fn slow_a_light_that_changes_runs_again_what_reads_it() {
+    let test = "slow_a_light_that_changes_runs_again_what_reads_it";
     let Some((device, _queue)) = super::super::tests::headless(test) else {
         return;
     };

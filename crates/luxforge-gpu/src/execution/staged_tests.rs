@@ -138,8 +138,8 @@ fn read(
 /// (NaN past the stage's first edges); windows across one seam, both and none, and one at the
 /// stage's far corner, copy out the stage's texels bit for bit.
 #[test]
-fn tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels() {
-    let test = "tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels";
+fn slow_tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels() {
+    let test = "slow_tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels";
     let Some((device, queue)) = device(test) else {
         return;
     };
@@ -201,8 +201,8 @@ fn tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels
 /// A stage past two textures either way is refused as `texture-limit` before its charge is asked
 /// for; a refused charge creates nothing; one texture holds a stage within the limit.
 #[test]
-fn a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged() {
-    let test = "a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged";
+fn slow_a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged() {
+    let test = "slow_a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged";
     let Some((device, _)) = device(test) else {
         return;
     };

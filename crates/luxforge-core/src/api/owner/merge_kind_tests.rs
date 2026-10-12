@@ -63,7 +63,7 @@ fn merge_kind_schemas_list_the_registered_kinds_and_hdr_options() {
 }
 
 #[test]
-fn merge_kind_panorama_is_not_ready_naming_its_missing_provider() {
+fn slow_merge_kind_panorama_is_not_ready_naming_its_missing_provider() {
     let bench = Bench::new("kind-panorama", 1);
     let targets = json!({"kind": "paths", "paths": bench.paths(0)});
     let first = bench.merged(0, "first");
@@ -184,7 +184,7 @@ fn merge_kind_cross_kind_fields_counts_and_options_name_their_cause() {
 }
 
 #[test]
-fn merge_kind_answers_provenance_and_reruns_are_tagged_by_kind() {
+fn slow_merge_kind_answers_provenance_and_reruns_are_tagged_by_kind() {
     let bench = Bench::new("kind-tagged", 1);
     let result = bench.merged(0, "tagged");
     assert_eq!(result["kind"], "hdr", "{result}");
@@ -236,7 +236,7 @@ fn merge_kind_answers_provenance_and_reruns_are_tagged_by_kind() {
 }
 
 #[test]
-fn merge_kind_provenance_validates_its_kind_and_bounds() {
+fn slow_merge_kind_provenance_validates_its_kind_and_bounds() {
     let bench = Bench::new("kind-validate", 1);
     let result = bench.merged(0, "validate");
     let inspected = bench.ok("merge.inspect", json!({"merge_id": result["merge_id"]}));

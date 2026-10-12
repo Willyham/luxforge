@@ -1052,7 +1052,7 @@ mod tests {
     /// shortfall, missing export or behaviour flag. A folder without the neutral export, an export
     /// of another size and a round of other variants are each refused by name.
     #[test]
-    fn a_reduced_round_measures_its_own_renders_as_identity() {
+    fn slow_a_reduced_round_measures_its_own_renders_as_identity() {
         let directory = tempfile::tempdir().unwrap();
         let round = directory.path().join("round");
         let renders = directory.path().join("renders");

@@ -95,7 +95,7 @@ const WIDTH_AT_FULL_BLENDING: f64 = 1.0;
 /// neighbours at ±100 give at most `3 · LUMINANCE_STRENGTH / width` (the smoothstep's steepest
 /// slope, `1.5 / width`, across a difference of two), so 0.4 gives 3.75: monotone, by a margin of
 /// about 4% (the least floor that holds is about 0.383).
-/// `grade_luminance_is_monotone_for_every_extreme_combination` samples it in `f32`.
+/// `slow_grade_luminance_is_monotone_for_every_extreme_combination` samples it in `f32`.
 const LUMINANCE_WIDTH_FLOOR: f64 = 0.4;
 
 /// The exponent a luminance amount of ±100 gives at full weight: `L^(2^∓0.5)`.

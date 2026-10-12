@@ -239,7 +239,7 @@ The order is frozen. The halos add along it, which is what the summed bound abov
 
 Each unit at amount 0 returns its input untouched through an explicit branch, not through an encode/decode round trip, so the identity is exact with no rounding — `every_unit_at_zero_is_the_exact_identity` asserts bit equality on eight images. Any pixel whose `delta` is exactly zero takes the same path, so a pass-through is exact too. A neutral payload compiles to no operation at all.
 
-Every stage is a composition of `+`, `-`, `*`, `/` by a value bounded away from zero (`var + eps`, the transmission floor, `A_FLOOR`), `tanh`, `exp` and `powf` with a positive base, so a finite input gives a finite output; `every_output_is_finite` exercises this over every fixture at the four extreme parameter corners. A non-finite **input** is out of scope for this reference and is the host's explicit `resource-limit` error, never a silently produced `NaN`.
+Every stage is a composition of `+`, `-`, `*`, `/` by a value bounded away from zero (`var + eps`, the transmission floor, `A_FLOOR`), `tanh`, `exp` and `powf` with a positive base, so a finite input gives a finite output; `slow_every_output_is_finite` exercises this over every fixture at the four extreme parameter corners. A non-finite **input** is out of scope for this reference and is the host's explicit `resource-limit` error, never a silently produced `NaN`.
 
 ## Per-tile scratch
 
@@ -257,7 +257,7 @@ Rough figures for one 512 × 512 output tile at a 60 MP stage (long side 10000, 
 
 ## Measured figures
 
-Every figure below is recomputed from the reference on each test run and compared against [`fixtures/presence/measurements.json`](../../fixtures/presence/measurements.json) by `measurements_match_reference`, so the note and the code cannot drift apart silently. All measurements are at a stage long side of 6000; the fixtures are small because a tile of such a stage is small.
+Every figure below is recomputed from the reference on each test run and compared against [`fixtures/presence/measurements.json`](../../fixtures/presence/measurements.json) by `slow_measurements_match_reference`, so the note and the code cannot drift apart silently. All measurements are at a stage long side of 6000; the fixtures are small because a tile of such a stage is small.
 
 ### Step edges
 
