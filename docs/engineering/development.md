@@ -1002,7 +1002,9 @@ cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descrip
 
 Beside it, `schema_list_names_developer_only_methods_only_in_developer_mode` serves
 `ModuleRegistry::developer()` too and checks that it lists every ordinary method unchanged and adds
-exactly the methods the test modules generate, none of which the snapshot holds.
+exactly the methods the test modules generate, none of which the snapshot holds. The one ordinary
+method a developer run changes is `task.fill-generative`, whose `model` choice gains the developer
+fake generator first.
 
 What only a developer run serves is written down in `fixtures/modules/developer-descriptors.json`:
 the developer-only modules of `module.list` and the methods they generate, compared byte for byte
