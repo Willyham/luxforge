@@ -59,6 +59,7 @@ use std::{
 
 mod analysis;
 pub(crate) mod grid;
+pub mod output;
 mod reference;
 pub mod region;
 pub use analysis::ANALYSIS_QUEUE_CAPACITY;
@@ -66,6 +67,7 @@ pub(crate) use analysis::AnalysisWorker;
 pub use grid::{
     ClipDetection, GridRead, MAX_SIDE as GRID_MAX_SIDE, SampleGrid, SensorClip, read as read_grid,
 };
+pub use output::{Depth, OutputSpec, PixelRows, Pixels};
 
 #[cfg(test)]
 pub(crate) use reference::Hold;
