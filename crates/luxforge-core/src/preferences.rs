@@ -218,6 +218,10 @@ pub(crate) struct Preferences {
     /// that changes the catalog format ([`crate::update::UpdatePolicy::installs_automatically`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) update_install_automatically: Option<bool>,
+    /// Whether a release build launched outside Applications on macOS asks to move itself there.
+    /// On unless the person chose Don't ask again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) update_ask_to_move: Option<bool>,
     /// The version the person skipped. Only `update.skip` writes it, through
     /// [`PreferenceStore::set_skipped_version`]: no [`PreferenceChange`] names it, so
     /// `preferences.set`, its `null` and every reset keep it.
@@ -235,7 +239,7 @@ type GeneralRows<'a> = (
     CanvasBackground,
     u16,
     Option<&'a Path>,
-    (bool, bool),
+    (bool, bool, bool),
 );
 
 impl Preferences {
@@ -279,6 +283,10 @@ impl Preferences {
         self.update_install_automatically.unwrap_or(false)
     }
 
+    pub(crate) fn update_ask_to_move(&self) -> bool {
+        self.update_ask_to_move.unwrap_or(true)
+    }
+
     /// The active theme's id, Luxforge Dark's when none is stored.
     pub(crate) fn theme(&self) -> &str {
         self.theme.as_deref().unwrap_or(LUXFORGE_DARK_ID)
@@ -294,7 +302,11 @@ impl Preferences {
             self.canvas_background(),
             self.interface_size(),
             self.catalog.as_deref(),
-            (self.update_checks(), self.update_install_automatically()),
+            (
+                self.update_checks(),
+                self.update_install_automatically(),
+                self.update_ask_to_move(),
+            ),
         )
     }
 
@@ -413,6 +425,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) theme: Option<Option<String>>,
     pub(crate) update_checks: Option<Option<bool>>,
     pub(crate) update_install_automatically: Option<Option<bool>>,
+    pub(crate) update_ask_to_move: Option<Option<bool>>,
 }
 
 impl PreferenceChange {
@@ -450,6 +463,7 @@ impl PreferenceChange {
             &mut preferences.update_install_automatically,
             self.update_install_automatically,
         );
+        put(&mut preferences.update_ask_to_move, self.update_ask_to_move);
     }
 }
 
@@ -660,6 +674,7 @@ mod tests {
             theme: Some(Some(STORED_THEME.to_owned())),
             update_checks: Some(Some(false)),
             update_install_automatically: Some(Some(true)),
+            update_ask_to_move: Some(Some(false)),
         }
     }
 
@@ -787,6 +802,7 @@ mod tests {
         );
         assert_eq!(reopened.theme(), STORED_THEME);
         assert!(!reopened.update_checks() && reopened.update_install_automatically());
+        assert!(!reopened.update_ask_to_move());
         let launch = LaunchPreferences::read(Some(root.clone()));
         assert!(launch.problem.is_none());
         assert_eq!(launch.catalog, reopened.catalog);
@@ -828,9 +844,11 @@ mod tests {
             theme: Some(None),
             update_checks: Some(None),
             update_install_automatically: Some(None),
+            update_ask_to_move: Some(None),
         };
         let (_, after) = store.set(reset).unwrap();
         assert!(after.update_checks() && !after.update_install_automatically());
+        assert!(after.update_ask_to_move());
         assert_eq!(after, Preferences::default());
         assert_eq!(after.theme(), LUXFORGE_DARK_ID);
         assert_eq!(
@@ -1057,6 +1075,10 @@ mod tests {
             },
             PreferenceChange {
                 update_install_automatically: Some(Some(true)),
+                ..PreferenceChange::default()
+            },
+            PreferenceChange {
+                update_ask_to_move: Some(Some(false)),
                 ..PreferenceChange::default()
             },
         ] {

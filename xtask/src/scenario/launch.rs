@@ -203,6 +203,8 @@ pub struct Launch {
     /// A catalog the evidence run opens as its remembered one, and the unsupported-catalog
     /// sheet's choice.
     evidence_catalog: Option<(PathBuf, String)>,
+    /// Show the move into Applications question wherever the run's app is, so it can be captured.
+    move_question: bool,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
@@ -231,6 +233,7 @@ impl Launch {
             usage_receiver: None,
             evidence_config: None,
             evidence_catalog: None,
+            move_question: false,
             sources: Vec::new(),
             script: None,
             window: None,
@@ -330,6 +333,14 @@ impl Launch {
     /// one's, so what it stored is what this launch reads. Passed beside `--evidence-dir`.
     pub fn evidence_config(mut self, dir: &Path) -> Self {
         self.evidence_config = Some(dir.into());
+        self
+    }
+
+    /// Show the Move Luxforge to Applications question once the workspace is usable, wherever the
+    /// run's app is, so it can be captured; its buttons move nothing. Passed beside
+    /// `--evidence-dir`.
+    pub fn move_question(mut self) -> Self {
+        self.move_question = true;
         self
     }
 
@@ -482,6 +493,9 @@ impl Launch {
                             "--evidence-unsupported-catalog".into(),
                             choice.into(),
                         ]);
+                    }
+                    if self.move_question {
+                        args.push("--evidence-move-to-applications".into());
                     }
                 }
                 Flag::GpuIdentity => {

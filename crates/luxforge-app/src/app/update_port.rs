@@ -883,7 +883,7 @@ impl UpdatePort for LinuxPayloadPort {
         notify(notifier);
     }
 
-    fn move_to_applications(&self) -> Result<(), Error> {
+    fn move_to_applications(&self, _replace: bool) -> Result<(), Error> {
         Err(
             Error::not_ready("moving into Applications is for macOS only")
                 .with_data(json!({ "reason": "not-supported" })),

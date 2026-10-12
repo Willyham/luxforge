@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; the [desktop's offer, Settings group and palette entry](#the-desktop); and [feed publication and the feed route](#publishing-and-serving-the-feeds). A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism and the move into Applications are not built yet, and the production key, the API host and its update store are not in place, so no build updates itself today.
+Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; the [desktop's offer, Settings group and palette entry](#the-desktop); the [move into Applications](#moving-into-applications) with its launch question; and [feed publication and the feed route](#publishing-and-serving-the-feeds). A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism (Sparkle) is not built yet, and the production key, the API host and its update store are not in place, so no build updates itself today.
 
 ## Outcome and scope
 
@@ -211,12 +211,13 @@ The core owns the update state, commands and preferences. A host port carries ou
 | `update.check` | Checks the feed now. The answer reports the check's outcome. The check runs on a bounded worker, and the owner and UI threads never wait on the network. |
 | `update.install` | Installs the available update and relaunches.<br>• Needs `ClientAuthority::Permissions`, so it comes from the desktop or a permission-authority client.<br>• Refuses `not-ready` when no update is available.<br>• Refuses `conflict` while a job (export, merge, import) runs, naming the jobs. |
 | `update.skip` | Stops offering a given version. A later version is offered as usual. |
-| `update.move-to-applications` | macOS only. Moves the app into Applications and relaunches it from there ([below](#moving-into-applications)). Needs `ClientAuthority::Permissions`. |
+| `update.move-to-applications` | macOS only. Moves the app into Applications and relaunches it from there ([below](#moving-into-applications)). Needs `ClientAuthority::Permissions`. Without `replace: true` it refuses `conflict` with `data.reason` `existing-app` and the app in the way as `data.path`; with it, that app goes to the Trash. |
 
 Two preferences are set through `preferences.set`, with the existing preference rules:
 
 - `update_checks`, default `true`;
-- `update_install_automatically`, default `false`.
+- `update_install_automatically`, default `false`;
+- `update_ask_to_move`, default `true`: whether a macOS release build launched outside Applications asks to move ([below](#moving-into-applications)).
 
 Luxforge's preferences are authoritative: the macOS port applies them to Sparkle at every launch and on every change. A skipped version is held in the same configuration. The commands are listed in `schema.list`, so `luxforge-ctl` exposes them with no further work.
 
@@ -323,23 +324,37 @@ Implemented choices:
 
 Updates cannot replace an app that runs from a disk image, from a read-only volume or from a translocated location. App Translocation is how macOS runs a quarantined app that was not moved into place.
 
-**When Luxforge asks.** A release build launched by a person checks where it runs. It asks when it is:
+**When Luxforge asks.** A macOS release build (one compiled with `LUXFORGE_RELEASE_VERSION`) launched by a person, with its window shown, checks where it runs once the workspace is usable, while `update_ask_to_move` is on. Development builds and hidden, background, evidence, smoke and verify launches never ask. The check runs off the update loop and reads where the running bundle is:
 
-- translocated, detected as LetsMove does with `SecTranslocateIsTranslocatedURL`;
-- on a disk image or read-only volume;
-- outside `/Applications` and `~/Applications`.
+- **translocated**, detected as LetsMove does with `SecTranslocateIsTranslocatedURL` and `SecTranslocateCreateOriginalPathForURL`, looked up at run time in the Security framework; where they are missing the app counts as not translocated, and the original's own volume decides the rest;
+- **on a disk image**, a read-only volume (`statfs` `MNT_RDONLY`) whose Disk Arbitration device model is `Disk Image`;
+- **on another read-only volume**;
+- **in `/Applications` or `~/Applications`**, where it does not ask;
+- **anywhere else**.
 
-The question is "Move Luxforge to Applications? Luxforge can only update itself from the Applications folder", with **Move and relaunch** and **Not now**, plus Don't ask again, which is a preference.
+The question is a non-modal card in the stack of workspace notices, under the update offer, once no sheet, dialog or menu is open and the usage statistics notice is answered, so the two never show together. It reads "Move Luxforge to Applications?" and "Luxforge can only update itself from the Applications folder.", with **Move and relaunch**, **Not now** and a **Don't ask again** switch. Not now with the switch on stores `update_ask_to_move: false` through `preferences.set`, like any other preference write; the question is not asked again in that launch either way.
 
-**What Move does:**
+**What Move does** (`luxforge-install`):
 
-1. It copies the bundle into `/Applications`, or into `~/Applications` when `/Applications` is not writable, preserving its signature.
-2. If an existing Luxforge is in the way, it moves that one to the Trash after the person confirms.
-3. It clears the copy's quarantine as LetsMove does.
-4. It relaunches from the new place.
-5. It moves the original to the Trash, or ejects its disk image.
+1. It copies the bundle with `ditto`, which keeps its signature, into a hidden staging copy in `/Applications`, or in `~/Applications` (created when needed) when `/Applications` is not writable.
+2. It verifies the copy with `codesign --verify --deep --strict` and clears its quarantine (`com.apple.quarantine`, recursively) as LetsMove does. A copy that fails either is removed, and nothing else has changed.
+3. If a `Luxforge.app` is already there, it stops and asks: "Replace the Luxforge in Applications?", naming it, with Replace and relaunch and Cancel. Only after Replace does that app go to the Trash (`NSFileManager trashItemAtURL`), and only then is the copy renamed into place.
+4. It closes the window through the ordinary quit path: the remembered frame and the last preference write are stored, and the catalog owner closes the catalog and its thread is joined.
+5. Only then does it move the original to the Trash, and start a detached waiter that waits for this process to exit (at most 30 seconds), opens the new copy with `open -n -a`, and ejects the original's disk image with `hdiutil detach`. An app on another read-only volume is left where it is.
 
-Until the app moves, `update.status` reports `unavailable` with the reason `outside-applications`. Background and evidence launches never ask.
+A failure is shown in the card in plain words, with Try again and Not now.
+
+Until the app moves, `update.status` reports `unavailable` with the reason `outside-applications`, once the macOS port reports it.
+
+**The hand-off to the Sparkle port.** The move is one crate, `luxforge-install`, which depends on no workspace crate, so the desktop's question and the macOS update port call the same code:
+
+- `classify(bundle) -> Placement` (`running_bundle()` names the bundle), and `classify_with(bundle, roots, probes)` with injectable Applications folders and translocation and volume probes for tests;
+- `move_to_applications(placement, roots, replace, env) -> Result<Moved, MoveError>`, with `Roots::standard()` and the `System` environment; `MoveError::Existing(path)` is the `existing-app` refusal, and each error names a `reason()`;
+- `Relaunch::moved(&moved).start(&System)`, which trashes the original and starts the waiter.
+
+The desktop's relaunch hook (`app/relaunch.rs`) runs work once the quit path has closed the catalog: `relaunch(Relaunch)` holds one relaunch for the quit path, and `request_quit()` closes the window the way its close button does, from any thread. The macOS port's `move_to_applications(replace)` calls the move, then those two. While the port's `update.status` reports `can_move_to_applications`, the desktop's question sends `update.move-to-applications` with `replace` instead of moving itself; until then it calls `luxforge-install` directly.
+
+**Evidence.** `--evidence-move-to-applications`, honoured only with `--evidence-dir`, shows the question once the workspace is usable wherever the run's app is, so it can be captured; its buttons move nothing and log `move_to_applications_skipped`. The `move-to-applications` smoke scenario captures it, with its state under `move_to_applications` in the frame and `move_question_classified` and `move_question_shown` in the log. The real translocated first launch from the disk image is part of final qualification.
 
 ## Linux: the payload updater
 

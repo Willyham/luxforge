@@ -321,6 +321,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-input/src",
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
+    "crates/luxforge-install/src",
 ];
 
 /// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
@@ -340,6 +341,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-input",
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
+    "crates/luxforge-install",
 ];
 
 const SOURCE_RULES: &[SourceRule] = &[
@@ -1178,6 +1180,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--evidence-config\"",
             "\"--evidence-catalog\"",
             "\"--evidence-unsupported-catalog\"",
+            "\"--evidence-move-to-applications\"",
             "spawn_editor",
             "editor_args",
         ],
@@ -1430,6 +1433,16 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-update may depend on no workspace crate and no path",
+    },
+    // The desktop's move question and the macOS update port both call the move into
+    // Applications, so it stays a leaf either can link: no core, GUI or desktop crate.
+    DependencyRule {
+        name: "install-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-install"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-install may depend on no workspace crate and no path but in its tests",
     },
     DependencyRule {
         name: "image-jpeg-feature",

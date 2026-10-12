@@ -33,7 +33,8 @@ struct State {
     held: Vec<CheckDone>,
     checks: usize,
     installs: usize,
-    moves: usize,
+    /// Each move requested, by its `replace`.
+    moves: Vec<bool>,
     skips: Vec<String>,
     refusal: Option<Error>,
     clock: i64,
@@ -58,7 +59,7 @@ impl FakeUpdatePort {
             held: Vec::new(),
             checks: 0,
             installs: 0,
-            moves: 0,
+            moves: Vec::new(),
             skips: Vec::new(),
             refusal: None,
             clock: 1_000,
@@ -163,7 +164,12 @@ impl FakeUpdatePort {
 
     /// How many moves into Applications the core requested.
     pub fn moves(&self) -> usize {
-        self.state().moves
+        self.state().moves.len()
+    }
+
+    /// Each move into Applications the core requested, by whether it may replace an existing app.
+    pub fn move_requests(&self) -> Vec<bool> {
+        self.state().moves.clone()
     }
 
     /// Every version skipped, in order.
@@ -238,12 +244,12 @@ impl UpdatePort for FakeUpdatePort {
         self.state().skips.push(version.into());
     }
 
-    fn move_to_applications(&self) -> Result<(), Error> {
+    fn move_to_applications(&self, replace: bool) -> Result<(), Error> {
         let mut state = self.state();
         if let Some(error) = state.refusal.take() {
             return Err(error);
         }
-        state.moves += 1;
+        state.moves.push(replace);
         Ok(())
     }
 }

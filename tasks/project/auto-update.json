@@ -424,7 +424,7 @@
     {
       "id": "TASK-008",
       "description": "Offer to move Luxforge into Applications on macOS.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],

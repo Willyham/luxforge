@@ -509,6 +509,7 @@ fn usage_generic_preference_writes_and_resets_keep_the_record() {
             theme: Some(None),
             update_checks: Some(None),
             update_install_automatically: Some(None),
+            update_ask_to_move: Some(None),
         })
         .unwrap();
     store.set_flag("developer", Some(json!(true))).unwrap();

@@ -589,4 +589,22 @@ fn update_move_to_applications_needs_authority_and_a_port_that_can() {
     );
     assert_eq!(moved["outcome"], "requested");
     assert_eq!(port.moves(), 1);
+    // The port refuses a move that would replace an existing app without the confirmation, and
+    // its refusal is answered as it is; the confirmed move carries replace.
+    port.refuse_next(
+        Error::conflict("Luxforge is already in /Applications")
+            .with_data(json!({"reason": "existing-app", "path": "/Applications/Luxforge.app"})),
+    );
+    assert_eq!(
+        harness.refused(
+            harness.desktop,
+            "update.move-to-applications",
+            mutation("in-the-way")
+        ),
+        ("conflict".into(), json!("existing-app"))
+    );
+    let mut confirmed = mutation("replace");
+    confirmed["replace"] = json!(true);
+    harness.ok(harness.desktop, "update.move-to-applications", confirmed);
+    assert_eq!(port.move_requests(), [false, true]);
 }

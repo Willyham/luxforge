@@ -122,6 +122,7 @@ fn settable() -> Value {
         "theme": "luxforge.dark",
         "update_checks": true,
         "update_install_automatically": false,
+        "update_ask_to_move": true,
     })
 }
 
@@ -173,6 +174,7 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "theme": "luxforge.dark",
         "update_checks": false,
         "update_install_automatically": true,
+        "update_ask_to_move": false,
     });
     assert_eq!(
         harness.ok("set", "preferences.set", chosen.clone()),
@@ -352,6 +354,7 @@ fn only_a_change_to_a_general_row_is_announced() {
         ("export-reset", json!({"export_folder": null})),
         ("checks", json!({"update_checks": false})),
         ("automatic", json!({"update_install_automatically": true})),
+        ("ask-to-move", json!({"update_ask_to_move": false})),
     ] {
         harness.ok(id, "preferences.set", params);
     }
@@ -367,7 +370,8 @@ fn only_a_change_to_a_general_row_is_announced() {
             "catalog",
             "catalog-reset",
             "checks",
-            "automatic"
+            "automatic",
+            "ask-to-move"
         ]
     );
 }
