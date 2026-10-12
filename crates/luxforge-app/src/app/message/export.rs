@@ -6,7 +6,7 @@ use serde_json::Value;
 #[derive(Clone, Debug)]
 pub(crate) enum ExportMessage {
     /// Export the displayed entry: ask `export.plan` for its suggested name, choose the destination
-    /// in the native save dialog and send `export.jpeg`, with `reference: true` when `reference`
+    /// in the native save dialog and send `export.write`, with `reference: true` when `reference`
     /// asks for the reference renderer's export.
     Start {
         keep_metadata: bool,
@@ -18,7 +18,7 @@ pub(crate) enum ExportMessage {
     Anyway,
     /// Cancel the export held for its stale patches.
     Dismiss,
-    /// `export.jpeg` answered: the queued job, or the refusal with its code.
+    /// `export.write` answered: the queued job, or the refusal with its code.
     Queued(Result<Value, CallError>),
     /// What the export's reader read of the job it names: its first record, a record that differs
     /// from the one sent before it, the job's end, or a read that failed. The reader sends

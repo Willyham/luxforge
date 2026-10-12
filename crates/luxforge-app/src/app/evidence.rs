@@ -172,7 +172,7 @@ pub(crate) struct Recorded {
     /// The requested entry once a frame rendered for it is the photograph, until a failure
     /// withdraws it: the entry the stack summary reports as displayed.
     pub(crate) rendered_entry: Option<Arc<HistoryEntry>>,
-    /// What `export.plan` and `export.jpeg` answered for the export in progress.
+    /// What `export.plan` and `export.write` answered for the export in progress.
     pub(crate) export_plan: Option<Value>,
     pub(crate) export_queued: Option<Value>,
     /// The Performance section's last two `resources.read` answers exactly as the owner sent them,

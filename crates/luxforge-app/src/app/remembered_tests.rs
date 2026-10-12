@@ -5,7 +5,7 @@
 //! next dialog opens on, while an evidence step's export stores nothing.
 use super::{
     Boot, Editor,
-    export::{ExportChoice, dialog_start, plan_now},
+    export::{ExportChoice, dialog_start, plan_now, plan_settings},
     job_reads::Reader,
     message::{
         Message, export::ExportMessage, mask::BrushEdit, mask::MaskMessage, sync::SyncMessage,
@@ -290,7 +290,8 @@ fn remembered_brush_is_stored_on_a_change_and_coalesced_under_repeated_keys() {
 /// Answer an export's chain as the runtime would, from the chosen destination to its end.
 fn export_to(editor: &mut Editor, asset: &AssetId, destination: PathBuf) {
     let entry = editor.displayed_entry().unwrap();
-    let plan = plan_now(&editor.owner, editor.client, asset, &entry).unwrap();
+    let settings = plan_settings(false, None, editor.export_last_folder().as_deref());
+    let plan = plan_now(&editor.owner, editor.client, asset, &entry, &settings).unwrap();
     let choice = ExportChoice {
         asset_id: asset.clone(),
         entry_id: entry,
@@ -325,10 +326,10 @@ fn export_to(editor: &mut Editor, asset: &AssetId, destination: PathBuf) {
     assert!(editor.export.run.is_none());
 }
 
-/// A dialog-chosen export stores its folder once it succeeds, and the next dialog opens there; an
-/// export whose destination an evidence step named stores nothing.
+/// A dialog-chosen export stores its settings as the last export once it succeeds, and the next
+/// dialog opens in its folder; an export whose destination an evidence step named stores nothing.
 #[test]
-fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evidence_one() {
+fn the_last_export_is_stored_after_a_dialog_export_and_not_after_an_evidence_one() {
     let (mut editor, root, asset) = launch(json!({}), true);
     let asset = asset.unwrap();
     let original = editor
@@ -347,7 +348,7 @@ fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evi
     export_to(&mut editor, &asset, evidence.join("step.jpg"));
     assert!(evidence.join("step.jpg").exists(), "{}", editor.status.text);
     assert!(editor.preferences.idle(), "nothing stored");
-    assert_eq!(stored(&editor)["export_folder"], Value::Null);
+    assert_eq!(stored(&editor)["export_last"], Value::Null);
 
     // The save dialog's destination: its folder is stored once the export succeeds.
     let chosen = root.join("chosen");
@@ -359,16 +360,23 @@ fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evi
     assert!(editor.view_state.picker_open, "the dialog is open");
     export_to(&mut editor, &asset, chosen.join("mine.jpg"));
     assert!(chosen.join("mine.jpg").exists(), "{}", editor.status.text);
+    let last = json!({"settings": {
+        "format": "jpeg", "size": {"fit": "full"}, "quality": 90, "optimise": false,
+        "chroma": "444", "limit_bytes": null, "sharpen": null, "metadata": "none",
+        "pixels_per_inch": null, "folder": {"path": chosen}, "suffix": "-edited",
+    }, "preset_id": null});
     assert_eq!(
         editor.preferences.writing().unwrap().params(),
-        json!({"export_folder": chosen})
+        json!({"export_last": last})
     );
     answer_preference(&mut editor);
-    assert_eq!(stored(&editor)["export_folder"], json!(chosen));
+    assert_eq!(stored(&editor)["export_last"], last);
 
-    // The next dialog opens on the remembered folder, at the plan's suggestion.
+    // The next dialog opens in the last export's folder, at the plan's suggestion.
     let entry = editor.displayed_entry().unwrap();
-    let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
+    assert_eq!(editor.export_last_folder(), Some(chosen.clone()));
+    let settings = plan_settings(false, None, editor.export_last_folder().as_deref());
+    let plan = plan_now(&editor.owner, editor.client, &asset, &entry, &settings).unwrap();
     let (folder, name) = dialog_start(&plan, &original);
     assert_eq!(folder, chosen);
     assert!(name.ends_with("-edited.jpg"), "{name}");
@@ -385,7 +393,7 @@ fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evi
 
 /// A dialog export that fails or is cancelled stores nothing.
 #[test]
-fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
+fn the_last_export_is_not_stored_for_a_cancelled_or_failed_export() {
     let (mut editor, root, asset) = launch(json!({}), true);
     let asset = asset.unwrap();
     let _ = editor.update(Message::Export(ExportMessage::Start {
@@ -411,7 +419,14 @@ fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
         keep_metadata: false,
         pixels_per_inch: None,
         reference: false,
-        plan: plan_now(&editor.owner, editor.client, &asset, &entry).unwrap(),
+        plan: plan_now(
+            &editor.owner,
+            editor.client,
+            &asset,
+            &entry,
+            &plan_settings(false, None, None),
+        )
+        .unwrap(),
         acknowledge_stale: None,
     };
     let queued = super::export::send_now(&editor.owner, editor.client, &choice);

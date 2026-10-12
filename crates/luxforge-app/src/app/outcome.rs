@@ -91,7 +91,7 @@ pub(crate) enum Outcome<'a> {
     ThemeFolderImported(&'a Value),
     /// `export.plan` answered for the export in progress.
     ExportPlanned(&'a Value),
-    /// `export.jpeg` queued the export in progress.
+    /// `export.write` queued the export in progress.
     ExportQueued(&'a Value),
     /// The export ended — written, failed or cancelled — or its request was refused: the job's
     /// last record when one was read, and the reason when it failed.

@@ -1564,13 +1564,14 @@ impl Exports {
         let destination = self.dir.join(name);
         let mut params = json!({
             "asset_id": self.asset,
+            "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),
             "destination": destination,
             "mutation": {"request_id": format!("export-{name}"), "actor": "test"},
         });
         if reference {
             params["reference"] = json!(true);
         }
-        let (queued, _) = owner_call(&self.owner, self.client, "export.jpeg", params)
+        let (queued, _) = owner_call(&self.owner, self.client, "export.write", params)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         let job = queued["job_id"].clone();
         let read = luxforge_testbase::wait_for("an export to end", || {
@@ -1809,16 +1810,18 @@ fn a_gpu_export_leaves_the_original_unchanged() {
     assert_eq!(stripped["renderer"]["record"], "gpu", "{stripped}");
     let kept = json!({
         "asset_id": exports.asset, "destination": exports.dir.join("kept.jpg"),
-        "keep_metadata": true, "mutation": {"request_id": "export-kept", "actor": "test"},
+        "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::All),
+        "mutation": {"request_id": "export-kept", "actor": "test"},
     });
-    owner_call(&exports.owner, exports.client, "export.jpeg", kept).expect("an export");
+    owner_call(&exports.owner, exports.client, "export.write", kept).expect("an export");
     let (_, reference) = exports.export("reference.jpg", true);
     let refused = owner_call(
         &exports.owner,
         exports.client,
-        "export.jpeg",
+        "export.write",
         json!({
             "asset_id": exports.asset, "destination": exports.dir.join("stripped.jpg"),
+            "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),
             "mutation": {"request_id": "export-taken", "actor": "test"},
         }),
     );
@@ -2392,7 +2395,7 @@ fn auto_tone_gpu_grid_and_values_agree_with_the_reference() {
 }
 
 /// A trivial export's whole time, GPU against reference, through the owner's export lane as the
-/// desktop starts it: `export.jpeg` to its job's end, read through `job.wait`, with the moment
+/// desktop starts it: `export.write` to its job's end, read through `job.wait`, with the moment
 /// encoding began. Alternating, after one discarded export of each; the generated 24 and 60 MP
 /// fixtures with Basic exposure +0.3.
 #[test]
@@ -2416,13 +2419,14 @@ fn trivial_export_timing_gpu_against_reference() {
         let time = |file: &str, reference: bool| -> (f64, f64) {
             let mut params = json!({
                 "asset_id": exports.asset, "destination": exports.dir.join(file),
+                "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),
                 "mutation": {"request_id": format!("export-{file}"), "actor": "test"},
             });
             if reference {
                 params["reference"] = json!(true);
             }
             let started = Instant::now();
-            let (queued, _) = owner_call(&exports.owner, exports.client, "export.jpeg", params)
+            let (queued, _) = owner_call(&exports.owner, exports.client, "export.write", params)
                 .expect("an export");
             let job = queued["job_id"].clone();
             let (mut after, mut encoding) = (None, None);
