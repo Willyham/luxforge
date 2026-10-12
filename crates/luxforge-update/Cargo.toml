@@ -1,0 +1,32 @@
+[package]
+name = "luxforge-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The update feed's one home: the per-release update record, the Sparkle-format appcast (written
+# and read), Ed25519 signing and verification in Sparkle's form, the choice of an update from a
+# feed, and `release/update.json`. xtask writes records and feeds with it; the Linux updater reads
+# feeds with it. It depends on no workspace crate, no GUI and no network crate *(enforced)*.
+[dependencies]
+ring.workspace = true
+base64.workspace = true
+memmap2.workspace = true
+roxmltree.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+# `unsafe` is allowed by name on one function only, beside its `SAFETY:` comment: the read-only
+# memory map an archive is signed and verified through (`key.rs`), since `ring`'s Ed25519 takes the
+# whole message as one slice and an archive is not read onto the heap. The crate denies `unsafe`
+# everywhere else, and the rest of the workspace keeps its forbid(unsafe_code) policy.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

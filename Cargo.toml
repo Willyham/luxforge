@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "xtask", "xtask/cli"]
+members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "crates/luxforge-update", "xtask", "xtask/cli"]
 # Standalone packages with their own workspace and lockfile; no desktop build or check builds them.
 exclude = ["services/usage-ingest"]
 resolver = "3"
@@ -80,6 +80,16 @@ sha2 = "=0.10.9"
 # package inventory keeps its licence with every other crate's.
 toml_edit = { version = "=0.25.15", default-features = false, features = ["parse"] }
 url = "=2.5.8"
+# The update feed (`luxforge-update`): Ed25519 signing and verification through `ring`, the version
+# `rustls` already builds, with the same default features, so it adds no package and no feature;
+# standard base64 for keys and signatures, the version `ureq` already builds, with the same `std`
+# feature; and the read-only memory map an archive is signed and verified through without a heap
+# copy, the version `fontdb` already builds.
+ring = "=0.17.14"
+base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
+memmap2 = "=0.9.11"
+# SemVer ordering of release versions, for xtask's release tags and the update feed.
+semver = "=1.0.28"
 uuid = { version = "=1.26.1", features = ["v4"] }
 # The operating system's cryptographic randomness, the same version `uuid` already draws its v4 IDs
 # from: the usage statistics image key's 32 random bytes. No features, so it adds no package.
