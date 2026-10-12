@@ -193,9 +193,36 @@ fn selecting_on_the_host() -> (Editor, PathBuf) {
     opened(seeded())
 }
 
+/// The editor over `catalog` as [`selecting_over`] opens it, its owner keeping the person's
+/// preferences in `preferences`.
+pub(super) fn selecting_with_preferences(
+    catalog: PathBuf,
+    preferences: PathBuf,
+) -> (Editor, PathBuf) {
+    OwnerHandle::read_no_host_mounts(&catalog);
+    let host = luxforge_core::HostConfig {
+        preferences_dir: Some(preferences),
+        ..luxforge_core::HostConfig::unconfigured()
+    };
+    let started = OwnerHandle::start_with_host(
+        &catalog,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
+        host,
+    )
+    .unwrap();
+    opened_with(catalog, started)
+}
+
 /// The editor over `catalog` with Select shown, what showing it reads answered.
 fn opened(catalog: PathBuf) -> (Editor, PathBuf) {
-    let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+    let started = OwnerHandle::start(&catalog).unwrap();
+    opened_with(catalog, started)
+}
+
+fn opened_with(
+    catalog: PathBuf,
+    (owner, join): (OwnerHandle, std::thread::JoinHandle<()>),
+) -> (Editor, PathBuf) {
     let (mut editor, _) = Editor::new(Boot {
         owner,
         join,
