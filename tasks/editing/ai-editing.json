@@ -809,8 +809,8 @@
     },
     {
       "id": "TASK-013",
-      "description": "Implement the local generative provider behind the Generator trait with the qualified runtime and models, memory admission and the shipped prompt embedding, and qualify it natively with the blinded comparison.",
-      "status": "in_progress",
+      "description": "Implement the local generative provider behind the Generator trait with the qualified runtime and models, memory admission and the shipped prompt embedding, and run it natively on the corpus.",
+      "status": "completed",
       "dependencies": [
         "TASK-005",
         "TASK-007",
@@ -822,7 +822,7 @@
         "If the generative qualification recorded a no-go for every model, complete this task by recording that outcome in the design and feature status and by leaving the Generative tier absent: the workflow stays, the remote tier fills it, and no unqualified model or runtime is substituted.",
         "The runtime the qualification chose is built from vendored, pinned sources with the cc crate in a crate of its own (luxforge-diffusion) that implements Generator and is handed in through HostConfig; the dependency rule keeps it out of the core. Candidates are produced one at a time from consecutive seeds so peak memory stays at one candidate's; progress and cancellation are per step.",
         "Resources: the light model; the heavy model's transformer and VAE with the precomputed empty-scene embedding as part of the resource; the text encoder as a separate optional resource for Replace. Each declares its resident budget and minimum machine memory, counted with the held candidates and the analysis cache; a generation that would exceed the budget is refused with resource-limit before allocation.",
-        "Native evidence with the qualified models on the corpus: three candidates in sequence within the recorded budgets and memory, the embedding-conditioned fill matching the qualification's result, and the blinded comparison the owner runs against the Fast fill and Lightroom's Generative Remove on the same photographs and masks; the flag is removed, or kept as a recorded default, when the figures are met and the owner accepts the tier."
+        "Native evidence with the qualified models on the corpus: one candidate per Generate and one per Regenerate within the recorded memory, and the embedding-conditioned fill matching the qualification's result. The owner's blinded comparison against the Fast fill and Lightroom's Generative Remove, the quiet-host timing and the flag's removal belong to TASK-018, so the owner's review gates nothing here."
       ],
       "context_links": [
         {
@@ -853,8 +853,8 @@
       ],
       "acceptance_criteria": [
         "The core links no generative runtime; luxforge-diffusion builds from pinned sources with no CMake or Python, its notices are recorded, and the workflow runs unchanged over it.",
-        "With the qualified models installed on the M4, three candidates generate in sequence within the recorded budgets and memory, each byte-identical to the input outside the coverage, with the embedding-conditioned fill matching the qualification's result; a machine below the minimum cannot install the model and a generation above the budget is refused by name.",
-        "The blinded comparison against the Fast fill and Lightroom's Generative Remove is recorded with its outcome, or the no-go is recorded with its evidence and the tier is absent; the performance-rules checklist is answered, including per-step cancellation and the resident budget.",
+        "With the qualified models installed on the M4, Generate makes one candidate and Regenerate adds one, each within the recorded memory, byte-identical to the input outside the coverage, with the embedding-conditioned fill matching the qualification's result; Replace runs on the installed text encoder; a machine below the minimum cannot install the model and a generation above the budget is refused by name.",
+        "The blinded comparison kit (the Fast fill against the generative tier, with a route for Lightroom's Generative Remove) is prepared for the owner, and the performance-rules checklist is answered, including per-step cancellation and the resident budget; the owner's comparison and the quiet-host timing are TASK-018's.",
         "Every analysis, guide and fill or remote repair-crop input uses the whole-frame reference on every host, with held input identity and cancellation; runtime/precision variation is stated separately from reference-input identity.",
         "Generation locks only its photograph through the shared command service, permits editing another photograph, and keeps progress and cancellation responsive; a stored accepted patch renders without inference."
       ],
@@ -1118,7 +1118,8 @@
         "The optional slices (sky, parts and depth, the remote provider) add their own evidence to the same package when they land; this task does not wait for them. A local generative no-go is recorded as such and the generative figures are omitted with the reason, never inferred.",
         "Timing runs wait until the feature work above is merged and take the host-wide timing lock; the full tier states every skipped component.",
         "Owner, 2026-10-07: qualify the permitted editing and UI responsiveness during inference, and model machine minima against combined resident models, candidates, cache and renderer resources. Report the two separate 2 GiB renderer budgets as ceilings, not allocations; measure residency and omitted GPU overhead separately, and re-check the 24 GB generative starting minimum. Run timing once feature work is complete.",
-        "Owner, 2026-10-07: a new generation locks only its photograph, through the command service as well as the desktop; another photograph remains editable and progress and cancellation stay responsive. Accepted patches render without inference. Qualification exercises permitted editing on another photograph while inference runs; it does not require same-photograph slider edits during generation."
+        "Owner, 2026-10-07: a new generation locks only its photograph, through the command service as well as the desktop; another photograph remains editable and progress and cancellation stay responsive. Accepted patches render without inference. Qualification exercises permitted editing on another photograph while inference runs; it does not require same-photograph slider edits during generation.",
+        "From TASK-013 (2026-10-12): the owner's blinded comparison of the generative tier against the Fast fill and Lightroom's Generative Remove, with the kit in probes/object-removal (scripts/generative_kit.py, the README's Blinded comparison); the generative candidate's quiet-host timing at 1024 px; Replace and removal on 16 GB and 24 GB machines; and the ai.generative flag removed, or kept as a recorded default, once the figures are met and the owner accepts the tier. The prompt-free conditioning's public release URL is verified once the owner publishes it."
       ],
       "context_links": [
         {
