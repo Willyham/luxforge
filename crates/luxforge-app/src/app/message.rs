@@ -36,6 +36,7 @@ pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
+pub(crate) mod unsupported_catalog;
 pub(crate) mod usage;
 pub(crate) mod view;
 pub(crate) mod visibility;
@@ -92,6 +93,8 @@ pub(crate) enum Message {
     /// Developing picks and the Develop folder: Develop N's confirmation, the filmstrip and moving
     /// through it.
     Develop(develop::DevelopMessage),
+    /// The unsupported-catalog sheet, shown before any catalog is open; the editor never sees one.
+    UnsupportedCatalog(unsupported_catalog::UnsupportedCatalogMessage),
     Close,
 }
 

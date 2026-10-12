@@ -5,8 +5,9 @@ use super::{
     gpu_tiles::GpuTiles,
     message::{Message, view::ViewMessage},
     tasks,
+    unsupported_catalog::{Shell, Unsupported},
 };
-use crate::Config;
+use crate::{Config, state::unsupported_catalog::Refusal};
 use iced::Task;
 use luxforge_cli::Paths;
 use luxforge_core::{
@@ -16,6 +17,7 @@ use luxforge_core::{
 use luxforge_net::{HttpTransport, platform_secret_store};
 use serde_json::json;
 use std::{
+    path::Path,
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
@@ -157,30 +159,6 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
         config.usage_receiver.is_some(),
         !config.hidden || config.evidence.is_some(),
     );
-    let (owner, join) =
-        OwnerHandle::start_with_host(&catalog, registry, host).map_err(|error| {
-            match error.kind {
-                ErrorKind::Conflict => format!(
-                    "another Luxforge instance owns the catalog {}; close it or pass --catalog",
-                    catalog.display()
-                ),
-                _ => format!("cannot open catalog {}: {error}", catalog.display()),
-            }
-        })?;
-    let session_file = luxforge_core::live_session_file(&catalog);
-    // Owning the catalog proves any same-catalog session file from an earlier process is stale.
-    if session_file.exists() {
-        let _ = std::fs::remove_file(&session_file);
-    }
-    let live_server = start_live_session(&mut config, &owner, &catalog, &session_file);
-    // Queue only the first command-line file. The source worker can read and decode it while
-    // Iced/AppKit initializes, without making the window thread read the image or changing the
-    // normal adoption, history and error path. Evidence mode opens later files in order as usual.
-    let client = owner.register_with(ClientAuthority::Permissions);
-    let initial_import = config
-        .files
-        .front()
-        .map(|path| tasks::start_import(&owner, client, path));
     let hidden = config.hidden;
     let position = config.opening.map(|opening| opening.position());
     // Iced opens the window at its settings' size times the application's scale factor, the
@@ -190,26 +168,50 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
             .interface_size
             .unwrap_or(luxforge_core::preferences::DEFAULT_INTERFACE_SIZE),
     );
-    let boot = Mutex::new(Some(Boot {
-        owner,
-        join,
-        live_server,
+    let prepared = Prepared {
         config,
-        client: Some(client),
-        initial_import,
+        registry,
+        host,
         window: size,
-    }));
+    };
+    // A refused evidence run that was given no choice for the sheet says so here, after its window.
+    let problem = Arc::new(Mutex::new(None));
+    let start = match own(&prepared, &catalog) {
+        Ok((owner, join)) => Start::Editor(boot(prepared, owner, join, &catalog)),
+        Err(error) => {
+            let offered = prepared
+                .config
+                .launch_catalog
+                .as_ref()
+                .and_then(|launch| Refusal::offered(launch, &error));
+            match offered {
+                // The remembered or default catalog is refused as another version's: the window
+                // opens on the sheet instead of the launch failing.
+                Some(refusal) => Start::Unsupported(refusal, prepared),
+                None => return Err(refused(&catalog, &error)),
+            }
+        }
+    };
+    let shell = Mutex::new(Some(start));
+    let exit = problem.clone();
     let application = iced::application(
-        move || {
-            Editor::new(
-                boot.lock()
-                    .expect("boot state is never poisoned")
-                    .take()
-                    .expect("the editor boots once"),
-            )
+        move || match shell
+            .lock()
+            .expect("boot state is never poisoned")
+            .take()
+            .expect("the shell boots once")
+        {
+            Start::Editor(boot) => {
+                let (editor, task) = Editor::new(boot);
+                (Shell::Editor(Box::new(editor)), task)
+            }
+            Start::Unsupported(refusal, prepared) => {
+                let (sheet, task) = Unsupported::new(refusal, prepared, exit.clone());
+                (Shell::Unsupported(Box::new(sheet)), task)
+            }
         },
-        Editor::update,
-        Editor::view,
+        Shell::update,
+        Shell::view,
     )
     .title("Luxforge")
     // An invisible window still owns a real surface and renders through it, so a hidden launch
@@ -221,10 +223,10 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     ))
     // The interface size scales everything Iced draws. Every physical-pixel computation reads the
     // view state's combined factor, so 100% zoom stays one source pixel per display pixel.
-    .scale_factor(Editor::interface_scale)
+    .scale_factor(Shell::interface_scale)
     // A function of the state, which Iced reads again after every update.
-    .theme(Editor::theme)
-    .subscription(Editor::subscription);
+    .theme(Shell::theme)
+    .subscription(Shell::subscription);
     // The bundled typeface is registered once, before the first frame, from bytes compiled into
     // the binary; every text run after that resolves it from the renderer's font database.
     luxforge_ui::theme::FONT_FILES
@@ -232,7 +234,83 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
         .fold(application, |application, file| application.font(file))
         .default_font(luxforge_ui::theme::FONT)
         .run()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    match problem.lock().expect("never poisoned").take() {
+        Some(problem) => Err(problem),
+        None => Ok(()),
+    }
+}
+
+/// What the window boots into: the editor over the catalog the launch opened, or the
+/// unsupported-catalog sheet over the one it could not.
+enum Start {
+    Editor(Boot),
+    Unsupported(Refusal, Prepared),
+}
+
+/// What a launch holds before its catalog opens: its configuration, registry, capability host and
+/// window size. The unsupported-catalog sheet keeps it for the catalog Start a new catalog opens.
+#[derive(Clone)]
+pub(crate) struct Prepared {
+    pub(crate) config: Config,
+    pub(crate) registry: Arc<ModuleRegistry>,
+    pub(crate) host: HostConfig,
+    pub(crate) window: (f32, f32),
+}
+
+/// Take ownership of `catalog` for this launch, or the core's refusal.
+pub(crate) fn own(
+    prepared: &Prepared,
+    catalog: &Path,
+) -> Result<(OwnerHandle, JoinHandle<()>), luxforge_core::Error> {
+    OwnerHandle::start_with_host(catalog, prepared.registry.clone(), prepared.host.clone())
+}
+
+/// The command line's message for a catalog the launch could not open and offers nothing for.
+pub(crate) fn refused(catalog: &Path, error: &luxforge_core::Error) -> String {
+    match error.kind {
+        ErrorKind::Conflict => format!(
+            "another Luxforge instance owns the catalog {}; close it or pass --catalog",
+            catalog.display()
+        ),
+        _ => format!("cannot open catalog {}: {error}", catalog.display()),
+    }
+}
+
+/// The editor's boot over `catalog`, which `owner` now holds: its live session, its own client and
+/// the first command-line file's import, started before the window opens.
+pub(crate) fn boot(
+    prepared: Prepared,
+    owner: OwnerHandle,
+    join: JoinHandle<()>,
+    catalog: &Path,
+) -> Boot {
+    let Prepared {
+        mut config, window, ..
+    } = prepared;
+    let session_file = luxforge_core::live_session_file(catalog);
+    // Owning the catalog proves any same-catalog session file from an earlier process is stale.
+    if session_file.exists() {
+        let _ = std::fs::remove_file(&session_file);
+    }
+    let live_server = start_live_session(&mut config, &owner, catalog, &session_file);
+    // Queue only the first command-line file. The source worker can read and decode it while
+    // Iced/AppKit initializes, without making the window thread read the image or changing the
+    // normal adoption, history and error path. Evidence mode opens later files in order as usual.
+    let client = owner.register_with(ClientAuthority::Permissions);
+    let initial_import = config
+        .files
+        .front()
+        .map(|path| tasks::start_import(&owner, client, path));
+    Boot {
+        owner,
+        join,
+        live_server,
+        config,
+        client: Some(client),
+        initial_import,
+        window,
+    }
 }
 
 /// Serve the live session on loopback and register it in the per-user registry of running

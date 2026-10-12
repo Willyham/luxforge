@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. The update feed format, record signing and feed generation, and the core's update state, commands, preferences and flag are built; no platform mechanism or desktop interface is, so every build reports `unavailable` and updates remain manual.
+Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; and [launching past an unsupported catalog](#launching-past-an-unsupported-catalog). No platform mechanism or update interface is built yet, so every build reports `unavailable` and updates remain manual.
 
 ## Outcome and scope
 
@@ -340,15 +340,29 @@ WinSparkle reads this feed format and verifies EdDSA signatures, but it brings i
 
 Until 1.0.0, an update can bring a new catalog format.
 
-**Today**, the desktop fails to launch when its remembered catalog is refused. After an update started from Finder, that looks like a broken app.
+This part is built (`crates/luxforge-app/src/app/unsupported_catalog.rs`). A launch that failed whenever its remembered catalog was refused would look like a broken app after an update started from Finder.
 
-**Instead**, the desktop opens and says the catalog was made by a different Luxforge version, naming both formats. It offers **Start a new catalog** and **Quit**.
+When the catalog the desktop chose itself, the remembered one or the default, is refused as `incompatible`, the window opens on a sheet instead of the launch failing. The sheet:
 
-- Start a new catalog creates and remembers a new catalog beside the old one; the naming is delegated.
-- The refused catalog is never modified, renamed or deleted.
-- The message says the earlier Luxforge can still open it, and links to the releases page.
+- names the refused catalog's file;
+- names its format marker and the format this version opens, from the refusal's `data.catalog_format` and `data.expected_format`, or says the file is not marked as a Luxforge catalog;
+- says the catalog and its originals are unchanged, and that the version of Luxforge that made it can still open it;
+- links to `https://github.com/Willyham/luxforge/releases` through the checked HTTPS opener;
+- offers **Quit** and **Start a new catalog**.
 
-An explicit `--catalog` path keeps today's refusal on the command line.
+**Start a new catalog** creates `<stem> (format N).sqlite` beside the refused catalog, where N is the format this version makes. A refused catalog's own ` (format M)` suffix is replaced rather than repeated. When the name is taken by any file a catalog keeps beside itself (the file, its `-wal`, `-shm` or `-journal`, its `.artifacts` or `.index` directory, or its live-session file), the next of `<stem> (format N) 2.sqlite`, `3` and so on is used. The new catalog is opened off the update loop through the same path a launch takes, and remembered with `preferences.set {"catalog": …}`. The window then becomes the editor over it. A failure says why and offers both choices again. **Quit** creates and writes nothing. Closing the window is Quit.
+
+The refused catalog is never modified, renamed or deleted. The core refuses a catalog before setting its journal. A refusal closes without checkpointing a write-ahead log it found beside the file, so the catalog, its `-wal`, its artifacts and its index keep every byte; tests check this byte for byte.
+
+These keep the command line's refusal, an error and a non-zero exit:
+
+- an explicit `--catalog` path;
+- another instance owning the catalog (`conflict`);
+- every other open error.
+
+No catalog is open while the sheet shows, so there is no owner or command registry to call. The programmatic equivalent of Start a new catalog is a launch with `--catalog NEW_PATH`, then `preferences.set {"catalog": NEW_PATH}` to keep it.
+
+Hidden and evidence launches show the sheet too, never taking focus. An evidence run opens a catalog of its own as its remembered one with `--evidence-catalog CATALOG`. It captures the sheet as `unsupported-catalog.png`, with its state in `unsupported-catalog.json`, then takes the choice `--evidence-unsupported-catalog start|quit` names. The `unsupported-catalog` smoke scenario captures the sheet over a seeded format-16 catalog, starts a new catalog and opens a photograph in it.
 
 ## Engineering constraints
 

@@ -35,6 +35,7 @@ pub(crate) mod testing;
 pub(crate) mod themes;
 pub(crate) mod title;
 pub(crate) mod tools;
+pub(crate) mod unsupported_catalog;
 pub(crate) mod usage;
 
 use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};

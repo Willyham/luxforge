@@ -80,6 +80,7 @@ mod settings_smoke;
 mod smoke;
 mod stats;
 mod theme_smoke;
+mod unsupported_catalog_smoke;
 mod usage_backend_smoke;
 mod usage_measure;
 mod usage_receiver;
