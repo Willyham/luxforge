@@ -203,6 +203,10 @@ impl Drop for Owner {
     }
 }
 
+/// `release/update.json` before its public key is committed.
+const UNKEYED: &str =
+    r#"{"feed_base_url": "https://api.luxforge.app/v1/updates/", "public_key": null}"#;
+
 /// A macOS bundle as `release-build` makes it, with the update key.
 const RELEASED: Bundle = Bundle {
     framework: true,
@@ -240,19 +244,28 @@ fn only_a_release_launched_by_a_person_on_linux_with_a_key_gets_the_payload_port
             "release {release}, automated {automated}, {platform:?}"
         );
     }
-    // The checked-in configuration commits no key yet, so a release reports it on every platform.
+    // A configuration that commits no key reports it on every platform.
     for platform in [Platform::Linux, Platform::Macos(RELEASED), Platform::Other] {
         assert_eq!(
-            choose(true, false, platform, RELEASE_UPDATE_CONFIG, None),
+            choose(true, false, platform, UNKEYED, None),
             Choice::Unavailable(UnavailableReason::NoUpdateKey),
             "{platform:?}"
         );
     }
+    // The checked-in configuration commits the update key, so a Linux release gets the payload
+    // port on the production feed.
     let embedded = UpdateConfig::parse(RELEASE_UPDATE_CONFIG).unwrap();
     assert_eq!(
         embedded.feed_base_url,
         "https://api.luxforge.app/v1/updates/"
     );
+    assert!(matches!(
+        choose(true, false, Platform::Linux, RELEASE_UPDATE_CONFIG, None),
+        Choice::Payload {
+            classes: &[EndpointClass::Remote],
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -352,13 +365,7 @@ fn a_development_feed_is_honoured_only_in_a_development_build_on_linux() {
     ] {
         assert!(
             !matches!(
-                choose(
-                    release,
-                    automated,
-                    platform,
-                    RELEASE_UPDATE_CONFIG,
-                    Some(local.clone())
-                ),
+                choose(release, automated, platform, UNKEYED, Some(local.clone())),
                 Choice::Payload { .. }
             ),
             "release {release}, automated {automated}, {platform:?}"
