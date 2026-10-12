@@ -26,8 +26,8 @@ use super::{
 use crate::{
     AssetId, AssetRecord, EditorService, Error,
     catalog_types::{
-        AssetSourceValue, AvailabilityRow, CaptureTime, DevelopOutcome, DevelopedPick,
-        FileAvailability, ItemFailure, LibraryItem,
+        AssetSourceValue, AvailabilityRow, CaptureTime, CatalogFolderId, DevelopOutcome,
+        DevelopedPick, FileAvailability, ItemFailure, LibraryItem,
     },
     editor::{
         NewAsset, NewPhotograph, ReadOriginal, insert_photograph, source_signature, upsert_volume,
@@ -65,15 +65,15 @@ pub(crate) struct Decided {
 
 impl Decided {
     /// The photograph the file became, or was linked or relinked to.
-    fn asset_id(&self) -> &AssetId {
+    pub(crate) fn asset_id(&self) -> &AssetId {
         match &self.becomes {
             Becomes::Created(photograph) => &photograph.asset.id,
             Becomes::Linked(asset) | Becomes::Relinked { asset, .. } => asset,
         }
     }
 
-    /// The file as a Develop's report lists it.
-    pub(crate) fn reported(&self) -> DevelopedPick {
+    /// The file as a Develop's report lists it, its photograph in the catalog folder `folder_id`.
+    pub(crate) fn reported(&self, folder_id: CatalogFolderId) -> DevelopedPick {
         let outcome = match &self.becomes {
             Becomes::Created(_) => DevelopOutcome::Created,
             Becomes::Linked(_) => DevelopOutcome::Linked,
@@ -84,6 +84,7 @@ impl Decided {
             used: self.developed.used.clone(),
             asset_id: self.asset_id().clone(),
             outcome,
+            folder_id,
         }
     }
 

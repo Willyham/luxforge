@@ -50,12 +50,12 @@ pub(crate) use read::{ReadFile, from_copy, read};
 
 use super::{availability::SYSTEM_ACTOR, journal::Request, locate::Phase};
 use crate::{
-    EditorService, EditorState, Error, JobId,
+    AssetId, EditorService, EditorState, Error, JobId,
     catalog_types::{
         CatalogFolderId, DevelopOutcome, DevelopReport, DevelopedPick, FolderValue,
         LibraryChangeDetail, LibraryItem, MomentId,
     },
-    editor::now_ms,
+    editor::{library_rows, now_ms},
     jobs::JobControl,
 };
 use rusqlite::OptionalExtension;
@@ -125,7 +125,7 @@ impl EditorService {
         }
         let asset = decided
             .first()
-            .map(|decided| decided.reported().asset_id)
+            .map(|decided| decided.asset_id().clone())
             .ok_or_else(|| Error::internal("a developed file was neither committed nor refused"))?;
         let request_id = JobId::new().to_string();
         let request = Request {
@@ -214,7 +214,11 @@ pub(crate) fn develop_file(
 /// a change created (`developed-asset`) or relinked (`asset-source`), with the pick it cleared
 /// after it; a copy developed in a pick's place is its `used`. A pick linked to a photograph
 /// already in the catalog records no photograph, so it is not listed; nothing failed is either.
-pub(crate) fn recorded_report(parts: &[LibraryChangeDetail]) -> DevelopReport {
+/// Each photograph's `folder_id` is the one `folder_of` answers, the folder it is in now.
+pub(crate) fn recorded_report(
+    parts: &[LibraryChangeDetail],
+    folder_of: impl Fn(&AssetId) -> Result<CatalogFolderId, Error>,
+) -> Result<DevelopReport, Error> {
     let mut report = DevelopReport::default();
     for part in parts {
         report.changes.push(part.change.sequence);
@@ -246,15 +250,30 @@ pub(crate) fn recorded_report(parts: &[LibraryChangeDetail]) -> DevelopReport {
             };
             if let Some((asset_id, path, outcome)) = developed {
                 report.developed.extend(pending.take());
+                let folder_id = folder_of(&asset_id)?;
                 pending = Some(DevelopedPick {
                     path,
                     used: None,
                     asset_id,
                     outcome,
+                    folder_id,
                 });
             }
         }
         report.developed.extend(pending);
     }
-    report
+    Ok(report)
+}
+
+/// The catalog folder a developed photograph is in now, for its Develop's report.
+pub(crate) fn folder_of(
+    connection: &rusqlite::Connection,
+    asset: &AssetId,
+) -> Result<CatalogFolderId, Error> {
+    library_rows::asset_folder(connection, asset)?.ok_or_else(|| {
+        Error::internal(format!(
+            "the developed photograph {} is not in the catalog",
+            asset.as_str()
+        ))
+    })
 }

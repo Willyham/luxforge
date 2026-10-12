@@ -793,7 +793,8 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
 /// original — adding nothing; a photograph whose original is missing is relinked by a file of its
 /// name, length and bytes, keeping its folder, and not by one of its name and length whose bytes
 /// differ, which becomes a photograph of its own; a photograph whose file was renamed within its
-/// volume is relinked by that file. A single file no index lists develops too.
+/// volume is relinked by that file. A single file no index lists develops too. Each report names
+/// the catalog folder each photograph is in after it.
 #[test]
 fn develop_picks_links_identical_files_and_relinks_a_missing_original_only_on_a_match() {
     let harness = Harness::new("link");
@@ -808,6 +809,17 @@ fn develop_picks_links_identical_files_and_relinks_a_missing_original_only_on_a_
     let first = harness.develop_paths("develop-a", &[&a, &b]);
     let (asset_a, asset_b) = (asset_of(&first, "a.jpg"), asset_of(&first, "b.jpg"));
     let folder_b = harness.state(&asset_b)["asset"]["source_root"].clone();
+    let folder_of = |asset: &Value| {
+        json!(
+            harness.query(
+                "SELECT catalog_folder_id FROM assets WHERE id = ?1",
+                vec![asset.as_str().unwrap().to_owned()],
+                |row| row.get::<_, String>(0),
+            )[0]
+        )
+    };
+    assert_eq!(first["developed"][0]["folder_id"], folder_of(&asset_a));
+    assert_eq!(first["developed"][1]["folder_id"], folder_of(&asset_b));
 
     // A copy of a's bytes, and a's own file: both link to it.
     let copy = harness.dir.join("elsewhere").join("a-copy.jpg");
@@ -824,6 +836,7 @@ fn develop_picks_links_identical_files_and_relinks_a_missing_original_only_on_a_
     );
     assert_eq!(linked["developed"][0]["asset_id"], asset_a);
     assert_eq!(linked["developed"][1]["asset_id"], asset_a);
+    assert_eq!(linked["developed"][0]["folder_id"], folder_of(&asset_a));
     assert_eq!(
         linked["changes"],
         json!([]),
@@ -858,17 +871,11 @@ fn develop_picks_links_identical_files_and_relinks_a_missing_original_only_on_a_
     );
 
     // The moved file itself relinks b, keeping its catalog folder.
-    let folder_of = |asset: &Value| {
-        harness.query(
-            "SELECT catalog_folder_id FROM assets WHERE id = ?1",
-            vec![asset.as_str().unwrap().to_owned()],
-            |row| row.get::<_, String>(0),
-        )
-    };
     let folder_before = folder_of(&asset_b);
     let relinked = harness.develop_paths("develop-moved", &[&moved]);
     assert_eq!(outcomes(&relinked), [("b.jpg".into(), "relinked".into())]);
     assert_eq!(relinked["developed"][0]["asset_id"], asset_b);
+    assert_eq!(relinked["developed"][0]["folder_id"], folder_before);
     let state = harness.state(&asset_b);
     assert_eq!(state["asset"]["locator"], json!(moved));
     assert_ne!(state["asset"]["source_root"], folder_b);
@@ -1154,6 +1161,8 @@ fn develop_picks_answers_a_retry_with_the_first_result() {
     assert_eq!(harness.sequence(), sequence, "the retry records no event");
     assert_eq!(answered["kind"], "develop-picks");
     assert_eq!(answered["result"], job["result"], "the first result");
+    let folder = &answered["result"]["developed"][0]["folder_id"];
+    assert!(folder.is_string(), "{answered}");
     assert_eq!(harness.photographs(), 2);
 }
 

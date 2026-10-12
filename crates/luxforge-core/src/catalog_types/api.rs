@@ -639,7 +639,7 @@ mod contract_table {
             "pick.develop",
             "DevelopReport",
             &[Validation, SourceUnavailable, ResourceLimit, Conflict, CatalogError, Cancelled],
-            "brings the picks into the catalog folders into names, in batches, each a library change: a place files each photograph under its capture year, the place and its day (\"2026 › Konstanz › 12 Sep\"), each folder found by name or made by the batch; an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared, and a cancelled or failed job keeps what it committed and nothing partial",
+            "brings the picks into the catalog folders into names, in batches, each a library change: a place files each photograph under its capture year, the place and its day (\"2026 › Konstanz › 12 Sep\"), each folder found by name or made by the batch; an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared; each developed pick names folder_id, the catalog folder its photograph is in after the Develop (a linked or relinked photograph's own); a cancelled or failed job keeps what it committed and nothing partial",
         )
         .starts(&jobs::DEVELOP_PICKS),
         method::<NoParams>(
