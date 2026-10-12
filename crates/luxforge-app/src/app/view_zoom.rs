@@ -160,8 +160,6 @@ impl Editor {
         )
     }
 
-    /// Scroll the photograph to `pan` through `view.set`, as a pinch does: the session is told in
-    /// this update and the scrollable follows.
     /// A `view.set` this client's session answered outside the desktop's own input — a script's
     /// request on the same session — is this client's view all the same: the answer is adopted and
     /// the scrollable follows its pan, as [`Self::reveal_pan`] does. An answer older than the
@@ -189,6 +187,8 @@ impl Editor {
         )
     }
 
+    /// Scroll the photograph to `pan` through `view.set`, as a pinch does: the session is told in
+    /// this update and the scrollable follows.
     pub(super) fn reveal_pan(&mut self, pan: (f32, f32)) -> Task<Message> {
         let params = json!({"pan_x": pan.0, "pan_y": pan.1});
         match tasks::call(&self.owner, self.client, "view.set", params.clone()).and_then(

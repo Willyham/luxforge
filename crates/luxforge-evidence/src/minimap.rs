@@ -20,7 +20,7 @@ const REACH: f32 = 2.0;
 /// - `{"api": P}` sends `view.set` on the desktop's own session with the pan that centres the view
 ///   on the stage point under `P` as the schema's pan units define it — what an API client
 ///   computes — and the desktop follows the answer.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum MinimapStep {
     Press(MinimapPoint),

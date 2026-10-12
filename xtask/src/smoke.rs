@@ -471,7 +471,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: zoom::SCENARIO,
-        about: "Percentage and pinch zooms, pans and idle frames over the 24 MP and 60 MP JPEGs, one run each",
+        about: "Percentage and pinch zooms, pans and idle frames, and the high-zoom minimap's threshold, navigation and interception over a crop draft, the neutral picker, a brush and Compare, over the 24 MP and 60 MP JPEGs, one run each",
         launches: &[LaunchSpec {
             plan: zoom::plan,
             ..APP
