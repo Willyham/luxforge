@@ -18,6 +18,7 @@ pub(crate) mod metadata;
 pub(crate) mod presets;
 pub(crate) mod publish;
 pub(crate) mod settings;
+pub(crate) mod tiff;
 
 pub use metadata::{CaptureInfo, CaptureMetadata};
 
