@@ -1,6 +1,6 @@
 # High-zoom minimap
 
-Status: **planned; implementation is not authorized by the planning request**. The owner requested a minimap at zoom levels of 200% or more. The owner chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below remain recommendations. [Tasks](../../tasks/interface/minimap.json) contain the implementation work.
+Status: **in progress**; the owner asked on 2026-10-12 for the plan to be built. The owner requested a minimap at zoom levels of 200% or more. The owner chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below are the recorded defaults. [Tasks](../../tasks/interface/minimap.json) contain the implementation work.
 
 ## Behavior and scope
 
