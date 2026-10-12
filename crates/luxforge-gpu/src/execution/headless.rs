@@ -122,25 +122,40 @@ impl HeadlessSurface {
         let mut done = super::RestFigures::default();
         // One frame a look, through the one hang-bounded wait: what can keep it waiting is a
         // sequence's compile on the compile thread, since the source's rows are written here.
-        let drawn = luxforge_testbase::try_wait_for("the picture at rest's last tile", || {
-            frames += 1;
-            self.pipeline
-                .fit_source(&self.device, &self.queue, Some(source));
-            self.pipeline
-                .prepare_rest(&mut self.surface, &self.device, &self.queue, Some(rest));
-            self.pipeline.trim_source();
-            let Some(figures) = self.surface.rest_figures() else {
-                return Some(Err(GpuFallback::PipelineFailed));
-            };
-            if let Some(fallback) = figures.fallback {
-                return Some(Err(fallback));
-            }
-            if !figures.done {
-                return None;
-            }
-            done = figures;
-            Some(Ok(()))
-        });
+        // A frame that drew a tile is followed by the next at once; only one that drew nothing,
+        // waiting on a compile or a retirement, rests before the next.
+        let mut drawn_before = 0;
+        let drawn =
+            luxforge_testbase::try_wait_progressing("the picture at rest's last tile", || {
+                use luxforge_testbase::Look;
+                frames += 1;
+                self.pipeline
+                    .fit_source(&self.device, &self.queue, Some(source));
+                self.pipeline.prepare_rest(
+                    &mut self.surface,
+                    &self.device,
+                    &self.queue,
+                    Some(rest),
+                );
+                self.pipeline.trim_source();
+                let Some(figures) = self.surface.rest_figures() else {
+                    return Look::Ready(Err(GpuFallback::PipelineFailed));
+                };
+                if let Some(fallback) = figures.fallback {
+                    return Look::Ready(Err(fallback));
+                }
+                if !figures.done {
+                    let progressed = figures.drawn > drawn_before;
+                    drawn_before = figures.drawn;
+                    return if progressed {
+                        Look::Progressed
+                    } else {
+                        Look::Waiting
+                    };
+                }
+                done = figures;
+                Look::Ready(Ok(()))
+            });
         let codes = drawn
             .map_err(|_| GpuFallback::Compiling)
             .and_then(|drawn| drawn)
@@ -180,6 +195,9 @@ impl HeadlessSurface {
     /// never a run of released ones still charged, so the next draw is charged as it would be.
     fn retired(&self) {
         let _ = luxforge_testbase::try_wait_for("the released slots' retirement", || {
+            // A retirement ends in a completion callback, which any poll of the device runs: this
+            // one rather than the retirement worker's next, up to 2 ms later.
+            let _ = self.device.poll(wgpu::PollType::Poll);
             (self
                 .pipeline
                 .figures

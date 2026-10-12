@@ -108,13 +108,14 @@ pub fn mutation(revision: u64, request: &str, actor: &str) -> Mutation {
 /// A rendered code against the f64 reference's: exact, unless the reference's linear value (clamped
 /// to the output range) sits within `relative + relative · |threshold|` of the linear threshold
 /// between the two codes, where one code of difference is permitted because production evaluates
-/// in f32. Each numerical contract declares its own `relative`.
+/// in f32. Each numerical contract declares its own `relative`. `case` is formatted only when the
+/// assertion fails, so a sweep passes `format_args!` rather than a string per pixel.
 pub fn assert_code_near_threshold(
     actual: u8,
     expected: u8,
     linear: f64,
     relative: f64,
-    case: &str,
+    case: impl std::fmt::Display,
 ) {
     if actual == expected {
         return;

@@ -39,6 +39,12 @@ pub struct Qualifier {
     poison: AtomicBool,
     /// The lights a plan's light planes hold, light `k` the `k`-th ([`Qualifier::set_lights`]).
     lights: std::sync::Mutex<Vec<[f32; 4]>>,
+    /// Each link's pipelines by what decides them, its steps' signature and the format it writes,
+    /// as the stage's sequence cache keys them: a sweep evaluates the same programs over and over
+    /// with other words. [`Qualifier::compile_time`] still compiles every time.
+    compiled: std::sync::Mutex<std::collections::HashMap<String, Arc<Compiled>>>,
+    /// The pass sources [`Qualifier::checked`] has validated with `naga`.
+    validated: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Qualifier {
@@ -54,6 +60,8 @@ impl Qualifier {
             support,
             poison: AtomicBool::new(false),
             lights: std::sync::Mutex::default(),
+            compiled: std::sync::Mutex::default(),
+            validated: std::sync::Mutex::default(),
         })
     }
 
@@ -339,12 +347,33 @@ impl Qualifier {
     /// `plan` checked as `prepare` checks it: every step and every pass of its chain validated,
     /// a spatial step only over the boundary's own texels on a device that can run one, and a
     /// region inside what it draws.
+    /// `steps` compiled into pipelines writing `format`, once per signature and format.
+    fn compiled(
+        &self,
+        steps: &[GpuStep],
+        format: wgpu::TextureFormat,
+    ) -> Result<Arc<Compiled>, String> {
+        let key = format!("{format:?} {:?}", super::compile::signature(steps));
+        if let Some(compiled) = self.compiled.lock().unwrap().get(&key) {
+            return Ok(Arc::clone(compiled));
+        }
+        let compiled = Arc::new(compile(&self.device, &self.support, steps, format)?);
+        self.compiled
+            .lock()
+            .unwrap()
+            .insert(key, Arc::clone(&compiled));
+        Ok(compiled)
+    }
+
     fn checked(&self, plan: &GpuPlan) -> Result<(), String> {
         for step in &plan.steps {
             validate_step(step)?;
         }
         for source in assemble_passes(&plan.steps, super::End::Codes)? {
-            validate(&source)?;
+            if !self.validated.lock().unwrap().contains(&source) {
+                validate(&source)?;
+                self.validated.lock().unwrap().insert(source);
+            }
         }
         let spatial_steps = plan
             .steps
@@ -578,7 +607,7 @@ impl Tick {
 /// One link of a [`Session`]'s chain: its steps' pipeline, buffers and group 0, its planes and
 /// schedule, and for every link but the last the intermediate it writes and what that holds.
 struct Link {
-    compiled: Compiled,
+    compiled: Arc<Compiled>,
     id: u64,
     words: wgpu::Buffer,
     blocks: wgpu::Buffer,
@@ -784,7 +813,7 @@ impl Session {
         {
             let last = index + 1 == count;
             let link_format = if last { format } else { intermediate_format };
-            let compiled = compile(device, &qualifier.support, steps, link_format)?;
+            let compiled = qualifier.compiled(steps, link_format)?;
             let offset = if last {
                 super::output_offset(plan)
             } else {

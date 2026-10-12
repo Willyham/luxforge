@@ -236,7 +236,7 @@ fn production_matches_the_reference_through_both_render_paths() {
                             code,
                             linear,
                             CODE_BAND,
-                            &format!("{case} byte pixel ({x}, {y}) channel {channel}"),
+                            format_args!("{case} byte pixel ({x}, {y}) channel {channel}"),
                         );
                         let deviation = (i32::from(pixel[channel]) - i32::from(code)).abs();
                         if deviation > worst {
@@ -270,7 +270,7 @@ fn production_matches_the_reference_through_both_render_paths() {
                             code,
                             linear,
                             CODE_BAND,
-                            &format!("{case} linear pixel ({x}, {y}) channel {channel}"),
+                            format_args!("{case} linear pixel ({x}, {y}) channel {channel}"),
                         );
                         let deviation = (i32::from(pixel[channel]) - i32::from(code)).abs();
                         if deviation > worst {

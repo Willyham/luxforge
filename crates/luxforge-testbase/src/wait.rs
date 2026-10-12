@@ -9,10 +9,14 @@ use std::{
 /// is generous because the tests run unoptimized beside other builds.
 pub const HANG: Duration = Duration::from_secs(120);
 
-/// How long [`wait_for`] rests between two looks at its condition.
+/// How long [`wait_for`] first rests between two looks at its condition, and the most it rests:
+/// the rest doubles from the first to the most. Most waits are for another thread's next step,
+/// which is microseconds away; a millisecond's rest each time made a test of thousands of steps
+/// sleep for seconds.
+const FIRST_POLL: Duration = Duration::from_micros(10);
 const POLL: Duration = Duration::from_millis(1);
 
-/// Wait until `done` holds, looking again every millisecond. Panics naming `what` once [`HANG`]
+/// Wait until `done` holds, looking again within a millisecond. Panics naming `what` once [`HANG`]
 /// has passed without it. `done` may itself panic to fail at once when what it waits for can no
 /// longer happen.
 pub fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
@@ -26,27 +30,53 @@ pub fn wait_for<T>(what: &str, ready: impl FnMut() -> Option<T>) -> T {
 
 /// [`wait_for`] for a check that reports what it found broken as a value rather than a panic:
 /// past [`HANG`] it answers an error naming `what`.
-pub fn try_wait_for<T>(what: &str, ready: impl FnMut() -> Option<T>) -> Result<T, String> {
-    wait_within(HANG, what, ready)
+pub fn try_wait_for<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> Result<T, String> {
+    wait_within(HANG, what, || ready().map_or(Look::Waiting, Look::Ready))
+}
+
+/// One look of [`try_wait_progressing`] at what it waits for.
+pub enum Look<T> {
+    /// It holds, with this value.
+    Ready(T),
+    /// It does not hold yet, but the look moved it on, as a frame that drew a tile does: look again
+    /// at once.
+    Progressed,
+    /// Nothing has changed since the last look.
+    Waiting,
+}
+
+/// [`try_wait_for`] for a look that itself moves what it waits for on, such as drawing a frame:
+/// it rests only after a look that changed nothing. The hang bound is the same.
+pub fn try_wait_progressing<T>(what: &str, look: impl FnMut() -> Look<T>) -> Result<T, String> {
+    wait_within(HANG, what, look)
 }
 
 /// [`try_wait_for`] with its hang bound given, so this crate's own tests can reach it.
 fn wait_within<T>(
     bound: Duration,
     what: &str,
-    mut ready: impl FnMut() -> Option<T>,
+    mut look: impl FnMut() -> Look<T>,
 ) -> Result<T, String> {
     let deadline = Instant::now() + bound;
+    let mut rest = FIRST_POLL;
     loop {
-        if let Some(value) = ready() {
-            return Ok(value);
+        match look() {
+            Look::Ready(value) => return Ok(value),
+            Look::Progressed => {
+                rest = FIRST_POLL;
+                if Instant::now() < deadline {
+                    continue;
+                }
+            }
+            Look::Waiting => {}
         }
         if Instant::now() >= deadline {
             return Err(format!(
                 "{what} never happened within the {bound:?} hang bound"
             ));
         }
-        thread::sleep(POLL);
+        thread::sleep(rest);
+        rest = (rest * 2).min(POLL);
     }
 }
 
@@ -82,7 +112,9 @@ mod tests {
     #[test]
     fn a_wait_that_never_holds_fails_naming_what_it_waited_for() {
         assert_eq!(
-            wait_within(Duration::from_millis(1), "the impossible", || None::<()>),
+            wait_within(Duration::from_millis(1), "the impossible", || {
+                Look::<()>::Waiting
+            }),
             Err("the impossible never happened within the 1ms hang bound".to_owned())
         );
         assert_eq!(try_wait_for("a value", || Some(7)), Ok(7));

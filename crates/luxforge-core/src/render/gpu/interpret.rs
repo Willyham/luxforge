@@ -47,16 +47,12 @@ fn colour(
         other if other.starts_with("lf_test_") => {
             panic!("the reference executor has no twin of {other}")
         }
-        other => {
+        _ => {
+            // [`described`] has held the unit to the plan's description.
             let cpu = &units
                 .get(&layer)
                 .unwrap_or_else(|| panic!("layer {layer} compiled no colour operation"))
                 .units()[index];
-            assert_eq!(
-                cpu.gpu().map(|description| description.program.entry),
-                Some(other),
-                "unit {index} of layer {layer} is not the one the plan describes"
-            );
             let mut pixel = [rgb];
             cpu.apply_row(pos[1] as u32, pos[0] as u32, &mut pixel);
             pixel[0]
@@ -82,19 +78,12 @@ fn coverage(
         other if other.starts_with("lf_test_") => {
             panic!("the reference executor has no twin of {other}")
         }
-        other => {
+        _ => {
+            // [`described`] has held the component to the plan's description.
             let field = units
                 .get(&layer)
                 .and_then(ColorOperation::mask)
                 .unwrap_or_else(|| panic!("layer {layer} compiled no masked colour operation"));
-            assert_eq!(
-                field
-                    .gpu()
-                    .ok()
-                    .map(|mask| mask.components[index].program.program.entry),
-                Some(other),
-                "component {index} of layer {layer} is not the one the plan describes"
-            );
             field.gpu_component_falloff(index, pos[0] as u32, pos[1] as u32, rgb.map(f64::from))
                 as f32
         }
@@ -142,6 +131,53 @@ fn mask_coverage(
         sum * 0.25
     } else {
         fold(mx, my)
+    }
+}
+
+/// Every shipped program of `plan`'s content is the one its layer's CPU unit or mask component
+/// describes, so the executor runs the unit the plan names. Once per plan: a description is the
+/// unit's own, the same at every pixel.
+fn described(plan: &GpuPlan, units: &Units) {
+    for operation in &plan.content {
+        let layer = operation.layer;
+        for (index, unit) in operation.units.iter().enumerate() {
+            let entry = unit.program.entry;
+            if entry.starts_with("lf_test_")
+                || (entry == "lf_basic_white_balance" && !units.contains_key(&layer))
+            {
+                continue;
+            }
+            let cpu = &units
+                .get(&layer)
+                .unwrap_or_else(|| panic!("layer {layer} compiled no colour operation"))
+                .units()[index];
+            assert_eq!(
+                cpu.gpu().map(|description| description.program.entry),
+                Some(entry),
+                "unit {index} of layer {layer} is not the one the plan describes"
+            );
+        }
+        let Some(mask) = &operation.mask else {
+            continue;
+        };
+        for (index, component) in mask.components.iter().enumerate() {
+            let entry = component.program.program.entry;
+            if entry.starts_with("lf_test_") {
+                continue;
+            }
+            let field = units
+                .get(&layer)
+                .and_then(ColorOperation::mask)
+                .unwrap_or_else(|| panic!("layer {layer} compiled no masked colour operation"));
+            assert_eq!(
+                field
+                    .gpu()
+                    .ok()
+                    .map(|mask| mask.components[index].program.program.entry),
+                Some(entry),
+                "component {index} of layer {layer} is not the one the plan describes"
+            );
+        }
     }
 }
 
@@ -304,6 +340,7 @@ pub(super) fn execute_with(
         (stage.width * stage.height) as usize,
         "the boundary is its stage's texels"
     );
+    described(plan, units);
     let mut texels = boundary.to_vec();
     // A texel the tail never reads, outside a straight crop, is left as it is once no spatial step
     // reads it either: a positional unit addresses the frame the crop keeps, which its CPU unit

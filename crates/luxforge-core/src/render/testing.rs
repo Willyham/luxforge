@@ -14,9 +14,44 @@ use std::borrow::Cow;
 
 /// A real frozen Nikon profile, resolved from the committed index without using its asynchronous
 /// singleton. Geometry tests can therefore change profile terms without racing index fault tests.
+/// The index is parsed once and each stage and focal length resolved once per process: a sweep
+/// asks for the same profile thousands of times. Each call still makes a layer of its own.
 pub(crate) fn frozen_lens(width: u32, height: u32, focal: f64) -> crate::Layer {
-    use crate::modules::lens::{index::LensIndex, payload, resolve};
-    let index = LensIndex::parse(include_bytes!("../../data/lensfun/index.json")).unwrap();
+    use crate::modules::lens::index::LensIndex;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static INDEX: OnceLock<LensIndex> = OnceLock::new();
+    type Payloads = Mutex<HashMap<(u32, u32, u64), serde_json::Value>>;
+    static PAYLOADS: OnceLock<Payloads> = OnceLock::new();
+    let key = (width, height, focal.to_bits());
+    let cached = PAYLOADS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap()
+        .get(&key)
+        .cloned();
+    let payload = cached.unwrap_or_else(|| {
+        let index = INDEX.get_or_init(|| {
+            LensIndex::parse(include_bytes!("../../data/lensfun/index.json")).unwrap()
+        });
+        let payload = frozen_lens_payload(index, width, height, focal);
+        PAYLOADS
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap()
+            .insert(key, payload.clone());
+        payload
+    });
+    crate::Layer::new(crate::LENS_EFFECT, payload)
+}
+
+fn frozen_lens_payload(
+    index: &crate::modules::lens::index::LensIndex,
+    width: u32,
+    height: u32,
+    focal: f64,
+) -> serde_json::Value {
+    use crate::modules::lens::{payload, resolve};
     let input = resolve::ResolveInput {
         make: "NIKON CORPORATION".into(),
         model: "NIKON Z 6".into(),
@@ -26,24 +61,21 @@ pub(crate) fn frozen_lens(width: u32, height: u32, focal: f64) -> crate::Layer {
         focal_override: None,
         stage: crate::Stage { width, height },
     };
-    let row = resolve::candidates(&index, &input)
+    let row = resolve::candidates(index, &input)
         .into_iter()
         .find(|row| row.eligible && row.matched == resolve::Match::LensModel)
         .unwrap();
-    let resolved = resolve::resolve(&index, &row.key, &input).unwrap();
+    let resolved = resolve::resolve(index, &row.key, &input).unwrap();
     let profile = payload::Profile::from_resolution(
         resolved,
         &crate::SourceOptics::jpeg(&crate::export::CaptureMetadata::default()),
         true,
     )
     .unwrap();
-    crate::Layer::new(
-        crate::LENS_EFFECT,
-        serde_json::to_value(payload::Payload {
-            profile: Some(profile),
-        })
-        .unwrap(),
-    )
+    serde_json::to_value(payload::Payload {
+        profile: Some(profile),
+    })
+    .unwrap()
 }
 
 /// A frame of `recipe` rendered through `context`, for a test that reads what the render left

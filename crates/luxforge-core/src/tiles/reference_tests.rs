@@ -618,7 +618,9 @@ fn a_call_evaluates_one_prefix_for_its_25_points() {
 /// A rectangle read in frame mode is the samples it covers, byte for byte, through spatial
 /// segments and a resample on both pixel domains: inside the stage, over the whole stage and at its
 /// edge, both through the render's own read and through the reference service, which answers the
-/// part of a rectangle the stage holds. A rectangle past the stage is not a render's to read.
+/// part of a rectangle the stage holds. A rectangle past the stage is not a render's to read. Over
+/// the whole stage the samples are the point evaluator's, the evaluation a sample makes, made once
+/// for every pixel rather than once per pixel.
 #[test]
 #[slow]
 fn a_rect_read_equals_the_samples_it_covers() {
@@ -636,7 +638,21 @@ fn a_rect_read_equals_the_samples_it_covers() {
             )
             .unwrap();
             let sample = |x: u32, y: u32| render.sample(x, y).unwrap();
-            let (width, height) = (sample(0, 0).width, sample(0, 0).height);
+            let first = sample(0, 0);
+            let (width, height) = (first.width, first.height);
+            let (_, _, every) = crate::render::testing::point_evaluated(
+                &context,
+                &registry,
+                source.input(),
+                &recipe,
+                crate::render::SpatialMode::Frames,
+            )
+            .unwrap();
+            let every: Vec<[u8; 4]> = every
+                .chunks_exact(4)
+                .map(|pixel| pixel.try_into().unwrap())
+                .collect();
+            assert_eq!(Some(every[0]), first.rgba, "{what}: the first pixel");
             let evaluation = evaluation(&registry, &context, &source, &recipe);
             let cancel = Cancel::never();
             let mut session = ReferenceReads.session(&evaluation, &cancel);
@@ -655,10 +671,15 @@ fn a_rect_read_equals_the_samples_it_covers() {
                     height: 1,
                 },
             ] {
-                let samples: Vec<[u8; 4]> = (rect.y0..rect.y1())
-                    .flat_map(|y| (rect.x0..rect.x1()).map(move |x| (x, y)))
-                    .map(|(x, y)| sample(x, y).rgba.unwrap())
-                    .collect();
+                let samples: Vec<[u8; 4]> = if rect == Region::whole(crate::Stage { width, height })
+                {
+                    every.clone()
+                } else {
+                    (rect.y0..rect.y1())
+                        .flat_map(|y| (rect.x0..rect.x1()).map(move |x| (x, y)))
+                        .map(|(x, y)| sample(x, y).rgba.unwrap())
+                        .collect()
+                };
                 assert_eq!(render.read_rect(rect).unwrap(), samples, "{what}, {rect:?}");
                 let read = session
                     .read(ReadStage::Output, rect, ReadValues::Codes)

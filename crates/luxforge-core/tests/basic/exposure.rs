@@ -87,7 +87,7 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
                     case.expected[channel],
                     linear,
                     CODE_BAND,
-                    &format!("input {:?} channel {channel} at {ev} EV", case.input),
+                    format_args!("input {:?} channel {channel} at {ev} EV", case.input),
                 );
             }
         }

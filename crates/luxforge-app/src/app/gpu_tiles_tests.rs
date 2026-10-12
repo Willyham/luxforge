@@ -596,9 +596,10 @@ fn a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit() {
     eprintln!("{test}: the runner's figures {:?}", runner.figures());
 }
 
-/// Two runs of one tile read back the same bytes: the codes, and the bits of every linear value,
-/// for every family on both paths, each run a fresh evaluation with every scratch plane starting
-/// from NaN. Beside it, how many pixels' linear values the core's output quantizer takes to the
+/// Two runs of one tile read back the same bits of every linear value, for every family on both
+/// paths, each run a fresh evaluation with every scratch plane starting from NaN; that two runs
+/// read the same codes is [`a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit`]'s,
+/// which holds a run poisoned and one not to the surface's codes. Beside it, how many pixels' linear values the core's output quantizer takes to the
 /// codes the codes' own run read, which is reported, not judged: the two ends are two shader
 /// modules.
 #[test]
@@ -630,13 +631,6 @@ fn two_runs_are_byte_identical() {
         let (mut pixels, mut agreeing) = (0, 0);
         for tile in &case.tiles {
             let first = codes(&mut runner, &case, tile);
-            assert_eq!(
-                codes(&mut runner, &case, tile),
-                first,
-                "{}: the tile at {:?}",
-                case.name,
-                tile.rect
-            );
             let values = linear(&mut runner, &case, tile);
             assert_eq!(
                 linear(&mut runner, &case, tile),

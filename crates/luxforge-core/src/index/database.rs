@@ -398,7 +398,7 @@ pub(crate) fn upsert_file(tx: &Transaction<'_>, file: &FileRecord) -> Result<Fil
         HeaderState::Unreadable(error) => Some(error.as_str()),
         _ => None,
     };
-    let id = tx.query_row(
+    let id = tx.prepare_cached(
         "INSERT INTO files (path, folder, name, volume_id, byte_len, modified_ns, device, inode,
              kind, header_state, header_error, capture_ms, local_text, local_day, offset_minutes,
              latitude, longitude, altitude_m, make, model, body_serial, lens, exposure_time_s,
@@ -427,6 +427,8 @@ pub(crate) fn upsert_file(tx: &Transaction<'_>, file: &FileRecord) -> Result<Fil
              thumb_height = excluded.thumb_height, last_seen_ms = excluded.last_seen_ms,
              born_ns = excluded.born_ns
          RETURNING id",
+)?
+.query_row(
         params![
             file.path.to_string_lossy(),
             file.folder.to_string_lossy(),

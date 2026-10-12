@@ -144,7 +144,7 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
                     reference_byte,
                     linear,
                     CODE_BAND,
-                    &format!("input {input:?} channel {channel} ev={ev} v={v} s={s}"),
+                    format_args!("input {input:?} channel {channel} ev={ev} v={v} s={s}"),
                 );
             }
         }

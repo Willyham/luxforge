@@ -156,11 +156,11 @@ impl CatalogSeeder {
                     },
                 )?;
                 editor::insert_entry(tx, artifact_root, &entry)?;
-                tx.execute(
+                tx.prepare_cached(
                     "INSERT INTO asset_state (asset_id, current_entry_id, revision, redo_json)
                      VALUES (?1, ?2, 0, '[]')",
-                    params![asset.id.as_str(), entry.id.as_str()],
-                )?;
+                )?
+                .execute(params![asset.id.as_str(), entry.id.as_str()])?;
                 editor::insert_capture(tx, row, &asset.header, asset.place.as_deref())?;
                 rows.push(row);
             }

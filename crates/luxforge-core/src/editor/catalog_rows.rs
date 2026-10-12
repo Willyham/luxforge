@@ -90,36 +90,36 @@ pub(crate) fn insert_asset(
     let record = asset.record;
     let byte_len = i64::try_from(record.byte_len)
         .map_err(|_| Error::resource_limit("source length exceeds catalog range"))?;
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO assets (id, source_root, locator, canonical_locator, file_identity,
              fingerprint, byte_len, width, height, source_json, source_kind, catalog_folder_id,
              source_folder, volume_id, file_name, developed_ms, removed_ms, availability,
              checked_ms, develop_moment)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
              ?18, ?19, ?20)",
-        params![
-            record.id.as_str(),
-            record.source_root.to_string_lossy(),
-            record.locator.to_string_lossy(),
-            asset.canonical_locator,
-            record.file_identity,
-            record.fingerprint,
-            byte_len,
-            i64::from(record.width),
-            i64::from(record.height),
-            encode(&record.source)?,
-            record.source.tag().as_str(),
-            asset.catalog_folder_id.as_str(),
-            asset.source_folder.to_string_lossy(),
-            asset.volume_id.as_str(),
-            asset.file_name,
-            asset.developed_ms,
-            asset.removed_ms,
-            asset.availability.as_str(),
-            asset.checked_ms,
-            asset.develop_moment.map(MomentId::as_str),
-        ],
-    )?;
+    )?
+    .execute(params![
+        record.id.as_str(),
+        record.source_root.to_string_lossy(),
+        record.locator.to_string_lossy(),
+        asset.canonical_locator,
+        record.file_identity,
+        record.fingerprint,
+        byte_len,
+        i64::from(record.width),
+        i64::from(record.height),
+        encode(&record.source)?,
+        record.source.tag().as_str(),
+        asset.catalog_folder_id.as_str(),
+        asset.source_folder.to_string_lossy(),
+        asset.volume_id.as_str(),
+        asset.file_name,
+        asset.developed_ms,
+        asset.removed_ms,
+        asset.availability.as_str(),
+        asset.checked_ms,
+        asset.develop_moment.map(MomentId::as_str),
+    ])?;
     Ok(AssetRowId(tx.last_insert_rowid()))
 }
 
@@ -134,38 +134,38 @@ pub(crate) fn insert_capture(
     let position = header.position.as_ref();
     let camera = header.camera.as_ref();
     let exposure = &header.exposure;
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO capture (asset_row, capture_ms, local_text, local_day, offset_minutes,
              latitude, longitude, altitude_m, place, make, model, body_serial, lens,
              exposure_time_s, f_number, iso, exposure_bias_ev, focal_mm, focal_35mm_mm, width,
              height, orientation)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
              ?18, ?19, ?20, ?21, ?22)",
-        params![
-            row.0,
-            capture.map(CaptureTime::instant_ms),
-            capture.map(|time| time.text.as_str()),
-            capture.map(|time| time.local_day().to_string()),
-            capture.and_then(|time| time.offset_minutes),
-            position.map(|at| at.lat),
-            position.map(|at| at.lon),
-            position.and_then(|at| at.alt_m),
-            place,
-            camera.map(|body| body.make.as_str()),
-            camera.map(|body| body.model.as_str()),
-            camera.and_then(|body| body.serial.as_deref()),
-            header.lens,
-            exposure.time_s,
-            exposure.f_number,
-            exposure.iso,
-            exposure.bias_ev,
-            exposure.focal_mm,
-            exposure.focal_35mm_mm,
-            header.dimensions.map(|size| size.width),
-            header.dimensions.map(|size| size.height),
-            header.orientation.map(ExifOrientation::get),
-        ],
-    )?;
+    )?
+    .execute(params![
+        row.0,
+        capture.map(CaptureTime::instant_ms),
+        capture.map(|time| time.text.as_str()),
+        capture.map(|time| time.local_day().to_string()),
+        capture.and_then(|time| time.offset_minutes),
+        position.map(|at| at.lat),
+        position.map(|at| at.lon),
+        position.and_then(|at| at.alt_m),
+        place,
+        camera.map(|body| body.make.as_str()),
+        camera.map(|body| body.model.as_str()),
+        camera.and_then(|body| body.serial.as_deref()),
+        header.lens,
+        exposure.time_s,
+        exposure.f_number,
+        exposure.iso,
+        exposure.bias_ev,
+        exposure.focal_mm,
+        exposure.focal_35mm_mm,
+        header.dimensions.map(|size| size.width),
+        header.dimensions.map(|size| size.height),
+        header.orientation.map(ExifOrientation::get),
+    ])?;
     Ok(())
 }
 
