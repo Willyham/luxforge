@@ -124,6 +124,8 @@ enum Tracked {
     Batch(String),
     /// The HDR merge this desktop started: each progress record for its pending row, and its end.
     Merge(String),
+    /// The open merge preview's job: its progress for the sheet's picture area, and its revision.
+    Preview(String),
 }
 
 fn job_reader(reader: &super::job_reads::Reader<Tracked>) -> BoxStream<'static, Message> {
@@ -149,7 +151,8 @@ fn job_reader(reader: &super::job_reads::Reader<Tracked>) -> BoxStream<'static, 
                     | Tracked::Search(job)
                     | Tracked::Locate(job)
                     | Tracked::Batch(job)
-                    | Tracked::Merge(job) => job,
+                    | Tracked::Merge(job)
+                    | Tracked::Preview(job) => job,
                 };
                 let result = super::job_reads::wait(&owner, client, job, after)
                     .await
@@ -160,18 +163,20 @@ fn job_reader(reader: &super::job_reads::Reader<Tracked>) -> BoxStream<'static, 
                 let finished = result.as_ref().map_or(true, |record| {
                     !matches!(record["status"].as_str(), Some("queued" | "running"))
                 });
-                if matches!(&tracked, Tracked::Search(_) | Tracked::Merge(_))
-                    && watch.observe_filtered(
-                        &result,
-                        |_| finished,
-                        |one, two| {
-                            if visible {
-                                one == two
-                            } else {
-                                super::job_reads::same_without_progress(one, two)
-                            }
-                        },
-                    ) == super::job_reads::Verdict::Skip
+                if matches!(
+                    &tracked,
+                    Tracked::Search(_) | Tracked::Merge(_) | Tracked::Preview(_)
+                ) && watch.observe_filtered(
+                    &result,
+                    |_| finished,
+                    |one, two| {
+                        if visible {
+                            one == two
+                        } else {
+                            super::job_reads::same_without_progress(one, two)
+                        }
+                    },
+                ) == super::job_reads::Verdict::Skip
                 {
                     continue;
                 }
@@ -215,6 +220,14 @@ fn job_reader(reader: &super::job_reads::Reader<Tracked>) -> BoxStream<'static, 
                     Tracked::Merge(job) => {
                         Message::Select(super::message::select::SelectMessage::Merge(
                             super::message::select_merge::MergeMessage::Watched {
+                                job: job.clone(),
+                                result,
+                            },
+                        ))
+                    }
+                    Tracked::Preview(job) => {
+                        Message::Select(super::message::select::SelectMessage::Merge(
+                            super::message::select_merge::MergeMessage::PreviewWatched {
                                 job: job.clone(),
                                 result,
                             },
@@ -604,6 +617,12 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
         .merge
         .running_job()
         .map(|job| Tracked::Merge(job.to_owned()));
+    let preview = editor
+        .select
+        .state
+        .merge
+        .preview_job()
+        .map(|job| Tracked::Preview(job.to_owned()));
     for identity in [
         reading,
         adding,
@@ -611,6 +630,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
         locate.map(Tracked::Locate),
         batch,
         merge,
+        preview,
     ]
     .into_iter()
     .flatten()

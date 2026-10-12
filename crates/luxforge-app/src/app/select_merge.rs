@@ -1,26 +1,35 @@
 //! Merges in the Select workspace ([HDR merge design](../../../../docs/design/hdr-merge.md),
-//! "Grid workflow"): a bracket's Pick merged and Import merged, the same for a selection of frames
-//! through the grid's menu, Merge options…, the one pending merge row, the result's stack and its
-//! originals, and Remove merge and Put back merge. Its model is `state/select_merge.rs`; the grid
-//! draws the pending row, the badges and the notes, and `view/select_merge.rs` the menu, the form
-//! and the notice.
+//! "Grid workflow"; the [merge preview](../../../../docs/design/panorama-merge.md#the-merge-preview)):
+//! a bracket's Pick merged and Import merged, the same for a selection of frames through the grid's
+//! menu, the merge preview sheet they open, ⌥-click merging at once with the last settings, the
+//! one pending merge row, the result's stack and its originals, and Remove merge and Put back
+//! merge. Its model is `state/select_merge.rs`; the grid draws the pending row, the badges and the
+//! notes, and `view/select_merge.rs` the menu, the sheet and the notice.
 //!
 //! The desktop holds no merge logic: every gesture sends the request an API client sends, and
-//! every refusal, progress and result shown is the owner's.
+//! every refusal, picture, progress and result shown is the owner's.
 //!
+//! - **The preview** opens on Pick merged or Import merged, from a header or the menu: one owner
+//!   task sends `merge.plan` of the frames and then, unless the plan refuses, `merge.preview` with
+//!   the plan's identity, as this desktop's actor. Its `merge-preview` job's `job.wait` reader
+//!   ([`super::long_work`]) brings each record: the job's words and fraction while it reads and
+//!   aligns, then the revision, whose JPEG is decoded off the update loop. A setting change sends
+//!   `merge.preview-update` with the whole options; a newer one supersedes it, and the owner
+//!   cancels the stale job. Show deghost overlay draws the revision's own overlay data and sends
+//!   nothing. Cancel sends `merge.preview-close`.
 //! - **Starting a merge** is one owner task off the update loop, since planning stats each frame
 //!   on disk: `merge.plan` of the frames by identity (a header's files, or the selection's rows as
 //!   they are held; the selection itself when a row is not held or is no file), `folder.create`
 //!   of the plan's suggested folder when it proposes none and the person chose none, then
-//!   `merge.create` with the plan's identity, as this desktop's actor. A plan that refuses is
-//!   said in its own words; an exact merge in Removed is offered as Put back merge. Defaults ask
-//!   for nothing more: Merge options… only changes what is sent.
-//! - **While the job runs** its `job.wait` reader ([`super::long_work`]) brings each record:
-//!   the pending row before the frames says how far it got and offers Cancel (`job.cancel`, the
-//!   activity board's Cancel too). Its end is the job's: `ready` reads the view again with the
-//!   result selected and active, leading its stack collapsed; failed says the input or stage
-//!   that failed in the row until it is dismissed; cancelled says nothing was added. Nothing is
-//!   hidden before the owner publishes.
+//!   `merge.create`: from the sheet with its `preview_id` and options, which continues the
+//!   preview's work, and with ⌥ held with the plan's identity and the last settings. A plan that
+//!   refuses is said in its own words; an exact merge in Removed is offered as Put back merge. A
+//!   merge that starts is remembered: its alignment and deghosting are the next ⌥-click's.
+//! - **While the job runs** its `job.wait` reader brings each record: the pending row before the
+//!   frames says how far it got and offers Cancel (`job.cancel`, the activity board's Cancel too).
+//!   Its end is the job's: `ready` reads the view again with the result selected and active,
+//!   leading its stack collapsed; failed says the input or stage that failed in the row until it
+//!   is dismissed; cancelled says nothing was added. Nothing is hidden before the owner publishes.
 //! - **The stack** is the view's: `S`, a press on the result's badge and the menu send
 //!   `stack.set-expanded` in an owner task, which evaluates the view again with the stack shown as
 //!   asked, answered as any evaluation is. Picking an original is an ordinary pick.
@@ -34,20 +43,25 @@ use crate::app::{
     select::{evaluate_now, session_now},
     tasks::{CallError, call, call_detailed, owner_task, request as mutation},
 };
+use crate::state::preferences::PreferenceChange;
 use crate::state::select::{Block, LibraryGesture, MomentAction};
 use crate::state::select_merge::{
-    self as model, FolderPick, MergeAction, MergeForm, MergeMenu, MergeMenuKind, MergeMode,
-    MergeOptions, MergeRequest, PendingMerge, PutBack, Started,
+    self as model, CreateFrom, MergeAction, MergeMenu, MergeMenuKind, MergeMode, MergeOptions,
+    MergeRequest, PendingMerge, PreviewSheet, PutBack, Started, sheet::SheetContext,
 };
-use iced::Task;
+use iced::{Task, widget::image::Handle};
 use luxforge_core::{
-    ClientId, ClientSession, OwnerHandle,
+    Cancel, ClientId, ClientSession, OwnerHandle,
     catalog_types::{
-        ItemRef, MergeAnswer, MergeKind, MergePlan, MergeState, RowItem, StackExpansion, StackRole,
-        Targets, ViewFilter, ViewSummary,
+        ItemRef, MergeAnswer, MergeKind, MergePlan, MergePreview, MergePreviewId, MergeState,
+        RowItem, StackExpansion, StackRole, Targets, ViewFilter, ViewSummary,
     },
 };
 use serde_json::{Value, json};
+use std::path::PathBuf;
+
+/// The longest side the preview's picture is decoded at: the most a preview draws.
+const PICTURE_SIDE: u32 = 4096;
 
 fn merge_message(message: MergeMessage) -> Message {
     Message::Select(SelectMessage::Merge(message))
@@ -64,9 +78,34 @@ pub(crate) struct StartAnswer {
     pub(crate) sent: Vec<Value>,
 }
 
+/// A `merge-preview` job the owner started: its id, and the preview it prepares when the answer
+/// names it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PreviewJob {
+    pub(crate) job_id: String,
+    pub(crate) preview_id: Option<MergePreviewId>,
+}
+
+/// What opening the preview came to: the plan, an exact merge in Removed, the preview's job or why
+/// there is none, and every request sent in order.
+#[derive(Clone, Debug)]
+pub(crate) struct OpenAnswer {
+    pub(crate) plan: Result<MergePlan, String>,
+    pub(crate) removed: Option<PutBack>,
+    pub(crate) job: Option<Result<PreviewJob, String>>,
+    pub(crate) sent: Vec<Value>,
+}
+
+/// The settled picture the sheet draws: the revision's JPEG decoded once.
+#[derive(Clone, Debug)]
+pub(crate) struct SheetPicture {
+    pub(crate) path: PathBuf,
+    pub(crate) handle: Handle,
+}
+
 // -- The owner calls, each the body of one owner task. --
 
-/// `merge.plan` for the form.
+/// `merge.plan` for the menu.
 pub(crate) fn plan_now(
     owner: &OwnerHandle,
     client: ClientId,
@@ -76,12 +115,97 @@ pub(crate) fn plan_now(
     parse(plan).map(Box::new)
 }
 
+/// Open the preview of `request`: plan it, and unless the plan refuses or finds this exact merge
+/// in Removed, start its `merge-preview` job. Each request is sent as an API client writes it.
+pub(crate) fn open_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    request: &MergeRequest,
+) -> OpenAnswer {
+    let mut sent = Vec::new();
+    let params = model::plan_params(request.kind, &request.targets, &request.options);
+    sent.push(json!({"method": "merge.plan", "params": params}));
+    let plan = match call_detailed(owner, client, "merge.plan", params) {
+        Ok(plan) => parse::<MergePlan>(plan),
+        Err(error) => Err(error.message),
+    };
+    let mut answer = OpenAnswer {
+        plan,
+        removed: None,
+        job: None,
+        sent,
+    };
+    let Ok(plan) = &answer.plan else {
+        return answer;
+    };
+    if model::plan_refusal(plan).is_some() {
+        return answer;
+    }
+    if let Some(existing) = plan
+        .existing
+        .as_ref()
+        .filter(|existing| existing.state == MergeState::Removed)
+    {
+        answer.removed = Some(PutBack {
+            merge_id: existing.merge_id.clone(),
+            result_asset_id: existing.result_asset_id.clone(),
+        });
+        return answer;
+    }
+    let params = model::preview_params(request, Some(&plan.plan_id));
+    answer
+        .sent
+        .push(json!({"method": "merge.preview", "params": params}));
+    answer.job = Some(preview_now(owner, client, "merge.preview", params));
+    answer
+}
+
+/// `merge.preview` or `merge.preview-update`: the job it started.
+pub(crate) fn preview_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<PreviewJob, String> {
+    let answer = call_detailed(owner, client, method, params).map_err(|error| error.message)?;
+    let job_id = answer["job_id"]
+        .as_str()
+        .ok_or_else(|| format!("{method} answered no job: {answer}"))?
+        .to_owned();
+    let preview_id = answer
+        .get("preview_id")
+        .and_then(|id| serde_json::from_value(id.clone()).ok());
+    Ok(PreviewJob { job_id, preview_id })
+}
+
+/// `merge.preview-close`.
+pub(crate) fn close_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    params: Value,
+) -> Result<(), String> {
+    call(owner, client, "merge.preview-close", params).map(|_| ())
+}
+
+/// The revision's picture, decoded for display.
+pub(crate) fn picture_now(path: &std::path::Path) -> Result<Handle, String> {
+    let decoded = luxforge_core::decode_preview(path, PICTURE_SIDE, &Cancel::new())
+        .map_err(|error| error.to_string())?;
+    Ok(Handle::from_rgba(
+        decoded.width,
+        decoded.height,
+        decoded.rgba,
+    ))
+}
+
 /// Start a merge of `request`: plan it, make the folder it suggests when it needs one, and create
-/// it. Each request is sent as an API client writes it.
+/// it, continuing `preview` when it comes from the sheet. Each request is sent as an API client
+/// writes it.
 pub(crate) fn start_now(
     owner: &OwnerHandle,
     client: ClientId,
     request: &MergeRequest,
+    preview: Option<&MergePreviewId>,
 ) -> Result<Box<StartAnswer>, String> {
     let mut sent = Vec::new();
     let params = model::plan_params(request.kind, &request.targets, &request.options);
@@ -116,12 +240,12 @@ pub(crate) fn start_now(
         });
     }
     let folder = match (&request.options.folder, &plan.folder) {
-        (FolderPick::Existing { folder_id, .. }, _) => folder_id.clone(),
-        (FolderPick::Proposed, Some(proposal)) => proposal.folder_id.clone(),
-        (FolderPick::Proposed, None) => {
+        (model::FolderPick::Existing { folder_id, .. }, _) => folder_id.clone(),
+        (model::FolderPick::Proposed, Some(proposal)) => proposal.folder_id.clone(),
+        (model::FolderPick::Proposed, None) => {
             let Some(params) = model::suggested_folder_params(&plan, &mutation()) else {
                 return answer(Started::Refused(plan.folder_reason.clone().unwrap_or_else(
-                    || "Choose a catalog folder for the merge in Merge options\u{2026}".to_owned(),
+                    || "Choose a catalog folder for the merge".to_owned(),
                 )));
             };
             sent.push(json!({"method": "folder.create", "params": params}));
@@ -130,7 +254,11 @@ pub(crate) fn start_now(
             parse(created["folder"]["id"].clone())?
         }
     };
-    let params = model::create_params(request, &plan.plan_id, &folder, &mutation());
+    let from = match preview {
+        Some(preview) => CreateFrom::Preview(preview),
+        None => CreateFrom::Plan(&plan.plan_id),
+    };
+    let params = model::create_params(request, from, &folder, &mutation());
     sent.push(json!({"method": "merge.create", "params": params}));
     match call_detailed(owner, client, "merge.create", params) {
         Ok(created) => {
@@ -187,31 +315,34 @@ impl Editor {
             MergeMessage::Header { moment, action } => return self.moment_action(moment, action),
             MergeMessage::Disclosure(item) => return self.toggle_stack_at(item),
             MergeMessage::Pending => return self.merge_act(MergeAction::Cancel),
+            MergeMessage::Option(held) => self.select.state.merge.option = held,
             MergeMessage::Planned { serial, result } => {
                 if serial != self.select.merge_plans {
                     return Task::none();
                 }
-                let merge = &mut self.select.state.merge;
-                if let Some(form) = &mut merge.form {
-                    match result {
-                        Ok(plan) => {
-                            form.plan = Some(*plan);
-                            form.refusal = None;
-                        }
-                        Err(error) => {
-                            form.plan = None;
-                            form.refusal = Some(error);
-                        }
-                    }
-                } else if let Some(MergeMenu {
+                if let Some(MergeMenu {
                     kind: MergeMenuKind::Frames { refusal, .. },
                     ..
-                }) = &mut merge.menu
+                }) = &mut self.select.state.merge.menu
                 {
                     *refusal = match result {
                         Ok(plan) => model::plan_refusal(&plan),
                         Err(error) => Some(error),
                     };
+                }
+            }
+            MergeMessage::Opened { serial, answer } => return self.sheet_opened(serial, *answer),
+            MergeMessage::Updated { serial, result } => return self.sheet_updated(serial, result),
+            MergeMessage::PreviewWatched { job, result } => {
+                return self.preview_watched(&job, result);
+            }
+            MergeMessage::Picture { path, result } => self.sheet_picture(path, result),
+            MergeMessage::Closed(result) => {
+                if let Err(error) = result {
+                    self.event(
+                        "select_merge_preview_close_failed",
+                        || json!({"reason": error}),
+                    );
                 }
             }
             MergeMessage::Started { request, result } => {
@@ -228,52 +359,15 @@ impl Editor {
             MergeAction::CloseMenu => merge.menu = None,
             MergeAction::Start(kind, mode) => {
                 merge.menu = None;
-                let Some(request) = self.selection_request(kind, mode, MergeOptions::default())
+                let Some((request, context)) =
+                    self.selection_request(kind, mode, self.last_options())
                 else {
                     return Task::none();
                 };
-                return self.start_merge(request);
+                return self.merge_or_preview(request, context);
             }
-            MergeAction::Options(kind) => {
-                merge.menu = None;
-                let Some(request) =
-                    self.selection_request(kind, MergeMode::Pick, MergeOptions::default())
-                else {
-                    return Task::none();
-                };
-                let folders = self
-                    .select
-                    .state
-                    .catalog
-                    .folders
-                    .as_ref()
-                    .map(|folders| {
-                        folders
-                            .folders
-                            .iter()
-                            .map(|folder| (folder.id.clone(), folder.name.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                self.select.state.merge.form = Some(MergeForm {
-                    request,
-                    plan: None,
-                    refusal: None,
-                    folders,
-                    folder_menu: false,
-                });
-                let lists = self.read_counts();
-                return Task::batch([lists, self.plan_form()]);
-            }
-            MergeAction::FormClose => merge.form = None,
-            MergeAction::FormStart(mode) => {
-                let Some(form) = &merge.form else {
-                    return Task::none();
-                };
-                let mut request = form.request.clone();
-                request.mode = mode;
-                return self.start_merge(request);
-            }
+            MergeAction::SheetClose => return self.close_sheet(),
+            MergeAction::SheetMerge(mode) => return self.merge_from_sheet(mode),
             MergeAction::Alignment(toggle) => {
                 return self.change_options(|options| options.alignment = toggle);
             }
@@ -286,15 +380,20 @@ impl Editor {
             MergeAction::Exposure { path, offset } => {
                 return self.change_options(|options| options.set_override(path, offset));
             }
+            MergeAction::Overlay(shown) => {
+                if let Some(sheet) = &mut merge.sheet {
+                    sheet.overlay = shown;
+                }
+            }
             MergeAction::FolderMenu(open) => {
-                if let Some(form) = &mut merge.form {
-                    form.folder_menu = open;
+                if let Some(sheet) = &mut merge.sheet {
+                    sheet.folder_menu = open;
                 }
             }
             MergeAction::Folder(pick) => {
-                if let Some(form) = &mut merge.form {
-                    form.folder_menu = false;
-                    form.request.options.folder = pick;
+                if let Some(sheet) = &mut merge.sheet {
+                    sheet.folder_menu = false;
+                    sheet.request.options.folder = pick;
                 }
             }
             MergeAction::Cancel => {
@@ -348,6 +447,29 @@ impl Editor {
         Task::none()
     }
 
+    /// The last HDR merge's settings, as the desktop remembers them: what ⌥-click merges with and
+    /// the sheet opens with.
+    pub(crate) fn last_options(&self) -> MergeOptions {
+        MergeOptions::last(
+            self.preferences
+                .applied()
+                .and_then(|preferences| preferences.hdr_merge),
+        )
+    }
+
+    /// A merge action pressed: with ⌥ held, a merge at once with the last settings; otherwise the
+    /// preview sheet, with that action primary.
+    fn merge_or_preview(&mut self, request: MergeRequest, context: SheetContext) -> Task<Message> {
+        if self.select.state.merge.option {
+            self.event(
+                "select_merge_last_settings",
+                || json!({"mode": request.mode.label(), "frames": request.frames}),
+            );
+            return self.start_merge(request, None);
+        }
+        self.open_sheet(request, context)
+    }
+
     /// A moment header's button: Pick all, or a merge of the bracket's frames.
     fn moment_action(&mut self, number: u32, action: u32) -> Task<Message> {
         let state = &self.select.state;
@@ -377,23 +499,41 @@ impl Editor {
             kind: MergeKind::Hdr,
             targets: Targets::Files { file_ids: files },
             mode,
-            options: MergeOptions::default(),
+            options: self.last_options(),
             source: Some(summary.query.source.clone()),
             anchor: moment.start,
             frames: moment.len,
         };
-        self.start_merge(request)
+        let context = self.sheet_context(moment.start..moment.start + moment.len);
+        self.merge_or_preview(request, context)
+    }
+
+    /// The view's words for the frames at `positions`: their files, and the first one's camera
+    /// and capture time.
+    fn sheet_context(&self, positions: impl IntoIterator<Item = u32>) -> SheetContext {
+        let mut context = SheetContext::default();
+        for position in positions {
+            let Some(row) = self.select.state.rows.row(position) else {
+                continue;
+            };
+            if context.names.is_empty() {
+                context.camera = row.camera.clone();
+                context.capture = row.capture.clone();
+            }
+            context.names.push(row.file_name.clone());
+        }
+        context
     }
 
     /// The selection as a merge's frames: by identity when every selected row is held and is a
     /// file (or every one a photograph), otherwise the selection itself, which the owner resolves
-    /// and refuses with its own reason; a merge of `kind`.
+    /// and refuses with its own reason; a merge of `kind`, with the view's words for its frames.
     fn selection_request(
         &mut self,
         kind: MergeKind,
         mode: MergeMode,
         options: MergeOptions,
-    ) -> Option<MergeRequest> {
+    ) -> Option<(MergeRequest, SheetContext)> {
         let summary = self.select.state.summary.as_ref()?;
         let selection = self.selection();
         if selection.count == 0 {
@@ -420,7 +560,7 @@ impl Editor {
         } else {
             Targets::Selection
         };
-        Some(MergeRequest {
+        let request = MergeRequest {
             kind,
             targets,
             mode,
@@ -428,14 +568,323 @@ impl Editor {
             source: Some(summary.query.source.clone()),
             anchor: selection.ranges.first().map_or(0, |range| range.0),
             frames: selection.count,
-        })
+        };
+        let context =
+            self.sheet_context(selection.ranges.iter().flat_map(|&(start, end)| start..end));
+        Some((request, context))
     }
 
-    /// Start `request` in an owner task, unless a merge of this desktop's is starting or running.
-    fn start_merge(&mut self, request: MergeRequest) -> Task<Message> {
+    // -- The preview sheet --
+
+    /// Open the preview sheet for `request`, with its action primary: plan it and start the
+    /// preview in one owner task. A sheet already open closes first.
+    fn open_sheet(&mut self, request: MergeRequest, context: SheetContext) -> Task<Message> {
+        let close = self.close_sheet();
         let merge = &mut self.select.state.merge;
-        if merge.starting.is_some() || merge.running_job().is_some() {
-            self.status.text = "A merge is running: wait for it or cancel it".into();
+        merge.put_back = None;
+        let folders = self
+            .select
+            .state
+            .catalog
+            .folders
+            .as_ref()
+            .map(|folders| {
+                folders
+                    .folders
+                    .iter()
+                    .map(|folder| (folder.id.clone(), folder.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.select.state.merge.sheet = Some(PreviewSheet::new(request, context, folders));
+        self.event("select_merge_preview_opened", || json!({}));
+        let open = self.reopen_sheet();
+        let lists = self.read_counts();
+        Task::batch([close, open, lists])
+    }
+
+    /// Plan the sheet's frames and start their preview again, with the sheet's settings.
+    fn reopen_sheet(&mut self) -> Task<Message> {
+        self.select.merge_serial += 1;
+        let serial = self.select.merge_serial;
+        let Some(sheet) = &mut self.select.state.merge.sheet else {
+            return Task::none();
+        };
+        sheet.serial = serial;
+        sheet.asking = true;
+        sheet.stale = false;
+        sheet.refusal = None;
+        let request = sheet.request.clone();
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || open_now(&owner, client, &request),
+            move |answer| {
+                merge_message(MergeMessage::Opened {
+                    serial,
+                    answer: Box::new(answer),
+                })
+            },
+        )
+    }
+
+    /// The sheet's plan and preview answered.
+    fn sheet_opened(&mut self, serial: u64, answer: OpenAnswer) -> Task<Message> {
+        let Some(sheet) = self
+            .select
+            .state
+            .merge
+            .sheet
+            .as_mut()
+            .filter(|sheet| sheet.serial == serial)
+        else {
+            // A sheet closed before its preview answered: close what it opened.
+            return match answer.job {
+                Some(Ok(job)) => self.close_preview(job.preview_id, Some(job.job_id)),
+                _ => Task::none(),
+            };
+        };
+        sheet.asking = false;
+        sheet.sent.extend(answer.sent);
+        match answer.plan {
+            Ok(plan) => sheet.planned(plan),
+            Err(error) => sheet.failed(error),
+        }
+        if let Some(put_back) = answer.removed {
+            self.select.state.merge.sheet = None;
+            self.select.merge_picture = None;
+            self.select.state.merge.put_back = Some(put_back);
+            self.status.text =
+                "This exact merge is in Removed \u{b7} Put back merge to see it again".into();
+            return Task::none();
+        }
+        match answer.job {
+            Some(Ok(job)) => sheet.following(job.job_id, job.preview_id),
+            Some(Err(error)) => sheet.failed(error),
+            None => {}
+        }
+        self.send_stale()
+    }
+
+    /// The sheet's settings changed: draw them.
+    fn change_options(&mut self, change: impl FnOnce(&mut MergeOptions)) -> Task<Message> {
+        let Some(sheet) = &mut self.select.state.merge.sheet else {
+            return Task::none();
+        };
+        change(&mut sheet.request.options);
+        sheet.stale = true;
+        self.send_stale()
+    }
+
+    /// Send the sheet's settings when they are newer than its preview's: `merge.preview-update`
+    /// once the preview is known; nothing yet while it is being opened, which sends them when it
+    /// answers; and the whole opening again when there is no preview to update.
+    fn send_stale(&mut self) -> Task<Message> {
+        let Some(sheet) = &mut self.select.state.merge.sheet else {
+            return Task::none();
+        };
+        if !sheet.stale || sheet.merging.is_some() {
+            return Task::none();
+        }
+        if let Some(preview_id) = sheet.preview_id.clone() {
+            self.select.merge_serial += 1;
+            let serial = self.select.merge_serial;
+            sheet.serial = serial;
+            sheet.asking = true;
+            sheet.stale = false;
+            sheet.refusal = None;
+            let params = model::preview_update_params(
+                sheet.request.kind,
+                &preview_id,
+                &sheet.request.options,
+            );
+            sheet
+                .sent
+                .push(json!({"method": "merge.preview-update", "params": params}));
+            let (owner, client) = (self.owner.clone(), self.client);
+            return owner_task(
+                move || preview_now(&owner, client, "merge.preview-update", params),
+                move |result| merge_message(MergeMessage::Updated { serial, result }),
+            );
+        }
+        if sheet.asking || sheet.job.is_some() {
+            // The preview is being opened: its identity is not known yet.
+            return Task::none();
+        }
+        self.reopen_sheet()
+    }
+
+    /// A `merge.preview-update` answered with its job, or why not.
+    fn sheet_updated(&mut self, serial: u64, result: Result<PreviewJob, String>) -> Task<Message> {
+        let Some(sheet) = self
+            .select
+            .state
+            .merge
+            .sheet
+            .as_mut()
+            .filter(|sheet| sheet.serial == serial)
+        else {
+            return Task::none();
+        };
+        sheet.asking = false;
+        match result {
+            Ok(job) => sheet.following(job.job_id, job.preview_id),
+            Err(error) => sheet.failed(error),
+        }
+        self.send_stale()
+    }
+
+    /// The open preview's job record: its progress, or its revision.
+    fn preview_watched(&mut self, job: &str, result: Result<Value, String>) -> Task<Message> {
+        let Some(sheet) = self
+            .select
+            .state
+            .merge
+            .sheet
+            .as_mut()
+            .filter(|sheet| sheet.job.as_deref() == Some(job))
+        else {
+            return Task::none();
+        };
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                sheet.failed(error);
+                return Task::none();
+            }
+        };
+        self.select.preview_record = Some(record.clone());
+        let task = match record["status"].as_str() {
+            Some("queued" | "running") => {
+                sheet.observe(&record);
+                Task::none()
+            }
+            Some("ready") => match parse::<MergePreview>(record["result"].clone()) {
+                Ok(preview) => {
+                    let path = preview.path.clone();
+                    sheet.adopt(preview);
+                    self.event(
+                        "select_merge_preview_ready",
+                        || json!({"revision": record["result"]["revision"], "path": path}),
+                    );
+                    match path {
+                        Some(path)
+                            if self
+                                .select
+                                .merge_picture
+                                .as_ref()
+                                .is_none_or(|picture| picture.path != path) =>
+                        {
+                            self.decode_picture(path)
+                        }
+                        _ => Task::none(),
+                    }
+                }
+                Err(error) => {
+                    sheet.failed(format!("The preview answered unexpectedly: {error}"));
+                    Task::none()
+                }
+            },
+            Some("cancelled") => {
+                sheet.failed("The preview was cancelled".to_owned());
+                Task::none()
+            }
+            _ => {
+                sheet.failed(model::failure_text(&record));
+                Task::none()
+            }
+        };
+        Task::batch([task, self.send_stale()])
+    }
+
+    /// Decode a revision's picture off the update loop.
+    fn decode_picture(&mut self, path: PathBuf) -> Task<Message> {
+        self.select.merge_picture_wanted = Some(path.clone());
+        let decoding = path.clone();
+        owner_task(
+            move || picture_now(&decoding),
+            move |result| merge_message(MergeMessage::Picture { path, result }),
+        )
+    }
+
+    /// A revision's picture decoded: drawn while it is still the sheet's.
+    fn sheet_picture(&mut self, path: PathBuf, result: Result<Handle, String>) {
+        if self.select.merge_picture_wanted.as_ref() != Some(&path) {
+            return;
+        }
+        self.select.merge_picture_wanted = None;
+        match result {
+            Ok(handle) => self.select.merge_picture = Some(SheetPicture { path, handle }),
+            Err(error) => {
+                if let Some(sheet) = &mut self.select.state.merge.sheet {
+                    sheet.failed(format!("Could not show the preview: {error}"));
+                }
+            }
+        }
+    }
+
+    /// The sheet put away: its preview closed, or its job cancelled while the preview is not
+    /// known yet. Nothing is published.
+    fn close_sheet(&mut self) -> Task<Message> {
+        let Some(sheet) = self.select.state.merge.sheet.take() else {
+            return Task::none();
+        };
+        self.select.merge_picture = None;
+        self.select.merge_picture_wanted = None;
+        self.close_preview(sheet.preview_id, sheet.job)
+    }
+
+    fn close_preview(
+        &mut self,
+        preview_id: Option<MergePreviewId>,
+        job: Option<String>,
+    ) -> Task<Message> {
+        if let Some(preview_id) = preview_id {
+            let params = model::preview_close_params(&preview_id);
+            self.select.preview_closed = Some(params.clone());
+            self.event("select_merge_preview_closed", || params.clone());
+            let (owner, client) = (self.owner.clone(), self.client);
+            return owner_task(
+                move || close_now(&owner, client, params),
+                move |result| merge_message(MergeMessage::Closed(result)),
+            );
+        }
+        match job {
+            Some(job) => self.cancel_job(job),
+            None => Task::none(),
+        }
+    }
+
+    /// The sheet's Pick merged or Import merged: a merge of its frames with its settings,
+    /// continuing its preview.
+    fn merge_from_sheet(&mut self, mode: MergeMode) -> Task<Message> {
+        let Some(sheet) = &mut self.select.state.merge.sheet else {
+            return Task::none();
+        };
+        if sheet.refusal.is_some() || sheet.merging.is_some() {
+            return Task::none();
+        }
+        sheet.merging = Some(mode);
+        let mut request = sheet.request.clone();
+        request.mode = mode;
+        let preview = sheet.preview_id.clone();
+        self.start_merge(request, preview)
+    }
+
+    // -- Merging --
+
+    /// Start `request` in an owner task, continuing `preview` when there is one, unless a merge
+    /// of this desktop's is starting or running.
+    fn start_merge(
+        &mut self,
+        request: MergeRequest,
+        preview: Option<MergePreviewId>,
+    ) -> Task<Message> {
+        let merge = &mut self.select.state.merge;
+        if merge.busy() {
+            if let Some(sheet) = &mut merge.sheet {
+                sheet.merging = None;
+            }
+            self.status.text = model::BUSY.into();
             return Task::none();
         }
         // A failed merge's row gives way to the next.
@@ -451,7 +900,7 @@ impl Editor {
         let (owner, client) = (self.owner.clone(), self.client);
         let sent = request.clone();
         owner_task(
-            move || start_now(&owner, client, &sent),
+            move || start_now(&owner, client, &sent, preview.as_ref()),
             move |result| {
                 merge_message(MergeMessage::Started {
                     request: Box::new(request),
@@ -469,6 +918,9 @@ impl Editor {
     ) -> Task<Message> {
         let merge = &mut self.select.state.merge;
         merge.starting = None;
+        if let Some(sheet) = &mut merge.sheet {
+            sheet.merging = None;
+        }
         let answer = match result {
             Ok(answer) => *answer,
             Err(error) => {
@@ -482,13 +934,13 @@ impl Editor {
             .sent
             .iter()
             .any(|sent| sent["method"] == "folder.create");
-        let task = match answer.started {
+        let mut tasks = Vec::new();
+        match answer.started {
             Started::Refused(reason) => {
-                if let Some(form) = &mut merge.form {
-                    form.refusal = Some(reason.clone());
+                if let Some(sheet) = &mut merge.sheet {
+                    sheet.failed(reason.clone());
                 }
                 self.status.text = format!("Cannot merge: {reason}");
-                Task::none()
             }
             Started::Removed {
                 merge_id,
@@ -500,20 +952,36 @@ impl Editor {
                 });
                 self.status.text =
                     "This exact merge is in Removed \u{b7} Put back merge to see it again".into();
-                Task::none()
+                tasks.push(self.close_sheet());
             }
             Started::Job { job_id, .. } => {
-                merge.form = None;
-                merge.pending = Some(PendingMerge::new(job_id.clone(), request));
+                // The merge continues the preview: the sheet goes, its preview with the merge.
+                merge.sheet = None;
+                self.select.merge_picture = None;
+                self.select.merge_picture_wanted = None;
+                merge.pending = Some(PendingMerge::new(job_id.clone(), request.clone()));
                 self.event("select_merge_started", || json!({"job_id": job_id}));
-                Task::none()
+                tasks.push(self.remember_merge(&request.options));
             }
-        };
+        }
         self.rebuild_grid();
         if folder_made {
-            return Task::batch([task, self.read_counts()]);
+            tasks.push(self.read_counts());
         }
-        task
+        Task::batch(tasks)
+    }
+
+    /// A merge of `options` started: they are the last settings from now on.
+    fn remember_merge(&mut self, options: &MergeOptions) -> Task<Message> {
+        let now = options.remembered();
+        match self.preferences.applied() {
+            Some(preferences) if preferences.hdr_merge.unwrap_or_default() != now => self
+                .store_preferences(PreferenceChange {
+                    hdr_merge: Some(Some(now)),
+                    ..PreferenceChange::default()
+                }),
+            _ => Task::none(),
+        }
     }
 
     /// The running merge's job record: its progress, or its end.
@@ -609,34 +1077,6 @@ impl Editor {
             self.rebuild_grid();
         }
         Task::batch(tasks)
-    }
-
-    /// The form's options changed: plan them again.
-    fn change_options(&mut self, change: impl FnOnce(&mut MergeOptions)) -> Task<Message> {
-        let Some(form) = &mut self.select.state.merge.form else {
-            return Task::none();
-        };
-        change(&mut form.request.options);
-        form.plan = None;
-        form.refusal = None;
-        self.plan_form()
-    }
-
-    /// `merge.plan` of the form's frames and options, in an owner task.
-    fn plan_form(&mut self) -> Task<Message> {
-        let Some(form) = &self.select.state.merge.form else {
-            return Task::none();
-        };
-        let request = &form.request;
-        let params = model::plan_params(request.kind, &request.targets, &request.options);
-        self.select.merge_plans += 1;
-        let serial = self.select.merge_plans;
-        self.select.plan_sent = Some(params.clone());
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || plan_now(&owner, client, params),
-            move |result| merge_message(MergeMessage::Planned { serial, result }),
-        )
     }
 
     /// Show the stack of `merge_id` as `expansion`: `stack.set-expanded` in an owner task, its
@@ -745,7 +1185,7 @@ impl Editor {
                 filtered,
             },
             (0 | 1, _) => return Task::none(),
-            // The selection menu's merge entries are HDR's.
+            // The selection menu's merge group is HDR's, the one kind with a provider.
             (count, _) => MergeMenuKind::Frames {
                 kind: MergeKind::Hdr,
                 count,
@@ -760,7 +1200,8 @@ impl Editor {
         let Some(kind) = frames else {
             return Task::none();
         };
-        let Some(request) = self.selection_request(kind, MergeMode::Pick, MergeOptions::default())
+        let Some((request, _)) =
+            self.selection_request(kind, MergeMode::Pick, MergeOptions::default())
         else {
             return Task::none();
         };
@@ -803,8 +1244,46 @@ impl Editor {
     /// The merge state for a captured frame's record.
     pub(crate) fn merge_summary(&self) -> Value {
         let merge = &self.select.state.merge;
+        let sheet = merge.sheet.as_ref().map(|sheet| {
+            let model = crate::state::select_merge::sheet::model(sheet, None);
+            json!({
+                "title": model.title,
+                "subtitle": model.subtitle,
+                "primary": sheet.request.mode.label(),
+                "preview_id": sheet.preview_id,
+                "job": sheet.job,
+                "message": sheet.message,
+                "fraction": sheet.fraction,
+                "revision": sheet.preview.as_ref().map(|preview| preview.revision),
+                "current": sheet.current(),
+                "picture": sheet.preview.as_ref().and_then(|preview| preview.path.clone()),
+                "picture_shown": self.select.merge_picture.as_ref().map(|picture| picture.path.clone()),
+                "status": model.status,
+                "output": model.output,
+                "refusal": sheet.refusal,
+                "overlay": sheet.overlay,
+                "regions": match &model.picture {
+                    crate::state::select_merge::sheet::Picture::Ready { regions, .. } => {
+                        regions.iter().map(|region| region.label.clone()).collect::<Vec<_>>()
+                    }
+                    _ => Vec::new(),
+                },
+                "alignment": format!("{:?}", sheet.request.options.alignment),
+                "deghost": format!("{:?}", sheet.request.options.deghost),
+                "frames": model.frames.iter().map(|frame| json!({
+                    "name": frame.name,
+                    "detail": frame.detail,
+                    "value": frame.value,
+                    "reference": frame.reference,
+                })).collect::<Vec<_>>(),
+                "folder": model.folder,
+                "enabled": model.enabled,
+                "sent": sheet.sent,
+            })
+        });
         json!({
             "starting": merge.starting.is_some(),
+            "option": merge.option,
             "pending": merge.pending.as_ref().map(|pending| json!({
                 "job_id": pending.job,
                 "mode": pending.request.mode.label(),
@@ -815,12 +1294,14 @@ impl Editor {
                 "failed": pending.failed,
             })),
             "put_back": merge.put_back.as_ref().map(|put_back| put_back.merge_id.clone()),
-            "form": merge.form.is_some(),
+            "sheet": sheet,
+            "closed": self.select.preview_closed,
             "menu": merge.menu.is_some(),
             "sent": self.select.merge_sent,
             "stack": self.select.stack_sent,
             "plan": self.select.plan_sent,
             "record": self.select.merge_record,
+            "preview_record": self.select.preview_record,
         })
     }
 }
