@@ -75,8 +75,9 @@ The [update feed](../design/auto-update.md#the-feed) crate, `luxforge-update`, a
 - `base64` 0.23.1 (MIT or Apache-2.0) with `std`, as `ureq` builds it;
 - `memmap2` 0.9.11 (MIT or Apache-2.0), as `fontdb` builds it;
 - `roxmltree` 0.20.0, `semver` 1.0.28, `serde`, `serde_json` and `zeroize` 1.9.0.
+- for the Linux payload updater, `flate2` 1.1.10 (MIT or Apache-2.0) on its default `miniz_oxide` backend and `tar` 0.4.46 (MIT or Apache-2.0) without its default `xattr` feature, the versions xtask already builds the Linux archive with; and, on every unix target, `rustix` 1.1.5 with the features the folder watcher pins (only `fs` is used here), for the writability check, `syncfs` and the `renameat2` exchange as safe calls. On macOS that brings `rustix` into the desktop's and `xtask-cli`'s graphs, where the watcher did not; it adds no package to the lockfile.
 
-`ring`'s Ed25519 takes the whole message as one slice. An archive is therefore mapped read-only rather than read onto the heap, in one function that allows `unsafe` by name beside its `SAFETY:` comment; the rest of the crate denies it. `xtask-cli` now builds this crate, and so `ring`'s native code, for `update-record` and `update-feed`. It is the one workspace crate `xtask-cli` may build, and it builds no image, codec, database or GUI crate; `cargo xtask check-repository` enforces both. As with every other dependency, passing the automated checks is not the deferred manual review.
+`ring`'s Ed25519 takes the whole message as one slice. An archive is therefore mapped read-only rather than read onto the heap, in one function that allows `unsafe` by name beside its `SAFETY:` comment; the rest of the crate denies it. `xtask-cli` builds this crate, and so `ring`'s native code, for `update-record` and `update-feed`; the desktop links it for the payload updater. It is the one workspace crate `xtask-cli` may build, and it builds no image, codec, database or GUI crate; `cargo xtask check-repository` enforces both. As with every other dependency, passing the automated checks is not the deferred manual review.
 
 ## Usage statistics dependencies
 

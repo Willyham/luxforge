@@ -209,6 +209,7 @@ pub(crate) mod thumbnails;
 pub(crate) mod unsupported_catalog;
 #[cfg(test)]
 mod unsupported_catalog_tests;
+pub(crate) mod update_port;
 pub(crate) mod usage;
 pub(crate) mod usage_device;
 #[cfg(test)]
@@ -633,6 +634,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 16] = [
     develop::subscription,
     long_work::subscription,
     palette::subscription,
+    update_port::subscription,
 ];
 
 /// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the

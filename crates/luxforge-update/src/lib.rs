@@ -10,6 +10,9 @@
 //!   form, a file signed or verified through a memory map rather than read onto the heap.
 //! - [`newest_eligible`]: the update a feed offers a build that follows some channels.
 //! - [`UpdateConfig`]: `release/update.json`, the feed base URL and the public key.
+//! - [`payload`]: the Linux payload updater's engine, which checks a feed, downloads, verifies and
+//!   extracts an archive and swaps the payload, reaching the network only through the
+//!   [`payload::Fetch`] its host hands it.
 //!
 //! It depends on no other workspace crate and on no GUI or network crate.
 mod appcast;
@@ -18,6 +21,7 @@ mod date;
 mod error;
 pub mod feed;
 mod key;
+pub mod payload;
 mod record;
 mod select;
 mod target;

@@ -1008,6 +1008,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/app/mask_coverage.rs",
             // The desktop's GPU tile worker, asleep while no call or export tile waits for it.
             "crates/luxforge-app/src/app/gpu_tiles.rs",
+            // The Linux payload updater's check worker, asleep until a request or its next daily
+            // check.
+            "crates/luxforge-app/src/app/update_port.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1115,6 +1118,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
+            // The Linux payload updater's port: its check worker and one download thread at a
+            // time.
+            "crates/luxforge-app/src/app/update_port.rs",
             // The backend's one retirement lane and the current preview pipeline compiler.
             "crates/luxforge-gpu/src/retirement.rs",
             "crates/luxforge-gpu/src/execution/compile.rs",

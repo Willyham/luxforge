@@ -2121,6 +2121,7 @@ dependencies = [
  "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-ui",
+ "luxforge-update",
  "rfd",
  "rusqlite",
  "serde",
@@ -2358,12 +2359,15 @@ name = "luxforge-update"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "flate2",
  "memmap2",
  "ring",
  "roxmltree",
+ "rustix 1.1.5",
  "semver",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "zeroize",
 ]
