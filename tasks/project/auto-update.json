@@ -472,7 +472,7 @@
     {
       "id": "TASK-009",
       "description": "Publish update records and feeds from the release workflow, and document the operator steps.",
-      "status": "in_progress",
+      "status": "pending",
       "dependencies": [
         "TASK-001",
         "TASK-004",
