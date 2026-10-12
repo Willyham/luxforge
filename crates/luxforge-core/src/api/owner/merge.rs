@@ -27,6 +27,10 @@
 //!   is captured (and refused when the request's `set_id` is another), carried to publication, and
 //!   the result's membership joins the publication's one library change. An exact active match is
 //!   added to the set in a library change of its own, unless it is a member already.
+//! - **Previews** (`merge.preview`, `merge.preview-update`, `merge.preview-close`, and
+//!   `merge.create`'s `preview_id`) are each client's open session beside the lane
+//!   ([`preview::Sessions`], `merge_preview.rs`): preparing occupies the lane, a ready preview's
+//!   spool counts against the kind's ceiling, and a merge of it takes its bracket over.
 //! - **Requests across a restart.** Each admitted request keeps a small marker in its own folder
 //!   under the artifact root (`merges/<key>/request.json`, `key` the SHA-256 of its method, actor
 //!   and request identity), beside the job's spool files. A retry while its job is queued or
@@ -101,6 +105,12 @@ mod hdr_merge_end_to_end;
 mod hdr_merge_job;
 #[cfg(any(test, feature = "test-holds"))]
 pub use frames::SyntheticFrame;
+#[path = "merge_preview.rs"]
+mod preview;
+pub(super) use preview::{
+    PREVIEW_QUEUE, disconnect as disconnect_previews, expire as expire_previews,
+};
+pub(in crate::api) use preview::{merge_preview, merge_preview_close, merge_preview_update};
 
 /// Merges that may wait behind the running one.
 pub(super) const MERGE_QUEUE: usize = 1;
@@ -117,6 +127,10 @@ const MAX_MARKERS: usize = 64;
 /// limits and arrange failures.
 pub(super) struct MergeLane {
     pub(super) lane: LibraryLane,
+    /// The merge preview lane, which draws open previews again ([`preview`]).
+    pub(super) updates: LibraryLane,
+    /// Each client's open merge preview.
+    pub(super) previews: preview::Sessions,
     /// Each queued or running job's request.
     live: HashMap<JobId, Live>,
     /// Each kind's provider in this build ([`providers::provider`]), or why there is none.
@@ -134,7 +148,9 @@ pub(super) struct MergeLane {
 impl MergeLane {
     pub(super) fn new(poster: Poster, board: Arc<ActivityBoard>) -> Self {
         Self {
-            lane: LibraryLane::of_kind(LaneKind::Merge, poster, board),
+            lane: LibraryLane::of_kind(LaneKind::Merge, poster.clone(), board.clone()),
+            updates: LibraryLane::of_kind(LaneKind::Preview, poster, board),
+            previews: preview::Sessions::default(),
             live: HashMap::new(),
             providers: MergeKind::ALL
                 .into_iter()
@@ -941,7 +957,19 @@ pub(in crate::api) fn merge_create(
                 )
             })?,
     };
-    let job_inputs = inputs
+    // A merge of a preview takes its bracket over: the preview's inputs, as it read them.
+    let continuation = match &params.preview_id {
+        Some(preview_id) => Some(preview::continuation(
+            owner,
+            call.client,
+            preview_id,
+            kind,
+            &inputs,
+            &parameters,
+        )?),
+        None => None,
+    };
+    let mut job_inputs: Vec<JobInput> = inputs
         .iter()
         .zip(signed)
         .zip(frames)
@@ -953,6 +981,14 @@ pub(in crate::api) fn merge_create(
             planned,
         })
         .collect();
+    if let Some(continuation) = &continuation
+        && let Some(previewed) = preview::preview_inputs(owner, &continuation.preview_id)
+    {
+        for (input, previewed) in job_inputs.iter_mut().zip(previewed) {
+            input.signature = previewed.signature;
+            input.planned = previewed.planned;
+        }
+    }
     start(
         owner,
         call,
@@ -968,6 +1004,7 @@ pub(in crate::api) fn merge_create(
             key: Some(key),
             mutation: params.mutation.clone(),
             membership: capture,
+            preview: continuation,
         },
     )
 }
@@ -1143,6 +1180,7 @@ pub(in crate::api) fn merge_rerun(
             key: None,
             mutation: params.mutation.clone(),
             membership: None,
+            preview: None,
         },
     )
 }
@@ -1293,6 +1331,8 @@ struct Started {
     mutation: MutationRequest,
     /// Pick merged: the set the request was made against, which the result joins when published.
     membership: Option<SetCapture>,
+    /// The preview whose bracket the merge takes over.
+    preview: Option<preview::Continuation>,
 }
 
 /// Every input's signature, refused with `source-unavailable` naming the first that is not there.
@@ -1366,12 +1406,22 @@ fn start(
     let job_kind = job_of(kind)?;
     let lane = &owner.catalog.merge;
     let limits = lane.limits(kind);
-    if lane.lane.is_full() {
+    // A merge continuing a preview still preparing waits behind it, outside the bound: it carries
+    // on the preview's work rather than adding its own.
+    let behind = started
+        .preview
+        .as_ref()
+        .and_then(|continuation| continuation.after.clone());
+    if behind.is_none() && lane.lane.is_full() {
         return Err(Error::resource_limit(format!(
             "a merge is running and {MERGE_QUEUE} waits; wait for one to end"
         )));
     }
     let root = merges_root(&owner.service)?;
+    let previews_root = preview::previews_root(owner)?;
+    let pictures_root = preview::pictures_root(owner);
+    let kept = lane.previews.kept();
+    let held = lane.previews.held.clone();
     let key = request_dir(request);
     let spool = root.join(&key);
     let n = started.inputs.len();
@@ -1383,8 +1433,13 @@ fn start(
         crate::atomic_file::file_error("cannot create the merge's folder", error.kind())
     })?;
     if started.reuse.is_none()
+        && started.preview.is_none()
         && width > 0
-        && let Err(error) = limits.preflight(&spool, job::temp_bytes(n, width, height))
+        && let Err(error) = limits.preflight(
+            &spool,
+            job::temp_bytes(n, width, height),
+            held.load(std::sync::atomic::Ordering::SeqCst),
+        )
     {
         let _ = fs::remove_dir_all(&spool);
         return Err(error);
@@ -1401,6 +1456,7 @@ fn start(
         developer: lane.developer.clone(),
         limits,
         hooks: lane.hooks.clone(),
+        held,
     };
     let publish = Publish {
         folder: started.folder,
@@ -1412,6 +1468,10 @@ fn start(
     };
     let reuse = started.reuse;
     let matched = started.key;
+    let continuation = started.preview;
+    let slot = continuation
+        .as_ref()
+        .map(|continuation| continuation.slot.clone());
     let detail = format!(
         "{} \u{b7} {n} exposures",
         job::result_name(
@@ -1426,9 +1486,15 @@ fn start(
         origin: call.origin.clone(),
         work: Box::new(move |context: &JobContext<'_>| {
             job::sweep_orphans(&root, &spool);
-            let merged = match reuse {
-                Some((provenance, source)) => verified(spec, provenance, source, context.control),
-                None => spec.run(context.control),
+            preview::sweep(&previews_root, &pictures_root, &kept);
+            let merged = match (reuse, slot) {
+                (Some((provenance, source)), _) => {
+                    verified(spec, provenance, source, context.control)
+                }
+                (None, Some(slot)) => preview::take(&slot).and_then(|retained| {
+                    spec.run_prepared(retained.prepared, retained.analysis, context.control)
+                }),
+                (None, None) => spec.run(context.control),
             };
             match merged {
                 Ok(merged) => Box::new(move |owner: &mut Owner| publish.commit(owner, merged)),
@@ -1436,7 +1502,19 @@ fn start(
             }
         }),
     };
-    let started = owner.catalog.merge.lane.queue(&mut owner.jobs, task);
+    // The preview is the merge's from now: its spool no longer counts as a preview's, so the
+    // merge's own preflight counts it once, and an update it had is stale.
+    if let Some(continuation) = &continuation {
+        preview::merging(owner, &continuation.preview_id, &job_id);
+    }
+    let started = match behind {
+        Some(after) => Ok(owner
+            .catalog
+            .merge
+            .lane
+            .queue_after(&mut owner.jobs, task, &after)),
+        None => owner.catalog.merge.lane.queue(&mut owner.jobs, task),
+    };
     match started {
         Ok(started) => {
             owner.catalog.merge.live.insert(
@@ -1838,9 +1916,11 @@ fn kind_of(code: &str) -> ErrorKind {
     .unwrap_or(ErrorKind::Internal)
 }
 
-/// A merge job ended, however it ended: a published one's marker goes, since the journal answers
-/// its retries; any other's records the error it ended with.
+/// A merge or merge preview job ended, however it ended: the preview it prepared, updated or was
+/// merged from hears of it (`merge_preview.rs`); a published merge's marker goes, since the journal
+/// answers its retries; any other's records the error it ended with.
 pub(super) fn ended(owner: &mut Owner, job_id: &JobId) {
+    preview::ended(owner, job_id);
     let Some(live) = owner.catalog.merge.live.remove(job_id) else {
         return;
     };

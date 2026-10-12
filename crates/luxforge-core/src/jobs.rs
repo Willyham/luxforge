@@ -140,6 +140,8 @@ pub enum JobKind {
     BatchExport,
     /// Merging an exposure bracket into one HDR photograph.
     HdrMerge,
+    /// Preparing or updating a merge preview's picture.
+    MergePreview,
 }
 
 /// How a kind is scheduled and cancelled.
@@ -189,7 +191,8 @@ impl JobKind {
             | Self::SourceLocate
             | Self::BatchSettings
             | Self::BatchExport
-            | Self::HdrMerge => Family::Catalog,
+            | Self::HdrMerge
+            | Self::MergePreview => Family::Catalog,
         }
     }
 
@@ -213,7 +216,8 @@ impl JobKind {
             | Self::SourceLocate
             | Self::BatchSettings
             | Self::BatchExport
-            | Self::HdrMerge => None,
+            | Self::HdrMerge
+            | Self::MergePreview => None,
         }
     }
 }
