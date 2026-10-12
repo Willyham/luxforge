@@ -4,7 +4,9 @@
 //! reported, a rescan as a job a client cancels and the stale folder it leaves, a folder no longer
 //! indexed no longer watched, changes made while Luxforge was closed caught up as it opens (macOS),
 //! volumes mounted and taken out, a card mounted as the lane starts, the one event every listing
-//! records as it ends, and stopping with the watcher running.
+//! records as it ends, and stopping with the watcher running. A test that waits for the platform to
+//! deliver a real change is named `slow_`, so the quick tier leaves it out; the others drive the
+//! lane through injected events alone.
 use super::*;
 use crate::index::lane::{VolumeEvent, WatchEvent};
 use luxforge_watch::RescanReason;
@@ -101,7 +103,7 @@ fn sequence(owner: &OwnerHandle, client: ClientId) -> u64 {
 /// changed files are read, the renamed one keeps its row unread, the removed rows go, and each
 /// batch is announced as work no request made.
 #[test]
-fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
+fn slow_an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     let fixture = Fixture::new("watch-changes");
     let owner = fixture.owner();
     let client = owner.register();
@@ -331,7 +333,7 @@ fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
 /// applications' caches, links and unsupported files; a skipped folder renamed to one that is
 /// listed is listed, and one renamed to a package is dropped.
 #[test]
-fn what_indexing_skips_stays_out_as_it_changes() {
+fn slow_what_indexing_skips_stays_out_as_it_changes() {
     let fixture = Fixture::new("watch-skips");
     let owner = fixture.owner();
     let client = owner.register();
@@ -387,7 +389,7 @@ fn what_indexing_skips_stays_out_as_it_changes() {
 
 /// A rescan lists again what the watcher could not report: a subtree alone, then the whole root.
 #[test]
-fn a_rescan_lists_again_what_was_not_reported() {
+fn slow_a_rescan_lists_again_what_was_not_reported() {
     let fixture = Fixture::new("watch-rescan");
     let owner = fixture.owner();
     let client = owner.register();
@@ -493,7 +495,7 @@ fn held_rescan(owner: &OwnerHandle, client: ClientId, gate: &Gate, photos: &Path
 /// `index.folders` — until a listing of it completes: before its next change is applied, and as the
 /// catalog next opens.
 #[test]
-fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_listed() {
+fn slow_a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_listed() {
     let mut fixture = Fixture::new("watch-rescan-job");
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
@@ -663,7 +665,7 @@ fn a_card_mounted_as_the_catalog_opens_is_listed() {
 /// Removing an indexed folder stops its watch: what changes in it later is not indexed, while
 /// another indexed folder is still followed.
 #[test]
-fn a_folder_no_longer_indexed_is_no_longer_watched() {
+fn slow_a_folder_no_longer_indexed_is_no_longer_watched() {
     let fixture = Fixture::new("watch-removed");
     let owner = fixture.owner();
     let client = owner.register();
@@ -711,7 +713,7 @@ fn a_folder_no_longer_indexed_is_no_longer_watched() {
 /// is listed again instead.
 #[cfg(target_os = "macos")]
 #[test]
-fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
+fn slow_changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
     let mut fixture = Fixture::new("watch-replay");
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
@@ -781,7 +783,7 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
 /// from the cursor kept before it as the catalog next opens.
 #[cfg(target_os = "macos")]
 #[test]
-fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
+fn slow_a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
     let mut fixture = Fixture::new("watch-stop-mid-unit");
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
