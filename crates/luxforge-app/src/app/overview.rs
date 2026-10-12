@@ -5,7 +5,7 @@
 //! - **The seam.** The minimap reads [`Editor::minimap_overview`] — [`MinimapOverview`]: none, a
 //!   stage still being made, a ready image, the last settled image of the same geometry while
 //!   another is made, or why there is none — and draws its [`ShownOverview::image`] with
-//!   `luxforge_ui::overview_image`. Everything here is plain data the update loop owns; the
+//!   `luxforge_ui::overview_image`, turned as the crop surface is for a crop draft's stage. Everything here is plain data the update loop owns; the
 //!   widget decides nothing.
 //! - **The stage.** The selected entry's output after geometry, from its presented content: a
 //!   historical entry, a held Before (the Original) and Shift's uncropped Original are presented
@@ -54,7 +54,8 @@ pub(crate) const MINIMAP_ZOOM: f32 = 200.0;
 pub(crate) enum StageKind {
     /// The selected entry's output after orientation, crop, straighten and other geometry.
     Output,
-    /// A crop draft's input stage, unturned: the minimap turns it as the crop surface does.
+    /// A crop draft's input stage, unturned: the minimap turns it as the crop surface does
+    /// (`luxforge_ui::OverviewSurface::turned`).
     CropInput,
 }
 
