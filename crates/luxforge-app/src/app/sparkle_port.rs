@@ -578,7 +578,9 @@ impl UpdatePort for SparklePort {
         }
     }
 
-    fn move_to_applications(&self) -> Result<(), Error> {
+    /// The Sparkle port runs only in Applications (outside them a launch gets the update port's
+    /// move port), so it never moves.
+    fn move_to_applications(&self, _replace: bool) -> Result<(), Error> {
         Err(
             Error::not_ready("this installation is in Applications already")
                 .with_data(json!({ "reason": "not-supported" })),

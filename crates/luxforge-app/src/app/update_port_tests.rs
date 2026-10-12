@@ -208,7 +208,7 @@ const RELEASED: Bundle = Bundle {
     framework: true,
     key: true,
     journey: false,
-    placement: Placement::Applications,
+    outside: false,
 };
 
 #[test]
@@ -280,28 +280,12 @@ fn only_a_release_bundle_with_sparkle_and_a_key_in_place_gets_the_sparkle_port()
         Choice::Unavailable(UnavailableReason::NoUpdateKey)
     );
     let outside = Bundle {
-        placement: Placement::Outside,
+        outside: true,
         ..RELEASED
     };
     assert_eq!(
         macos(outside),
         Choice::Unavailable(UnavailableReason::OutsideApplications)
-    );
-    // The injected location check decides the placement.
-    let check: LocationCheck = Arc::new(|path: &std::path::Path| {
-        if path.starts_with("/Applications") {
-            Placement::Applications
-        } else {
-            Placement::Outside
-        }
-    });
-    assert_eq!(
-        check(std::path::Path::new("/Volumes/Luxforge/Luxforge.app")),
-        Placement::Outside
-    );
-    assert_eq!(
-        in_applications()(std::path::Path::new("/tmp/Luxforge.app")),
-        Placement::Applications
     );
     // The update journey's bundles carry a test key and run hidden, as automated launches do;
     // they alone take Sparkle while automated, and only from a release bundle with both.
@@ -636,4 +620,55 @@ fn the_port_reports_its_mechanism_and_build_before_any_owner() {
     assert_eq!(status.updater.mechanism(), Mechanism::LinuxPayload);
     assert_eq!(status.build, Some(1));
     assert!(!status.checking && status.available.is_none());
+}
+
+/// A bundle the location check put outside Applications.
+fn placed(location: luxforge_install::Location) -> Placement {
+    Placement {
+        bundle: "/Users/someone/Downloads/Luxforge.app".into(),
+        original: "/Users/someone/Downloads/Luxforge.app".into(),
+        location,
+        cleanup: luxforge_install::Cleanup::Leave,
+    }
+}
+
+#[test]
+fn move_to_applications_a_release_outside_applications_can_move_and_nothing_else() {
+    let port = MovePort {
+        build: Some(7),
+        placement: placed(luxforge_install::Location::Elsewhere),
+    };
+    let status = port.status();
+    assert_eq!(
+        (status.updater, status.build, status.can_move_to_applications),
+        (
+            Updater::Unavailable(UnavailableReason::OutsideApplications),
+            Some(7),
+            true
+        )
+    );
+    let refused = port.request_install().unwrap_err();
+    assert_eq!(
+        refused.data.unwrap()["reason"],
+        json!("outside-applications")
+    );
+    // A Luxforge in the way is a conflict naming it; any other failure says why.
+    let existing = move_refusal(MoveError::Existing("/Applications/Luxforge.app".into()));
+    assert_eq!(existing.kind, ErrorKind::Conflict);
+    assert_eq!(
+        *existing.data.unwrap(),
+        json!({"reason": "existing-app", "path": "/Applications/Luxforge.app"})
+    );
+    let copy = move_refusal(MoveError::Copy("disk full".into()));
+    assert_eq!(copy.kind, ErrorKind::NotReady);
+    assert_eq!(*copy.data.unwrap(), json!({"reason": "copy-failed"}));
+    // A bundle already in Applications is never moved, and nothing is relaunched.
+    let refused = move_into_applications(
+        &placed(luxforge_install::Location::Applications),
+        false,
+        &luxforge_install::System,
+    )
+    .unwrap_err();
+    assert_eq!(refused.data.unwrap()["reason"], json!("in-applications"));
+    assert!(crate::app::relaunch::take().is_none());
 }
