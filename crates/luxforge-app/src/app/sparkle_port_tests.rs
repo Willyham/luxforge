@@ -31,21 +31,37 @@ struct FakeSparkle {
     commands: Mutex<Vec<Command>>,
     script: Mutex<Script>,
     events: Mutex<mpsc::Sender<Event>>,
+    /// Events sent, and events the port has handled.
+    raised: AtomicUsize,
+    handled: Arc<AtomicUsize>,
 }
 
 impl FakeSparkle {
     fn start(listener: Arc<PortListener>, script: Script) -> Arc<Self> {
         let (events, receive) = mpsc::channel::<Event>();
+        let handled = Arc::new(AtomicUsize::new(0));
+        let counted = handled.clone();
         std::thread::spawn(move || {
             for event in receive {
                 listener.event(event);
+                counted.fetch_add(1, Ordering::SeqCst);
             }
         });
         Arc::new(Self {
             commands: Mutex::new(Vec::new()),
             script: Mutex::new(script),
             events: Mutex::new(events),
+            raised: AtomicUsize::new(0),
+            handled,
         })
+    }
+
+    /// Wait until the port has handled every event raised so far, and with it every command it
+    /// sent in answer (the port answers within its handling).
+    fn settle(&self) {
+        wait_until("the port handled every event", || {
+            self.handled.load(Ordering::SeqCst) == self.raised.load(Ordering::SeqCst)
+        });
     }
 
     fn commands(&self) -> Vec<Command> {
@@ -64,6 +80,7 @@ impl FakeSparkle {
 
     /// Deliver `event` as Sparkle would, unasked.
     fn raise(&self, event: Event) {
+        self.raised.fetch_add(1, Ordering::SeqCst);
         self.events.lock().unwrap().send(event).unwrap();
     }
 }
@@ -384,7 +401,7 @@ fn sparkle_installs_automatically_only_an_update_with_this_catalog_format() {
             );
         } else {
             // Offered, never prepared for the installer without being asked.
-            std::thread::sleep(Duration::from_millis(50));
+            fixture.sparkle.settle();
             assert_eq!(owner.status()["ready"], false);
             assert!(fixture.sparkle.answers().is_empty());
             owner.stop();

@@ -322,6 +322,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
     "crates/luxforge-install/src",
+    "crates/luxforge-sparkle/src",
 ];
 
 /// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
@@ -342,6 +343,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
     "crates/luxforge-install",
+    "crates/luxforge-sparkle",
 ];
 
 const SOURCE_RULES: &[SourceRule] = &[
@@ -1013,6 +1015,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The Linux payload updater's check worker, asleep until a request or its next daily
             // check.
             "crates/luxforge-app/src/app/update_port.rs",
+            // The macOS update port's quit hook, waiting off the update loop for Sparkle's
+            // installer to take or cancel an update.
+            "crates/luxforge-app/src/app/sparkle_port.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1443,6 +1448,16 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: &[Table::Normal, Table::Build],
         allowed: &[],
         reason: "luxforge-install may depend on no workspace crate and no path but in its tests",
+    },
+    // The Sparkle bridge carries plain values between Sparkle and the desktop's port, which makes
+    // every decision, so it stays a leaf: no core, GUI or desktop crate.
+    DependencyRule {
+        name: "sparkle-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-sparkle"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-sparkle may depend on no workspace crate and no path",
     },
     DependencyRule {
         name: "image-jpeg-feature",

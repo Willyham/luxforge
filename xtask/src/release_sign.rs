@@ -80,8 +80,10 @@ fn staple(path: &Path) -> [Step; 2] {
         .map(|command| step("xcrun", ["stapler".into(), command.into(), path.into()]))
 }
 
-/// The whole sequence: sign, notarize and staple the app, recreate its ZIP, then create, sign,
-/// notarize and staple the disk image `image` from the stapled app.
+/// The whole sequence: sign Sparkle's nested code innermost first (`Autoupdate`, `Updater.app`,
+/// then the framework), the helpers and the app, each on its own and never with `--deep`;
+/// notarize and staple the app, recreate its ZIP, then create, sign, notarize and staple the disk
+/// image `image` from the stapled app.
 fn plan(
     out: &Path,
     image: &Path,
@@ -92,7 +94,11 @@ fn plan(
     let app = out.join("Luxforge.app");
     let helpers = release_build::executable_paths(out, release_build::TARGETS[0].0);
     let mut result = Vec::new();
-    for path in helpers.iter().skip(1).chain(std::iter::once(&app)) {
+    for path in sparkle::signing_order(&app)
+        .iter()
+        .chain(helpers.iter().skip(1))
+        .chain(std::iter::once(&app))
+    {
         result.push(sign(identity, keychain, true, path));
     }
     for path in helpers.iter().skip(1) {
@@ -338,30 +344,40 @@ mod tests {
     #[test]
     fn helpers_precede_app_and_only_accepted_submission_reaches_stapling() {
         let steps = test_plan(Some(Path::new("temporary keychain")));
-        assert!(
-            steps[0]
-                .args
-                .last()
-                .unwrap()
-                .to_string_lossy()
-                .ends_with("Helpers/luxforge-json")
-        );
-        assert!(
-            steps[1]
-                .args
-                .last()
-                .unwrap()
-                .to_string_lossy()
-                .ends_with("Helpers/luxforge-ctl")
-        );
-        assert!(
-            steps[2]
-                .args
-                .last()
-                .unwrap()
-                .to_string_lossy()
-                .ends_with("Luxforge.app")
-        );
+        let signed: Vec<String> = steps
+            .iter()
+            .take_while(|s| s.args.iter().any(|a| a == "--sign"))
+            .map(|s| s.args.last().unwrap().to_string_lossy().into_owned())
+            .collect();
+        let framework = "Luxforge.app/Contents/Frameworks/Sparkle.framework";
+        let expected = [
+            format!("{framework}/Versions/B/Autoupdate"),
+            format!("{framework}/Versions/B/Updater.app"),
+            framework.to_owned(),
+            "Contents/Helpers/luxforge-json".to_owned(),
+            "Contents/Helpers/luxforge-ctl".to_owned(),
+            "Luxforge.app".to_owned(),
+        ];
+        assert_eq!(signed.len(), expected.len(), "{signed:?}");
+        for (path, suffix) in signed.iter().zip(&expected) {
+            assert!(path.ends_with(suffix.as_str()), "{path} is not {suffix}");
+        }
+        // Sparkle's code is signed as the app's: hardened runtime, secure timestamp, the keychain.
+        for step in &steps[..3] {
+            assert_eq!(
+                step.args[..8],
+                os(&[
+                    "--force",
+                    "--sign",
+                    "Developer ID Application: Test",
+                    "--options",
+                    "runtime",
+                    "--timestamp",
+                    "--keychain",
+                    "temporary keychain",
+                ])
+            );
+        }
         assert!(
             steps
                 .iter()
