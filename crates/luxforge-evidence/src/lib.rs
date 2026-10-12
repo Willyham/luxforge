@@ -1716,7 +1716,7 @@ pub struct ExportFile {
     pub name: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub keep_metadata: bool,
-    /// Ask for the reference renderer's export, `export.jpeg`'s `reference: true`.
+    /// Ask for the reference renderer's export, `export.write`'s `reference: true`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reference: bool,
     /// Capture once the export has started rather than once it has ended: it runs on under the

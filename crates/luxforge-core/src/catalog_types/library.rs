@@ -809,7 +809,7 @@ pub struct BatchSettingsSkipped {
 }
 
 /// A file a batch export wrote: the photograph, the file, and the renderer that rendered it, as
-/// `export.jpeg`'s result names it.
+/// `export.write`'s result names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchWritten {

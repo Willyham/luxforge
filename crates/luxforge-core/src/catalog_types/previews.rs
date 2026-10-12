@@ -109,7 +109,7 @@ impl PreviewOrigin {
 }
 
 /// Which renderer drew a file Luxforge rendered — a developed photograph's rendered tier, a batch
-/// export's file — in the shape an `export.jpeg` result names its renderer: `{record: "gpu",
+/// export's file — in the shape an `export.write` result names its renderer: `{record: "gpu",
 /// reason: null}`, or `{record: "reference", reason}` with the reason the GPU did not draw it (the
 /// session's, an export's such as `refused` or `tiles-budget`, or the GPU plan's own code), and no
 /// reason on an owner with no GPU provider, whose only renderer is the reference. Read back as

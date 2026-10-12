@@ -146,9 +146,9 @@ fn export(fixture: &Fixture, out: &Path, samples: usize) -> Result<Value> {
         let request_id = client::request_id("detail-export");
         let start = Instant::now();
         let accepted = fixture.call(
-            "export.jpeg",
+            "export.write",
             json!({
-                "asset_id":fixture.asset,"destination":destination,"keep_metadata":false,
+                "asset_id":fixture.asset,"destination":destination,"settings":crate::export_smoke::export_settings(&directory),
                 "mutation":{"request_id":request_id,"actor":"detail-performance"}
             }),
         )?;
