@@ -184,7 +184,7 @@
     {
       "id": "TASK-004",
       "description": "Ship the macOS download as a signed, notarized and stapled drag-to-Applications disk image beside the update ZIP.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Create luxforge-<version>-macos-arm64.dmg holding Luxforge.app and an Applications link (modest layout delegated, no branding gate). Sign it with the Developer ID identity, notarize and staple it after the app is stapled; the ZIP stays as the Sparkle update archive.",
@@ -243,7 +243,7 @@
     {
       "id": "TASK-005",
       "description": "Build the Linux payload updater and its desktop port.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -363,7 +363,7 @@
     {
       "id": "TASK-007",
       "description": "Build the desktop's update offer, Settings Updates group and palette entry.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002"
       ],
