@@ -491,7 +491,7 @@ fn a_batch_export_names_each_files_renderer() {
         assert_eq!(record["status"], "ready", "{record}");
         assert_eq!(
             record["result"]["written"],
-            json!([{"asset_id": tiers.asset, "path": out.join("batch-edited.jpg"), "renderer": renderer}]),
+            json!([{"asset_id": tiers.asset, "path": out.join("batch-edited.jpg"), "renderer": renderer, "quality": 90}]),
             "{record}"
         );
     }
