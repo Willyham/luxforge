@@ -94,6 +94,8 @@ pub(crate) mod usage_events;
 mod usage_events_tests;
 #[cfg(test)]
 mod usage_tests;
+#[cfg(test)]
+mod view_tests;
 pub(super) mod views;
 
 /// The catalog owner's thread's name, which reads no pixel (performance rule 5): a read reaching
