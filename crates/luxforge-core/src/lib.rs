@@ -92,6 +92,8 @@ pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
 pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
 pub use draft::{Draft, DraftTarget, declared_target};
+/// The catalog format this build opens, which release builds record for the update feed.
+pub use editor::CATALOG_FORMAT;
 pub use editor::{
     ActionResult, AssetRecord, BatchStaleAcknowledgement, DraftStamp, EditorService, EditorState,
     Evaluation, FirstOpen, HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD,

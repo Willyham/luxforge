@@ -6,6 +6,8 @@ pub use xtask_cli::release_artifacts::{
     TARGETS, archive_name, archive_record, platform, verify_record,
 };
 pub const EXECUTABLES: &[&str] = &["luxforge", "luxforge-json", "luxforge-ctl"];
+/// `LSMinimumSystemVersion`, which `target.json` also records for the update feed.
+pub const MACOS_MINIMUM_SYSTEM_VERSION: &str = "14.0";
 
 pub fn executable_paths(out: &Path, target: &str) -> Vec<PathBuf> {
     EXECUTABLES
@@ -121,7 +123,7 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
         fs::write(
             contents.join("Info.plist"),
             format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{}</string><key>CFBundleVersion</key><string>{number}</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
+                r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{}</string><key>CFBundleVersion</key><string>{number}</string><key>LSMinimumSystemVersion</key><string>{MACOS_MINIMUM_SYSTEM_VERSION}</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
                 tag.bundle_version
             ),
         )?;
@@ -151,7 +153,7 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
             tag.version, tag.tag, target
         ),
     )?;
-    let metadata = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":number,"revision":revision,"target":target,"profile":"release","working_tree_dirty":dirty,"usage_release":luxforge_core::usage::BuildIdentity::new(&tag.version,embedded).release(),"rehearsal":allow_dirty,"lock_sha256":lock,"rustc":output(root,"rustc",&["--version"])?.trim(),"executable_hash_kind":"before-signing","executables":executable_hashes,"release_ready":false});
+    let metadata = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":number,"catalog_format":luxforge_core::CATALOG_FORMAT,"revision":revision,"target":target,"profile":"release","working_tree_dirty":dirty,"usage_release":luxforge_core::usage::BuildIdentity::new(&tag.version,embedded).release(),"rehearsal":allow_dirty,"lock_sha256":lock,"rustc":output(root,"rustc",&["--version"])?.trim(),"executable_hash_kind":"before-signing","executables":executable_hashes,"release_ready":false});
     write_json(&resource_root.join("build.json"), &metadata)?;
     let archive = archive_payload(out, &tag, &target)?;
     ensure(
@@ -170,6 +172,9 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
     record["working_tree_dirty"] = json!(dirty || dirty_after);
     record["signing"] =
         json!({"status":if target == TARGETS[0].0 {"unsigned"} else {"not-applicable"}});
+    if target == TARGETS[0].0 {
+        record["minimum_system_version"] = json!(MACOS_MINIMUM_SYSTEM_VERSION);
+    }
     record["archive"] = archive_record(&archive)?;
     write_json(&out.join("target.json"), &record)?;
     println!("Build candidate: {}", archive.display());

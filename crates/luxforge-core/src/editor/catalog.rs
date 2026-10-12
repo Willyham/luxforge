@@ -19,7 +19,7 @@ use std::{
 /// ([`MERGE_SCHEMA`]). A catalog is marked by [`CATALOG_APPLICATION_ID`] as well as its format, so
 /// a database without the mark is not taken for one. Every other marker, earlier or later, is
 /// refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 1;
+pub const CATALOG_FORMAT: i64 = 1;
 /// SQLite's `application_id` for a Luxforge catalog, `LXFC`.
 pub(crate) const CATALOG_APPLICATION_ID: i64 = 0x4C58_4643;
 pub(super) const ASSET_COLUMNS: &str =

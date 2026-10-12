@@ -86,6 +86,8 @@ fn main_result() -> Result<ExitCode> {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
+        "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "check" => {
             let quick = a.flag("--quick");
             a.done()?;
@@ -198,6 +200,8 @@ mod tests {
                 "release",
                 "release-tag",
                 "release-assemble",
+                "update-record",
+                "update-feed",
                 "check-repository",
                 "test",
                 "build",

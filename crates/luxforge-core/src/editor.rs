@@ -59,9 +59,8 @@ pub(crate) use test_support::{
     synthetic_raw_metadata,
 };
 
-pub(crate) use catalog::{
-    CATALOG_FORMAT, decode, default_artifact_root, encode, insert_entry, now_ms, write,
-};
+pub use catalog::CATALOG_FORMAT;
+pub(crate) use catalog::{decode, default_artifact_root, encode, insert_entry, now_ms, write};
 pub(crate) use catalog_rows::capture_of;
 pub(crate) use catalog_rows::{
     NewAsset, insert_asset, insert_capture, insert_catalog_folder, insert_collection,
