@@ -60,6 +60,12 @@ struct Synthetic {
     reading: Arc<Gate>,
     reads: AtomicUsize,
     frames: Mutex<HashMap<PathBuf, Arc<Vec<f32>>>>,
+    /// Record a dark disc at another place in every frame, a subject that moved, for the frames
+    /// developed from now on.
+    moving: std::sync::atomic::AtomicBool,
+    /// Record a scene with no texture at all, which no alignment can fix, for the frames
+    /// developed from now on.
+    flat: std::sync::atomic::AtomicBool,
 }
 
 fn camera() -> Camera {
@@ -76,6 +82,14 @@ impl Synthetic {
             return planes.clone();
         }
         let scene = geometry::textured_scene(shot.seed);
+        let scene: Box<dyn Fn(f64, f64) -> [f64; 3]> = if self.flat.load(Ordering::SeqCst) {
+            Box::new(|_, _| [0.18; 3])
+        } else if self.moving.load(Ordering::SeqCst) {
+            let centre = [(120.0, 100.0), (190.0, 128.0), (260.0, 150.0)][shot.position];
+            Box::new(geometry::with_disc(scene, centre, 18.0, [0.004; 3]))
+        } else {
+            Box::new(scene)
+        };
         let (dx, dy) = MOTIONS[shot.position];
         let exposure = geometry::record(
             &scene,
@@ -255,6 +269,8 @@ impl Bench {
             reading: Arc::new(Gate::new()),
             reads: AtomicUsize::new(0),
             frames: Mutex::new(HashMap::new()),
+            moving: std::sync::atomic::AtomicBool::new(false),
+            flat: std::sync::atomic::AtomicBool::new(false),
         });
         let (owner, join) = start_owner(&catalog, source_hold.clone());
         let client = owner.register();
@@ -1703,3 +1719,6 @@ fn hdr_merge_job_and_an_editor_never_wait_on_each_other() {
 
 #[path = "merge_kind_tests.rs"]
 mod merge_kind;
+
+#[path = "merge_preview_tests.rs"]
+mod merge_preview;
