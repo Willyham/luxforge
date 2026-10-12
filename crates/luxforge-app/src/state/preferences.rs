@@ -716,7 +716,8 @@ mod tests {
             "hdr_merge": null,
             "theme": "luxforge.dark",
             "update_checks": true,
-            "update_install_automatically": false
+            "update_install_automatically": false,
+            "update_ask_to_move": true
         }))
         .unwrap()
     }
