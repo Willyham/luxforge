@@ -7,9 +7,10 @@
 //! from its own `module.status` answer (`fill_tiers`), and every candidate's label from the job
 //! that published it. Everything here is plain data the app layer turns into requests; nothing is
 //! a request until a gesture sends one.
-use crate::state::Inputs;
+use crate::state::{Inputs, settings};
 use luxforge_core::{
-    AssetId, CandidateRead, CandidateState, ModuleDescriptor, ParameterKind, jobs::JobStatus,
+    AssetId, CandidateRead, CandidateState, ModuleDescriptor, ParameterKind, flags::FlagList,
+    jobs::JobStatus,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -21,26 +22,64 @@ const PROMPT_FALLBACK: usize = 256;
 /// The most candidates the strip lists: the newest, across the selection's jobs.
 pub(crate) const STRIP_MAX: usize = 12;
 
-/// The first available module that declares a fill task, the one the Remove mode drives.
-pub(crate) fn fill_module(modules: &[ModuleDescriptor]) -> Option<&ModuleDescriptor> {
+/// The first available module that declares a fill task the desktop offers, the one the Remove
+/// mode drives. A fill task behind an experiment flag that is off is not offered
+/// ([`TaskDescriptor::flags`](luxforge_core::capabilities::descriptor::TaskDescriptor::flags)), so
+/// with every fill task's flag off there is no Remove at all: no segment, no gestures.
+pub(crate) fn fill_module<'a>(
+    modules: &'a [ModuleDescriptor],
+    flags: Option<&FlagList>,
+) -> Option<&'a ModuleDescriptor> {
     modules
         .iter()
         .filter(|module| module.is_available())
         .find(|module| {
-            module
-                .tasks
-                .iter()
-                .any(|task| task.id.starts_with(FILL_TASK_PREFIX))
+            module.tasks.iter().any(|task| {
+                task.id.starts_with(FILL_TASK_PREFIX) && settings::task_offered(flags, task)
+            })
         })
+}
+
+/// The tiers of `module`'s status the desktop lists: those whose fill task it offers. A tier
+/// whose task is behind a flag that is off is left out rather than named as off: the flag is the
+/// person's choice not to see the experiment.
+pub(crate) fn shown_tiers(
+    module: &ModuleDescriptor,
+    tiers: &[FillTier],
+    flags: Option<&FlagList>,
+) -> Vec<FillTier> {
+    tiers
+        .iter()
+        .filter(|tier| {
+            module
+                .task(task_id(&tier.task))
+                .is_some_and(|task| settings::task_offered(flags, task))
+        })
+        .cloned()
+        .collect()
+}
+
+/// The status was read before a flag a tier names last changed: what it says of the flag no
+/// longer holds, and a read is due.
+pub(crate) fn stale(tiers: &[FillTier], flags: Option<&FlagList>) -> bool {
+    tiers.iter().any(|tier| {
+        tier.flag
+            .as_ref()
+            .is_some_and(|flag| flag.on != settings::toggle_on(flags, &flag.id))
+    })
+}
+
+/// A tier's task as its module declares it: `fill-generative` for `task.fill-generative`.
+fn task_id(method: &str) -> &str {
+    method
+        .strip_prefix(luxforge_core::capabilities::host::TASK_PREFIX)
+        .unwrap_or(method)
 }
 
 /// How many characters the fill task's `prompt` takes, as it declares.
 pub(crate) fn prompt_max(module: &ModuleDescriptor, task: &str) -> usize {
     module
-        .task(
-            task.strip_prefix(luxforge_core::capabilities::host::TASK_PREFIX)
-                .unwrap_or(task),
-        )
+        .task(task_id(task))
         .and_then(|task| task.parameters.iter().find(|p| p.name == "prompt"))
         .and_then(|parameter| match &parameter.kind {
             ParameterKind::String { max_length } => Some(*max_length),
@@ -266,8 +305,6 @@ pub(crate) struct TierOption {
 pub(crate) enum TierAction {
     /// Install the model's file through the capability block's own install and consent notice.
     Download { module_id: String, resource: String },
-    /// Turn the tier's flag on in Settings › Experiments.
-    Experiments,
 }
 
 /// Why no tier is offered, and the one action it allows.
@@ -359,20 +396,11 @@ pub(crate) fn chosen_tier<'a>(tiers: &'a [FillTier], choice: Option<&str>) -> Op
         .or_else(|| offered().next())
 }
 
-/// Why `tier` is not offered, in the order a person can act on it: the flag first, then the
-/// runtime, then the model.
+/// Why `tier` is not offered, in the order a person can act on it: the runtime, then the model. A
+/// tier is listed only while its flags are on, so a flag is never the reason.
 fn unoffered(module: &str, tier: &FillTier) -> Unoffered {
     let title = tier_title(&tier.tier);
     let missing = |kind: &str| tier.missing.iter().find(|missing| missing.kind == kind);
-    if missing("flag").is_some() {
-        return Unoffered {
-            reason: format!("{title} fill is an experiment that is off"),
-            action: Some((
-                "Settings \u{203a} Experiments".into(),
-                TierAction::Experiments,
-            )),
-        };
-    }
     if missing("runtime").is_some() {
         return Unoffered {
             reason: "No inference runtime is available on this computer".into(),
@@ -420,10 +448,17 @@ fn running_sentence(job: &FillJob) -> String {
 
 /// The Remove model for these inputs, or `None` when no module fills.
 pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> {
-    let module = fill_module(inputs.modules)?;
+    let flags = inputs.settings.flags.as_ref();
+    let module = fill_module(inputs.modules, flags)?;
     let panel = inputs.remove;
-    let tiers = tiers_of(inputs, &module.id).unwrap_or(&[]);
-    let reading = tiers_of(inputs, &module.id).is_none();
+    let read = tiers_of(inputs, &module.id);
+    // A status read before a flag changed is being read again: until it answers, it is not read.
+    let reading = read.is_none_or(|tiers| stale(tiers, flags));
+    let tiers = match read {
+        Some(tiers) if !reading => shown_tiers(module, tiers, flags),
+        _ => Vec::new(),
+    };
+    let tiers = tiers.as_slice();
     let chosen = chosen_tier(tiers, panel.tier.as_deref());
     let options: Vec<TierOption> = tiers
         .iter()
@@ -645,21 +680,21 @@ mod tests {
         json!([{"model": "m", "title": "Model", "resource": "m-file", "state": state, "runtime": "run-m", "text_encoder": {"resource": "m-text", "state": "not-installed"}}])
     }
 
-    /// The flag is the first thing to act on, then the runtime, then the model, whose action is
-    /// its download unless that is running.
+    /// The runtime is the first thing to act on, then the model, whose action is its download
+    /// unless that is running. A flag is never the reason: a tier behind one that is off is not
+    /// listed at all.
     #[test]
     fn an_unoffered_tier_names_one_reason_and_its_one_action() {
-        let all = tier(
-            json!([{"kind": "flag", "id": "ai.generative", "state": "off"}, {"kind": "model", "id": "generative", "state": "not-installed"}]),
-            model("not-installed"),
-        );
-        let first = unoffered("ai", &all);
-        assert_eq!(first.action.unwrap().1, TierAction::Experiments);
         let runtime = tier(
-            json!([{"kind": "runtime", "id": "inference", "state": "unavailable"}]),
+            json!([{"kind": "runtime", "id": "inference", "state": "unavailable"}, {"kind": "model", "id": "generative", "state": "not-installed"}]),
             model("not-installed"),
         );
-        assert_eq!(unoffered("ai", &runtime).action, None);
+        let first = unoffered("ai", &runtime);
+        assert_eq!(first.action, None);
+        assert_eq!(
+            first.reason,
+            "No inference runtime is available on this computer"
+        );
         let download = tier(
             json!([{"kind": "model", "id": "generative", "state": "not-installed"}]),
             model("not-installed"),

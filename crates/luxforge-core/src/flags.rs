@@ -573,7 +573,13 @@ mod tests {
         assert_eq!(ids(false), ["developer", RANGE_MASKS, AI_GENERATIVE]);
         assert_eq!(
             ids(true),
-            ["developer", RANGE_MASKS, AI_GENERATIVE, "proof.choice", "proof.number"]
+            [
+                "developer",
+                RANGE_MASKS,
+                AI_GENERATIVE,
+                "proof.choice",
+                "proof.number"
+            ]
         );
     }
 

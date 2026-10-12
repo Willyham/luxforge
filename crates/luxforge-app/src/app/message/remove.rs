@@ -57,8 +57,6 @@ pub(crate) enum RemoveMessage {
     Accept,
     /// Install a model file through the capability block's install and its consent notice.
     Download { module_id: String, resource: String },
-    /// Open Settings › Experiments, where the tier's flag is.
-    Experiments,
     /// The group's menu opened or closed.
     Menu(bool),
     /// Copy one request the group's controls send.

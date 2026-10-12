@@ -5696,6 +5696,7 @@
                 "url": "https://github.com/Willyham/luxforge/releases/download/models-generative-1/klein-4b-removal-conditioning-ba26d15a.lfsdcond"
               }
             ],
+            "flag": "ai.generative",
             "format": "gguf",
             "id": "generative-klein-4b",
             "license": "Apache-2.0",
@@ -5725,6 +5726,7 @@
                 "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/tokenizer.json"
               }
             ],
+            "flag": "ai.generative",
             "format": "gguf",
             "id": "generative-klein-text-encoder",
             "license": "Apache-2.0",
@@ -5746,6 +5748,9 @@
         "tasks": [
           {
             "asset": true,
+            "flags": [
+              "ai.generative"
+            ],
             "id": "fill-generative",
             "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}.",
             "parameters": [

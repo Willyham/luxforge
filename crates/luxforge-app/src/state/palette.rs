@@ -307,7 +307,7 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
         ),
     ]);
     // Models only where the sheet lists it: a registered module holds a model.
-    if crate::state::models::model_modules(inputs.modules)
+    if crate::state::models::model_modules(inputs.modules, inputs.settings.flags.as_ref())
         .next()
         .is_some()
     {

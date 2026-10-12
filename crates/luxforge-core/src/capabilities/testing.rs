@@ -214,6 +214,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 parameter: "tint".into(),
             }),
             reads: None,
+            flags: Vec::new(),
         }],
         ..ModuleDescriptor::default()
     }

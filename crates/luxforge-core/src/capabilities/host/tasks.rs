@@ -249,7 +249,15 @@ impl CapabilityHost {
 
         // Every unmet requirement, listed together before anything else is asked.
         let mut missing = Vec::new();
+        // The flags the task declares, which a client reads to offer it, then any its module
+        // names for this request, each once.
+        let mut flags: Vec<&str> = task.flags.iter().map(String::as_str).collect();
         for flag in &needs.flags {
+            if !flags.contains(flag) {
+                flags.push(flag);
+            }
+        }
+        for flag in flags {
             if !crate::flags::live_toggle(&self.preferences, self.launch_flags(), flag) {
                 missing.push(Requirement {
                     kind: RequirementKind::Flag,

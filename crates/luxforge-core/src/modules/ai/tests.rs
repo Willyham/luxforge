@@ -580,8 +580,13 @@ fn every_refusal_is_named_and_generates_nothing() {
     let refused = owner.fill(selection(&asset)).unwrap_err();
     assert_eq!(refused.code, "not-ready", "{refused:?}");
     let missing = requirements(&refused);
-    assert!(
-        missing.contains(&("flag".into(), "ai.generative".into())),
+    // Declared by the task and named by its needs, the flag is one requirement.
+    assert_eq!(
+        missing
+            .iter()
+            .filter(|(kind, id)| kind == "flag" && id == "ai.generative")
+            .count(),
+        1,
         "{missing:?}"
     );
     assert!(
@@ -762,6 +767,9 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
         resources,
         [KLEIN_GENERATOR.resource, KLEIN_TEXT_ENCODER.resource]
     );
+    // The fill task declares its experiment, so a client hides it without reading the status.
+    let task = descriptor.task(FILL_GENERATIVE).unwrap();
+    assert_eq!(task.flags, ["ai.generative"]);
     for resource in &descriptor.resources {
         assert!(
             resource.url.starts_with("https://huggingface.co/"),
@@ -774,6 +782,8 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
             resource.url
         );
         assert_eq!(resource.license, "Apache-2.0");
+        // Offered only under the tier's experiment, which a client reads from the descriptor.
+        assert_eq!(resource.flag.as_deref(), Some("ai.generative"));
         assert!(resource.use_restriction.is_none());
         assert!(resource.tradeoff.is_some());
         assert_eq!(resource.sha256.len(), 64);

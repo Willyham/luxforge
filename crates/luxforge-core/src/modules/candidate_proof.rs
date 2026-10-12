@@ -94,6 +94,7 @@ impl CandidateProofModule {
                     ],
                     apply: None,
                     reads: None,
+                    flags: Vec::new(),
                 }],
                 ..ModuleDescriptor::default()
             },

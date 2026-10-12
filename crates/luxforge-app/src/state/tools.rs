@@ -948,7 +948,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if !applies(module, inputs.document.state.as_ref()) {
             continue;
         }
-        if !draws_section(module) {
+        if !draws_section(module, inputs.settings.flags.as_ref()) {
             continue;
         }
         if module.developer && !inputs.developer {
@@ -1154,10 +1154,14 @@ pub(crate) fn controls_of<'a>(
 
 /// Whether a module has anything of its own to draw: controls, a capability block, or the host's
 /// crop-frame editor its canvas declares. A module with none — the RAW development, whose controls
-/// are Basic's variants, or Corrections, whose band is its own mode's — has no section.
-pub(crate) fn draws_section(module: &ModuleDescriptor) -> bool {
+/// are Basic's variants, Corrections, whose band is its own mode's, or AI editing while its
+/// experiment is off — has no section.
+pub(crate) fn draws_section(
+    module: &ModuleDescriptor,
+    flags: Option<&luxforge_core::flags::FlagList>,
+) -> bool {
     !module.controls.is_empty()
-        || capabilities::declares(module)
+        || capabilities::declares_offered(module, flags)
         || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
 }
 

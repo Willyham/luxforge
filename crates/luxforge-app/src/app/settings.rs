@@ -26,7 +26,9 @@ impl Editor {
             SettingsMessage::Open(tab) => {
                 // A launch that is not eligible for usage statistics has no Privacy tab to open, and
                 // one whose modules hold no model no Models tab.
-                let models = models::model_modules(&self.modules).next().is_some();
+                let models = models::model_modules(&self.modules, self.settings.flags.as_ref())
+                    .next()
+                    .is_some();
                 let tab =
                     if SettingsTab::shown(self.usage.eligible, models).any(|shown| shown == tab) {
                         tab
@@ -79,16 +81,20 @@ impl Editor {
             }
             SettingsMessage::Listed { flags, preferences } => {
                 self.settings.reading = false;
-                match flags {
+                let followed = match flags {
                     Ok(flags) => {
                         self.settings.flags = Some(flags);
                         self.settings.error = None;
+                        self.flags_followed()
                     }
-                    Err(reason) => self.settings.error = Some(reason),
-                }
+                    Err(reason) => {
+                        self.settings.error = Some(reason);
+                        Task::none()
+                    }
+                };
                 let applied = self.preferences_read(preferences);
                 self.outcome(Outcome::FlagsRead);
-                return applied;
+                return Task::batch([applied, followed]);
             }
             SettingsMessage::Flags { flags, change } => {
                 if change {
@@ -96,7 +102,10 @@ impl Editor {
                 }
                 match flags {
                     // A read the sheet's own read overtook leaves the sheet's answer.
-                    Ok(flags) if !self.settings.reading => self.settings.flags = Some(flags),
+                    Ok(flags) if !self.settings.reading => {
+                        self.settings.flags = Some(flags);
+                        return self.flags_followed();
+                    }
                     Ok(_) => {}
                     Err(reason) => self.event("flags_read_failed", || json!({"reason": reason})),
                 }
@@ -110,12 +119,12 @@ impl Editor {
             }
             SettingsMessage::Saved(result) => {
                 let written = self.settings.writing.take();
-                let mut read = Task::none();
-                match result {
+                let read = match result {
                     Ok((flags, request)) => {
                         self.settings.flags = Some(flags);
                         self.settings.error = None;
                         self.read_back(request);
+                        self.flags_followed()
                     }
                     Err(reason) => {
                         // The write may have landed before its answer was lost: the poll reads
@@ -129,9 +138,9 @@ impl Editor {
                         );
                         self.settings.error = Some(reason);
                         // The row showed the change it asked for; read back what is stored.
-                        read = self.read_flags();
+                        self.read_flags()
                     }
-                }
+                };
                 if self.settings.closing && self.settings.idle() {
                     return self.close();
                 }
@@ -176,10 +185,11 @@ impl Editor {
     /// round trip each through the capability driver; a module with a round trip already out is
     /// left to its answer.
     fn read_model_statuses(&mut self) -> Task<Message> {
-        let wanted: Vec<String> = models::model_modules(&self.modules)
-            .map(|module| module.id.clone())
-            .filter(|module| self.capabilities.module(module).pending == 0)
-            .collect();
+        let wanted: Vec<String> =
+            models::model_modules(&self.modules, self.settings.flags.as_ref())
+                .map(|module| module.id.clone())
+                .filter(|module| self.capabilities.module(module).pending == 0)
+                .collect();
         Task::batch(
             wanted
                 .into_iter()
@@ -211,8 +221,23 @@ impl Editor {
         )
     }
 
+    /// The flags as the host answered them changed: what a live flag gates follows. Remove leaves
+    /// with its fill task's flag off and reads its tiers again when its status predates the change,
+    /// and an open Models tab with no model left to list gives way to General.
+    fn flags_followed(&mut self) -> Task<Message> {
+        if self.settings.open == Some(SettingsTab::Models)
+            && models::model_modules(&self.modules, self.settings.flags.as_ref())
+                .next()
+                .is_none()
+        {
+            self.settings.open = Some(SettingsTab::General);
+        }
+        self.remove_follow_flags()
+    }
+
     /// Read the flags alone, off the update loop: what a live flag gates outside the sheet (the
-    /// range mask kinds the Masks panel offers) follows the person's choice from launch on. A read
+    /// range mask kinds the Masks panel offers, Remove and the models a flagged feature uses)
+    /// follows the person's choice from launch on. A read
     /// that follows another client's `change` is counted until it answers.
     pub(crate) fn read_flag_values(&mut self, change: bool) -> Task<Message> {
         if change {
@@ -353,7 +378,7 @@ impl Editor {
                 })
             })
             .collect();
-        let statuses: serde_json::Map<String, Value> = models::model_modules(&self.modules)
+        let statuses: serde_json::Map<String, Value> = models::model_modules(&self.modules, self.settings.flags.as_ref())
             .map(|module| {
                 let status = self.capabilities.module(&module.id).status.as_ref();
                 (

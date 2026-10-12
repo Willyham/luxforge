@@ -19,7 +19,6 @@ use super::{
         Message,
         capability::CapabilityMessage,
         remove::{RemoveMessage, RemoveRequest},
-        settings::SettingsMessage,
     },
     tasks::{self, CallError, owner_task},
 };
@@ -28,8 +27,10 @@ use crate::{
     state::{
         MenuTarget,
         capabilities::Operation,
-        remove::{FillJob, FillTier, RemoveNotice, RemoveSelection, chosen_tier, fill_module},
-        settings::SettingsTab,
+        remove::{
+            FillJob, FillTier, RemoveNotice, RemoveSelection, chosen_tier, fill_module,
+            shown_tiers, stale,
+        },
     },
 };
 use iced::{Subscription, Task, futures::stream::BoxStream, widget::image::Handle};
@@ -303,16 +304,46 @@ fn draw_seed(serial: u64) -> u64 {
 }
 
 impl Editor {
-    /// The fill module's tiers as its status last listed them.
-    fn fill_tiers(&self) -> Option<(String, &[FillTier])> {
-        let module = fill_module(&self.modules)?;
+    /// The fill module's tiers as its status last listed them, those the desktop offers.
+    fn fill_tiers(&self) -> Option<(String, Vec<FillTier>)> {
+        let flags = self.settings.flags.as_ref();
+        let module = fill_module(&self.modules, flags)?;
         let tiers = self
             .capabilities
             .module(&module.id)
             .status
             .as_ref()
             .map_or(&[][..], |status| status.fill_tiers.as_slice());
-        Some((module.id.clone(), tiers))
+        Some((module.id.clone(), shown_tiers(module, tiers, flags)))
+    }
+
+    /// The flags as the host last answered them changed: Remove follows them. With no fill task
+    /// offered, a chosen Remove gives way to the kind the band chose before it, Heal or Clone; a
+    /// running generation keeps running, since only a new one is refused. A status read before
+    /// the change is read again, so the tiers it lists say what holds now.
+    pub(crate) fn remove_follow_flags(&mut self) -> Task<Message> {
+        let flags = self.settings.flags.as_ref();
+        let Some(module) = fill_module(&self.modules, flags) else {
+            if self.remove.chosen {
+                self.remove.chosen = false;
+                self.remove_reads.painting = None;
+                if self.view_state.menu == Some(MenuTarget::Remove) {
+                    self.view_state.menu = None;
+                }
+            }
+            return Task::none();
+        };
+        let stale = self
+            .capabilities
+            .module(&module.id)
+            .status
+            .as_ref()
+            .is_some_and(|status| stale(&status.fill_tiers, flags));
+        if stale {
+            self.remove_refresh_tiers()
+        } else {
+            Task::none()
+        }
     }
 
     /// The newest job of the photograph on screen that this desktop started with the fill task
@@ -328,7 +359,9 @@ impl Editor {
 
     /// The Corrections mode is on screen with Remove chosen.
     pub(crate) fn remove_active(&self) -> bool {
-        self.remove.chosen && self.corrections_active() && fill_module(&self.modules).is_some()
+        self.remove.chosen
+            && self.corrections_active()
+            && fill_module(&self.modules, self.settings.flags.as_ref()).is_some()
     }
 
     /// Why the photograph on screen cannot be edited: a generation this desktop started is running
@@ -351,7 +384,7 @@ impl Editor {
         let asset = state.asset.id.clone();
         let (_, tiers) = self.fill_tiers().ok_or("No module fills a selection")?;
         let tier =
-            chosen_tier(tiers, self.remove.tier.as_deref()).ok_or("No fill tier is offered")?;
+            chosen_tier(&tiers, self.remove.tier.as_deref()).ok_or("No fill tier is offered")?;
         let model = tier
             .installed_model()
             .ok_or("The tier's model is not installed")?;
@@ -481,7 +514,9 @@ impl Editor {
 
     /// Read the fill module's status, for its tiers, unless a read is already out.
     pub(crate) fn remove_refresh_tiers(&mut self) -> Task<Message> {
-        let Some(module) = fill_module(&self.modules).map(|module| module.id.clone()) else {
+        let Some(module) = fill_module(&self.modules, self.settings.flags.as_ref())
+            .map(|module| module.id.clone())
+        else {
             return Task::none();
         };
         if self.capabilities.module(&module).pending > 0 {
@@ -494,6 +529,10 @@ impl Editor {
     pub(crate) fn remove_message(&mut self, message: RemoveMessage) -> Task<Message> {
         match message {
             RemoveMessage::Choose => {
+                // No fill task is offered, so there is no Remove to choose.
+                if fill_module(&self.modules, self.settings.flags.as_ref()).is_none() {
+                    return Task::none();
+                }
                 self.view_state.menu = None;
                 self.remove.chosen = true;
                 self.correction_reads.line = None;
@@ -528,11 +567,6 @@ impl Editor {
                     module_id,
                     resource,
                 }));
-            }
-            RemoveMessage::Experiments => {
-                return self.dispatch(Message::Settings(SettingsMessage::Open(
-                    SettingsTab::Experiments,
-                )));
             }
             RemoveMessage::Menu(open) => {
                 self.view_state.menu = open.then_some(MenuTarget::Remove);
@@ -1028,7 +1062,7 @@ impl Editor {
     pub(crate) fn remove_settled(&self) -> bool {
         // The fill module's status read, which lists the tiers, is Remove's too.
         let reading_tiers = self.remove_active()
-            && fill_module(&self.modules)
+            && fill_module(&self.modules, self.settings.flags.as_ref())
                 .is_some_and(|module| self.capabilities.module(&module.id).pending > 0);
         if self.remove.pending > 0
             || self.remove_reads.starting.is_some()

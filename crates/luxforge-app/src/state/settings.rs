@@ -17,6 +17,7 @@ use super::{
 };
 use luxforge_core::{
     ModuleDescriptor,
+    capabilities::descriptor::{ResourceDescriptor, TaskDescriptor},
     flags::{Applies, FlagList, ListedFlag},
 };
 use serde_json::Value;
@@ -30,6 +31,22 @@ pub(crate) fn toggle_on(flags: Option<&FlagList>, id: &str) -> bool {
         .and_then(|flags| flags.flag(id))
         .and_then(|flag| flag.active.as_ref().unwrap_or(&flag.value).as_bool())
         .unwrap_or(false)
+}
+
+/// Every experiment flag `task` declares is on, as the host last answered: the desktop offers the
+/// task only then. Off before the first `flags.list` answers, so nothing behind a flag shows at
+/// launch; the host refuses the task by name either way.
+pub(crate) fn task_offered(flags: Option<&FlagList>, task: &TaskDescriptor) -> bool {
+    task.flags.iter().all(|flag| toggle_on(flags, flag))
+}
+
+/// The experiment flag `resource` declares, if any, is on: the desktop lists the resource only
+/// then. The host still lists, installs and removes it for any client.
+pub(crate) fn resource_offered(flags: Option<&FlagList>, resource: &ResourceDescriptor) -> bool {
+    resource
+        .flag
+        .as_deref()
+        .is_none_or(|flag| toggle_on(flags, flag))
 }
 
 /// One tab of the sheet.
@@ -238,13 +255,16 @@ pub(crate) fn derive(
         ),
         tabs: SettingsTab::shown(
             usage.eligible,
-            models::model_modules(models.modules).next().is_some(),
+            models::model_modules(models.modules, settings.flags.as_ref())
+                .next()
+                .is_some(),
         )
         .collect(),
         privacy: usage.eligible.then(|| privacy(usage)),
         models: (open == SettingsTab::Models).then(|| {
             models::derive(
                 models.modules,
+                settings.flags.as_ref(),
                 models.capabilities,
                 view_state.menu.as_ref(),
             )

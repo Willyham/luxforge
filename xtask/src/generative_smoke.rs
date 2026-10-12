@@ -2,15 +2,16 @@
 //! (`docs/design/ai-editing.md#desktop-surface`), on the real editor, background-only, with
 //! correlated state, log and capture.
 //!
-//! One developer launch on the four-quadrant fixture. Remove is chosen with nothing set up and
-//! names the experiment's flag; the flag is set through the API and Remove names the missing model
-//! and its Download; the fake generator's grant and install go through the API as any client's
+//! One developer launch on the four-quadrant fixture. With the `ai.generative` experiment off the
+//! Corrections band has no Remove; a second client turns it on, Remove is offered and chosen, and
+//! names the missing model and its Download; the fake generator's grant and install go through the API as any client's
 //! would. A stroke across the boundary of two quadrants is the selection; Generate is captured
 //! while it runs (the ring and the status bar's progress), Escape cancels it, Generate runs to its
 //! one candidate (owner, 2026-10-11), Regenerate adds one more, and the first is chosen again and
 //! previewed on the canvas. A second client accepts the desktop's newest job's candidate. A prompt makes the action
 //! Replace and offers the text encoder's download, which goes through the consent notice; Replace
-//! then runs and Accept commits it. The fill of a flat-coloured context is that context's mean, so
+//! then runs and Accept commits it. Last, the second client turns the experiment off while Remove
+//! is chosen, and the band is back on Heal with no Remove. The fill of a flat-coloured context is that context's mean, so
 //! a fill across two quadrants is legible in the capture: the left quadrant's colour inside the
 //! selection becomes a mix of both.
 use crate::{
@@ -24,13 +25,14 @@ use luxforge_evidence::{
 };
 
 pub const SCENARIO: &str = "generative";
-pub const ABOUT: &str = "Remove in the Corrections band on the developer fake models: the flag and model reasons, a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate's preview, a second client's accept, a prompt's Replace with the text encoder's consented download, and Accept";
+pub const ABOUT: &str = "Remove in the Corrections band on the developer fake models: hidden with its experiment off and shown once on, the model reason, a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate's preview, a second client's accept, a prompt's Replace with the text encoder's consented download, Accept, and Remove gone again with the experiment off";
 
 /// The developer AI module, which serves the fill tiers and their fake models.
 const AI: &str = "luxforge.ai";
 const GENERATOR: &str = "fake-generator";
 const ORIGIN: &str = "https://developer.luxforge.invalid";
 const PROMPT: &str = "a red bicycle";
+const FLAG: &str = "ai.generative";
 
 /// The selection: a stroke across the boundary between the top two quadrants.
 const STROKE: [[f64; 2]; 4] = [[0.42, 0.30], [0.47, 0.30], [0.53, 0.30], [0.58, 0.30]];
@@ -56,22 +58,20 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     let api = |name: &str, method: &str, params: Value| {
         Step::new(name, script::Step::call(method, params)).commits(0)
     };
-    Plan::new(vec![
-        Step::opened("opened").no_draft(),
-        Step::new("mode", key("q")).commits(0).mode(MODULE),
-        // Nothing set up: the experiment's flag is the first thing to act on.
+    // A second client's flag change, which the step waits for the desktop to read.
+    let flag = |name: &str, on: bool| {
         Step::new(
-            "remove-off",
-            correction(CorrectionStep::Kind("remove".into())),
+            name,
+            script::Step::agent("flags.set", json!({"flag": FLAG, "value": on})),
         )
         .commits(0)
-        .status_starts("Generative fill is an experiment that is off"),
-        api(
-            "flag",
-            "flags.set",
-            json!({"flag": "ai.generative", "value": true}),
-        ),
-        // The flag on: the model is missing, with its Download.
+    };
+    Plan::new(vec![
+        Step::opened("opened").no_draft(),
+        // The experiment off, as by default: the band has no Remove.
+        Step::new("mode", key("q")).commits(0).mode(MODULE),
+        flag("flag", true),
+        // The flag on: Remove is offered; the model is missing, with its Download.
         Step::new(
             "remove-model",
             correction(CorrectionStep::Kind("remove".into())),
@@ -151,6 +151,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(1)
             .label(format!("Add Replace \"{PROMPT}\" 2"))
             .status_starts("Accepted"),
+        // The experiment off while Remove is chosen: the band is back on its kind.
+        flag("flag-off", false),
     ])
 }
 
@@ -179,11 +181,19 @@ fn apart(one: [f64; 3], two: [f64; 3]) -> f64 {
 pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
-    let off = launch.at("remove-off")?;
+    // With the experiment off there is no Remove, and with it on Remove is offered, not chosen.
+    let off = launch.at("mode")?;
     ensure(
-        band(off)["unoffered"]["action"] == json!("Settings \u{203a} Experiments")
-            && band(off)["tiers"] == json!([]),
-        format!("Remove with the flag off: {}", band(off)),
+        band(off).is_null() && record(off)["active"] == json!(false),
+        format!(
+            "The band with the experiment off: {}",
+            off.state()["corrections"]["band"]
+        ),
+    )?;
+    let on = launch.at("flag")?;
+    ensure(
+        band(on)["chosen"] == json!(false),
+        format!("Remove with the experiment on: {}", band(on)),
     )?;
     let missing = launch.at("remove-model")?;
     ensure(
@@ -315,6 +325,17 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         apart(rgb(accepted, INSIDE)?, rgb(opened, INSIDE)?),
         0.0,
         Tolerance::Above(NEAR),
+    )?;
+    // Turned off while Remove is chosen: no Remove, and the band on Heal.
+    let gone = launch.at("flag-off")?;
+    ensure(
+        band(gone).is_null()
+            && record(gone)["active"] == json!(false)
+            && gone.state()["corrections"]["band"]["new_kind"] == json!("heal"),
+        format!(
+            "The band with the experiment turned off: {}",
+            gone.state()["corrections"]["band"]
+        ),
     )?;
     checks.write(
         run.out(),

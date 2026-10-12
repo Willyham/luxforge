@@ -324,6 +324,13 @@ pub struct ResourceDescriptor {
     /// less sees the requirement and cannot install it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_memory_bytes: Option<u64>,
+    /// The experiment flag ([`crate::flags`]) of the one feature that uses the resource, such as a
+    /// generative fill's model: a client offers it only while that toggle is on, so a person who
+    /// has not turned the experiment on is not offered its download. It gates nothing in the host:
+    /// the resource is listed, installed and removed as ever, and what refuses the feature is its
+    /// task's own flags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag: Option<String>,
 }
 
 /// One further file of a resource, pinned as the resource's own file is.
@@ -421,6 +428,12 @@ pub struct TaskDescriptor {
     /// takes an asset may declare one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reads: Option<ReadBoundary>,
+    /// The experiment flags ([`crate::flags`]) the task is offered under: toggles that must all be
+    /// on. The host refuses a request while one is off, `not-ready` naming it as `{kind: flag}`
+    /// with any flag the module's `task_needs` adds, and a client offers the task only while they
+    /// are on, without reading the module's status first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<String>,
 }
 
 /// Apply names a declared action and its `artifact` parameter, which receives the task's result.
@@ -881,7 +894,23 @@ fn validate_resource<'a>(
             "resource {id} declares min_memory_bytes {minimum}; it is {MIN_MACHINE_MEMORY_BYTES}..={MAX_MACHINE_MEMORY_BYTES}"
         )));
     }
+    if let Some(flag) = &resource.flag {
+        validate_flag("resource", id, flag)?;
+    }
     Ok(())
+}
+
+/// A flag a resource or task is offered under: a toggle the flag registry lists.
+fn validate_flag(what: &str, id: &str, flag: &str) -> Result<(), Error> {
+    match crate::flags::find(flag, true).map(|spec| spec.kind) {
+        Some(crate::flags::FlagKind::Toggle { .. }) => Ok(()),
+        Some(_) => Err(Error::validation(format!(
+            "{what} {id} declares flag {flag}, which is not a toggle"
+        ))),
+        None => Err(Error::validation(format!(
+            "{what} {id} declares unknown flag {flag}"
+        ))),
+    }
 }
 
 /// A resource's further files: at most [`MAX_RESOURCE_FILES`] with its own, each a plain name that
@@ -1020,6 +1049,15 @@ fn validate_task<'a>(
             )));
         }
     }
+    let mut flags = HashSet::with_capacity(task.flags.len());
+    for flag in &task.flags {
+        validate_flag("task", id, flag)?;
+        if !flags.insert(flag.as_str()) {
+            return Err(Error::validation(format!(
+                "task {id} declares flag {flag} twice"
+            )));
+        }
+    }
     if let Some(reads) = task.reads
         && !task.asset
     {
@@ -1110,6 +1148,8 @@ mod tests {
         resource.tradeoff = Some("Finds smaller objects; slower to start".into());
         resource.use_restriction = Some("Non-commercial use only".into());
         resource.min_memory_bytes = Some(8 << 30);
+        resource.flag = Some(crate::flags::AI_GENERATIVE.into());
+        descriptor.tasks[0].flags = vec![crate::flags::AI_GENERATIVE.into()];
         descriptor.validate().unwrap();
         let resource = &descriptor.resources[0];
         assert_eq!(resource.total_bytes(), 36);
@@ -1135,12 +1175,21 @@ mod tests {
             "Non-commercial use only"
         );
         assert_eq!(value["resources"][0]["min_memory_bytes"], json!(8u64 << 30));
+        assert_eq!(value["resources"][0]["flag"], "ai.generative");
+        assert_eq!(value["tasks"][0]["flags"], json!(["ai.generative"]));
         assert_eq!(ModuleDescriptor::deserialize(&value).unwrap(), descriptor);
-        // A resource without them serializes none of them.
+        // A resource without them serializes none of them, nor a task without flags its flags.
         let plain = serde_json::to_value(capability_descriptor()).unwrap();
-        for key in ["files", "tradeoff", "use_restriction", "min_memory_bytes"] {
+        for key in [
+            "files",
+            "tradeoff",
+            "use_restriction",
+            "min_memory_bytes",
+            "flag",
+        ] {
             assert!(plain["resources"][0].get(key).is_none(), "{key}");
         }
+        assert!(plain["tasks"][0].get("flags").is_none());
         // An unknown resource field is refused rather than ignored.
         let mut unknown = value["resources"][0].clone();
         unknown["training_data"] = json!("a note");
@@ -1687,7 +1736,23 @@ mod tests {
                 |d| d.resources[0].min_memory_bytes = Some(MAX_MACHINE_MEMORY_BYTES + 1),
                 "resource palette declares min_memory_bytes 4398046511105",
             ),
+            (
+                |d| d.resources[0].flag = Some("ai.unknown".into()),
+                "resource palette declares unknown flag ai.unknown",
+            ),
+            (
+                |d| d.resources[0].flag = Some("proof.choice".into()),
+                "resource palette declares flag proof.choice, which is not a toggle",
+            ),
             // Tasks.
+            (
+                |d| d.tasks[0].flags = vec!["ai.unknown".into()],
+                "task generate-test-tint declares unknown flag ai.unknown",
+            ),
+            (
+                |d| d.tasks[0].flags = vec!["ai.generative".into(), "ai.generative".into()],
+                "task generate-test-tint declares flag ai.generative twice",
+            ),
             (
                 |d| d.tasks[0].uses.push("missing".into()),
                 "task generate-test-tint uses undeclared capability missing",

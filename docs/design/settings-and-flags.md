@@ -38,13 +38,17 @@ Flags today:
 | --- | --- | --- | --- | --- | --- |
 | `developer` | toggle | launch | on in debug builds, off in optimized builds | always | The desktop serves the test modules (the pixel and controls proofs) and shows the Developer button and its components gallery |
 | `masks.range-selections` | toggle | live | off | always | Luminance and colour range masks: the New mask and Add component menus, their keys and the palette offer the two range kinds, and `mask.create-<kind>` and `mask.add-<kind>` accept them ([gated kinds](#gated-mask-kinds)) |
+| `ai.generative` | toggle | live | off | always | Generative fill: whether `task.fill-generative` is offered, and whether the desktop shows Remove, the AI editing section and the generative models in Settings › Models ([gated generative fill](#gated-generative-fill)); never how an accepted fill renders |
 | `proof.choice` | choice: `first`, `second`, `third` | live | `first` | developer runs only | Nothing; a fixture for the choice control |
 | `proof.number` | number: 0 to 100, step 5 | live | 50 | developer runs only | Nothing; a fixture for the number control |
-| `ai.generative` | toggle | live | off | developer runs only, after the proof flags | Whether `task.fill-generative` is offered ([AI editing](ai-editing.md#the-delivered-workflow)); never how an accepted fill renders. Listed only where `luxforge.ai` is registered, which is developer runs while its one model is the developer fake |
 
 ### Gated mask kinds
 
 `masks.range-selections` gates creating a range component, not having one. Off, the desktop's menus, kind keys and palette entries leave out the luminance and colour range kinds, and the owner refuses `mask.create-luminance-range`, `mask.create-colour-range`, `mask.add-luminance-range` and `mask.add-colour-range`, and a `draft.begin` of any of them, as `not-ready` with `data.flag` naming the flag; their schema notes say so. Every component that exists still renders, exports, lists through `mask.list` and stays editable and deletable through its `mask.set-<kind>`, sample and delete commands, so turning the flag off never changes a photo. The owner reads the flag at each such request, so a change applies at once, and the desktop reads the flags again on the `flags.set` event.
+
+### Gated generative fill
+
+`ai.generative` gates generating a fill, not having one. The fill task declares it in its descriptor (`flags`) and each of its model resources names it (`flag`) ([module capabilities](module-capabilities.md)), so the desktop hides them from the descriptor alone, reading the flag as off until `flags.list` first answers. Off, the desktop shows no Remove segment in the Corrections band and takes no Remove gesture, draws no AI editing section, and Settings › Models lists none of the generative models nor their minimums; turning it off while Remove is chosen returns the band to Heal or Clone, and a generation already running finishes. The owner refuses `task.fill-generative` as `not-ready` naming the flag, and still lists the task and its models and installs or removes them for any client. An accepted fill is a stored patch and renders whatever the flag. The desktop reads the flags again after its own toggle's answer and on another client's `flags.set` event, and reads the fill module's status again when the one it holds predates the change.
 
 The two proof flags follow the proof modules' rule: they exist only when the running host serves the test modules, and change nothing, so the choice and number controls have a real flag to render and test. A stored proof value is kept, and listed as unrecognized, by a host that does not list them.
 
@@ -89,7 +93,7 @@ Which tab is open, and whether the sheet is, is this desktop's own view state, l
 - **Original reads and decodes:** none added.
 - **Full-frame allocations:** none. A listing is a few hundred bytes; `preferences.json` is bounded at 16 KiB.
 - **Point queries:** none added.
-- **Owner thread:** `flags.list` and `preferences.read` read one small file; `flags.set` and `preferences.set` are each one locked read-modify-write of it, `flags.set` written only when the value changed. Creating or adding a range component reads it once to check `masks.range-selections`; no other request does. No frame work.
+- **Owner thread:** `flags.list` and `preferences.read` read one small file; `flags.set` and `preferences.set` are each one locked read-modify-write of it, `flags.set` written only when the value changed. Creating or adding a range component reads it once to check `masks.range-selections`, and a fill task request once to check `ai.generative`; no other request does. No frame work.
 - **Desktop messages:** opening the sheet reads `flags.list` once; each change sends one `flags.set` and adopts its answer. No `asset.state`, `history.list`, preview job or upload is added. A closed sheet derives nothing. The launch reads `flags.list` once, and a `flags.set` event reads it again, with the preferences too while the sheet is open; the desktop's own writes are skipped by the event sync.
 - **Timers, polls and subscriptions:** none added.
 - **Repeated work and caches:** none added; the launch reads its flags once, before the registry is assembled.
