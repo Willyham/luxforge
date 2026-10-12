@@ -65,7 +65,7 @@ pub fn cargo_command() -> Command {
                 || key.starts_with("CARGO_MANIFEST_")
                 || matches!(
                     key,
-                    "CARGO_CRATE_NAME" | "CARGO_BIN_NAME" | "CARGO_PRIMARY_PACKAGE"
+                    "CARGO_CRATE_NAME" | "CARGO_BIN_NAME" | "CARGO_PRIMARY_PACKAGE" | "OUT_DIR"
                 )
         }) {
             command.env_remove(key);
@@ -166,7 +166,10 @@ mod tests {
         // `xtask`, so every one of them present here must be removed.
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();
-            if name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_MANIFEST_") {
+            if name.starts_with("CARGO_PKG_")
+                || name.starts_with("CARGO_MANIFEST_")
+                || name == "OUT_DIR"
+            {
                 assert!(
                     removed.contains(&key),
                     "{name} would reach the spawned Cargo"
