@@ -22,7 +22,7 @@
 //! reserved on the render's spatial budget before it is allocated, which paces the other spatial
 //! work of the process; a failed allocation is `resource-limit`, naming the operation that needed
 //! it. Nothing changes geometry or quality to fit.
-use super::{PixelDomain, RenderContext};
+use super::{PixelDomain, RenderContext, context::SpatialReservation};
 use crate::{
     Cancel, Error,
     modules::{Parallelism, Region, RepairOperation, RepairTable, Stage},
@@ -166,6 +166,19 @@ pub(crate) struct RepairEntry {
     /// The operations with their footprints' indexes, built once on the first evaluation that
     /// needs them (on a render worker, never while planning).
     bound: Arc<OnceLock<Arc<[RepairOp]>>>,
+    /// The working set the reference's banded mode prepared in its first pass from the whole
+    /// stage ([`repair_store`]), which every window of the frame reads; `None` everywhere else,
+    /// where a frame prepares its own.
+    pub(crate) held: Option<Arc<RepairStore>>,
+}
+
+/// A repair boundary's working set once its operations have run: the read set of every
+/// destination ([`RepairEntry::destination_reads`]), each rectangle's three `f32` planes holding
+/// what the operations left there. Every pixel of the frame inside one of them is its value there,
+/// and every other pixel is the input's.
+#[derive(Debug)]
+pub(crate) struct RepairStore {
+    parts: Vec<(Region, Vec<f32>)>,
 }
 
 impl RepairEntry {
@@ -181,6 +194,7 @@ impl RepairEntry {
             stage,
             regions,
             bound: Arc::new(OnceLock::new()),
+            held: None,
         }
     }
 
@@ -313,36 +327,19 @@ fn planes(len: usize, what: impl FnOnce() -> String) -> Result<Vec<f32>, Error> 
     Ok(values)
 }
 
-/// The output of the repair boundary `entry` over its whole `stage`, in the domain's frame: every
+/// The working set of the repair boundary `entry` over its `stage` ([`RepairStore`]): every
 /// destination's read set filled from the input (`fill` reads one rectangle of the stage it reads
-/// into three planes), the operations applied over it in order, and the frame written band by band,
-/// each band its input with the working set's values over it.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn repair_frame<D: PixelDomain>(
-    _domain: &D,
+/// into three planes), and the operations applied over it in order. Reserved on the render's
+/// spatial budget before it is allocated, which paces the other spatial work of the process; the
+/// reservation is answered with it, for its holder to keep while it holds the working set.
+pub(super) fn repair_store<'c>(
     entry: &RepairEntry,
     stage: Stage,
     cancel: &Cancel,
-    context: &RenderContext,
-    wide: bool,
-    fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
-) -> Result<D::SpatialFrame, Error> {
-    if stage != entry.stage {
-        return Err(Error::internal(format!(
-            "a repair boundary bound to {}x{} received a {}x{} stage",
-            entry.stage.width, entry.stage.height, stage.width, stage.height
-        )));
-    }
-    cancel.check()?;
-    let parallelism = if super::parallel::pooled(
-        super::parallel::RenderPass::Repair,
-        u64::from(stage.width) * u64::from(stage.height),
-    ) {
-        Parallelism::Pool
-    } else {
-        Parallelism::Serial
-    };
-    let mut frame = D::spatial_frame(stage, wide)?;
+    context: &'c RenderContext,
+    fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error>,
+) -> Result<(RepairStore, SpatialReservation<'c>), Error> {
+    let parallelism = repair_parallelism(stage);
     let (set, relevant) = entry.destination_reads();
     let name = || {
         entry
@@ -354,7 +351,7 @@ pub(super) fn repair_frame<D: PixelDomain>(
     };
     // The working set, charged to the spatial budget before it is allocated.
     let bytes = set.pixels().saturating_mul(12);
-    let _reservation = context.spatial().reserve(bytes, 1);
+    let reservation = context.spatial().reserve(bytes, 1);
     let mut store: Vec<(Region, Vec<f32>)> = Vec::with_capacity(set.rects().len());
     for &rect in set.rects() {
         cancel.check()?;
@@ -392,23 +389,80 @@ pub(super) fn repair_frame<D: PixelDomain>(
             }
         })?;
     }
+    Ok((RepairStore { parts: store }, reservation))
+}
+
+/// Whether a repair frame of `stage` runs its reads and writes on the pool.
+fn repair_parallelism(stage: Stage) -> Parallelism {
+    if super::parallel::pooled(
+        super::parallel::RenderPass::Repair,
+        u64::from(stage.width) * u64::from(stage.height),
+    ) {
+        Parallelism::Pool
+    } else {
+        Parallelism::Serial
+    }
+}
+
+/// The output of the repair boundary `entry` over `area` of its `stage`, the whole stage but in
+/// the reference's banded mode, in the domain's frame of the area: its working set — the one the
+/// banded mode's first pass held ([`RepairEntry::held`]), or else built here
+/// ([`repair_store`]) — and the frame written band by band, each band its input with the working
+/// set's values over it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn repair_frame<D: PixelDomain>(
+    _domain: &D,
+    entry: &RepairEntry,
+    stage: Stage,
+    area: Region,
+    cancel: &Cancel,
+    context: &RenderContext,
+    wide: bool,
+    fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
+) -> Result<D::SpatialFrame, Error> {
+    if stage != entry.stage {
+        return Err(Error::internal(format!(
+            "a repair boundary bound to {}x{} received a {}x{} stage",
+            entry.stage.width, entry.stage.height, stage.width, stage.height
+        )));
+    }
+    cancel.check()?;
+    let parallelism = repair_parallelism(stage);
+    let whole = area == Region::whole(stage);
+    let mut frame = if whole {
+        D::spatial_frame(stage, wide)?
+    } else {
+        D::area_frame(area, wide)?
+    };
+    let built;
+    let store = match &entry.held {
+        Some(store) => store.as_ref(),
+        None => {
+            built = repair_store(entry, stage, cancel, context, &fill)?;
+            &built.0
+        }
+    };
+    let held = Stage {
+        width: area.width,
+        height: area.height,
+    };
     // The frame, band by band: the input, with the working set's values where it holds them.
-    let rows = (BAND_BYTES / (u64::from(stage.width.max(1)) * 12)).clamp(1, u64::from(u32::MAX));
-    let mut y0 = 0;
+    let rows = (BAND_BYTES / (u64::from(area.width.max(1)) * 12)).clamp(1, u64::from(u32::MAX));
+    let mut y0 = area.y0;
     let mut values = Vec::new();
-    while y0 < stage.height {
+    while y0 < area.y1() {
         cancel.check()?;
-        let height = (rows as u32).min(stage.height - y0);
+        let height = (rows as u32).min(area.y1() - y0);
         let band = Region {
-            x0: 0,
+            x0: area.x0,
             y0,
-            width: stage.width,
+            width: area.width,
             height,
         };
         let len = band.pixels() as usize;
         values.resize(len * 3, 0.0);
         fill(band, &mut values, parallelism)?;
-        for (rect, held) in &store {
+        for (rect, held) in &store.parts {
             let shared = intersection(*rect, band);
             if shared.is_empty() {
                 continue;
@@ -416,7 +470,7 @@ pub(super) fn repair_frame<D: PixelDomain>(
             let held_len = rect.pixels() as usize;
             for y in shared.y0..shared.y1() {
                 let from = ((y - rect.y0) * rect.width + (shared.x0 - rect.x0)) as usize;
-                let to = ((y - band.y0) * band.width + shared.x0) as usize;
+                let to = ((y - band.y0) * band.width + (shared.x0 - band.x0)) as usize;
                 let width = shared.width as usize;
                 for channel in 0..3 {
                     values[channel * len + to..channel * len + to + width].copy_from_slice(
@@ -426,7 +480,12 @@ pub(super) fn repair_frame<D: PixelDomain>(
             }
         }
         let output = D::tile_output(band, &values, band, parallelism, wide);
-        D::write_tile(&mut frame, stage, band, output);
+        let at = Region {
+            x0: band.x0 - area.x0,
+            y0: band.y0 - area.y0,
+            ..band
+        };
+        D::write_tile(&mut frame, held, at, output);
         y0 += height;
     }
     Ok(frame)
