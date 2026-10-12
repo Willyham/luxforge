@@ -12,8 +12,8 @@ use crate::coalesce::Coalesce;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
-        BrushPreference, CanvasBackground, CatalogSelection, INTERFACE_SIZES, RawLook, WindowFrame,
-        WorkspacePreference,
+        BrushPreference, CanvasBackground, CatalogSelection, HdrMergePreference, INTERFACE_SIZES,
+        RawLook, WindowFrame, WorkspacePreference,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,9 @@ preferences! {
     window: Option<WindowFrame>,
     /// The folder `export.plan` suggests, or `None` for the original's.
     export_folder: Option<PathBuf>,
+    /// The last HDR merge's alignment and deghosting, which ⌥-click merges with, or `None` for
+    /// the defaults.
+    hdr_merge: Option<HdrMergePreference>,
     /// The active theme's id, Luxforge Dark's when none is stored. The Appearance tab and the
     /// palette's theme entries set it; the desktop draws the theme it names.
     theme: String,
@@ -698,6 +701,7 @@ mod tests {
             "brush": null,
             "window": null,
             "export_folder": null,
+            "hdr_merge": null,
             "theme": "luxforge.dark"
         }))
         .unwrap()

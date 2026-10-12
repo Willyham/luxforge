@@ -160,7 +160,7 @@ pub(crate) struct SelectState {
     /// The catalog's folders and collections, its filter bar and Metadata browser, and the Info
     /// panel over photographs ([`super::select_catalog`]).
     pub(crate) catalog: super::select_catalog::CatalogState,
-    /// HDR merges: the menu, the Merge options… form and the merge this desktop runs.
+    /// HDR merges: the menu, the merge preview sheet and the merge this desktop runs.
     pub(crate) merge: super::select_merge::SelectMerge,
     /// The size slider's cell widths, one per preset.
     pub(crate) files_cell_width: f32,
@@ -627,8 +627,15 @@ pub(crate) fn change_text(change: &LibraryChange) -> String {
 
 /// What a refused undo or redo says: the first item that changed since, by its file's name where
 /// it has one, and how many others did, from the refusal's `data` (`{items, count}`). `None` when
-/// the refusal carries no items.
-pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Option<String> {
+/// the refusal carries no items. A merge stack is named by its kind, which `stack_kind` reads from
+/// a row of the view that shows it.
+pub(crate) fn refusal_text(
+    gesture: LibraryGesture,
+    data: Option<&Value>,
+    stack_kind: impl Fn(
+        &luxforge_core::catalog_types::MergeId,
+    ) -> Option<luxforge_core::catalog_types::MergeKind>,
+) -> Option<String> {
     let data = data?;
     let first: LibraryItem = serde_json::from_value(data.get("items")?.get(0)?.clone()).ok()?;
     // A photograph sent back, or one that cannot be, is refused with the core's own reason, which
@@ -646,7 +653,9 @@ pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Opt
         }
         LibraryItem::CatalogFolder { .. } => "a catalog folder".to_owned(),
         LibraryItem::Collection { .. } => "a collection".to_owned(),
-        LibraryItem::MergeStack { .. } => "an HDR stack".to_owned(),
+        LibraryItem::MergeStack { merge_id } => {
+            super::select_merge::stack_name(stack_kind(merge_id)).to_owned()
+        }
         _ => "a photograph".to_owned(),
     };
     let others = match count.saturating_sub(1) {
@@ -772,7 +781,10 @@ impl MomentAction {
     pub(crate) fn label(self) -> String {
         match self {
             Self::PickAll(frames) => format!("Pick all {frames}"),
-            Self::Merge => super::select_merge::MERGE_LABEL.to_owned(),
+            // A bracket's merge is HDR's.
+            Self::Merge => super::select_merge::words(luxforge_core::catalog_types::MergeKind::Hdr)
+                .action
+                .to_owned(),
         }
     }
 
@@ -982,9 +994,10 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
 }
 
 /// A moment's header buttons: for a bracket over files, Pick all while its frames are not all
-/// picked, then the primary Merge HDR while a merge takes that many frames.
+/// picked, then the primary Merge HDR while an HDR merge, a bracket's kind, takes that many
+/// frames.
 fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<MomentAction> {
-    use super::select_merge::{MAX_FRAMES, MIN_FRAMES};
+    use luxforge_core::catalog_types::MergeKind;
     let mut actions = Vec::new();
     if !bracket_of_files {
         return actions;
@@ -992,7 +1005,7 @@ fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<Momen
     if picked < frames {
         actions.push(MomentAction::PickAll(frames));
     }
-    if (MIN_FRAMES..=MAX_FRAMES).contains(&frames) {
+    if MergeKind::Hdr.inputs().contains(&(frames as usize)) {
         actions.push(MomentAction::Merge);
     }
     actions
@@ -1158,6 +1171,21 @@ impl RowCache {
         self.blocks
             .get(&(position / ROW_BLOCK))?
             .get((position % ROW_BLOCK) as usize)
+    }
+
+    /// The kind of the merge stack `merge_id`, from any row held of it: its result's or an
+    /// original's.
+    pub(crate) fn stack_kind(
+        &self,
+        merge_id: &luxforge_core::catalog_types::MergeId,
+    ) -> Option<luxforge_core::catalog_types::MergeKind> {
+        self.blocks
+            .values()
+            .flatten()
+            .chain(self.carried.values())
+            .filter_map(|row| row.stack.as_ref())
+            .find(|stack| stack.merge_id == *merge_id)
+            .map(|stack| stack.kind)
     }
 
     /// The row to draw at `position`: this revision's, or else one carried from the last.
@@ -1646,7 +1674,7 @@ pub(crate) struct SelectModel {
     /// The catalog's folders and collections, and over the catalog its filter bar, Metadata
     /// browser and Info panel.
     pub(crate) catalog: super::select_catalog::CatalogModel,
-    /// HDR merges: the menu over the grid, the Merge options… form and Put back merge's notice.
+    /// HDR merges: the menu over the grid, the merge preview sheet and Put back merge's notice.
     pub(crate) merge: super::select_merge::MergeModel,
     /// Remove from indexed folders…'s confirmation, over the centre.
     pub(crate) forget: Option<ForgetSheet>,

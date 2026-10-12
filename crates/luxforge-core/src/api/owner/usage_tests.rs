@@ -226,6 +226,7 @@ fn usage_untrusted_enable_and_generic_preference_bypasses_are_refused() {
         "brush",
         "window",
         "export_folder",
+        "hdr_merge",
         "theme",
     ]
     .into_iter()

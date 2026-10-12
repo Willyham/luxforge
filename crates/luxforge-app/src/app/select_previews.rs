@@ -1042,6 +1042,12 @@ impl<'a> GridImages<'a> {
         previews.held(&self.item(item)?)
     }
 
+    /// The handle held for `file`, wherever its cell is: a merge preview's frame thumbnails.
+    pub(crate) fn file(&self, file: FileId) -> Option<&'a Handle> {
+        let previews: &'a SelectPreviews = self.previews;
+        previews.held(&Item::File(file))
+    }
+
     /// The cell at `item` is Unreadable: the owner found no usable preview in its file.
     pub(crate) fn unreadable(&self, item: u32) -> bool {
         self.item(item)

@@ -63,7 +63,7 @@ pub(crate) fn boot() -> (Editor, PathBuf) {
 }
 
 /// The owner a launch from `config` starts for `catalog`: the built-in registry, holding what the
-/// launch knows of its renderer as the desktop's own launch tells it.
+/// launch knows of its renderer and the flags it resolved, as the desktop's own launch tells it.
 pub(crate) fn start_owner(
     catalog: &std::path::Path,
     config: &Config,
@@ -73,10 +73,37 @@ pub(crate) fn start_owner(
         Arc::new(luxforge_core::ModuleRegistry::builtin()),
         luxforge_core::HostConfig {
             renderer: crate::app::renderer::launched(config.launch_renderer().refused()),
+            launch_flags: config.launch_flags.clone(),
             ..luxforge_core::HostConfig::unconfigured()
         },
     )
     .unwrap()
+}
+
+/// A launch that forces the range mask experiment on, as a test host may force a live flag: for
+/// the tests that create luminance and colour range masks.
+pub(crate) fn range_masks_config() -> Config {
+    Config {
+        launch_flags: luxforge_core::flags::LaunchFlags::resolve(
+            None,
+            &[(luxforge_core::flags::RANGE_MASKS, json!(true), "test")],
+        ),
+        ..Config::default()
+    }
+}
+
+/// The flags read through `flags.list` and taken up as the launch's own read is.
+pub(crate) fn read_flags(editor: &mut Editor) {
+    let flags = crate::app::tasks::call(&editor.owner, editor.client, "flags.list", json!({}))
+        .and_then(|(value, _)| {
+            serde_json::from_value(value).map_err(|error| format!("unreadable flags: {error}"))
+        });
+    let _ = editor.update(Message::Settings(
+        crate::app::message::settings::SettingsMessage::Flags {
+            flags,
+            change: false,
+        },
+    ));
 }
 
 /// An editor started from `config`, the startup task it asked the runtime for, and its catalog.
@@ -220,6 +247,7 @@ pub(crate) fn real_photo_prepared<T>(
         window: (1440.0, 900.0),
     });
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    read_flags(&mut editor);
     let prepared = prepare(&mut editor);
     // Drawn where the editor draws it, as an open asks: at the display bounds, with the picture at
     // rest planned on the GPU at the view.

@@ -13,11 +13,13 @@ use crate::app::message::{
     loupe::LoupeMessage,
     select::{SelectMessage, Step},
     select_catalog::CatalogMessage,
+    select_merge::MergeMessage,
 };
 use crate::state::host_commands::HostCommand;
 use crate::state::palette::Panel;
 use crate::state::select::{SelectPanel, Shown};
 use crate::state::select_catalog::CatalogAction;
+use crate::state::select_merge::MergeAction;
 use iced::{
     Event, Subscription,
     event::Status,
@@ -158,6 +160,9 @@ pub(crate) struct KeyContext {
     pub(crate) select_menu_open: bool,
     /// The loupe is open over Select's centre, so Escape returns to the grid.
     pub(crate) loupe_open: bool,
+    /// The merge preview sheet is open: it is modal, so Escape cancels it and no other key reaches
+    /// the grid behind it.
+    pub(crate) merge_sheet_open: bool,
     /// Develop N's confirmation is open, so Escape cancels it and Return develops.
     pub(crate) develop_confirm: bool,
     /// Develop holds a filmstrip, so `←` and `→` move through it.
@@ -412,6 +417,10 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         }
         if character(key, "-") {
             return Some(Message::View(ViewMessage::ZoomStep(-1)));
+        }
+        // Back to Fit, as `f` is without the modifier.
+        if character(key, "0") {
+            return Some(Message::View(ViewMessage::Fit));
         }
         // Export the displayed entry; Shift keeps its metadata.
         if character(key, "e") {
@@ -734,6 +743,24 @@ fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
 /// `Cmd+Return` the picks in view, through Develop N's confirmation, which Escape cancels and
 /// Return confirms; the loupe's keys are the loupe's.
 fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<Message> {
+    // ⌥ held turns a merge action into a merge at once with the last settings, and the menu's
+    // merge items drop their ellipsis, so the modifier is followed whatever has focus.
+    if let Keys::ModifiersChanged(modifiers) = keyboard {
+        return Some(Message::Select(SelectMessage::Merge(MergeMessage::Option(
+            modifiers.alt(),
+        ))));
+    }
+    if context.merge_sheet_open {
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Select(SelectMessage::Merge(MergeMessage::Act(
+                MergeAction::SheetClose,
+            )))),
+            _ => None,
+        };
+    }
     let Keys::KeyPressed {
         key,
         modifiers,
@@ -940,9 +967,20 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
             .with(sequence)
             .map(|(sequence, _)| Message::History(HistoryMessage::CompareHoldElapsed(sequence)))
     });
+    // One wake-up once a waiting comparison's loading delay has passed, only while it waits and
+    // its bar is not yet shown.
+    let loading = editor
+        .activity
+        .compare_loading
+        .due(Instant::now())
+        .then(|| {
+            iced::time::every(crate::state::canvas::COMPARE_LOADING_DELAY)
+                .map(|_| Message::History(HistoryMessage::CompareLoadingDue))
+        });
     Subscription::batch([
         iced::event::listen_with(raw_event),
         deadline.unwrap_or_else(Subscription::none),
+        loading.unwrap_or_else(Subscription::none),
     ])
 }
 
@@ -1204,6 +1242,24 @@ mod tests {
     }
 
     #[test]
+    fn command_zero_fits() {
+        let context = KeyContext::default();
+        let fits = |modifiers, status| {
+            matches!(
+                keymap(&pressed(letter("0"), modifiers), status, &context),
+                Some(Message::View(ViewMessage::Fit))
+            )
+        };
+        for status in [Status::Ignored, Status::Captured] {
+            assert!(fits(Modifiers::COMMAND, status));
+            assert!(fits(Modifiers::COMMAND | Modifiers::SHIFT, status));
+            assert!(fits(Modifiers::COMMAND | Modifiers::ALT, status));
+        }
+        assert!(!fits(Modifiers::empty(), Status::Ignored));
+        assert!(!fits(Modifiers::ALT, Status::Ignored));
+    }
+
+    #[test]
     fn compare_slider_keys_respect_focus_repeat_and_escape() {
         let context = KeyContext::default();
         let backslash = pressed(letter("\\"), Modifiers::empty());
@@ -1332,6 +1388,7 @@ mod tests {
             select: false,
             select_menu_open: false,
             loupe_open: false,
+            merge_sheet_open: false,
             develop_confirm: false,
             filmstrip: false,
             copy_settings_modal: None,

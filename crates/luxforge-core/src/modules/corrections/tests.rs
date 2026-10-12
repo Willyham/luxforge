@@ -333,11 +333,6 @@ fn refusals_name_what_is_wrong_and_change_nothing() {
         ),
         (
             "add-correction",
-            spot(0.5, 0.5, -0.5, 0.5),
-            "a correction's source must meet the photograph's frame",
-        ),
-        (
-            "add-correction",
             json!({"points": [[0.5, 0.5]], "radius": 0.02, "source-x": 0.3}),
             "send source-x and source-y together, or neither",
         ),
@@ -422,6 +417,110 @@ fn rendered(service: &mut EditorService, asset: &AssetId) -> Result<crate::Raste
         }
         result => result,
     }
+}
+
+/// A source is kept inside the frame. A spot or a stroke in each corner sent with a source past
+/// the frame's edge is stored with its source moved inward, its whole footprint inside, and
+/// answers where it went; a source dragged out and a radius grown past the edge are kept inside the
+/// same way; a source that fits is stored where it was sent.
+#[test]
+fn a_source_that_would_leave_the_frame_is_kept_inside_it() {
+    let mut session = Session::new("corrections-source-inside.sqlite");
+    let raster = rendered(&mut session.service, &session.asset).unwrap();
+    let content = (raster.width, raster.height);
+    let aspect = f64::from(raster.width) / f64::from(raster.height);
+    let inside = |points: &[[f64; 2]], radius: f64, source: [f64; 2]| {
+        let anchor = points[0];
+        points.iter().all(|[x, y]| {
+            let (sx, sy) = (x - anchor[0] + source[0], y - anchor[1] + source[1]);
+            sx - radius / aspect >= 0.0
+                && sx + radius / aspect <= 1.0
+                && sy - radius >= 0.0
+                && sy + radius <= 1.0
+        })
+    };
+    let mut added = 0;
+    for (x, y, dx, dy) in [
+        (0.03, 0.04, 1.0, 1.0),
+        (0.97, 0.04, -1.0, 1.0),
+        (0.03, 0.96, 1.0, -1.0),
+        (0.97, 0.96, -1.0, -1.0),
+    ] {
+        for points in [
+            vec![[x, y]],
+            vec![[x + dx * 0.1, y], [x, y], [x, y + dy * 0.1]],
+        ] {
+            let points: Vec<[f64; 2]> = points
+                .iter()
+                .map(|[px, py]| [on_grid(*px), on_grid(*py)])
+                .collect();
+            // Sent outward, past the corner.
+            let sent = [points[0][0] - dx * 0.08, points[0][1] - dy * 0.08];
+            let answer = session.ok(
+                "add-correction",
+                json!({"points": points, "radius": 0.04, "source-x": sent[0], "source-y": sent[1]}),
+            );
+            added += 1;
+            let correction = &answer.answer["correction"];
+            let source = [
+                correction["source-x"].as_f64().unwrap(),
+                correction["source-y"].as_f64().unwrap(),
+            ];
+            assert!(inside(&points, 0.04, source), "{points:?} {source:?}");
+            // Moved inward just far enough: where the public form places it at the rendered size,
+            // to within the one-pixel margin the stage it was stored at keeps.
+            let expected =
+                super::fit_correction_source(&points, 0.04, sent, content, super::SourceFit::Clamp)
+                    .unwrap();
+            for axis in 0..2 {
+                assert!(
+                    (source[axis] - expected[axis]).abs()
+                        <= 2.0 / f64::from(content.1.min(content.0)),
+                    "{source:?} {expected:?}"
+                );
+            }
+            assert_eq!(correction["source-origin"], "set");
+        }
+    }
+    // A source that fits is stored where it was sent.
+    let fits = session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
+    assert_eq!(fits.answer["correction"]["source-x"], json!(on_grid(0.3)));
+    assert_eq!(fits.answer["correction"]["source-y"], json!(on_grid(0.4)));
+    let operation = format!("correction-{}", added + 1);
+    // Dragged out past the left edge, the source stops inside it.
+    let dragged = session.ok(
+        "update-correction",
+        json!({"operation": operation, "source-x": -0.4, "source-y": 0.4}),
+    );
+    let source = [
+        dragged.answer["correction"]["source-x"].as_f64().unwrap(),
+        dragged.answer["correction"]["source-y"].as_f64().unwrap(),
+    ];
+    assert!(inside(&[[0.5, 0.5]], 0.02, source), "{source:?}");
+    assert_eq!(source[1], on_grid(0.4), "only the axis that left moves");
+    // Grown past the edge, its source moves inward with it.
+    let grown = session.ok(
+        "update-correction",
+        json!({"operation": operation, "radius": 0.2}),
+    );
+    let source = [
+        grown.answer["correction"]["source-x"].as_f64().unwrap(),
+        grown.answer["correction"]["source-y"].as_f64().unwrap(),
+    ];
+    assert!(inside(&[[0.5, 0.5]], 0.2, source), "{source:?}");
+    // A change of numbers moves nothing.
+    session.ok(
+        "update-correction",
+        json!({"operation": operation, "opacity": 40}),
+    );
+    let after = session.corrections();
+    let listed = after["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["operation"] == json!(operation))
+        .unwrap();
+    assert_eq!(listed["source-x"].as_f64().unwrap(), source[0]);
 }
 
 /// The number of strokes the catalog's store holds.

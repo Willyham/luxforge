@@ -154,7 +154,8 @@ wire_enum! {
         FolderMerge => "folder-merge",
         FolderMove => "folder-move",
         FolderRename => "folder-rename",
-        /// An HDR merge started (`merge.create`) or a recorded one merged again (`merge.rerun`).
+        /// An HDR merge started (`merge.create`) or a recorded one merged again (`merge.rerun`). A
+        /// panorama merge is exempt, never counted as this, until the owner approves its event.
         HdrMerge => "hdr-merge",
         /// A history entry previewed.
         HistoryPreview => "history-preview",

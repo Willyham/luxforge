@@ -129,7 +129,7 @@ fn the_descriptor_declares_a_single_raw_colour_effect_at_order_three() {
     // The registry lists the Look directly above Basic, the order a tools panel draws their
     // sections in; the layer's own place, after Basic's, is its declared order.
     assert_eq!(at("luxforge.basic"), at("luxforge.look") + 1);
-    assert_eq!(at("luxforge.curve"), at("luxforge.basic") + 1);
+    assert_eq!(at("luxforge.presence"), at("luxforge.basic") + 1);
 }
 
 /// The first `set-look` on a RAW photo without a look layer commits the layer: Standard at 100,

@@ -140,7 +140,7 @@ impl EditorService {
             for volume in publication.volumes {
                 upsert_volume(tx, volume)?;
             }
-            let reference = provenance.reference();
+            let reference = provenance.reference_input();
             let identity = derived_locator(&asset_id);
             insert_photograph(
                 tx,
@@ -360,7 +360,7 @@ pub(crate) fn no_original(asset: &AssetId, file_name: &str, action: &str) -> Err
 }
 
 /// Write the merge's immutable rows: its provenance and its inputs in the stack's order, each with
-/// its resolved EV offset.
+/// its resolved EV offset when its kind has one (HDR) and none otherwise.
 fn insert_merge(
     tx: &Transaction<'_>,
     merge_id: &MergeId,
@@ -387,18 +387,13 @@ fn insert_merge(
         "INSERT INTO merge_inputs (merge_id, ordinal, path, asset_id, offset_ev)
          VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
-    for (ordinal, (merge_input, exposure)) in provenance
-        .inputs
-        .iter()
-        .zip(&provenance.resolved.exposures.inputs)
-        .enumerate()
-    {
+    for (ordinal, merge_input) in provenance.inputs.iter().enumerate() {
         input.execute(params![
             merge_id.as_str(),
             ordinal as i64,
             merge_input.path.to_string_lossy(),
             merge_input.asset_id.as_ref().map(AssetId::as_str),
-            exposure.offset_ev,
+            provenance.resolved.offset_ev(ordinal),
         ])?;
     }
     Ok(())
@@ -507,8 +502,8 @@ fn claim(tx: &Transaction<'_>, item: &LibraryItem, merge: &MergeId) -> Result<()
     Ok(())
 }
 
-/// The refusal of a merge over an input an active stack claims, naming the input and the stack's
-/// result.
+/// The refusal of a merge over an input an active stack claims, naming the input, the stack's kind
+/// and its result.
 pub(crate) fn overlap(connection: &Connection, claim: &StackClaim) -> Error {
     let result = connection
         .prepare_cached("SELECT file_name FROM assets WHERE id = ?1")
@@ -523,8 +518,9 @@ pub(crate) fn overlap(connection: &Connection, claim: &StackClaim) -> Error {
         .flatten()
         .unwrap_or_else(|| claim.result_asset_id.to_string());
     Error::conflict(format!(
-        "{} is already in the HDR stack of {result} ({}); remove that merge first",
+        "{} is already in the {} stack of {result} ({}); remove that merge first",
         file_name(&claim.path),
+        claim.kind.noun(),
         claim.merge_id
     ))
 }
@@ -536,20 +532,22 @@ pub(crate) fn claims(
     paths: impl IntoIterator<Item = PathBuf>,
 ) -> Result<Vec<StackClaim>, Error> {
     let mut statement = connection.prepare_cached(
-        "SELECT c.merge_id, m.result_asset_id FROM stack_claims c
+        "SELECT c.merge_id, m.result_asset_id, m.kind FROM stack_claims c
          JOIN merges m ON m.id = c.merge_id WHERE c.path = ?1",
     )?;
     let mut claimed = Vec::new();
     for path in paths {
-        let row: Option<(String, String)> = statement
+        let row: Option<(String, String, String)> = statement
             .query_row([path.to_string_lossy()], |row| {
-                Ok((row.get(0)?, row.get(1)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .optional()?;
-        if let Some((merge, result)) = row {
+        if let Some((merge, result, kind)) = row {
+            let merge_id = MergeId::parse(merge)?;
             claimed.push(StackClaim {
+                kind: stored_kind(&merge_id, &kind)?,
                 path,
-                merge_id: MergeId::parse(merge)?,
+                merge_id,
                 result_asset_id: AssetId::parse(result)?,
             });
         }
@@ -683,17 +681,21 @@ pub(crate) fn record(connection: &Connection, merge: &MergeId) -> Result<MergeRe
         .optional()?;
     let (kind, result, source, state, created_ms, provenance) =
         row.ok_or_else(|| Error::validation(format!("unknown merge {merge}")))?;
-    let provenance: MergeProvenance = decode("stored merge provenance", provenance)?;
-    if provenance.format != crate::catalog_types::MERGE_PROVENANCE_FORMAT
-        || provenance.kind.as_str() != kind
-    {
-        return Err(Error::incompatible(format!(
+    let kind = stored_kind(merge, &kind)?;
+    let unread = || {
+        Error::incompatible(format!(
             "merge {merge} records provenance this build does not read; it is kept unchanged"
-        )));
+        ))
+        .with_data(json!({"kind": kind}))
+    };
+    let provenance: MergeProvenance = decode("stored merge provenance", provenance)?;
+    if provenance.format != crate::catalog_types::MERGE_PROVENANCE_FORMAT || provenance.kind != kind
+    {
+        return Err(unread());
     }
     Ok(MergeRecord {
         merge_id: merge.clone(),
-        kind: MergeKind::Hdr,
+        kind,
         result_asset_id: AssetId::parse(result)?,
         source_id: crate::DerivedSourceId::parse(source)?,
         state: MergeState::parse(&state)?,
@@ -701,6 +703,29 @@ pub(crate) fn record(connection: &Connection, merge: &MergeId) -> Result<MergeRe
         members: members(connection, merge)?,
         provenance,
     })
+}
+
+/// The kind a `merges.kind` value names, `incompatible` for one this build does not know, the row
+/// kept as it is.
+pub(crate) fn stored_kind(merge: &MergeId, kind: &str) -> Result<MergeKind, Error> {
+    MergeKind::parse(kind).ok_or_else(|| {
+        Error::incompatible(format!(
+            "merge {merge}: unknown kind {kind}; it is kept unchanged"
+        ))
+    })
+}
+
+/// The position in its stack's order of the reference input of `merge`, from its provenance; none
+/// for provenance this build does not read. One indexed read and one decode.
+pub(crate) fn reference(connection: &Connection, merge: &MergeId) -> Result<Option<u32>, Error> {
+    let provenance: Option<String> = connection
+        .prepare_cached("SELECT provenance_json FROM merges WHERE id = ?1")?
+        .query_row([merge.as_str()], |row| row.get(0))
+        .optional()?;
+    Ok(provenance
+        .and_then(|text| decode::<MergeProvenance>("stored merge provenance", text).ok())
+        .filter(|provenance| provenance.format == crate::catalog_types::MERGE_PROVENANCE_FORMAT)
+        .map(|provenance| provenance.reference() as u32))
 }
 
 /// A stack's members, its merge's exact inputs in the stack's order. One indexed range read.
@@ -714,7 +739,7 @@ pub(crate) fn members(connection: &Connection, merge: &MergeId) -> Result<Vec<St
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
-            row.get::<_, f64>(3)?,
+            row.get::<_, Option<f64>>(3)?,
         ))
     })?;
     rows.map(|row| {

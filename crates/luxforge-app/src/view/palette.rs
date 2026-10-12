@@ -70,7 +70,10 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
             .height(Length::Fill)
             .style(theme::scrim_surface),
     )
-    .on_press(Message::Palette(PaletteMessage::Close));
+    .on_press(Message::Palette(PaletteMessage::Close))
+    // The palette claims the pointer over everything it covers, so a canvas tool under it draws no
+    // cursor of its own and the system's arrow is shown.
+    .interaction(iced::mouse::Interaction::Idle);
 
     Some(
         iced::widget::stack(vec![

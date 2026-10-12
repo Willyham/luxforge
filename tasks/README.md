@@ -43,7 +43,7 @@ Selection, catalog sources and library operations.
 
 | Plan | Purpose |
 | --- | --- |
-| [Panorama merges and the merge preview](library/panorama-merge.json) ([design](../docs/design/panorama-merge.md)) | Decided, not authorized: a merge preview that opens first for HDR and panoramas, panorama stitching as a second merge kind over the HDR boundary (kind-tagged provenance and commands, a shared merge lane with band-read spools, catalog format 15), derived sources up to 65,000 pixels a side and 512 MP through tiled preparation, rendering and export, merge-only RAW and JPEG frame development, rotation-model registration, projection, photometric fit, seams, blending and Boundary Warp, the job and commands, Select's panorama menu, sheet and stack, and a background journey first; natural-panorama quality and photo-sized measurement last |
+| [Panorama merges and the merge preview](library/panorama-merge.json) ([design](../docs/design/panorama-merge.md)) | Decided, not authorized: a merge preview that opens first for HDR and panoramas, panorama stitching as a second merge kind over the HDR boundary (kind-tagged provenance and commands, a shared merge lane with band-read spools, catalog format 16), derived sources up to 65,000 pixels a side and 512 MP through tiled preparation, rendering and export, merge-only RAW and JPEG frame development, rotation-model registration, projection, photometric fit, seams, blending and Boundary Warp, the job and commands, Select's panorama menu, sheet and stack, and a background journey first; natural-panorama quality and photo-sized measurement last |
 
 ### Editing tools (`editing/`)
 

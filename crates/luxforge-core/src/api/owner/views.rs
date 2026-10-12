@@ -443,7 +443,8 @@ pub(in crate::api) fn stack_inspect(
         &owner.service,
         &p.merge_id,
         p.from.unwrap_or(0),
-        p.limit.unwrap_or(crate::merge::hdr::MAX_INPUTS),
+        p.limit
+            .unwrap_or(crate::catalog_types::MergeKind::MAX_STACK),
         expansion,
     )?)
 }

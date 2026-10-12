@@ -644,3 +644,125 @@ fn a_gestures_tick_is_counted_once_from_the_frame_it_drew() {
     paint(&device, &queue, &mut pipeline, &handing_none());
     settle(&pipeline);
 }
+
+/// A percentage view's picture at rest is its backdrop: once its last tile is in it is drawn, the
+/// whole photograph reduced and stretched over it, in place of any frame while the view holds no
+/// picture of its current content, and under a region's GPU frame wherever that frame does not
+/// cover the view, as when a pan reveals an edge before the region's plan lands, so the canvas
+/// never shows through. A region frame covering the view is drawn alone.
+#[test]
+fn a_percentage_views_backdrop_fills_what_its_region_frame_does_not_cover() {
+    let test = "a_percentage_views_backdrop_fills_what_its_region_frame_does_not_cover";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let held = held_codes(&rgba);
+    let source = GpuSource::codes(3, Arc::new(rgba), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    pipeline.compile_now(&device, &tiles[0]);
+    // The 128 × 96 stage at 100%, panned so its part from (32, 16) fills the 64 × 64 target.
+    let (x0, y0) = (32u32, 16u32);
+    let viewed = |plan: Option<GpuPlan>| {
+        let mut viewed = PhotoPrimitive {
+            source: Some(source.clone()),
+            rest: Some(rest_of(&tiles)),
+            ..primitive(ID, plan)
+        };
+        viewed.viewport = Some(crate::photo_surface::ViewportFrames {
+            full: None,
+            current_content: 1,
+            full_stage: (WIDTH, HEIGHT),
+        });
+        viewed.offset = Vector::new(-(x0 as f32), -(y0 as f32));
+        viewed.size = Size::new(WIDTH as f32, HEIGHT as f32);
+        viewed
+    };
+    // A region plan of the stage's `width` columns from the view's left edge, the whole view down.
+    let region = |width: u32, version: u64| {
+        let boundary = GpuBoundary::derived(
+            &source,
+            Derivation::Cut { origin: (x0, y0) },
+            width,
+            SIDE,
+            version,
+        )
+        .expect("a region's boundary");
+        GpuPlan {
+            boundary,
+            texels: TexelMap {
+                origin: [x0 as f32, y0 as f32],
+                step: [1.0, 1.0],
+            },
+            steps: vec![GpuStep::colour(identity())],
+            region: Some(GpuRegion {
+                rect: [x0, y0, x0 + width, y0 + SIDE],
+                stage: (WIDTH, HEIGHT),
+                full_stage: (WIDTH, HEIGHT),
+            }),
+            lights: Vec::new(),
+        }
+    };
+    // With no frame of the view's content and no plan, the backdrop alone once its tiles are in.
+    let mut frames = 0;
+    let backdrop = loop {
+        let drawn = paint(&device, &queue, &mut pipeline, &viewed(None));
+        frames += 1;
+        let seen = diagnostics(&pipeline, ID);
+        let figures = seen.gpu_rest.expect("the rest's figures");
+        assert_eq!(figures.fallback, None, "frame {frames}: {figures:?}");
+        if figures.done {
+            assert_eq!(seen.drawn_backdrop, Some(1));
+            assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+            assert_eq!(
+                seen.drawn_rest, None,
+                "a backdrop, not the photograph's picture"
+            );
+            assert!(!seen.drawn_photo_uncovered);
+            break drawn;
+        }
+        assert_eq!(seen.drawn_backdrop, None, "frame {frames}: not yet");
+        assert!(frames < 6, "the backdrop was never drawn: {figures:?}");
+    };
+    // The reduction of the stage, magnified: not a code of the canvas's clear colour.
+    assert!(backdrop.chunks_exact(4).all(|pixel| pixel[3] == 255));
+    // A region frame over the view's left half: drawn over the backdrop, which fills the right.
+    let half = SIDE / 2;
+    let drawn = paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &viewed(Some(region(half, 50))),
+    );
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_gpu_boundary, Some(50));
+    assert_eq!(seen.drawn_backdrop, Some(1), "under the region frame");
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert!(!seen.drawn_photo_uncovered, "nothing showed through");
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let at = ((y * SIDE + x) * 4) as usize;
+            let pixel = &drawn[at..at + 4];
+            if x < half {
+                let [r, g, b] = held[((y0 + y) * WIDTH + x0 + x) as usize];
+                assert_eq!(pixel, [b, g, r, 255], "({x}, {y}): the region's own code");
+            } else {
+                assert_eq!(pixel, &backdrop[at..at + 4], "({x}, {y}): the backdrop");
+            }
+        }
+    }
+    // A region frame covering the view is drawn alone.
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &viewed(Some(region(SIDE, 51))),
+    );
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_gpu_boundary, Some(51));
+    assert_eq!(seen.drawn_backdrop, None, "covered");
+    assert!(!seen.drawn_photo_uncovered);
+    paint(&device, &queue, &mut pipeline, &handing_none());
+    settle(&pipeline);
+}

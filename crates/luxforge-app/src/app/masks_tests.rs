@@ -304,9 +304,16 @@ struct Masking {
 }
 
 impl Masking {
+    /// Opened in a launch that forces the range mask experiment on, so every kind is offered.
     fn opened() -> Self {
+        Self::launched(testing::range_masks_config())
+    }
+
+    fn launched(config: crate::Config) -> Self {
         let catalog = scratch("catalog.sqlite");
-        let (editor, asset, agent) = testing::real_photo(&catalog);
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/s0/orientation-1.jpg");
+        let (editor, asset, agent) = testing::real_photo_launched(&catalog, &fixture, config);
         Self {
             editor,
             catalog,
@@ -2144,6 +2151,136 @@ fn a_typed_kind_is_created_by_its_button_with_no_gesture() {
     assert_eq!(component.payload["refine"], json!(50.0));
     // An unsampled colour range holds no swatches and selects nothing until one is picked.
     assert_eq!(component.payload["samples"], json!([]));
+}
+
+/// **The range kinds are an experiment.** With `masks.range-selections` off, New mask and Add
+/// component offer neither range kind and the host refuses one asked for anyway, naming the flag.
+/// Turned on through `flags.set` by another client, the desktop reads it and offers both again; a
+/// range mask created then and the flag turned off again still lists, shows its band and edits.
+#[test]
+fn the_range_kinds_are_offered_only_while_their_experiment_is_on() {
+    use luxforge_core::flags::RANGE_MASKS;
+    const RANGE_KINDS: [&str; 2] = ["luminance-range", "colour-range"];
+    let dir = scratch("experiment");
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog = dir.join("catalog.sqlite");
+    let (owner, join) = OwnerHandle::start_with_host(
+        &catalog,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
+        luxforge_core::HostConfig {
+            preferences_dir: Some(dir.join("config")),
+            ..luxforge_core::HostConfig::unconfigured()
+        },
+    )
+    .unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let (editor, asset, agent) =
+        testing::real_photo_on(owner, join, &fixture, crate::Config::default());
+    let mut masking = Masking {
+        editor,
+        catalog,
+        asset,
+        agent,
+    };
+    masking.enter_mask_mode();
+    let offered = |masking: &Masking| -> Vec<String> {
+        masking
+            .editor
+            .workspace
+            .masks
+            .kinds
+            .iter()
+            .map(|kind| kind.kind.clone())
+            .collect()
+    };
+    let set_flag = |masking: &mut Masking, value: bool| {
+        call(
+            &masking.owner(),
+            masking.agent,
+            "flags.set",
+            json!({"flag": RANGE_MASKS, "value": value}),
+        )
+        .expect("the flag is stored");
+        // What the event sync does for another client's flag change with the sheet closed.
+        testing::read_flags(&mut masking.editor);
+    };
+
+    // Off by default: the menus offer the drawn kinds and neither range kind.
+    let kinds = offered(&masking);
+    assert!(kinds.iter().any(|kind| kind == LINEAR), "{kinds:?}");
+    assert!(
+        RANGE_KINDS
+            .iter()
+            .all(|range| !kinds.iter().any(|kind| kind == range)),
+        "{kinds:?}"
+    );
+    let entries = crate::view::masks_panel::kind_menu(
+        &masking.editor.workspace.masks,
+        crate::app::message::mask::KindMenu::New,
+    );
+    assert_eq!(entries.len(), kinds.len(), "the menu is the offered kinds");
+    // The host refuses one asked for anyway, naming the flag.
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
+    let refused = call(
+        &masking.owner(),
+        masking.agent,
+        "mask.create-luminance-range",
+        json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision)}),
+    )
+    .expect_err("a new range mask is refused while the experiment is off");
+    assert!(
+        refused.contains("not-ready") && refused.contains(RANGE_MASKS),
+        "{refused}"
+    );
+
+    // On: both kinds are offered, and the panel's own button creates one.
+    set_flag(&mut masking, true);
+    let kinds = offered(&masking);
+    assert!(
+        RANGE_KINDS
+            .iter()
+            .all(|range| kinds.iter().any(|kind| kind == range)),
+        "{kinds:?}"
+    );
+    masking.run(MaskMessage::New("luminance-range".to_owned()));
+
+    // Off again: no new one is offered, and the stored one still lists, shows its band and edits.
+    set_flag(&mut masking, false);
+    let kinds = offered(&masking);
+    assert!(
+        RANGE_KINDS
+            .iter()
+            .all(|range| !kinds.iter().any(|kind| kind == range)),
+        "{kinds:?}"
+    );
+    let listed = masking.listing();
+    let component = listed.masks[0].components[0].clone();
+    assert_eq!(component.kind, "luminance-range");
+    masking.message(MaskMessage::SelectComponent(
+        component.id.as_str().to_owned(),
+    ));
+    assert!(
+        !masking.editor.workspace.masks.components[0]
+            .fields
+            .is_empty(),
+        "the stored range component shows its fields"
+    );
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
+    call(
+        &masking.owner(),
+        masking.agent,
+        "mask.set-luminance-range",
+        json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision),
+               "mask": listed.masks[0].id, "component": component.id, "low": 25.0}),
+    )
+    .expect("a stored range component is edited with the experiment off");
+    masking.refresh();
+    assert_eq!(
+        masking.listing().masks[0].components[0].payload["low"],
+        json!(25.0)
+    );
+    let _ = std::fs::remove_dir_all(dir.join("config"));
 }
 
 /// **A luminance band is one range over its own four fields.** The open row's generated controls
@@ -5736,7 +5873,9 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
         .iter()
         .filter_map(|entry| match entry {
             luxforge_ui::MenuEntry::Item(item) => Some((item.label.clone(), item.trailing.clone())),
-            luxforge_ui::MenuEntry::Separator | luxforge_ui::MenuEntry::Hint(_) => None,
+            luxforge_ui::MenuEntry::Separator
+            | luxforge_ui::MenuEntry::Hint(_)
+            | luxforge_ui::MenuEntry::Heading(_) => None,
         })
         .collect();
     assert_eq!(

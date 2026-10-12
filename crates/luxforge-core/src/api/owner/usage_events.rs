@@ -75,6 +75,10 @@ pub(crate) fn host_feature(method: &str, params: &Value) -> Option<(Feature, Emi
         "batch.apply-settings" => (settings_feature(params), OnSuccess),
         "export.jpeg" => (F::Export, OnSuccess),
         "batch.export" => (F::ExportBatch, OnSuccess),
+        // A panorama merge is an explicit exemption until the owner approves a panorama-merge
+        // event; it is never counted as hdr-merge. A rerun that names no kind reruns the merge's
+        // own, and this build reruns only HDR merges.
+        "merge.create" | "merge.rerun" if params["kind"] == "panorama" => return None,
         "merge.create" | "merge.rerun" => (F::HdrMerge, OnSuccess),
         "pick.develop" => (F::DevelopPicks, OnSuccess),
         "source.find" => (F::OriginalsFind, OnSuccess),

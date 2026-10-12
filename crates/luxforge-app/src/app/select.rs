@@ -151,9 +151,17 @@ pub(crate) struct Select {
     pub(crate) loupe: crate::app::loupe::Loupe,
     /// The catalog's reads in flight: its folders and collections, a total and a selection's rows.
     pub(crate) catalog: SelectCatalog,
-    /// The newest `merge.plan` the Merge options form asked for; an answer for any other is
-    /// dropped.
+    /// The newest `merge.plan` the menu asked for; an answer for any other is dropped.
     pub(crate) merge_plans: u64,
+    /// The newest owner task the preview sheet asked for, numbered.
+    pub(crate) merge_serial: u64,
+    /// The preview sheet's picture, decoded, and the revision's picture being decoded.
+    pub(crate) merge_picture: Option<crate::app::select_merge::SheetPicture>,
+    pub(crate) merge_picture_wanted: Option<PathBuf>,
+    /// The newest record of the preview's job, and the newest `merge.preview-close` sent, for
+    /// evidence.
+    pub(crate) preview_record: Option<Value>,
+    pub(crate) preview_closed: Option<Value>,
     /// The requests the newest merge's start sent, in order, for evidence.
     pub(crate) merge_sent: Option<Value>,
     /// The newest record of the running merge's job, for evidence.
@@ -162,7 +170,7 @@ pub(crate) struct Select {
     pub(crate) reveal_held: bool,
     /// The newest `stack.set-expanded` parameters sent, for evidence.
     pub(crate) stack_sent: Option<Value>,
-    /// The newest `merge.plan` parameters the menu or the form sent, for evidence.
+    /// The newest `merge.plan` parameters the menu sent, for evidence.
     pub(crate) plan_sent: Option<Value>,
 }
 
@@ -240,6 +248,11 @@ impl Default for Select {
             loupe: crate::app::loupe::Loupe::default(),
             catalog: SelectCatalog::default(),
             merge_plans: 0,
+            merge_serial: 0,
+            merge_picture: None,
+            merge_picture_wanted: None,
+            preview_record: None,
+            preview_closed: None,
             merge_sent: None,
             merge_record: None,
             reveal_held: false,
@@ -1993,7 +2006,11 @@ impl Editor {
     pub(crate) fn library_refused(&mut self, gesture: LibraryGesture, error: &CallError) {
         let conflict = error.code == "conflict";
         self.status.text = conflict
-            .then(|| model::refusal_text(gesture, error.data.as_ref()))
+            .then(|| {
+                model::refusal_text(gesture, error.data.as_ref(), |merge_id| {
+                    self.select.state.rows.stack_kind(merge_id)
+                })
+            })
             .flatten()
             .unwrap_or_else(|| format!("{}: {}", gesture.refused(), error.message));
         if conflict
@@ -2304,7 +2321,8 @@ impl Editor {
                     "picked": row.picked,
                     "merge_id": stack.merge_id,
                     "role": stack.role,
-                    "exposures": stack.exposures,
+                    "kind": stack.kind,
+                    "size": stack.size,
                     "collapsed": stack.collapsed,
                     "expansion": stack.expansion,
                     "ordinal": stack.ordinal,

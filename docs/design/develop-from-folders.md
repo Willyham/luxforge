@@ -64,8 +64,8 @@ The desktop holds one **Develop folder**, its own view state like the shown work
 
 ### Merging
 
-- **Actions.** A bracket header offers Pick all N and **Merge HDR**. The selection menu offers Merge HDR ("Merge the frames into one HDR photograph in the catalog") and Merge options…. The result is made in its folder, and the person stays in Select.
-- **Choosing the folder.** `merge.plan` proposes the folder as Develop would for the reference frame. `merge.create` takes `folder?`, a folder choice as above: the plan's proposal by default, resolved for the reference frame's capture day. The folders it makes are recorded as their own library change (`folder.create`, the request's actor and identity) just before the publication's, in the same transaction, so undoing the merge leaves them: the result it keeps in Removed is still in them. The desktop no longer sends `folder.create` first.
+- **Actions.** A bracket header offers Pick all N and **Merge HDR**. The selection menu's HDR group offers Merge HDR… ("Merge the frames into one HDR photograph in the catalog"). It opens the [merge preview](hdr-merge.md#in-the-desktop) first, with Cancel and Merge; ⌥-click merges at once with the last settings. The result is made in its folder, and the person stays in Select.
+- **Choosing the folder.** `merge.plan` proposes the folder as Develop would for the reference frame. `merge.create` takes `folder?`, a folder choice as above: the plan's proposal by default, resolved for the reference frame's capture day. The folders it makes are recorded as their own library change (`folder.create`, the request's actor and identity) just before the publication's, in the same transaction, so undoing the merge leaves them: the result it keeps in Removed is still in them. The preview sheet's folder control shows the plan's proposal and sends it, or `{kind: existing, folder_id}` for a folder the person picks; the desktop never sends `folder.create` first.
 - **What goes.** `add_to_development_set` and `set_id` are gone.
 - **Picks.** Over files, a bracket whose stack has an active result is decided for Moments without a pick. The Picked segment and Develop N count file picks only, and a result is never shown picked.
 
@@ -80,7 +80,7 @@ Everything below is removed, with no compatibility path:
 - `in_development_set` in views, rows and `stack.inspect`, and the view stamp's set revision;
 - the usage statistics features for adding to and removing from the set.
 
-The catalog format becomes 15, and a format-14 catalog is refused with the existing "choose a new catalog path".
+The catalog format is 16, which also holds the kind-tagged merges of [HDR merges](hdr-merge.md#durable-derived-source) ([storage](versions-and-lineage.md#storage-catalog-format-16)); a catalog of format 15 or earlier is refused with the existing "choose a new catalog path".
 
 ## Delegated choices
 
@@ -105,7 +105,7 @@ The Develop N confirmation shows one field per event for the place's name, with 
   - `folder.list`'s order;
   - `merge.create`'s folder choice;
   - Moments without a pick after a merge;
-  - the refusal of a format-14 catalog.
+  - the refusal of an earlier format's catalog.
 - **Desktop.** Tests against a real owner prove:
   - the folder tree in the sources;
   - pressing a year folder views every photograph under it and makes it Develop's folder;

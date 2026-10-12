@@ -30,6 +30,21 @@ pub fn find(method: &str) -> Option<&'static MaskCommand> {
     COMMANDS.iter().find(|command| command.method == method)
 }
 
+/// The experiment flag a command needs on, with the kind it would create: a generated
+/// `mask.create-<kind>` or `mask.add-<kind>` whose kind is behind a flag
+/// ([`crate::mask::component_kind_experiment`]). Every other command — a patch, a sample, a
+/// delete — edits what already exists and needs none, so a stored component of a flagged kind is
+/// never stranded.
+pub fn experiment(method: &str) -> Option<(&'static str, &'static str)> {
+    match find(method)?.op {
+        MaskOp::Geometry(GeometryMethod {
+            op: GeometryOp::Create | GeometryOp::Add,
+            kind,
+        }) => crate::mask::component_kind_experiment(kind).map(|flag| (flag, kind)),
+        _ => None,
+    }
+}
+
 /// The identity of the host descriptor the mask family is published as.
 pub(crate) const HOST_MODULE: &str = "luxforge.masks";
 
@@ -299,6 +314,15 @@ fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
                     ),
                     (true, true),
                 ),
+            };
+            // A kind behind an experiment says so where a client discovers it, beside the refusal
+            // it would otherwise meet.
+            let notes = match crate::mask::component_kind_experiment(kind) {
+                Some(flag) if op != GeometryOp::Set => format!(
+                    "{notes}; refused as not-ready, with data.flag naming it, while the \
+                     experiment flag {flag} is off"
+                ),
+                _ => notes,
             };
             command(
                 MaskOp::Geometry(GeometryMethod { op, kind }),

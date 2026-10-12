@@ -30,6 +30,7 @@ pub(super) enum CatalogMessage {
     Previews(previews::PreviewsMessage),
     Library(library::LibraryMessage),
     Merge(library::LibraryMessage),
+    MergePreview(library::LibraryMessage),
 }
 
 /// How a lane's worker posts into the owner's own channel: nothing polls, and the owner sleeps
@@ -80,6 +81,7 @@ impl CatalogLanes {
         self.previews.disconnect(client, jobs);
         self.library.disconnect(client);
         self.merge.lane.disconnect(client);
+        self.merge.updates.disconnect(client);
         self.views.disconnect(client);
     }
 
@@ -89,6 +91,7 @@ impl CatalogLanes {
         self.previews.shutdown();
         self.library.shutdown();
         self.merge.lane.shutdown();
+        self.merge.updates.shutdown();
     }
 }
 
@@ -104,6 +107,15 @@ impl Owner {
                 self.catalog.previews.cancelled(job_id, &mut self.jobs)
             }
             JobKind::HdrMerge => library::cancelled(self, library::LaneKind::Merge, job_id),
+            // A preview reads and aligns on the merge lane and draws again on its own.
+            JobKind::MergePreview => {
+                let lane = if self.catalog.merge.lane.holds(job_id) {
+                    library::LaneKind::Merge
+                } else {
+                    library::LaneKind::Preview
+                };
+                library::cancelled(self, lane, job_id);
+            }
             _ => library::cancelled(self, library::LaneKind::Library, job_id),
         }
     }
@@ -152,6 +164,9 @@ impl Owner {
             }
             CatalogMessage::Merge(message) => {
                 library::handle(self, library::LaneKind::Merge, message)
+            }
+            CatalogMessage::MergePreview(message) => {
+                library::handle(self, library::LaneKind::Preview, message)
             }
         }
     }

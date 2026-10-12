@@ -86,6 +86,8 @@ pub(crate) struct Grid<'a> {
     pub(crate) images: GridImages<'a>,
     /// The loupe's decoded frames and region, borrowed likewise.
     pub(crate) loupe: LoupeImages<'a>,
+    /// The merge preview sheet's decoded picture, borrowed likewise.
+    pub(crate) merge_picture: Option<&'a iced::widget::image::Handle>,
 }
 
 /// The workspace switch at a title bar's leading edge, `current` raised. Either segment sends the
@@ -201,6 +203,20 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         status
     ]
     .into();
+    // The merge preview sheet, modal over the whole window.
+    let screen = match &select.merge.sheet {
+        Some(sheet) => {
+            let images = grid.images;
+            stack![
+                screen,
+                crate::view::select_merge::sheet(sheet, grid.merge_picture, move |file| {
+                    images.file(file)
+                })
+            ]
+            .into()
+        }
+        None => screen,
+    };
     if let Some(sheet) = crate::view::copy_settings::confirmation(&model.copy_settings) {
         stack![screen, sheet].into()
     } else {
@@ -663,8 +679,7 @@ fn centre<'a>(
     if let Some(sheet) = &model.catalog.sheet {
         layers = layers.push(crate::view::select_catalog::sheet(sheet));
     }
-    // A merge found in Removed, offered back; the merge menu where a right-click opened it; and
-    // Merge options….
+    // A merge found in Removed, offered back, and the merge menu where a right-click opened it.
     if let Some(put_back) = &model.merge.put_back {
         layers = layers.push(
             container(crate::view::select_merge::put_back(put_back))
@@ -674,9 +689,6 @@ fn centre<'a>(
     }
     if let Some(menu) = &model.merge.menu {
         layers = layers.push(crate::view::select_merge::menu(menu, viewport));
-    }
-    if let Some(form) = &model.merge.form {
-        layers = layers.push(crate::view::select_merge::form(form));
     }
     // Over the catalog: its own filter bar, and the Metadata browser under it while open.
     let mut regions = match &model.catalog.filter {
@@ -1111,6 +1123,7 @@ mod tests {
                 content: &state.content,
                 images: previews.grid(&state.rows),
                 loupe: loupe.images(&previews),
+                merge_picture: None,
             },
         );
         let _ = switch(Shown::Develop, true);

@@ -117,6 +117,7 @@ fn settable() -> Value {
         "brush": null,
         "window": null,
         "export_folder": null,
+        "hdr_merge": null,
         "theme": "luxforge.dark",
     })
 }
@@ -165,6 +166,7 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "brush": {"size": 0.05, "feather": 20.0, "flow": 75.0},
         "window": {"width": 1280.0, "height": 800.0, "x": -40.5, "y": 25.0},
         "export_folder": exports,
+        "hdr_merge": {"alignment": "off", "deghost": "auto"},
         "theme": "luxforge.dark",
     });
     assert_eq!(

@@ -28,6 +28,9 @@ pub struct DropdownButtonModel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuEntry<M> {
     Item(MenuItem<M>),
+    /// A group's name over its items ("HDR"), in the section label's small capitals, aligned with
+    /// the items' labels. It is not pressable.
+    Heading(String),
     /// A rule between two groups of items.
     Separator,
     /// A quiet line under the item before it, aligned with its label, saying what it does beyond
@@ -99,6 +102,21 @@ pub fn menu_list<'a, M: Clone + 'a>(entries: Vec<MenuEntry<M>>) -> Element<'a, M
                     .style(theme::menu_separator),
             )
             .padding(theme::MENU_SEPARATOR_MARGIN)
+            .width(Length::Fill)
+            .into(),
+            MenuEntry::Heading(heading) => container(
+                text(heading.to_uppercase())
+                    .size(theme::SIZE_SECTION_LABEL)
+                    .font(theme::FONT_SEMIBOLD)
+                    .wrapping(Wrapping::None)
+                    .style(theme::ink(Token::TextTertiary)),
+            )
+            .padding(Padding {
+                top: theme::MENU_PADDING,
+                right: theme::MENU_ITEM_PADDING,
+                bottom: theme::MENU_PADDING,
+                left: theme::MENU_ITEM_PADDING + theme::HEADER_ICON_SIZE + theme::MENU_ITEM_SPACING,
+            })
             .width(Length::Fill)
             .into(),
             MenuEntry::Hint(hint) => container(

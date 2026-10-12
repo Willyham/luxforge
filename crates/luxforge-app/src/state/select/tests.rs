@@ -1586,12 +1586,13 @@ fn select_picking_decides_sends_and_says_what_an_agent_sees() {
             Some(&json!({
                 "items": [{"kind": "pick", "path": "/Volumes/NIKON Z 8/DCIM/DSC_0412.NEF"}],
                 "count": 3,
-            }))
+            })),
+            |_| None,
         )
         .as_deref(),
         Some("Could not undo: DSC_0412.NEF and 2 other items changed since")
     );
-    assert_eq!(refusal_text(LibraryGesture::Redo, None), None);
+    assert_eq!(refusal_text(LibraryGesture::Redo, None, |_| None), None);
     assert_eq!(LibraryGesture::Undo.nothing(), "Nothing to undo");
     assert_eq!(LibraryGesture::Redo.method(), "library.redo");
 
@@ -1844,5 +1845,8 @@ fn a_send_back_is_said_as_the_core_records_and_refuses_it() {
     );
     let data =
         json!({"items": [{"kind": "developed-asset", "asset_id": AssetId::new()}], "count": 1});
-    assert_eq!(refusal_text(LibraryGesture::Undo, Some(&data)), None);
+    assert_eq!(
+        refusal_text(LibraryGesture::Undo, Some(&data), |_| None),
+        None
+    );
 }

@@ -250,7 +250,8 @@ pub(crate) fn confirmation(model: &CopyModel) -> Option<Element<'_, Message>> {
                     .width(Length::Fill)
                     .height(Length::Fill)
             )
-            .on_press(msg(C::Cancel)),
+            .on_press(msg(C::Cancel))
+            .interaction(iced::mouse::Interaction::Idle),
             container(
                 container(body)
                     .padding(24)
@@ -362,7 +363,8 @@ pub(crate) fn cell_menu(model: &CopyModel) -> Option<Element<'_, Message>> {
                     .height(Length::Fill)
             )
             .on_press(msg(C::Cancel))
-            .on_right_press(msg(C::Cancel)),
+            .on_right_press(msg(C::Cancel))
+            .interaction(iced::mouse::Interaction::Idle),
             container(luxforge_ui::menu_list(entries)).padding(iced::Padding {
                 top: (at.1 - 190.0).max(0.0),
                 left: at.0.max(0.0),

@@ -4,7 +4,8 @@
 //! Coordinates are full-resolution upright pixel indices: pixel `(x, y)`'s centre is `(x, y)`. An
 //! input's [`RigidTransform`] maps a reference point `p` to the input point that recorded it,
 //! `q = c + R(θ)(p − c) + t`, with `c` the frame centre `((W − 1)/2, (H − 1)/2)`: a rotation and a
-//! translation. Scale is not fitted: the bracket's focal length is equal by validation.
+//! translation. Scale is not fitted: validation admits only the focal lengths a zoom's rounded
+//! record allows, so an input whose framing really differs is refused here, not rescaled.
 //!
 //! The evidence is exposure invariant: each proxy pixel's `log2` luminance, where a stop of
 //! exposure is a constant offset, compared only where both frames recorded it usably (above the
