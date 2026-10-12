@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "crates/luxforge-update", "crates/luxforge-install", "crates/luxforge-sparkle", "xtask", "xtask/cli"]
+members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-webp", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "crates/luxforge-update", "crates/luxforge-install", "crates/luxforge-sparkle", "xtask", "xtask/cli"]
 # Standalone packages with their own workspace and lockfile; no desktop build or check builds them.
 exclude = ["services/usage-ingest"]
 resolver = "3"
@@ -30,6 +30,16 @@ mozjpeg = { version = "=0.10.13", default-features = false, features = ["with_si
 # which `mozjpeg` accepts but does not export, and for libjpeg's warning codes, which that manager
 # classifies so that a warning standing for lost data stops a decode.
 mozjpeg-sys = { version = "=2.2.3", default-features = false }
+# The one WebP codec, for lossy WebP exports, named only by `luxforge-webp`: libwebp 1.6.0 as
+# vendored by `libwebp-sys`, built from its source with `cc` and linked statically; never a system
+# libwebp, and no `bindgen` (the crate's committed bindings). No default features: without `std`
+# libwebp is built without its worker threads, so an encode runs on the caller's thread alone, and
+# without `parallel` `cc` compiles the C source serially.
+libwebp-sys = { version = "=0.14.4", default-features = false }
+# Independent decoders for the export tests only: WebP by `image-webp`, TIFF by the `tiff` crate
+# with only its Deflate decompression, on the `flate2` already in the lockfile.
+image-webp = "=0.2.4"
+tiff = { version = "=0.11.3", default-features = false, features = ["deflate"] }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 # The exact runtime Iced uses, pinned for the desktop's visible clocks. The core also enables
 # rt/net/io-util for one event loop on each existing loopback connection thread, so an indefinite

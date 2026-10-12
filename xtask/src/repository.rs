@@ -321,6 +321,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-input/src",
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
+    "crates/luxforge-webp/src",
     "crates/luxforge-install/src",
     "crates/luxforge-sparkle/src",
 ];
@@ -342,6 +343,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-input",
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
+    "crates/luxforge-webp",
     "crates/luxforge-install",
     "crates/luxforge-sparkle",
 ];
@@ -535,6 +537,18 @@ const SOURCE_RULES: &[SourceRule] = &[
         tests: false,
         once: false,
         reason: "shipped code decodes JPEG only through crates/luxforge-jpeg, never through image",
+    },
+    // One WebP codec path: in shipped code only `luxforge-webp` names libwebp's bindings.
+    SourceRule {
+        name: "webp-codec-name",
+        tokens: &["libwebp_sys"],
+        scope: SHIPPED_SOURCES,
+        types: &["rs"],
+        allowed: &["crates/luxforge-webp"],
+        mode: Match::Prefix,
+        tests: false,
+        once: false,
+        reason: "only the WebP codec crate (crates/luxforge-webp) may name libwebp_sys",
     },
     // The RAW development's identity belongs to the RAW module alone: every other surface decides
     // whether a module applies to a photo from the source kinds its effects declare, and the host's
@@ -1517,6 +1531,32 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-jpeg may depend on no workspace crate and no path",
+    },
+    DependencyRule {
+        name: "libwebp-links",
+        refuses: Depends::Prefixed("libwebp"),
+        manifests: SHIPPED_CRATES,
+        tables: &[Table::Normal],
+        allowed: &["crates/luxforge-webp"],
+        reason: "only luxforge-webp links the WebP codec",
+    },
+    // The WebP codec crate is a leaf behind the core, like the JPEG one. Its tests read the
+    // process's footprint through luxforge-process, which is a leaf too.
+    DependencyRule {
+        name: "webp-codec-users",
+        refuses: Depends::On("luxforge-webp"),
+        manifests: &["crates/*", "xtask"],
+        tables: EVERY_TABLE,
+        allowed: &["crates/luxforge-core"],
+        reason: "only luxforge-core may depend on luxforge-webp",
+    },
+    DependencyRule {
+        name: "webp-codec-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-webp"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-webp may depend on no workspace crate and no path but in its tests",
     },
     // The watcher's platform code is a leaf the core's index uses: it builds against no workspace
     // crate. Its tests may use the test base, which reaches no workspace crate either.
