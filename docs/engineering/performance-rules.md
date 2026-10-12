@@ -62,12 +62,14 @@ one current and one retiring full-photo allocation per surface, each at most 512
 surface's allocations within one 1 GiB aggregate; there are no region sets. The full slot reserves
 a bounded size bucket, so a rotated Fit reduction usually rewrites active texels without
 reallocating. At 100% and above the visible region is the GPU stage's own output, charged to the
-GPU-preview budget; where the GPU cannot draw it, the reference renderer's whole frame is the
-picture. A deferred upload keeps one coherent previous picture visible and marks it updating;
-overlays tied to other content are suppressed. The crop stage has separate GPU tiles outside these
-photo slots, sized to its frame: display-size at Fit, full size only at a percentage zoom that needs
-the exact stage. An 8 MiB upload chunk borrows the raster; it makes no full-frame application
-staging copy. Backend staging is not measured.
+GPU-preview budget, over a backdrop wherever it does not cover the view: the picture at rest's
+tiles reduced within 2048 × 2048, at most 64 MiB of accumulator and 16 MiB of output charged to the
+same budget, kept through a gesture once drawn. Where the GPU cannot draw the region, the reference
+renderer's whole frame is the picture. A deferred upload keeps one coherent previous picture
+visible and marks it updating; overlays tied to other content are suppressed. The crop stage has
+separate GPU tiles outside these photo slots, sized to its frame: display-size at Fit, full size
+only at a percentage zoom that needs the exact stage. An 8 MiB upload chunk borrows the raster; it
+makes no full-frame application staging copy. Backend staging is not measured.
 
 Rendering, estimate reduction and coverage run on workers. The desktop admits a single desired view
 through the shared gate, planned at once with no quiet interval; preview has one active and one

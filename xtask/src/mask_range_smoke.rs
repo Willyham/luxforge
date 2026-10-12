@@ -238,6 +238,20 @@ fn pick_entered(name: &str) -> Step {
     Step::new(name, MaskStep::Pick).commits(0)
 }
 
+/// The luminance and colour range kinds are an experiment that is off by default, so another
+/// client of the session turns it on, as a script's `flags.set` does, before a range is offered.
+/// The desktop reads the flag from the event that follows and offers both kinds from then on.
+pub fn range_experiment(name: &str) -> Step {
+    Step::new(
+        name,
+        script::Step::agent(
+            "flags.set",
+            json!({"flag": luxforge_core::flags::RANGE_MASKS, "value": true}),
+        ),
+    )
+    .commits(0)
+}
+
 /// One click on the named patch, in output-stage pixels. What it commits is the caller's: a new
 /// colour is one entry and a colour the component already holds is none.
 fn pick(name: &str, patch: &str) -> Step {
@@ -250,6 +264,7 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         // The fixture as launched, with nothing in the recipe: every reading is against this frame.
         Step::opened("opened").no_layer(BASIC_EFFECT).masks(0),
+        range_experiment("range-experiment"),
         mask_mode("mask-mode"),
         // A new mask whose first component is a luminance range. A **typed** kind: every field of
         // its geometry carries a default, so the button creates it in one history entry rather than
@@ -371,6 +386,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         // The catalog reopened in a new process, on the entry launch 1 ended on.
         Step::opened("reopened").label("Sample Colour range 1"),
+        range_experiment("range-experiment"),
         mask_mode("mask-mode"),
         // A second mask, one colour range, and an adjustment through it before anything is
         // sampled. The order is the host's rule and not a convenience: a pick reads the pixel the

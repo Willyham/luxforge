@@ -90,6 +90,10 @@ pub(crate) struct TitleBarModel {
     /// Both clipping overlays are on, so the bar's Clipping toggle reads as selected. `J` and this
     /// button drive the pair together; the two triangles drive them one at a time.
     pub(crate) clipping_on: bool,
+    /// The thirds overlay is on, so the bar's Thirds toggle reads as selected.
+    pub(crate) thirds_on: bool,
+    /// The Information readout is on, so the bar's Information toggle reads as selected.
+    pub(crate) information_on: bool,
     /// The window fills the screen, so the bar starts at its ordinary inset: macOS hides the
     /// traffic lights there.
     pub(crate) fullscreen: bool,
@@ -267,6 +271,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         compare_held: inputs.compare_held,
         clipping_on: inputs.session.workspace.clip_shadows
             && inputs.session.workspace.clip_highlights,
+        thirds_on: inputs.session.workspace.thirds,
+        information_on: inputs.session.workspace.information,
         fullscreen: inputs.view_state.fullscreen,
     }
 }

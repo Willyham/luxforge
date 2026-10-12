@@ -1137,7 +1137,7 @@
           },
           {
             "id": "mask.create-luminance-range",
-            "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add",
+            "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": 0.0,
@@ -1200,7 +1200,7 @@
           },
           {
             "id": "mask.add-luminance-range",
-            "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+            "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": null,
@@ -1374,7 +1374,7 @@
           },
           {
             "id": "mask.create-colour-range",
-            "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add",
+            "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": 50.0,
@@ -1397,7 +1397,7 @@
           },
           {
             "id": "mask.add-colour-range",
-            "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+            "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": null,
@@ -3312,6 +3312,123 @@
       {
         "actions": [
           {
+            "id": "set-presence",
+            "notes": "merges the named presence fields into the stack's one Presence layer, which the host places after the pointwise colour run and before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+            "parameters": [
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "texture",
+                "notes": "scales a medium-frequency luminance band isolated between two edge-preserving smoothers; negative values attenuate it",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "clarity",
+                "notes": "scales the residual of luminance against a broad edge-preserving base computed on a reduced grid; negative values soften it",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "dehaze",
+                "notes": "removes the estimated atmospheric veil by inverting I = t*J + (1 - t)*A; negative values add a veil through the same model",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              }
+            ],
+            "patch": true,
+            "title": "Set Presence"
+          },
+          {
+            "id": "reset-presence",
+            "notes": "returns the stack's one Presence layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Presence"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-presence",
+                "kind": "number",
+                "label": "Texture",
+                "parameter": "texture"
+              },
+              {
+                "action": "set-presence",
+                "kind": "number",
+                "label": "Clarity",
+                "parameter": "clarity"
+              },
+              {
+                "action": "set-presence",
+                "kind": "number",
+                "label": "Dehaze",
+                "parameter": "dehaze"
+              }
+            ],
+            "kind": "group",
+            "label": "Presence",
+            "reset": {
+              "action": "set-presence",
+              "preset": {
+                "clarity": 0.0,
+                "dehaze": 0.0,
+                "texture": 0.0
+              }
+            }
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.presence.adjust",
+            "maskable": true,
+            "order": 0,
+            "single": true,
+            "stage": "spatial"
+          }
+        ],
+        "hint": "Texture, clarity and dehaze",
+        "id": "luxforge.presence",
+        "layout": "stacked",
+        "queries": [],
+        "reset": {
+          "action": "reset-presence",
+          "preset": {}
+        },
+        "title": "Presence"
+      },
+      {
+        "actions": [
+          {
             "id": "set-curve",
             "notes": "A monotone point curve over encoded luminance, placed after Basic and before the colour mixer by declared order",
             "parameters": [
@@ -3659,123 +3776,6 @@
           "preset": {}
         },
         "title": "Detail"
-      },
-      {
-        "actions": [
-          {
-            "id": "set-presence",
-            "notes": "merges the named presence fields into the stack's one Presence layer, which the host places after the pointwise colour run and before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
-            "parameters": [
-              {
-                "default": 0.0,
-                "kind": "number",
-                "max": 100.0,
-                "min": -100.0,
-                "name": "texture",
-                "notes": "scales a medium-frequency luminance band isolated between two edge-preserving smoothers; negative values attenuate it",
-                "precision": 0,
-                "required": false,
-                "step": 1.0,
-                "unit": null,
-                "zero": 0.0
-              },
-              {
-                "default": 0.0,
-                "kind": "number",
-                "max": 100.0,
-                "min": -100.0,
-                "name": "clarity",
-                "notes": "scales the residual of luminance against a broad edge-preserving base computed on a reduced grid; negative values soften it",
-                "precision": 0,
-                "required": false,
-                "step": 1.0,
-                "unit": null,
-                "zero": 0.0
-              },
-              {
-                "default": 0.0,
-                "kind": "number",
-                "max": 100.0,
-                "min": -100.0,
-                "name": "dehaze",
-                "notes": "removes the estimated atmospheric veil by inverting I = t*J + (1 - t)*A; negative values add a veil through the same model",
-                "precision": 0,
-                "required": false,
-                "step": 1.0,
-                "unit": null,
-                "zero": 0.0
-              }
-            ],
-            "patch": true,
-            "title": "Set Presence"
-          },
-          {
-            "id": "reset-presence",
-            "notes": "returns the stack's one Presence layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
-            "parameters": [],
-            "patch": false,
-            "title": "Reset Presence"
-          }
-        ],
-        "availability": {
-          "kind": "available"
-        },
-        "canvas": null,
-        "collapsed": true,
-        "controls": [
-          {
-            "controls": [
-              {
-                "action": "set-presence",
-                "kind": "number",
-                "label": "Texture",
-                "parameter": "texture"
-              },
-              {
-                "action": "set-presence",
-                "kind": "number",
-                "label": "Clarity",
-                "parameter": "clarity"
-              },
-              {
-                "action": "set-presence",
-                "kind": "number",
-                "label": "Dehaze",
-                "parameter": "dehaze"
-              }
-            ],
-            "kind": "group",
-            "label": "Presence",
-            "reset": {
-              "action": "set-presence",
-              "preset": {
-                "clarity": 0.0,
-                "dehaze": 0.0,
-                "texture": 0.0
-              }
-            }
-          }
-        ],
-        "developer": false,
-        "effects": [
-          {
-            "format": 1,
-            "id": "luxforge.presence.adjust",
-            "maskable": true,
-            "order": 0,
-            "single": true,
-            "stage": "spatial"
-          }
-        ],
-        "hint": "Texture, clarity and dehaze",
-        "id": "luxforge.presence",
-        "layout": "stacked",
-        "queries": [],
-        "reset": {
-          "action": "reset-presence",
-          "preset": {}
-        },
-        "title": "Presence"
       },
       {
         "actions": [
@@ -7830,7 +7830,7 @@
       "mask.add-colour-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+        "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "refine": "how tight the selection around each sampled colour is; a higher refine is always a narrower selection, geometrically between a whole colour family at 0 and one flat patch at 100"
         },
@@ -8080,7 +8080,7 @@
       "mask.add-luminance-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+        "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "high": "the bright edge of the band, on the histogram's own axis; it may not be below the dark edge",
           "high_feather": "how far above the bright edge the selection ramps away, in the same units; 0 is a hard edge and anything else is at least 1",
@@ -8462,7 +8462,7 @@
       "mask.create-colour-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add",
+        "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "refine": "how tight the selection around each sampled colour is; a higher refine is always a narrower selection, geometrically between a whole colour family at 0 and one flat patch at 100"
         },
@@ -8570,7 +8570,7 @@
       "mask.create-luminance-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add",
+        "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "high": "the bright edge of the band, on the histogram's own axis; it may not be below the dark edge",
           "high_feather": "how far above the bright edge the selection ramps away, in the same units; 0 is a hard edge and anything else is at least 1",

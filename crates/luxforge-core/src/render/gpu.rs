@@ -57,8 +57,9 @@ pub(crate) use preview::plan_warm;
 pub(crate) use preview::position;
 pub use preview::{
     BoundaryKey, GPU_PLAN_LINKS, GPU_PREVIEW_BYTES, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView,
-    GpuWarmList, REDUCED_AFTER_BYTES, REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK,
-    RestReduction, RestTile, RestTiles, SourceBoundary, rest_light_bytes, rest_slot_bytes,
+    GpuWarmList, REDUCED_AFTER_BYTES, REST_BACKDROP_BOUNDS, REST_SHARE_MAX, REST_TILE_SIDES,
+    REST_TILE_WORK, RestReduction, RestTile, RestTiles, SourceBoundary, rest_light_bytes,
+    rest_slot_bytes,
 };
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) use preview::{RestSizing, plan_rest_tiles};

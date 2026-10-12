@@ -19,6 +19,12 @@ pub(crate) enum SettingsMessage {
         flags: Result<FlagList, String>,
         preferences: Result<Preferences, String>,
     },
+    /// `flags.list` answered a read of the flags alone: at launch, and when another client changed
+    /// a flag while the sheet is closed (`change`), so what a live flag gates follows it.
+    Flags {
+        flags: Result<FlagList, String>,
+        change: bool,
+    },
     /// One gesture on a General row's control, stored through the desktop's preference writer.
     SetGeneral(GeneralPreference, GeneralValue),
     /// The Catalog row's folder dialog answered: the folder chosen, or `None` when it was

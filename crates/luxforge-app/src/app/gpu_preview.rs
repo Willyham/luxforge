@@ -234,6 +234,33 @@ struct HeldRest {
 enum RestPresentation<'a> {
     Picture(&'a luxforge_gpu::GpuRest),
     Counts(&'a luxforge_gpu::GpuRest),
+    /// At 100% and above: the tiles reduced, the backdrop the percentage view's region is drawn
+    /// over where it does not cover the view, and counted as they are drawn.
+    Backdrop(&'a luxforge_gpu::GpuRest),
+}
+
+/// Whether `held` draws the same tiles as `new`, whatever either is reduced to and the share it was
+/// planned within: the same stack's picture at rest at another view. `O(tiles × steps)`, no
+/// allocation.
+fn same_tiles(held: &luxforge_core::RestTiles, new: &luxforge_core::RestTiles) -> bool {
+    let luxforge_core::RestTiles {
+        plan,
+        tiles,
+        share: _,
+        staging,
+        light_sweeps,
+        output,
+        reduction: _,
+        source,
+        format,
+    } = new;
+    held.plan == *plan
+        && held.tiles == *tiles
+        && held.staging == *staging
+        && held.light_sweeps == *light_sweeps
+        && held.output == *output
+        && held.source == *source
+        && held.format == *format
 }
 
 /// `tiles` as the surfaces draw them under `version`: each tile's plan over its window cut from the
@@ -2249,8 +2276,14 @@ impl Editor {
     /// The displayed stack's picture at rest in tiles, from its job: held for the surfaces to draw
     /// ([`luxforge_gpu::GpuRest`]), under a new version unless they are the tiles held. `None` lets the
     /// one held go: a view that draws the stack at its own size or larger, or tiles the GPU cannot
-    /// draw. Nothing while the GPU stage is refused.
-    pub(crate) fn gpu_rest_from(&mut self, tiles: Option<Box<luxforge_core::RestTiles>>) {
+    /// draw. Nothing while the GPU stage is refused. At 100% and above (`region`), tiles held that
+    /// differ only in their reduction — the same stack's picture at rest Fit reduced — are kept:
+    /// their reduction serves as the backdrop of the view's region, with no tile drawn again.
+    pub(crate) fn gpu_rest_from(
+        &mut self,
+        tiles: Option<Box<luxforge_core::RestTiles>>,
+        region: bool,
+    ) {
         if self.gpu_preview_allowed().is_err() {
             self.gpu.rest = None;
             return;
@@ -2265,12 +2298,10 @@ impl Editor {
             }
             return;
         };
-        if self
-            .gpu
-            .rest
-            .as_ref()
-            .is_some_and(|held| held.tiles == tiles)
-        {
+        if self.gpu.rest.as_ref().is_some_and(|held| {
+            held.tiles == tiles
+                || (region && held.tiles.reduction.is_some() && same_tiles(&held.tiles, &tiles))
+        }) {
             return;
         }
         self.gpu.rests += 2;
@@ -2425,38 +2456,41 @@ impl Editor {
     /// The picture at rest in tiles the surfaces are handed: the committed stack's, while no
     /// gesture's draft is open — a released gesture's last plan may still be drawn, beside which
     /// the tiles are drawn, to dissolve in over it — and no crop draft or clipping overlay is shown,
-    /// the overlay's marks being the view plan's; Compare's Before side among them. None while the
-    /// gate refuses the GPU stage or an evidence hook hands a plan of its own.
+    /// the overlay's marks being the view plan's; Compare's Before side among them. None at 100%
+    /// and above, where the tiles are the backdrop ([`Self::gpu_counts_handed`]), while the gate
+    /// refuses the GPU stage or while an evidence hook hands a plan of its own.
     pub(crate) fn gpu_rest_handed(&self) -> Option<&luxforge_gpu::GpuRest> {
         match self.rest_presentation()? {
             RestPresentation::Picture(picture) => Some(picture),
-            RestPresentation::Counts(_) => None,
+            RestPresentation::Counts(_) | RestPresentation::Backdrop(_) => None,
         }
     }
 
-    /// The picture at rest's tiles for their histogram and clipping counts alone, which the
-    /// surfaces are handed while the counts of the content the GPU presents are still to come and
-    /// the picture, which counts its tiles as it draws them, is not handed: at 100% and above,
-    /// where the view draws the stage at its own size, and while the clipping overlay's marks are
-    /// the view plan's. None while a gesture or a crop draft is open, the gate refuses the GPU
-    /// stage or an evidence hook hands a plan of its own.
+    /// The picture at rest's tiles where the picture itself is not handed: at 100% and above,
+    /// reduced to the backdrop the percentage view's region is drawn over where it does not cover
+    /// the view, and counted as they are drawn; elsewhere for their histogram and clipping counts
+    /// alone while the counts of the content the GPU presents are still to come — at 100% and
+    /// above for a stage the backdrop does not reduce, and while the clipping overlay's marks are
+    /// the view plan's. None while a crop draft is open, the gate refuses the GPU stage or an
+    /// evidence hook hands a plan of its own; while a gesture's draft is open, only a backdrop
+    /// the surface has drawn whole already, so no tile is drawn in motion.
     pub(crate) fn gpu_counts_handed(&self) -> Option<&luxforge_gpu::GpuRest> {
         match self.rest_presentation()? {
-            RestPresentation::Counts(counts) => Some(counts),
+            RestPresentation::Counts(counts) | RestPresentation::Backdrop(counts) => Some(counts),
             RestPresentation::Picture(_) => None,
         }
     }
 
-    /// One eligibility decision for the picture and the tiles for counts alone. A released
-    /// gesture may still have its last plan on screen; an active gesture or crop draft owns it.
+    /// One eligibility decision for the picture, the backdrop and the tiles for counts alone. A
+    /// released gesture may still have its last plan on screen; an active gesture or crop draft
+    /// owns it, keeping at most a backdrop already drawn.
     fn rest_presentation(&self) -> Option<RestPresentation<'_>> {
         self.gpu_preview_allowed().ok()?;
         #[cfg(test)]
         if self.gpu.rest_off {
             return None;
         }
-        if self.core_gesture().is_some()
-            || self.drafting()
+        if self.drafting()
             || self
                 .evidence
                 .as_ref()
@@ -2464,9 +2498,32 @@ impl Editor {
         {
             return None;
         }
+        let moving = self.core_gesture().is_some();
         let held = self.gpu.rest.as_ref()?;
         let ready = held.conversion.ready()?;
+        // At 100% and above the view's region plan is the picture at rest, and the tiles' reduction
+        // its backdrop; a comparison draws neither.
+        let region = matches!(self.session.preview.view.zoom,
+            luxforge_core::Zoom::Percent { value } if value >= 100.0);
+        if region && self.presentation.compare_after.is_none() && ready.picture.reduction.is_some()
+        {
+            // In motion only once drawn whole: the gesture's ticks own the frames.
+            let drawn = || {
+                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+                    .gpu_rest
+                    .is_some_and(|figures| {
+                        figures.version == ready.picture.version
+                            && figures.done
+                            && figures.fallback.is_none()
+                    })
+            };
+            return (!moving || drawn()).then_some(RestPresentation::Backdrop(&ready.picture));
+        }
+        if moving {
+            return None;
+        }
         if ready.picture.reduction.is_some()
+            && !region
             && super::gpu_settle::clip_flags(&self.session.workspace).is_none()
         {
             Some(RestPresentation::Picture(&ready.picture))

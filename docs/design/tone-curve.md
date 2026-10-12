@@ -33,7 +33,7 @@ The descriptor vocabulary needs no change: no new control kind, parameter kind, 
 
 ## The module
 
-- **Identity.** Module `luxforge.curve`, title `Tone curve`, hint `A point curve over the photograph's tones`; effect `luxforge.curve.tone` (`CURVE_EFFECT`, exported at the crate root beside `MIXER_EFFECT`), stage `color`, order `5`, `single`, `maskable`; actions `set-curve` (the field patch) and `reset-curve`; query `sample-curve`. The registry lists it directly after Basic, so its section follows Basic in the tools panel, collapsed, where the [workspace tool array](develop-workspace.md#tool-array) places it, and ahead of the [Detail](detail.md) section ([panel order](#landing-beside-detail-and-lens)).
+- **Identity.** Module `luxforge.curve`, title `Tone curve`, hint `A point curve over the photograph's tones`; effect `luxforge.curve.tone` (`CURVE_EFFECT`, exported at the crate root beside `MIXER_EFFECT`), stage `color`, order `5`, `single`, `maskable`; actions `set-curve` (the field patch) and `reset-curve`; query `sample-curve`. The registry lists it directly after Presence, which follows Basic, so its section follows Presence in the tools panel, collapsed, where the [workspace tool array](develop-workspace.md#tool-array) places it, and ahead of the [Detail](detail.md) section ([panel order](#landing-beside-detail-and-lens)).
 - **One field**, `luminance`: kind `curve` with `points_min 2`, `points_max 16`, `monotone true`, no `fixed_x`; default `[[0, 0], [1, 1]]`; `step 0.01`, `precision 2`, no `fine_step` (the Option nudge falls back to a tenth of the step, `0.001`). The host stores exactly the points it was sent, which the `curve` kind has already checked. Its refusals are the kind's generic texts, which name the field: "parameter luminance has an invalid curve point count" and "parameter luminance has an invalid curve point N". A patch that changes nothing is a no-op; `{}` is the canonical neutral payload and `{"luminance": [[0, 0], [1, 1]]}` the same state written differently.
 - **One group**, `Tone curve`, whose only control is the curve: `Control::curve("set-curve", [{luminance, "Luminance"}], "Tone curve", "sample-curve")` with `background: histogram`. A stacked module whose controls are one group is drawn headerless: the curve editor sits directly under the band, with no sub-group header, no disclosure, and no Original or Custom caption. One channel declares no channel switch. The band carries the module reset and the active dot.
 - **History words.** The field declares `.history("Tone curve")`, so a field patch is labelled by the delivered rule for a curve, its point count: `Tone curve 3 points`. A patch that returns the field to its default is `Reset Tone curve`, and so is `reset-curve`. A recipe row reads `Tone curve 3 points` or `Neutral`.
@@ -67,7 +67,7 @@ The descriptor vocabulary needs no change: no new control kind, parameter kind, 
   ```
 
   The query's parameter is the field's kind exactly, optional and without a default, which the descriptor validator requires of a sample query.
-- `crates/luxforge-core/src/modules/registry/mod.rs`: `linked_modules` is `[Arc<dyn ToolModule>; 14]` with `Arc::new(CurveModule::new())` directly after `BasicModule`.
+- `crates/luxforge-core/src/modules/registry/mod.rs`: `linked_modules` is `[Arc<dyn ToolModule>; 14]` with `Arc::new(CurveModule::new())` directly after `PresenceModule`, which follows `BasicModule`.
 
 ## Placement
 
@@ -296,7 +296,7 @@ Recommendations for the owner, recorded as proposals until decided. The module i
 | What the composite channel acts on | Encoded luminance with the reconstruction above: hue-preserving where the black is not lifted, one axis shared with the histogram, the frozen Basic vocabulary reused | Lightroom's per-channel composite, which applies one curve to R, G and B and so saturates on an S-curve; or both, as two channels of the one control |
 | Channels | One, `luminance` | Red, Green and Blue curves as further channels of the same control, evaluated after the composite one, under their own study and per-channel arithmetic |
 | Order in the colour run | `5`: after Basic, before the mixer | After the mixer (order above 10) |
-| Section place | After Basic, before Detail and Presence, collapsed | After the mixer |
+| Section place | After Basic and Presence, before Detail, collapsed | After the mixer |
 | Endpoints | Free: `x` and `y` of every point move, with the curve held flat inside `[0, 1]` beyond the span | Endpoints fixed at `x = 0` and `x = 1` with only their `y` movable, which needs a validation hook the field-patch framework does not have |
 | Behaviour past white and below black | The unit-slope tail | Flat (collapses over-white values) or tangent (amplifies them) |
 | Point limit | 16 | The kind's maximum, 32 |

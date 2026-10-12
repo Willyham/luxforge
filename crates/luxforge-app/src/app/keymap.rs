@@ -418,6 +418,10 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         if character(key, "-") {
             return Some(Message::View(ViewMessage::ZoomStep(-1)));
         }
+        // Back to Fit, as `f` is without the modifier.
+        if character(key, "0") {
+            return Some(Message::View(ViewMessage::Fit));
+        }
         // Export the displayed entry; Shift keeps its metadata.
         if character(key, "e") {
             return Some(Message::Export(ExportMessage::Start {
@@ -963,9 +967,20 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
             .with(sequence)
             .map(|(sequence, _)| Message::History(HistoryMessage::CompareHoldElapsed(sequence)))
     });
+    // One wake-up once a waiting comparison's loading delay has passed, only while it waits and
+    // its bar is not yet shown.
+    let loading = editor
+        .activity
+        .compare_loading
+        .due(Instant::now())
+        .then(|| {
+            iced::time::every(crate::state::canvas::COMPARE_LOADING_DELAY)
+                .map(|_| Message::History(HistoryMessage::CompareLoadingDue))
+        });
     Subscription::batch([
         iced::event::listen_with(raw_event),
         deadline.unwrap_or_else(Subscription::none),
+        loading.unwrap_or_else(Subscription::none),
     ])
 }
 
@@ -1224,6 +1239,24 @@ mod tests {
         assert_eq!(step("=", Modifiers::empty(), false, Status::Ignored), None);
         assert_eq!(step("-", Modifiers::empty(), false, Status::Ignored), None);
         assert_eq!(step("-", Modifiers::ALT, false, Status::Ignored), None);
+    }
+
+    #[test]
+    fn command_zero_fits() {
+        let context = KeyContext::default();
+        let fits = |modifiers, status| {
+            matches!(
+                keymap(&pressed(letter("0"), modifiers), status, &context),
+                Some(Message::View(ViewMessage::Fit))
+            )
+        };
+        for status in [Status::Ignored, Status::Captured] {
+            assert!(fits(Modifiers::COMMAND, status));
+            assert!(fits(Modifiers::COMMAND | Modifiers::SHIFT, status));
+            assert!(fits(Modifiers::COMMAND | Modifiers::ALT, status));
+        }
+        assert!(!fits(Modifiers::empty(), Status::Ignored));
+        assert!(!fits(Modifiers::ALT, Status::Ignored));
     }
 
     #[test]

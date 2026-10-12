@@ -1841,7 +1841,7 @@ impl Editor {
         // where its view draws the stack at its own size or larger or the GPU cannot draw them.
         if committed && let Some(rest) = job.gpu_rest.as_mut() {
             let tiles = rest.tiles.take().and_then(Result::ok);
-            self.gpu_rest_from(tiles);
+            self.gpu_rest_from(tiles, region_view);
             self.gpu.rest_planned_at = planned_at.filter(|_| !region_view);
         }
         self.gpu_resident_from(job.gpu_rest.take(), region_view, committed);

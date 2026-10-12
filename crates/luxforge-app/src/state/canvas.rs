@@ -12,7 +12,7 @@ use luxforge_core::{
     POINTER_MODE, PREVIEW_PROGRESS_QUIET, PreviewProgress, Zoom, mask::commands::MaskListing,
     preferences::CanvasBackground,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The shortest render, start to finish, that the bar over the photograph is shown for: a shorter
 /// one is over before a bar would tell anyone anything.
@@ -47,6 +47,54 @@ pub(crate) fn render_bar(
         generation: progress.generation,
         fraction: fraction as f32,
     })
+}
+
+/// How long a comparison waits for a picture it needs before the canvas says it is loading: one
+/// ready sooner shows no bar, so a quick comparison never flickers.
+pub(crate) const COMPARE_LOADING_DELAY: Duration = Duration::from_millis(150);
+
+/// Whether a comparison is waiting for a picture it needs: the After frame a slider waits for
+/// before it begins (`after_waits`), or, once comparing, the Original (`original`) not yet the
+/// entry presented (`presented`). Before is drawn from the presented frame, so until the Original
+/// is presented the comparison is still being prepared. No comparison waits for nothing.
+pub(crate) fn comparison_pending(
+    after_waits: bool,
+    comparing: bool,
+    original: Option<&luxforge_core::EntryId>,
+    presented: Option<&luxforge_core::EntryId>,
+) -> bool {
+    after_waits || (comparing && original.is_some() && presented != original)
+}
+
+/// When the comparison began waiting, kept from one derivation to the next so the canvas shows
+/// its loading bar only once the wait has outlasted [`COMPARE_LOADING_DELAY`], and hides it the
+/// moment the wait ends, whether the picture is ready or the comparison was left.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct CompareLoading {
+    since: Option<Instant>,
+}
+
+impl CompareLoading {
+    /// Follow whether the comparison is pending at `now`: a wait starts its clock once and keeps
+    /// it while it lasts; anything else clears it.
+    pub(crate) fn observe(&mut self, pending: bool, now: Instant) {
+        self.since = match (pending, self.since) {
+            (false, _) => None,
+            (true, None) => Some(now),
+            (true, since) => since,
+        };
+    }
+
+    /// The bar is shown at `now`: the wait has lasted the delay.
+    pub(crate) fn shown(&self, now: Instant) -> bool {
+        self.since
+            .is_some_and(|since| now.saturating_duration_since(since) >= COMPARE_LOADING_DELAY)
+    }
+
+    /// A wait whose bar is not shown yet, so one wake-up after the delay is due to show it.
+    pub(crate) fn due(&self, now: Instant) -> bool {
+        self.since.is_some() && !self.shown(now)
+    }
 }
 
 /// How the photograph is sized on the surface. The view never reads the session itself.
@@ -254,7 +302,6 @@ pub(crate) struct CanvasModel {
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) modes: Vec<ModeEntry>,
     pub(crate) thirds: bool,
-    pub(crate) information_on: bool,
     pub(crate) information: Option<super::information::Information>,
     pub(crate) draft_bar: Option<DraftBar>,
     pub(crate) notices: Vec<Notice>,
@@ -277,6 +324,14 @@ pub(crate) struct CanvasModel {
     /// draws its own stage, and over a GPU frame the exact phase is not the picture, only the
     /// histogram and the reference frame behind it.
     pub(crate) render_bar: Option<f32>,
+    /// A comparison has waited longer than [`COMPARE_LOADING_DELAY`] for a picture it needs, drawn
+    /// as an indeterminate bar along the top of the photograph ([`CompareLoading`]).
+    pub(crate) compare_loading: bool,
+    /// Something is open over the canvas — the palette, the Settings sheet, a menu or a
+    /// copy-settings sheet — so a press there closes it rather than reaching the photograph, and a
+    /// brush's own cursor gives way to the system's ([`super::Workspace::covers_canvas`]). Set once
+    /// the whole workspace is derived.
+    pub(crate) covered: bool,
 }
 
 /// Whether the workspace is on a mask: Mask mode itself, or one of the host's own canvas picks,
@@ -374,7 +429,6 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         dimensions: inputs.dimensions,
         modes,
         thirds: inputs.session.workspace.thirds,
-        information_on: inputs.session.workspace.information,
         information: super::information::derive(inputs),
         draft_bar: draft_bar(inputs),
         notices: notices(inputs),
@@ -406,6 +460,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             .render_bar
             .filter(|_| photo == PhotoView::Plain && inputs.gpu_frame_us.is_none())
             .map(|bar| bar.fraction),
+        compare_loading: inputs.compare_loading,
+        covered: false,
     }
 }
 
@@ -706,6 +762,77 @@ fn unavailable_body(modules: &[ModuleDescriptor], effect: &str) -> String {
             Availability::Available => format!("{} did not provide this layer", module.title),
         },
         None => format!("No registered module provides {effect}"),
+    }
+}
+
+#[cfg(test)]
+mod compare_loading_tests {
+    use super::*;
+    use luxforge_core::EntryId;
+
+    /// A comparison waits for the After frame it begins over, or for the Original to be the
+    /// presented entry; once the Original is presented, or with no comparison, nothing waits.
+    #[test]
+    fn a_comparison_is_pending_until_the_original_is_presented() {
+        let (original, edited) = (EntryId::new(), EntryId::new());
+        assert!(comparison_pending(true, false, None, None), "After's frame");
+        assert!(comparison_pending(
+            false,
+            true,
+            Some(&original),
+            Some(&edited)
+        ));
+        assert!(!comparison_pending(
+            false,
+            true,
+            Some(&original),
+            Some(&original)
+        ));
+        assert!(!comparison_pending(
+            false,
+            false,
+            Some(&original),
+            Some(&edited)
+        ));
+        assert!(
+            !comparison_pending(false, true, None, Some(&edited)),
+            "no Original to wait for"
+        );
+    }
+
+    /// Pending shows the bar only once the delay has passed; ready hides it at once; and a
+    /// comparison left while waiting hides it too, and a new wait starts its own clock.
+    #[test]
+    fn the_bar_shows_after_the_delay_and_hides_when_ready_or_cancelled() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut loading = CompareLoading::default();
+        loading.observe(false, at(0));
+        assert!(
+            !loading.shown(at(1_000)) && !loading.due(at(1_000)),
+            "nothing waits"
+        );
+
+        loading.observe(true, at(0));
+        assert!(!loading.shown(at(0)) && loading.due(at(0)));
+        loading.observe(true, at(100));
+        assert!(!loading.shown(at(149)), "a quick comparison never shows it");
+        assert!(loading.shown(at(150)) && !loading.due(at(150)));
+        loading.observe(true, at(400));
+        assert!(
+            loading.shown(at(400)),
+            "the clock is kept while the wait lasts"
+        );
+
+        // The picture is ready.
+        loading.observe(false, at(500));
+        assert!(!loading.shown(at(500)) && !loading.due(at(500)));
+
+        // A new wait starts its own clock; leaving the comparison ends it before it shows.
+        loading.observe(true, at(600));
+        assert!(!loading.shown(at(700)));
+        loading.observe(false, at(700));
+        assert!(!loading.shown(at(2_000)) && !loading.due(at(2_000)));
     }
 }
 
