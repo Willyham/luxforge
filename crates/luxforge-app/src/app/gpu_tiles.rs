@@ -78,15 +78,26 @@ use luxforge_core::{
     STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_light_sweeps,
     plan_stream_sweeps,
     tiles::{
-        Answered, Band, BandSender, BandStream, EXPORT_BANDS_IN_FLIGHT, ReadAnswer, ReadPixels,
-        ReadStage, ReadValues, ReferenceReads, TILE_QUEUE_CAPACITY, TileCall, TileFallback,
-        TileReads, TileService, TileSession, TileStatus, TileUnavailable, clipped,
+        Answered, Band, BandSender, BandStream, Depth, EXPORT_BANDS_IN_FLIGHT, OutputSpec, Pixels,
+        ReadAnswer, ReadPixels, ReadStage, ReadValues, ReferenceReads, TILE_QUEUE_CAPACITY,
+        TileCall, TileFallback, TileReads, TileService, TileSession, TileStatus, TileUnavailable,
+        clipped, lanczos_taps,
     },
 };
 use luxforge_gpu::{
-    Derivation, GpuBoundary, GpuSource, tiles::GPU_TILE_BUDGET, tiles::TILES_IN_FLIGHT,
-    tiles::Ticket, tiles::TileEnd, tiles::TileFailure, tiles::TileFigures, tiles::TileInput,
-    tiles::TileOutput, tiles::TilePixels, tiles::TileRunner, tiles::TileTimes,
+    Derivation, GpuBoundary, GpuSource,
+    resample::{ResampleCut, ResampleDepth, ResampleRange, ResampleTaps, resample_charge},
+    tiles::GPU_TILE_BUDGET,
+    tiles::TILES_IN_FLIGHT,
+    tiles::Ticket,
+    tiles::TileEnd,
+    tiles::TileFailure,
+    tiles::TileFigures,
+    tiles::TileInput,
+    tiles::TileOutput,
+    tiles::TilePixels,
+    tiles::TileRunner,
+    tiles::TileTimes,
     tiles::TileUnavailable as RunnerUnavailable,
 };
 use serde_json::{Value, json};
@@ -232,6 +243,8 @@ pub(crate) struct TileWorkerFigures {
     /// now.
     pub(crate) staged: u64,
     pub(crate) stage_bytes: u64,
+    /// Of the streams, those resampled or encoded at 16 bits through the held output stage.
+    pub(crate) resampled: u64,
     /// Tiles the runner drew, reads' and streams' alike, program sequences it compiled, and lights
     /// it computed and repair steps it solved, each once for the tiles that read it.
     pub(crate) tiles: u64,
@@ -262,6 +275,7 @@ struct Figures {
     streams: u64,
     bands: u64,
     staged: u64,
+    resampled: u64,
     runner: TileFigures,
 }
 
@@ -278,6 +292,7 @@ impl Figures {
             bands: self.bands,
             staged: self.staged,
             stage_bytes: self.runner.stage_bytes,
+            resampled: self.resampled,
             tiles: self.runner.runs,
             compiles: self.runner.compiles,
             lights: self.runner.lights,
@@ -533,14 +548,23 @@ impl TileService for GpuTiles {
     /// The export's stream, planned here, on the caller's thread, at the longest side, so a stack
     /// the GPU cannot draw, and a runner that cannot draw, are answered at once; the worker chooses
     /// the side its every tile fits at when it begins drawing it. A worker that could not start,
-    /// has stopped or already holds as many streams as calls ends the stream at once with why.
-    fn stream(&self, evaluation: &Stack, cancel: &Cancel) -> Result<BandStream, TileFallback> {
+    /// has stopped or already holds as many streams as calls ends the stream at once with why, as
+    /// does an `output` larger than the output stage or empty (`validation`). An output smaller
+    /// than the stage, or at 16 bits, is resampled from the held output stage
+    /// (`luxforge_gpu::resample`).
+    fn stream(
+        &self,
+        evaluation: &Stack,
+        output: OutputSpec,
+        cancel: &Cancel,
+    ) -> Result<BandStream, TileFallback> {
         if let TileStatus::Reference(Some(reason)) = self.status() {
             return Err(reason);
         }
         let (sides, sweep_sides) = (self.sides(), self.sweep_sides());
         let prepared = PreparedStream::of(evaluation)?;
         let plan = prepared.stream(sides[0])?;
+        let checked = output.check(plan.output.width, plan.output.height);
         let taken = Arc::new(AtomicUsize::new(0));
         let wake = {
             let (shared, taken) = (Arc::clone(&self.shared), Arc::clone(&taken));
@@ -552,10 +576,9 @@ impl TileService for GpuTiles {
                 shared.wake.notify_one();
             }
         };
-        let (sender, bands) =
-            BandStream::waking(plan.output.width, plan.output.height, Answered::gpu(), wake);
+        let (sender, bands) = BandStream::waking(output, Answered::gpu(), wake);
         // Nothing has been sent, so the channel has room for the error that ends it.
-        if let Err(error) = self.start() {
+        if let Err(error) = checked.and_then(|()| self.start()) {
             sender.send(Err(error));
             return Ok(bands);
         }
@@ -578,6 +601,7 @@ impl TileService for GpuTiles {
         state.streams.push_back(Box::new(Stream {
             stack: evaluation.clone(),
             cancel: cancel.clone(),
+            output,
             sender,
             taken,
             sides,
@@ -637,6 +661,8 @@ impl std::fmt::Debug for GpuTiles {
 struct Stream {
     stack: Stack,
     cancel: Cancel,
+    /// The output its bands make up: the output stage's own, or smaller, or at 16 bits.
+    output: OutputSpec,
     sender: BandSender,
     /// Bands its encoder has taken, which the stream's wake counts on the encoder's thread.
     taken: Arc<AtomicUsize>,
@@ -699,6 +725,36 @@ struct Drawing {
     /// The runner it began on ([`Worker::runners`]): its tiles in flight and its window are that
     /// runner's, so it ends if the worker opens another.
     runner: u64,
+    /// A resampled stream's cuts, its tiles drawn into the held output stage first.
+    resample: Option<Resampling>,
+}
+
+/// A resampled stream (`luxforge_gpu::resample`): an output smaller than the output stage, or at 16
+/// bits. Its tiles draw their linear values into the output stage the runner holds, two in flight;
+/// its cuts are then read back band by band, as a full-size stream's tiles are.
+struct Resampling {
+    depth: ResampleDepth,
+    /// Each output column's and row's taps, the core's own narrowed to `f32`.
+    columns: Vec<ResampleTaps>,
+    rows: Vec<ResampleTaps>,
+    /// The cuts, band by band, and each cut's band.
+    cuts: Vec<ResampleRange>,
+    band_of: Vec<usize>,
+    /// While its tiles are drawn into the held stage: the next, and those in flight; `None` once
+    /// every one is drawn.
+    content: Option<(usize, VecDeque<Ticket>)>,
+}
+
+impl Resampling {
+    /// The cut `index` as the runner draws it.
+    fn cut(&self, index: usize) -> ResampleCut<'_> {
+        let range = &self.cuts[index];
+        ResampleCut {
+            columns: &self.columns[range.columns.start as usize..range.columns.end as usize],
+            rows: &self.rows[range.rows.start as usize..range.rows.end as usize],
+            depth: self.depth,
+        }
+    }
 }
 
 /// A stream's staged sweeps (`docs/design/gpu-first.md`, "Staged sweeps"): every sweep before the
@@ -745,9 +801,50 @@ struct Assembling {
     band: usize,
     y0: u32,
     rows: u32,
-    rgba: Vec<u8>,
+    pixels: Pixels,
     /// Its tiles not read back yet.
     left: usize,
+}
+
+impl Assembling {
+    /// A band of `rows` rows of `width` pixels at `depth`, from row `y0`, of `left` tiles.
+    fn new(band: usize, (y0, rows): (u32, u32), width: u32, depth: Depth, left: usize) -> Self {
+        let samples = width as usize * rows as usize * 4;
+        Self {
+            band,
+            y0,
+            rows,
+            pixels: match depth {
+                Depth::Eight => Pixels::Eight(vec![0; samples]),
+                Depth::Sixteen => Pixels::Sixteen(vec![0; samples]),
+            },
+            left,
+        }
+    }
+
+    /// Place `read`, a tile's or a cut's pixels `columns` wide, at column `x0` of every row of the
+    /// band, `width` pixels across: whether they are of the band's depth and size.
+    fn place(&mut self, read: TilePixels, x0: u32, columns: u32, width: u32) -> bool {
+        fn rows<T: Copy>(band: &mut [T], read: &[T], x0: usize, row: usize, width: usize) -> bool {
+            if row == 0
+                || !read.len().is_multiple_of(row)
+                || read.len() / row * width * 4 > band.len()
+            {
+                return false;
+            }
+            for (line, pixels) in read.chunks_exact(row).enumerate() {
+                let at = (line * width + x0) * 4;
+                band[at..at + row].copy_from_slice(pixels);
+            }
+            true
+        }
+        let (x0, row, width) = (x0 as usize, columns as usize * 4, width as usize);
+        match (&mut self.pixels, read) {
+            (Pixels::Eight(band), TilePixels::Codes(read)) => rows(band, &read, x0, row, width),
+            (Pixels::Sixteen(band), TilePixels::Codes16(read)) => rows(band, &read, x0, row, width),
+            _ => false,
+        }
+    }
 }
 
 /// A chained stream's light sweeps (`docs/design/gpu-preview.md`, "The global estimate"): each
@@ -794,14 +891,34 @@ impl Drawing {
             staged: None,
             lit: None,
             runner,
+            resample: None,
         }
     }
 
-    /// Whether a sweep before the last remains to be drawn into the stage textures, or a light
-    /// sweep before the stream's tiles.
+    /// Whether a sweep before the last remains to be drawn into the stage textures, a light sweep
+    /// before the stream's tiles, or a resampled stream's tile into the held output stage.
     fn drawing_stages(&self) -> bool {
         self.staged.as_ref().is_some_and(Staged::drawing_stages)
             || self.lit.as_ref().is_some_and(LightSweeps::drawing)
+            || self
+                .resample
+                .as_ref()
+                .is_some_and(|resample| resample.content.is_some())
+    }
+
+    /// The pieces its bands are read back in: its tiles, or a resampled stream's cuts.
+    fn pieces(&self) -> usize {
+        self.resample
+            .as_ref()
+            .map_or(self.plan.tiles.len(), |resample| resample.cuts.len())
+    }
+
+    /// The band of piece `index`, if there is one.
+    fn band(&self, index: usize) -> Option<usize> {
+        match &self.resample {
+            Some(resample) => resample.band_of.get(index).copied(),
+            None => self.band_of.get(index).copied(),
+        }
     }
 }
 
@@ -847,7 +964,7 @@ impl Stream {
         if drawing.drawing_stages() {
             return false;
         }
-        let Some(&band) = drawing.band_of.get(self.next) else {
+        let Some(band) = drawing.band(self.next) else {
             return false;
         };
         self.open.back().is_some_and(|open| open.band == band) || self.room()
@@ -995,8 +1112,12 @@ impl Worker {
             let Some((backend, name)) = self.shared.lock().adapter.clone() else {
                 return Err(TileFallback::Unavailable(TileUnavailable::NoAdapter));
             };
-            // A JPEG's cut reads the core's decode table, which the surface holds once handed it.
+            // A JPEG's cut reads the core's decode table, which the surface holds once handed it,
+            // and a 16-bit export's cuts the core's 16-bit thresholds.
             gpu_plan::install_output_encoding();
+            luxforge_gpu::resample::install_wide_encoding(
+                luxforge_core::colour::srgb::output_thresholds16(),
+            );
             match crate::adapters::tile_runner(&backend, &name) {
                 Ok(opened) => {
                     self.figures.borrow_mut().adapter = Some(opened.adapter().clone());
@@ -1284,6 +1405,7 @@ impl Worker {
             runner.abandon();
             runner.release();
             runner.release_stages();
+            runner.release_output();
             runner.abandon_light();
             self.figures.borrow_mut().runner = runner.figures();
         }
@@ -1539,12 +1661,16 @@ impl Worker {
                 Err(fallback) => self.end(stream, End::Fallback(fallback)),
             };
         }
-        // A staged stream draws its sweeps before the last into the stage textures first.
+        // A staged stream draws its sweeps before the last into the stage textures first, and a
+        // resampled stream its tiles into the held output stage.
         if stream.drawing.as_ref().is_some_and(Drawing::drawing_stages) {
             let drawing = stream.drawing.as_mut().expect("drawing");
-            let step = match drawing.lit.as_ref().is_some_and(LightSweeps::drawing) {
-                true => self.light_step(drawing),
-                false => self.stage_step(drawing),
+            let step = if drawing.lit.as_ref().is_some_and(LightSweeps::drawing) {
+                self.light_step(drawing)
+            } else if drawing.staged.as_ref().is_some_and(Staged::drawing_stages) {
+                self.stage_step(drawing)
+            } else {
+                self.content_step(drawing)
             };
             return match step {
                 Ok(()) => true,
@@ -1557,55 +1683,39 @@ impl Worker {
         if submitted {
             let drawing = stream.drawing.as_mut().expect("drawing");
             let index = stream.next;
-            let tile = drawing.plan.tiles[index];
-            let band = drawing.band_of[index];
+            let band = drawing.band(index).expect("a piece to submit");
             if stream.open.back().is_none_or(|open| open.band != band) {
-                let width = drawing.plan.output.width as usize;
-                stream.open.push_back(Assembling {
-                    band,
-                    y0: tile.rect.y0,
-                    rows: tile.rect.height,
-                    rgba: vec![0; width * tile.rect.height as usize * 4],
-                    left: drawing.band_of.iter().filter(|of| **of == band).count(),
-                });
+                let rows = match &drawing.resample {
+                    Some(resample) => {
+                        let rows = &resample.cuts[index].rows;
+                        (rows.start, rows.end - rows.start)
+                    }
+                    None => {
+                        let rect = drawing.plan.tiles[index].rect;
+                        (rect.y0, rect.height)
+                    }
+                };
+                let left = (0..drawing.pieces())
+                    .filter(|&piece| drawing.band(piece) == Some(band))
+                    .count();
+                let (width, depth) = (stream.output.width, stream.output.depth);
+                stream
+                    .open
+                    .push_back(Assembling::new(band, rows, width, depth, left));
             }
-            let output = TileOutput::Read(TileEnd::Codes);
-            let ticket = match &drawing.staged {
-                // The last sweep's tile, cut from the stage texture the sweep before it wrote.
-                Some(staged) => {
-                    let last = staged.last();
-                    let input = last
-                        .reads
-                        .map(TileInput::Stage)
-                        .ok_or_else(|| unplannable("the last sweep reads no stage"));
-                    input.and_then(|input| {
-                        self.convert_sweep(
-                            &drawing.plan.plan,
-                            last,
-                            &drawing.source,
-                            drawing.grid.as_ref(),
-                            tile,
-                        )
-                        .and_then(|plan| {
-                            self.submit(&plan, &drawing.source, tile.window, (input, output))
-                        })
-                    })
+            let ticket = match &drawing.resample {
+                // A cut of the held output stage, resampled and encoded.
+                Some(resample) => {
+                    let mut runner = match self.runner() {
+                        Ok(runner) => runner,
+                        Err(fallback) => return self.end(stream, End::Fallback(fallback)),
+                    };
+                    let submitted = runner.submit_resample(&resample.cut(index));
+                    self.figures.borrow_mut().runner = runner.figures();
+                    drop(runner);
+                    submitted.map_err(|failure| self.failed(failure))
                 }
-                None => self
-                    .convert(
-                        &drawing.plan.plan,
-                        &drawing.source,
-                        drawing.grid.as_ref(),
-                        tile,
-                    )
-                    .and_then(|plan| {
-                        self.submit(
-                            &plan,
-                            &drawing.source,
-                            drawing.windows[band],
-                            (TileInput::Source, output),
-                        )
-                    }),
+                None => self.submit_tile(drawing, index, TileOutput::Read(TileEnd::Codes)),
             };
             match ticket {
                 Ok(ticket) => drawing.pending.push_back((ticket, index)),
@@ -1615,35 +1725,41 @@ impl Worker {
         }
         // The oldest tile read back once the next is on its way, or once none can be submitted.
         let drawing = stream.drawing.as_mut().expect("drawing");
-        let tiles = drawing.plan.tiles.len();
+        let pieces = drawing.pieces();
         let finish = drawing.pending.len() >= TILES_IN_FLIGHT
-            || ((!submitted || stream.next == tiles) && !drawing.pending.is_empty());
+            || ((!submitted || stream.next == pieces) && !drawing.pending.is_empty());
         if finish {
             let (ticket, index) = drawing.pending.pop_front().expect("a tile in flight");
-            let codes = match self.finish(ticket) {
-                Ok(TilePixels::Codes(codes)) => codes,
-                Ok(TilePixels::Linear(_)) => {
-                    return self.end(
-                        stream,
-                        End::Error(Error::internal("an export's tile read back no codes")),
-                    );
-                }
+            let read = match self.finish(ticket) {
+                Ok(read) => read,
                 Err(fallback) => return self.end(stream, End::Fallback(fallback)),
             };
             let drawing = stream.drawing.as_ref().expect("drawing");
-            let width = drawing.plan.output.width as usize;
-            let rect = drawing.plan.tiles[index].rect;
-            let band = drawing.band_of[index];
-            let Some(open) = stream.open.iter_mut().find(|open| open.band == band) else {
+            let (x0, columns) = match &drawing.resample {
+                Some(resample) => {
+                    let columns = &resample.cuts[index].columns;
+                    (columns.start, columns.end - columns.start)
+                }
+                None => {
+                    let rect = drawing.plan.tiles[index].rect;
+                    (rect.x0, rect.width)
+                }
+            };
+            let band = drawing.band(index);
+            let width = stream.output.width;
+            let Some(open) = stream.open.iter_mut().find(|open| Some(open.band) == band) else {
                 return self.end(
                     stream,
                     End::Error(Error::internal("an export's tile read back into no band")),
                 );
             };
-            let row = rect.width as usize * 4;
-            for (line, pixels) in codes.chunks_exact(row).enumerate() {
-                let at = (line * width + rect.x0 as usize) * 4;
-                open.rgba[at..at + row].copy_from_slice(pixels);
+            if !open.place(read, x0, columns, width) {
+                return self.end(
+                    stream,
+                    End::Error(Error::internal(
+                        "an export's tile read back no codes of its output's depth",
+                    )),
+                );
             }
             open.left -= 1;
             // Every band whose tiles are all read back, in order.
@@ -1652,7 +1768,7 @@ impl Worker {
                 let band = Band {
                     y0: open.y0,
                     rows: open.rows,
-                    rgba: open.rgba,
+                    pixels: open.pixels,
                 };
                 // The channel had room for the band when its first tile was submitted, and its
                 // encoder only makes more: this send never waits.
@@ -1665,7 +1781,7 @@ impl Worker {
             }
         }
         let drawing = stream.drawing.as_ref().expect("drawing");
-        let last = stream.next == drawing.plan.tiles.len() && drawing.pending.is_empty();
+        let last = stream.next == drawing.pieces() && drawing.pending.is_empty();
         if last {
             // Every band sent: the stream ends as its sender goes.
             self.release_stream();
@@ -1673,9 +1789,182 @@ impl Worker {
         !last
     }
 
+    /// Submit tile `index` of `drawing`'s output stage, written as `output`: the last sweep's tile
+    /// of a staged stream, cut from the stage texture the sweep before it wrote, or a chained tile
+    /// cut from its band's window of the source.
+    fn submit_tile(
+        &self,
+        drawing: &Drawing,
+        index: usize,
+        output: TileOutput,
+    ) -> Result<Ticket, TileFallback> {
+        let tile = drawing.plan.tiles[index];
+        match &drawing.staged {
+            Some(staged) => {
+                let last = staged.last();
+                let input = last
+                    .reads
+                    .map(TileInput::Stage)
+                    .ok_or_else(|| unplannable("the last sweep reads no stage"))?;
+                let plan = self.convert_sweep(
+                    &drawing.plan.plan,
+                    last,
+                    &drawing.source,
+                    drawing.grid.as_ref(),
+                    tile,
+                )?;
+                self.submit(&plan, &drawing.source, tile.window, (input, output))
+            }
+            None => {
+                let plan = self.convert(
+                    &drawing.plan.plan,
+                    &drawing.source,
+                    drawing.grid.as_ref(),
+                    tile,
+                )?;
+                self.submit(
+                    &plan,
+                    &drawing.source,
+                    drawing.windows[drawing.band_of[index]],
+                    (TileInput::Source, output),
+                )
+            }
+        }
+    }
+
+    /// One step of a resampled stream's tiles into the held output stage: its next tile submitted,
+    /// writing its linear values at its rectangle, and its oldest tile in flight waited for once two
+    /// are or none more can be. Once the last is done, the stage textures, the window and the slot
+    /// go, so its cuts read the held stage alone. Why the GPU cannot go on drawing it.
+    fn content_step(&self, drawing: &mut Drawing) -> Result<(), TileFallback> {
+        let tiles = drawing.plan.tiles.len();
+        fn content(drawing: &mut Drawing) -> (&mut usize, &mut VecDeque<Ticket>) {
+            let (next, pending) = drawing
+                .resample
+                .as_mut()
+                .and_then(|resample| resample.content.as_mut())
+                .expect("a resampled stream's tiles");
+            (next, pending)
+        }
+        let (next, in_flight) = {
+            let (next, pending) = content(drawing);
+            (*next, pending.len())
+        };
+        let submitted = next < tiles && in_flight < TILES_IN_FLIGHT;
+        if submitted {
+            let rect = drawing.plan.tiles[next].rect;
+            let output = TileOutput::Held {
+                rect: [rect.x0, rect.y0, rect.x1(), rect.y1()],
+            };
+            let ticket = self.submit_tile(drawing, next, output)?;
+            let (next, pending) = content(drawing);
+            pending.push_back(ticket);
+            *next += 1;
+        }
+        let (next, pending) = content(drawing);
+        let finish = pending.len() >= TILES_IN_FLIGHT
+            || ((!submitted || *next == tiles) && !pending.is_empty());
+        if finish {
+            let ticket = pending.pop_front().expect("a tile in flight");
+            self.finish_stage(ticket)?;
+        }
+        let (next, pending) = content(drawing);
+        if *next == tiles && pending.is_empty() {
+            drawing
+                .resample
+                .as_mut()
+                .expect("a resampled stream")
+                .content = None;
+            let mut runner = self.runner()?;
+            runner.release_stages();
+            runner.release();
+            self.figures.borrow_mut().runner = runner.figures();
+        }
+        Ok(())
+    }
+
+    /// A resampled stream's cuts of `output` from a `stage` output stage, and what its held stage
+    /// and largest cut take: `None` for the stage's own size at 8 bits, which is read back as its
+    /// tiles' codes.
+    fn resampling(
+        &self,
+        output: OutputSpec,
+        stage: (u32, u32),
+    ) -> Result<Option<(Resampling, u64, u64)>, TileFallback> {
+        if output.is_full(stage.0, stage.1) && output.depth == Depth::Eight {
+            return Ok(None);
+        }
+        let taps = |from, to| {
+            lanczos_taps(from, to)
+                .map(|taps| {
+                    taps.into_iter()
+                        .map(|taps| ResampleTaps {
+                            first: taps.first,
+                            weights: taps.weights.iter().map(|weight| *weight as f32).collect(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|_| unplannable("an output larger than its stage"))
+        };
+        let (columns, rows) = (taps(stage.0, output.width)?, taps(stage.1, output.height)?);
+        let depth = match output.depth {
+            Depth::Eight => ResampleDepth::Eight,
+            Depth::Sixteen => ResampleDepth::Sixteen,
+        };
+        let runner = self.runner()?;
+        let cuts = runner.resample_cuts(&columns, &rows).map_err(fallback_of)?;
+        let held = runner.output_charge(stage).map_err(fallback_of)?;
+        drop(runner);
+        let mut band_of = Vec::with_capacity(cuts.len());
+        for (index, cut) in cuts.iter().enumerate() {
+            let band = match band_of.last() {
+                Some(&band) if cuts[index - 1].rows == cut.rows => band,
+                Some(&band) => band + 1,
+                None => 0,
+            };
+            band_of.push(band);
+        }
+        let resampling = Resampling {
+            depth,
+            columns,
+            rows,
+            cuts,
+            band_of,
+            content: Some((0, VecDeque::new())),
+        };
+        let largest = (0..resampling.cuts.len())
+            .map(|index| resample_charge(&resampling.cut(index)))
+            .max()
+            .unwrap_or(0);
+        Ok(Some((resampling, held, largest)))
+    }
+
+    /// Hold `drawing`'s output stage for its resampled stream, `resampling`: the stage the runner
+    /// holds beside the stage textures a staged stream holds already.
+    fn hold_output(
+        &self,
+        drawing: &mut Drawing,
+        resampling: Option<Resampling>,
+    ) -> Result<(), TileFallback> {
+        let Some(resampling) = resampling else {
+            return Ok(());
+        };
+        let stage = (drawing.plan.output.width, drawing.plan.output.height);
+        let mut runner = self.runner()?;
+        let held = runner.hold_output(stage);
+        self.figures.borrow_mut().runner = runner.figures();
+        drop(runner);
+        held.map_err(|failure| self.failed(failure))?;
+        self.figures.borrow_mut().resampled += 1;
+        drawing.resample = Some(resampling);
+        Ok(())
+    }
+
     /// Begin drawing `stream`: the runner opened, the source its tiles' windows are cut from, a
     /// lens warp's grid of the whole output stage, and the longest of its sides whose every tile
-    /// the runner's own charge holds within [`GPU_TILE_BUDGET`] less [`STREAM_READ_RESERVE`].
+    /// the runner's own charge holds within [`GPU_TILE_BUDGET`] less [`STREAM_READ_RESERVE`], and,
+    /// for a resampled stream, less its held output stage, which with its largest cut must fit that
+    /// budget too.
     fn begin(&self, stream: &mut Stream) -> Result<Drawing, TileFallback> {
         let first = stream
             .first
@@ -1690,7 +1979,27 @@ impl Worker {
             Some(warp) => Some(stage_grid(warp)?),
             None => None,
         };
-        let budget = GPU_TILE_BUDGET - STREAM_READ_RESERVE;
+        let budget = self.stream_budget();
+        let stage = (first.output.width, first.output.height);
+        let (resampling, held) = match self.resampling(stream.output, stage)? {
+            Some((resampling, held, largest)) => {
+                if held + largest > budget {
+                    return Err(TileFallback::Budget {
+                        requested: held + largest,
+                        budget,
+                    });
+                }
+                (Some(resampling), held)
+            }
+            None => (None, 0),
+        };
+        // A resampled stream's tiles are drawn beside its held output stage, their linear values
+        // written in place of codes.
+        let budget = budget - held;
+        let end = match resampling {
+            Some(_) => TileEnd::Linear,
+            None => TileEnd::Codes,
+        };
         // A stack whose layers together reach far is drawn in staged sweeps, the runner holding
         // their stage textures, charged before they are created, for as long as the stream is
         // drawn; any other is drawn chained.
@@ -1722,6 +2031,7 @@ impl Worker {
             self.figures.borrow_mut().staged += 1;
             let mut drawing = Drawing::new(plan, source, grid, self.runners.get());
             drawing.staged = Some(Staged::new(sweeps));
+            self.hold_output(&mut drawing, resampling)?;
             return Ok(drawing);
         }
         // A light behind a spatial layer whose stage textures do not fit is computed by light
@@ -1734,15 +2044,26 @@ impl Worker {
             } else {
                 prepared.stream(side)?
             };
-            let charge = self.largest_charge(&plan, &source, grid.as_ref())?;
+            let charge = self.largest_charge(&plan, &source, grid.as_ref(), end)?;
             if charge <= budget {
                 let mut drawing = Drawing::new(plan, source, grid, self.runners.get());
                 drawing.lit = (!lit.is_empty()).then(|| LightSweeps::new(lit));
+                self.hold_output(&mut drawing, resampling)?;
                 return Ok(drawing);
             }
             requested = charge;
         }
         Err(TileFallback::Budget { requested, budget })
+    }
+
+    /// What a stream's runner may hold: [`GPU_TILE_BUDGET`] less [`STREAM_READ_RESERVE`], unless a
+    /// test asked for less.
+    fn stream_budget(&self) -> u64 {
+        let budget = GPU_TILE_BUDGET - STREAM_READ_RESERVE;
+        #[cfg(test)]
+        return self.shared.lock().hooks.budget.unwrap_or(budget);
+        #[cfg(not(test))]
+        budget
     }
 
     /// Whether a test asked for every stream drawn chained.
@@ -1754,12 +2075,13 @@ impl Worker {
     }
 
     /// The most the runner would hold for any one tile of `plan`, by its own charge, over its
-    /// band's window.
+    /// band's window, its output written as `end`.
     fn largest_charge(
         &self,
         plan: &StreamPlan,
         source: &GpuSource,
         grid: Option<&CoordinateGrid>,
+        end: TileEnd,
     ) -> Result<u64, TileFallback> {
         let runner = self.runner()?;
         let (windows, band_of) = bands(&plan.tiles);
@@ -1772,7 +2094,7 @@ impl Worker {
                     &converted,
                     source,
                     [window.x0, window.y0, window.width, window.height],
-                    TileEnd::Codes,
+                    end,
                 )
                 .map_err(fallback_of)?;
             largest = largest.max(charge);
@@ -1882,6 +2204,9 @@ impl Drawn {
             TilePixels::Linear(linear) => self
                 .plan
                 .answer(values, points.map(|point| linear[at(point)])),
+            // A read's tile is drawn as codes or linear values; only an export's resample cut
+            // reads back 16-bit codes.
+            TilePixels::Codes16(_) => unreachable!("a read's tile read back 16-bit codes"),
         };
         ReadAnswer {
             stage: self.plan.size,
@@ -2133,6 +2458,7 @@ impl TileWorkerFigures {
             "bands": self.bands,
             "staged_streams": self.staged,
             "stage_bytes": self.stage_bytes,
+            "resampled_streams": self.resampled,
             "tiles": self.tiles,
             "compiles": self.compiles,
             "lights": self.lights,
@@ -2165,6 +2491,9 @@ struct Hooks {
     sides: Option<Vec<u32>>,
     /// Every later stream is drawn chained, whatever its stack.
     chained: bool,
+    /// Every later stream fits within this in place of [`GPU_TILE_BUDGET`] less
+    /// [`STREAM_READ_RESERVE`].
+    budget: Option<u64>,
 }
 
 #[cfg(test)]
@@ -2235,5 +2564,11 @@ impl GpuTiles {
     /// Draw every later stream chained, never in staged sweeps, or stop.
     pub(crate) fn chain_streams(&self, chained: bool) {
         self.shared.lock().hooks.chained = chained;
+    }
+
+    /// Fit every later stream within `budget` in place of [`GPU_TILE_BUDGET`] less
+    /// [`STREAM_READ_RESERVE`], or stop.
+    pub(crate) fn budget_streams(&self, budget: Option<u64>) {
+        self.shared.lock().hooks.budget = budget;
     }
 }
