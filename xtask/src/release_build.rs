@@ -9,6 +9,47 @@ pub const EXECUTABLES: &[&str] = &["luxforge", "luxforge-json", "luxforge-ctl"];
 /// `LSMinimumSystemVersion`, which `target.json` also records for the update feed.
 pub const MACOS_MINIMUM_SYSTEM_VERSION: &str = "14.0";
 
+/// What a macOS bundle's `Info.plist` states.
+pub struct BundleInfo<'a> {
+    pub identifier: &'a str,
+    /// `CFBundleShortVersionString`, the tag's bundle version.
+    pub version: &'a str,
+    /// `CFBundleVersion`, the build number Sparkle orders updates by.
+    pub build: &'a str,
+    /// `SUFeedURL`: the target's appcast.
+    pub feed_url: &'a str,
+    /// `SUPublicEDKey`, the committed update key; `None` while none is committed, when the app
+    /// reports `no-update-key`.
+    pub public_key: Option<&'a str>,
+    /// Further `<key>…</key><value/>` pairs, already XML: the update journey's.
+    pub extra: &'a str,
+}
+
+/// The release bundle's `Info.plist`, with Sparkle's settings
+/// (`docs/design/auto-update.md#macos-sparkle`): the feed and key, automatic checks once a day
+/// (which also suppresses Sparkle's permission prompt), and an archive verified before it is
+/// extracted. The feed itself is not required to be signed (`SURequireSignedFeed` is absent): the
+/// update key signs only archives, and stays in the release workflow's one signing step.
+pub fn info_plist(info: &BundleInfo) -> String {
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let key = info.public_key.map_or_else(String::new, |key| {
+        format!("<key>SUPublicEDKey</key><string>{}</string>", escape(key))
+    });
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{}</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{}</string><key>CFBundleVersion</key><string>{}</string><key>LSMinimumSystemVersion</key><string>{MACOS_MINIMUM_SYSTEM_VERSION}</string><key>NSHighResolutionCapable</key><true/><key>SUFeedURL</key><string>{}</string>{key}<key>SUEnableAutomaticChecks</key><true/><key>SUScheduledCheckInterval</key><integer>86400</integer><key>SUVerifyUpdateBeforeExtraction</key><true/>{}</dict></plist>"#,
+        escape(info.identifier),
+        escape(info.version),
+        escape(info.build),
+        escape(info.feed_url),
+        info.extra,
+    )
+}
+
 pub fn executable_paths(out: &Path, target: &str) -> Vec<PathBuf> {
     EXECUTABLES
         .iter()
@@ -171,18 +212,31 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
         output(root, "git", &["rev-parse", "HEAD"])?.trim() == revision,
         "Source revision changed during the build",
     )?;
+    // The macOS bundle embeds the pinned Sparkle, fetched (and verified) before anything is built.
+    let sparkle = if target == TARGETS[0].0 {
+        Some(sparkle::fetch(root)?)
+    } else {
+        None
+    };
     fs::create_dir_all(out)?;
-    let resource_root = if target == TARGETS[0].0 {
+    let resource_root = if let Some(sparkle) = &sparkle {
         let contents = out.join("Luxforge.app/Contents");
         fs::create_dir_all(contents.join("MacOS"))?;
         fs::create_dir_all(contents.join("Helpers"))?;
+        let config = luxforge_update::UpdateConfig::load_from_repository(root)?;
+        let public_key = config.public_key.map(|key| key.to_base64());
         fs::write(
             contents.join("Info.plist"),
-            format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{}</string><key>CFBundleVersion</key><string>{number}</string><key>LSMinimumSystemVersion</key><string>{MACOS_MINIMUM_SYSTEM_VERSION}</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
-                tag.bundle_version
-            ),
+            info_plist(&BundleInfo {
+                identifier: "org.luxforge.app",
+                version: &tag.bundle_version,
+                build: number,
+                feed_url: &config.feed_url(luxforge_update::Target::MacosArm64),
+                public_key: public_key.as_deref(),
+                extra: "",
+            }),
         )?;
+        sparkle::embed(sparkle, &out.join("Luxforge.app"))?;
         contents.join("Resources")
     } else {
         out.join("Luxforge")
@@ -251,6 +305,44 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_info_plist_names_sparkles_feed_and_only_a_committed_key() {
+        let info = |public_key| {
+            info_plist(&BundleInfo {
+                identifier: "org.luxforge.app",
+                version: "0.2.0",
+                build: "42",
+                feed_url: "https://api.luxforge.app/v1/updates/macos-arm64/appcast.xml?a&b",
+                public_key,
+                extra: "<key>LSBackgroundOnly</key><true/>",
+            })
+        };
+        let keyed = info(Some("rg7plRI+lkAvslNaVkA284ovU8kr7pm2xW1/AQL86Cs="));
+        for pair in [
+            "<key>CFBundleShortVersionString</key><string>0.2.0</string>",
+            "<key>CFBundleVersion</key><string>42</string>",
+            "<key>SUFeedURL</key><string>https://api.luxforge.app/v1/updates/macos-arm64/appcast.xml?a&amp;b</string>",
+            "<key>SUPublicEDKey</key><string>rg7plRI+lkAvslNaVkA284ovU8kr7pm2xW1/AQL86Cs=</string>",
+            "<key>SUEnableAutomaticChecks</key><true/>",
+            "<key>SUScheduledCheckInterval</key><integer>86400</integer>",
+            "<key>SUVerifyUpdateBeforeExtraction</key><true/>",
+            "<key>LSBackgroundOnly</key><true/></dict></plist>",
+        ] {
+            assert!(keyed.contains(pair), "{pair}");
+        }
+        assert!(!keyed.contains("SURequireSignedFeed"));
+        let unkeyed = info(None);
+        assert!(!unkeyed.contains("SUPublicEDKey"));
+        assert!(unkeyed.contains("<key>SUFeedURL</key>"));
+        // The committed configuration's feed is the macOS target's.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let config = luxforge_update::UpdateConfig::load_from_repository(root).unwrap();
+        assert_eq!(
+            config.feed_url(luxforge_update::Target::MacosArm64),
+            "https://api.luxforge.app/v1/updates/macos-arm64/appcast.xml"
+        );
+    }
 
     #[test]
     #[cfg(unix)]

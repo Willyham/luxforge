@@ -5421,6 +5421,7 @@ dependencies = [
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
+ "luxforge-update",
  "percent-encoding",
  "regex",
  "roxmltree",
