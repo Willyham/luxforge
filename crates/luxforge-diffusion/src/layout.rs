@@ -62,7 +62,11 @@ impl Files {
             if !path.is_file() {
                 return Err(Error::new(
                     ErrorKind::SourceUnavailable,
-                    format!("model file of {} is missing: {}", model.identity().id, path.display()),
+                    format!(
+                        "model file of {} is missing: {}",
+                        model.identity().id,
+                        path.display()
+                    ),
                 ));
             }
         }

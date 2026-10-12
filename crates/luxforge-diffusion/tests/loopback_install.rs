@@ -19,7 +19,7 @@ use luxforge_core::{
         transport::{SendOptions, Transport, TransportRequest, TransportResponse},
     },
 };
-use luxforge_testbase::{TestServer, respond};
+use luxforge_testbase::{TestServer, respond, wait_for};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -83,9 +83,10 @@ impl Transport for Loopback {
         sink: &mut dyn Write,
     ) -> Result<TransportResponse, Error> {
         let declared = request.endpoint.url.clone();
-        let local = self.served.get(declared.as_str()).ok_or_else(|| {
-            Error::validation(format!("the test serves no {declared}"))
-        })?;
+        let local = self
+            .served
+            .get(declared.as_str())
+            .ok_or_else(|| Error::validation(format!("the test serves no {declared}")))?;
         let rewritten = TransportRequest {
             method: request.method,
             endpoint: parse_endpoint(local, &[EndpointClass::Loopback])?,
@@ -136,15 +137,10 @@ impl Client {
 
     /// Wait for a job to end; answers its record.
     fn finished(&mut self, job: &Value) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(1800);
-        loop {
+        wait_for(&format!("job {job} ending"), || {
             let record = self.ok("job.read", json!({"job_id": job}));
-            if !matches!(record["status"].as_str(), Some("queued" | "running")) {
-                return record;
-            }
-            assert!(Instant::now() < deadline, "the job never ended: {record}");
-            std::thread::sleep(Duration::from_millis(100));
-        }
+            (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
+        })
     }
 
     fn install(&mut self, resource: &Value) -> (Value, Duration) {
@@ -158,7 +154,10 @@ impl Client {
         assert_eq!(refused["code"], "consent-required", "{refused}");
         let disclosure = refused["data"]["consent"]["disclosure"].clone();
         let consent = &refused["data"]["consent"];
-        assert_eq!(consent["scope"]["version"], resource["version"], "{consent}");
+        assert_eq!(
+            consent["scope"]["version"], resource["version"],
+            "{consent}"
+        );
         let grant = json!({
             "module_id": AI, "capability": consent["capability"],
             "scope": consent["scope"], "mutation": self.mutation(),
@@ -170,7 +169,10 @@ impl Client {
             json!({"module_id": AI, "resource_id": id, "mutation": self.mutation()}),
         );
         let record = self.finished(&queued["job_id"]);
-        (json!({"disclosure": disclosure, "record": record}), started.elapsed())
+        (
+            json!({"disclosure": disclosure, "record": record}),
+            started.elapsed(),
+        )
     }
 }
 
@@ -309,7 +311,10 @@ fn klein_installs_over_loopback_and_both_slots_load() {
             let record = client.finished(job);
             assert_eq!(record["status"], "ready", "{record}");
         }
-        eprintln!("{resource} loaded in {:.1} s", started.elapsed().as_secs_f64());
+        eprintln!(
+            "{resource} loaded in {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
     }
     let status = client.ok("module.status", json!({"module_id": AI}));
     let held: Vec<(Value, Value)> = status["runtime"]["models"]

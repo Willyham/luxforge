@@ -195,7 +195,9 @@ pub fn build(root: &Path) {
     let arch = match target_arch.as_str() {
         "aarch64" => "arm",
         "x86_64" => "x86",
-        other => panic!("luxforge-diffusion vendors ggml's CPU kernels for aarch64 and x86_64, not {other}"),
+        other => panic!(
+            "luxforge-diffusion vendors ggml's CPU kernels for aarch64 and x86_64, not {other}"
+        ),
     };
     c.file(ggml.join(format!("src/ggml-cpu/arch/{arch}/quants.c")));
     objects.extend(c.compile_intermediates());
@@ -346,9 +348,7 @@ pub fn build(root: &Path) {
     // One archive of every object: GNU ld resolves an archive's members against each other
     // whatever their order, but not one archive against an earlier one, and stable-diffusion.cpp,
     // its third-party code and ggml's C, C++ and Metal parts call each other in both directions.
-    cc::Build::new()
-        .objects(&objects)
-        .compile("luxforge_sdcpp");
+    cc::Build::new().objects(&objects).compile("luxforge_sdcpp");
 
     if metal {
         for framework in ["Foundation", "Metal", "MetalKit", "Accelerate"] {

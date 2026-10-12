@@ -330,10 +330,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     assert_eq!(fixture.controls().generations(), 1);
 
     // Three candidates from consecutive seeds in one job.
-    let first = owner.generate(with(
-        selection(&asset),
-        json!({"seed": 7, "candidates": 3}),
-    ));
+    let first = owner.generate(with(selection(&asset), json!({"seed": 7, "candidates": 3})));
     let result = &first["result"]["result"];
     assert_eq!(result["candidates"], json!([0, 1, 2]), "{first}");
     assert_eq!(result["seeds"], json!([7, 8, 9]));
@@ -650,7 +647,10 @@ fn every_refusal_is_named_and_generates_nothing() {
         .iter()
         .map(|model| model["resource_id"].clone())
         .collect();
-    assert!(held.contains(&json!(FAKE_TEXT_ENCODER.resource)), "{held:?}");
+    assert!(
+        held.contains(&json!(FAKE_TEXT_ENCODER.resource)),
+        "{held:?}"
+    );
     owner
         .accept_as(owner.edit, &asset, &job["job_id"], 0)
         .unwrap();
@@ -745,21 +745,34 @@ fn the_developer_transport_serves_only_the_pinned_models_and_install_checks_thei
 
 #[test]
 fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
-    use crate::capabilities::descriptor::{CapabilityKind, machine_floor};
     use super::models::{
         CONDITIONING_ASSET, CONDITIONING_RELEASE_TAG, CONDITIONING_URL, KLEIN_GENERATOR,
         KLEIN_TEXT_ENCODER,
     };
+    use crate::capabilities::descriptor::{CapabilityKind, machine_floor};
     let registry = ModuleRegistry::builtin();
-    let module = registry.module(AI_MODULE).expect("every run serves luxforge.ai");
+    let module = registry
+        .module(AI_MODULE)
+        .expect("every run serves luxforge.ai");
     let descriptor = module.descriptor();
     assert!(!descriptor.developer);
     descriptor.validate().unwrap();
     let resources: Vec<_> = descriptor.resources.iter().map(|r| r.id.as_str()).collect();
-    assert_eq!(resources, [KLEIN_GENERATOR.resource, KLEIN_TEXT_ENCODER.resource]);
+    assert_eq!(
+        resources,
+        [KLEIN_GENERATOR.resource, KLEIN_TEXT_ENCODER.resource]
+    );
     for resource in &descriptor.resources {
-        assert!(resource.url.starts_with("https://huggingface.co/"), "{}", resource.url);
-        assert!(resource.url.contains("/resolve/"), "pinned by revision: {}", resource.url);
+        assert!(
+            resource.url.starts_with("https://huggingface.co/"),
+            "{}",
+            resource.url
+        );
+        assert!(
+            resource.url.contains("/resolve/"),
+            "pinned by revision: {}",
+            resource.url
+        );
         assert_eq!(resource.license, "Apache-2.0");
         assert!(resource.use_restriction.is_none());
         assert!(resource.tradeoff.is_some());

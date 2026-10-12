@@ -37,7 +37,9 @@ mod native;
 #[cfg(test)]
 mod tests;
 
-pub use generator::{KleinGenerator, LORA_PROMPT, MAX_SIDE, REPLACE_PREFIX, outlined, replace_prompt};
+pub use generator::{
+    KleinGenerator, LORA_PROMPT, MAX_SIDE, REPLACE_PREFIX, outlined, replace_prompt,
+};
 
 /// The runtime's name in provenance.
 pub const RUNTIME_NAME: &str = "stable-diffusion.cpp";
@@ -94,7 +96,9 @@ impl InferenceRuntime for DiffusionRuntime {
         cancel.check()?;
         #[cfg(luxforge_sdcpp)]
         native::warm().map_err(|detail| {
-            Error::render(format!("the {METAL_BACKEND} backend did not open: {detail}"))
+            Error::render(format!(
+                "the {METAL_BACKEND} backend did not open: {detail}"
+            ))
         })?;
         Ok(Vec::new())
     }

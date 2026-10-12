@@ -32,10 +32,8 @@ fn identity(id: &str) -> ModelIdentity {
 }
 
 fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "luxforge-diffusion-{name}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("luxforge-diffusion-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -85,10 +83,19 @@ fn the_layout_is_the_registered_descriptors() {
         runtimes,
         [
             (GENERATOR.into(), backends.clone(), Precision::Mixed, vec![]),
-            (ENCODER.into(), backends.clone(), Precision::Mixed, vec![GENERATOR.into()]),
+            (
+                ENCODER.into(),
+                backends.clone(),
+                Precision::Mixed,
+                vec![GENERATOR.into()]
+            ),
         ]
     );
-    assert!(offered_backends().iter().all(|name| backends.contains(name)));
+    assert!(
+        offered_backends()
+            .iter()
+            .all(|name| backends.contains(name))
+    );
 }
 
 /// The names share a host with ONNX Runtime's and the developer fake's.
@@ -175,14 +182,28 @@ fn admission_refuses_by_name_what_klein_cannot_run() {
         (vec![0.5f32; pixels * 3], vec![0f32; pixels])
     };
     let (image, mask) = buffers(MAX_SIDE);
-    admit(&request(MAX_SIDE, &image, &mask, Conditioning::None), false, "m").unwrap();
+    admit(
+        &request(MAX_SIDE, &image, &mask, Conditioning::None),
+        false,
+        "m",
+    )
+    .unwrap();
     let (image, mask) = buffers(MAX_SIDE + 16);
-    let past = admit(&request(MAX_SIDE + 16, &image, &mask, Conditioning::None), false, "m")
-        .unwrap_err();
+    let past = admit(
+        &request(MAX_SIDE + 16, &image, &mask, Conditioning::None),
+        false,
+        "m",
+    )
+    .unwrap_err();
     assert_eq!(past.kind, ErrorKind::ResourceLimit);
     assert_eq!(past.data.unwrap()["limit"], "generation-side");
     let (image, mask) = buffers(1000);
-    let odd = admit(&request(1000, &image, &mask, Conditioning::None), false, "m").unwrap_err();
+    let odd = admit(
+        &request(1000, &image, &mask, Conditioning::None),
+        false,
+        "m",
+    )
+    .unwrap_err();
     assert_eq!(odd.kind, ErrorKind::Validation);
     let (image, mask) = buffers(512);
     let prompt = request(512, &image, &mask, Conditioning::Prompt("a red bicycle"));
@@ -221,7 +242,8 @@ fn the_inputs_grey_the_hole_and_outline_the_object() {
         }
     }
     let built = inputs(&request(side, &image, &mask, Conditioning::None));
-    let at = |buffer: &[u8], x: usize, y: usize| buffer[(y * n + x) * 3..(y * n + x) * 3 + 3].to_vec();
+    let at =
+        |buffer: &[u8], x: usize, y: usize| buffer[(y * n + x) * 3..(y * n + x) * 3 + 3].to_vec();
     assert_eq!(at(&built.init, 25, 25), [128, 128, 128]);
     assert_eq!(at(&built.init, 5, 5), [64, 64, 64]);
     assert_eq!(built.mask[25 * n + 25], 255);
@@ -230,7 +252,11 @@ fn the_inputs_grey_the_hole_and_outline_the_object() {
     assert_eq!(at(&built.reference, 25, 25), [0, 255, 0]);
     assert_eq!(at(&built.reference, 19, 25), [255, 0, 0]);
     assert_eq!(at(&built.reference, 20, 19), [255, 0, 0]);
-    assert_eq!(at(&built.reference, 31, 31), [64, 64, 64], "outside the outline");
+    assert_eq!(
+        at(&built.reference, 31, 31),
+        [64, 64, 64],
+        "outside the outline"
+    );
     assert_eq!(at(&built.reference, 27, 27), [0, 255, 0], "inside it");
     assert_eq!(at(&built.reference, 30, 30), [255, 0, 0]);
     assert_eq!(at(&built.reference, 17, 25), [64, 64, 64]);
@@ -262,7 +288,11 @@ fn it_opens_no_session_and_no_backend_it_does_not_offer() {
         .err()
         .unwrap();
     assert_eq!(session.kind, ErrorKind::Incompatible);
-    assert!(runtime.open_generator(&model, &options("cpu"), &cancel).is_err());
+    assert!(
+        runtime
+            .open_generator(&model, &options("cpu"), &cancel)
+            .is_err()
+    );
     if let Some(offered) = offered_backends().first() {
         let missing = runtime
             .open_generator(&model, &options(offered), &cancel)
@@ -310,9 +340,7 @@ mod native {
     fn conditioning() -> PathBuf {
         std::env::var_os("LUXFORGE_GENERATIVE_CONDITIONING")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                models().join("klein-4b-removal-conditioning-ba26d15a.lfsdcond")
-            })
+            .unwrap_or_else(|| models().join("klein-4b-removal-conditioning-ba26d15a.lfsdcond"))
     }
 
     /// The generator resource laid out as an install lays it out, its files linked from the
@@ -322,7 +350,10 @@ mod native {
         fs::create_dir_all(&dir).unwrap();
         let models = models();
         for (from, to) in [
-            (models.join("flux-2-klein-4b-Q4_0.gguf"), dir.join(GENERATOR)),
+            (
+                models.join("flux-2-klein-4b-Q4_0.gguf"),
+                dir.join(GENERATOR),
+            ),
             (models.join("flux2-klein-4b-vae.safetensors"), dir.join(VAE)),
             (
                 models.join("klein-object-remove-lora-comfy.safetensors"),
@@ -337,8 +368,7 @@ mod native {
             ModelIdentity {
                 id: GENERATOR.into(),
                 version: "test".into(),
-                sha256: "d1023499ef3f2f82ff7c50e6778495195c1b6cc34835741778868428111f9ff4"
-                    .into(),
+                sha256: "d1023499ef3f2f82ff7c50e6778495195c1b6cc34835741778868428111f9ff4".into(),
             },
             dir.join(GENERATOR),
         );
@@ -402,7 +432,10 @@ mod native {
         let (_, hole) = rgb(&with_suffix(&prefix, "-input-hole.png"));
         let (_, expected) = rgb(&with_suffix(&prefix, "-model.png"));
         let image: Vec<f32> = input.iter().map(|&v| f32::from(v) / 255.0).collect();
-        let mask: Vec<f32> = hole.chunks(3).map(|p| if p[0] != 0 { 1.0 } else { 0.0 }).collect();
+        let mask: Vec<f32> = hole
+            .chunks(3)
+            .map(|p| if p[0] != 0 { 1.0 } else { 0.0 })
+            .collect();
         let (dir, model) = installed("reproduce");
         let opened = Instant::now();
         let generator = open(&model);
@@ -489,7 +522,10 @@ mod native {
         );
         // The next step boundary comes within one step of the cancel.
         let step = cancelled_at - started;
-        assert!(after < step + Duration::from_secs(5), "{after:?} against a step of {step:?}");
+        assert!(
+            after < step + Duration::from_secs(5),
+            "{after:?} against a step of {step:?}"
+        );
         let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
     }
 }

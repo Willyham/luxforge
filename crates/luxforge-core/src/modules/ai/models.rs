@@ -324,8 +324,7 @@ const KLEIN_REDIRECTS: &[&str] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const CONDITIONING_RELEASE_TAG: &str = "models-generative-1";
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const CONDITIONING_ASSET: &str =
-    "klein-4b-removal-conditioning-ba26d15a.lfsdcond";
+pub(crate) const CONDITIONING_ASSET: &str = "klein-4b-removal-conditioning-ba26d15a.lfsdcond";
 pub(crate) const CONDITIONING_URL: &str = "https://github.com/Willyham/luxforge/releases/download/models-generative-1/klein-4b-removal-conditioning-ba26d15a.lfsdcond";
 
 /// FLUX.2 klein 4B's resource: the Q4_0 transformer as its own file, with the VAE, fal's removal
@@ -394,7 +393,9 @@ pub(crate) const KLEIN_TEXT_ENCODER: ModelFile = ModelFile {
         sha256: "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
         format: "json",
     }],
-    tradeoff: Some("Needed only to describe what Replace puts in the region; needs 24 GB of memory"),
+    tradeoff: Some(
+        "Needed only to describe what Replace puts in the region; needs 24 GB of memory",
+    ),
     min_memory_bytes: Some(24 * GIB),
     redirect_origins: HUGGING_FACE_REDIRECTS,
 };

@@ -100,8 +100,14 @@ fn native_diffusion_notices(root: &Path, out: &Path) -> Result {
     let source = root.join("crates/luxforge-diffusion");
     let sd = "vendor/stable-diffusion.cpp-1b0ba108";
     let notices = [
-        ("THIRD_PARTY.md".to_owned(), "luxforge-diffusion/THIRD_PARTY.md"),
-        (format!("{sd}/LICENSE"), "stable-diffusion.cpp-1b0ba108/LICENSE"),
+        (
+            "THIRD_PARTY.md".to_owned(),
+            "luxforge-diffusion/THIRD_PARTY.md",
+        ),
+        (
+            format!("{sd}/LICENSE"),
+            "stable-diffusion.cpp-1b0ba108/LICENSE",
+        ),
         (
             format!("{sd}/thirdparty/LICENSE.darts_clone.txt"),
             "stable-diffusion.cpp-1b0ba108/thirdparty/LICENSE.darts_clone.txt",
@@ -114,7 +120,10 @@ fn native_diffusion_notices(root: &Path, out: &Path) -> Result {
             format!("{sd}/thirdparty/utf8proc/LICENSE.md"),
             "stable-diffusion.cpp-1b0ba108/thirdparty/utf8proc/LICENSE.md",
         ),
-        ("vendor/ggml-d25b121c/LICENSE".to_owned(), "ggml-d25b121c/LICENSE"),
+        (
+            "vendor/ggml-d25b121c/LICENSE".to_owned(),
+            "ggml-d25b121c/LICENSE",
+        ),
     ];
     for (from, to) in notices {
         let input = source.join(&from);
