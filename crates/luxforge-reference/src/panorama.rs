@@ -141,9 +141,10 @@ impl Lens {
         (cx + dx * scale, cy + dy * scale)
     }
 
-    /// The ideal point a recorded point shows, by bisection on the radius. The distortion is
-    /// monotone in the ideal radius up to `R/√(3|k|)` when `k < 0`, which the search stays within;
-    /// a recorded radius past that radius's image has no ideal point and returns the limit.
+    /// The ideal point a recorded point shows, by Newton's method on the radius safeguarded by
+    /// bisection. The distortion is monotone in the ideal radius up to `R/√(3|k|)` when `k < 0`,
+    /// which the search stays within; a recorded radius past that radius's image has no ideal
+    /// point and returns the limit.
     pub fn undistort(&self, recorded: (f64, f64)) -> (f64, f64) {
         let (cx, cy) = self.centre();
         let (dx, dy) = (recorded.0 - cx, recorded.1 - cy);
@@ -158,15 +159,27 @@ impl Lens {
             hi = hi.min(self.radial_scale() / (3.0 * -self.radial).sqrt());
         }
         let mut lo = 0.0;
-        for _ in 0..200 {
-            let mid = 0.5 * (lo + hi);
-            if forward(mid) < rd {
-                lo = mid;
+        let mut ru = rd.min(hi);
+        for _ in 0..100 {
+            let value = forward(ru) - rd;
+            if value < 0.0 {
+                lo = ru;
             } else {
-                hi = mid;
+                hi = ru;
             }
+            let slope = 1.0 + 3.0 * self.radial * ru * ru / r2;
+            let newton = ru - value / slope;
+            let next = if slope > 0.0 && newton > lo && newton < hi {
+                newton
+            } else {
+                0.5 * (lo + hi)
+            };
+            if (next - ru).abs() <= 1e-13 * rd {
+                ru = next;
+                break;
+            }
+            ru = next;
         }
-        let ru = 0.5 * (lo + hi);
         (cx + dx * ru / rd, cy + dy * ru / rd)
     }
 
@@ -224,8 +237,8 @@ struct Patch {
 
 /// A textured environment: linear radiance for every viewing direction. Space is cut into cubes
 /// of side `cell` (radians, near the unit sphere); each holds one randomly turned box with sides
-/// 30–90% of the cell, ±1.5 stops and a slight colour tint, whose edges soften over a tenth of the
-/// cell. On a base of −2 stops brightening by 0.6 stops towards the zenith. Each box reaches less
+/// 30–84% of the cell, ±1.5 stops and a slight colour tint, whose edges soften over a fifth of the
+/// cell, so a frame that point-samples it at a few pixels a cell does not alias. On a base of −2 stops brightening by 0.6 stops towards the zenith. Each box reaches less
 /// than one cell from its centre, so only the 27 cells around a point can touch it: the scene is
 /// exactly continuous. Deterministic in `seed`.
 #[derive(Clone, Debug)]
@@ -241,7 +254,7 @@ impl Scene {
     pub fn new(seed: u64, cell: f64) -> Self {
         let origin = -1.0 - 2.0 * cell;
         let cells = ((2.0 * -origin) / cell).ceil() as usize;
-        let edge = 0.1 * cell;
+        let edge = 0.2 * cell;
         let mut patches = Vec::with_capacity(cells.pow(3));
         for k in 0..cells {
             for j in 0..cells {
@@ -266,9 +279,9 @@ impl Scene {
                     let q = [a * u2.sin(), a * u2.cos(), b * u3.sin(), b * u3.cos()];
                     let axes = quaternion_matrix(q);
                     let half = [
-                        cell * rng.next_range(0.15, 0.45),
-                        cell * rng.next_range(0.15, 0.45),
-                        cell * rng.next_range(0.15, 0.45),
+                        cell * rng.next_range(0.15, 0.42),
+                        cell * rng.next_range(0.15, 0.42),
+                        cell * rng.next_range(0.15, 0.42),
                     ];
                     let stops = rng.next_range(-1.5, 1.5);
                     let tint = [rng.next_range(0.85, 1.15), 1.0, rng.next_range(0.85, 1.15)];
