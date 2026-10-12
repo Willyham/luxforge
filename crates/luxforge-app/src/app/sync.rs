@@ -102,6 +102,10 @@ impl Editor {
                 // the library then; list it again beside the photo all the same, so the section
                 // a newly opened photograph shows is the library as it stands.
                 let opened = result.is_ok();
+                let filed = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|refresh| refresh.folder.clone());
                 let refreshed = self.dispatch(Message::Sync(SyncMessage::Refreshed(result)));
                 if !opened {
                     if self.develop.file_open == Some(generation) {
@@ -118,14 +122,9 @@ impl Editor {
                     self.status.happened =
                         Some(state::status::Happened::opened(state).naming(name));
                 }
-                // A file opened: its catalog folder becomes the Develop folder.
-                let folder = match self.document.state.as_ref() {
-                    Some(state) => {
-                        let asset = state.asset.id.clone();
-                        self.develop_file_opened(generation, asset)
-                    }
-                    None => Task::none(),
-                };
+                // A file opened: the catalog folder its Develop filed it in becomes the Develop
+                // folder.
+                let folder = self.develop_file_opened(generation, filed);
                 return Task::batch([
                     refreshed,
                     folder,
