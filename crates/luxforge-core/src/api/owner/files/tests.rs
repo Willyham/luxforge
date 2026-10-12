@@ -116,10 +116,22 @@ struct Fixture {
     dir: PathBuf,
     catalog: PathBuf,
     owner: Option<(OwnerHandle, JoinHandle<()>)>,
+    injected_watcher: Option<crate::index::lane::InjectedWatcher>,
 }
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::with_watcher(name, None)
+    }
+
+    fn injected(name: &str) -> Self {
+        Self::with_watcher(name, Some(crate::index::lane::InjectedWatcher::default()))
+    }
+
+    fn with_watcher(
+        name: &str,
+        injected_watcher: Option<crate::index::lane::InjectedWatcher>,
+    ) -> Self {
         let dir = luxforge_testbase::paths::temp_dir(&format!("files-{name}"))
             .canonicalize()
             .unwrap();
@@ -128,12 +140,19 @@ impl Fixture {
             dir,
             catalog,
             owner: None,
+            injected_watcher,
         };
         fixture.start();
         fixture
     }
 
     fn start(&mut self) {
+        if let Some(watcher) = &self.injected_watcher {
+            watcher.clear();
+            let mut opening = super::OPENING_WATCHERS.lock().unwrap();
+            opening.retain(|(path, _)| *path != self.catalog);
+            opening.push((self.catalog.clone(), watcher.clone()));
+        }
         self.owner = Some(
             OwnerHandle::start_with(&self.catalog, Arc::new(ModuleRegistry::builtin())).unwrap(),
         );
@@ -148,6 +167,45 @@ impl Fixture {
 
     fn owner(&self) -> &OwnerHandle {
         &self.owner.as_ref().unwrap().0
+    }
+
+    /// Report a change only for an injected source. Native journeys receive it from the OS.
+    fn changed(&self, root: u64, paths: Vec<PathBuf>) {
+        if self.injected_watcher.is_some() {
+            tell(
+                self.owner(),
+                FilesMessage::Inject(WatchEvent::Changed {
+                    root,
+                    paths,
+                    cursor: None,
+                }),
+            );
+        }
+    }
+
+    fn resumed_from(&self, path: &Path, cursor: Option<luxforge_watch::Resume>) {
+        if let Some(watcher) = &self.injected_watcher {
+            let requested = wait_for("the injected watch's resume request", || {
+                watcher
+                    .roots()
+                    .into_iter()
+                    .rev()
+                    .find(|root| root.path == path)
+            });
+            assert_eq!(requested.resume, cursor, "{requested:?}");
+        }
+    }
+
+    fn caught_up(&self, root: u64, cursor: luxforge_watch::Resume) {
+        if self.injected_watcher.is_some() {
+            tell(
+                self.owner(),
+                FilesMessage::Inject(WatchEvent::CaughtUp {
+                    root,
+                    cursor: Some(cursor),
+                }),
+            );
+        }
     }
 
     fn index_dir(&self) -> PathBuf {
@@ -191,6 +249,10 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop();
+        super::OPENING_WATCHERS
+            .lock()
+            .unwrap()
+            .retain(|(path, _)| *path != self.catalog);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

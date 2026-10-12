@@ -50,11 +50,12 @@ The unit tests need no model. Three ignored tests need the pinned klein files fr
 | Purpose | Command |
 | --- | --- |
 | Environment report, with the graphics adapters a built release editor sees | `cargo xtask doctor` |
-| Full local and CI checks: repository links and task plans, formatting, Clippy, tests | `cargo xtask check` |
-| The same without the slow tests and the doctests, what the quick tier runs | `cargo xtask check --quick` |
+| Ordinary local/CI checks: repository links and task plans, formatting, Clippy, slow tests and doctests; native watcher delivery is separate | `cargo xtask check` |
+| The same without slow tests, doctests or native watcher delivery, what the quick tier runs | `cargo xtask check --quick` |
 | The quick tier with its summary, with no release build | `cargo xtask verify --tier quick --output NEW_DIR` |
 | A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
-| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test [--quick]`, `build [--release]` (the editor, the headless `luxforge-json` and the live-session client `luxforge-ctl`) |
+| Required native watcher delivery and recovery gate; run for watcher changes and each release platform | `cargo xtask test --native-watchers` |
+| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test [--quick\|--native-watchers]`, `build [--release]` (the editor, the headless `luxforge-json` and the live-session client `luxforge-ctl`) |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH] [--binary PATH]` |
@@ -233,7 +234,7 @@ timing run elsewhere on the host. Run each check where its answer can change wha
 | Stage | Run |
 | --- | --- |
 | Editing | The tests for the code you are changing: `cargo test -p CRATE FILTER`, narrowed to one binary with `--lib` or `--test NAME`. For a rendered change, the one smoke scenario that covers it, against a current release build. Nothing whole-suite and nothing timed. |
-| Change complete: code, tests and docs | `fmt --all`, `xtask check-repository` and Clippy on each crate you changed (`clippy --locked -p CRATE --all-targets -- -D warnings`), then `verify --tier quick`, once, before handing off. After a failure your change caused, fix it and rerun only what failed (the named test or the one scenario), then `quick` once more. A failure it cannot have caused is reported as failed, by name, and neither investigated nor rerun. |
+| Change complete: code, tests and docs | `fmt --all`, `xtask check-repository` and Clippy on each crate you changed (`clippy --locked -p CRATE --all-targets -- -D warnings`), then `verify --tier quick`, once, before handing off. Watcher changes also require `test --native-watchers` on each changed platform. After a failure your change caused, fix it and rerun only what failed (the named test or the one scenario), then `quick` once more. A failure it cannot have caused is reported as failed, by name, and neither investigated nor rerun. |
 | Documentation only | No tier: `xtask check-repository`, `xtask lint` and `fmt --all -- --check`. |
 | Integration point | `rendered` for a change touching rendering or the UI; `timing` for a change under `crates/` that can affect cost. |
 | Milestone claim | `full`, with `--manifest`. |
@@ -498,7 +499,7 @@ takes 100 ms or more in the dev profile, measured in its binary's ordinary run o
 GPU stack held against the reference, or a whole job run end to end. The quick tier keeps the
 rest: about nine tests in ten, most of them a few milliseconds each. `check --quick` and `test --quick` list each binary's tests, skip the
 slow ones by exact name, leave out the doctests and say how many tests they left out; without
-`--quick` nothing is left out. The attribute changes nothing in the test; the listing is libtest's
+`--quick` slow tests and doctests run; native watcher delivery is selected by its separate gate. The attribute changes nothing in the test; the listing is libtest's
 JSON one, which gives each test's source file and the line of its name, and the mark is read from
 the attributes above that line. That listing is unstable, so `check` asks for it with
 `RUSTC_BOOTSTRAP=1` on the pinned toolchain, and a listing it cannot read fails the run. In a
@@ -506,7 +507,7 @@ the attributes above that line. That listing is unstable, so `check` asks for it
 bare one resolves where the macro is used. `luxforge-test-macros` depends on no crate, which the
 repository check enforces, so every crate's tests may name it, even those of crates that may name
 no other workspace crate. The quick tier runs `check --quick`, and every other tier and CI the
-whole `check`. The repository check refuses a function named `slow_…`, the old way of
+ordinary `check` plus the native watcher gate. The repository check refuses a function named `slow_…`, the old way of
 marking one, which `check` no longer reads. Mark a new test `#[slow]` when it reaches that bound, after making it as cheap as what it proves
 allows. To read every test's time in a binary, run it with libtest's unstable timing report, as a
 diagnostic: `RUSTC_BOOTSTRAP=1 BINARY -Z unstable-options --format json --report-time` in the
@@ -514,11 +515,25 @@ package directory. A slow test runs by hand like any other: plain `cargo test` l
 nothing out. The field-patch conformance test is one:
 `editor-acceptance` runs the same suite in release in a quarter of the time.
 
-A test that waits for the platform's change notifications (FSEvents, inotify,
-`ReadDirectoryChangesW`) to deliver a real change is also marked `#[slow]`, however quick it is
-alone: the delivery latency is the host's, not the test's, and a loaded macOS host delivers
-FSEvents 15 s to 2 min late. Such tests run in every tier above quick and in CI; the quick tier
-keeps the index lane's tests that drive it through injected events, gates and a fixed mount table.
+### Native watcher gate
+
+`cargo xtask test --native-watchers` selects only own-name `native_watch_` tests and runs their binaries
+one at a time after their build, separately from ordinary test execution. It fails if no native
+tests are available or any selected test fails or is ignored. `--quick` and `--native-watchers`
+are mutually exclusive. Ordinary `check` and `test` exclude these tests and report their counts; binaries with no selected ordinary tests say `SKIP`. Real delivery tests also carry `#[slow]`. Direct Cargo tests retain their ordinary selection behavior.
+
+Ordinary tests keep watcher event interpretation, bounded delivery and core owner/index-lane
+invariants over real scratch files with fixture-owned injected notifications and cursors. Quick
+keeps the cheap checks; injected journeys taking 100 ms or more retain `#[slow]`. The
+native gate retains real OS notification delivery, watch removal, replay and core automatic
+updates and interrupted-read recovery. Their shared hang bound is unchanged. See the
+[watcher verification contract](watcher-verification.md).
+
+Run quick and the native gate for watcher changes. Non-quick verification tiers record
+`native-watchers` as a required component after ordinary checks; hosted checks, tag builds and
+local release initiation require it too. A quick pass never qualifies native delivery, and an
+isolated retry never qualifies a failed native gate. Hosted OS-event evidence is not native GPU
+or desktop evidence. Platform qualification remains explicit when it has not run.
 
 ### Tests skip the disk flush
 
@@ -570,6 +585,13 @@ Their `hdiutil` operations retry within that same hang bound when the disk-image
 them, then still wait for the kernel's mount table to show the transition. A persistent command
 failure reports its exit status, stdout and stderr; it never skips the volume checks.
 
+The native watcher tests report the root's received events when a wait reaches the hang bound.
+Their overflow assertions check the first `CaughtUp` boundary within the drained events: a single
+poll can also receive live changes after it, so recovery need not be the last event in that poll.
+The host's notification service can itself stop delivering changes within the hang bound under
+load. An isolated retry does not qualify the aggregate run; keep the failure and its received
+events as evidence, rather than extending the deadline or treating the test as passed.
+
 The GPU spatial-plan replacement test waits for full adoption across scratch-pool and kept-plane
 retirements, checking each budget fallback and then stable residency. Callback scheduling does
 not guarantee that both replacements fit on the same attempt.
@@ -613,13 +635,14 @@ them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 ### Verification tiers
 
 `verify` runs a tier of the commands above and writes one summary. Each tier includes the ones below
-it; the tiers above `quick` run the whole `check` in place of its quick subset:
+it; the tiers above `quick` run ordinary `check` plus the required native watcher gate in place
+of the quick subset:
 
 | Tier | What it runs |
 | --- | --- |
-| `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario but `visibility-monitoring`, including the macOS-only `hidden-analysis`, `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `copy-settings` (mixed-kind white balance with a RAW `--source`), `export`, `settings`, `usage`, `theme`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, `select`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `hdr-merge`, `hdr-merge-view`, `loupe`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
-| `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
+| `quick` | `check --quick`: ordinary checks and tests, excluding native watcher delivery, [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
+| `rendered` | ordinary `check`, the required `native-watchers` gate, `editor-acceptance` and every checkout smoke scenario but `visibility-monitoring`, including the macOS-only `hidden-analysis`, `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `copy-settings` (mixed-kind white balance with a RAW `--source`), `export`, `settings`, `usage`, `theme`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, `select`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `hdr-merge`, `hdr-merge-view`, `loupe`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
+| `timing` | ordinary `check`, the required `native-watchers` gate, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus the macOS-only `visibility-monitoring` scenario in its pool, then `gpu-qualification`, the release gate, alone, given `--manifest` when the run has one, plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel`, a `smoke --scenario look`, a `smoke --scenario raw-detail` and a `smoke --scenario raw-corrections` run per manifest source and one `smoke --scenario performance` run over the first manifest source; its timing part adds an `editor-latency --mode corrections` run per manifest source (`editor-latency-corrections-<id>`) |
 
 When to run each tier is in [when to verify](#when-to-verify). `hardening` needs only `--binary` and
@@ -643,9 +666,11 @@ process of the release `xtask` executable with its console output in `<out>/<com
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
 measures the same file. The rendered and timing tiers run `generate-fixtures` first when any
-generated fixture — 24 MP, 60 MP, hue-wheel, presence, range or tone-ramp — is missing. A component that has
-stopped making progress is killed after twenty minutes, the release gate after three hours, and recorded as `timed_out`. `quick` builds
-nothing up front: its one component, `check --quick`, builds what it tests, runs as a child of the
+generated fixture — 24 MP, 60 MP, hue-wheel, presence, range or tone-ramp — is missing. A component is
+given twenty minutes of wall-clock time, the release gate three hours, before it is killed and
+recorded as `timed_out`; this includes compilation, so a timeout alone does not establish a hung
+test or a lack of progress. `quick` builds nothing up front: its one component, `check --quick`,
+builds what it tests, runs as a child of the
 `xtask` executable running `verify`, and its summary names no editor binary.
 
 The rendered scenarios are the one block that overlaps: they run through a bounded pool, three at a
@@ -1803,7 +1828,7 @@ before hand-off, doc ownership and the hand-off report.
 
 `cargo xtask package` builds an unsigned host development artifact: a ZIP on macOS and Windows or a `.tar.gz` on Linux containing `Luxforge/` with the executable, notices, `build.json` (source revision, dirty state, the reported release, target, profile, binary and lockfile hashes) and `checksums.txt`. The executable of a clean tree embeds its source revision for the [usage statistics build identity](../design/usage-statistics.md#build-identity-and-activation); a dirty tree's embeds none, and its release is `null`. Run smoke against the packaged executable with `--binary`. Packaging is repeatable, not byte-reproducible, and inventory is not a completed license audit. These development macOS bundles are unsigned and not notarized. Tag-build signing is a separate explicit path; stores remain absent, and [automatic updates](../design/auto-update.md) are planned.
 
-Initial public [v0.1 preparation](../design/release-v0.1.md) is planned, with a [task plan](../../tasks/project/release-v0-1.json) and [release notes draft](../releases/v0.1.md). [`cargo xtask release TAG`](releases.md) checks clean synchronized main, runs quick checks and pushes one annotated tag; `--dry-run` skips quick checks and tag mutation after Git preflight. Tag-triggered builds provide versioned packages with all three binaries, optional explicit macOS signing/notarization and automatic pre-release publication; `package` retains the development behavior above. Full corresponding source, distribution review, native qualification and the final release-ready verifier remain open. Hosted build/signing runs are not claimed. The owner chose Apple silicon macOS and x86-64 Linux together; both native qualification gates remain open. Paid Apple membership is active; the owner reports completing signing setup with Keychain profile `luxforge-notarization`; identity/profile validation remains unrun, and the owner explicitly chose automatic pre-release publication on their release-tag pushes.
+Initial public [v0.1 preparation](../design/release-v0.1.md) is planned, with a [task plan](../../tasks/project/release-v0-1.json) and [release notes draft](../releases/v0.1.md). [`cargo xtask release TAG`](releases.md) checks clean synchronized main, runs quick and native watcher checks and pushes one annotated tag; `--dry-run` skips both checks and tag mutation after Git preflight. Tag-triggered builds provide versioned packages with all three binaries, optional explicit macOS signing/notarization and automatic pre-release publication; `package` retains the development behavior above. Full corresponding source, distribution review, native qualification and the final release-ready verifier remain open. Hosted build/signing runs are not claimed. The owner chose Apple silicon macOS and x86-64 Linux together; both native qualification gates remain open. Paid Apple membership is active; the owner reports completing signing setup with Keychain profile `luxforge-notarization`; identity/profile validation remains unrun, and the owner explicitly chose automatic pre-release publication on their release-tag pushes.
 
 ## CI
 
@@ -1827,9 +1852,9 @@ rates and wall-time savings remain unmeasured.
 
 | Lane or machine | What runs | What it proves | What it never proves |
 | --- | --- | --- | --- |
-| Linux CI, no adapter (`ubuntu-24.04`) | `cargo xtask check` (slow tests, doctests and the golden-fixture test included, `luxforge-cli`'s `json_cli` owner journeys among them) and `editor-acceptance` in release, with every Vulkan and EGL driver hidden from the loaders (`VK_DRIVER_FILES`, `VK_ICD_FILENAMES`, `__EGL_VENDOR_LIBRARY_FILENAMES`); then, with the same drivers hidden, `--gpu-adapters` must find no adapter, or the lane fails | The reference renderer's own tests, the catalog owner, the headless `luxforge-json` and the owner journeys, with no graphics adapter at all | Anything of the GPU: its tests skip, saying so, and a skip is not a pass |
+| Linux CI, no adapter (`ubuntu-24.04`) | `cargo xtask check` plus `cargo xtask test --native-watchers` (slow tests, doctests and the golden-fixture test included, `luxforge-cli`'s `json_cli` owner journeys among them) and `editor-acceptance` in release, with every Vulkan and EGL driver hidden from the loaders (`VK_DRIVER_FILES`, `VK_ICD_FILENAMES`, `__EGL_VENDOR_LIBRARY_FILENAMES`); then, with the same drivers hidden, `--gpu-adapters` must find no adapter, or the lane fails | The reference renderer's own tests, the catalog owner, the headless `luxforge-json` and the owner journeys, with no graphics adapter at all | Anything of the GPU: its tests skip, saying so, and a skip is not a pass |
 | Linux CI, software adapter (the same job, after the build) | Mesa's lavapipe installed; with `WGPU_BACKEND=vulkan`, `--gpu-adapters` must find only `Cpu` adapters; then ten smoke scenarios against the packaged binary under Xvfb, the small original renderer smoke (`empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`), `histogram`, `gpu-identity`, `gpu-preview` and `no-gpu-render`, each with `smoke --editor-software-adapter`, so every launch passes `--software-adapter` and draws through the GPU stage on lavapipe, which the editor otherwise refuses until the software adapter is adopted; every launch's recorded adapter must be `Cpu`; the runtime imports are recorded | The rendered journeys, the GPU stage's programs and the GPU-preview path, and the reference renderer as the no-GPU fallback, functionally, on a software Vulkan rasterizer | Native GPU behaviour, performance or tolerance: lavapipe runs on the CPU, so no figure or GPU-against-reference comparison from it is GPU evidence; nor what a software-only host draws by default, which the unit tests and the container run below prove |
-| macOS CI (`macos-14`, a hosted VM) | `cargo xtask check` and `editor-acceptance` in release, the optimized build and packaging; `--gpu-adapters` records whatever adapter the VM exposes | The reference renderer's tests, the owner thread and the build on macOS arm64 | Any GPU result: macOS has no software Metal, a VM's paravirtual Metal device is not native, and no rendered scenario runs |
+| macOS CI (`macos-14`, a hosted VM) | `cargo xtask check`, `cargo xtask test --native-watchers` and `editor-acceptance` in release, the optimized build and packaging; `--gpu-adapters` records whatever adapter the VM exposes | The reference renderer's tests, the owner thread and the build on macOS arm64 | Any GPU result: macOS has no software Metal, a VM's paravirtual Metal device is not native, and no rendered scenario runs |
 | Windows CI | Disabled | Nothing | Anything on Windows |
 | The owner's M4 Pro, native | Every tier on Metal, the rendered scenarios and the GPU tests on its own adapter, and timing on a quiet host | Native GPU evidence on Apple silicon with its driver, which each run's recorded adapter names | Windows or Linux GPU behaviour |
 | An arm64 Linux container on the M4 (Docker Desktop, Mesa lavapipe, no GPU passed through) | The drag-tick benchmark on lavapipe, its own release build in the container ([software adapters](../specs/performance.md#software-adapters)); and, under Xvfb, the `load` scenario as a launch starts by default and `gpu-preview`, `gpu-identity`, `histogram` and `no-gpu-render` with `--editor-software-adapter`, as the CI lane runs them (passed on 2026-10-06, the editor built at `885e741e` and the harness with the software wording of the smoke checks) | What the GPU path costs on a software rasterizer running on the M4's cores, against the reference renderer's frame on the same cores: the measurement the software adapter's adoption is decided on. That a software-only host draws the reference by default (`launch_renderer` `software-adapter-not-adopted`, the status bar's "Reference renderer") and the GPU stage on lavapipe when asked (the session's GPU record with `software: true`, "Software GPU preview"), functionally | A typical PC's figures (the M4's cores are faster than most), Windows' WARP, or any GPU evidence |

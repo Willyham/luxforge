@@ -140,7 +140,7 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 - Optional: **sky replacement** as a deterministic layer over the Select Sky mask; people parts and depth-range masks
 - Last: the typed remote-provider adapter and loopback protocol, Windows and Linux functional checks, qualification and measurement, documentation
 
-**Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create, Lightroom import, Amount and hover preview are delivered. [Preset interaction verification](../tasks/interface/preset-interaction.json) remains open for native filesystem-watcher failures in the aggregate quick check; the scoped tests and M4 Pro / Metal synthetic preset journey pass.
+**Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create, Lightroom import, Amount and hover preview are delivered. [Preset interaction verification](../tasks/interface/preset-interaction.json) keeps native filesystem-watcher qualification separate in its required native gate; the scoped tests and M4 Pro / Metal synthetic preset journey pass.
 - Owner review of the recorded defaults
 - Calibrated RAW white balance preset import in the Lightroom alignment RAW white-balance round; the existing conversion matches white chromaticity, not a measured rendered response
 

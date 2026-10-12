@@ -287,8 +287,17 @@ fn main_result() -> Result {
         }
         "test" => {
             let quick = a.flag("--quick");
+            let native = a.flag("--native-watchers");
             a.done()?;
-            check::tests(&root, quick)?;
+            ensure(
+                !(quick && native),
+                "--quick and --native-watchers are separate gates",
+            )?;
+            if native {
+                check::native_watchers(&root)?;
+            } else {
+                check::tests(&root, quick)?;
+            }
         }
         "build" | "fmt" | "lint" => {
             let release = a.flag("--release");
