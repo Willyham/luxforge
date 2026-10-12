@@ -175,6 +175,9 @@ pub fn build(root: &Path) {
         }
     };
 
+    // Every object, archived once at the end.
+    let mut objects: Vec<PathBuf> = Vec::new();
+
     // ggml: C sources.
     let mut c = cc::Build::new();
     configure(&mut c, false);
@@ -195,7 +198,7 @@ pub fn build(root: &Path) {
         other => panic!("luxforge-diffusion vendors ggml's CPU kernels for aarch64 and x86_64, not {other}"),
     };
     c.file(ggml.join(format!("src/ggml-cpu/arch/{arch}/quants.c")));
-    c.compile("luxforge_ggml_c");
+    objects.extend(c.compile_intermediates());
 
     // ggml: C++ sources.
     let mut cpp = cc::Build::new();
@@ -237,7 +240,7 @@ pub fn build(root: &Path) {
             cpp.file(ggml.join(file));
         }
     }
-    cpp.compile("luxforge_ggml_cpp");
+    objects.extend(cpp.compile_intermediates());
 
     if metal {
         // Objective-C, without ARC as upstream builds it.
@@ -246,14 +249,14 @@ pub fn build(root: &Path) {
         objc.includes(&ggml_includes);
         objc.file(ggml.join("src/ggml-metal/ggml-metal-device.m"));
         objc.file(ggml.join("src/ggml-metal/ggml-metal-context.m"));
-        objc.compile("luxforge_ggml_objc");
+        objects.extend(objc.compile_intermediates());
 
         let mut asm = cc::Build::new();
         asm.flag("-Wno-unused-command-line-argument");
         for kind in METAL_KERNELS {
             asm.file(embed_metal_kernel(&ggml, &generated, kind));
         }
-        asm.compile("luxforge_ggml_metallib");
+        objects.extend(asm.compile_intermediates());
     }
 
     // Third-party C under stable-diffusion.cpp/thirdparty.
@@ -285,7 +288,7 @@ pub fn build(root: &Path) {
         tc.file(third.join("oniguruma").join(file));
     }
     tc.file(third.join("utf8proc/utf8proc.c"));
-    tc.compile("luxforge_sd_thirdparty");
+    objects.extend(tc.compile_intermediates());
 
     // stable-diffusion.cpp itself, upstream's source glob, with the staged engine and the local
     // vocabulary and shim sources in place of the generated vocabulary tables.
@@ -338,16 +341,25 @@ pub fn build(root: &Path) {
     // version.cpp reads these, as CMake sets them from git.
     sdb.define("SDCPP_BUILD_COMMIT", Some(SD_COMMIT))
         .define("SDCPP_BUILD_VERSION", Some(SD_VERSION));
-    sdb.compile("luxforge_sdcpp");
+    objects.extend(sdb.compile_intermediates());
+
+    // One archive of every object: GNU ld resolves an archive's members against each other
+    // whatever their order, but not one archive against an earlier one, and stable-diffusion.cpp,
+    // its third-party code and ggml's C, C++ and Metal parts call each other in both directions.
+    cc::Build::new()
+        .objects(&objects)
+        .compile("luxforge_sdcpp");
 
     if metal {
         for framework in ["Foundation", "Metal", "MetalKit", "Accelerate"] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }
     }
+    // The C++ runtime the archive needs.
     if target_os == "linux" {
-        // The C++ runtime the static libraries need.
         println!("cargo:rustc-link-lib=dylib=stdc++");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=c++");
     }
 }
 
