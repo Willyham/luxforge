@@ -9,7 +9,7 @@ use crate::{
     artifacts::{PREPARED_ARTIFACT_BYTES, candidates::MAX_CANDIDATE_BYTES},
     capabilities::{
         context::ModuleContext,
-        descriptor::{ReadBoundary, TaskDescriptor},
+        descriptor::{ReadBoundary, ResourceDescriptor, TaskDescriptor},
         resources::ResourceState,
     },
     inference::MAX_PROMPT_CHARS,
@@ -146,7 +146,12 @@ impl AiModule {
         let mut resources = Vec::new();
         for model in models {
             capabilities.extend(model.capabilities());
-            resources.extend(model.files().map(|file| file.descriptor()));
+            // Every file is the Generative tier's alone: a client offers it only while the tier's
+            // experiment is on.
+            resources.extend(model.files().map(|file| ResourceDescriptor {
+                flag: Some(GENERATIVE_FLAG.into()),
+                ..file.descriptor()
+            }));
         }
         let mut uses: Vec<String> = Vec::new();
         for model in models {
@@ -199,6 +204,7 @@ impl AiModule {
             ],
             apply: None,
             reads: Some(ReadBoundary::RepairInput),
+            flags: vec![GENERATIVE_FLAG.into()],
         };
         Self {
             descriptor: ModuleDescriptor {

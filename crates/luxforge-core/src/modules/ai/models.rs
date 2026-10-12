@@ -123,6 +123,7 @@ impl ModelFile {
             tradeoff: self.tradeoff.map(Into::into),
             use_restriction: None,
             min_memory_bytes: self.min_memory_bytes,
+            flag: None,
         }
     }
 

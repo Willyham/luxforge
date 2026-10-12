@@ -15,6 +15,7 @@ use super::{
         capability::CapabilityMessage,
         corrections::{CanvasHit, CorrectionMessage},
         remove::{RemoveMessage, RemoveRequest},
+        settings::SettingsMessage,
         sync::SyncMessage,
         view::ViewMessage,
     },
@@ -29,6 +30,7 @@ use crate::{
         GENERATING,
         capabilities::Operation,
         remove::{RemoveModel, TierAction},
+        settings,
     },
 };
 use iced::keyboard::{Key, Modifiers as Keys, key::Named};
@@ -60,6 +62,7 @@ const GENERATOR: &str = "fake-generator";
 const ENCODER: &str = "fake-text-encoder";
 const ORIGIN: &str = "https://developer.luxforge.invalid";
 const TASK: &str = "task.fill-generative";
+const FLAG: &str = "ai.generative";
 
 fn fixture(name: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -84,7 +87,17 @@ impl Drop for Filling {
 }
 
 impl Filling {
+    /// The photograph open in Corrections with the experiment on, as the desktop read it, and
+    /// Remove chosen.
     fn opened() -> Self {
+        let mut filling = Self::corrections(true);
+        filling.choose();
+        filling
+    }
+
+    /// The photograph open in Corrections, with `ai.generative` on or left at its default, off,
+    /// and the flags read as the launch reads them.
+    fn corrections(flag: bool) -> Self {
         let root = std::env::temp_dir().join(format!(
             "luxforge-remove-{}-{}",
             std::process::id(),
@@ -141,6 +154,10 @@ impl Filling {
             agent,
             fake,
         };
+        if flag {
+            filling.api("flags.set", json!({"flag": FLAG, "value": true}));
+        }
+        testing::read_flags(&mut filling.editor);
         filling.enter();
         filling
     }
@@ -164,7 +181,7 @@ impl Filling {
             .0
     }
 
-    /// Enter Corrections with its letter and choose Remove; the tiers are read.
+    /// Enter Corrections with its letter.
     fn enter(&mut self) {
         self.key(Key::Character("q".into()), Keys::empty());
         let _ = call(
@@ -187,9 +204,25 @@ impl Filling {
             "{}",
             self.editor.status.text
         );
+    }
+
+    /// Choose Remove, the kind control's last segment; the tiers are read.
+    fn choose(&mut self) {
         self.remove(RemoveMessage::Choose);
         self.answer_capabilities();
         assert!(self.editor.remove_active());
+    }
+
+    /// Turn the experiment on or off with the Settings sheet's own toggle, its write answered
+    /// as its task would, and run what following it started.
+    fn toggle(&mut self, on: bool) {
+        self.update(Message::Settings(SettingsMessage::Set {
+            flag: FLAG.into(),
+            value: Some(json!(on)),
+        }));
+        super::settings_tests::answer_write(&mut self.editor);
+        answer_reads(&mut self.editor);
+        self.answer_capabilities();
     }
 
     fn key(&mut self, key: Key, modifiers: Keys) {
@@ -248,10 +281,6 @@ impl Filling {
             .expect("the Remove model")
     }
 
-    fn flag(&self) {
-        self.api("flags.set", json!({"flag": "ai.generative", "value": true}));
-    }
-
     /// Grant and install one developer model through the API, as any client does.
     fn install(&self, resource: &str) {
         self.api(
@@ -268,9 +297,8 @@ impl Filling {
         assert_eq!(record["status"], "ready", "{record}");
     }
 
-    /// The flag on and the generator installed: the Generative tier is offered.
+    /// The generator installed: the Generative tier is offered.
     fn ready(&mut self) {
-        self.flag();
         self.install(GENERATOR);
         self.refresh_tiers();
         assert_eq!(self.model().tiers.len(), 1, "{:?}", self.model());
@@ -453,9 +481,9 @@ fn same_request(copied: Value, sent: &(String, Value)) {
     );
 }
 
-/// Remove joins Heal and Clone, and with nothing set up names why no tier is offered with its one
-/// action: the experiment's flag in Settings, then the model's download through the capability
-/// driver; once both are done the Generative tier is listed.
+/// With the experiment on, Remove joins Heal and Clone, and with no model installed names why no
+/// tier is offered with its one action, the model's download through the capability driver; once
+/// it is installed the Generative tier is listed.
 #[test]
 fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
     let mut filling = Filling::opened();
@@ -465,27 +493,15 @@ fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
     assert!(model.chosen);
     assert!(!model.reading, "the tiers were read on choosing Remove");
     assert!(model.tiers.is_empty());
-    let unoffered = model.unoffered.clone().expect("why no tier is offered");
-    assert_eq!(
-        unoffered.reason,
-        "Generative fill is an experiment that is off"
-    );
-    assert!(matches!(
-        unoffered.action,
-        Some((ref label, TierAction::Experiments)) if label == "Settings \u{203a} Experiments"
-    ));
-    assert_eq!(
-        model.generate_reason.as_deref(),
-        Some("Generative fill is an experiment that is off")
-    );
-
-    filling.flag();
-    filling.refresh_tiers();
     let unoffered = filling
         .model()
         .unoffered
         .clone()
         .expect("the model is missing");
+    assert_eq!(
+        filling.model().generate_reason.as_deref(),
+        Some("Generative fill needs its model installed, also listed in Settings \u{203a} Models")
+    );
     assert_eq!(
         unoffered.reason,
         "Generative fill needs its model installed, also listed in Settings \u{203a} Models"
@@ -544,6 +560,141 @@ fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
         model.generate_reason.as_deref(),
         Some("Paint over what to remove first")
     );
+}
+
+/// What the desktop shows of generative fill with `ai.generative` off: nothing. No Remove segment,
+/// no Remove gestures, no AI editing section and no generative model in Settings › Models, its
+/// minimums left off the machine line.
+fn assert_nothing_generative(filling: &Filling) {
+    let editor = &filling.editor;
+    assert!(editor.workspace.corrections.active);
+    assert_eq!(
+        editor.workspace.corrections.remove, None,
+        "no Remove segment"
+    );
+    assert!(!editor.remove_active(), "no Remove gestures");
+    assert!(editor.remove_canvas().is_none());
+    assert!(!editor.remove.chosen);
+    let flags = editor.settings.flags.as_ref();
+    let ai = editor
+        .modules
+        .iter()
+        .find(|module| module.id == AI)
+        .expect("the AI module is registered");
+    assert!(!crate::state::tools::draws_section(ai, flags));
+    let tab = crate::state::models::derive(&editor.modules, flags, &editor.capabilities, None);
+    assert!(
+        tab.rows.iter().all(|row| row.module_id != AI),
+        "{:?}",
+        tab.rows
+    );
+    assert!(
+        crate::state::models::model_modules(&editor.modules, flags).all(|module| module.id != AI)
+    );
+    assert!(
+        tab.machine
+            .as_deref()
+            .is_none_or(|line| !line.contains("klein") && !line.contains("Fake")),
+        "{:?}",
+        tab.machine
+    );
+}
+
+/// With the experiment off, as it is by default, the desktop shows nothing of generative fill and
+/// a press of Remove's message chooses nothing; the host still lists the task and refuses it by
+/// name.
+#[test]
+fn with_the_experiment_off_nothing_of_generative_fill_shows() {
+    let mut filling = Filling::corrections(false);
+    assert_nothing_generative(&filling);
+    filling.remove(RemoveMessage::Choose);
+    filling.answer_capabilities();
+    assert_nothing_generative(&filling);
+    // The band offers Heal and Clone, and a press paints the chosen one.
+    let kinds: Vec<&str> = filling
+        .editor
+        .workspace
+        .corrections
+        .kinds
+        .iter()
+        .map(|kind| kind.title.as_str())
+        .collect();
+    assert_eq!(kinds, ["Heal", "Clone"]);
+    // Pillar 2: the API lists everything and refuses by name.
+    let (listed, _) = call(&filling.owner(), filling.agent, "module.list", json!({})).unwrap();
+    let task = listed["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["id"] == AI)
+        .and_then(|module| module["tasks"].as_array())
+        .and_then(|tasks| tasks.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(task["flags"], json!([FLAG]));
+}
+
+/// Turning the experiment on with Settings' own toggle shows Remove and its models; turning it
+/// off while Remove is chosen leaves Remove for the band's kind, Heal, and shows nothing of it
+/// again; on once more, Remove is offered but not chosen.
+#[test]
+fn the_experiment_toggle_shows_remove_and_leaves_it_when_turned_off() {
+    let mut filling = Filling::corrections(false);
+    assert_nothing_generative(&filling);
+
+    filling.toggle(true);
+    assert!(
+        settings::toggle_on(filling.editor.settings.flags.as_ref(), FLAG),
+        "the desktop follows its own write"
+    );
+    let model = filling.model();
+    assert!(!model.chosen, "offered, not chosen");
+    let flags = filling.editor.settings.flags.as_ref();
+    let tab = crate::state::models::derive(
+        &filling.editor.modules,
+        flags,
+        &filling.editor.capabilities,
+        None,
+    );
+    assert!(
+        tab.rows.iter().any(|row| row.module_id == AI),
+        "{:?}",
+        tab.rows
+    );
+    filling.choose();
+    let model = filling.model();
+    assert!(!model.reading, "{model:?}");
+    assert_eq!(
+        model
+            .unoffered
+            .as_ref()
+            .map(|unoffered| unoffered.reason.as_str()),
+        Some("Generative fill needs its model installed, also listed in Settings \u{203a} Models")
+    );
+
+    filling.toggle(false);
+    assert_nothing_generative(&filling);
+    let band = &filling.editor.workspace.corrections;
+    assert_eq!(
+        band.kinds
+            .get(band.new_kind)
+            .map(|kind| kind.title.as_str()),
+        Some("Heal"),
+        "the band is back on its default kind"
+    );
+
+    filling.toggle(true);
+    assert!(!filling.model().chosen);
+    assert!(!filling.editor.remove_active());
+}
+
+/// The flags are off until the launch's own read answers, so nothing behind them shows first.
+#[test]
+fn before_the_flags_are_read_remove_is_not_offered() {
+    let mut filling = Filling::corrections(true);
+    filling.editor.settings.flags = None;
+    filling.update(Message::Remove(RemoveMessage::Choose));
+    assert_nothing_generative(&filling);
 }
 
 /// A painted selection and Generate send the tier's fill request, the one Copy as JSON copies; the

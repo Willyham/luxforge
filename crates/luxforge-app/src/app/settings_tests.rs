@@ -80,7 +80,7 @@ pub(super) fn answer_preference(editor: &mut Editor) {
 }
 
 /// Answer the write in flight as its task would.
-fn answer_write(editor: &mut Editor) {
+pub(super) fn answer_write(editor: &mut Editor) {
     let (flag, value) = editor.settings.writing.clone().expect("a write in flight");
     let answer = call_own(
         &editor.owner,
@@ -126,7 +126,13 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
         .collect();
     assert_eq!(
         ids,
-        ["developer", RANGE_MASKS, "ai.generative", "proof.choice", "proof.number"]
+        [
+            "developer",
+            RANGE_MASKS,
+            "ai.generative",
+            "proof.choice",
+            "proof.number"
+        ]
     );
 
     set(&mut editor, "proof.choice", Some(json!("second")));

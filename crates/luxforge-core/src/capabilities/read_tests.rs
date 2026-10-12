@@ -62,6 +62,7 @@ fn task(id: &str, reads: Option<ReadBoundary>) -> TaskDescriptor {
         ],
         apply: None,
         reads,
+        flags: Vec::new(),
     }
 }
 

@@ -10,6 +10,7 @@
 use super::{
     MenuTarget,
     capabilities::{CapabilityStore, ModuleCapabilities, human_bytes, version_label},
+    settings::resource_offered,
 };
 use luxforge_core::{
     ModuleDescriptor,
@@ -18,6 +19,7 @@ use luxforge_core::{
         resources::{self, ResourceState},
         runtime,
     },
+    flags::FlagList,
 };
 use serde_json::{Value, json};
 
@@ -96,15 +98,19 @@ pub(crate) struct ModelsModel {
     pub(crate) errors: Vec<String>,
 }
 
-/// The modules that hold a model, in registry order.
-pub(crate) fn model_modules(
-    modules: &[ModuleDescriptor],
-) -> impl Iterator<Item = &ModuleDescriptor> {
-    modules.iter().filter(|module| !held(module).is_empty())
+/// The modules that hold a model the desktop offers, in registry order.
+pub(crate) fn model_modules<'a>(
+    modules: &'a [ModuleDescriptor],
+    flags: Option<&'a FlagList>,
+) -> impl Iterator<Item = &'a ModuleDescriptor> + 'a {
+    modules
+        .iter()
+        .filter(move |module| !held(module, flags).is_empty())
 }
 
-/// The resources `module` holds through `local-runtime` capabilities, in declaration order.
-fn held(module: &ModuleDescriptor) -> Vec<&ResourceDescriptor> {
+/// The resources `module` holds through `local-runtime` capabilities, in declaration order: those
+/// behind an experiment flag only while it is on, so a model nobody can use yet is not listed.
+fn held<'a>(module: &'a ModuleDescriptor, flags: Option<&FlagList>) -> Vec<&'a ResourceDescriptor> {
     module
         .resources
         .iter()
@@ -113,6 +119,7 @@ fn held(module: &ModuleDescriptor) -> Vec<&ResourceDescriptor> {
                 matches!(&capability.kind, CapabilityKind::LocalRuntime { resource: held, .. } if *held == resource.id)
             })
         })
+        .filter(|resource| resource_offered(flags, resource))
         .collect()
 }
 
@@ -129,6 +136,7 @@ pub(crate) fn memory_text(bytes: u64) -> String {
 /// The tab, from the descriptors and the statuses the store holds.
 pub(crate) fn derive(
     modules: &[ModuleDescriptor],
+    flags: Option<&FlagList>,
     store: &CapabilityStore,
     menu: Option<&MenuTarget>,
 ) -> ModelsModel {
@@ -137,7 +145,7 @@ pub(crate) fn derive(
     let mut minimums = Vec::new();
     let mut read_any = false;
     let mut budget = None;
-    for module in model_modules(modules) {
+    for module in model_modules(modules, flags) {
         let state = store.module(&module.id);
         let status = state.status.as_ref();
         read_any |= status.is_some();
@@ -152,7 +160,7 @@ pub(crate) fn derive(
         if let Some(runtime) = status.and_then(|status| status.runtime.as_ref()) {
             budget = Some((runtime.held_bytes, runtime.budget_bytes));
         }
-        for resource in held(module) {
+        for resource in held(module, flags) {
             if let Some(minimum) = resource.min_memory_bytes {
                 minimums.push((resource.title.clone(), minimum));
             }
@@ -439,7 +447,7 @@ mod tests {
     #[test]
     fn only_a_model_is_listed_and_an_unread_tab_is_loading() {
         let modules = [module()];
-        let model = derive(&modules, &CapabilityStore::default(), None);
+        let model = derive(&modules, None, &CapabilityStore::default(), None);
         assert_eq!(
             model.rows.len(),
             1,
@@ -485,7 +493,7 @@ mod tests {
             module_id: "m".into(),
             resource_id: "seg".into(),
         };
-        let model = derive(&modules, &store, Some(&menu));
+        let model = derive(&modules, None, &store, Some(&menu));
         let row = &model.rows[0];
         assert_eq!(row.state, "Loaded");
         assert!(row.removable && row.enabled && !row.menu_open);
@@ -516,7 +524,7 @@ mod tests {
             Vec::new(),
             Some(4 << 30),
         ));
-        let model = derive(&modules, &store, None);
+        let model = derive(&modules, None, &store, None);
         let row = &model.rows[0];
         assert_eq!(row.fits, Some(false));
         assert_eq!(
@@ -556,12 +564,12 @@ mod tests {
         };
         store.module_mut("m").status = Some(at(0.35, "downloading"));
         assert_eq!(
-            derive(&modules, &store, None).rows[0].state,
+            derive(&modules, None, &store, None).rows[0].state,
             "Installing 35%"
         );
         store.module_mut("m").status = Some(at(1.0, "preparing the model"));
         assert_eq!(
-            derive(&modules, &store, None).rows[0].state,
+            derive(&modules, None, &store, None).rows[0].state,
             "Installing · preparing the model"
         );
     }

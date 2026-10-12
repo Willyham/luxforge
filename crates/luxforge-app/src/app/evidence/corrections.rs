@@ -254,6 +254,11 @@ impl Editor {
             }
             // Remove is the kind control's third segment, which sends Remove's own message.
             CorrectionStep::Kind(kind) if kind == REMOVE_KIND => {
+                if self.workspace.corrections.remove.is_none() {
+                    return self.fail_step(
+                        "the kind control has no Remove segment: no fill task is offered",
+                    );
+                }
                 self.remove_reads.wait = Some(RemoveWait::Done);
                 tasks.push(self.update(Message::Remove(RemoveMessage::Choose)));
             }
@@ -345,7 +350,6 @@ impl Editor {
                             module_id: module_id.clone(),
                             resource: resource.clone(),
                         },
-                        Some((_, TierAction::Experiments)) => RemoveMessage::Experiments,
                         None => return Err("Remove offers no download".into()),
                     }
                 };

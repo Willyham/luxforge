@@ -60,6 +60,7 @@ impl Models {
         })
         .unwrap();
         let host = HostConfig {
+            preferences_dir: Some(root.join("config")),
             config_dir: Some(root.join("config")),
             resource_dir: Some(root.join("resources")),
             secrets: Arc::new(MemorySecretStore::new()),
@@ -200,8 +201,9 @@ fn the_models_tab_is_listed_only_with_a_model_and_shows_it_against_this_machine(
         sent.iter()
             .filter(|request| request["method"] == "module.status")
             .count(),
-        2,
-        "opening the tab reads each model module's status, the proof's and luxforge.ai's: {sent:?}"
+        1,
+        "opening the tab reads each listed model module's status, the proof's alone while \
+         luxforge.ai's experiment is off: {sent:?}"
     );
     let tabs = &models.editor.workspace.settings.tabs;
     assert!(tabs.contains(&SettingsTab::Models), "{tabs:?}");
@@ -224,9 +226,12 @@ fn the_models_tab_is_listed_only_with_a_model_and_shows_it_against_this_machine(
     assert!(!row.removable);
     assert_eq!(
         tab.machine.as_deref(),
-        Some(
-            "This machine has 16 GB of memory. FLUX.2 klein 4B with the object removal LoRA needs 16 GB; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB."
-        )
+        Some("This machine has 16 GB of memory. Proof segmenter needs 2 GB.")
+    );
+    assert!(
+        tab.rows.iter().all(|row| row.module_id == MODULE),
+        "no generative model is listed with its experiment off: {:?}",
+        tab.rows
     );
     assert!(tab.resident.is_empty());
     // What a frame records is the tab as drawn beside the status it was drawn from.
@@ -244,6 +249,57 @@ fn the_models_tab_is_listed_only_with_a_model_and_shows_it_against_this_machine(
     assert_eq!(summary["models"]["tiers"], json!([]));
 }
 
+/// The generative models follow `ai.generative` as the desktop last read it: listed, with their
+/// minimums on the machine line, once it is on, and gone again once it is off.
+#[test]
+fn the_generative_models_are_listed_only_while_their_experiment_is_on() {
+    let mut models = Models::start(Some(16 << 30));
+    let flag = |models: &mut Models, on: bool| {
+        models
+            .api("flags.set", json!({"flag": "ai.generative", "value": on}))
+            .unwrap();
+        // As the open sheet reads the flags again on the flags.set event.
+        super::settings_tests::answer_read(&mut models.editor);
+    };
+    flag(&mut models, true);
+    let sent = models.open();
+    assert_eq!(
+        sent.iter()
+            .filter(|request| request["method"] == "module.status")
+            .count(),
+        2,
+        "the proof's status and luxforge.ai's: {sent:?}"
+    );
+    let titles: Vec<&str> = models
+        .tab()
+        .rows
+        .iter()
+        .filter(|row| row.module_id == "luxforge.ai")
+        .map(|row| row.title.as_str())
+        .collect();
+    assert!(
+        titles.contains(&"FLUX.2 klein 4B with the object removal LoRA")
+            && titles.contains(&"Text encoder for Replace (Qwen3-4B)"),
+        "{titles:?}"
+    );
+    assert_eq!(
+        models.tab().machine.as_deref(),
+        Some(
+            "This machine has 16 GB of memory. FLUX.2 klein 4B with the object removal LoRA needs 16 GB; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB."
+        )
+    );
+    flag(&mut models, false);
+    assert!(
+        models.tab().rows.iter().all(|row| row.module_id == MODULE),
+        "{:?}",
+        models.tab().rows
+    );
+    assert_eq!(
+        models.tab().machine.as_deref(),
+        Some("This machine has 16 GB of memory. Proof segmenter needs 2 GB.")
+    );
+}
+
 #[test]
 fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
     let mut models = Models::start(Some(1 << 30));
@@ -252,9 +308,7 @@ fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
     assert_eq!(row.fits, Some(false));
     assert_eq!(
         models.tab().machine.as_deref(),
-        Some(
-            "This machine has 1 GB of memory. FLUX.2 klein 4B with the object removal LoRA needs 16 GB, more than it has; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB, more than it has."
-        )
+        Some("This machine has 1 GB of memory. Proof segmenter needs 2 GB, more than it has.")
     );
     models.grant();
     let refused = models

@@ -13,6 +13,7 @@ use crate::state::{
     Inputs,
     canvas::{Notice, NoticeAction, NoticeIcon, NoticeTone},
     number::{NumberSpec, number_text},
+    settings::{resource_offered, task_offered},
 };
 use luxforge_core::{
     AssetId, EditorState, ModuleDescriptor, ParameterKind,
@@ -23,6 +24,7 @@ use luxforge_core::{
         resources::{ResourceRow, ResourceState},
         settings::{FieldRead, ProfileStatus, SettingsRead, SettingsState},
     },
+    flags::FlagList,
     jobs::{JobRecord, JobStatus},
 };
 use serde::Deserialize;
@@ -35,6 +37,18 @@ const MAX_TRACKED: usize = 16;
 /// A module the capability surface applies to: it declares settings, resources or tasks.
 pub(crate) fn declares(module: &ModuleDescriptor) -> bool {
     module.settings.is_some() || !module.resources.is_empty() || !module.tasks.is_empty()
+}
+
+/// A module the desktop draws a capability block for: it declares settings, or a resource or task
+/// that is not behind an experiment flag that is off. A module whose every resource and task waits
+/// on such a flag, as AI editing's wait on `ai.generative`, shows nothing until it is on.
+pub(crate) fn declares_offered(module: &ModuleDescriptor, flags: Option<&FlagList>) -> bool {
+    module.settings.is_some()
+        || module
+            .resources
+            .iter()
+            .any(|resource| resource_offered(flags, resource))
+        || module.tasks.iter().any(|task| task_offered(flags, task))
 }
 
 /// `module.status` as the desktop reads it: every declared resource, how many grants and denials
@@ -467,7 +481,8 @@ pub(crate) enum TaskControlState {
 /// The capability block of one module's section, or `None` for a module that declares nothing it
 /// covers.
 pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<CapabilityModel> {
-    if !declares(module) {
+    let flags = inputs.settings.flags.as_ref();
+    if !declares_offered(module, flags) {
         return None;
     }
     let state = inputs.capabilities.module(&module.id);
@@ -479,6 +494,7 @@ pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<
         resources: module
             .resources
             .iter()
+            .filter(|declared| resource_offered(flags, declared))
             .map(|declared| resource_row(declared, state))
             .collect(),
         fields: settings_form(module, state),

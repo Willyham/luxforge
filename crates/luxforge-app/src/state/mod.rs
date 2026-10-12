@@ -2278,7 +2278,7 @@ mod tests {
             modules
                 .iter()
                 .filter(|module| module.applies_to(luxforge_core::SourceTag::Raw))
-                .filter(|module| !module.developer && tools::draws_section(module))
+                .filter(|module| !module.developer && tools::draws_section(module, None))
                 .count(),
             "a module with nothing of its own to draw has no section"
         );
@@ -4153,7 +4153,7 @@ mod tests {
                 // development's controls are Basic's variants.
                 assert_eq!(
                     sections.contains(&id.as_str()),
-                    applies && tools::draws_section(module),
+                    applies && tools::draws_section(module, scene.settings.flags.as_ref()),
                     "{id} has a section on a {label} photo exactly when it applies and declares \
                      controls"
                 );

@@ -91,6 +91,7 @@ fn task(id: &str, uses: &str) -> TaskDescriptor {
         ],
         apply: None,
         reads: None,
+        flags: Vec::new(),
     }
 }
 

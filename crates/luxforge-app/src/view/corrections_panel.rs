@@ -310,7 +310,6 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
                     module_id: module_id.clone(),
                     resource: resource.clone(),
                 },
-                TierAction::Experiments => RemoveMessage::Experiments,
             };
             group = group.push(remove_button(
                 label,

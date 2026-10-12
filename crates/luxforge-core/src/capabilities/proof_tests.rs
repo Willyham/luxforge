@@ -65,6 +65,7 @@ impl Publisher {
                 ],
                 apply: None,
                 reads: None,
+                flags: Vec::new(),
             }],
             ..ModuleDescriptor::default()
         };
