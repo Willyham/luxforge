@@ -387,8 +387,8 @@ fn update_install_needs_authority_an_update_and_no_running_export() {
     let destination = harness.dir.join("exported.jpg");
     let export = harness.ok(
         harness.client,
-        "export.jpeg",
-        json!({
+        "export.write",
+        json!({"settings": crate::export::settings::baseline_json(),
             "asset_id": asset,
             "destination": destination,
             "mutation": {"request_id": "export", "actor": "test"},

@@ -520,7 +520,7 @@ fn detail_original_hashes_unchanged_and_exact_export_uses_the_saved_entry() {
         json!({"luminance":40,"colour":40,"sharpening":50}),
     )["created_entry_id"]
         .clone();
-    let exported=s.owner.call(s.client,"export.jpeg",json!({"asset_id":s.asset,"entry_id":entry,"destination":s.directory.join("detail.jpg"),"mutation":library_mutation("export")})).unwrap();
+    let exported=s.owner.call(s.client,"export.write",json!({"asset_id":s.asset,"settings":luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),"entry_id":entry,"destination":s.directory.join("detail.jpg"),"mutation":library_mutation("export")})).unwrap();
     s.mutate("edit.set-detail", json!({"sharpening":90}));
     let job = client::settle(&s.owner, s.client, &exported["job_id"]).unwrap();
     assert_eq!(job["status"], "ready");
@@ -549,8 +549,8 @@ fn detail_missing_provider_refuses_affected_outputs_and_keeps_data() {
     for (method, params) in [
         ("render.sample", json!({"asset_id":s.asset,"x":0,"y":0})),
         (
-            "export.jpeg",
-            json!({"asset_id":s.asset,"destination":s.directory.join("missing.jpg"),"mutation":library_mutation("missing-export")}),
+            "export.write",
+            json!({"asset_id":s.asset,"settings":luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),"destination":s.directory.join("missing.jpg"),"mutation":library_mutation("missing-export")}),
         ),
     ] {
         let error = missing.refused(c, method, params).unwrap();

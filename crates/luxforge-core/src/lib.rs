@@ -105,6 +105,14 @@ pub use editor::{
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
+/// An export's settings, its presets and what a plan says of it (`docs/design/export-settings.md`).
+pub use export::{
+    presets::ExportPreset,
+    settings::{
+        Chroma, ExportFolder, ExportFormat, ExportSettings, FormatSettings, MetadataLevel, Notice,
+        OutputSize,
+    },
+};
 /// The RAW test cameras' process-wide switch, which the desktop turns on only for a launch with
 /// `LUXFORGE_TEST_CAMERAS=1`: see `luxforge_raw::admit_test_cameras`.
 pub use luxforge_raw::{admit_test_cameras, test_cameras_admitted};

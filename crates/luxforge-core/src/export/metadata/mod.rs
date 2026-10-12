@@ -8,6 +8,10 @@
 //!   `Exif\0\0` header: the kept fields plus Orientation 1, ColorSpace sRGB, PixelXDimension,
 //!   PixelYDimension, ExifVersion and Software.
 //! - `field_names()` lists the kept fields by their EXIF names, in a stable order.
+//! - `at_level(level)` keeps exactly the fields an export's metadata level writes: none, Artist
+//!   and Copyright, every field but the GPS group, or every field. Whether the export writes EXIF
+//!   at all is the level's ([`MetadataLevel::writes_exif`]): none writes no segment, not even the
+//!   structural fields.
 //! - `jpeg_orientation(bytes)` is a JPEG file's EXIF orientation, 1 when absent or invalid: what
 //!   the import turns the decoded pixels upright by.
 //!
@@ -21,6 +25,7 @@ pub(crate) mod header;
 mod read;
 mod write;
 
+use super::settings::MetadataLevel;
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -131,6 +136,9 @@ const FIELDS: [Field; 33] = {
 /// Copyright keeps its NUL-separated photographer and editor parts; every other ASCII field ends
 /// at its first NUL.
 const COPYRIGHT: u16 = 0x8298;
+
+/// The fields the copyright level keeps: Artist and Copyright.
+const COPYRIGHT_FIELDS: [u16; 2] = [0x013b, COPYRIGHT];
 
 /// The descriptive fields, dropped first when the kept fields would not fit one APP1 segment.
 const DESCRIPTIVE: [u16; 3] = [0x010e, 0x013b, COPYRIGHT];
@@ -311,6 +319,27 @@ impl CaptureMetadata {
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.fields.is_empty()
+    }
+
+    /// The fields an export at `level` writes, from these: none for none; Artist and Copyright for
+    /// copyright; every one but the GPS group for no_location; every one for all.
+    pub(crate) fn at_level(&self, level: MetadataLevel) -> Self {
+        let kept = |field: &Field| match level {
+            MetadataLevel::None => false,
+            MetadataLevel::Copyright => {
+                field.ifd == Ifd::Primary && COPYRIGHT_FIELDS.contains(&field.tag)
+            }
+            MetadataLevel::NoLocation => field.ifd != Ifd::Gps,
+            MetadataLevel::All => true,
+        };
+        Self {
+            fields: self
+                .fields
+                .iter()
+                .filter(|(index, _)| kept(&FIELDS[*index]))
+                .cloned()
+                .collect(),
+        }
     }
 
     /// The kept fields' EXIF names: IFD0, then Exif, then GPS, each by tag.
