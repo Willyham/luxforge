@@ -20,6 +20,7 @@
 
 use super::camera::{Lens, MAX_RADIAL, Rotation, rotation_from};
 use super::linalg::{self, V3};
+use super::matching::Correspondence;
 use crate::{Cancel, Error};
 use rayon::prelude::*;
 
@@ -37,7 +38,7 @@ const RADIAL_STEP: f64 = 1e-6;
 pub(crate) struct PairObservations {
     pub(crate) a: usize,
     pub(crate) b: usize,
-    pub(crate) points: Vec<((f64, f64), (f64, f64))>,
+    pub(crate) points: Vec<Correspondence>,
     pub(crate) weights: Vec<f64>,
 }
 
