@@ -23,6 +23,7 @@ use crate::{
         locate::Phase,
     },
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, paths::temp_dir};
 use serde_json::{Value, json};
 use std::{
@@ -543,7 +544,8 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
 /// fingerprint, interpretation, Original entry, capture row with its place, source folder and
 /// burst, the committed picks cleared, and every original unchanged.
 #[test]
-fn slow_develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
+#[slow]
+fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
     let harness = Harness::new("batches");
     let trip = harness.dir.join("trip");
     let k1 = photo(
@@ -796,7 +798,8 @@ fn slow_develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each
 /// volume is relinked by that file. A single file no index lists develops too. Each report names
 /// the catalog folder each photograph is in after it.
 #[test]
-fn slow_develop_picks_links_identical_files_and_relinks_a_missing_original_only_on_a_match() {
+#[slow]
+fn develop_picks_links_identical_files_and_relinks_a_missing_original_only_on_a_match() {
     let harness = Harness::new("link");
     let a = photo(
         &harness.dir.join("shoot").join("a.jpg"),
@@ -909,7 +912,8 @@ fn slow_develop_picks_links_identical_files_and_relinks_a_missing_original_only_
 /// bytes leaves its pick refused and picked unless `confirm_removable` develops it from the card.
 /// Neither the card's files nor the copies change.
 #[test]
-fn slow_develop_picks_uses_verified_card_copies_and_otherwise_needs_confirm_removable() {
+#[slow]
+fn develop_picks_uses_verified_card_copies_and_otherwise_needs_confirm_removable() {
     let harness = Harness::new("card");
     let dcim = harness.dir.join("card").join("DCIM").join("100NZ8_1");
     let x = photo(&dcim.join("x.jpg"), &Shot::at("2026:09:12 10:00:00"));
@@ -1125,7 +1129,8 @@ fn develop_picks_reports_a_failing_file_and_leaves_it_picked() {
 /// A retried Develop answers its first job and changes nothing again, and after a restart it is
 /// answered as a finished job with the report its recorded changes give.
 #[test]
-fn slow_develop_picks_answers_a_retry_with_the_first_result() {
+#[slow]
+fn develop_picks_answers_a_retry_with_the_first_result() {
     let harness = Harness::new("retry");
     let trip = harness.dir.join("trip");
     let k1 = photo(&trip.join("k1.jpg"), &Shot::at("2026:09:12 10:00:00"));
@@ -1171,7 +1176,8 @@ fn slow_develop_picks_answers_a_retry_with_the_first_result() {
 /// refused; an edited photograph
 /// refuses the undo, naming it, and nothing changes.
 #[test]
-fn slow_develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photograph() {
+#[slow]
+fn develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photograph() {
     let harness = Harness::new("undo");
     let trip = harness.dir.join("trip");
     let k1 = photo(&trip.join("k1.jpg"), &Shot::at("2026:09:12 10:00:00"));
@@ -1236,7 +1242,8 @@ fn slow_develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photogra
 /// announced once, and a retry of that undo answers them all; redoing it is refused, as a
 /// sent-back photograph is developed again with `pick.develop`.
 #[test]
-fn slow_develop_picks_undo_of_a_develop_in_batches_is_one_step() {
+#[slow]
+fn develop_picks_undo_of_a_develop_in_batches_is_one_step() {
     let harness = Harness::new("undo-batches");
     let trip = harness.dir.join("trip");
     let files: Vec<PathBuf> = (0..3)
@@ -1305,7 +1312,8 @@ fn slow_develop_picks_undo_of_a_develop_in_batches_is_one_step() {
 /// refuses a photograph with an edit, one in a collection and one whose original is missing, each
 /// saying why.
 #[test]
-fn slow_develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
+#[slow]
+fn develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
     let harness = Harness::new("send-back");
     let trip = harness.dir.join("trip");
     let paths: Vec<PathBuf> = (0..4)
@@ -1443,7 +1451,8 @@ fn slow_develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
 /// change that links the file and clears its pick, keeping its history; undoing the Develop returns
 /// it to Removed with the time it was removed and picks its file again.
 #[test]
-fn slow_develop_picks_puts_back_a_removed_photograph_whose_file_it_develops() {
+#[slow]
+fn develop_picks_puts_back_a_removed_photograph_whose_file_it_develops() {
     let harness = Harness::new("put-back");
     let a = photo(
         &harness.dir.join("shoot").join("a.jpg"),
@@ -1536,7 +1545,8 @@ fn slow_develop_picks_puts_back_a_removed_photograph_whose_file_it_develops() {
 /// entry with no event names, made with that event's span; an unknown event, two default entries,
 /// an unknown folder and a new folder whose name is taken are each refused, developing nothing.
 #[test]
-fn slow_develop_picks_into_sends_each_event_to_the_folder_it_names() {
+#[slow]
+fn develop_picks_into_sends_each_event_to_the_folder_it_names() {
     let harness = Harness::new("into");
     let trip = harness.dir.join("trip");
     let k1 = photo(&trip.join("k1.jpg"), &Shot::at("2026:09:12 10:00:00"));
@@ -1696,7 +1706,8 @@ fn at(name: &str, path: &str) -> (String, String) {
 /// made it, and a year or day folder none. Undoing the Develop deletes the folders it made and
 /// leaves the ones it found.
 #[test]
-fn slow_develop_picks_files_each_photograph_under_its_year_place_and_day() {
+#[slow]
+fn develop_picks_files_each_photograph_under_its_year_place_and_day() {
     let harness = Harness::new("place");
     let trip = harness.dir.join("trip");
     let zurich = |time: &str| Shot::at(time).in_place(47.3769, 8.5417);
@@ -1855,7 +1866,8 @@ fn slow_develop_picks_files_each_photograph_under_its_year_place_and_day() {
 /// picks the folder its last developed photograph went into, without. A file no index lists, as an
 /// opened file is, takes its folder's name as its place and its year and day from its header.
 #[test]
-fn slow_develop_picks_proposes_a_place_a_named_folder_or_the_folder_an_earlier_develop_made() {
+#[slow]
+fn develop_picks_proposes_a_place_a_named_folder_or_the_folder_an_earlier_develop_made() {
     let harness = Harness::new("proposals");
     let nowhere = |time: &str| Shot {
         position: None,
@@ -1988,7 +2000,8 @@ fn slow_develop_picks_proposes_a_place_a_named_folder_or_the_folder_an_earlier_d
 /// files keeps nothing. A later one-file Develop replaces what an earlier one kept, sending its
 /// photograph back drops it, and the prepared photograph stays prepared throughout.
 #[test]
-fn slow_develop_picks_keeps_one_files_read_for_the_preparation_that_follows() {
+#[slow]
+fn develop_picks_keeps_one_files_read_for_the_preparation_that_follows() {
     let harness = Harness::new("kept-read");
     let trip = harness.dir.join("trip");
     let paths: Vec<PathBuf> = (0..5)

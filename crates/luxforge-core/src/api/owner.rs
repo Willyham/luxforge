@@ -3283,6 +3283,7 @@ pub(super) fn analysis_request(
 
 #[cfg(test)]
 mod tests {
+    use luxforge_test_macros::slow;
     #[test]
     fn preview_intent_carries_only_its_view_settings() {
         let bounds = ProxyBounds {
@@ -4094,7 +4095,8 @@ mod tests {
     /// asset than its filter does not, so it answers empty at its timeout, with the sequence the
     /// log had by then.
     #[test]
-    fn slow_a_parked_wait_wakes_on_the_next_event_past_its_cursor() {
+    #[slow]
+    fn a_parked_wait_wakes_on_the_next_event_past_its_cursor() {
         let catalog = temp("event-wait-wake.sqlite");
         let _ = std::fs::remove_file(&catalog);
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
@@ -4168,7 +4170,8 @@ mod tests {
     /// as `events.since` does; a cursor the log is already past, or beyond, answers at once with
     /// what `events.since` would; and a timeout above the limit is refused, not clamped.
     #[test]
-    fn slow_an_events_wait_answers_at_its_timeout_and_at_once_when_the_log_already_has_something() {
+    #[slow]
+    fn an_events_wait_answers_at_its_timeout_and_at_once_when_the_log_already_has_something() {
         let catalog = temp("event-wait-timeout.sqlite");
         let _ = std::fs::remove_file(&catalog);
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
@@ -4362,7 +4365,8 @@ mod tests {
     /// to wait for answers at once. Nothing polls: each answer is the owner handling the message
     /// that ended the wait.
     #[test]
-    fn slow_a_source_wait_answers_when_its_job_ends_or_its_client_leaves_it() {
+    #[slow]
+    fn a_source_wait_answers_when_its_job_ends_or_its_client_leaves_it() {
         let catalog = temp("source-wait.sqlite");
         let photo = temp("source-wait.jpg");
         let _ = std::fs::remove_file(&catalog);
@@ -6991,7 +6995,8 @@ mod tests {
     /// refuses, and a value just outside it, which is refused where the request is parsed in the
     /// generic check's words, naming the field. Every kind a host method declares is exercised.
     #[test]
-    fn slow_every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one() {
+    #[slow]
+    fn every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one() {
         let catalog = temp("declared.sqlite");
         let _ = std::fs::remove_file(&catalog);
         let mut registry = ModuleRegistry::builtin();
@@ -7673,7 +7678,8 @@ mod tests {
     /// layer, of an entry and of a draft, equals the full render at its pixel and names the
     /// reference renderer that drew it.
     #[test]
-    fn slow_a_spatial_sample_is_answered_off_the_owner_against_the_entry_it_was_planned_against() {
+    #[slow]
+    fn a_spatial_sample_is_answered_off_the_owner_against_the_entry_it_was_planned_against() {
         let catalog = temp("point-worker.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let sampler = owner.register();
@@ -7817,7 +7823,8 @@ mod tests {
     /// is read off the owner — the owner answers everything else meanwhile, and a disconnect drops
     /// only that client's waiting sample.
     #[test]
-    fn slow_a_full_tile_queue_refuses_and_a_disconnect_drops_the_waiting_sample() {
+    #[slow]
+    fn a_full_tile_queue_refuses_and_a_disconnect_drops_the_waiting_sample() {
         let catalog = temp("point-queue.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let editor = owner.register();
@@ -8360,7 +8367,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_restoration_colour_limited_stroke_and_mask_input_keep_content_coordinates_with_warps() {
+    #[slow]
+    fn restoration_colour_limited_stroke_and_mask_input_keep_content_coordinates_with_warps() {
         let catalog = temp("detail-warp-mask-input.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let painter = owner.register();
@@ -8551,8 +8559,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_restoration_mask_colour_input_matches_actual_float_run_selection_with_and_without_detail()
-     {
+    #[slow]
+    fn restoration_mask_colour_input_matches_actual_float_run_selection_with_and_without_detail() {
         // A hard range edge separates the true float from its RGB16 rounding. The white case
         // proves that values above one survive the run, with ordinary UI-representable feathers.
         for detail in [false, true] {
@@ -9168,7 +9176,8 @@ mod tests {
     /// read by the tile service on its own thread, while the owner, on its thread named for it,
     /// evaluates no tile; a drafted stroke's later ticks and its commit reuse its seed.
     #[test]
-    fn slow_every_pixel_read_leaves_the_owner_thread() {
+    #[slow]
+    fn every_pixel_read_leaves_the_owner_thread() {
         for detail in [false, true] {
             let catalog = temp(&format!("every-read-off-owner-{detail}.sqlite"));
             let registry = crate::editor::SampleModule::registry();
@@ -9583,7 +9592,8 @@ mod tests {
     /// `cancelled`; the newer one is read and commits. Another client's Auto on the same
     /// photograph is not this client's request and supersedes nothing.
     #[test]
-    fn slow_a_newer_auto_tone_from_the_same_client_supersedes_the_parked_one() {
+    #[slow]
+    fn a_newer_auto_tone_from_the_same_client_supersedes_the_parked_one() {
         let catalog = temp("auto-tone-superseded-again.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
@@ -9682,7 +9692,8 @@ mod tests {
     /// `render.sample` at once, and another client's `query.auto-tone` reads its grid and waits
     /// behind the solve, in order. Both answer the same values.
     #[test]
-    fn slow_auto_tones_solve_runs_on_the_analysis_worker_while_the_tile_service_answers_others() {
+    #[slow]
+    fn auto_tones_solve_runs_on_the_analysis_worker_while_the_tile_service_answers_others() {
         let catalog = temp("auto-tone-analysis-worker.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
@@ -9777,7 +9788,8 @@ mod tests {
     /// Another client's query supersedes nothing, and neither does another client's disconnect;
     /// its own client's disconnect cancels it.
     #[test]
-    fn slow_a_newer_auto_tone_query_or_another_photograph_supersedes_the_query() {
+    #[slow]
+    fn a_newer_auto_tone_query_or_another_photograph_supersedes_the_query() {
         let catalog = temp("auto-tone-query-superseded.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();

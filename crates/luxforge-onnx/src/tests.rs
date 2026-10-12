@@ -413,9 +413,11 @@ fn the_compile_cache_is_keyed_by_model_runtime_and_system_build() {
 #[cfg(target_os = "macos")]
 mod coreml {
     use super::*;
+    use luxforge_test_macros::slow;
 
     #[test]
-    fn slow_coreml_runs_the_fixed_copy_written_once_and_other_shapes_on_the_cpu() {
+    #[slow]
+    fn coreml_runs_the_fixed_copy_written_once_and_other_shapes_on_the_cpu() {
         let dir = Dir::new("coreml");
         let model = dir.model(&affine(Side::Named("batch"), SCALE, BIAS));
         let cache = Dir::new("coreml-cache");
@@ -539,7 +541,8 @@ mod coreml {
     }
 
     #[test]
-    fn slow_a_static_model_needs_no_copy_and_an_unnamed_free_dimension_stays_on_the_cpu() {
+    #[slow]
+    fn a_static_model_needs_no_copy_and_an_unnamed_free_dimension_stays_on_the_cpu() {
         let dir = Dir::new("coreml-static");
         let model = dir.model(&affine(Side::Fixed(2), SCALE, BIAS));
         let runtime = OnnxRuntime::new(None);

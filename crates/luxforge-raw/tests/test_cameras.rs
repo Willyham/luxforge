@@ -3,6 +3,7 @@
 //! process and holds one test that checks the refusal before it admits them: nothing else here
 //! admits them (the bracket generator's own tests, compiled in with it, only make bytes).
 use luxforge_raw::{RawError, RawMode, RawSource, admit_test_cameras, test_cameras_admitted};
+use luxforge_test_macros::slow;
 use std::sync::atomic::AtomicBool;
 
 // The synthetic bracket generator, compiled in from its one source, as luxforge-core's HDR tests
@@ -14,7 +15,8 @@ mod hdr_bracket;
 const MODE: &str = "LuxforgeSyntheticBracketDng16";
 
 #[test]
-fn slow_synthetic_body_is_refused_until_test_cameras_are_admitted() {
+#[slow]
+fn synthetic_body_is_refused_until_test_cameras_are_admitted() {
     let bracket = hdr_bracket::Bracket::new(&hdr_bracket::BracketSpec::default());
     let dng = bracket.dng(0);
     let cancel = AtomicBool::new(false);

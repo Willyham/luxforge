@@ -929,6 +929,7 @@ mod tests {
     use crate::editor::test_support::{
         SAMPLE_ACTION, SHRINK_ACTION, SampleModule, ShrinkModule, fixture, mutation, shrink, temp,
     };
+    use luxforge_test_macros::slow;
 
     fn geometry_photo() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -968,7 +969,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_orientation_carries_perspective_and_crop_in_one_action() {
+    #[slow]
+    fn orientation_carries_perspective_and_crop_in_one_action() {
         use crate::{Orientation, Transform};
         let orientations: Vec<_> = [false, true]
             .into_iter()

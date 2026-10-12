@@ -534,6 +534,7 @@ impl Answer {
 mod tests {
     use super::super::MAX_RAW_GAIN;
     use super::*;
+    use luxforge_test_macros::slow;
 
     const IDENTITY: [[f32; 3]; 4] = [
         [1.0, 0.0, 0.0],
@@ -902,7 +903,8 @@ mod tests {
     /// stored gains to 0.01 K and 0.001 tint, far inside the whole kelvin and tint unit a field
     /// shows.
     #[test]
-    fn slow_the_inverse_round_trips_the_forward_map_over_the_whole_range() {
+    #[slow]
+    fn the_inverse_round_trips_the_forward_map_over_the_whole_range() {
         let mut temperatures: Vec<f64> = (2_000..=12_000).step_by(100).map(f64::from).collect();
         temperatures.extend([
             2_000.5, 2_221.5, 2_222.5, 3_799.9, 3_800.1, 3_999.5, 4_000.5, 4_450.0, 4_499.9,

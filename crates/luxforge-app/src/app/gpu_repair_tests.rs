@@ -20,6 +20,7 @@ use luxforge_gpu::{
     PassShape, PlaneFormat, PlaneSize, TexelMap, qualification::boundary_as, validate_step,
 };
 use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
+use luxforge_test_macros::slow;
 use std::{borrow::Cow, sync::Arc};
 
 /// One group's description as the surface's spatial step.
@@ -292,8 +293,9 @@ fn gpu_repair_the_program_passes_the_surfaces_own_convention() {
 /// Every case over every frame against the CPU units, on an `rgba32float` boundary (a developed
 /// RAW's) and, for the in-range frames, a half-float one (a JPEG's), judged by the spatial limits.
 #[test]
-fn slow_gpu_repair_matches_the_cpu_units() {
-    let test = "slow_gpu_repair_matches_the_cpu_units";
+#[slow]
+fn gpu_repair_matches_the_cpu_units() {
+    let test = "gpu_repair_matches_the_cpu_units";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };

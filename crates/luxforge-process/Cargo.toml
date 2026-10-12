@@ -34,6 +34,7 @@ windows-sys = { version = "=0.61.2", features = [
 ] }
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 
 # This crate contains locally documented FFI to the operating system's process accounting. It is

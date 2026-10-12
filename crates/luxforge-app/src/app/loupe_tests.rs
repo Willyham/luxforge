@@ -9,6 +9,7 @@ use crate::app::select_owner_tests::{evaluate, finish, read_rows, selecting};
 use crate::state::select::{Shown, SourcePress};
 use iced::{Size, event::Status, keyboard::Event as KeyEvent, keyboard::key::Physical};
 use luxforge_core::catalog_types::{MomentKind, ViewSource};
+use luxforge_test_macros::slow;
 use std::path::PathBuf;
 
 /// The editor with the seeded event viewed, every row read.
@@ -1096,7 +1097,8 @@ fn press_away(editor: &mut Editor, position: u32) {
 /// grid under the loupe follows the active frame, so its rows window holds the rows the loupe
 /// names, and the grid shows the active frame when the loupe closes.
 #[test]
-fn slow_the_loupe_opened_on_a_frame_outside_the_rows_window_reads_its_row_and_settles() {
+#[slow]
+fn the_loupe_opened_on_a_frame_outside_the_rows_window_reads_its_row_and_settles() {
     use crate::state::select::ROW_BLOCK;
     use std::sync::{
         Arc,
@@ -1174,7 +1176,8 @@ fn slow_the_loupe_opened_on_a_frame_outside_the_rows_window_reads_its_row_and_se
 /// A block of rows the owner refuses is not asked for again until the view is evaluated again: a
 /// loupe open on a frame of it says the frame is unavailable and has nothing more to wait for.
 #[test]
-fn slow_the_loupe_settles_on_a_frame_whose_row_the_owner_refused() {
+#[slow]
+fn the_loupe_settles_on_a_frame_whose_row_the_owner_refused() {
     use crate::state::select::ROW_BLOCK;
     let (mut editor, catalog) = viewing_singles(ROW_BLOCK + 50);
     let position = ROW_BLOCK + 10;

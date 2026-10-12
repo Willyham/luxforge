@@ -14,7 +14,7 @@
 //! rereads before each handoff and the worker's own thread bookkeeping.
 //!
 //! The counter sees every thread of the process, so this binary holds one test. It simulates over
-//! a day and a half of the worker's clock and takes several seconds, so it is a `slow_` test.
+//! a day and a half of the worker's clock and takes several seconds, so it is marked `#[slow]`.
 use luxforge_core::{
     Error,
     capabilities::transport::{SendOptions, Transport, TransportRequest, TransportResponse},
@@ -27,6 +27,7 @@ use luxforge_core::{
     },
 };
 use luxforge_process::allocations::{self, Counting};
+use luxforge_test_macros::slow;
 use luxforge_testbase::{paths::temp_dir, wait_until};
 use std::{
     fmt, fs, io,
@@ -166,7 +167,8 @@ fn above(baseline: i64) -> (i64, i64) {
 }
 
 #[test]
-fn slow_usage_statistics_storage_stays_within_256_kib_however_long_and_hard_it_runs() {
+#[slow]
+fn usage_statistics_storage_stays_within_256_kib_however_long_and_hard_it_runs() {
     let dir = temp_dir("usage-capacity");
     let installation = "c9a10716-1b78-4cbe-8d1c-b8309e5e7247";
     fs::write(

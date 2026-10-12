@@ -26,7 +26,7 @@
 //! * composed masks of the kind — every mode, both inversions, any amount — are bit-identical to the
 //!   frozen fold over the reference, sparsely on photo-sized stages and at every pixel of small
 //!   ones, and one component alone is its reference falloff ([`is_bit_identical_to_the_reference`],
-//!   [`slow_is_bit_identical_over_whole_small_stages`], [`one_component_alone_is_its_reference_falloff`]);
+//!   [`is_bit_identical_over_whole_small_stages`], [`one_component_alone_is_its_reference_falloff`]);
 //! * `evaluate` is the `f64` field narrowed once and stays in `[0, 1]`
 //!   ([`evaluate_is_the_narrowed_field_and_stays_in_range`]);
 //! * `bounds` never excludes a non-zero pixel, and is narrower than the stage often enough that the
@@ -169,8 +169,9 @@ macro_rules! checklist {
             super::is_bit_identical_to_the_reference::<$kind>();
         }
         #[test]
-        fn slow_is_bit_identical_over_whole_small_stages() {
-            super::slow_is_bit_identical_over_whole_small_stages::<$kind>();
+        #[luxforge_test_macros::slow]
+        fn is_bit_identical_over_whole_small_stages() {
+            super::is_bit_identical_over_whole_small_stages::<$kind>();
         }
         #[test]
         fn one_component_alone_is_its_reference_falloff() {
@@ -422,7 +423,7 @@ fn is_bit_identical_to_the_reference<K: Kind>() {
 }
 
 /// The same comparison walked at every pixel of the small stages.
-fn slow_is_bit_identical_over_whole_small_stages<K: Kind>() {
+fn is_bit_identical_over_whole_small_stages<K: Kind>() {
     let kind = K::KIND;
     let mut rng = SplitMix64(K::SEEDS.dense);
     let mut checked = 0usize;

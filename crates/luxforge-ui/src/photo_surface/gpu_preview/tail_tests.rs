@@ -6,6 +6,7 @@ use super::qualification::{boundary, held};
 use super::tests::qualifier;
 use super::*;
 use luxforge_gpu_types::PlaneSize as PlaneExtent;
+use luxforge_test_macros::slow;
 
 fn encoding() -> &'static OutputEncoding {
     luxforge_gpu::qualification::install_reference_encoding();
@@ -315,8 +316,9 @@ fn a_grid_tail_interpolates_its_nodes() {
 /// it, within a code, on its own and over a window of the stage; with no perspective in it, it draws
 /// what the affine tail draws.
 #[test]
-fn slow_a_projective_tail_draws_the_reference_blend() {
-    let Some(qualifier) = qualifier("slow_a_projective_tail_draws_the_reference_blend") else {
+#[slow]
+fn a_projective_tail_draws_the_reference_blend() {
+    let Some(qualifier) = qualifier("a_projective_tail_draws_the_reference_blend") else {
         return;
     };
     let (width, height) = (64, 48);
@@ -401,8 +403,9 @@ fn slow_a_projective_tail_draws_the_reference_blend() {
 /// A quantizing tail writes the content pass's result as codes and decodes them, and quantizes its
 /// own blend, as a JPEG's segments do; a step after the tail runs at the output pixel.
 #[test]
-fn slow_a_quantizing_tail_and_an_output_step() {
-    let Some(qualifier) = qualifier("slow_a_quantizing_tail_and_an_output_step") else {
+#[slow]
+fn a_quantizing_tail_and_an_output_step() {
+    let Some(qualifier) = qualifier("a_quantizing_tail_and_an_output_step") else {
         return;
     };
     let (width, height) = (64, 48);

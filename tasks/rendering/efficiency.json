@@ -256,7 +256,7 @@
       "dependencies": [],
       "extra_context": [
         "Implemented as colour::srgb::Quantizer16 (crates/luxforge-core/src/colour.rs, quantizer16()): a 128 KiB index of the square root of [0, 1] in 65,536 bins, no bin holding more than two of the 65,535 thresholds, so a value is compared with at most two. Non-finite values, the signed zeros and the infinities keep the search's answers. Row passes take the index and the 16-bit decode table once rather than per pixel.",
-        "Evidence: slow_byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval compares it with the threshold search at every f32 in [0, 1] and the special values; byte_quantize16_is_monotone_and_exact_at_every_threshold and the byte-domain tests pass unchanged. Its per-value cost and the integrated editor-performance figures are in docs/specs/performance.md; the index is listed in docs/design/architecture.md's limits."
+        "Evidence: byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval compares it with the threshold search at every f32 in [0, 1] and the special values; byte_quantize16_is_monotone_and_exact_at_every_threshold and the byte-domain tests pass unchanged. Its per-value cost and the integrated editor-performance figures are in docs/specs/performance.md; the index is listed in docs/design/architecture.md's limits."
       ],
       "context_links": [
         {

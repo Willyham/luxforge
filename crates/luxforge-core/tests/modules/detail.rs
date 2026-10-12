@@ -8,6 +8,7 @@ use luxforge_reference::{
     detail::{self, Image, Params},
     srgb,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use luxforge_testkit::{
     client::{self, Owner},
@@ -220,7 +221,8 @@ fn library_mutation(tag: &str) -> Value {
 }
 
 #[test]
-fn slow_detail_ancillary_commit_is_reported_and_later_activation_uses_its_radius() {
+#[slow]
+fn detail_ancillary_commit_is_reported_and_later_activation_uses_its_radius() {
     let s = Session::open("ancillary-activation");
     let registry = ModuleRegistry::builtin();
     let source = luxforge_core::open_source(&paths::jpeg()).unwrap();
@@ -340,7 +342,8 @@ fn detail_native_preset_round_trips_all_eight_fields_and_zero_strengths() {
 }
 
 #[test]
-fn slow_detail_history_undo_redo_restore_versions_and_reopen() {
+#[slow]
+fn detail_history_undo_redo_restore_versions_and_reopen() {
     let s = Session::open("history");
     let original = s.owner.recipe(s.client, &s.asset).unwrap();
     let original_pixel = s.owner.sample(s.client, &s.asset, (0, 0), None).unwrap();
@@ -508,7 +511,8 @@ fn detail_drafts_conflict_and_reapply() {
 }
 
 #[test]
-fn slow_detail_original_hashes_unchanged_and_exact_export_uses_the_saved_entry() {
+#[slow]
+fn detail_original_hashes_unchanged_and_exact_export_uses_the_saved_entry() {
     let before = fs::read(paths::jpeg()).unwrap();
     let s = Session::open("export");
     let entry = s.mutate(
@@ -527,7 +531,8 @@ fn slow_detail_original_hashes_unchanged_and_exact_export_uses_the_saved_entry()
 }
 
 #[test]
-fn slow_detail_missing_provider_refuses_affected_outputs_and_keeps_data() {
+#[slow]
+fn detail_missing_provider_refuses_affected_outputs_and_keeps_data() {
     let s = Session::open("missing");
     s.mutate("edit.set-detail", json!({"luminance":40,"colour":40}));
     let recipe = s.owner.recipe(s.client, &s.asset).unwrap();

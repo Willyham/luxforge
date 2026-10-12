@@ -10,6 +10,7 @@ use crate::{
     },
     editor::{self, insert_catalog_folder, insert_collection, upsert_volume},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::temp_path;
 
 fn folder(name: &str) -> CatalogFolder {
@@ -45,7 +46,8 @@ fn photographs(service: &mut EditorService, folder: &CatalogFolderId, from: usiz
 }
 
 #[test]
-fn slow_catalog_folder_merges_and_collection_deletes_past_the_batch_limit_are_refused_whole() {
+#[slow]
+fn catalog_folder_merges_and_collection_deletes_past_the_batch_limit_are_refused_whole() {
     let path = temp_path("catalog-folder-limit.sqlite");
     let _ = std::fs::remove_file(&path);
     let mut service = EditorService::open(&path).unwrap();

@@ -24,6 +24,7 @@ serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }

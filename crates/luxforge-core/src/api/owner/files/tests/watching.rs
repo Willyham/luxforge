@@ -5,10 +5,11 @@
 //! indexed no longer watched, changes made while Luxforge was closed caught up as it opens (macOS),
 //! volumes mounted and taken out, a card mounted as the lane starts, the one event every listing
 //! records as it ends, and stopping with the watcher running. A test that waits for the platform to
-//! deliver a real change is named `slow_`, so the quick tier leaves it out; the others drive the
+//! deliver a real change is marked `#[slow]`, so the quick tier leaves it out; the others drive the
 //! lane through injected events alone.
 use super::*;
 use crate::index::lane::{VolumeEvent, WatchEvent};
+use luxforge_test_macros::slow;
 use luxforge_watch::RescanReason;
 use std::sync::mpsc::sync_channel;
 
@@ -103,7 +104,8 @@ fn sequence(owner: &OwnerHandle, client: ClientId) -> u64 {
 /// changed files are read, the renamed one keeps its row unread, the removed rows go, and each
 /// batch is announced as work no request made.
 #[test]
-fn slow_an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
+#[slow]
+fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     let fixture = Fixture::new("watch-changes");
     let owner = fixture.owner();
     let client = owner.register();
@@ -187,7 +189,8 @@ fn slow_an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
 /// order, reaches the lane.
 #[cfg(target_os = "macos")]
 #[test]
-fn slow_a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
+#[slow]
+fn a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
     let fixture = Fixture::new("watch-late-rename");
     let owner = fixture.owner();
     let client = owner.register();
@@ -263,7 +266,8 @@ fn slow_a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
 /// is that link moved, as a rename is.)
 #[cfg(unix)]
 #[test]
-fn slow_an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
+#[slow]
+fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     const LINKS: usize = 300;
     let fixture = Fixture::new("watch-links");
     let owner = fixture.owner();
@@ -333,7 +337,8 @@ fn slow_an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() 
 /// applications' caches, links and unsupported files; a skipped folder renamed to one that is
 /// listed is listed, and one renamed to a package is dropped.
 #[test]
-fn slow_what_indexing_skips_stays_out_as_it_changes() {
+#[slow]
+fn what_indexing_skips_stays_out_as_it_changes() {
     let fixture = Fixture::new("watch-skips");
     let owner = fixture.owner();
     let client = owner.register();
@@ -389,7 +394,8 @@ fn slow_what_indexing_skips_stays_out_as_it_changes() {
 
 /// A rescan lists again what the watcher could not report: a subtree alone, then the whole root.
 #[test]
-fn slow_a_rescan_lists_again_what_was_not_reported() {
+#[slow]
+fn a_rescan_lists_again_what_was_not_reported() {
     let fixture = Fixture::new("watch-rescan");
     let owner = fixture.owner();
     let client = owner.register();
@@ -495,7 +501,8 @@ fn held_rescan(owner: &OwnerHandle, client: ClientId, gate: &Gate, photos: &Path
 /// `index.folders` — until a listing of it completes: before its next change is applied, and as the
 /// catalog next opens.
 #[test]
-fn slow_a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_listed() {
+#[slow]
+fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_listed() {
     let mut fixture = Fixture::new("watch-rescan-job");
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
@@ -608,7 +615,8 @@ fn slow_a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_i
 /// the lane started has found it, with no client asking about the disk; opened again with more on
 /// the card, it is reconciled again.
 #[test]
-fn slow_a_card_mounted_as_the_catalog_opens_is_listed() {
+#[slow]
+fn a_card_mounted_as_the_catalog_opens_is_listed() {
     let mut fixture = Fixture::new("watch-card-at-open");
     let (table, card, drive) = mounts(&fixture);
     {
@@ -665,7 +673,8 @@ fn slow_a_card_mounted_as_the_catalog_opens_is_listed() {
 /// Removing an indexed folder stops its watch: what changes in it later is not indexed, while
 /// another indexed folder is still followed.
 #[test]
-fn slow_a_folder_no_longer_indexed_is_no_longer_watched() {
+#[slow]
+fn a_folder_no_longer_indexed_is_no_longer_watched() {
     let fixture = Fixture::new("watch-removed");
     let owner = fixture.owner();
     let client = owner.register();
@@ -713,7 +722,8 @@ fn slow_a_folder_no_longer_indexed_is_no_longer_watched() {
 /// is listed again instead.
 #[cfg(target_os = "macos")]
 #[test]
-fn slow_changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
+#[slow]
+fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
     let mut fixture = Fixture::new("watch-replay");
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
@@ -783,7 +793,8 @@ fn slow_changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
 /// from the cursor kept before it as the catalog next opens.
 #[cfg(target_os = "macos")]
 #[test]
-fn slow_a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
+#[slow]
+fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
     let mut fixture = Fixture::new("watch-stop-mid-unit");
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
@@ -870,7 +881,8 @@ fn slow_a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_a
 /// is gone from `card.list` at once, its roots offline, and an indexed folder on it no longer
 /// watched.
 #[test]
-fn slow_a_card_mounted_is_listed_and_a_volume_taken_out_goes_offline() {
+#[slow]
+fn a_card_mounted_is_listed_and_a_volume_taken_out_goes_offline() {
     let fixture = Fixture::new("watch-volumes");
     let owner = fixture.owner();
     let client = owner.register();
@@ -1005,7 +1017,8 @@ fn every_listing_records_one_event_as_it_ends() {
 /// Stopping the owner with the watcher following a folder stops the watcher and joins every lane
 /// thread.
 #[test]
-fn slow_stopping_with_the_watcher_running_joins_cleanly() {
+#[slow]
+fn stopping_with_the_watcher_running_joins_cleanly() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let mut fixture = Fixture::new("watch-stop");
     let photos = fixture.dir.join("photos");

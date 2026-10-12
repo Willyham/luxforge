@@ -18,7 +18,7 @@
 //!     -- --ignored generate_presence_fixtures
 //! ```
 //!
-//! `presence_fixtures_match_reference` and `slow_measurements_match_reference` (not ignored)
+//! `presence_fixtures_match_reference` and `measurements_match_reference` (not ignored)
 //! reload the committed files and recompute every value from the same reference, so a
 //! silent drift between the files and the frozen formulas fails the build.
 
@@ -27,6 +27,7 @@ use luxforge_reference::presence::{
     encode_srgb_extended, luminance,
 };
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -578,7 +579,8 @@ fn every_unit_at_zero_is_the_exact_identity() {
 }
 
 #[test]
-fn slow_the_declared_halos_make_tiled_evaluation_bit_identical() {
+#[slow]
+fn the_declared_halos_make_tiled_evaluation_bit_identical() {
     let cases = [
         ("step-high", step_high(), params(100.0, 100.0, 0.0)),
         ("step-high", step_high(), params(-100.0, -100.0, 0.0)),
@@ -794,7 +796,8 @@ fn every_unit_is_monotone_in_its_amount() {
 }
 
 #[test]
-fn slow_every_output_is_finite() {
+#[slow]
+fn every_output_is_finite() {
     for (name, spec) in property_images() {
         for p in [
             params(100.0, 100.0, 100.0),
@@ -1631,7 +1634,7 @@ fn generate_presence_fixtures() {
             "crates/luxforge-reference/tests/studies/presence.rs generate_presence_fixtures"
                 .to_string(),
         note: "Every figure quoted in docs/design/presence-study.md, recomputed from the same \
-               reference by slow_measurements_match_reference on each test run."
+               reference by measurements_match_reference on each test run."
             .to_string(),
         measurements: measure_all(),
     };
@@ -1694,7 +1697,8 @@ fn presence_fixtures_match_reference() {
 }
 
 #[test]
-fn slow_measurements_match_reference() {
+#[slow]
+fn measurements_match_reference() {
     let path = fixture_dir().join("measurements.json");
     let json = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!(

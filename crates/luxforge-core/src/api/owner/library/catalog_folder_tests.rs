@@ -11,6 +11,7 @@ use crate::{
     },
     seed::{CatalogSeeder, SeedAsset, SeedKind},
 };
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
@@ -331,7 +332,8 @@ fn stop(owner: OwnerHandle, join: std::thread::JoinHandle<()>) {
 /// The folder tree is made, renamed, nested, moved, merged and deleted, each one journaled change
 /// with one event; undoing every change restores the exact tree and redoing them makes it again.
 #[test]
-fn slow_catalog_folders_are_created_renamed_nested_merged_and_deleted_with_undo_and_redo() {
+#[slow]
+fn catalog_folders_are_created_renamed_nested_merged_and_deleted_with_undo_and_redo() {
     let fixture = Fixture::new("tree");
     let (owner, join) = fixture.start();
     let client = owner.register();
@@ -867,7 +869,8 @@ fn catalog_folder_moves_of_photographs_are_journaled_and_never_touch_a_file() {
 /// removed, each one change with undo; a collection's delete takes its memberships and its undo
 /// restores them exactly; a group that holds anything is not deleted.
 #[test]
-fn slow_catalog_folder_collections_change_membership_and_undo_exactly() {
+#[slow]
+fn catalog_folder_collections_change_membership_and_undo_exactly() {
     let fixture = Fixture::new("collections");
     let (owner, join) = fixture.start();
     let client = owner.register();

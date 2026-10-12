@@ -28,6 +28,7 @@ use luxforge_reference::mixer::{
     RANGE_NAMES, RANGE_REFERENCE_CODES,
 };
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fs;
@@ -433,7 +434,8 @@ fn full_hue_slider_moves_a_centre_the_reach_of_the_way_to_its_neighbour() {
 /// Fritsch-Carlson condition that makes each cubic segment strictly
 /// increasing — for all 5^8 five-level combinations.
 #[test]
-fn slow_hue_warp_satisfies_the_fritsch_carlson_conditions_for_every_combination() {
+#[slow]
+fn hue_warp_satisfies_the_fritsch_carlson_conditions_for_every_combination() {
     let floor = 1.0 - HUE_REACH;
     for params in five_level_combinations() {
         let warp = HueWarp::new(&params);

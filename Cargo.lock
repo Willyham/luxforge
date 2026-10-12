@@ -2117,6 +2117,7 @@ dependencies = [
  "luxforge-net",
  "luxforge-onnx",
  "luxforge-reference",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-ui",
@@ -2136,6 +2137,7 @@ dependencies = [
  "luxforge-net",
  "luxforge-onnx",
  "luxforge-reference",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
  "serde",
@@ -2158,6 +2160,7 @@ dependencies = [
  "luxforge-process",
  "luxforge-raw",
  "luxforge-reference",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-watch",
  "moxcms",
@@ -2205,6 +2208,7 @@ dependencies = [
  "half",
  "luxforge-gpu-types",
  "luxforge-reference",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "wgpu",
 ]
@@ -2229,6 +2233,7 @@ name = "luxforge-jpeg"
 version = "0.0.0"
 dependencies = [
  "image",
+ "luxforge-test-macros",
  "mozjpeg",
  "mozjpeg-sys",
  "serde_json",
@@ -2241,6 +2246,7 @@ version = "0.0.0"
 dependencies = [
  "luxforge-core",
  "luxforge-process",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "rustls",
  "rustls-platform-verifier",
@@ -2257,6 +2263,7 @@ version = "0.0.0"
 dependencies = [
  "half",
  "luxforge-core",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "ort",
  "serde",
@@ -2270,6 +2277,7 @@ version = "0.0.0"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "objc2 0.6.4",
  "serde",
@@ -2285,6 +2293,7 @@ dependencies = [
  "jxl-image",
  "jxl-oxide",
  "libc",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "rayon",
  "serde",
@@ -2297,9 +2306,14 @@ name = "luxforge-reference"
 version = "0.0.0"
 dependencies = [
  "image",
+ "luxforge-test-macros",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "luxforge-test-macros"
+version = "0.0.0"
 
 [[package]]
 name = "luxforge-testbase"
@@ -2316,6 +2330,7 @@ dependencies = [
  "luxforge-core",
  "luxforge-raw",
  "luxforge-reference",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "serde_json",
  "sha2",
@@ -2332,6 +2347,7 @@ dependencies = [
  "luxforge-gpu-types",
  "luxforge-process",
  "luxforge-reference",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "wgpu",
 ]
@@ -2342,6 +2358,7 @@ version = "0.0.0"
 dependencies = [
  "dispatch2",
  "libc",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "objc2-core-foundation",
  "objc2-core-services",
@@ -5358,6 +5375,7 @@ dependencies = [
  "luxforge-evidence",
  "luxforge-raw",
  "luxforge-reference",
+ "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
  "percent-encoding",
@@ -5377,6 +5395,7 @@ dependencies = [
 name = "xtask-cli"
 version = "0.0.0"
 dependencies = [
+ "luxforge-test-macros",
  "percent-encoding",
  "regex",
  "semver",

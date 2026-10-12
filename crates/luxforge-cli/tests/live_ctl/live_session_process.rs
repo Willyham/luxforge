@@ -8,6 +8,7 @@ use luxforge_core::{
     ApiRequest, ClientAuthority, ClientId, LocalServer, LocalSessionInfo, OwnerHandle,
     live_session_file,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, paths, wait_for, wait_until};
 use serde_json::{Value, json};
 use std::{
@@ -228,7 +229,8 @@ impl Ran {
 }
 
 #[test]
-fn slow_live_session_process_reads_schema_and_state_and_fails_without_a_session() {
+#[slow]
+fn live_session_process_reads_schema_and_state_and_fails_without_a_session() {
     let Some(live) = Live::start("ctl-process-read", None) else {
         return;
     };
@@ -351,7 +353,8 @@ fn live_session_process_finds_the_running_session_without_a_catalog() {
 }
 
 #[test]
-fn slow_live_session_process_edits_join_history_and_export_through_a_waited_job() {
+#[slow]
+fn live_session_process_edits_join_history_and_export_through_a_waited_job() {
     let Some(live) = Live::start("ctl-process-edit", None) else {
         return;
     };
@@ -414,7 +417,8 @@ fn slow_live_session_process_edits_join_history_and_export_through_a_waited_job(
 }
 
 #[test]
-fn slow_live_session_process_applies_auto_tone_as_one_entry_in_history() {
+#[slow]
+fn live_session_process_applies_auto_tone_as_one_entry_in_history() {
     let Some(live) = Live::start("ctl-process-auto-tone", None) else {
         return;
     };

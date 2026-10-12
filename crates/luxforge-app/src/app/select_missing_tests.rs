@@ -24,6 +24,7 @@ use luxforge_core::{
     ApiRequest, AssetId, ClientId, EditorService, OwnerHandle,
     catalog_types::{FindResult, MissingOriginals, ViewSource},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::{fixture, temp_dir};
 use serde_json::{Value, json};
 use std::{
@@ -379,7 +380,8 @@ fn listed(editor: &Editor) -> &MissingOriginals {
 /// others are left as they were; Stop search changes nothing; Locate… verifies before it
 /// changes anything, and a file of other bytes changes nothing.
 #[test]
-fn slow_resolve_missing_from_the_desktop_is_the_apis() {
+#[slow]
+fn resolve_missing_from_the_desktop_is_the_apis() {
     let mut scene = scene("desktop");
     let client = &scene.client;
 
@@ -619,7 +621,8 @@ fn locate(editor: &mut Editor, asset: &AssetId, file_name: &str, path: &Path) {
 /// chosen is verified and relinked through `source.locate`, and the photograph is opened again from
 /// it through the Open path.
 #[test]
-fn slow_resolve_missing_locate_original_in_develop_reopens_the_photograph() {
+#[slow]
+fn resolve_missing_locate_original_in_develop_reopens_the_photograph() {
     let mut scene = scene("develop");
     let deleted = scene.asset("DSC_0004.jpg");
     let state = scene
@@ -686,7 +689,8 @@ fn slow_resolve_missing_locate_original_in_develop_reopens_the_photograph() {
 /// Real job.wait observations supply partial and final search results without board reads or a
 /// presentation timer, including while hidden.
 #[test]
-fn slow_resolve_missing_follows_authoritative_search_observations_while_hidden() {
+#[slow]
+fn resolve_missing_follows_authoritative_search_observations_while_hidden() {
     let mut scene = scene("followed");
     let _ = find(&mut scene.editor, &scene.lake, &scene.archive);
     let editor = &mut scene.editor;

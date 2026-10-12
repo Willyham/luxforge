@@ -6,6 +6,7 @@ use crate::app::gpu_qualification::{figures, worst};
 use luxforge_core::{
     GpuAnswer, GpuPlanRequest, Layer, Mask, ModuleRegistry, RECIPE_FORMAT, Recipe, Stage, gpu_plan,
 };
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 
 /// Detail at `detail`, an exposure lift, then Presence at `presence`, through the radial mask when
@@ -34,8 +35,9 @@ fn chained(detail: Value, presence: Value, masking: bool) -> Recipe {
 /// frame held to the spatial limits. Dehaze's light reads Detail's output, which only a sweep of
 /// the whole stage through Detail computes; a slot computes it with Detail left out, as here.
 #[test]
-fn slow_gpu_presence_after_detail_meets_the_spatial_limits() {
-    let test = "slow_gpu_presence_after_detail_meets_the_spatial_limits";
+#[slow]
+fn gpu_presence_after_detail_meets_the_spatial_limits() {
+    let test = "gpu_presence_after_detail_meets_the_spatial_limits";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -108,8 +110,9 @@ fn slow_gpu_presence_after_detail_meets_the_spatial_limits() {
 /// but Detail's half-precision planes and Presence's share no class, so the pool holds each link's
 /// scratch side by side, neither link's is written by the other, and no count moves.
 #[test]
-fn slow_gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes() {
-    let test = "slow_gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes";
+#[slow]
+fn gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes() {
+    let test = "gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };

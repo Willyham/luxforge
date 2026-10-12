@@ -24,6 +24,7 @@ use luxforge_reference::grade::{
     WHEEL_NAMES, Wheel,
 };
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -118,7 +119,8 @@ fn balance_moves_the_split_monotonically() {
 /// luminance amounts at -100, -50, 0, 50 and 100, at Blending 0, 50 and 100 and Balance -100, 0
 /// and 100, measured densely in `f64` on greys.
 #[test]
-fn slow_luminance_is_strictly_increasing_for_every_combination() {
+#[slow]
+fn luminance_is_strictly_increasing_for_every_combination() {
     let levels = [-100.0, -50.0, 0.0, 50.0, 100.0];
     let mut tightest = f64::INFINITY;
     for combination in 0..levels.len().pow(4) {

@@ -146,6 +146,7 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     #[test]
     fn record_verification_refuses_tampering_or_another_version() {
         let tmp = tempfile::tempdir().unwrap();
@@ -162,7 +163,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_assembly_requires_both_matching_clean_targets_and_checksums_final_files() {
+    #[slow]
+    fn assembly_requires_both_matching_clean_targets_and_checksums_final_files() {
         let root = crate::root().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let tag = ReleaseTag::parse("v0.1").unwrap();

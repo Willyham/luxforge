@@ -8,6 +8,7 @@
 //! The synthetic camera and the bench are the HDR merge job's (`hdr_merge_job.rs`): each input
 //! file is read once by the camera, which counts every read.
 use super::*;
+use luxforge_test_macros::slow;
 use std::time::Duration;
 
 fn preview_params(bench: &Bench, bracket: usize) -> Value {
@@ -117,7 +118,8 @@ fn record_stages(bench: &Bench) -> Arc<Mutex<Vec<Stage>>> {
 /// reporting its phases, and answers a JPEG under the preview cache with its diagnostics, the
 /// deghost overlay in its own pixels and the output the merge would save, publishing nothing.
 #[test]
-fn slow_merge_preview_answers_a_picture_diagnostics_and_motion_overlays_through_the_registry() {
+#[slow]
+fn merge_preview_answers_a_picture_diagnostics_and_motion_overlays_through_the_registry() {
     let bench = Bench::new("preview-picture", 1);
     bench
         .developer
@@ -288,7 +290,8 @@ fn slow_merge_preview_answers_a_picture_diagnostics_and_motion_overlays_through_
 /// again, a refusal keeps the session open, each revision replaces the last picture, and a newer
 /// update cancels a stale one.
 #[test]
-fn slow_merge_preview_updates_read_no_frame_and_a_newer_update_cancels_a_stale_one() {
+#[slow]
+fn merge_preview_updates_read_no_frame_and_a_newer_update_cancels_a_stale_one() {
     let bench = Bench::new("preview-update", 1);
     bench
         .developer
@@ -398,7 +401,8 @@ fn slow_merge_preview_updates_read_no_frame_and_a_newer_update_cancels_a_stale_o
 /// A merge given a preview reads and aligns nothing and saves exactly what a merge without a
 /// preview of the same options saves: the same pixels, bit for bit, and the same resolution.
 #[test]
-fn slow_merge_preview_merge_reads_and_aligns_nothing_and_equals_a_merge_without_a_preview() {
+#[slow]
+fn merge_preview_merge_reads_and_aligns_nothing_and_equals_a_merge_without_a_preview() {
     let plain = Bench::new("preview-equal-plain", 1);
     let previewed = Bench::new("preview-equal-previewed", 1);
     for bench in [&plain, &previewed] {
@@ -525,7 +529,8 @@ fn merge_preview_refusal_is_an_answer_and_keeps_the_session_open() {
 /// A stale or foreign `preview_id` is a conflict, a refused revision refuses the merge, and a merge
 /// of a preview still preparing continues it behind its own job, outside the lane's bound.
 #[test]
-fn slow_merge_preview_stale_preview_id_is_a_conflict_and_a_preparing_preview_is_continued() {
+#[slow]
+fn merge_preview_stale_preview_id_is_a_conflict_and_a_preparing_preview_is_continued() {
     let bench = Bench::new("preview-stale", 3);
     let opened = preview(&bench, bench.client, 0);
     let id = opened["preview_id"].clone();
@@ -609,7 +614,8 @@ fn slow_merge_preview_stale_preview_id_is_a_conflict_and_a_preparing_preview_is_
 /// ceiling beside every merge's; a ready preview's client may keep it while another client opens
 /// its own, and opening a second closes a client's first.
 #[test]
-fn slow_merge_preview_sessions_share_the_lane_and_the_ceiling_across_clients() {
+#[slow]
+fn merge_preview_sessions_share_the_lane_and_the_ceiling_across_clients() {
     let bench = Bench::new("preview-lane", 3);
     let second = bench.owner.register();
     // One preview reading, one merge waiting: a further preview or merge is refused.
@@ -685,7 +691,8 @@ fn slow_merge_preview_sessions_share_the_lane_and_the_ceiling_across_clients() {
 /// A preview closes when idle past the limit, when its client disconnects, and when its job is
 /// cancelled or closed while it prepares; restart cleanup sweeps what a stopped process left.
 #[test]
-fn slow_merge_preview_closes_when_idle_disconnected_cancelled_and_sweeps_after_a_restart() {
+#[slow]
+fn merge_preview_closes_when_idle_disconnected_cancelled_and_sweeps_after_a_restart() {
     let mut bench = Bench::new("preview-bounds", 1);
     // Idle: a short limit, which the owner's own wake-up enforces.
     bench.lane(|lane| lane.previews.idle = Duration::from_millis(300));

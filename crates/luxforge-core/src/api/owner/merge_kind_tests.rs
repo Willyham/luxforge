@@ -5,6 +5,7 @@
 //! `validation` naming their cause; a rerun's kind must be its merge's; and a merge's answers and
 //! provenance are tagged by its kind.
 use super::*;
+use luxforge_test_macros::slow;
 
 /// What `schema.list` declares for `method`'s field `name`.
 fn declared(schema: &Value, method: &str, name: &str) -> Value {
@@ -63,7 +64,8 @@ fn merge_kind_schemas_list_the_registered_kinds_and_hdr_options() {
 }
 
 #[test]
-fn slow_merge_kind_panorama_is_not_ready_naming_its_missing_provider() {
+#[slow]
+fn merge_kind_panorama_is_not_ready_naming_its_missing_provider() {
     let bench = Bench::new("kind-panorama", 1);
     let targets = json!({"kind": "paths", "paths": bench.paths(0)});
     let first = bench.merged(0, "first");
@@ -184,7 +186,8 @@ fn merge_kind_cross_kind_fields_counts_and_options_name_their_cause() {
 }
 
 #[test]
-fn slow_merge_kind_answers_provenance_and_reruns_are_tagged_by_kind() {
+#[slow]
+fn merge_kind_answers_provenance_and_reruns_are_tagged_by_kind() {
     let bench = Bench::new("kind-tagged", 1);
     let result = bench.merged(0, "tagged");
     assert_eq!(result["kind"], "hdr", "{result}");
@@ -236,7 +239,8 @@ fn slow_merge_kind_answers_provenance_and_reruns_are_tagged_by_kind() {
 }
 
 #[test]
-fn slow_merge_kind_provenance_validates_its_kind_and_bounds() {
+#[slow]
+fn merge_kind_provenance_validates_its_kind_and_bounds() {
     let bench = Bench::new("kind-validate", 1);
     let result = bench.merged(0, "validate");
     let inspected = bench.ok("merge.inspect", json!({"merge_id": result["merge_id"]}));

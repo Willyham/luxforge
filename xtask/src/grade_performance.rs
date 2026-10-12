@@ -233,8 +233,10 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     #[test]
-    fn slow_paired_workloads_complete_exports_and_preserve_the_source() {
+    #[slow]
+    fn paired_workloads_complete_exports_and_preserve_the_source() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()

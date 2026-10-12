@@ -5,6 +5,7 @@
 //! third-stop values, consecutive brackets, brackets only the previews show, and undated frames.
 use super::*;
 use crate::catalog_types::{BodyIndex, FolderIndex, PlaceNames};
+use luxforge_test_macros::slow;
 use std::collections::BTreeMap;
 
 /// A fixed-seed generator (SplitMix64).
@@ -884,7 +885,8 @@ pub(super) fn check_against_reference(frames: Frames, what: &str) -> Frames {
 
 /// Events, days, cameras and moments of 4,000 random frame sets equal the reference's.
 #[test]
-fn slow_organize_equals_an_independent_grouping_of_random_frames() {
+#[slow]
+fn organize_equals_an_independent_grouping_of_random_frames() {
     let mut tallies = [0usize; 6];
     for seed in 0..4_000 {
         let mut case = random_case(seed);

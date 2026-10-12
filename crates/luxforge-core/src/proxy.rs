@@ -544,7 +544,7 @@ const REDUCTION_CHUNK_BYTES: usize = 4 << 20;
 /// the render path's threshold boundary. A source row's horizontal average depends on that row
 /// alone and an output pixel's sum runs over its span in the same order, so the result is the same
 /// bytes as [`reduce_raster`] of the whole frame, however the rows are banded
-/// (`slow_a_row_reduction_is_reduce_raster_byte_for_byte`).
+/// (`a_row_reduction_is_reduce_raster_byte_for_byte`).
 ///
 /// Holds the averaged rows of one output row's span, `⌈source ÷ output⌉ + 1` rows of the output's
 /// width in f32, and of the chunk of a band being averaged, about 4 MiB, plus the output frame; the
@@ -807,6 +807,7 @@ mod tests {
     use crate::{
         BoxRect, CropStage, Layer, ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, SnapshotId,
     };
+    use luxforge_test_macros::slow;
 
     fn jpeg_source(width: u32, height: u32, pixels: &[[u8; 3]]) -> PreviewSource {
         assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
@@ -1137,7 +1138,8 @@ mod tests {
     /// whole frame, pooled and serial; it refuses rows past its frame, ends only once every row
     /// has arrived and stops on a cancel.
     #[test]
-    fn slow_a_row_reduction_is_reduce_raster_byte_for_byte() {
+    #[slow]
+    fn a_row_reduction_is_reduce_raster_byte_for_byte() {
         let (width, height) = (301u32, 197u32);
         let rgba: Vec<u8> = (0..width * height)
             .flat_map(|i| {

@@ -3,6 +3,7 @@
 //! proves the probes, not the editor's speed: its figures are not a measurement.
 use super::*;
 use crate::catalog_measure::desktop::{self, DesktopContext};
+use luxforge_test_macros::slow;
 
 /// Each figure the design names is one the measuring command lists, in its unit.
 #[test]
@@ -55,7 +56,8 @@ fn the_memory_figures_hold_every_grid_sample_and_each_runs_loupe_peak() {
 /// of the others — the memory figures here — still stand. One probe's error never loses another's
 /// rows.
 #[test]
-fn slow_a_probe_run_that_fails_is_its_own_failed_row_beside_the_others() {
+#[slow]
+fn a_probe_run_that_fails_is_its_own_failed_row_beside_the_others() {
     let out = std::env::temp_dir().join(format!(
         "luxforge-catalog-probes-failing-{}",
         std::process::id()

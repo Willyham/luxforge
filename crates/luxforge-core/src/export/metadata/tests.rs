@@ -4,6 +4,7 @@
 use super::{CaptureInfo, CaptureMetadata, FIELDS, Ifd, MAX_PAYLOAD, Value, jpeg_orientation};
 use exif::experimental::Writer;
 use exif::{Field, In, Rational, Reader, SRational, Tag, Value as ExifValue};
+use luxforge_test_macros::slow;
 use std::io::Cursor;
 
 fn ascii(text: &str) -> ExifValue {
@@ -531,7 +532,8 @@ fn malformed_structures_yield_empty_or_partial_metadata() {
 }
 
 #[test]
-fn slow_truncated_and_corrupted_inputs_never_panic_and_always_write_a_readable_payload() {
+#[slow]
+fn truncated_and_corrupted_inputs_never_panic_and_always_write_a_readable_payload() {
     let mut input = kept();
     input.extend(excluded());
     let check = |metadata: CaptureMetadata| {

@@ -19,6 +19,7 @@ use super::{
 };
 use crate::state::{settings::SettingsTab, themes::FolderOutcome};
 use luxforge_core::theme::MAX_THEME_FILE_BYTES;
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -108,7 +109,8 @@ fn a_folder_is_one_theme_a_set_of_them_or_neither() {
 }
 
 #[test]
-fn slow_a_set_is_at_most_256_subfolders() {
+#[slow]
+fn a_set_is_at_most_256_subfolders() {
     let temp = Temp::new("theme-folder-bound");
     temp.theme("a-theme", &[("colors.toml", b"accent = \"#ffffff\"")]);
     for index in 1..MAX_SET {

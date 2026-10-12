@@ -81,6 +81,7 @@ mod tests {
         render::testing::{frame_in, linear},
         render::tests::{fitted_crop, gradient, turn},
     };
+    use luxforge_test_macros::slow;
     use serde_json::{Value, json};
 
     fn layer(effect_id: &str, payload: Value) -> Layer {
@@ -362,7 +363,8 @@ mod tests {
     /// threshold, a full Basic layer before the crop pools that linear pass by the heavy colour
     /// gate, since its taps run that layer's units.
     #[test]
-    fn slow_a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes() {
+    #[slow]
+    fn a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes() {
         let (crop, crop_output) = straightened_crop(720, 480);
         let (small_crop, small_crop_output) = straightened_crop(420, 280);
         assert!(!pooled(RenderPass::Resample, small_crop_output));

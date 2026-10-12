@@ -457,7 +457,7 @@ The finished-work quick tier still checks the whole workspace.
 
 The current runner already overlaps test binaries. A
 [nextest](https://nexte.st/docs/design/why-process-per-test/) trial must compare warm execution
-against `cargo xtask test --quick` and the full test command, retain the `slow_` selection and a
+against `cargo xtask test --quick` and the full test command, retain the `#[slow]` selection and a
 separate doctest step, and account for its process-per-test startup and repeated initialization.
 It offers global scheduling and resource groups, but a speed gain here is unmeasured. Likewise,
 the current binaries each default to libtest's CPU-count thread budget and can have Rayon workers;
@@ -493,21 +493,28 @@ binary now bounds it. Each binary runs half as many tests at once as the host ha
 had more threads than the host has cores, and spent as long in the kernel as in their own code.
 The doctests run last, through Cargo.
 
-A test whose own name starts with `slow_` is a slow test: one that takes 100 ms or more in the dev
-profile, measured in its binary's ordinary run on the owner's M4, such as an exhaustive sweep, a
+A test marked `#[slow]`, the attribute `luxforge-test-macros` exports, is a slow test: one that
+takes 100 ms or more in the dev profile, measured in its binary's ordinary run on the owner's M4, such as an exhaustive sweep, a
 GPU stack held against the reference, or a whole job run end to end. The quick tier keeps the
 rest: about nine tests in ten, most of them a few milliseconds each. `check --quick` and `test --quick` list each binary's tests, skip the
 slow ones by exact name, leave out the doctests and say how many tests they left out; without
-`--quick` nothing is left out. The quick tier runs `check --quick`, and every other tier and CI the
-whole `check`. Name a new test `slow_` when it reaches that bound, after making it as cheap as what it proves
+`--quick` nothing is left out. The attribute changes nothing in the test; the listing is libtest's
+JSON one, which gives each test's source file and the line of its name, and the mark is read from
+the attributes above that line. That listing is unstable, so `check` asks for it with
+`RUSTC_BOOTSTRAP=1` on the pinned toolchain, and a listing it cannot read fails the run. In a
+`macro_rules!` body, write the attribute's whole path, `#[luxforge_test_macros::slow]`, since a
+bare one resolves where the macro is used. `luxforge-test-macros` depends on no crate, which the
+repository check enforces, so every crate's tests may name it, even those of crates that may name
+no other workspace crate. The quick tier runs `check --quick`, and every other tier and CI the
+whole `check`. Mark a new test `#[slow]` when it reaches that bound, after making it as cheap as what it proves
 allows. To read every test's time in a binary, run it with libtest's unstable timing report, as a
 diagnostic: `RUSTC_BOOTSTRAP=1 BINARY -Z unstable-options --format json --report-time` in the
-package directory. A slow test runs by hand like any other, for example
-`cargo test -p luxforge-core --lib spatial::tests::slow_`. The field-patch conformance test is one:
+package directory. A slow test runs by hand like any other: plain `cargo test` leaves
+nothing out. The field-patch conformance test is one:
 `editor-acceptance` runs the same suite in release in a quarter of the time.
 
 A test that waits for the platform's change notifications (FSEvents, inotify,
-`ReadDirectoryChangesW`) to deliver a real change is also named `slow_`, however quick it is
+`ReadDirectoryChangesW`) to deliver a real change is also marked `#[slow]`, however quick it is
 alone: the delivery latency is the host's, not the test's, and a loaded macOS host delivers
 FSEvents 15 s to 2 min late. Such tests run in every tier above quick and in CI; the quick tier
 keeps the index lane's tests that drive it through injected events, gates and a fixed mount table.

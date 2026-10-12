@@ -2,6 +2,7 @@ use super::{
     worker::{CancelAt, progress_of, reads, stages},
     *,
 };
+use luxforge_test_macros::slow;
 
 fn at(pairs: &[(&str, f64)]) -> Vec<(String, f64)> {
     pairs
@@ -98,7 +99,8 @@ fn hdr_merge_measure_reports_a_failed_or_unmeasured_row() {
 /// A photo-sized synthetic frame is admitted by the camera catalog as the synthetic body's own
 /// recording mode at that size, with its default crop the frame the merge sees.
 #[test]
-fn slow_hdr_merge_measure_photo_brackets_are_admitted_at_their_size() {
+#[slow]
+fn hdr_merge_measure_photo_brackets_are_admitted_at_their_size() {
     luxforge_raw::admit_test_cameras();
     let bracket = Bracket::new(&BracketSpec::default());
     for size in PhotoSize::ALL {

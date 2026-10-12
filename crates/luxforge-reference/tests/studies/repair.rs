@@ -21,6 +21,7 @@ use luxforge_reference::{
     repair::{self, Class, Compiled, Image, Kind, Level, Operation, Schedule},
     srgb,
 };
+use luxforge_test_macros::slow;
 
 /// `sum += v`, channel by channel in order.
 fn add(sum: &mut [f64; 3], v: [f64; 3]) {
@@ -356,7 +357,8 @@ fn cascade(finest: &Level, k: usize) -> Level {
 /// convolution pyramid, each against the converged membrane, case by case: the table the numerics
 /// document records. Holds the frozen schedule within one code of the membrane everywhere.
 #[test]
-fn slow_heal_solvers_against_the_converged_membrane() {
+#[slow]
+fn heal_solvers_against_the_converged_membrane() {
     let schedules = [
         ("start, 3 x V(2,2) (frozen)", repair::SCHEDULE),
         (

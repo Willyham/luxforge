@@ -5,6 +5,7 @@
 //! desktop's tests (`cargo test -p luxforge-app gpu_mask`).
 use super::*;
 use crate::photo_surface::gpu_preview::{mask::changed_ranges, qualification};
+use luxforge_test_macros::slow;
 
 // ---- Test programs ----------------------------------------------------------------------------
 
@@ -326,8 +327,9 @@ fn a_tick_writes_only_the_chunks_of_the_blocks_that_changed() {
 /// black boundary, against the CPU's fold of the same component values in `f64`: every mode, every
 /// inversion, the whole mask's inversion and the amount.
 #[test]
-fn slow_the_algebra_inversions_and_amount_compose_as_the_cpus() {
-    let test = "slow_the_algebra_inversions_and_amount_compose_as_the_cpus";
+#[slow]
+fn the_algebra_inversions_and_amount_compose_as_the_cpus() {
+    let test = "the_algebra_inversions_and_amount_compose_as_the_cpus";
     let Some(qualifier) = qualifier(test) else {
         return;
     };

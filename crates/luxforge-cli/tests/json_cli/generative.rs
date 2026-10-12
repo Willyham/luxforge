@@ -3,6 +3,7 @@
 //! candidate, Regenerate, accept one, undo and redo, then reopen the catalog in a process without
 //! `--developer`, which serves no developer model and offers no installed generator, and render the
 //! accepted patch.
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use luxforge_testkit::JsonProcess;
 use serde_json::{Value, json};
@@ -37,7 +38,8 @@ fn sample(client: &mut JsonProcess, asset: &Value, x: u32, y: u32) -> Value {
 }
 
 #[test]
-fn slow_an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_model() {
+#[slow]
+fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_model() {
     let data_root = paths::temp_path("json-cli-generative");
     std::fs::create_dir_all(&data_root).unwrap();
     let data_root = data_root.canonicalize().unwrap();

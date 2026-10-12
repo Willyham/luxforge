@@ -13,6 +13,7 @@ use super::{
     *,
 };
 use luxforge_gpu::GpuFallback as SurfaceFallback;
+use luxforge_test_macros::slow;
 use std::time::Duration;
 
 const ACTION: &str = "set-basic";
@@ -187,7 +188,8 @@ fn gpu_preview_the_notice_says_nothing_while_the_source_or_the_plan_comes() {
 /// the zoom has no reason of its own: the first tick's `surface-pending` passes, the ticks after it
 /// are drawn on the GPU, and nothing is said through the release until the settle ends.
 #[test]
-fn slow_gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
+#[slow]
+fn gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
     for value in [50.0, 33.0] {
         let catalog = catalog(&format!("notice-below-{value}"));
         let (mut editor, _, _) = real_photo(&catalog);
@@ -473,8 +475,8 @@ fn gpu_preview_the_notice_says_compiling_once_it_has_lasted_half_a_second() {
 /// whose every tick names `device-lost`, and still once the release has settled, beside the reason
 /// the evidence records.
 #[test]
-fn slow_gpu_preview_the_notice_says_the_reference_renderer_from_the_session_at_rest_and_in_a_drag()
-{
+#[slow]
+fn gpu_preview_the_notice_says_the_reference_renderer_from_the_session_at_rest_and_in_a_drag() {
     use super::renderer_tests::report;
     use luxforge_core::{Renderer, RendererReason};
     use luxforge_gpu::GpuStageState;

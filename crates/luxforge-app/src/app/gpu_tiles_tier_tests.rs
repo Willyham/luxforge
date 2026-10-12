@@ -26,6 +26,7 @@ use luxforge_core::{
     RendererRecord, catalog_types::RenderedBy, qualification, tiles::ReferenceTiles,
 };
 use luxforge_reference::preview_error::{Class, Rgb8, Statistics, compare, verdict};
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use serde_json::{Value, json};
 use std::{
@@ -301,8 +302,9 @@ fn held_to_the_reference(
 /// both reduced and on the corpus's Presence fixture, whose large tier is its whole 1440 × 960
 /// stage.
 #[test]
-fn slow_a_gpu_tier_is_within_the_display_limit_of_the_reference_tier() {
-    let test = "slow_a_gpu_tier_is_within_the_display_limit_of_the_reference_tier";
+#[slow]
+fn a_gpu_tier_is_within_the_display_limit_of_the_reference_tier() {
+    let test = "a_gpu_tier_is_within_the_display_limit_of_the_reference_tier";
     let Some(adapter) = host_adapter(test) else {
         return;
     };
@@ -391,8 +393,9 @@ fn a_gpu_tier_of_a_raw_is_within_the_display_limit_of_the_reference_tier() {
 /// are compared with the reference's for the record only: the display limit is held before
 /// encoding (above), since two encodings of pixels a code apart can differ by a 16 × 16 block.
 #[test]
-fn slow_the_preview_lane_draws_a_photographs_tiers_on_the_gpu() {
-    let test = "slow_the_preview_lane_draws_a_photographs_tiers_on_the_gpu";
+#[slow]
+fn the_preview_lane_draws_a_photographs_tiers_on_the_gpu() {
+    let test = "the_preview_lane_draws_a_photographs_tiers_on_the_gpu";
     let Some(adapter) = host_adapter(test) else {
         return;
     };
@@ -433,7 +436,8 @@ fn slow_the_preview_lane_draws_a_photographs_tiers_on_the_gpu() {
 /// adapter yet draw the reference's tiers, byte for byte, naming `refused` and `surface-pending`;
 /// neither worker starts a thread or opens a device. Neither needs an adapter on this host.
 #[test]
-fn slow_a_no_gpu_launch_draws_the_reference_tiers_naming_why() {
+#[slow]
+fn a_no_gpu_launch_draws_the_reference_tiers_naming_why() {
     let original = written("no-gpu", &generated(900, 600));
     let reference = Tiers::new("no-gpu-reference", None, &original);
     reference.edit("edit.set-basic", json!({"exposure": 0.5}));

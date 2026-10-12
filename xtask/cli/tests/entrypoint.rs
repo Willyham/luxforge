@@ -1,5 +1,8 @@
+use luxforge_test_macros::slow;
+
 #[test]
-fn slow_malformed_commands_fail_before_delegation() {
+#[slow]
+fn malformed_commands_fail_before_delegation() {
     for args in [
         vec!["unknown-command"],
         vec!["check-repository", "--unknown"],
@@ -15,7 +18,8 @@ fn slow_malformed_commands_fail_before_delegation() {
 
 #[cfg(unix)]
 #[test]
-fn slow_delegated_command_keeps_arguments_status_and_a_clean_cargo_environment() {
+#[slow]
+fn delegated_command_keeps_arguments_status_and_a_clean_cargo_environment() {
     use std::{fs, os::unix::fs::PermissionsExt, process::Command};
     let temp = tempfile::tempdir().unwrap();
     let cargo = temp.path().join("cargo");

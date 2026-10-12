@@ -643,6 +643,7 @@ pub fn run(root: &Path, mut a: Args) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
 
     fn committed() -> (PathBuf, Value) {
         let root = root().unwrap();
@@ -1185,7 +1186,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_preview_error_corpus_command_is_incomplete_not_a_pass_when_a_source_is_unresolved() {
+    #[slow]
+    fn preview_error_corpus_command_is_incomplete_not_a_pass_when_a_source_is_unresolved() {
         // A checkout holding only the corpus and its descriptors: nothing generated, no manifest.
         let (real, _) = committed();
         let tmp = tempfile::tempdir().unwrap();

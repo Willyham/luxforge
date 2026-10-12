@@ -203,6 +203,7 @@ impl Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     use std::io::Cursor;
     use std::sync::{Arc, Mutex};
 
@@ -365,7 +366,8 @@ mod tests {
     /// The file on disk is cut back and written again in place as its tail turns over, and holds
     /// what the writer means it to up to the last event it was sent, before the finish and after.
     #[test]
-    fn slow_a_long_log_on_disk_is_rewritten_in_place_within_the_cap() {
+    #[slow]
+    fn a_long_log_on_disk_is_rewritten_in_place_within_the_cap() {
         let path = temporary("long");
         let log = Diagnostics::start(&path).unwrap();
         let sent = 2 * EVENT_CAP + 5;

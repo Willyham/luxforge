@@ -9,6 +9,7 @@ use super::super::{End, GpuBoundary, GpuFallback, GpuStep, assemble_passes, outp
 use super::*;
 use iced::{Size, Vector};
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 use std::sync::Arc;
 
 /// The CPU overlay's palette: its theme colours at its 0.72 opacity, as the desktop paints them.
@@ -131,8 +132,9 @@ fn primitive(steps: Vec<GpuStep>) -> PhotoPrimitive {
 /// colour, and a class turned off unmarked — composited in linear light at the overlay's opacity,
 /// within one code of the reference; and the draw records the marks it drew.
 #[test]
-fn slow_the_marks_composite_each_clipped_pixel_as_the_cpu_overlay_does() {
-    let test = "slow_the_marks_composite_each_clipped_pixel_as_the_cpu_overlay_does";
+#[slow]
+fn the_marks_composite_each_clipped_pixel_as_the_cpu_overlay_does() {
+    let test = "the_marks_composite_each_clipped_pixel_as_the_cpu_overlay_does";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -170,7 +172,8 @@ fn slow_the_marks_composite_each_clipped_pixel_as_the_cpu_overlay_does() {
 /// The marks read the output the last pass encodes: anywhere but last, a plan does not assemble,
 /// and its frame is the CPU's.
 #[test]
-fn slow_the_marks_are_a_plans_last_step() {
+#[slow]
+fn the_marks_are_a_plans_last_step() {
     let steps = vec![
         GpuStep::Clipping(marks(true, true)),
         GpuStep::colour(identity()),
@@ -187,7 +190,7 @@ fn slow_the_marks_are_a_plans_last_step() {
         )
         .is_ok()
     );
-    let test = "slow_the_marks_are_a_plans_last_step";
+    let test = "the_marks_are_a_plans_last_step";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -202,8 +205,9 @@ fn slow_the_marks_are_a_plans_last_step() {
 /// The CPU frame's clipping overlay marks that frame's pixels, so over the GPU output drawn in its
 /// place it is not drawn; once the CPU frame is drawn again, held behind the plan, it is.
 #[test]
-fn slow_the_cpu_overlay_is_not_drawn_over_the_gpu_output() {
-    let test = "slow_the_cpu_overlay_is_not_drawn_over_the_gpu_output";
+#[slow]
+fn the_cpu_overlay_is_not_drawn_over_the_gpu_output() {
+    let test = "the_cpu_overlay_is_not_drawn_over_the_gpu_output";
     let Some((device, queue)) = headless(test) else {
         return;
     };

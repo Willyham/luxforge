@@ -1153,11 +1153,13 @@ fn write_ifd(out: &mut Vec<u8>, tags: &[Tag]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
 
     /// The default bracket's bytes are pinned, so a change to the generator is deliberate; its
     /// exposures, times and files are what its specification says.
     #[test]
-    fn slow_hdr_bracket_default_is_deterministic_and_pinned() {
+    #[slow]
+    fn hdr_bracket_default_is_deterministic_and_pinned() {
         let bracket = Bracket::new(&BracketSpec::default());
         let offsets: Vec<i32> = bracket
             .frames()
@@ -1186,7 +1188,8 @@ mod tests {
     /// A photo-sized frame's rows are the same bytes however they are split into bands, at the
     /// sensor's top and bottom edges (where the blur clamps) as in its middle, and are pinned.
     #[test]
-    fn slow_hdr_bracket_photo_rows_are_alike_in_any_band_and_pinned() {
+    #[slow]
+    fn hdr_bracket_photo_rows_are_alike_in_any_band_and_pinned() {
         let bracket = Bracket::new(&BracketSpec {
             handheld: true,
             moving_subject: Some(2),
@@ -1253,7 +1256,8 @@ mod tests {
     /// The scene clips in the metered frame where the shortest exposure records it, holds shadow
     /// that only the longest lifts, and a sun no frame records.
     #[test]
-    fn slow_hdr_bracket_scene_spans_the_bracket() {
+    #[slow]
+    fn hdr_bracket_scene_spans_the_bracket() {
         let bracket = Bracket::new(&BracketSpec::default());
         let (mut clipped_recovered, mut deep, mut sun) = (0, 0, 0);
         for y in (0..HEIGHT).step_by(4) {

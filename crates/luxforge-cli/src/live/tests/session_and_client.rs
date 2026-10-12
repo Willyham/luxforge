@@ -7,6 +7,7 @@ use crate::live::*;
 use luxforge_core::{
     ApiFailure, LiveSessionEntry, LocalServer, OwnerHandle, PROTOCOL, live_session_file,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::{temp_catalog, temp_path};
 use serde_json::json;
 use std::{fs::File, net::TcpListener, path::Path, time::Duration};
@@ -174,7 +175,8 @@ fn live_session_client_reports_a_session_nothing_answers_as_stale() {
 }
 
 #[test]
-fn slow_live_session_client_handshake_proves_the_address_is_the_session() {
+#[slow]
+fn live_session_client_handshake_proves_the_address_is_the_session() {
     // An address that accepts and never answers, as another program now holding it might: the
     // handshake's deadline makes it stale rather than a hang.
     let endpoint = Endpoint::serve_all(|_, _| Reply::Silence);

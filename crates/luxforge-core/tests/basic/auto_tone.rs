@@ -1,4 +1,5 @@
 use luxforge_core::{BASIC_EFFECT, OwnerHandle, auto_tone::FIELDS};
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use luxforge_testkit::client::{call, mutation, open, refused};
 use serde_json::{Value, json};
@@ -42,7 +43,8 @@ fn basic(entry: &Value) -> Value {
 }
 
 #[test]
-fn slow_auto_tone_query_action_repeat_undo_and_source_preservation_through_the_owner() {
+#[slow]
+fn auto_tone_query_action_repeat_undo_and_source_preservation_through_the_owner() {
     let image = photo("owner", false);
     let before = fs::read(&image).unwrap();
     let catalog = paths::temp_catalog("auto-tone-owner");

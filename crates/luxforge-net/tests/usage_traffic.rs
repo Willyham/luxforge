@@ -17,6 +17,7 @@ use luxforge_core::usage::{
     device_profile::AppleTier, eligibility::Eligibility,
 };
 use luxforge_net::{HttpTransport, TlsTrust, TransportConfig};
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Request, TestServer, paths::temp_dir, respond, wait_until};
 use serde_json::json;
 use std::{
@@ -101,7 +102,8 @@ struct Captured {
 }
 
 #[test]
-fn slow_usage_a_loopback_capture_shows_a_request_a_minute_at_most_and_no_hourly_or_daily_cap() {
+#[slow]
+fn usage_a_loopback_capture_shows_a_request_a_minute_at_most_and_no_hourly_or_daily_cap() {
     let clock = Arc::new(ManualClock::new(WALL));
     let captured: Arc<Mutex<Vec<Captured>>> = Arc::default();
     let phase: Arc<Mutex<&'static str>> = Arc::new(Mutex::new("typical"));

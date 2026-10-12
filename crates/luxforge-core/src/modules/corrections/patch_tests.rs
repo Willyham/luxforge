@@ -16,6 +16,7 @@ use crate::{
     artifacts::{collect_files, object_path},
     editor::mutation,
 };
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::{fs, path::Path, sync::atomic::AtomicBool};
 
@@ -477,7 +478,8 @@ fn reopened_render(catalog: &Path, asset: &crate::AssetId) -> Result<Raster, cra
 }
 
 #[test]
-fn slow_a_reopened_patch_renders_without_a_producer_and_missing_or_corrupt_bytes_are_named() {
+#[slow]
+fn a_reopened_patch_renders_without_a_producer_and_missing_or_corrupt_bytes_are_named() {
     let mut session = Session::new("patch-reopen.sqlite");
     let (_, artifact) = add_patch(
         &mut session.service,

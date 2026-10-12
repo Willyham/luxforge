@@ -10,6 +10,7 @@ use crate::{
     api::{ApiFailure, ApiRequest, ApiResponse, ClientId, OwnerHandle},
     library::locate::Phase,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{
     Gate,
     paths::{fixture, temp_dir},
@@ -605,7 +606,8 @@ fn a_retried_batch_is_answered_once() {
 /// export's rule gives them there: two originals of one name get two names, and a file already there
 /// is never replaced. Each written file records an event, as a single export's does.
 #[test]
-fn slow_a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() {
+#[slow]
+fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() {
     let harness = Harness::new("export-equals");
     let photographs = [
         harness.photograph("srgb.jpg", "card-a/DSC_0001.jpg"),
@@ -853,7 +855,8 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
 }
 
 #[test]
-fn slow_auto_tone_batch_analyses_each_photo_and_matches_individual_actions() {
+#[slow]
+fn auto_tone_batch_analyses_each_photo_and_matches_individual_actions() {
     let harness = Harness::new("auto-tone");
     let mut batch = Vec::new();
     for (index, bright) in [false, true].into_iter().enumerate() {
@@ -946,7 +949,8 @@ fn auto_tone_batch_cancel_during_analysis_cannot_commit_a_late_result() {
 /// A batch belongs to no client, and so do its reads: the client that started it disconnecting
 /// while the tile service answers its Auto analysis cancels nothing, and the batch commits.
 #[test]
-fn slow_auto_tone_batch_reads_outlive_the_client_that_started_it() {
+#[slow]
+fn auto_tone_batch_reads_outlive_the_client_that_started_it() {
     let harness = Harness::new("auto-tone-disconnect");
     let asset = harness.photograph("orientation-1.jpg", "disconnect.jpg");
     let preset = harness.preset("Auto", json!({"auto-tone":{}}));
@@ -991,7 +995,8 @@ fn slow_auto_tone_batch_reads_outlive_the_client_that_started_it() {
 }
 
 #[test]
-fn slow_batch_paste_settings_reports_skips_and_uses_the_single_paste_path() {
+#[slow]
+fn batch_paste_settings_reports_skips_and_uses_the_single_paste_path() {
     let harness = Harness::new("paste-settings");
     let [target, removed, drafted, previewed, unchanged, alone] = [
         "Target",
@@ -1202,7 +1207,8 @@ fn stale_patch(catalog: &Path, asset: &AssetId) {
 /// and the written file's result echoes what it acknowledged. A batch skips it with its entry and
 /// reasons while it exports the rest, and exports it once the batch acknowledges it.
 #[test]
-fn slow_a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
+#[slow]
+fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
     let mut harness = Harness::new("export-stale");
     let photographs = [
         harness.photograph("srgb.jpg", "card/Stale.jpg"),

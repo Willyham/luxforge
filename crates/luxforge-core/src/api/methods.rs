@@ -3198,6 +3198,7 @@ mod tests {
         editor::mutation_json,
         modules::{PATCH_ACTION, PATCH_MODULE, PatchModule},
     };
+    use luxforge_test_macros::slow;
     use std::{
         collections::HashSet,
         path::{Path, PathBuf},
@@ -3911,7 +3912,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_nonlinear_api_locate_agrees_with_the_stamped_map_in_all_orientations() {
+    #[slow]
+    fn nonlinear_api_locate_agrees_with_the_stamped_map_in_all_orientations() {
         for mirror in [false, true] {
             for turns in 0..4 {
                 let catalog = luxforge_testbase::paths::temp_catalog("nonlinear-api-locate");
@@ -4873,7 +4875,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_recipe_describe_lists_every_layer_and_names_a_provider_it_cannot_use() {
+    #[slow]
+    fn recipe_describe_lists_every_layer_and_names_a_provider_it_cannot_use() {
         let catalog = std::env::temp_dir().join(format!(
             "luxforge-methods-describe-{}.sqlite",
             std::process::id()

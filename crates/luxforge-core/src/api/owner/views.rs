@@ -504,6 +504,7 @@ mod tests {
         browse::testing::{self, Fixture},
         catalog_types::{PositionRange, ViewSelection},
     };
+    use luxforge_test_macros::slow;
     use serde_json::json;
 
     fn call(
@@ -561,7 +562,8 @@ mod tests {
     /// and its windows, the selection reported in `session.state` and carried over by item, a
     /// revision refused, staleness after an index revision, and a view dropped on disconnect.
     #[test]
-    fn slow_browse_methods_answer_through_the_owner() {
+    #[slow]
+    fn browse_methods_answer_through_the_owner() {
         let fx = testing::fixture("owner");
         let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
         let client = owner.register();
@@ -833,7 +835,8 @@ mod tests {
     /// evaluated again in place from its query for `pick.plan` and `pick.develop` — its revision
     /// moves on and it is fresh — rather than refused, while the selection seam still refuses it.
     #[test]
-    fn slow_browse_a_stale_view_is_read_again_for_a_develop() {
+    #[slow]
+    fn browse_a_stale_view_is_read_again_for_a_develop() {
         let fx = testing::fixture("owner-develop-stale");
         let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
         let client = owner.register();
@@ -870,7 +873,8 @@ mod tests {
     /// A selection the index's revision alone left stale — grid previews landing — still names the
     /// items the person saw, so a request on it is answered, its view evaluated again first.
     #[test]
-    fn slow_browse_a_selection_the_index_alone_left_stale_is_acted_on() {
+    #[slow]
+    fn browse_a_selection_the_index_alone_left_stale_is_acted_on() {
         let fx = testing::fixture("owner-selection-stale");
         let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
         let client = owner.register();
@@ -909,7 +913,8 @@ mod tests {
     /// A change the owner records marks every view it left behind stale, so the selection seam
     /// refuses it before the client reads its session again.
     #[test]
-    fn slow_browse_a_recorded_change_marks_views_stale() {
+    #[slow]
+    fn browse_a_recorded_change_marks_views_stale() {
         let fx = testing::fixture("owner-changed");
         let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
         let client = owner.register();
@@ -983,7 +988,8 @@ mod tests {
     /// A view evaluated again into the same items keeps the preview lane's job for it rather than
     /// cancelling it and reading and queuing the same previews again; another view replaces it.
     #[test]
-    fn slow_browse_a_view_read_again_keeps_its_preview_job() {
+    #[slow]
+    fn browse_a_view_read_again_keeps_its_preview_job() {
         let fx = testing::fixture("owner-same-job");
         let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
         let client = owner.register();

@@ -10,6 +10,7 @@ use crate::{
     export::metadata::header::tests::camera_jpeg,
     index::{database, volumes::MountSource, walk::WalkLimits},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, wait_for};
 use luxforge_watch::Mount;
 use serde_json::{Value, json};
@@ -245,7 +246,8 @@ fn mixed_tree(root: &Path, outside: &Path) -> Vec<PathBuf> {
 /// packages, caches, system folders and Luxforge's own directories (the catalog lives in the root)
 /// are skipped; no file changes; and the job is on the activity board.
 #[test]
-fn slow_index_refresh_lists_supported_files_with_their_headers_and_changes_nothing() {
+#[slow]
+fn index_refresh_lists_supported_files_with_their_headers_and_changes_nothing() {
     let mut fixture = Fixture::new("list");
     fixture.stop();
     let root = fixture.dir.join("photos");
@@ -400,7 +402,8 @@ fn reconciling_reads_only_what_changed_and_carries_moves() {
 /// and a new link of the same file are a move, as a rename is.)
 #[cfg(unix)]
 #[test]
-fn slow_hard_links_are_each_their_own_row_and_a_move_among_them_carries_its_row() {
+#[slow]
+fn hard_links_are_each_their_own_row_and_a_move_among_them_carries_its_row() {
     const LINKS: usize = 600;
     let fixture = Fixture::new("hard-links");
     let owner = fixture.owner();
@@ -470,7 +473,8 @@ fn slow_hard_links_are_each_their_own_row_and_a_move_among_them_carries_its_row(
 /// Every batch advances the index's revision once, in its own transaction, and records one event
 /// naming it; a listing too large for one batch commits several.
 #[test]
-fn slow_every_batch_advances_the_revision_and_records_one_event() {
+#[slow]
+fn every_batch_advances_the_revision_and_records_one_event() {
     let fixture = Fixture::new("revision");
     let owner = fixture.owner();
     let client = owner.register();
@@ -646,7 +650,8 @@ fn job_cancel_stops_a_listing_mid_walk() {
 
 /// Past its file limit a listing is refused with `resource-limit`.
 #[test]
-fn slow_a_listing_past_its_file_limit_is_refused() {
+#[slow]
+fn a_listing_past_its_file_limit_is_refused() {
     let fixture = Fixture::new("limit");
     let owner = fixture.owner();
     let client = owner.register();
@@ -675,7 +680,8 @@ fn slow_a_listing_past_its_file_limit_is_refused() {
 /// Deleting the index directory while Luxforge is closed loses nothing but time: listing again
 /// rebuilds the same rows.
 #[test]
-fn slow_a_deleted_index_rebuilds_the_same_content() {
+#[slow]
+fn a_deleted_index_rebuilds_the_same_content() {
     let mut fixture = Fixture::new("rebuild");
     let root = fixture.dir.join("photos");
     let camera = camera_jpeg();
@@ -832,7 +838,8 @@ fn volumes_cards_and_folders_on_disk() {
 /// refused by the contract's rules, listed on add, forgotten on remove, and undone and redone with
 /// the index following.
 #[test]
-fn slow_indexed_folders_are_library_changes_with_undo_and_redo() {
+#[slow]
+fn indexed_folders_are_library_changes_with_undo_and_redo() {
     let fixture = Fixture::new("folders");
     let owner = fixture.owner();
     let client = owner.register();
@@ -963,7 +970,8 @@ fn slow_indexed_folders_are_library_changes_with_undo_and_redo() {
 /// After a restart, a retried `index.add-folder` or `index.remove-folder` is answered from the
 /// journal with the change its first attempt recorded, and records nothing.
 #[test]
-fn slow_a_retry_after_a_restart_is_answered_from_the_journal() {
+#[slow]
+fn a_retry_after_a_restart_is_answered_from_the_journal() {
     let mut fixture = Fixture::new("retry");
     let photos = fixture.dir.join("photos");
     put(&photos.join("a.jpg"), &camera_jpeg());
@@ -1010,7 +1018,8 @@ fn slow_a_retry_after_a_restart_is_answered_from_the_journal() {
 /// A folder on a volume that is not mounted is offline: its rows stay, `index.folders` says so, a
 /// refresh of it is `source-unavailable` and a refresh of every indexed folder reports it.
 #[test]
-fn slow_an_offline_folder_keeps_its_rows() {
+#[slow]
+fn an_offline_folder_keeps_its_rows() {
     let fixture = Fixture::new("offline");
     let owner = fixture.owner();
     let client = owner.register();

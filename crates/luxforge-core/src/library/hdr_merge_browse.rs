@@ -19,6 +19,7 @@ use crate::{
     merge::hdr::DeghostMode,
     seed::IndexSeeder,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::jpeg;
 use serde_json::{Value, json};
 use std::{fs, thread::JoinHandle};
@@ -340,7 +341,8 @@ fn sorted(mut rows: Vec<String>) -> Vec<String> {
 /// every file under another row finds the same stack. Counts tell the rows from the originals the
 /// leader hides.
 #[test]
-fn slow_hdr_merge_browse_sources_show_the_result_once_over_its_collapsed_originals() {
+#[slow]
+fn hdr_merge_browse_sources_show_the_result_once_over_its_collapsed_originals() {
     let mut scene = Scene::new("sources");
     let hashes = scene.bench.hashes();
     let merge = scene.import(&[0, 1, 2]);
@@ -423,7 +425,8 @@ fn slow_hdr_merge_browse_sources_show_the_result_once_over_its_collapsed_origina
 /// and Show all brings back the rest labelled outside the filter; expanding changes no library
 /// item. Picked counts files, and the pick facet counts each item once.
 #[test]
-fn slow_hdr_merge_browse_filters_act_on_each_items_own_metadata() {
+#[slow]
+fn hdr_merge_browse_filters_act_on_each_items_own_metadata() {
     let mut scene = Scene::new("filters");
     let merge = scene.import(&[0, 1, 2]);
     let bracket = scene.bracket();
@@ -528,7 +531,8 @@ fn slow_hdr_merge_browse_filters_act_on_each_items_own_metadata() {
 /// A collapsed cell's selection is the leader alone. Another client's Remove merge makes the view
 /// stale, and its next evaluation leaves the bracket undecided.
 #[test]
-fn slow_hdr_merge_browse_an_active_result_decides_its_bracket_and_is_not_picked() {
+#[slow]
+fn hdr_merge_browse_an_active_result_decides_its_bracket_and_is_not_picked() {
     let mut scene = Scene::new("picked");
     let merge = scene.import(&[0, 1, 2]);
     let bracket = scene.bracket();
@@ -624,7 +628,8 @@ fn slow_hdr_merge_browse_an_active_result_decides_its_bracket_and_is_not_picked(
 /// why each is not available; `stack.inspect` names each original's availability, reason, pick,
 /// index row and photograph, and its reference.
 #[test]
-fn slow_hdr_merge_browse_offline_and_unlisted_originals_have_provenance_rows() {
+#[slow]
+fn hdr_merge_browse_offline_and_unlisted_originals_have_provenance_rows() {
     let mut scene = Scene::new("provenance");
     let merge = scene.import(&[0, 1, 2]);
     let bracket = scene.bracket();
@@ -760,7 +765,8 @@ fn slow_hdr_merge_browse_offline_and_unlisted_originals_have_provenance_rows() {
 /// change to the result refuses the creation's undo by name, all or nothing; every pick stays as it
 /// was, and the originals' bytes too.
 #[test]
-fn slow_hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_picks() {
+#[slow]
+fn hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_picks() {
     let mut scene = Scene::new("lifecycle");
     let hashes = scene.bench.hashes();
     let pick = scene.path(3);
@@ -844,7 +850,8 @@ fn slow_hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_picks() {
 /// and, since this build reads no panorama provenance, without a reference; HDR's reference comes
 /// from its provenance.
 #[test]
-fn slow_merge_kind_browse_reads_a_panorama_stack_beside_an_hdr_one() {
+#[slow]
+fn merge_kind_browse_reads_a_panorama_stack_beside_an_hdr_one() {
     let mut scene = Scene::new("panorama");
     let hdr = scene.import(&[0, 1, 2]);
     let connection = &scene.bench.service.connection;

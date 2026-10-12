@@ -11,6 +11,7 @@ use crate::{
     catalog_types::{FindResult, Volume, VolumeId},
     jobs::JobControl,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::temp_dir;
 use std::{
     collections::HashSet,
@@ -268,7 +269,8 @@ fn resolve_missing_settles_each_result_from_what_was_found_and_who_names_it() {
 /// forgotten file by file, and bounded: past the bound the photograph remembered longest ago goes
 /// first.
 #[test]
-fn slow_resolve_missing_remembers_verified_files_bounded_and_replaced() {
+#[slow]
+fn resolve_missing_remembers_verified_files_bounded_and_replaced() {
     let dir = temp_dir("resolve-missing-remember").canonicalize().unwrap();
     let file = write(&dir.join("DSC_0001.JPG"), b"bytes");
     let other = write(&dir.join("DSC_0002.JPG"), b"bytes");

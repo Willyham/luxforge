@@ -7,11 +7,13 @@
 //! same function in release and records what it returns as evidence.
 
 use super::conformance;
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use std::fs;
 
 #[test]
-fn slow_every_field_patch_module_passes_the_conformance_suite() {
+#[slow]
+fn every_field_patch_module_passes_the_conformance_suite() {
     let out = paths::temp_path("field-patch-conformance");
     fs::create_dir_all(&out).expect("a scratch directory");
     let result = conformance::run(&paths::jpeg(), &out);

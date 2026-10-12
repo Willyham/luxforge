@@ -2,6 +2,7 @@ use super::plan::{BracketKind, Event, Frame, MomentKind, Plan};
 use super::*;
 use exif::{In, Tag, Value as ExifValue};
 use image::GenericImageView;
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::temp_dir;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -66,7 +67,8 @@ impl Drop for Generated {
 }
 
 #[test]
-fn slow_the_same_seed_writes_the_same_bytes_and_another_seed_does_not() {
+#[slow]
+fn the_same_seed_writes_the_same_bytes_and_another_seed_does_not() {
     let first = Generated::new(1, COUNT, "generate-catalog-first");
     let again = Generated::new(1, COUNT, "generate-catalog-again");
     let other = Generated::new(2, COUNT, "generate-catalog-other");
@@ -165,7 +167,8 @@ fn exif_of(bytes: &[u8]) -> (exif::Exif, image::DynamicImage) {
 }
 
 #[test]
-fn slow_every_field_written_reads_back_with_a_thumbnail_of_the_stated_size() {
+#[slow]
+fn every_field_written_reads_back_with_a_thumbnail_of_the_stated_size() {
     let generated = Generated::new(3, COUNT, "generate-catalog-fields");
     let manifest = generated.manifest();
     let size = |key: &str| {
@@ -280,7 +283,8 @@ fn mean_log_luminance(thumbnail: &image::DynamicImage) -> f64 {
 }
 
 #[test]
-fn slow_a_brackets_thumbnails_step_by_its_written_exposure_steps() {
+#[slow]
+fn a_brackets_thumbnails_step_by_its_written_exposure_steps() {
     let generated = Generated::new(4, COUNT, "generate-catalog-brackets");
     let mut brackets: BTreeMap<String, Vec<(f64, f64)>> = BTreeMap::new();
     for entry in generated.entries() {
@@ -310,7 +314,8 @@ fn slow_a_brackets_thumbnails_step_by_its_written_exposure_steps() {
 }
 
 #[test]
-fn slow_the_layout_holds_a_card_dumps_and_user_named_folders() {
+#[slow]
+fn the_layout_holds_a_card_dumps_and_user_named_folders() {
     let generated = Generated::new(5, COUNT, "generate-catalog-layout");
     let entries = generated.entries();
     let paths: Vec<&str> = entries
@@ -516,7 +521,8 @@ const EVERY_KIND: [MomentKind; 5] = [
 ];
 
 #[test]
-fn slow_every_plan_keeps_the_event_and_moment_rules_and_its_count() {
+#[slow]
+fn every_plan_keeps_the_event_and_moment_rules_and_its_count() {
     let count = |events: &[Event]| events.iter().map(|e| e.frames.len() as u32).sum::<u32>();
     for seed in 1..=6 {
         for total in [
@@ -669,7 +675,8 @@ fn seeded(seed: u64, files: u32, assets: u32) -> Options {
 }
 
 #[test]
-fn slow_the_same_seed_seeds_the_same_rows_and_another_seed_does_not() {
+#[slow]
+fn the_same_seed_seeds_the_same_rows_and_another_seed_does_not() {
     let first = Seeded::new(seeded(7, 300, 900), "generate-catalog-rows-first");
     let again = Seeded::new(seeded(7, 300, 900), "generate-catalog-rows-again");
     let other = Seeded::new(seeded(8, 300, 900), "generate-catalog-rows-other");
@@ -688,7 +695,8 @@ fn count(index: &luxforge_core::IndexDb, query: &str) -> i64 {
 }
 
 #[test]
-fn slow_a_generated_catalog_index_and_image_folder_open_with_the_core() {
+#[slow]
+fn a_generated_catalog_index_and_image_folder_open_with_the_core() {
     let seeded = Seeded::new(
         Options {
             images: Some(100),

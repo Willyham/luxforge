@@ -15,6 +15,7 @@ use crate::{
         add_file, broken_jpeg, camera_jpeg, counted_development, decoded, header, synthetic_dng,
     },
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, paths::temp_dir, wait_for, wait_until};
 use serde_json::{Value, json};
 use std::{
@@ -772,7 +773,8 @@ fn missing(index: &mut IndexDb, root: &Path, count: usize) -> Vec<FileId> {
 /// At most 20,000 tasks wait: a view that would pass it queues nothing, and a request past it is
 /// refused with `resource-limit`.
 #[test]
-fn slow_preview_cache_owner_refuses_past_the_queue_bound() {
+#[slow]
+fn preview_cache_owner_refuses_past_the_queue_bound() {
     let mut setup = Setup::new("preview-owner-bound");
     let root = setup.root.clone();
     let files = missing(&mut setup.index, &root, 20_003);

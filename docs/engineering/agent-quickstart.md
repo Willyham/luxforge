@@ -70,12 +70,13 @@ and `fmt --all -- --check`.
 ## Tests
 
 - Write one test per behavior, at the cheapest level that proves it.
-- A test that takes 100 ms or more, such as an exhaustive sweep, is named
-  `slow_`: `quick` skips it and the whole `check` runs it. A numerical study belongs in
+- A test that takes 100 ms or more, such as an exhaustive sweep, is marked `#[slow]` after its
+  `#[test]`, with `use luxforge_test_macros::slow;` in its module: `quick` skips it and the whole
+  `check` runs it. A numerical study belongs in
   `luxforge-reference`.
 - A test whose timing belongs to a host service (FSEvents, inotify, disk images, an editor
-  launch) needs a seam it can drive without that service in the unit tier. Name the test that
-  uses the real service `slow_`, or make it a smoke scenario.
+  launch) needs a seam it can drive without that service in the unit tier. Mark the test that
+  uses the real service `#[slow]`, or make it a smoke scenario.
 - A test sets up any process-wide state it reads, such as an installed output encoding, itself.
   `quick` and a filtered run leave tests out, so the test that would have installed it may never
   run first.

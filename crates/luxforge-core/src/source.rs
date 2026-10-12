@@ -782,6 +782,7 @@ mod tests {
         LinearSettings, ModuleRegistry, PreviewSource, ProxyBounds, Recipe, SnapshotId,
         WhiteBalanceApproximation, gains_from_temperature_tint, render::testing::render_linear,
     };
+    use luxforge_test_macros::slow;
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
 
@@ -847,7 +848,8 @@ mod tests {
     /// it, and a stop wakes it while planes are still held. Waits are bounded by a watchdog so a
     /// lost wake-up fails the test rather than hanging it.
     #[test]
-    fn slow_plane_gate_opens_on_the_last_release_and_on_a_stop() {
+    #[slow]
+    fn plane_gate_opens_on_the_last_release_and_on_a_stop() {
         let gate = Arc::new(PlaneGate::default());
         let never = AtomicBool::new(false);
         assert!(!gate.wait_released(&never), "an idle gate is open");
@@ -916,7 +918,8 @@ mod tests {
     /// alone, and puts it back when it drops, for as long as a view of the planes lives; planes
     /// released while retained are never counted twice.
     #[test]
-    fn slow_a_retained_development_is_out_of_the_gate_count_until_its_retention_drops() {
+    #[slow]
+    fn a_retained_development_is_out_of_the_gate_count_until_its_retention_drops() {
         let gate = Arc::new(PlaneGate::default());
         let never = AtomicBool::new(false);
         let mut image = LinearImage::new(1, 1, vec![0.0; 3]).unwrap();
@@ -1845,6 +1848,7 @@ mod jpeg_tests {
         Layer, ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, SnapshotId, Transform,
         render::testing::render,
     };
+    use luxforge_test_macros::slow;
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1993,7 +1997,8 @@ mod jpeg_tests {
     /// mirrored ones, renders byte-identically whether the actions are separate single-action
     /// orientation layers or one layer holding their composition. The source is untouched.
     #[test]
-    fn slow_composed_and_separate_orientations_agree_on_every_exif_orientation() {
+    #[slow]
+    fn composed_and_separate_orientations_agree_on_every_exif_orientation() {
         let registry = ModuleRegistry::builtin();
         let transforms = [
             Transform::RotateLeft,

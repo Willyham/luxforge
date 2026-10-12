@@ -133,13 +133,15 @@ mod tests {
     use crate::app::testing::{attach_log, attach_script, events, logged};
     use crate::state::select::SourcePress;
     use iced::Size;
+    use luxforge_test_macros::slow;
     use std::time::Instant;
 
     /// Each display frame of a `grid_scroll` step moves the grid down by the step's speed through
     /// the offset its scrollable publishes, which the grid records in the update that adopts it;
     /// the step ends at its last frame, or at the frame that reached the end.
     #[test]
-    fn slow_a_grid_scroll_moves_the_grid_once_per_frame_and_records_what_each_draws() {
+    #[slow]
+    fn a_grid_scroll_moves_the_grid_once_per_frame_and_records_what_each_draws() {
         let (mut editor, catalog) = selecting();
         let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
             .press

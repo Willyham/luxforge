@@ -5873,6 +5873,7 @@ mod tests {
     use super::*;
     use crate::app::message::sync::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
+    use luxforge_test_macros::slow;
 
     /// A step that names a preset row or a curve reads the sections whether or not the panel draws
     /// them: the derive builds no controls for a collapsed one, so the step builds them on demand.
@@ -6689,7 +6690,8 @@ mod tests {
     /// work's) lists the export running past the section's half-second threshold, not before; one that ends before any read
     /// lists it fails, and with the section closed, which reads nothing, the step fails at once.
     #[test]
-    fn slow_a_background_export_step_is_captured_once_the_section_lists_it_running() {
+    #[slow]
+    fn a_background_export_step_is_captured_once_the_section_lists_it_running() {
         let read = |editor: &mut Editor, elapsed_ms: u64| {
             let (resources, _) =
                 crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
@@ -7028,7 +7030,8 @@ mod tests {
     /// settings write, whose envelope carries the revision the desktop holds: that is refused and
     /// still captured. A host method waits for the event sync to follow it.
     #[test]
-    fn slow_an_agent_step_refuses_a_module_settings_write_and_waits_on_a_host_method() {
+    #[slow]
+    fn an_agent_step_refuses_a_module_settings_write_and_waits_on_a_host_method() {
         let (mut editor, catalog, _, _) = scripted(
             r#"[{"agent":{"method":"module.settings.reset","params":{"module_id":"luxforge.lens"}}}]"#,
         );
@@ -7081,7 +7084,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_a_scripted_preview_step_selects_by_sequence_or_returns_to_current() {
+    #[slow]
+    fn a_scripted_preview_step_selects_by_sequence_or_returns_to_current() {
         // No loaded entry has this sequence: the step is refused, not silently ignored.
         let (mut editor, catalog, _, _) = scripted(r#"[{"preview":{"sequence":9}}]"#);
         let _ = editor.next_step();
@@ -7113,7 +7117,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_a_scripted_palette_step_opens_and_queries_or_runs_the_first_match() {
+    #[slow]
+    fn a_scripted_palette_step_opens_and_queries_or_runs_the_first_match() {
         let (mut editor, catalog, _, _) = scripted(r#"[{"palette":{"query":"crop"}}]"#);
         let _ = editor.next_step();
         assert!(editor.palette.open);
@@ -7242,7 +7247,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_preset_create_delete_and_import_steps_drive_the_sections_own_messages() {
+    #[slow]
+    fn preset_create_delete_and_import_steps_drive_the_sections_own_messages() {
         use crate::app::testing::listed;
         let warm = listed("Warm", "User presets", None);
         let (mut editor, catalog) = with_library(

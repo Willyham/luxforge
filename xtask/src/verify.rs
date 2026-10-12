@@ -1612,6 +1612,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     fn names(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> Vec<String> {
         plan(tier, manifest, fixtures)
             .into_iter()
@@ -2340,7 +2341,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_the_pool_overlaps_scenarios_but_keeps_every_result_at_its_own_index() {
+    #[slow]
+    fn the_pool_overlaps_scenarios_but_keeps_every_result_at_its_own_index() {
         let specs = sleeps(&[
             "nap_long",
             "nap_short",
@@ -2394,7 +2396,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_one_job_is_the_serial_run_through_the_same_path() {
+    #[slow]
+    fn one_job_is_the_serial_run_through_the_same_path() {
         let specs = sleeps(&["nap_medium", "nap_medium", "nap_medium"]);
         let tmp = tempfile::tempdir().unwrap();
         let entries = pooled(&specs, 1, tmp.path());

@@ -1,0 +1,16 @@
+[package]
+name = "luxforge-test-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The test attributes every crate's tests may use, the leaves included. It depends on no crate at
+# all, which `cargo xtask check-repository` enforces, so naming it reaches nothing: the crates
+# that may depend on no workspace crate may still name this one.
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true

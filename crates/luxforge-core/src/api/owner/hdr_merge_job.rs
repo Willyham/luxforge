@@ -30,6 +30,7 @@ use luxforge_reference::{
     hdr::{CAMERA_TO_SRGB, Camera},
     hdr_align::{self as geometry, Rigid},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::Gate;
 use std::{
     sync::{
@@ -524,7 +525,8 @@ fn envelope(request: &str) -> Value {
 /// asked for again: one result, named after the reference, with its accounting, and nothing else
 /// in the catalog or on disk changed.
 #[test]
-fn slow_hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
+#[slow]
+fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
     let bench = Bench::new("create", 1);
     let before = bench.untouched();
     let paths = bench.paths(0);
@@ -739,7 +741,8 @@ fn slow_hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry()
 /// A merge result has no original: a check never looks for it or records it missing, and Locate,
 /// a find and a relink each refuse it by name.
 #[test]
-fn slow_hdr_merge_job_result_has_no_original_to_check_locate_find_or_relink() {
+#[slow]
+fn hdr_merge_job_result_has_no_original_to_check_locate_find_or_relink() {
     let bench = Bench::new("derived-locator", 1);
     let result = bench.merged(0, "create");
     let asset = result["result_asset_id"].clone();
@@ -806,7 +809,8 @@ fn slow_hdr_merge_job_result_has_no_original_to_check_locate_find_or_relink() {
 /// `job.cancel` stops a merge at every stage, publishes nothing and leaves no spool; once the
 /// worker's result reached the owner first, the merge is published and a cancel finds it ready.
 #[test]
-fn slow_hdr_merge_job_cancels_at_every_stage_and_a_late_cancel_never_misreports() {
+#[slow]
+fn hdr_merge_job_cancels_at_every_stage_and_a_late_cancel_never_misreports() {
     let bench = Bench::new("cancel", 1);
     let before = bench.untouched();
 
@@ -925,7 +929,8 @@ fn hdr_merge_job_queue_pressure_slow_reads_and_disconnect() {
 /// An input that changes or goes while the merge runs fails it, naming the file; nothing is
 /// published.
 #[test]
-fn slow_hdr_merge_job_fails_when_an_input_changes_or_vanishes() {
+#[slow]
+fn hdr_merge_job_fails_when_an_input_changes_or_vanishes() {
     let bench = Bench::new("inputs", 3);
     // The reference is read first; the first input changes while it is.
     bench.developer.reading.shut();
@@ -967,7 +972,8 @@ fn slow_hdr_merge_job_fails_when_an_input_changes_or_vanishes() {
 /// scratch limit each refuse the merge with `resource-limit`, leaving no spool; a retry answers
 /// the error, and a new request merges once the limit allows.
 #[test]
-fn slow_hdr_merge_job_refuses_past_the_temp_ceiling_a_full_disk_and_the_scratch_limit() {
+#[slow]
+fn hdr_merge_job_refuses_past_the_temp_ceiling_a_full_disk_and_the_scratch_limit() {
     let bench = Bench::new("limits", 1);
     type Limit = Box<dyn Fn(&mut MergeLane) + Send + Sync>;
     let cases: [(&str, Limit, &str); 4] = [
@@ -1030,7 +1036,8 @@ fn slow_hdr_merge_job_refuses_past_the_temp_ceiling_a_full_disk_and_the_scratch_
 /// A failure at each step of writing the result's durable source, or of the publication's
 /// transaction, publishes nothing and changes nothing; the next merge publishes.
 #[test]
-fn slow_hdr_merge_job_publication_failure_at_each_boundary_publishes_nothing() {
+#[slow]
+fn hdr_merge_job_publication_failure_at_each_boundary_publishes_nothing() {
     let bench = Bench::new("publication", 1);
     let before = bench.untouched();
     let assets = bench.count("SELECT COUNT(*) FROM assets");
@@ -1084,7 +1091,8 @@ fn slow_hdr_merge_job_publication_failure_at_each_boundary_publishes_nothing() {
 /// result with no library change and reading no input, and so does its retry; `merge.create`
 /// takes no development-set parameter.
 #[test]
-fn slow_hdr_merge_job_publishes_alone_and_reuses_an_exact_repeat_without_a_change() {
+#[slow]
+fn hdr_merge_job_publishes_alone_and_reuses_an_exact_repeat_without_a_change() {
     let bench = Bench::new("one-action", 2);
     let before = bench.untouched();
     let first = bench.merged(0, "merge");
@@ -1132,7 +1140,8 @@ fn slow_hdr_merge_job_publishes_alone_and_reuses_an_exact_repeat_without_a_chang
 /// before the publication's: undoing the merge keeps its result, in Removed, in those folders, and
 /// leaves them. A later merge the same proposal files finds them and makes none.
 #[test]
-fn slow_hdr_merge_job_files_the_result_by_the_proposal_and_its_undo_leaves_the_folders() {
+#[slow]
+fn hdr_merge_job_files_the_result_by_the_proposal_and_its_undo_leaves_the_folders() {
     let bench = Bench::new("filed", 2);
     let without_folder = |bracket: usize, request: &str| {
         let mut params = bench.create_params(bracket, request);
@@ -1235,7 +1244,8 @@ fn slow_hdr_merge_job_files_the_result_by_the_proposal_and_its_undo_leaves_the_f
 /// another job sweeps the spool it left, a published merge answers its retries, and a corrupt
 /// chunk found after reopening is reported and merged again by a rerun.
 #[test]
-fn slow_hdr_merge_job_restart_interrupts_sweeps_orphans_and_regenerates_a_corrupt_source() {
+#[slow]
+fn hdr_merge_job_restart_interrupts_sweeps_orphans_and_regenerates_a_corrupt_source() {
     let mut bench = Bench::new("restart", 2);
     bench.developer.reading.shut();
     let interrupted = bench.create(0, "interrupted");
@@ -1314,7 +1324,8 @@ fn slow_hdr_merge_job_restart_interrupts_sweeps_orphans_and_regenerates_a_corrup
 /// A rerun replaces its merge's result in one change; an exact rerun of a whole source merges
 /// nothing; Remove and Put back; and a missing or different provider disables create and rerun.
 #[test]
-fn slow_hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
+#[slow]
+fn hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
     let bench = Bench::new("rerun", 1);
     let first = bench.merged(0, "create");
     let reads = bench.reads();
@@ -1436,7 +1447,8 @@ fn slow_hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
 /// A merge holds no plane lease: an editor prepares and samples a photograph while a merge is
 /// held in its development, and a merge runs to its end while the editor's source work is held.
 #[test]
-fn slow_hdr_merge_job_and_an_editor_never_wait_on_each_other() {
+#[slow]
+fn hdr_merge_job_and_an_editor_never_wait_on_each_other() {
     let sources = Arc::new(Gate::new());
     let hold = sources.clone();
     let bench = Bench::with("editor", 1, Some(Arc::new(move || hold.pass())));

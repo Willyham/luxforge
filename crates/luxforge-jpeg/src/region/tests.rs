@@ -3,6 +3,7 @@ use crate::tests::{
     AFTER_APP0, LIMITS, Seeded, accepted, baseline, decode, first_scan, fixture, next_marker,
     pattern, scene, spliced,
 };
+use luxforge_test_macros::slow;
 use mozjpeg::{ColorSpace, Compress};
 use mozjpeg_sys::{
     JWRN_BOGUS_PROGRESSION, JWRN_EXTRANEOUS_DATA, JWRN_HIT_MARKER, JWRN_HUFF_BAD_CODE,
@@ -221,7 +222,8 @@ fn corpus() -> Vec<(String, Vec<u8>)> {
 /// Exactness, the acceptance test: every region equals the same rectangle cut from the full
 /// decode, byte for byte, over every layout and every kind of rectangle.
 #[test]
-fn slow_a_region_is_the_same_rectangle_cut_from_the_full_decode() {
+#[slow]
+fn a_region_is_the_same_rectangle_cut_from_the_full_decode() {
     let mut checked = 0;
     for (index, (name, bytes)) in corpus().into_iter().enumerate() {
         let (width, height, whole) = decode(&bytes).unwrap();
@@ -243,7 +245,8 @@ fn slow_a_region_is_the_same_rectangle_cut_from_the_full_decode() {
 /// a region's first and last, at every offset from the iMCU grid, which is where a crop's edges
 /// differ from a full decode; each row is a skip to every offset from the iMCU rows.
 #[test]
-fn slow_every_column_and_every_row_alone_is_the_same_as_the_full_decode() {
+#[slow]
+fn every_column_and_every_row_alone_is_the_same_as_the_full_decode() {
     let mut checked = 0;
     for (name, bytes) in corpus() {
         let (width, height, whole) = decode(&bytes).unwrap();
@@ -631,7 +634,8 @@ fn a_harmless_warning_decodes_the_same_region() {
 /// of a file, closed with an EOI so that libjpeg reads it, panics or aborts a region decode: each
 /// either decodes or is refused with an error.
 #[test]
-fn slow_truncation_is_refused_and_no_prefix_panics() {
+#[slow]
+fn truncation_is_refused_and_no_prefix_panics() {
     let pixel = Region {
         x: 0,
         y: 0,
