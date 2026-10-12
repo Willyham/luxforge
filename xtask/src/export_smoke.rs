@@ -21,6 +21,15 @@
 //! (`luxforge_reference::preview_error`); the two GPU exports of the edited entry, stripped and
 //! during comparison, are the same bytes; and the GPU tile worker drew them on the adapter that
 //! draws the window, as each export's `export_finished` event records.
+//!
+//! The settings the desktop does not send yet, through the API (`api_exports`): once the editor
+//! has quit, an owner of the runner's own over a copy of the run's catalog writes the edited entry
+//! with the Web and Master presets as `export.presets.list` lists them and as an optimised WebP
+//! resized to 160 px, on the reference renderer since it has no GPU. Each is decoded here with the
+//! `image`, `tiff` and `image-webp` crates and must be the plan's output, the result's length and
+//! format, carry the sRGB profile and an EXIF Orientation of 1, be brighter than the original and
+//! have the structure its settings ask for: a progressive 4:2:0 JPEG with no density, a 16-bit
+//! Deflate TIFF at 300 ppi, a lossy WebP with its ICC and EXIF chunks.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
@@ -494,9 +503,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     );
 
     // The GPU tile worker drew each GPU export on the adapter that draws the window, one stream
-    // each, and the reference export streamed nothing.
+    // each, and the reference export streamed nothing. The photograph's catalog tiers stream
+    // through the same worker before the first export, so the count is held from that export on.
     let backend = &launch.at("stripped")?["state"]["backend"];
-    let mut streams = 0;
+    let mut streams: Option<u64> = None;
     for (step, streamed) in [
         ("stripped", true),
         ("kept", true),
@@ -515,10 +525,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )?;
         let now = tiles["streams"].as_u64().unwrap_or_default();
         ensure(
-            now == streams + u64::from(streamed),
-            format!("The {step} export left the tile worker at {now} streams after {streams}"),
+            streams.map_or(now >= 1, |before| now == before + u64::from(streamed)),
+            format!("The {step} export left the tile worker at {now} streams after {streams:?}"),
         )?;
-        streams = now;
+        streams = Some(now);
         checks.note(
             launch.at(step)?,
             "the GPU tile worker's figures as the export ended",
@@ -559,6 +569,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "The refused export changed the stripped file",
     )?;
 
+    // The settings the desktop does not send yet, through the API of an owner of the runner's own
+    // over the run's catalog.
+    let queued = &record(launch.at("stripped")?, "stripped")?["queued"];
+    let api = api_exports(launch, queued, output, original, &mut checks)?;
+
     // The original was only read.
     run.sources_unchanged()?;
     checks.write(
@@ -567,11 +582,291 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({
             "fixture": {"path": FIXTURE, "sha256": hash(&root.join(FIXTURE))?, "unchanged": true},
             "output_stage": [output.0, output.1],
+            "api_exports": api,
             "same_tolerance": SAME,
             "brighter_margin": BRIGHTER,
-            "scope": "Each written JPEG decoded with the image crate and its segments read here: dimensions, byte length, ICC profile, APP1 and EXIF orientation, mean colour against the original and each other, and the GPU's export against the reference renderer's by the pointwise display limit (CIEDE2000, luxforge_reference::preview_error) over every pixel of one small fixture: functional evidence of the GPU export, which the release gate measures over the corpus",
+            "scope": "Each written JPEG decoded with the image crate and its segments read here: dimensions, byte length, ICC profile, APP1 and EXIF orientation, mean colour against the original and each other, and the GPU's export against the reference renderer's by the pointwise display limit (CIEDE2000, luxforge_reference::preview_error) over every pixel of one small fixture: functional evidence of the GPU export, which the release gate measures over the corpus. The Web and Master presets and a resized optimised WebP are written through the API by an owner of the runner's own over a copy of the run's catalog, on the reference renderer since it has no GPU, and decoded here with the image, tiff and image-webp crates",
         }),
     )
+}
+
+/// The long edge the API's WebP export is resized to, below the output stage's, so the reference
+/// resamples it.
+const WEBP_EDGE: u32 = 160;
+
+/// What one API export is, as the decoders here read it.
+struct Decoded {
+    size: (u32, u32),
+    icc: bool,
+    /// IFD0's Orientation in the file's EXIF, `None` when it carries no EXIF.
+    orientation: Option<u32>,
+    mean: [f64; 3],
+    /// What the format's own structure says: a JPEG's frame marker, sampling and JFIF density; a
+    /// TIFF's bits, compression and resolution; a WebP's chunks.
+    structure: Value,
+}
+
+/// The EXIF Orientation in a TIFF structure, as `kamadak-exif` reads it.
+fn exif_orientation(tiff: &[u8]) -> Option<u32> {
+    let exif = exif::Reader::new().read_raw(tiff.to_vec()).ok()?;
+    exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|field| field.value.get_uint(0))
+}
+
+fn decode_api_jpeg(bytes: &[u8]) -> Result<Decoded> {
+    use image::ImageDecoder;
+    let found = segments(bytes)?;
+    let frame = found
+        .iter()
+        .find(|(marker, _)| matches!(marker, 0xC0 | 0xC2))
+        .ok_or("The JPEG has no baseline or progressive frame")?;
+    let jfif = found
+        .iter()
+        .find(|(marker, _)| *marker == 0xE0)
+        .ok_or("The JPEG has no JFIF header")?
+        .1;
+    let orientation = found
+        .iter()
+        .find(|(marker, payload)| *marker == 0xE1 && payload.starts_with(b"Exif\0\0"))
+        .and_then(|(_, payload)| exif_orientation(&payload[6..]));
+    let mut decoder = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(bytes))?;
+    let icc = decoder.icc_profile()?.is_some();
+    let image = image::DynamicImage::from_decoder(decoder)?.to_rgb8();
+    Ok(Decoded {
+        size: image.dimensions(),
+        icc,
+        orientation,
+        mean: mean_rgb(&image),
+        structure: json!({
+            "progressive": frame.0 == 0xC2,
+            "sampling": frame.1[7],
+            "jfif_density": [jfif[7], u16::from_be_bytes([jfif[8], jfif[9]])],
+        }),
+    })
+}
+
+fn decode_api_tiff(bytes: &[u8]) -> Result<Decoded> {
+    use tiff::{
+        ColorType,
+        decoder::{Decoder, DecodingResult, ifd::Value as Tag},
+        tags::Tag as Name,
+    };
+    let mut decoder = Decoder::new(std::io::Cursor::new(bytes))?;
+    let (width, height) = decoder.dimensions()?;
+    let ColorType::RGB(bits) = decoder.colortype()? else {
+        return Err("The TIFF is not RGB".into());
+    };
+    let compression = decoder.get_tag_u32(Name::Compression)?;
+    let unit = decoder.get_tag_u32(Name::ResolutionUnit)?;
+    let resolution = match decoder.get_tag(Name::XResolution)? {
+        Tag::Rational(numerator, denominator) => f64::from(numerator) / f64::from(denominator),
+        other => return Err(format!("The TIFF's XResolution is {other:?}").into()),
+    };
+    let icc = decoder.get_tag_u8_vec(Name::IccProfile).is_ok();
+    let rgb: Vec<u8> = match decoder.read_image()? {
+        DecodingResult::U8(samples) => samples,
+        DecodingResult::U16(samples) => samples.iter().map(|sample| (sample >> 8) as u8).collect(),
+        _ => return Err("The TIFF's samples are neither 8 nor 16 bits".into()),
+    };
+    let image = image::RgbImage::from_raw(width, height, rgb).ok_or("The TIFF is short")?;
+    Ok(Decoded {
+        size: (width, height),
+        icc,
+        orientation: exif_orientation(bytes),
+        mean: mean_rgb(&image),
+        structure: json!({"bits": bits, "compression": compression, "resolution_unit": unit, "resolution": resolution}),
+    })
+}
+
+fn decode_api_webp(bytes: &[u8]) -> Result<Decoded> {
+    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes))?;
+    let (width, height) = decoder.dimensions();
+    let icc = decoder.icc_profile()?.is_some();
+    let exif = decoder.exif_metadata()?;
+    let alpha = decoder.has_alpha();
+    let mut pixels = vec![
+        0;
+        decoder
+            .output_buffer_size()
+            .ok_or("The WebP is too large")?
+    ];
+    decoder.read_image(&mut pixels)?;
+    let rgb: Vec<u8> = if alpha {
+        pixels
+            .chunks_exact(4)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .collect()
+    } else {
+        pixels
+    };
+    let image = image::RgbImage::from_raw(width, height, rgb).ok_or("The WebP is short")?;
+    let mut chunks = Vec::new();
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let len = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]]);
+        chunks.push(String::from_utf8_lossy(&bytes[at..at + 4]).into_owned());
+        at += 8 + len as usize + len as usize % 2;
+    }
+    Ok(Decoded {
+        size: (width, height),
+        icc,
+        orientation: exif.as_deref().and_then(exif_orientation),
+        mean: mean_rgb(&image),
+        structure: json!({"chunks": chunks}),
+    })
+}
+
+/// Write the Web and Master presets and a resized optimised WebP of the run's edited entry through
+/// the API, as an independent client does, with an owner of the runner's own over a copy of the
+/// run's catalog (the editor has quit; the copy keeps the run's own catalog as it left it), and
+/// check each independently: the plan's output stage is the frame's, the file decodes to the
+/// plan's output and is the result's length and format, carries the sRGB profile and an EXIF
+/// whose Orientation is 1, is brighter than the original, and is the structure its settings ask
+/// for. This owner has no GPU, so the reference renders each, as the result names.
+fn api_exports(
+    launch: &Checked,
+    queued: &Value,
+    stage: (u32, u32),
+    original: f64,
+    checks: &mut Checks,
+) -> Result<Value> {
+    use luxforge_testkit::client::{call, prepare, request_id, settle};
+    let copy = launch.evidence.join("api-catalog");
+    fs::create_dir_all(&copy)?;
+    for suffix in ["", "-wal", "-shm"] {
+        let from = launch.evidence.join(format!("catalog.sqlite{suffix}"));
+        if from.exists() {
+            fs::copy(&from, copy.join(format!("catalog.sqlite{suffix}")))?;
+        }
+    }
+    let (owner, join) = luxforge_core::OwnerHandle::start(&copy.join("catalog.sqlite"))
+        .map_err(|error| format!("the core cannot open the run's catalog: {error}"))?;
+    let client = owner.register();
+    let outcome = (|| -> Result<Value> {
+        let (asset, entry) = (&queued["asset_id"], &queued["entry_id"]);
+        prepare(&owner, client, asset)?;
+        let presets = call(&owner, client, "export.presets.list", json!({}))?;
+        let preset = |id: &str| -> Result<Value> {
+            presets["presets"]
+                .as_array()
+                .and_then(|presets| presets.iter().find(|preset| preset["preset_id"] == id))
+                .map(|preset| preset["settings"].clone())
+                .ok_or_else(|| format!("export.presets.list lists no {id}: {presets}").into())
+        };
+        let webp = json!({
+            "format": "webp", "size": {"fit": "long_edge", "pixels": WEBP_EDGE}, "quality": 80,
+            "optimise": true, "limit_bytes": null, "sharpen": null, "metadata": "all",
+            "pixels_per_inch": null, "folder": "original", "suffix": "-webp",
+        });
+        let frame = launch.at("refused")?;
+        let mut written = Vec::new();
+        for (file, settings) in [
+            ("api-web.jpg", preset("luxforge.web")?),
+            ("api-master.tif", preset("luxforge.master")?),
+            ("api-small.webp", webp),
+        ] {
+            let plan = call(
+                &owner,
+                client,
+                "export.plan",
+                json!({"asset_id": asset, "entry_id": entry, "settings": settings}),
+            )?;
+            ensure(
+                plan["stage"] == json!({"width": stage.0, "height": stage.1}),
+                format!(
+                    "{file}'s plan has stage {}, the frame {stage:?}",
+                    plan["stage"]
+                ),
+            )?;
+            let output = (
+                plan["output"]["width"].as_u64().unwrap_or_default() as u32,
+                plan["output"]["height"].as_u64().unwrap_or_default() as u32,
+            );
+            let destination = launch.evidence.join(file);
+            let job = call(
+                &owner,
+                client,
+                "export.write",
+                json!({
+                    "asset_id": asset, "entry_id": entry, "settings": settings,
+                    "destination": destination,
+                    "mutation": {"request_id": request_id(file), "actor": "export-smoke"},
+                }),
+            )?;
+            let read = settle(&owner, client, &job["job_id"])?;
+            ensure(
+                read["status"] == "ready",
+                format!("The API export of {file} did not end ready: {read}"),
+            )?;
+            let result = &read["result"];
+            let bytes = fs::read(&destination)?;
+            let decoded = match settings["format"].as_str() {
+                Some("jpeg") => decode_api_jpeg(&bytes)?,
+                Some("tiff") => decode_api_tiff(&bytes)?,
+                _ => decode_api_webp(&bytes)?,
+            };
+            ensure(
+                decoded.size == output
+                    && result["width"] == output.0
+                    && result["height"] == output.1,
+                format!(
+                    "{file} decodes to {:?}, the plan's output is {output:?}, the result names {} \u{d7} {}",
+                    decoded.size, result["width"], result["height"]
+                ),
+            )?;
+            ensure(
+                result["bytes"] == bytes.len() && result["format"] == settings["format"],
+                format!("{file} is {} bytes; the result is {result}", bytes.len()),
+            )?;
+            ensure(
+                result["renderer"] == json!({"record": "reference", "reason": null}),
+                format!("{file} names {} as its renderer", result["renderer"]),
+            )?;
+            ensure(decoded.icc, format!("{file} carries no ICC profile"))?;
+            ensure(
+                decoded.orientation == Some(1),
+                format!("{file}'s EXIF orientation is {:?}", decoded.orientation),
+            )?;
+            let expected = match file {
+                "api-web.jpg" => {
+                    json!({"progressive": true, "sampling": 0x22, "jfif_density": [0, 1]})
+                }
+                "api-master.tif" => {
+                    json!({"bits": 16, "compression": 8, "resolution_unit": 2, "resolution": 300.0})
+                }
+                _ => json!({"chunks": ["VP8X", "ICCP", "VP8 ", "EXIF"]}),
+            };
+            ensure(
+                decoded.structure == expected,
+                format!(
+                    "{file}'s structure is {}, its settings ask for {expected}",
+                    decoded.structure
+                ),
+            )?;
+            checks.compare(
+                frame,
+                &format!("{file}'s mean luminance against the original's"),
+                mean_luminance(decoded.mean),
+                original,
+                Tolerance::Above(BRIGHTER),
+            )?;
+            let record = json!({
+                "file": file, "settings": settings, "output": [output.0, output.1],
+                "bytes": bytes.len(), "quality": result["quality"], "metadata": result["metadata"],
+                "structure": decoded.structure, "renderer": result["renderer"],
+            });
+            checks.note(
+                frame,
+                "an API export written and decoded here",
+                record.clone(),
+            );
+            written.push(record);
+        }
+        Ok(Value::Array(written))
+    })();
+    owner.stop();
+    let _ = join.join();
+    outcome
 }
 
 #[cfg(test)]

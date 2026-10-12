@@ -5471,6 +5471,7 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "image",
+ "image-webp",
  "kamadak-exif",
  "luxforge-core",
  "luxforge-evidence",
@@ -5488,6 +5489,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "tiff",
  "time",
  "xtask-cli",
  "zip",
