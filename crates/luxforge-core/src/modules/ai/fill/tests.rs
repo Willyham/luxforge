@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     Error,
-    modules::{Region, Stage},
+    modules::{Region, Stage, ai::selection::Selection},
 };
 use luxforge_reference::srgb;
 
@@ -907,4 +907,105 @@ fn a_preview_is_at_most_1024_on_its_longer_side() {
     assert_eq!(super::preview_size(300, 200), (300, 200));
     assert_eq!(super::preview_size(4096, 1024), (1024, 256));
     assert_eq!(super::preview_size(3000, 1), (1024, 1));
+}
+
+#[test]
+fn a_selection_is_full_over_what_was_painted_and_feathers_past_it() {
+    // A 120 px radius along y = 600: full coverage out to the painted edge, then a feather of 18
+    // px (15% of the radius) past it.
+    let s = stage(1600, 1200);
+    let parameters = serde_json::json!({
+        "selection-points": [[0.4, 0.5], [0.6, 0.5]],
+        "selection-radius": 0.1,
+    });
+    let selection = Selection::parse(parameters.as_object().unwrap()).unwrap();
+    let coverage = selection.coverage(s).unwrap().unwrap();
+    // Pixel row `y`'s centre is `|y + 0.5 − 600|` from the stroke.
+    for y in [600, 560, 481, 719] {
+        assert_eq!(coverage.at(800, y), 1.0, "row {y}");
+    }
+    for y in [470, 729] {
+        let c = coverage.at(800, y);
+        assert!(c > 0.0 && c < 1.0, "row {y}: {c}");
+    }
+    assert!(coverage.at(800, 470) > coverage.at(800, 465));
+    for y in [461, 738] {
+        assert_eq!(coverage.at(800, y), 0.0, "row {y}");
+    }
+    let bounds = coverage.bounds();
+    assert_eq!((bounds.y0, bounds.y1()), (462, 738));
+    // What the owner admits by holds every covered pixel.
+    let support = selection.support(s);
+    assert!(
+        support.y0 <= bounds.y0 && support.y1() >= bounds.y1(),
+        "{support:?}"
+    );
+}
+
+#[test]
+fn an_object_the_brush_paints_over_never_shows_through_the_candidate() {
+    // A flat background with a red block, the object, whose top edge lies 12 px inside the top
+    // edge of the brush stroke painted over it: a 120 px radius along y = 600 paints 480 to 720,
+    // and the block starts at 492. Whatever the model answers, nothing of the block may reach the
+    // composite: a flat answer of the background must composite to the background everywhere,
+    // with the seam correction and detail blend (a removal) and without them (a Replace).
+    let s = stage(1600, 1200);
+    let background = [0.30_f32, 0.40, 0.50];
+    let red = [0.75_f32, 0.03, 0.03];
+    let block = rect(672, 492, 256, 188);
+    let image: Vec<[f32; 3]> = (0..s.height)
+        .flat_map(|y| (0..s.width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            if block.contains(x, y) {
+                red
+            } else {
+                background
+            }
+        })
+        .collect();
+    let parameters = serde_json::json!({
+        "selection-points": [[0.4, 0.5], [0.6, 0.5]],
+        "selection-radius": 0.1,
+    });
+    let selection = Selection::parse(parameters.as_object().unwrap()).unwrap();
+    let coverage = selection.coverage(s).unwrap().unwrap();
+    // The painted footprint holds the whole block.
+    for (x, y) in [(672, 492), (927, 492), (800, 492), (672, 679), (927, 679)] {
+        assert!(coverage.at(x, y) > 0.0, "({x}, {y})");
+    }
+    let n = 256;
+    let mut reads = Vec::new();
+    let context = Context::prepare(
+        coverage.clone(),
+        s,
+        n,
+        1 << 22,
+        &mut reader(&image, s, &mut reads),
+        &ok,
+    )
+    .unwrap();
+    let codes = background.map(|v| context.encoding.code(v));
+    let answer = flat_answer(n, codes.map(|c| c / 255.0));
+    for blend in [true, false] {
+        let candidate = context.finish_with(&answer, 7, blend).unwrap();
+        let [x0, y0, width, _] = candidate.rect;
+        let (mut worst, mut at) = (0.0_f32, (0, 0));
+        for (i, &c) in candidate.coverage.iter().enumerate() {
+            let (x, y) = (x0 + i as u32 % width, y0 + i as u32 / width);
+            let input = image[(y * s.width + x) as usize];
+            for k in 0..3 {
+                // The repair stage's composite, `in + c · (patch − in)`.
+                let patch = f64::from(candidate.linear[i * 3 + k]);
+                let shown = f64::from(input[k]) + f64::from(c) * (patch - f64::from(input[k]));
+                let error = (context.encoding.code(shown as f32) - codes[k]).abs();
+                if error > worst {
+                    (worst, at) = (error, (x, y));
+                }
+            }
+        }
+        assert!(
+            worst < 1.0,
+            "blend {blend}: the block shows through by {worst} codes at {at:?}"
+        );
+    }
 }

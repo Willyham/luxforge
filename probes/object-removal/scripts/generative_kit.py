@@ -10,7 +10,8 @@ It drives the editor's own `luxforge-json` (never the GUI) and the probe, and ne
            asset that may not be published yet)
   editor   per case, one `luxforge-json` process under `/usr/bin/time -l`: install if needed,
            Generate, Regenerate, accept and export each candidate; record times, progress, peak
-           memory and `uptime`
+           memory and `uptime` (`--once`: Generate alone; `--prompt`: a Replace, then a
+           prompt-free removal in the same process)
   lama     the Fast fill (LaMa, the probe's `fill`) over the same footprint
   sheets   blinded contact sheets: the input with the region outlined, then each method's result
            under a letter in a per-case random order; the key is written separately
@@ -335,7 +336,15 @@ def editor(args):
         open_s = time.monotonic() - opened
         runs = []
         seed = args.seed
-        for label in ("generate", "regenerate"):
+        # Generate then Regenerate; with --once Generate alone; with --prompt a Replace and then a
+        # prompt-free removal from the same seed, so one process holds each runtime slot in turn.
+        if args.prompt:
+            plan = [("replace", args.prompt), ("generate", None)]
+        elif args.once:
+            plan = [("generate", None)]
+        else:
+            plan = [("generate", None), ("regenerate", None)]
+        for label, prompt in plan:
             params = {
                 "asset_id": asset,
                 "selection-points": stroke["points"],
@@ -344,6 +353,8 @@ def editor(args):
                 "seed": seed,
                 "mutation": mutation(label),
             }
+            if prompt:
+                params["prompt"] = prompt
             steps = []
             started = time.monotonic()
 
@@ -361,16 +372,20 @@ def editor(args):
             runs.append(
                 {
                     "label": label,
+                    "prompt": prompt,
                     "job_id": queued["job_id"],
                     "seed": seed,
                     "seconds": round(elapsed, 2),
                     "progress": steps,
                     "result": result,
                     "candidates": record["candidates"],
+                    # Which runtime slots the process holds once the candidate is published.
+                    "runtime_after": client.call("module.status", {"module_id": AI}).get("runtime"),
                 }
             )
             print(f"{cid} {label} seed {seed}: {elapsed:.1f} s", flush=True)
-            seed = result["next_seed"]
+            if label != "replace":
+                seed = result["next_seed"]
         # Accept and export each candidate in turn, undoing between them.
         for run in runs:
             revision = client.call("asset.state", {"asset_id": asset})["revision"]
@@ -383,7 +398,8 @@ def editor(args):
                     "mutation": {**mutation("accept"), "expected_revision": revision},
                 },
             )
-            destination = out / "klein" / f"{cid}-seed{run['seed']}.jpg"
+            kind = "replace-" if run["prompt"] else ""
+            destination = out / "klein" / f"{cid}-{kind}seed{run['seed']}.jpg"
             if destination.exists():
                 destination.unlink()
             exported = client.call(
@@ -574,6 +590,8 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--only")
+    p.add_argument("--once", action="store_true", help="Generate one candidate, no Regenerate")
+    p.add_argument("--prompt", help="a Replace with this prompt, then a prompt-free removal")
     p.set_defaults(run=editor)
     p = sub.add_parser("lama")
     p.add_argument("--probe", required=True)

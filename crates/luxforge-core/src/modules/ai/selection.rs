@@ -2,8 +2,15 @@
 //! effect region, a second stroke for what the object casts (a shadow, a reflection). Each is
 //! captured exactly as a correction's stroke is ([`CorrectionStroke::capture`]: the same posted
 //! positions, decimation, grid and radius range) and becomes coverage as a correction's footprint
-//! does, feathered over 15% of its radius at full opacity: the design's Nothing case, the stroke's
+//! does, with the mask brush's profile at full opacity: the design's Nothing case, the stroke's
 //! footprint as painted. The region is the larger of the two coverages at every pixel.
+//!
+//! **The feather lies outside what was painted.** Coverage is full over the footprint as painted
+//! and falls to zero over 15% of the radius past it, as the prototype's footprint region and the
+//! object region's soft outer edge do. A correction's brush feathers inward, which a removal must
+//! not: what a person paints over is the object to take away, and an object edge under a partial
+//! coverage `c` shows through the composite `in + c · (patch − in)` at `1 − c`, a faint trace of
+//! the object inside the fill wherever its edge lies near the brush's.
 use super::fill::Coverage;
 use crate::{
     Error,
@@ -12,8 +19,19 @@ use crate::{
 };
 use serde_json::{Map, Value};
 
-/// The feather of a brush selection's footprint, as a share of its radius in percent.
+/// The feather of a brush selection's footprint past its painted edge, as a share of its radius in
+/// percent.
 pub(crate) const SELECTION_FEATHER: f64 = 15.0;
+
+/// The radius a stroke's coverage reaches, in content heights: the painted radius and the feather
+/// past it.
+fn reach(stroke: &CorrectionStroke) -> f64 {
+    stroke.radius() * (1.0 + SELECTION_FEATHER / 100.0)
+}
+
+/// The feather as a share of [`reach`] in percent, so its band is [`SELECTION_FEATHER`] percent
+/// of the painted radius and coverage is full out to the painted edge.
+const REACH_FEATHER: f64 = 100.0 * SELECTION_FEATHER / (100.0 + SELECTION_FEATHER);
 
 /// The selection's path and radius.
 pub(crate) const SELECTION_POINTS: &str = "selection-points";
@@ -75,7 +93,7 @@ impl Selection {
             .map(|stroke| {
                 footprint::support(
                     &footprint::segments(&Self::positions(stroke), stage),
-                    stroke.radius(),
+                    reach(stroke),
                     stage,
                 )
             })
@@ -97,8 +115,8 @@ impl Selection {
             .map(|stroke| {
                 Footprint::new(
                     &Self::positions(stroke),
-                    stroke.radius(),
-                    SELECTION_FEATHER,
+                    reach(stroke),
+                    REACH_FEATHER,
                     100.0,
                     stage,
                 )
