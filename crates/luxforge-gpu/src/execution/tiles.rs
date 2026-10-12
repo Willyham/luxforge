@@ -824,10 +824,7 @@ impl TileRunner {
         if self.in_flight.is_empty() {
             return;
         }
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
+        let _ = super::wait_for_submission(&self.device, None);
         for tile in &mut self.in_flight {
             tile.done = true;
         }
@@ -1137,13 +1134,9 @@ impl TileRunner {
             return Err(TileFailure::PIPELINE_FAILED);
         };
         let waiting = Instant::now();
-        let waited = self
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(self.in_flight[at].index.clone()),
-                timeout: None,
-            })
-            .is_ok();
+        let waited =
+            super::wait_for_submission(&self.device, Some(self.in_flight[at].index.clone()))
+                .is_ok();
         let wait_us = micros(waiting);
         // The queue runs its submissions in order: every tile up to this one is done.
         for tile in self.in_flight.iter_mut().take(at + 1) {
