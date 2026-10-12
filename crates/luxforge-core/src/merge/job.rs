@@ -270,75 +270,38 @@ impl Developer for SharedDevelopment {
         gains: Option<[f32; 3]>,
         control: &JobControl,
     ) -> Result<Developed, Error> {
-        use crate::{editor::ReadContent, source::RawPrepared};
-        let read = crate::library::develop::read(path, true, control, &|_| {})?;
-        let capture_ms = read.header.capture.as_ref().map(|time| time.instant_ms());
-        let settings = settings(&read.header);
-        let camera = read.header.camera.clone();
-        let Some(ReadContent::Raw { sensor, capture }) = read.kept else {
-            return Ok(Developed {
-                frame: FrameMetadata {
-                    identity: read.fingerprint.clone(),
-                    make: camera.as_ref().map(|body| body.make.clone()),
-                    model: camera.as_ref().map(|body| body.model.clone()),
-                    recording: Recording::Jpeg,
-                    width: read.width,
-                    height: read.height,
-                    orientation: 1,
-                    exposure: settings,
-                    captured_at_ms: capture_ms,
-                },
-                path: read.path,
-                fingerprint: read.fingerprint,
-                header: read.header,
-                place: read.place,
-                volume: read.volume,
-                development: None,
-            });
-        };
-        let metadata = sensor.metadata().clone();
-        let gains = gains.unwrap_or(metadata.as_shot_gains);
-        let layout = SensorLayout::of_raw(&metadata).ok_or_else(|| {
-            Error::unsupported_input("HDR merging does not know this colour filter array")
-        })?;
-        let clip = SensorClipModel::of_raw(&metadata, gains)?;
-        let prepared = RawPrepared::develop(
-            sensor,
-            capture,
-            read.fingerprint.clone(),
+        develop_read(
+            crate::library::develop::read(path, true, control, &|_| {})?,
             gains,
-            control.flag(),
+            control,
         )
-        .map_err(|error| {
-            if control.is_cancelled() {
-                control.cancelled_error()
-            } else {
-                error
-            }
-        })?;
-        let image = prepared
-            .linear
-            .ok_or_else(|| Error::internal("a RAW development held no frame"))?;
-        Ok(Developed {
+    }
+}
+
+/// Develop a file the shared bounded read has just read, keeping what it read: a RAW through
+/// [`crate::source::RawPrepared::develop`] at `gains`, or its own as-shot gains when none are
+/// named; anything else, which kept no sensor, as a JPEG with no development. What
+/// [`SharedDevelopment`] does after reading, and what a panorama frame does after its own read
+/// (`crate::merge::panorama::frames`).
+pub(crate) fn develop_read(
+    read: crate::library::develop::ReadFile,
+    gains: Option<[f32; 3]>,
+    control: &JobControl,
+) -> Result<Developed, Error> {
+    use crate::{editor::ReadContent, source::RawPrepared};
+    let capture_ms = read.header.capture.as_ref().map(|time| time.instant_ms());
+    let settings = settings(&read.header);
+    let camera = read.header.camera.clone();
+    let Some(ReadContent::Raw { sensor, capture }) = read.kept else {
+        return Ok(Developed {
             frame: FrameMetadata {
                 identity: read.fingerprint.clone(),
-                make: Some(
-                    camera
-                        .as_ref()
-                        .map_or(metadata.make.clone(), |body| body.make.clone()),
-                ),
-                model: Some(
-                    camera
-                        .as_ref()
-                        .map_or(metadata.model.clone(), |body| body.model.clone()),
-                ),
-                recording: Recording::Raw {
-                    mode: metadata.mode.id().to_owned(),
-                    layout,
-                },
-                width: image.width(),
-                height: image.height(),
-                orientation: metadata.exif_orientation,
+                make: camera.as_ref().map(|body| body.make.clone()),
+                model: camera.as_ref().map(|body| body.model.clone()),
+                recording: Recording::Jpeg,
+                width: read.width,
+                height: read.height,
+                orientation: 1,
                 exposure: settings,
                 captured_at_ms: capture_ms,
             },
@@ -347,14 +310,67 @@ impl Developer for SharedDevelopment {
             header: read.header,
             place: read.place,
             volume: read.volume,
-            development: Some(Development {
-                gains,
-                cam_xyz: metadata.cam_xyz,
-                image,
-                clip,
-            }),
-        })
-    }
+            development: None,
+        });
+    };
+    let metadata = sensor.metadata().clone();
+    let gains = gains.unwrap_or(metadata.as_shot_gains);
+    let layout = SensorLayout::of_raw(&metadata).ok_or_else(|| {
+        Error::unsupported_input("HDR merging does not know this colour filter array")
+    })?;
+    let clip = SensorClipModel::of_raw(&metadata, gains)?;
+    let prepared = RawPrepared::develop(
+        sensor,
+        capture,
+        read.fingerprint.clone(),
+        gains,
+        control.flag(),
+    )
+    .map_err(|error| {
+        if control.is_cancelled() {
+            control.cancelled_error()
+        } else {
+            error
+        }
+    })?;
+    let image = prepared
+        .linear
+        .ok_or_else(|| Error::internal("a RAW development held no frame"))?;
+    Ok(Developed {
+        frame: FrameMetadata {
+            identity: read.fingerprint.clone(),
+            make: Some(
+                camera
+                    .as_ref()
+                    .map_or(metadata.make.clone(), |body| body.make.clone()),
+            ),
+            model: Some(
+                camera
+                    .as_ref()
+                    .map_or(metadata.model.clone(), |body| body.model.clone()),
+            ),
+            recording: Recording::Raw {
+                mode: metadata.mode.id().to_owned(),
+                layout,
+            },
+            width: image.width(),
+            height: image.height(),
+            orientation: metadata.exif_orientation,
+            exposure: settings,
+            captured_at_ms: capture_ms,
+        },
+        path: read.path,
+        fingerprint: read.fingerprint,
+        header: read.header,
+        place: read.place,
+        volume: read.volume,
+        development: Some(Development {
+            gains,
+            cam_xyz: metadata.cam_xyz,
+            image,
+            clip,
+        }),
+    })
 }
 
 /// A header's exposure as the merge reads it.

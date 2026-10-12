@@ -180,12 +180,24 @@ struct Upright {
 /// written into one frame: rows go straight into it when the EXIF orientation is 1, and otherwise
 /// through a strip of [`UPRIGHT_STRIP_ROWS`] rows placed where the orientation puts them.
 fn decode_upright(bytes: &[u8]) -> Result<Upright, Error> {
+    decode_upright_with(bytes, |profile, components| match profile {
+        Some(profile) => crate::profile::check(profile, components),
+        None => Ok(()),
+    })
+    .map(|(upright, ())| upright)
+}
+
+/// [`decode_upright`] with the embedded ICC profile (`None` when the file has none) and the
+/// component count handed to `profile` before the first row is decoded, instead of the editor's
+/// sRGB check: what it answers comes back beside the frame, and its refusal refuses the decode.
+fn decode_upright_with<T>(
+    bytes: &[u8],
+    profile: impl FnOnce(Option<&[u8]>, u8) -> Result<T, Error>,
+) -> Result<(Upright, T), Error> {
     // The codec walks the container and bounds the declared frame by these limits before libjpeg
     // reads anything, then checks libjpeg's own reading of it against them.
     let mut decoder = luxforge_jpeg::Decoder::new(bytes, JPEG_LIMITS)?;
-    if let Some(profile) = decoder.icc_profile() {
-        crate::profile::check(profile, decoder.components())?;
-    }
+    let colour = profile(decoder.icc_profile(), decoder.components())?;
     let orientation = jpeg_orientation(bytes);
     let (width, height) = (decoder.width() as usize, decoder.height() as usize);
     let (upright_width, upright_height) = if orientation >= 5 {
@@ -220,12 +232,15 @@ fn decode_upright(bytes: &[u8]) -> Result<Upright, Error> {
         }
     }
     decoder.finish()?;
-    Ok(Upright {
-        rgba: frame,
-        width: upright_width as u32,
-        height: upright_height as u32,
-        orientation,
-    })
+    Ok((
+        Upright {
+            rgba: frame,
+            width: upright_width as u32,
+            height: upright_height as u32,
+            orientation,
+        },
+        colour,
+    ))
 }
 
 /// Decode the complete upright source once for non-destructive recipe evaluation.
@@ -250,14 +265,36 @@ pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
 pub(crate) fn decode_source(bytes: &[u8], fingerprint: String) -> Result<SourceImage, Error> {
     let capture = Arc::new(CaptureMetadata::from_jpeg(bytes));
     let upright = decode_upright(bytes)?;
-    Ok(SourceImage {
+    Ok(source_image(upright, fingerprint, capture))
+}
+
+/// [`decode_source`] under the same limits and orientation, with the embedded ICC profile read by
+/// `profile` rather than checked as the editor's sRGB: a merge's JPEG frame, whose colour profile
+/// it converts itself ([`crate::profile::RgbProfile`]). What `profile` answers comes back beside
+/// the source.
+pub(crate) fn decode_source_with<T>(
+    bytes: &[u8],
+    fingerprint: String,
+    profile: impl FnOnce(Option<&[u8]>, u8) -> Result<T, Error>,
+) -> Result<(SourceImage, T), Error> {
+    let capture = Arc::new(CaptureMetadata::from_jpeg(bytes));
+    let (upright, colour) = decode_upright_with(bytes, profile)?;
+    Ok((source_image(upright, fingerprint, capture), colour))
+}
+
+fn source_image(
+    upright: Upright,
+    fingerprint: String,
+    capture: Arc<CaptureMetadata>,
+) -> SourceImage {
+    SourceImage {
         width: upright.width,
         height: upright.height,
         rgba: upright.rgba,
         fingerprint,
         orientation: upright.orientation,
         capture,
-    })
+    }
 }
 
 const CAMERA_CHUNK_PIXELS: usize = 65_536;
