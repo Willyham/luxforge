@@ -1073,6 +1073,10 @@ pub struct SpatialSlot {
     filled: Option<u64>,
     /// The buffers a read set derived from the source is drawn with.
     fill_buffers: Option<fill::FillBuffers>,
+    /// The planes the applies read already hold the step's values, solved by an earlier tick over
+    /// the same input and words, which reads them alone: no read set is filled and no pass runs
+    /// ([`SpatialSlot::solved`]).
+    solved: bool,
 }
 
 impl SpatialSlot {
@@ -1088,7 +1092,24 @@ impl SpatialSlot {
             valid: None,
             filled: None,
             fill_buffers: None,
+            solved: false,
         }
+    }
+
+    /// Planes whose kept textures another evaluation of the same step over the same input left
+    /// holding what the applies read: each tick binds them for the frame's pass alone, filling no
+    /// read set and running no pass. The tile runner's kept repair results
+    /// ([`tiles`] docs), which only a step whose passes read no window can be.
+    fn solved(planes: spatial::Planes, pool: &mut spatial::Pool) -> Self {
+        Self {
+            solved: true,
+            ..Self::new(planes, pool)
+        }
+    }
+
+    /// Its planes, for a later evaluation to read solved ([`SpatialSlot::solved`]).
+    fn into_planes(self) -> spatial::Planes {
+        self.planes
     }
 
     /// The groups that bind the planes, when they have been built.
@@ -1152,6 +1173,17 @@ impl SpatialSlot {
     ) -> Result<(u64, Option<spatial::Rect>), GpuFallback> {
         #[cfg(any(test, feature = "qualification"))]
         pool.poison(device, encoder);
+        if self.solved {
+            // The kept planes hold what the applies read: the frame's group alone binds them.
+            if !self.bound(pipeline, pool) {
+                self.groups = Some((
+                    pipeline,
+                    pool.generation(),
+                    spatial::Groups::fragment(device, compiled, &self.planes, pool),
+                ));
+            }
+            return Ok((0, dirty.map(|_| spatial::Rect::whole(size))));
+        }
         if !self.bound(pipeline, pool) {
             self.groups = Some((
                 pipeline,
@@ -3840,9 +3872,11 @@ pub use compile::GpuOptions;
 pub use source::{AxisCoverage, Derivation, GpuSource, Reduction, SourceFigures, SourceKind};
 use source::{Layouts as SourceLayouts, SourceSlot};
 mod stage;
+mod submission;
 pub use compile::{GpuWarm, PIPELINE_CACHE, WarmUpFigures};
 pub use stage::gpu_stage_refused;
 pub use stage::{GpuStageState, refuse_gpu_stage};
+pub(crate) use submission::wait_for_submission;
 mod tail;
 pub use tail::{GpuTail, OutputEncoding, install_output_encoding, output_encoding};
 mod mask;

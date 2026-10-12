@@ -2539,6 +2539,25 @@ impl Groups {
         }
     }
 
+    /// `compiled`'s frame group alone over `planes`, binding the planes its applies read, and no
+    /// pass's: what a tick that runs no pass binds over planes already holding them
+    /// ([`super::SpatialSlot`]).
+    pub fn fragment(
+        device: &wgpu::Device,
+        compiled: &CompiledSpatial,
+        planes: &Planes,
+        pool: &Pool,
+    ) -> Self {
+        Self {
+            passes: Vec::new(),
+            origin: planes.key.origin,
+            fragment: compiled
+                .fragment
+                .as_ref()
+                .map(|(layout, slots)| planes.group(device, layout, slots, None, pool)),
+        }
+    }
+
     /// Where each pass runs to fill `rect` of the boundary: its output plane's texels over it, a
     /// reduced plane's blocks the rectangle touches, and a fixed plane, or a workgroup's pass,
     /// whole.

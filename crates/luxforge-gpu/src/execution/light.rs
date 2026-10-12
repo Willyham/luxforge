@@ -1498,14 +1498,7 @@ pub(crate) fn read_light(
     link.written_blocks
         .write(queue, &link.block_words.buffer, &light.steps, BLOCK_CHUNK);
     let places = prepare_tiles(&mut link, queue, light)?;
-    let wait = || {
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .map_err(|_| GpuFallback::DeviceLost)
-    };
+    let wait = || super::wait_for_submission(device, None).map_err(|_| GpuFallback::DeviceLost);
     for (index, (tile, place)) in link.shape.tiles().into_iter().zip(&places).enumerate() {
         let [x0, y0, x1, y1] = tile;
         let window = source
@@ -1646,14 +1639,7 @@ fn select_into_and_read(
     cut_into: &LightTile,
     texture: &wgpu::Texture,
 ) -> Result<[f32; 4], GpuFallback> {
-    let wait = || {
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .map_err(|_| GpuFallback::DeviceLost)
-    };
+    let wait = || super::wait_for_submission(device, None).map_err(|_| GpuFallback::DeviceLost);
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("luxforge.gpu_light.read.readback"),
         size: LIGHT_READBACK,

@@ -983,6 +983,9 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             "crates/luxforge-gpu/src/retirement.rs",
+            // The GPU's wait for a submission, which rests between looks instead of the Metal
+            // backend's whole-millisecond sleep.
+            "crates/luxforge-gpu/src/execution/submission.rs",
             // The fake inference runtime's step delay, which stands in for a model's step time in
             // developer runs and in the port's own tests of slow generation.
             "crates/luxforge-core/src/inference/fake.rs",

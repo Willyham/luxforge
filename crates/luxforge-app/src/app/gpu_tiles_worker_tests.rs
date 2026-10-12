@@ -2472,3 +2472,179 @@ fn trivial_export_timing_gpu_against_reference() {
         );
     }
 }
+
+/// What a repair step costs a stream and a call's reads: a generated 6000 × 4000 photograph
+/// carrying six Clone and Heal corrections — a far source among them — and a Basic layer, streamed
+/// whole through the worker as an export streams it, then twelve point reads of the output stage
+/// in one call, each its own tile. Prints each sample's wall time and the runner's tiles and repair
+/// steps solved for each, one discarded warm-up first; `LUXFORGE_REPAIR_SAMPLES` sets the samples.
+#[test]
+#[ignore = "release timing of a repair step over a stream's tiles and a call's reads, photo-sized"]
+fn repair_step_stream_and_reads_measurement() {
+    use super::gpu_repair_plan_tests::{op, repair};
+    use std::time::Instant;
+    let adapter = host_adapter("repair_step_stream_and_reads_measurement").expect("an adapter");
+    assert!(install_output_encoding());
+    let samples: usize = std::env::var("LUXFORGE_REPAIR_SAMPLES")
+        .ok()
+        .and_then(|samples| samples.parse().ok())
+        .unwrap_or(5);
+    let (width, height) = (6000u32, 4000u32);
+    let rgba: Vec<u8> = generated(width, height)
+        .pixels()
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+        .collect();
+    let source = PreviewSource::Jpeg(luxforge_core::SourceImage {
+        width,
+        height,
+        rgba: Arc::new(rgba),
+        fingerprint: "sha256:repair-step-measurement".into(),
+        orientation: 1,
+        capture: Default::default(),
+    });
+    let size = (width, height);
+    let recipe = Recipe {
+        layers: vec![
+            repair(vec![
+                op(
+                    1,
+                    true,
+                    size,
+                    &[[1500.0, 1000.0]],
+                    60.0,
+                    [150.0, 40.0],
+                    50,
+                    100,
+                ),
+                op(
+                    2,
+                    true,
+                    size,
+                    &[[4200.0, 2600.0]],
+                    45.0,
+                    [-120.0, 80.0],
+                    50,
+                    100,
+                ),
+                op(
+                    3,
+                    false,
+                    size,
+                    &[[3000.0, 800.0]],
+                    50.0,
+                    [0.0, 200.0],
+                    50,
+                    100,
+                ),
+                op(
+                    4,
+                    true,
+                    size,
+                    &[[800.0, 3000.0], [1100.0, 3150.0]],
+                    35.0,
+                    [0.0, -150.0],
+                    50,
+                    100,
+                ),
+                op(
+                    5,
+                    true,
+                    size,
+                    &[[5600.0, 600.0]],
+                    40.0,
+                    [-5000.0, 2800.0],
+                    50,
+                    100,
+                ),
+                op(
+                    6,
+                    false,
+                    size,
+                    &[[2500.0, 3500.0]],
+                    30.0,
+                    [90.0, 0.0],
+                    50,
+                    100,
+                ),
+            ]),
+            Layer::new(BASIC_EFFECT, json!({"exposure": 0.3})),
+        ],
+        ..Recipe::default()
+    };
+    let stack = stack(&source, &recipe);
+    let service = GpuTiles::new(Some(adapter.clone()), false);
+    let client = clients(1)[0];
+    let reads: Vec<Read> = (0..12u32)
+        .map(|k| {
+            let x = (k % 4) * width / 4 + width / 8;
+            let y = (k / 4) * height / 3 + height / 6;
+            point(ReadStage::Output, x, y, ReadValues::Codes)
+        })
+        .collect();
+    let mut rows = Vec::new();
+    for sample in 0..=samples {
+        settle(&service, client);
+        let before = service.figures();
+        let started = Instant::now();
+        let mut bytes = 0usize;
+        for band in service
+            .stream(&stack, &Cancel::new())
+            .expect("a GPU stream")
+        {
+            bytes += band.expect("a complete band").rgba.len();
+        }
+        let stream_ms = started.elapsed().as_secs_f64() * 1e3;
+        assert_eq!(bytes, width as usize * height as usize * 4);
+        settle(&service, client);
+        let streamed = service.figures();
+        let started = Instant::now();
+        let (answers, _) = call(&service, client, &stack, &reads);
+        let reads_ms = started.elapsed().as_secs_f64() * 1e3;
+        assert_eq!(answers.len(), reads.len());
+        assert!(
+            answers
+                .iter()
+                .all(|answer| answer.answered == Answered::gpu())
+        );
+        settle(&service, client);
+        let after = service.figures();
+        // The runner's thread's encoding and its wait for the device, summed over the tiles.
+        let spent = |from: &super::gpu_tiles::TileWorkerFigures,
+                     to: &super::gpu_tiles::TileWorkerFigures| {
+            let ms = |us: u64| us as f64 / 1e3;
+            json!({
+                "encode_ms": ms(to.total.encode_us - from.total.encode_us),
+                "wait_ms": ms(to.total.wait_us - from.total.wait_us),
+            })
+        };
+        let row = json!({
+            "sample": sample,
+            "stream_ms": stream_ms,
+            "stream_runner": spent(&before, &streamed),
+            "reads_runner": spent(&streamed, &after),
+            "stream_tiles": streamed.tiles - before.tiles,
+            "stream_repairs_solved": streamed.repairs - before.repairs,
+            "reads_ms": reads_ms,
+            "reads": reads.len(),
+            "read_tiles": after.tiles - streamed.tiles,
+            "read_repairs_solved": after.repairs - streamed.repairs,
+        });
+        println!("REPAIR_STEP_SAMPLE {row}");
+        if sample > 0 {
+            rows.push(row);
+        }
+    }
+    let times = |key: &str| {
+        luxforge_testbase::Distribution::of(rows.iter().filter_map(|row| row[key].as_f64()))
+            .map(|times| json!({"p50": times.p50, "p95": times.p95}))
+    };
+    println!(
+        "REPAIR_STEP {}",
+        json!({
+            "dimensions": [width, height], "adapter": adapter, "samples": samples,
+            "stream_ms": times("stream_ms"), "reads_ms": times("reads_ms"),
+            "rows": rows, "figures": service.figures().record(),
+            "scope": "GPU tile worker on a warmed device and caches after one discarded warm-up: a whole 24 MP stage streamed in bands as an export streams it, band consumption only (no JPEG encoding), then 12 point reads of the output stage in one call",
+        })
+    );
+}
