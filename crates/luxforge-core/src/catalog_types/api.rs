@@ -15,7 +15,7 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
-use super::{ExposureOverride, MergeId, MergeKind};
+use super::{ExposureOverride, FolderChoice, MergeId, MergeKind};
 use crate::{
     AssetId, PresetId, SettingsOrigin,
     api::params::host_params,
@@ -334,7 +334,7 @@ host_params! {
         exposure_overrides: Option<Vec<ExposureOverride>> = json(MERGE_OVERRIDES),
         alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto"),
         deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto"),
-        folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the folder merge.plan proposes"),
+        folder: Option<FolderChoice> = json("{kind: place, name}, {kind: existing, folder_id, days?} or {kind: new, name, parent_id?}, as pick.develop's into names one, resolved for the reference frame's capture day; default the choice merge.plan proposes"),
     }
 }
 
@@ -639,7 +639,7 @@ mod contract_table {
             "pick.develop",
             "DevelopReport",
             &[Validation, SourceUnavailable, ResourceLimit, Conflict, CatalogError, Cancelled],
-            "brings the picks into the catalog folders into names, in batches, each a library change: a place files each photograph under its capture year, the place and its day (\"2026 › Konstanz › 12 Sep\"), each folder found by name or made by the batch; an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared, and a cancelled or failed job keeps what it committed and nothing partial",
+            "brings the picks into the catalog folders into names, in batches, each a library change: a place files each photograph under its capture year, the place and its day (\"2026 › Konstanz › 12 Sep\"), each folder found by name or made by the batch; an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared; each developed pick names folder_id, the catalog folder its photograph is in after the Develop (a linked or relinked photograph's own); a cancelled or failed job keeps what it committed and nothing partial",
         )
         .starts(&jobs::DEVELOP_PICKS),
         method::<NoParams>(

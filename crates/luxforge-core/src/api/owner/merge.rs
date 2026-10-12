@@ -40,11 +40,11 @@ use crate::{
     api::{Origin, announce_once, methods::value},
     artifacts::{RootState, derived_source::PublishedSource, root_state},
     catalog_types::{
-        AssetRowId, CatalogFolderId, ExposureOverride, FileId, FileSignature, FolderChoice,
-        FolderProposal, HdrParameters, HeaderMetadata, InspectedInput, MergeAnswer, MergeEstimates,
-        MergeId, MergeInspection, MergeKind, MergePlan, MergeProvenance, MergeProvider,
-        MergeRecord, MergeState, PlannedInput, ProviderState, SourceAvailability, Targets,
-        ViewItem, VolumeId,
+        AssetRowId, CaptureTime, CatalogFolderId, EventSpan, ExposureOverride, FileId,
+        FileSignature, FolderChoice, FolderProposal, HdrParameters, HeaderMetadata, InspectedInput,
+        LocalDay, MergeAnswer, MergeEstimates, MergeId, MergeInspection, MergeKind, MergePlan,
+        MergeProvenance, MergeProvider, MergeRecord, MergeState, PlannedInput, ProviderState,
+        SourceAvailability, Targets, ViewItem, VolumeId,
         api::{MergeCreate, MergeInspect, MergePlanParams, MergeRerun, MergeTargets},
         jobs::HDR_MERGE,
         match_key,
@@ -52,7 +52,7 @@ use crate::{
     editor::now_ms,
     jobs::{JobControl, JobError},
     library::{
-        develop,
+        develop::{self, Destination},
         journal::Request,
         merge::{
             self, Publication, PublishedMerge, claims, matching, overlap, published_by, record,
@@ -190,8 +190,6 @@ struct Named {
     signature: Option<FileSignature>,
     volume_id: Option<VolumeId>,
     asset_id: Option<AssetId>,
-    /// The catalog folder of the photograph it is.
-    folder: Option<CatalogFolderId>,
     header: Option<HeaderMetadata>,
     kind: Option<SourceTag>,
 }
@@ -312,7 +310,6 @@ fn inputs(owner: &Owner, client: ClientId, targets: &Targets) -> Result<Vec<Name
             asset_id: photograph
                 .as_ref()
                 .map(|photograph| photograph.asset_id.clone()),
-            folder: photograph.map(|photograph| photograph.folder),
             path,
             file_id,
             signature,
@@ -509,23 +506,20 @@ fn request_key(
     match_key(MergeKind::Hdr, provider, signed, parameters).map(Some)
 }
 
-/// The folder a merge of `inputs` proposes: the folder made from their one event; else the one
-/// folder every catalog photograph among them is in; else the reference photograph's. An event
-/// with no folder yet answers its new folder's choice instead, which `folder.create` makes: a
-/// merge's result goes into an existing folder, since undoing the merge keeps its result.
-fn proposal(
-    owner: &Owner,
-    inputs: &[Named],
-    reference: Option<usize>,
-) -> Result<(Option<FolderProposal>, Option<FolderChoice>), Error> {
+/// The folder a merge proposes: the folder choice a Develop would file its reference frame by.
+struct Proposed {
+    /// The proposal of the reference's event ([`develop::plan`]).
+    choice: FolderChoice,
+    /// That event's span and identity, which a place folder the merge makes records.
+    span: Option<EventSpan>,
+    /// The reference's camera-local capture day, by its header.
+    day: Option<LocalDay>,
+}
+
+/// What a merge of `inputs` proposes for the reference frame `reference` (the middle input when
+/// none): the folder choice a Develop of the inputs would make for its event, for its capture day.
+fn proposal(owner: &Owner, inputs: &[Named], reference: Option<usize>) -> Result<Proposed, Error> {
     let catalog = &owner.service.connection;
-    let named = |folder_id: &CatalogFolderId, from: &str| -> Result<FolderProposal, Error> {
-        Ok(FolderProposal {
-            name: crate::library::folders::folder(catalog, folder_id)?.name,
-            folder_id: folder_id.clone(),
-            from: from.to_owned(),
-        })
-    };
     let files: Vec<crate::library::targets::NamedFile> = inputs
         .iter()
         .map(|input| crate::library::targets::NamedFile {
@@ -539,33 +533,54 @@ fn proposal(
     let index = owner.service.index()?;
     let plan = develop::plan(catalog, index.connection(), files, &mut volumes)?;
     drop(index);
-    let mut suggested = None;
-    if let [event] = plan.events.as_slice() {
-        match &event.proposal {
-            FolderChoice::Existing { folder_id, .. } => {
-                return Ok((Some(named(folder_id, "event")?), None));
-            }
-            choice @ (FolderChoice::New { .. } | FolderChoice::Place { .. }) => {
-                suggested = Some(choice.clone());
-            }
-        }
-    }
-    let folders: Vec<&CatalogFolderId> = inputs
+    let at = reference
+        .filter(|&at| at < inputs.len())
+        .unwrap_or((inputs.len().max(1) - 1) / 2);
+    let reference = &inputs[at];
+    let event = plan
+        .files
         .iter()
-        .filter_map(|input| input.folder.as_ref())
-        .collect();
-    if let Some(first) = folders.first()
-        && folders.iter().all(|folder| folder == first)
-    {
-        return Ok((Some(named(first, "inputs")?), None));
-    }
-    if let Some(folder) = reference
-        .and_then(|at| inputs.get(at))
-        .and_then(|input| input.folder.as_ref())
-    {
-        return Ok((Some(named(folder, "reference")?), None));
-    }
-    Ok((None, suggested))
+        .find(|file| file.path == reference.path)
+        .map_or(0, |file| file.event);
+    let event = plan
+        .events
+        .get(event)
+        .ok_or_else(|| Error::internal("a merge's inputs were planned in no event"))?;
+    Ok(Proposed {
+        choice: event.proposal.clone(),
+        span: develop::made_from(std::slice::from_ref(&event.span)),
+        day: reference
+            .header
+            .as_ref()
+            .and_then(|header| header.capture.as_ref())
+            .map(CaptureTime::local_day),
+    })
+}
+
+/// What `merge.plan` answers of the folder: the folder `proposed` files the result in when it is
+/// in the catalog already — `existing` when the choice names a folder, `place` when the year, place
+/// and day folders exist — or else the choice itself, whose folders `merge.create` makes.
+fn proposed_folder(
+    catalog: &Connection,
+    proposed: Proposed,
+) -> Result<(Option<FolderProposal>, Option<FolderChoice>), Error> {
+    let from = match proposed.choice {
+        FolderChoice::Existing { .. } => "existing",
+        FolderChoice::Place { .. } => "place",
+        FolderChoice::New { .. } => "new",
+    };
+    let destination = Destination::chosen(catalog, &proposed.choice, None, now_ms())?;
+    Ok(match destination.found(catalog, proposed.day)? {
+        Some(folder_id) => (
+            Some(FolderProposal {
+                name: crate::library::folders::folder(catalog, &folder_id)?.name,
+                folder_id,
+                from: from.to_owned(),
+            }),
+            None,
+        ),
+        None => (None, Some(proposed.choice)),
+    })
 }
 
 /// The reference the metadata picks, when the headers make a bracket.
@@ -649,7 +664,10 @@ pub(in crate::api) fn merge_plan(
             }
         };
     let reference = header_reference(&frames, &parameters);
-    let (folder, suggested_folder) = proposal(owner, &inputs, reference)?;
+    let (folder, suggested_folder) = proposed_folder(
+        &owner.service.connection,
+        proposal(owner, &inputs, reference)?,
+    )?;
     let lane = &owner.catalog.merge;
     let provider = lane.provider_state();
     let existing = match &lane.provider {
@@ -686,11 +704,6 @@ pub(in crate::api) fn merge_plan(
         exposures,
         needs_fit,
         reference: reference.map(|at| at as u32),
-        folder_reason: folder.is_none().then(|| {
-            "no catalog folder holds these frames' event or photographs yet: create one with \
-             folder.create and name it as folder_id"
-                .to_owned()
-        }),
         folder,
         suggested_folder,
         estimates: estimates(lane, &inputs, &frames, &root),
@@ -779,21 +792,9 @@ pub(in crate::api) fn merge_create(
         })));
     }
     let reference = header_reference(&frames, &parameters);
-    let folder = match params.folder_id {
-        Some(folder_id) => {
-            crate::library::folders::folder(&owner.service.connection, &folder_id)?;
-            folder_id
-        }
-        None => proposal(owner, &inputs, reference)?
-            .0
-            .map(|proposal| proposal.folder_id)
-            .ok_or_else(|| {
-                Error::validation(
-                    "no catalog folder holds these frames' event or photographs yet: create one \
-                     with folder.create and name it as folder_id",
-                )
-            })?,
-    };
+    let proposed = proposal(owner, &inputs, reference)?;
+    let choice = params.folder.unwrap_or(proposed.choice);
+    let folder = Destination::chosen(&owner.service.connection, &choice, proposed.span, now_ms())?;
     let job_inputs = inputs
         .iter()
         .zip(signed)
@@ -849,7 +850,6 @@ pub(in crate::api) fn merge_rerun(
             signature: Some(input.signature),
             volume_id: Some(input.volume_id.clone()),
             asset_id: input.asset_id.clone(),
-            folder: None,
             header: None,
             kind: Some(SourceTag::Raw),
         })
@@ -885,7 +885,7 @@ pub(in crate::api) fn merge_rerun(
             "path": claim.path,
         })));
     }
-    let folder = match params.folder_id {
+    let folder_id = match params.folder_id {
         Some(folder_id) => {
             crate::library::folders::folder(&owner.service.connection, &folder_id)?;
             folder_id
@@ -897,6 +897,10 @@ pub(in crate::api) fn merge_rerun(
         )?
         .map(|photograph| photograph.folder)
         .ok_or_else(|| Error::validation("name folder_id for the new result"))?,
+    };
+    let folder = Destination::Existing {
+        folder_id,
+        days: false,
     };
     // An exact match whose saved source is whole is given to the new result as it is; anything
     // else is merged again.
@@ -1080,7 +1084,8 @@ struct Started {
     inputs: Vec<JobInput>,
     parameters: HdrParameters,
     provider: MergeProvider,
-    folder: CatalogFolderId,
+    /// The folder the result is filed by.
+    folder: Destination,
     replaces: Option<MergeId>,
     /// A rerun's exact match: the recorded provenance and source the new result is given.
     reuse: Option<(MergeProvenance, PublishedSource)>,
@@ -1329,7 +1334,7 @@ fn fingerprint(path: &Path, control: &JobControl) -> Result<String, Error> {
 
 /// The owner's half of a merge: what it publishes the job's result with.
 struct Publish {
-    folder: CatalogFolderId,
+    folder: Destination,
     replaces: Option<MergeId>,
     method: String,
     mutation: MutationRequest,
@@ -1348,7 +1353,7 @@ impl Publish {
             &Publication {
                 provenance: &merged.provenance,
                 source: &merged.source,
-                catalog_folder_id: &self.folder,
+                folder: &self.folder,
                 file_name: &merged.file_name,
                 header: &merged.header,
                 place: merged.place.as_deref(),
@@ -1374,8 +1379,15 @@ impl Publish {
 }
 
 /// Announce a publication's library change as [`change`] announces one: one event naming its
-/// sequence and the result, and the lanes that follow its items told.
+/// sequence and the result, and the lanes that follow its items told; the change that made its
+/// folders, when it made any, first, as one event of its own.
 fn announce(owner: &mut Owner, origin: &Origin, published: &PublishedMerge) {
+    if let Some(folders) = &published.folders
+        && let Some(sequence) = folders.announced()
+    {
+        announce_once(&mut owner.announced, &origin.clone().library(sequence));
+        owner.library_changed(origin, folders.items());
+    }
     if let Some(sequence) = published.outcome.announced() {
         let announced = origin
             .clone()

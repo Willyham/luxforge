@@ -4,7 +4,10 @@
 //! active stack per input, exact-match reuse, and what Remove and Put back change for a result.
 //!
 //! - **Publication** ([`EditorService::publish_merge`]) is one owner transaction after a worker
-//!   made the result's source durable: it rechecks every input by stat and catalog row, writes the
+//!   made the result's source durable: it rechecks every input by stat and catalog row, files the
+//!   result by its folder choice for the reference's capture day, the folders that needs made and
+//!   recorded first as a change of their own, which the merge's undo leaves
+//!   ([`develop::file_one`]), writes the
 //!   result photograph (its Original holding the derived source), links the source, records the
 //!   merge's provenance and inputs, activates its stack and records one library change. That change
 //!   records the result's `asset-removal` and the merge's `merge-stack` as written
@@ -28,12 +31,15 @@
 // Stack browsing (`docs/design/hdr-merge.md`) calls what the `merge.*` commands and
 // Remove and Put back do not yet; until it does, only the tests do.
 #![cfg_attr(not(test), allow(dead_code))]
-use super::journal::{self, Desired, Outcome, Request};
+use super::{
+    develop::{self, Destination},
+    journal::{self, Desired, Outcome, Request},
+};
 use crate::{
     AssetId, EditorService, Error, SourceKind,
     artifacts::derived_source::PublishedSource,
     catalog_types::{
-        AssetRemovalValue, AssetRowId, CatalogFolderId, FileAvailability, FileSignature,
+        AssetRemovalValue, AssetRowId, CaptureTime, FileAvailability, FileSignature,
         HeaderMetadata, LibraryItem, MergeId, MergeKind, MergeMatch, MergeProvenance, MergeRecord,
         MergeStackValue, MergeState, StackClaim, StackMember, Volume,
     },
@@ -50,12 +56,13 @@ use std::{
 };
 
 /// What a merge's publication commits beside the result's durable source: the provenance, the
-/// catalog folder and name the result takes, the reference's header metadata and named place its
-/// capture row is written from, and the volumes the inputs are on.
+/// catalog folder the result is filed by and the name it takes, the reference's header metadata
+/// and named place its capture row is written from, and the volumes the inputs are on.
 pub(crate) struct Publication<'a> {
     pub provenance: &'a MergeProvenance,
     pub source: &'a PublishedSource,
-    pub catalog_folder_id: &'a CatalogFolderId,
+    /// The folder choice the result is filed by, for the reference's capture day (its header's).
+    pub folder: &'a Destination,
     /// The result's name, the reference frame's with "HDR".
     pub file_name: &'a str,
     pub header: &'a HeaderMetadata,
@@ -68,12 +75,14 @@ pub(crate) struct Publication<'a> {
 }
 
 /// A published merge: its identity, its result photograph and the library change that made both
-/// visible, or, for a retry, the change its first attempt recorded.
+/// visible, or, for a retry, the change its first attempt recorded; and the change that made the
+/// folders it was filed in, recorded just before it, when it made any.
 #[derive(Debug)]
 pub(crate) struct PublishedMerge {
     pub merge_id: MergeId,
     pub result: AssetId,
     pub outcome: Outcome,
+    pub folders: Option<Outcome>,
 }
 
 impl EditorService {
@@ -115,6 +124,15 @@ impl EditorService {
                 return Ok(published);
             }
             recheck_inputs(tx, provenance)?;
+            // The folders it needs, their own change before the publication's
+            // ([`develop::file_one`]): undoing the merge keeps its result in them.
+            let day = publication
+                .header
+                .capture
+                .as_ref()
+                .map(CaptureTime::local_day);
+            let (catalog_folder_id, folders) =
+                develop::file_one(tx, request, publication.folder, day, now)?;
             let mut changes = match publication.replaces {
                 Some(old) => replace(tx, old, now)?,
                 None => Vec::new(),
@@ -131,7 +149,7 @@ impl EditorService {
                 &NewAsset {
                     record: &photograph.asset,
                     canonical_locator: &identity,
-                    catalog_folder_id: publication.catalog_folder_id,
+                    catalog_folder_id: &catalog_folder_id,
                     source_folder: reference.path.parent().unwrap_or(Path::new("")),
                     volume_id: &reference.volume_id,
                     file_name: publication.file_name,
@@ -185,6 +203,7 @@ impl EditorService {
                 merge_id,
                 result: asset_id,
                 outcome,
+                folders,
             })
         })
     }
@@ -422,6 +441,7 @@ pub(crate) fn published_by(
         merge_id,
         result: AssetId::parse(result)?,
         outcome: Outcome::deduplicated(detail.change),
+        folders: None,
     }))
 }
 
