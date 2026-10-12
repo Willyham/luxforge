@@ -104,8 +104,17 @@ pub const HDR_MERGE: CatalogJob = CatalogJob {
     label: "Merging HDR",
 };
 
+/// Preparing a merge's preview (`merge.preview`: reading and aligning on the merge lane, then
+/// drawing) or drawing it again from its retained proxies (`merge.preview-update`).
+pub const MERGE_PREVIEW: CatalogJob = CatalogJob {
+    kind: JobKind::MergePreview,
+    job_kind: "merge-preview",
+    activity: "merge.preview",
+    label: "Preparing merge preview",
+};
+
 /// Every catalog job kind.
-pub const CATALOG_JOBS: [CatalogJob; 11] = [
+pub const CATALOG_JOBS: [CatalogJob; 12] = [
     INDEX_REFRESH,
     PREVIEW_EXTRACT,
     PREVIEW_REGION,
@@ -117,6 +126,7 @@ pub const CATALOG_JOBS: [CatalogJob; 11] = [
     BATCH_SETTINGS,
     BATCH_EXPORT,
     HDR_MERGE,
+    MERGE_PREVIEW,
 ];
 
 /// The catalog job that publishes activity board entries of kind `activity`, if one does: how a

@@ -15,7 +15,7 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
-use super::{HdrOptions, MergeId, MergeKind};
+use super::{HdrOptions, MergeId, MergeKind, MergePreviewId};
 use crate::{AssetId, PresetId, SettingsOrigin, api::params::host_params};
 use std::path::PathBuf;
 
@@ -329,10 +329,36 @@ host_params! {
         targets: Targets = json(MERGE_TARGETS),
         mutation: MutationRequest,
         plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
+        preview_id: Option<MergePreviewId> = string(64).notes("the caller's open merge.preview of these inputs, whose spool, proxies and alignment the merge takes over, reading and aligning nothing again (a preview still preparing is continued); the options must be its latest revision's: conflict otherwise, and for a preview that is not open"),
         hdr: Option<HdrOptions> = json(MERGE_HDR),
         folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the folder merge.plan proposes"),
         add_to_development_set: Option<bool> = boolean().default(false).notes("Pick merged: append the result to the current development set in the same library change that publishes it, or start a one-result set when there is none; false (Import merged) leaves the set as it is"),
         set_id: Option<super::DevelopmentSetId> = name().notes("with add_to_development_set: the set the client believes is current, refused with conflict unless it is; ignored without it"),
+    }
+}
+
+host_params! {
+    /// `merge.preview`: open the caller's preview of a merge.
+    pub(crate) struct MergePreviewParams {
+        kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
+        targets: Targets = json(MERGE_TARGETS),
+        hdr: Option<HdrOptions> = json(MERGE_HDR),
+        plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
+    }
+}
+
+host_params! {
+    /// `merge.preview-update`: the full new options of the caller's open preview.
+    pub(crate) struct MergePreviewUpdate {
+        preview_id: MergePreviewId = string(64).notes("merge-preview-…: the caller's open preview"),
+        hdr: HdrOptions = json("the preview's full new hdr options, as merge.preview takes them: {reference?, exposure_overrides?, alignment?, deghost?}; a field left out is its default, not the previous revision's"),
+    }
+}
+
+host_params! {
+    /// `merge.preview-close`.
+    pub(crate) struct MergePreviewClose {
+        preview_id: MergePreviewId = string(64).notes("merge-preview-…: the caller's preview to discard"),
     }
 }
 
