@@ -18,6 +18,7 @@ use luxforge_reference::colour::{chroma, hue_degrees, to_oklab};
 use luxforge_reference::curve::{CurvePoints, curve, curve_pixel, curve_pixel_with_input_error};
 use luxforge_reference::srgb;
 use luxforge_reference::tone::{ToneParams, luminance, tone_pixel};
+use luxforge_test_macros::slow;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -197,7 +198,8 @@ fn interpolates_every_knot() {
 }
 
 #[test]
-fn slow_dense_forward_differences_are_nondecreasing_for_named_and_10000_random_lists() {
+#[slow]
+fn dense_forward_differences_are_nondecreasing_for_named_and_10000_random_lists() {
     let grid = dense_grid();
     for (name, points) in all_lists() {
         let reference = CurvePoints::new(&points);
@@ -216,7 +218,8 @@ fn slow_dense_forward_differences_are_nondecreasing_for_named_and_10000_random_l
 }
 
 #[test]
-fn slow_no_segment_leaves_its_knot_values() {
+#[slow]
+fn no_segment_leaves_its_knot_values() {
     let grid = dense_grid();
     for (name, points) in all_lists() {
         let reference = CurvePoints::new(&points);

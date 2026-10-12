@@ -12,6 +12,7 @@ use crate::{
     colour::srgb::decode_table,
     modules::{Region, Stage},
 };
+use luxforge_test_macros::slow;
 
 /// The nearest half float of an `f32`, back as an `f32`: what a texel holds.
 fn held(value: f32) -> f32 {
@@ -300,7 +301,8 @@ fn a_boundary_of_another_compilation_is_refused() {
 /// origin: before Detail, whose input is a colour layer's output, and before Presence, whose input
 /// is Detail's output.
 #[test]
-fn slow_a_region_boundary_holds_the_gpus_halo_and_the_whole_stages_input() {
+#[slow]
+fn a_region_boundary_holds_the_gpus_halo_and_the_whole_stages_input() {
     use super::Entry;
     let registry = ModuleRegistry::builtin();
     let (width, height) = (1536, 1100);

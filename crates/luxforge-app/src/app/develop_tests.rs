@@ -33,6 +33,7 @@ use luxforge_core::{
     catalog_types::{FolderChoice, ViewRows, ViewSource, ViewSummary},
     decode_preview,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{
     paths::{fixture, temp_dir},
     wait_until,
@@ -352,7 +353,8 @@ fn developed(name: &str) -> (Scene, Vec<AssetId>) {
 /// folder, and Develop sends the `pick.develop` an agent writes for it, whose job's end opens
 /// Develop on the first photograph it developed, in the folder confirmed as the Develop folder.
 #[test]
-fn slow_filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
+#[slow]
+fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
     let mut scene = scene("develop-n");
     let picked = scene.files[..3].to_vec();
     pick(&mut scene, &picked);
@@ -541,7 +543,8 @@ fn slow_filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
 /// then shows the same photograph at the preview's entry, and its render replaces the preview.
 /// `←` goes back the same way. Nothing prepares a neighbour.
 #[test]
-fn slow_filmstrip_moves_through_the_set_drawing_the_cached_preview_first() {
+#[slow]
+fn filmstrip_moves_through_the_set_drawing_the_cached_preview_first() {
     let (mut scene, set) = developed("moves");
     let editor = &mut scene.editor;
     decode(editor, &set[1..3]);
@@ -633,7 +636,8 @@ fn slow_filmstrip_moves_through_the_set_drawing_the_cached_preview_first() {
 /// photograph on screen, so the preview is let go of — not withdrawn from under it — and the
 /// status bar no longer calls the picture a cached preview.
 #[test]
-fn slow_filmstrip_a_warm_opens_gpu_picture_replaces_the_cached_preview() {
+#[slow]
+fn filmstrip_a_warm_opens_gpu_picture_replaces_the_cached_preview() {
     let (mut scene, set) = developed("warm-move");
     let editor = &mut scene.editor;
     decode(editor, &set[1..2]);
@@ -674,7 +678,8 @@ fn slow_filmstrip_a_warm_opens_gpu_picture_replaces_the_cached_preview() {
 /// an open of a photograph moved past that lands after the next move is never drawn for the
 /// photograph moved to, whose own preview is drawn as soon as it lands.
 #[test]
-fn slow_filmstrip_a_stale_answer_is_never_drawn_for_another_photograph() {
+#[slow]
+fn filmstrip_a_stale_answer_is_never_drawn_for_another_photograph() {
     let (mut scene, set) = developed("stale");
     let editor = &mut scene.editor;
     send(editor, DevelopMessage::Step(1));
@@ -732,7 +737,8 @@ fn slow_filmstrip_a_stale_answer_is_never_drawn_for_another_photograph() {
 /// A preview whose entry is not the one the open shows — another client committed meanwhile — is
 /// taken off the surface once the open answers, rather than standing for the entry shown.
 #[test]
-fn slow_filmstrip_a_preview_of_another_entry_is_withdrawn() {
+#[slow]
+fn filmstrip_a_preview_of_another_entry_is_withdrawn() {
     let (mut scene, set) = developed("entry");
     let editor = &mut scene.editor;
     decode(editor, &set[1..2]);
@@ -758,7 +764,8 @@ fn slow_filmstrip_a_preview_of_another_entry_is_withdrawn() {
 /// While a draft is open a move is refused with the one start refusal's reason and changes nothing;
 /// the strip collapses and expands with `Cmd+Option+F`, taking its height off the canvas.
 #[test]
-fn slow_filmstrip_a_move_is_refused_while_a_draft_is_open() {
+#[slow]
+fn filmstrip_a_move_is_refused_while_a_draft_is_open() {
     let (mut scene, set) = developed("refused");
     let editor = &mut scene.editor;
     let (action, parameter) = patch_control(editor);
@@ -847,7 +854,8 @@ fn strip_assets(editor: &Editor) -> Vec<AssetId> {
 /// client's Develop into that folder reaches the strip through the event poll, the photograph on
 /// screen keeping its place.
 #[test]
-fn slow_filmstrip_a_double_click_opens_the_photographs_own_folder() {
+#[slow]
+fn filmstrip_a_double_click_opens_the_photographs_own_folder() {
     let mut scene = scene("catalog");
     for path in &scene.files[..3] {
         agent_develop(&scene.client, path);
@@ -921,7 +929,8 @@ fn slow_filmstrip_a_double_click_opens_the_photographs_own_folder() {
 /// Opening a file forgets the strip at once; once its open answers with a photograph, that
 /// photograph's folder becomes the Develop folder and is read into the strip.
 #[test]
-fn slow_filmstrip_a_file_opened_has_its_folder() {
+#[slow]
+fn filmstrip_a_file_opened_has_its_folder() {
     let (mut scene, set) = developed("alone");
     let editor = &mut scene.editor;
     let folder = editor
@@ -1106,7 +1115,8 @@ fn develop_without_a_folder_stays_in_select_and_explains_the_choice() {
 /// empty folder keeps Select shown and says so; a folder holding the open photograph opens Develop
 /// on it, with the folder's path as the strip's title.
 #[test]
-fn slow_filmstrip_the_catalog_folder_viewed_is_the_develop_folder_and_survives_browsing() {
+#[slow]
+fn filmstrip_the_catalog_folder_viewed_is_the_develop_folder_and_survives_browsing() {
     let (mut scene, assets) = developed("folder-browse");
     let open = scene
         .editor
@@ -1273,7 +1283,8 @@ fn filmstrip_develop_n_opens_on_the_common_folder() {
 /// alone. A paste to several photographs goes to the batch, which skips what it cannot write and
 /// reports it. A pending paste request refuses another paste, not an export or a preset batch.
 #[test]
-fn slow_copy_settings_the_open_photographs_refusal_stops_only_a_single_photo_paste() {
+#[slow]
+fn copy_settings_the_open_photographs_refusal_stops_only_a_single_photo_paste() {
     use crate::state::copy_settings::{Clipboard, Source};
     let (mut scene, set) = developed("paste-refusal");
     let editor = &mut scene.editor;

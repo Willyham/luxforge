@@ -4,6 +4,7 @@
 //! bit for bit; a stage past two textures either way is refused before anything is charged or
 //! created; and its charge is its texels.
 use super::*;
+use luxforge_test_macros::slow;
 
 const LIMIT: u32 = 64;
 const STAGE: (u32, u32) = (100, 90);
@@ -138,8 +139,9 @@ fn read(
 /// (NaN past the stage's first edges); windows across one seam, both and none, and one at the
 /// stage's far corner, copy out the stage's texels bit for bit.
 #[test]
-fn slow_tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels() {
-    let test = "slow_tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels";
+#[slow]
+fn tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels() {
+    let test = "tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_texels";
     let Some((device, queue)) = device(test) else {
         return;
     };
@@ -201,8 +203,9 @@ fn slow_tiles_copied_in_and_windows_copied_out_across_the_seams_are_the_stages_t
 /// A stage past two textures either way is refused as `texture-limit` before its charge is asked
 /// for; a refused charge creates nothing; one texture holds a stage within the limit.
 #[test]
-fn slow_a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged() {
-    let test = "slow_a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged";
+#[slow]
+fn a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged() {
+    let test = "a_stage_past_two_textures_either_way_is_refused_before_anything_is_charged";
     let Some((device, _)) = device(test) else {
         return;
     };

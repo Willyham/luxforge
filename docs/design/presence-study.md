@@ -41,7 +41,7 @@ Every cross ratio between channels is preserved exactly by construction, so hue 
 Four host rules shape every choice below, and the algorithms are selected to fit them rather than the other way round.
 
 1. **Finite support only.** Production processes 512 × 512 output tiles, reading each tile plus the operation's summed halo from the input frame with edge clamping, and the summed halo is bounded at 512 pixels. Every filter here is therefore a box mean, a box minimum, or a box-based guided filter. No Gaussian appears anywhere: a Gaussian's support is infinite, so its halo would be a truncation choice rather than a bound.
-2. **Tile invariance is structural, not hoped for.** Every filter is evaluated by direct summation over its window in a fixed order (horizontal mean first, then vertical mean of that), never by a running sum, so a result does not depend on where evaluation started. Every reduced grid is anchored at the frame origin. `slow_the_declared_halos_make_tiled_evaluation_bit_identical` evaluates six image/parameter combinations at tile sizes 16, 37 and 64 and requires **exact** equality with the whole-frame evaluation, and the reference's planes panic on any read outside the rectangle they hold, so an insufficient halo fails the test instead of quietly changing a number. A production implementation that uses running sums instead will differ within the frozen tolerance below, which is the "up to float summation order" allowance; one that reads a smaller neighbourhood will not.
+2. **Tile invariance is structural, not hoped for.** Every filter is evaluated by direct summation over its window in a fixed order (horizontal mean first, then vertical mean of that), never by a running sum, so a result does not depend on where evaluation started. Every reduced grid is anchored at the frame origin. `the_declared_halos_make_tiled_evaluation_bit_identical` evaluates six image/parameter combinations at tile sizes 16, 37 and 64 and requires **exact** equality with the whole-frame evaluation, and the reference's planes panic on any read outside the rectangle they hold, so an insufficient halo fails the test instead of quietly changing a number. A production implementation that uses running sums instead will differ within the frozen tolerance below, which is the "up to float summation order" allowance; one that reads a smaller neighbourhood will not.
 3. **Large radii are computed on a reduced base.** Clarity and Dehaze reduce by an integer factor of 4 per axis before filtering. Reduction cuts the work by 16, not the neighbourhood: the halo is still roughly twice the full-resolution radius.
 4. **One global estimate, bounded.** Dehaze's atmospheric light is computed from the host's 1/16-per-side reduction of the whole stage and is 3 `f64` (24 bytes), far inside the host's 4 KiB limit. Texture and Clarity declare no global estimate.
 
@@ -239,7 +239,7 @@ The order is frozen. The halos add along it, which is what the summed bound abov
 
 Each unit at amount 0 returns its input untouched through an explicit branch, not through an encode/decode round trip, so the identity is exact with no rounding — `every_unit_at_zero_is_the_exact_identity` asserts bit equality on eight images. Any pixel whose `delta` is exactly zero takes the same path, so a pass-through is exact too. A neutral payload compiles to no operation at all.
 
-Every stage is a composition of `+`, `-`, `*`, `/` by a value bounded away from zero (`var + eps`, the transmission floor, `A_FLOOR`), `tanh`, `exp` and `powf` with a positive base, so a finite input gives a finite output; `slow_every_output_is_finite` exercises this over every fixture at the four extreme parameter corners. A non-finite **input** is out of scope for this reference and is the host's explicit `resource-limit` error, never a silently produced `NaN`.
+Every stage is a composition of `+`, `-`, `*`, `/` by a value bounded away from zero (`var + eps`, the transmission floor, `A_FLOOR`), `tanh`, `exp` and `powf` with a positive base, so a finite input gives a finite output; `every_output_is_finite` exercises this over every fixture at the four extreme parameter corners. A non-finite **input** is out of scope for this reference and is the host's explicit `resource-limit` error, never a silently produced `NaN`.
 
 ## Per-tile scratch
 
@@ -257,7 +257,7 @@ Rough figures for one 512 × 512 output tile at a 60 MP stage (long side 10000, 
 
 ## Measured figures
 
-Every figure below is recomputed from the reference on each test run and compared against [`fixtures/presence/measurements.json`](../../fixtures/presence/measurements.json) by `slow_measurements_match_reference`, so the note and the code cannot drift apart silently. All measurements are at a stage long side of 6000; the fixtures are small because a tile of such a stage is small.
+Every figure below is recomputed from the reference on each test run and compared against [`fixtures/presence/measurements.json`](../../fixtures/presence/measurements.json) by `measurements_match_reference`, so the note and the code cannot drift apart silently. All measurements are at a stage long side of 6000; the fixtures are small because a tile of such a stage is small.
 
 ### Step edges
 

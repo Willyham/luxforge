@@ -934,6 +934,7 @@ fn contact_sheet(path: &Path, rows: &[(String, Vec<[f64; 3]>)], count: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
 
     /// Every generated variant's XMP reads back to its manifest fields, and the families cover
     /// every wheel's saturation, luminance and hue, Blending and Balance.
@@ -1052,7 +1053,8 @@ mod tests {
     /// shortfall, missing export or behaviour flag. A folder without the neutral export, an export
     /// of another size and a round of other variants are each refused by name.
     #[test]
-    fn slow_a_reduced_round_measures_its_own_renders_as_identity() {
+    #[slow]
+    fn a_reduced_round_measures_its_own_renders_as_identity() {
         let directory = tempfile::tempdir().unwrap();
         let round = directory.path().join("round");
         let renders = directory.path().join("renders");

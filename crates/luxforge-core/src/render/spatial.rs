@@ -1817,6 +1817,7 @@ mod tests {
         },
     };
     use luxforge_reference::srgb;
+    use luxforge_test_macros::slow;
     use luxforge_testbase::{Distribution, Gate};
     use serde_json::{Map, Value, json};
     use std::{
@@ -2796,7 +2797,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_a_crop_resample_after_a_spatial_layer_resamples_the_blurred_frame() {
+    #[slow]
+    fn a_crop_resample_after_a_spatial_layer_resamples_the_blurred_frame() {
         let source = gradient(80, 60);
         let registry = spatial_registry();
         let crop = fitted_crop(80, 60, 8.0, [0.15, 0.15, 0.6, 0.6]);
@@ -2897,7 +2899,8 @@ mod tests {
     /// every pixel read through the frames it materializes, along every fifth row and in several
     /// tiles, is the rendered byte.
     #[test]
-    fn slow_a_read_and_its_reduction_read_the_stage_by_rows_on_both_paths() {
+    #[slow]
+    fn a_read_and_its_reduction_read_the_stage_by_rows_on_both_paths() {
         let registry = ModuleRegistry::builtin();
         let byte = gradient(96, 72);
         let linear = linear_source(96, 72);
@@ -2959,7 +2962,8 @@ mod tests {
     /// neighbours straddle tiles, and after an earlier spatial layer whose output the last one reads
     /// whole neighbourhoods of and whose mean the second shift reduces; and so does a sample.
     #[test]
-    fn slow_a_linear_read_equals_the_tiled_render() {
+    #[slow]
+    fn a_linear_read_equals_the_tiled_render() {
         let registry = spatial_registry();
         let source = linear_source(70, 52);
         let crop = fitted_crop(70, 52, 6.0, [0.15, 0.2, 0.6, 0.55]);
@@ -3132,7 +3136,8 @@ mod tests {
     /// small tiles and of the wide ones fixed, and every read, on either side of a wide tile's
     /// seam and a small one's, is the rendered byte.
     #[test]
-    fn slow_a_wide_halo_renders_in_wide_tiles_and_reads_equal_it_on_both_paths() {
+    #[slow]
+    fn a_wide_halo_renders_in_wide_tiles_and_reads_equal_it_on_both_paths() {
         use crate::render::limits::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
         let registry = spatial_registry();
         // Wider and taller than one wide tile, above the parallel threshold.
@@ -3753,7 +3758,8 @@ mod tests {
     /// estimates the render stored, and from a cold store of its own, whose reductions behind a
     /// spatial segment read that segment's frame.
     #[test]
-    fn slow_a_read_through_several_spatial_segments_is_the_rendered_byte_on_both_paths() {
+    #[slow]
+    fn a_read_through_several_spatial_segments_is_the_rendered_byte_on_both_paths() {
         use crate::render::SpatialMode;
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
@@ -4971,7 +4977,8 @@ mod tests {
     /// on the pool; one whose window is as wide as the pool does all of that serially. Both paths
     /// give the same frame to the byte.
     #[test]
-    fn slow_a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
+    #[slow]
+    fn a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
         let registry = spatial_registry();
         // Forced past the parallel threshold, in 16 px tiles so that a window as wide as the pool
         // exists whatever the pool's size.

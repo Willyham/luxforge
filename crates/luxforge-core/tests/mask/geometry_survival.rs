@@ -11,6 +11,7 @@ use luxforge_core::{
     AssetId, EditorService, EntryId, GeometryMap, MaskId, Mutation, Raster, Transform,
     mask::commands,
 };
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 
 /// The gradient this test draws: coverage 0 above `Y0` of the content stage, 1 below `Y1`.
@@ -240,7 +241,8 @@ fn settled(map: &[bool], width: u32, height: u32, x: u32, y: u32, reach: i64) ->
 }
 
 #[test]
-fn slow_a_mask_lands_on_the_same_content_pixels_through_every_delivered_tail() {
+#[slow]
+fn a_mask_lands_on_the_same_content_pixels_through_every_delivered_tail() {
     // The footprint with no tail at all: which content pixels the masked layer changes.
     let mut base = Fixture::open("content");
     let plain_content = base.render();

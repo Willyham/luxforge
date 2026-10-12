@@ -13,6 +13,7 @@ use crate::{
     },
 };
 use luxforge_reference::grade as reference;
+use luxforge_test_macros::slow;
 
 fn wheel(hue: f64, saturation: f64, luminance: f64) -> WheelValues {
     WheelValues {
@@ -523,7 +524,8 @@ fn global_ignores_blending_and_balance() {
 /// four luminance amounts at -100, 0 and +100, at the narrowest and widest Blending and both
 /// Balance extremes, sampled in `f32` exactly as the pixel path evaluates it.
 #[test]
-fn slow_grade_luminance_is_monotone_for_every_extreme_combination() {
+#[slow]
+fn grade_luminance_is_monotone_for_every_extreme_combination() {
     for combination in 0..3usize.pow(4) {
         let mut code = combination;
         let amounts: [f64; 4] = std::array::from_fn(|_| {

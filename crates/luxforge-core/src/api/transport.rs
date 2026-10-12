@@ -410,6 +410,7 @@ fn serve(
 mod tests {
     use super::*;
     use crate::ModuleRegistry;
+    use luxforge_test_macros::slow;
     use luxforge_testbase::paths::{jpeg as fixture, temp_path as temp};
     use serde_json::{Value, json};
     use std::io::Cursor;
@@ -554,7 +555,8 @@ mod tests {
     /// The session file is written whole and owner-only over whatever was there, the session is
     /// registered while it runs, and a client past the limit is told why it is refused.
     #[test]
-    fn slow_local_server_registers_itself_and_answers_a_client_past_its_limit() {
+    #[slow]
+    fn local_server_registers_itself_and_answers_a_client_past_its_limit() {
         let root = luxforge_testbase::paths::temp_dir("live-limit");
         let catalog = root.join("catalog.sqlite");
         let session_file = live_session_file(&catalog);
@@ -743,11 +745,13 @@ mod tests {
 #[cfg(test)]
 mod monitoring_transport_tests {
     use super::*;
+    use luxforge_test_macros::slow;
     use luxforge_testbase::paths::temp_path;
     use serde_json::json;
 
     #[test]
-    fn slow_a_remote_close_releases_a_quiet_job_wait_and_pipeline_preserves_order() {
+    #[slow]
+    fn a_remote_close_releases_a_quiet_job_wait_and_pipeline_preserves_order() {
         // An ordinary owner's catalog refresh is held before disk work; its globally readable
         // queued/running job gives the transport a quiet indefinite wait.
         let dir = luxforge_testbase::paths::temp_dir("remote-job-wait")

@@ -25,6 +25,7 @@ use crate::{
     },
     tiles::{TileFallback, TileService, TileUnavailable},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, paths, wait_for, wait_until};
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -411,7 +412,8 @@ fn generated_jpeg(label: &str, width: u32, height: u32) -> PathBuf {
 /// scaled with the tier, is approximate. The camera preview shown until the first render is never
 /// approximate either.
 #[test]
-fn slow_a_rendered_tier_is_never_approximate() {
+#[slow]
+fn a_rendered_tier_is_never_approximate() {
     let sources = [
         generated_jpeg("rendered-owner-approximate-basic", 1200, 800),
         generated_jpeg("rendered-owner-approximate-clarity", 1000, 800),
@@ -534,7 +536,8 @@ fn a_photographs_read_queues_a_render_and_then_answers_it_ready() {
 /// Both tiers asked for while a render waits come from that one render, each with its own job;
 /// a tier asked for while the render runs without it is rendered next.
 #[test]
-fn slow_both_tiers_come_from_one_render() {
+#[slow]
+fn both_tiers_come_from_one_render() {
     let (setup, photos) = Setup::new(
         "rendered-owner-both",
         &["orientation-1.jpg", "orientation-3.jpg"],
@@ -617,7 +620,8 @@ fn a_commit_renders_again_and_collects_the_old_tier() {
 /// Once a photograph's preview has been read, another client's commit re-renders its cached grid
 /// tier in the background with nobody reading it; before any read, a commit renders nothing.
 #[test]
-fn slow_another_clients_commit_rerenders_a_cached_grid_tier() {
+#[slow]
+fn another_clients_commit_rerenders_a_cached_grid_tier() {
     let (setup, photos) = Setup::new(
         "rendered-owner-follow",
         &["orientation-1.jpg", "orientation-8.jpg"],
@@ -683,7 +687,8 @@ fn slow_another_clients_commit_rerenders_a_cached_grid_tier() {
 
 /// Undo returns to an earlier entry, whose tier is rendered again under its own key and file name.
 #[test]
-fn slow_undo_returns_to_an_earlier_entrys_key() {
+#[slow]
+fn undo_returns_to_an_earlier_entrys_key() {
     let (setup, photos) = Setup::new("rendered-owner-undo", &["orientation-1.jpg"], true);
     let photo = &photos[0];
     let first = setup.ready(photo, GRID);
@@ -705,7 +710,8 @@ fn slow_undo_returns_to_an_earlier_entrys_key() {
 /// Deleting the index directory loses nothing but time: read again, the tier is rendered again,
 /// the same key and bytes.
 #[test]
-fn slow_deleting_the_index_directory_renders_again() {
+#[slow]
+fn deleting_the_index_directory_renders_again() {
     let (mut setup, photos) = Setup::new("rendered-owner-deleted", &["orientation-1.jpg"], true);
     let photo = &photos[0];
     let grid = setup.ready(photo, GRID);
@@ -722,7 +728,8 @@ fn slow_deleting_the_index_directory_renders_again() {
 /// Large tiers share the loupe tiers' byte budget, least recently used out first and never the one
 /// just written; grid tiers are kept. A served large tier records its use at most once a minute.
 #[test]
-fn slow_the_large_tier_shares_the_loupe_budget() {
+#[slow]
+fn the_large_tier_shares_the_loupe_budget() {
     let (mut setup, photos) = Setup::new(
         "rendered-owner-budget",
         &["orientation-1.jpg", "orientation-3.jpg"],
@@ -807,7 +814,8 @@ fn slow_the_large_tier_shares_the_loupe_budget() {
 /// When the render worker starts, the rows of other renderer generations are discarded with their
 /// files; this generation's rows and camera previews stay.
 #[test]
-fn slow_another_generations_rows_are_discarded() {
+#[slow]
+fn another_generations_rows_are_discarded() {
     let (setup, photos) = Setup::new(
         "rendered-owner-generation",
         &["orientation-1.jpg", "orientation-3.jpg"],
@@ -890,7 +898,8 @@ fn slow_another_generations_rows_are_discarded() {
 /// `embedded`. The render then replaces it. For a JPEG with no edits the camera preview is the
 /// original itself, fitted.
 #[test]
-fn slow_the_camera_preview_is_the_fallback_until_the_first_render() {
+#[slow]
+fn the_camera_preview_is_the_fallback_until_the_first_render() {
     let (setup, photos) = Setup::new("rendered-owner-camera", &["orientation-6.jpg"], false);
     let photo = &photos[0];
     let woken = Arc::new(AtomicU64::new(0));
@@ -947,7 +956,8 @@ fn slow_the_camera_preview_is_the_fallback_until_the_first_render() {
 /// A view over photographs makes, in the background, only the camera previews of those with no
 /// grid row, never a render; the grid states follow the renders a visible read and a commit make.
 #[test]
-fn slow_views_over_photographs_make_camera_previews_only() {
+#[slow]
+fn views_over_photographs_make_camera_previews_only() {
     let (setup, photos) = Setup::new(
         "rendered-owner-view",
         &[
@@ -1022,7 +1032,8 @@ fn slow_views_over_photographs_make_camera_previews_only() {
 /// `job.cancel` removes a waiting render and stops a running one before it writes anything; read
 /// again, the photograph renders.
 #[test]
-fn slow_job_cancel_removes_a_waiting_render_and_stops_a_running_one() {
+#[slow]
+fn job_cancel_removes_a_waiting_render_and_stops_a_running_one() {
     let (setup, photos) = Setup::new(
         "rendered-owner-cancel",
         &[
@@ -1079,7 +1090,8 @@ fn slow_job_cancel_removes_a_waiting_render_and_stops_a_running_one() {
 /// running, then `ready`, and it is woken for the camera preview and for the render — while the
 /// client that left reads the same outcome and is woken for neither.
 #[test]
-fn slow_a_tiers_job_is_shared_and_a_cancel_releases_only_the_callers_interest() {
+#[slow]
+fn a_tiers_job_is_shared_and_a_cancel_releases_only_the_callers_interest() {
     let (setup, photos) = Setup::new("rendered-owner-interest", &["orientation-6.jpg"], false);
     let photo = &photos[0];
     let watching = || {
@@ -1150,7 +1162,8 @@ fn slow_a_tiers_job_is_shared_and_a_cancel_releases_only_the_callers_interest() 
 /// render and on a waiting one have left — by `job.cancel`, or the last by disconnecting — each
 /// tier's job ends `cancelled`, the waiting render never runs and the running one writes nothing.
 #[test]
-fn slow_only_the_last_client_to_leave_a_tiers_job_stops_its_render() {
+#[slow]
+fn only_the_last_client_to_leave_a_tiers_job_stops_its_render() {
     let (setup, photos) = Setup::new(
         "rendered-owner-last-cancel",
         &[
@@ -1215,7 +1228,8 @@ fn slow_only_the_last_client_to_leave_a_tiers_job_stops_its_render() {
 /// it for everyone, answering the job, and drops the commit's want, so the render writes nothing
 /// and nothing renders it again.
 #[test]
-fn slow_any_clients_cancel_of_a_commits_rerender_stops_it_for_everyone() {
+#[slow]
+fn any_clients_cancel_of_a_commits_rerender_stops_it_for_everyone() {
     let (setup, photos) = Setup::new(
         "rendered-owner-stop-rerender",
         &["orientation-1.jpg", "orientation-3.jpg"],
@@ -1355,7 +1369,8 @@ fn the_render_queue_is_bounded() {
 /// photograph Develop has open asks for its preview: its exact frame arrives through the editor's preview queue while every render is still held or waiting, so the
 /// preview never waited behind them. Released, the backlog completes.
 #[test]
-fn slow_a_rendered_backlog_never_delays_an_open_develop_preview() {
+#[slow]
+fn a_rendered_backlog_never_delays_an_open_develop_preview() {
     let (setup, photos) = Setup::new(
         "rendered-owner-backlog",
         &[
@@ -1556,7 +1571,8 @@ mod preview_forget;
 /// and a later read answering the same from the row. A service that cannot draw names why, the
 /// reference drawing the tiers, and an owner with no GPU provider names the reference alone.
 #[test]
-fn slow_a_photographs_tiers_are_drawn_by_the_tile_service_off_the_owner_thread() {
+#[slow]
+fn a_photographs_tiers_are_drawn_by_the_tile_service_off_the_owner_thread() {
     let source = [paths::fixture("s0/orientation-1.jpg")];
     let edit = |service: &mut EditorService, asset: &AssetId, _: usize| {
         service
@@ -1637,7 +1653,8 @@ fn slow_a_photographs_tiers_are_drawn_by_the_tile_service_off_the_owner_thread()
 /// A tier cancelled while the tile service draws it writes nothing: its job ends `cancelled`, the
 /// stream ends between its bands, and neither a row nor a file of the tier is left.
 #[test]
-fn slow_a_tier_cancelled_while_it_is_drawn_writes_nothing() {
+#[slow]
+fn a_tier_cancelled_while_it_is_drawn_writes_nothing() {
     let tiles = BandTiles::new(Draw::Bands(8));
     tiles.gate.shut();
     let (setup, photos) = Setup::on(
@@ -1676,7 +1693,8 @@ fn slow_a_tier_cancelled_while_it_is_drawn_writes_nothing() {
 /// visible read of either tier queues a render from its stored source, whose tier is `rendered`
 /// at the tier's size, and the index records no camera preview for it.
 #[test]
-fn slow_a_derived_source_photograph_renders_its_previews_with_no_camera_preview() {
+#[slow]
+fn a_derived_source_photograph_renders_its_previews_with_no_camera_preview() {
     let (width, height) = (900_u32, 600_u32);
     let derived = std::sync::Mutex::new(None);
     let (setup, _) = Setup::of(

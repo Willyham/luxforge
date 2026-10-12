@@ -17,6 +17,7 @@ use luxforge_core::{
     stage_transform,
 };
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::{path::PathBuf, thread::JoinHandle};
 
@@ -928,7 +929,8 @@ fn linear_to_code(linear: f64) -> u32 {
 /// The delivered cell cap bounds the grid however large the stage is, and the request that would
 /// exceed it is refused before any work starts.
 #[test]
-fn slow_the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
+#[slow]
+fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
     let f = Fixture::open("cap");
     let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);

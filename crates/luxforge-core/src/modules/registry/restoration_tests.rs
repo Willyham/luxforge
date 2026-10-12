@@ -7,6 +7,7 @@ use crate::modules::{
 use crate::{
     CompileStage, EffectDescriptor, EffectStage, Layer, Mask, Processing, Recipe, Stage, ToolModule,
 };
+use luxforge_test_macros::slow;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -311,7 +312,8 @@ fn restoration_placement_keeps_a_repair_stage_layer_after_colour() {
     assert_eq!(registry.insertion_index_for(&layers, EFFECT), 0);
 }
 #[test]
-fn slow_restoration_placement_all_creation_permutations_and_targets() {
+#[slow]
+fn restoration_placement_all_creation_permutations_and_targets() {
     let (mut registry, _) = registry();
     let mut colour5 = super::tests::TestModule::new(
         "luxforge.colourprobe",

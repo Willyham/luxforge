@@ -26,6 +26,7 @@ use crate::{
 };
 use iced::{Point, Size};
 use luxforge_core::{ClientId, EditorService, OwnerHandle, catalog_types::ViewSource};
+use luxforge_test_macros::slow;
 use luxforge_testbase::{
     paths::{fixture, temp_dir},
     wait_for,
@@ -202,7 +203,8 @@ fn newest(editor: &Editor, agent: ClientId) -> Value {
 /// refused with the core's reason. Remove from indexed folders…, from the row's menu, asks first;
 /// its Remove sends `index.remove-folder` synchronously, which `Cmd+Z` undoes.
 #[test]
-fn slow_select_adds_lists_undoes_and_removes_an_indexed_folder_on_a_real_owner() {
+#[slow]
+fn select_adds_lists_undoes_and_removes_an_indexed_folder_on_a_real_owner() {
     use iced::keyboard::Modifiers;
     let (mut editor, agent, dir) = scene("add");
     let folder = dir.join("Card dumps");

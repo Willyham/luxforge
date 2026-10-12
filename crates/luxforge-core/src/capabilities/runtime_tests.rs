@@ -23,6 +23,7 @@ use crate::{
         fake::{FAKE_INPUT, FakeControls, FakeInference},
     },
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, wait_for, wait_until};
 use serde_json::{Map, Value, json};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
@@ -518,7 +519,8 @@ fn a_task_loads_on_first_use_and_an_unload_releases_and_is_announced() {
 }
 
 #[test]
-fn slow_an_idle_model_is_released_after_the_interval_and_every_model_on_a_memory_signal() {
+#[slow]
+fn an_idle_model_is_released_after_the_interval_and_every_model_on_a_memory_signal() {
     let mut fixture = Fixture::new("idle");
     fixture.idle = Duration::from_millis(150);
     let controls = fixture.controls();

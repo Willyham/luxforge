@@ -9,6 +9,7 @@ use luxforge_core::{
     ClientId, ComponentId, EditorService, MaskId,
     mask::commands::{self, MaskTarget},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use luxforge_testkit::client::{Owner, mutation as envelope};
 
@@ -356,7 +357,8 @@ fn an_external_commit_conflicts_a_mask_draft_and_discard_or_reapply_resolves_it(
 /// of the identity kind — and whose identities are refused by the one generic check, from either
 /// side, with the same words.
 #[test]
-fn slow_the_mask_family_is_discovered_as_a_host_descriptor_and_checked_like_any_action() {
+#[slow]
+fn the_mask_family_is_discovered_as_a_host_descriptor_and_checked_like_any_action() {
     let client = Session::open("discovery");
     let listed = client.send("module.list", json!({}));
     let host = listed["host"].as_array().expect("the host's descriptors");

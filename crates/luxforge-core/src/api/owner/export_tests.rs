@@ -13,6 +13,7 @@ use crate::{
         TileUnavailable,
     },
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{
     Gate,
     paths::{jpeg as fixture, temp_dir},
@@ -387,7 +388,8 @@ const FAR_SHARE: f64 = 0.05;
 /// deterministic encoder reading an independently evaluated exact raster. JPEG decoding is not
 /// used as an exact-pixel oracle.
 #[test]
-fn slow_detail_export_evaluates_exact_detail_once() {
+#[slow]
+fn detail_export_evaluates_exact_detail_once() {
     use sha2::{Digest, Sha256};
 
     let mut harness = Harness::start("detail-once");
@@ -628,7 +630,8 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
 /// export waits behind another, changes neither file, and a historical entry exports as itself
 /// while the current entry differs.
 #[test]
-fn slow_a_later_commit_never_changes_an_accepted_export() {
+#[slow]
+fn a_later_commit_never_changes_an_accepted_export() {
     let mut harness = Harness::start("frozen");
     let state = harness.import("frozen.jpg");
     let asset = state["asset"]["id"].clone();
@@ -1436,7 +1439,8 @@ fn warped_export_cancellation_publishes_nothing() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 #[test]
-fn slow_export_refuses_forged_lens_payload_before_publication() {
+#[slow]
+fn export_refuses_forged_lens_payload_before_publication() {
     let mut h = Harness::start("lens-forged");
     let (asset, original) = lens_asset(&h);
     let original_bytes = fs::read(&original).unwrap();
@@ -1637,7 +1641,8 @@ fn staged_files(dir: &Path) -> Vec<String> {
 /// metadata it carries, and its result names the GPU. While it is encoding its progress is the
 /// share of the rows encoded. The original is unchanged.
 #[test]
-fn slow_a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
+#[slow]
+fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
     let stub = StubTiles::new(Behaviour::Bands {
         rows: 7,
         stop: None,

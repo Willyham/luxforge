@@ -554,6 +554,7 @@ pub fn attested(archive: &Archive, answer: &Value) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
 
     fn root_file(name: &str) -> String {
         fs::read_to_string(
@@ -577,7 +578,8 @@ mod tests {
         checksum = \"cf211e3776eea6aec988552fa118dd746d70e1b1e5e244058d1c98015f3e5872\"\n";
 
     #[test]
-    fn slow_the_repositorys_own_pins_hold() {
+    #[slow]
+    fn the_repositorys_own_pins_hold() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         check(&root).unwrap();
     }

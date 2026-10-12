@@ -8,6 +8,7 @@ use super::source::Preparing;
 use super::*;
 use crate::artifacts::derived_source::{payload_work, source_object_path};
 use crate::{LinearImage, LinearSettings, PreviewSource, source::PlaneGate};
+use luxforge_test_macros::slow;
 use serde_json::json;
 use std::{fs, sync::atomic::AtomicBool};
 
@@ -332,7 +333,8 @@ fn a_derived_source_stays_linear_until_the_sdr_boundary() {
 /// exactly as the same planes held in memory render the same stack, at every stack prefix, all
 /// from its one preparation.
 #[test]
-fn slow_a_derived_source_renders_every_stack_as_its_planes_in_memory_do() {
+#[slow]
+fn a_derived_source_renders_every_stack_as_its_planes_in_memory_do() {
     let (directory, _, mut service, asset, values) = published("stacks");
     let state = prepare(&mut service, &asset).unwrap();
     assert_eq!(payload_work::take(), 3);

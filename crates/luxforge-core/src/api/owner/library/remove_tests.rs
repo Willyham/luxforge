@@ -20,6 +20,7 @@ use crate::{
     library::develop::develop_picks_tests::{Shot, photo, record, untouched},
     modules::PROOF_MODULE,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::temp_dir;
 use serde_json::{Value, json};
 use std::{
@@ -493,7 +494,8 @@ fn named(assets: &[&Value]) -> BTreeSet<String> {
 /// the first change. `library.undo` puts them back and `library.redo` removes them again, with the
 /// same removal time; `asset.restore` puts one back as its own change. No original is touched.
 #[test]
-fn slow_remove_and_put_back_are_library_changes_undone_and_redone() {
+#[slow]
+fn remove_and_put_back_are_library_changes_undone_and_redone() {
     let harness = Harness::new("put-back");
     let paths = harness.photos(3);
     let assets = harness.develop("develop", &paths);
@@ -619,7 +621,8 @@ fn slow_remove_and_put_back_are_library_changes_undone_and_redone() {
 /// every count: `catalog.info`, `folder.list`, `collection.list`, `source.missing` and the facets.
 /// Removed shows only them. Put back returns every view and count exactly as it was.
 #[test]
-fn slow_removed_photographs_leave_every_other_view_and_count_and_put_back_returns_them() {
+#[slow]
+fn removed_photographs_leave_every_other_view_and_count_and_put_back_returns_them() {
     let harness = Harness::new("views");
     let paths = harness.photos(4);
     let assets = harness.develop("develop", &paths);
@@ -755,7 +758,8 @@ fn slow_removed_photographs_leave_every_other_view_and_count_and_put_back_return
 /// the client with permission authority empties Removed, recording one event, and its retry is
 /// answered with the first answer and records none. With nothing removed it is a no-op.
 #[test]
-fn slow_remove_empty_is_forbidden_without_permission_authority() {
+#[slow]
+fn remove_empty_is_forbidden_without_permission_authority() {
     let harness = Harness::new("authority");
     let paths = harness.photos(2);
     let assets = harness.develop("develop", &paths);
@@ -818,7 +822,8 @@ fn slow_remove_empty_is_forbidden_without_permission_authority() {
 /// caller's and another client's, so neither acts on or shows the deleted photographs until it is
 /// evaluated again. A no-op empties nothing and leaves views as they were.
 #[test]
-fn slow_remove_empty_leaves_every_view_stale() {
+#[slow]
+fn remove_empty_leaves_every_view_stale() {
     let harness = Harness::new("empty-views");
     let paths = harness.photos(2);
     let assets = harness.develop("develop", &paths);
@@ -878,7 +883,8 @@ fn slow_remove_empty_leaves_every_view_stale() {
 /// renders; the artifact's file is collected. The journal is kept, so undoing the removal is refused
 /// by its value check, and the catalog's triggers are exactly as they were. No original is touched.
 #[test]
-fn slow_remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_and_artifacts() {
+#[slow]
+fn remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_and_artifacts() {
     let harness = Harness::new("empty");
     let paths = harness.photos(3);
     let assets = harness.develop("develop", &paths);
@@ -1040,7 +1046,8 @@ fn slow_remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_
 /// were. Sending back an unedited photograph deletes its record, which holds only its Original
 /// entry: the one other deletion, P9's. Emptying Removed then deletes the edited one's entries.
 #[test]
-fn slow_remove_no_other_path_deletes_an_entry() {
+#[slow]
+fn remove_no_other_path_deletes_an_entry() {
     let harness = Harness::new("no-other-path");
     let paths = harness.photos(2);
     let assets = harness.develop("develop", &paths);
@@ -1126,7 +1133,8 @@ fn slow_remove_no_other_path_deletes_an_entry() {
 /// beside them stay, read back whole by the survivor, whatever stroke type and photograph named
 /// them. No original is touched.
 #[test]
-fn slow_remove_and_empty_keep_correction_strokes_every_surviving_entry_names() {
+#[slow]
+fn remove_and_empty_keep_correction_strokes_every_surviving_entry_names() {
     let harness = Harness::new("corrections");
     let paths = harness.photos(2);
     let assets = harness.develop("develop", &paths);
@@ -1190,7 +1198,8 @@ fn slow_remove_and_empty_keep_correction_strokes_every_surviving_entry_names() {
 /// collects only the patch artifact no remaining photograph names; the patch another photograph
 /// shares — the same bytes, published once — stays, and that photograph still renders with it.
 #[test]
-fn slow_remove_put_back_and_empty_keep_shared_patch_artifacts_and_collect_the_rest() {
+#[slow]
+fn remove_put_back_and_empty_keep_shared_patch_artifacts_and_collect_the_rest() {
     let harness = Harness::new("patches");
     let paths = harness.photos(2);
     let assets = harness.develop("develop", &paths);

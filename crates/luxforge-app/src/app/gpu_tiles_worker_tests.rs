@@ -51,6 +51,7 @@ use luxforge_gpu::{
     tiles::TileEnd, tiles::TilePixels,
 };
 use luxforge_reference::preview_error::{Class, ciede2000, lab_from_srgb8, statistics_of};
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, HANG, paths, wait_until};
 use serde_json::{Value, json};
 use std::sync::{Arc, mpsc};
@@ -296,8 +297,9 @@ fn next_step(service: &GpuTiles, held: &Gate) -> Arc<Gate> {
 /// linear values those an independent runner on a third device draws over that region, each as
 /// the stage holds it; the worker's scratch starts from NaN, and its thread reads them.
 #[test]
-fn slow_a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
-    let test = "slow_a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit";
+#[slow]
+fn a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
+    let test = "a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -417,8 +419,9 @@ fn slow_a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit(
 /// the family's class's display limit — mean ΔE00, p99 and the signed mean ΔL\*, a worst block
 /// having no meaning over scattered points — with each figure printed.
 #[test]
-fn slow_a_read_is_within_the_display_limit_of_the_reference_service() {
-    let test = "slow_a_read_is_within_the_display_limit_of_the_reference_service";
+#[slow]
+fn a_read_is_within_the_display_limit_of_the_reference_service() {
+    let test = "a_read_is_within_the_display_limit_of_the_reference_service";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -621,8 +624,9 @@ fn a_picks_25_points_render_one_window() {
 /// the core quantizer's code of the sample input there, for every masked layer of every family on
 /// both paths.
 #[test]
-fn slow_a_seed_is_the_code_of_the_sample_input() {
-    let test = "slow_a_seed_is_the_code_of_the_sample_input";
+#[slow]
+fn a_seed_is_the_code_of_the_sample_input() {
+    let test = "a_seed_is_the_code_of_the_sample_input";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -679,8 +683,9 @@ fn slow_a_seed_is_the_code_of_the_sample_input() {
 /// adapter the host does not offer by that name, which the status then names; and a desktop that
 /// named no adapter.
 #[test]
-fn slow_a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
-    let test = "slow_a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why";
+#[slow]
+fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
+    let test = "a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -813,8 +818,9 @@ fn slow_a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
 /// has not taken draws nothing more and holds no tile in flight, and a read then waits behind no
 /// tile at all; and once the encoder takes a band, the stream draws on.
 #[test]
-fn slow_an_interactive_read_waits_behind_at_most_two_export_tiles() {
-    let test = "slow_an_interactive_read_waits_behind_at_most_two_export_tiles";
+#[slow]
+fn an_interactive_read_waits_behind_at_most_two_export_tiles() {
+    let test = "an_interactive_read_waits_behind_at_most_two_export_tiles";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -994,8 +1000,9 @@ fn staged_families() -> Vec<(&'static str, Recipe)> {
 /// from NaN; twice on one worker it is the same bytes; and once it ends the runner holds no stage
 /// texture.
 #[test]
-fn slow_a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
-    let test = "slow_a_staged_stream_is_the_whole_stage_render_bit_for_bit";
+#[slow]
+fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
+    let test = "a_staged_stream_is_the_whole_stage_render_bit_for_bit";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -1076,8 +1083,9 @@ fn slow_a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
 /// stitched, are bit for bit the whole output stage the photo surface's own drawing draws as one
 /// region on another device of the same adapter, so its tiles carry no seam.
 #[test]
-fn slow_a_stream_is_the_whole_stage_render_bit_for_bit() {
-    let test = "slow_a_stream_is_the_whole_stage_render_bit_for_bit";
+#[slow]
+fn a_stream_is_the_whole_stage_render_bit_for_bit() {
+    let test = "a_stream_is_the_whole_stage_render_bit_for_bit";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -1137,8 +1145,9 @@ fn slow_a_stream_is_the_whole_stage_render_bit_for_bit() {
 /// same adapter, in tiles of [`SIDE`] and at the longest side: byte-identical, for the heavier
 /// families on both paths.
 #[test]
-fn slow_two_streams_are_byte_identical() {
-    let test = "slow_two_streams_are_byte_identical";
+#[slow]
+fn two_streams_are_byte_identical() {
+    let test = "two_streams_are_byte_identical";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -1253,8 +1262,9 @@ fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
 /// waiting behind at most two of its tiles — the step being taken and at most one in flight — and,
 /// cancelled, lets go of them with the rest of what its runner held.
 #[test]
-fn slow_a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled() {
-    let test = "slow_a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled";
+#[slow]
+fn a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled() {
+    let test = "a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -1657,8 +1667,9 @@ fn decoded_against(
 /// Dehaze light is computed by the worker's runner from the whole stage before any render of the
 /// stack, so the GPU exports it at once.
 #[test]
-fn slow_a_gpu_export_is_within_the_display_limit_of_the_reference_export() {
-    let test = "slow_a_gpu_export_is_within_the_display_limit_of_the_reference_export";
+#[slow]
+fn a_gpu_export_is_within_the_display_limit_of_the_reference_export() {
+    let test = "a_gpu_export_is_within_the_display_limit_of_the_reference_export";
     let Some(adapter) = host_adapter(test) else {
         return;
     };
@@ -1708,8 +1719,9 @@ fn slow_a_gpu_export_is_within_the_display_limit_of_the_reference_export() {
 /// worker, and once through a second worker's own device on the same adapter, under another
 /// owner, over the same photograph, Dehaze's light computed by each worker's runner.
 #[test]
-fn slow_two_gpu_exports_are_byte_identical() {
-    let test = "slow_two_gpu_exports_are_byte_identical";
+#[slow]
+fn two_gpu_exports_are_byte_identical() {
+    let test = "two_gpu_exports_are_byte_identical";
     let Some(adapter) = host_adapter(test) else {
         return;
     };
@@ -1749,8 +1761,9 @@ fn slow_two_gpu_exports_are_byte_identical() {
 /// `mask.sample-input` do: the neutral picker's patch and Auto tone's grid, each read by the GPU
 /// tile worker the owner serves its reads through.
 #[test]
-fn slow_pixel_reading_queries_name_the_gpu_that_drew_them() {
-    let test = "slow_pixel_reading_queries_name_the_gpu_that_drew_them";
+#[slow]
+fn pixel_reading_queries_name_the_gpu_that_drew_them() {
+    let test = "pixel_reading_queries_name_the_gpu_that_drew_them";
     let Some(adapter) = host_adapter(test) else {
         return;
     };
@@ -1847,9 +1860,10 @@ fn a_no_gpu_launch_exports_the_reference_naming_why() {
 /// the reference and no output mixes two adapters' tiles. The window naming the same adapter
 /// confirms it, and a stream draws on to its end.
 #[test]
-fn slow_the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs() {
+#[slow]
+fn the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs() {
     use super::gpu_tiles::AdapterNaming;
-    let test = "slow_the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs";
+    let test = "the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -2043,8 +2057,9 @@ fn a_measured_export_staged_is_chained() {
 /// texture, a worker drawing the stream chained after light sweeps, and reading through them, draws
 /// the same bytes.
 #[test]
-fn slow_a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
-    let test = "slow_a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage";
+#[slow]
+fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
+    let test = "a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -2278,9 +2293,10 @@ fn code_structure_export_measurement() {
 }
 
 #[test]
-fn slow_auto_tone_gpu_grid_and_values_agree_with_the_reference() {
+#[slow]
+fn auto_tone_gpu_grid_and_values_agree_with_the_reference() {
     let Some((backend, name)) =
-        host_adapter("slow_auto_tone_gpu_grid_and_values_agree_with_the_reference")
+        host_adapter("auto_tone_gpu_grid_and_values_agree_with_the_reference")
     else {
         return;
     };

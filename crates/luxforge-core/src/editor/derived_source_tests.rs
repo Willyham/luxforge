@@ -11,6 +11,7 @@ use crate::artifacts::{
         read_derived_source, source_object_path,
     },
 };
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
@@ -164,7 +165,8 @@ fn same_bits(read: &[f32], written: &[f32]) -> bool {
 /// publishes a complete source or leaves nothing visible, and collection keeps exactly the closure
 /// an independent walk of the photographs finds, plus what this process published while open.
 #[test]
-fn slow_a_publication_is_complete_or_invisible_at_every_boundary() {
+#[slow]
+fn a_publication_is_complete_or_invisible_at_every_boundary() {
     let directory = directory("boundaries");
     let (catalog, mut service, _) = catalog(&directory);
     let (width, height) = (1100, 1030);
@@ -275,7 +277,8 @@ fn slow_a_publication_is_complete_or_invisible_at_every_boundary() {
 /// releases a source only when no remaining photograph holds it, and never a chunk another source
 /// shares.
 #[test]
-fn slow_a_source_is_retained_until_emptying_removed_releases_its_last_photograph() {
+#[slow]
+fn a_source_is_retained_until_emptying_removed_releases_its_last_photograph() {
     let directory = directory("retention");
     let (catalog, mut service, _) = catalog(&directory);
     let (width, height) = (2048, 4);

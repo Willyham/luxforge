@@ -22,6 +22,7 @@ url.workspace = true
 security-framework.workspace = true
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-testbase = { path = "../luxforge-testbase", features = ["tls"] }
 # The core with the disk flush skipped, for this crate's tests only (luxforge-core's
 # `test-skip-disk-flush`).

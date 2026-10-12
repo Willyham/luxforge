@@ -2,6 +2,7 @@
 //! method table, persistence and identity render are exercised through the same public paths as
 //! an independent JSON client.
 use luxforge_core::{CONTROLS_EFFECT, ModuleRegistry, OwnerHandle, SnapshotId, controls_module};
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use luxforge_testkit::client::{call, open, refused};
 use luxforge_testkit::fixtures::render;
@@ -10,7 +11,8 @@ use serde_json::json;
 use std::{fs, sync::Arc};
 
 #[test]
-fn slow_controls_query_choice_is_described_and_selects_through_the_json_service() {
+#[slow]
+fn controls_query_choice_is_described_and_selects_through_the_json_service() {
     let mut registry = ModuleRegistry::builtin();
     registry.register(Arc::new(controls_module())).unwrap();
     let catalog = paths::temp_catalog("controls-query-choice");

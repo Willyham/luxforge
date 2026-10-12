@@ -2,8 +2,9 @@
 //! folders under the system's temporary directory. That directory is reached through the `/var`
 //! link, so every test also checks that events are named under the root's path as given, not as
 //! FSEvents spells it (`/private/var`, or relative to the data volume). A test that waits for
-//! FSEvents to deliver a change is named `slow_`, so the quick tier leaves it out.
+//! FSEvents to deliver a change is marked `#[slow]`, so the quick tier leaves it out.
 #![cfg(target_os = "macos")]
+use luxforge_test_macros::slow;
 use luxforge_testbase::{paths::temp_dir, wait_until};
 use luxforge_watch::{
     RescanReason, Resume, VolumeEvent, WatchEvent, WatchRoot, Watcher, current_cursor,
@@ -104,7 +105,8 @@ fn folder(name: &str) -> PathBuf {
 }
 
 #[test]
-fn slow_changes_in_a_watched_folder_arrive_as_paths_under_the_root_as_given() {
+#[slow]
+fn changes_in_a_watched_folder_arrive_as_paths_under_the_root_as_given() {
     let dir = folder("watch-changes");
     fs::write(dir.join("b.jpg"), b"b").unwrap();
     let (sender, receiver) = sync_channel::<WatchEvent>(64);
@@ -164,7 +166,8 @@ fn slow_changes_in_a_watched_folder_arrive_as_paths_under_the_root_as_given() {
 }
 
 #[test]
-fn slow_a_watcher_started_again_replays_what_changed_while_none_ran() {
+#[slow]
+fn a_watcher_started_again_replays_what_changed_while_none_ran() {
     let dir = folder("watch-replay");
     fs::write(dir.join("kept.jpg"), b"k").unwrap();
     fs::write(dir.join("renamed.jpg"), b"r").unwrap();
@@ -252,7 +255,8 @@ fn slow_a_watcher_started_again_replays_what_changed_while_none_ran() {
 }
 
 #[test]
-fn slow_a_new_root_listed_after_reading_its_cursor_replays_what_changed_during_the_listing() {
+#[slow]
+fn a_new_root_listed_after_reading_its_cursor_replays_what_changed_during_the_listing() {
     let dir = folder("watch-cursor");
     let cursor = current_cursor(&dir).expect("the data volume keeps a history");
     // What the first listing would have missed.
@@ -301,7 +305,8 @@ fn attempted(root: u64, what: impl Fn(&WatchEvent) -> bool) -> bool {
 }
 
 #[test]
-fn slow_a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
+#[slow]
+fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     let dir = folder("watch-overflow");
     let id = 90_001;
     // The channel starts full, and nothing reads it until the watcher owes an overflow rescan.
@@ -373,7 +378,8 @@ fn slow_a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
 }
 
 #[test]
-fn slow_a_removed_root_sends_nothing_more_and_a_dropped_watcher_closes_the_channel() {
+#[slow]
+fn a_removed_root_sends_nothing_more_and_a_dropped_watcher_closes_the_channel() {
     let (first, second) = (folder("watch-removed"), folder("watch-kept"));
     let (sender, receiver) = sync_channel::<WatchEvent>(64);
     let mut events = Events::new(receiver);

@@ -34,6 +34,7 @@ windows-sys = { version = "=0.61.2", features = [
 ] }
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 
 # This crate holds locally documented FFI to the platform's file system notifications (FSEvents and

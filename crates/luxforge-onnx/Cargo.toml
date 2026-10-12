@@ -31,6 +31,7 @@ ort = { workspace = true, features = ["directml"] }
 sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 
 # `unsafe` is allowed by name only in `src/ffi.rs`, on the calls the safe binding does not wrap:

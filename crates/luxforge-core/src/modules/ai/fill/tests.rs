@@ -17,6 +17,7 @@ use crate::{
     modules::{Region, Stage, ai::selection::Selection},
 };
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 
 fn rect(x0: u32, y0: u32, width: u32, height: u32) -> Region {
     Region {
@@ -943,7 +944,8 @@ fn a_selection_is_full_over_what_was_painted_and_feathers_past_it() {
 }
 
 #[test]
-fn slow_an_object_the_brush_paints_over_never_shows_through_the_candidate() {
+#[slow]
+fn an_object_the_brush_paints_over_never_shows_through_the_candidate() {
     // A flat background with a red block, the object, whose top edge lies 12 px inside the top
     // edge of the brush stroke painted over it: a 120 px radius along y = 600 paints 480 to 720,
     // and the block starts at 492. Whatever the model answers, nothing of the block may reach the

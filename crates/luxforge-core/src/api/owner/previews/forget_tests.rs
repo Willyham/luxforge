@@ -6,6 +6,7 @@
 //! work; a second call does nothing; and a send-back through the API followed by the call, as
 //! the library makes it.
 use super::*;
+use luxforge_test_macros::slow;
 
 /// A row of `photo`'s and its file, written as the lane writes them — a rendered tier at this
 /// generation, or a camera preview — for a test to start from what an earlier session cached.
@@ -74,7 +75,8 @@ fn cancelled_for_leaving(setup: &Setup, job: &Value) {
 /// runs or is written, `kept`'s render and `other`'s camera preview complete, and the view job
 /// ends counting one item. A second call changes nothing.
 #[test]
-fn slow_forgetting_photographs_removes_their_rows_and_files_and_stops_their_work() {
+#[slow]
+fn forgetting_photographs_removes_their_rows_and_files_and_stops_their_work() {
     let (setup, photos) = Setup::new(
         "forget-owner",
         &[
@@ -208,7 +210,8 @@ fn slow_forgetting_photographs_removes_their_rows_and_files_and_stops_their_work
 /// the same photograph asked for again — joins it rather than running beside it, and it runs again,
 /// for that request, once the forgotten run has stopped.
 #[test]
-fn slow_a_request_that_joins_a_forgotten_camera_preview_runs_it_again() {
+#[slow]
+fn a_request_that_joins_a_forgotten_camera_preview_runs_it_again() {
     let (setup, photos) = Setup::new("forget-join", &["orientation-6.jpg"], true);
     let photo = &photos[0];
     let renders = Arc::new(Gate::new());
@@ -247,7 +250,8 @@ fn slow_a_request_that_joins_a_forgotten_camera_preview_runs_it_again() {
 /// forgotten. The photograph's rendered tiers and camera previews go, rows and files; another
 /// photograph's stay, and a read of the one sent back is refused, as for any unknown photograph.
 #[test]
-fn slow_a_send_back_then_forgetting_leaves_no_preview_of_the_photograph() {
+#[slow]
+fn a_send_back_then_forgetting_leaves_no_preview_of_the_photograph() {
     let (setup, photos) = Setup::new(
         "forget-send-back",
         &["orientation-1.jpg", "orientation-3.jpg"],

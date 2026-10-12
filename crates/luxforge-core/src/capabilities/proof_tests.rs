@@ -26,6 +26,7 @@ use crate::{
     modules::{ActionInput, ActionPlan},
     redact_params,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::ProofEndpoint;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -378,7 +379,8 @@ fn assert_tint_renders(
 }
 
 #[test]
-fn slow_the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_reopen() {
+#[slow]
+fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_reopen() {
     let fixture = Fixture::new("proof-journey");
     let assets = fixture.import();
     let owner = fixture.start();

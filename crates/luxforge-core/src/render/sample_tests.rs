@@ -8,6 +8,7 @@ use crate::{
     Component, ComponentMode, Layer, Mask, Orientation, Recipe, SnapshotId, Transform,
     modules::CropPayload,
 };
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 
 /// One stack shape of the table.
@@ -214,7 +215,8 @@ pub(super) fn cases() -> Vec<Case> {
 /// sample through the entry point answers the stage and the rendered byte inside it and nothing
 /// outside it. The linear sources are views, so the rows read them through an orientation.
 #[test]
-fn slow_a_frame_equals_its_point_evaluator_and_a_sample_equals_the_frame() {
+#[slow]
+fn a_frame_equals_its_point_evaluator_and_a_sample_equals_the_frame() {
     let registry = colour_registry();
     let balance = WhiteBalanceApproximation::from_matrix([
         [1.21, -0.11, -0.02],

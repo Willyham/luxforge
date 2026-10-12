@@ -10,6 +10,7 @@ use crate::photo_surface::{
     CountsOutcome, GpuRegion, GpuRest, GpuSource, RestFigures, RestReduction,
 };
 use luxforge_reference::tolerance;
+use luxforge_test_macros::slow;
 
 /// Codes that vary along both axes, `width` × `height` pixels of four bytes each.
 fn codes(width: u32, height: u32) -> Vec<u8> {
@@ -366,8 +367,9 @@ fn held_codes(rgba: &[u8]) -> Vec<[u8; 3]> {
 /// output, each frame of which draws the output and then the rest output at the share, and once the
 /// dissolve has run its course the rest output alone is the photograph.
 #[test]
-fn slow_a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it() {
-    let test = "slow_a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it";
+#[slow]
+fn a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it() {
+    let test = "a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -441,8 +443,9 @@ fn slow_a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it() {
 /// holding only that tile's own window is the tile drawn from the whole source, bit for bit, each
 /// pixel the identity's code of its own.
 #[test]
-fn slow_a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws() {
-    let test = "slow_a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws";
+#[slow]
+fn a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws() {
+    let test = "a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws";
     let Some((device, queue)) = headless(test) else {
         return;
     };

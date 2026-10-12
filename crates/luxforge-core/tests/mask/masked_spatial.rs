@@ -25,6 +25,7 @@ use luxforge_core::{
     Layer, LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, SnapshotId, SourceImage,
 };
 use luxforge_reference::mask::{Algebra, Mask as RefMask, Stage as RefStage, coverage};
+use luxforge_test_macros::slow;
 use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::json;
 
@@ -223,7 +224,8 @@ fn a_tile_the_mask_cannot_reach_holds_the_operation_input() {
 /// evaluates the one stage-aligned tile that contains its pixel — is unchanged, and a tile the mask
 /// cannot reach costs the sample less than that, never more.
 #[test]
-fn slow_a_sample_equals_the_rendered_byte_through_a_masked_spatial_layer() {
+#[slow]
+fn a_sample_equals_the_rendered_byte_through_a_masked_spatial_layer() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source(SMALL);
     let linear = linear_source(SMALL);

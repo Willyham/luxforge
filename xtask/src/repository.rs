@@ -1303,9 +1303,13 @@ enum Depends {
         dependency: &'static str,
         feature: &'static str,
     },
-    /// Any workspace crate: a `luxforge` name, or any path.
+    /// Any workspace crate: a `luxforge` name, or any path. [`TEST_MACROS`] is not one: it depends
+    /// on no crate (`dependency-free-test-macros`), so naming it reaches nothing.
     WorkspaceCrate,
 }
+
+/// The test attributes (`#[slow]`), which every crate's tests may name, the leaves' included.
+const TEST_MACROS: &str = "luxforge-test-macros";
 
 /// A rule about which crate may depend on what.
 struct DependencyRule {
@@ -1355,6 +1359,15 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-gpu-types uses std only: shared GPU data and layout may not depend on any crate",
+    },
+    DependencyRule {
+        name: "dependency-free-test-macros",
+        refuses: Depends::Every,
+        manifests: &["crates/luxforge-test-macros"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-test-macros may depend on no crate: every crate's tests name it, the \
+                 crates that may name no workspace crate included",
     },
     DependencyRule {
         name: "xtask-cli-no-photo-dependencies",
@@ -2018,7 +2031,10 @@ impl Depends {
                 dependency: name,
                 feature,
             } => named(&|n| n == name) && holds_token(&dependency.text, feature, Match::Prefix),
-            Depends::WorkspaceCrate => dependency.path || named(&|n| n.starts_with("luxforge")),
+            Depends::WorkspaceCrate => {
+                !named(&|n| n == TEST_MACROS)
+                    && (dependency.path || named(&|n| n.starts_with("luxforge")))
+            }
         }
     }
 }
@@ -2569,6 +2585,7 @@ pub fn check(root: &Path) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     #[test]
     fn schema_rejects_wrong_types_and_unknown_fields() {
         let s = json!({"type":"object","required":["n"],"additionalProperties":false,"properties":{"n":{"type":"integer","minimum":1}}});
@@ -2583,7 +2600,8 @@ mod tests {
         assert!(schema(&json!({"n":2}), &s, &s).is_ok());
     }
     #[test]
-    fn slow_active_repository_is_valid() {
+    #[slow]
+    fn active_repository_is_valid() {
         check(&root().unwrap()).unwrap();
     }
     /// The desktop layering rules.
@@ -2968,7 +2986,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_only_the_codec_crate_names_the_jpeg_codec() {
+    #[slow]
+    fn only_the_codec_crate_names_the_jpeg_codec() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         for dir in [
@@ -4890,6 +4909,7 @@ fn frame() {}
                 "// Not MIN_ANGLE: the declared range.
 #[cfg(test)]
 mod tests {
+    use luxforge_test_macros::slow;
                      fn t() { assert_eq!(spec.min, MIN_ANGLE); }
 }
 "
@@ -5247,7 +5267,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_every_percentile_is_read_from_the_one_distribution() {
+    #[slow]
+    fn every_percentile_is_read_from_the_one_distribution() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let rule = &["one-distribution"];

@@ -20,6 +20,7 @@ use luxforge_core::{
     qualification, tiles::ReferenceTiles,
 };
 use luxforge_reference::preview_error::{Class, verdict};
+use luxforge_test_macros::slow;
 use luxforge_testbase::{paths, wait_until};
 use serde_json::json;
 use std::{path::PathBuf, sync::atomic::Ordering};
@@ -47,7 +48,8 @@ fn published(name: &str, width: u32, height: u32) -> (PathBuf, PathBuf, AssetId)
 /// is drawn and presented, nothing is refused, and its sections are a JPEG's, with no RAW
 /// development or look.
 #[test]
-fn slow_a_derived_source_photograph_opens_in_develop() {
+#[slow]
+fn a_derived_source_photograph_opens_in_develop() {
     let (dir, catalog, asset) = published("develop", 1600, 1000);
     let (owner, join) = luxforge_core::OwnerHandle::start(&catalog).unwrap();
     let (mut editor, _) = Editor::new(Boot {
@@ -117,8 +119,9 @@ fn slow_a_derived_source_photograph_opens_in_develop() {
 /// brought down (pointwise), and after Presence and Detail (spatial). The planes hold values below
 /// zero and up to four times diffuse white.
 #[test]
-fn slow_a_derived_source_gpu_tier_is_within_the_display_limit_of_the_reference_tier() {
-    let test = "slow_a_derived_source_gpu_tier_is_within_the_display_limit_of_the_reference_tier";
+#[slow]
+fn a_derived_source_gpu_tier_is_within_the_display_limit_of_the_reference_tier() {
+    let test = "a_derived_source_gpu_tier_is_within_the_display_limit_of_the_reference_tier";
     let Some(adapter) = host_adapter(test) else {
         return;
     };

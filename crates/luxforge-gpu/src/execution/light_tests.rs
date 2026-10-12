@@ -12,6 +12,7 @@ use super::super::{
 };
 use super::{GpuLight, light_charge};
 use luxforge_gpu_types::PlaneSize as PlaneExtent;
+use luxforge_test_macros::slow;
 use std::borrow::Cow;
 
 /// A spatial program with a reduction, a selection, and a pass and an apply that read a light.
@@ -255,8 +256,9 @@ fn a_light_links_steps_name_its_light() {
 
 /// A light that changes runs again the passes that read it, and nothing else.
 #[test]
-fn slow_a_light_that_changes_runs_again_what_reads_it() {
-    let test = "slow_a_light_that_changes_runs_again_what_reads_it";
+#[slow]
+fn a_light_that_changes_runs_again_what_reads_it() {
+    let test = "a_light_that_changes_runs_again_what_reads_it";
     let Some((device, _queue)) = super::super::tests::headless(test) else {
         return;
     };

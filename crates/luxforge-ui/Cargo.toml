@@ -18,6 +18,7 @@ iced_wgpu.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 half = { version = "=2.7.1", default-features = false, features = ["std"] }
 luxforge-gpu = { path = "../luxforge-gpu", features = ["qualification"] }
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.

@@ -17,6 +17,7 @@ use iced::advanced::{
 };
 use iced::{Background, Color, Event, Length, Rectangle, Size, Transformation, Vector, window};
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 use std::{any::Any, sync::Arc};
 
 // ---- The clock, without a device --------------------------------------------------------------
@@ -421,8 +422,9 @@ fn linear_mix(share: f32) -> [u8; 3] {
 /// both identities, the GPU boundary and the progress are recorded; the slot is kept, charged,
 /// for the dissolve and released once it ends, when the CPU frame is drawn alone.
 #[test]
-fn slow_a_dissolve_blends_the_gpu_frame_into_the_cpu_frame_in_linear_light() {
-    let test = "slow_a_dissolve_blends_the_gpu_frame_into_the_cpu_frame_in_linear_light";
+#[slow]
+fn a_dissolve_blends_the_gpu_frame_into_the_cpu_frame_in_linear_light() {
+    let test = "a_dissolve_blends_the_gpu_frame_into_the_cpu_frame_in_linear_light";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -520,8 +522,9 @@ fn an_input_mid_dissolve_cancels_it_and_draws_the_next_gpu_frame() {
 /// holds: the held plan stays ready for the next tick, the dissolve's end leaves the CPU frame
 /// with the slot still held, and a tick drawn on the GPU mid-dissolve cancels it.
 #[test]
-fn slow_a_dissolve_runs_behind_a_held_plan_and_a_drawn_one_cancels_it() {
-    let test = "slow_a_dissolve_runs_behind_a_held_plan_and_a_drawn_one_cancels_it";
+#[slow]
+fn a_dissolve_runs_behind_a_held_plan_and_a_drawn_one_cancels_it() {
+    let test = "a_dissolve_runs_behind_a_held_plan_and_a_drawn_one_cancels_it";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -682,8 +685,9 @@ fn percent(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>, hold: bool) -> P
 /// both identities and keeps the slot until it ends; behind a held plan as with none. Once it ends
 /// the whole frame is drawn alone and the slot retires.
 #[test]
-fn slow_a_percentage_view_dissolves_its_gpu_region_into_its_whole_frame() {
-    let test = "slow_a_percentage_view_dissolves_its_gpu_region_into_its_whole_frame";
+#[slow]
+fn a_percentage_view_dissolves_its_gpu_region_into_its_whole_frame() {
+    let test = "a_percentage_view_dissolves_its_gpu_region_into_its_whole_frame";
     let Some((device, queue)) = headless(test) else {
         return;
     };

@@ -9,6 +9,7 @@ use crate::{
     Transform, render,
 };
 use crate::{Component, ComponentMode};
+use luxforge_test_macros::slow;
 use luxforge_testbase::{wait_for, wait_until};
 use serde_json::json;
 use std::sync::Arc;
@@ -2118,7 +2119,8 @@ fn the_cost_of_a_coverage_grid() {
 /// the frame the same stack renders with the target free, and every batch releases what it
 /// reserved.
 #[test]
-fn slow_a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
+#[slow]
+fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
     use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT};
     // More than one 512 px tile each way, so the spatial pass runs in batches.
     let (width, height) = (1100_u32, 700_u32);

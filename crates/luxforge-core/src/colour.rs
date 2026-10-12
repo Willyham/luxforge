@@ -903,6 +903,7 @@ pub(crate) mod cct {
 
 #[cfg(test)]
 mod tests {
+    use luxforge_test_macros::slow;
     /// The encode's constants a GPU program is held to are the ones the `f32` encode evaluates:
     /// the table reproduces it bit for bit on both branches and at the branch point.
     #[test]
@@ -1154,7 +1155,8 @@ mod tests {
     /// `1`, one by one, and at the sampled and edge values beyond them. The search over ascending
     /// values is a walk along the thresholds, which the search itself starts at each chunk.
     #[test]
-    fn slow_byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval() {
+    #[slow]
+    fn byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval() {
         use rayon::prelude::*;
         let thresholds = thresholds16_reference();
         let quantizer = srgb::quantizer16();

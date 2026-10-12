@@ -385,6 +385,7 @@ const PINNED_FILES: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     fn convert(xml: &str) -> Result<(tempfile::TempDir, Value, Value)> {
         let temp = tempfile::tempdir()?;
         fs::create_dir_all(temp.path().join("data/db"))?;
@@ -486,7 +487,8 @@ mod tests {
         assert_eq!(p["excluded"][0]["reason"], "centre-offset");
     }
     #[test]
-    fn slow_lensfun_import_fails_only_on_whole_import_caps() {
+    #[slow]
+    fn lensfun_import_fails_only_on_whole_import_caps() {
         assert!(convert(&tree(&lens("<type>fisheye</type>", CAL))).is_ok());
         let too_many = "<mount><name>Example</name></mount>".repeat(MAX_RECORDS + 1);
         assert!(

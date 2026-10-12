@@ -11,6 +11,7 @@ use super::{
 use crate::state::palette::PaletteAction;
 use crate::state::{fields, tools};
 use luxforge_core::{AssetId, HistorySelection, POINTER_MODE, RawPayload, WhiteBalanceMode};
+use luxforge_test_macros::slow;
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -1502,7 +1503,8 @@ fn sampling(modules: Vec<luxforge_core::ModuleDescriptor>) -> (Editor, PathBuf) 
 /// module declares `collapsed` draws no curve until it is opened, and a developer section outside
 /// developer mode is not drawn at all.
 #[test]
-fn slow_a_curve_in_a_hidden_section_queries_no_samples() {
+#[slow]
+fn a_curve_in_a_hidden_section_queries_no_samples() {
     let (editor, catalog) = sampling(vec![controls_descriptor()]);
     assert!(
         editor

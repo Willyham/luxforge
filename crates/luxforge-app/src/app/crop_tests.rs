@@ -14,6 +14,7 @@ use crate::app::{
 use crate::crop_draft::{Corner, Handle};
 use crate::state::tools::{ControlModel, NumberControlStyle, SliderControl};
 use luxforge_core::{ClientSession, HistoryEntry, HistorySelection};
+use luxforge_test_macros::slow;
 
 /// A layer ahead of the crop, whose output stage the crop's input stage includes.
 fn earlier_layer() -> luxforge_core::Layer {
@@ -99,7 +100,8 @@ fn section_angle(editor: &Editor) -> Value {
 }
 
 #[test]
-fn slow_crop_focus_restores_all_disclosures_on_cancel_noop_and_failed_stage() {
+#[slow]
+fn crop_focus_restores_all_disclosures_on_cancel_noop_and_failed_stage() {
     for exit in ["cancel", "noop", "failed-stage"] {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
         editor

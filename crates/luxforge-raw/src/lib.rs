@@ -1296,6 +1296,7 @@ mod tests {
         DemosaicInput, DemosaicShape, DevelopDiagnostics, DevelopOptions, develop_with,
         development_lanes, native_demosaic, native_demosaic_sites,
     };
+    use luxforge_test_macros::slow;
 
     /// The development executor with `worker_limit` ([`DevelopOptions::worker_limit`]).
     fn on_executor(worker_limit: usize) -> DevelopOptions<'static> {
@@ -1418,7 +1419,8 @@ mod tests {
     /// subtraction, division and multiplication alone, so the digests hold on every
     /// architecture.
     #[test]
-    fn slow_normalized_mosaics_keep_the_native_bits() {
+    #[slow]
+    fn normalized_mosaics_keep_the_native_bits() {
         let expected = [
             "176f4073ce6f9c7be0762983ddefb466faf64dfa15b55daa867b0f8ab2bf59aa",
             "c79700cd6b8589be63cb0e089bc6c3c70fb7dacb91e21fec763dc24283036fed",
@@ -1865,7 +1867,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_rcd_tile_jobs_match_the_serial_raster_bits() {
+    #[slow]
+    fn rcd_tile_jobs_match_the_serial_raster_bits() {
         let never = AtomicBool::new(false);
         let never_context = (&never as *const AtomicBool).cast_mut().cast();
         let cfas = [[0, 1, 1, 2], [1, 0, 2, 1], [2, 1, 1, 0], [1, 2, 0, 1]];
@@ -1934,7 +1937,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_rcd_checks_cancellation_before_every_tile_and_stops_mid_frame() {
+    #[slow]
+    fn rcd_checks_cancellation_before_every_tile_and_stops_mid_frame() {
         struct CancelAt {
             calls: std::sync::atomic::AtomicUsize,
             first_cancel_call: usize,
@@ -2099,7 +2103,7 @@ mod tests {
 
     /// The synthetic mosaics, each with its gains, that the sensor-site input is held to the float
     /// mosaic on: every Bayer CFA phase at the RCD tile edges of
-    /// `slow_rcd_tile_jobs_match_the_serial_raster_bits`, black repeat patterns that do and do not
+    /// `rcd_tile_jobs_match_the_serial_raster_bits`, black repeat patterns that do and do not
     /// divide the CFA, X-Trans frames from the native minimum up and in all 36 phases of its
     /// pattern, gains that push red and blue far past sensor white (RCD's input clip, X-Trans's
     /// unclamped values) or keep them under it, and mosaics entirely at sensor white and
@@ -2212,7 +2216,8 @@ mod tests {
     /// bit, border band included, serial and on the pool at one worker and at the pool's width,
     /// each tile job once and never more than eight at once.
     #[test]
-    fn slow_sensor_sites_develop_the_float_mosaic_bits() {
+    #[slow]
+    fn sensor_sites_develop_the_float_mosaic_bits() {
         let never = AtomicBool::new(false);
         let never_context = (&never as *const AtomicBool).cast_mut().cast();
         for (label, samples, meta, gains) in sensor_site_cases() {
@@ -2265,7 +2270,8 @@ mod tests {
     /// the native geometry minimums and when a tile job fails as the float mosaic does, and a
     /// development after a failure gives the same bits.
     #[test]
-    fn slow_sensor_sites_cancel_and_fail_as_the_float_mosaic_does() {
+    #[slow]
+    fn sensor_sites_cancel_and_fail_as_the_float_mosaic_does() {
         struct CancelAt {
             calls: std::sync::atomic::AtomicUsize,
             first_cancel_call: usize,
@@ -2409,7 +2415,8 @@ mod tests {
     /// mosaic's 4 bytes a site gone from what it holds through the demosaic, less the per-site
     /// tables it holds instead, and its planes are the float mosaic's, bit for bit.
     #[test]
-    fn slow_developments_drop_the_float_mosaic_unless_the_sensor_stage_rewrites_it() {
+    #[slow]
+    fn developments_drop_the_float_mosaic_unless_the_sensor_stage_rewrites_it() {
         let cancel = AtomicBool::new(false);
         let gains = [1.7, 1.0, 1.3];
         let develop = |raw: &RawSource, float_mosaic: bool, executor: bool| {

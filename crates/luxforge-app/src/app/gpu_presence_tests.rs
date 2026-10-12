@@ -31,6 +31,7 @@ use luxforge_gpu::{
     qualification::held, validate_step,
 };
 use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::{borrow::Cow, sync::Arc};
 
@@ -323,8 +324,9 @@ fn largest(gpu: &[f32], cpu: &[f32]) -> (f64, usize) {
 /// The box mean's two passes against the CPU's, at every radius the Presence units use from a
 /// small Fit stage to a 60 MP one, each at several run lengths of its running sums.
 #[test]
-fn slow_gpu_presence_box_mean_matches_the_cpu_filter() {
-    let test = "slow_gpu_presence_box_mean_matches_the_cpu_filter";
+#[slow]
+fn gpu_presence_box_mean_matches_the_cpu_filter() {
+    let test = "gpu_presence_box_mean_matches_the_cpu_filter";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -376,8 +378,9 @@ fn slow_gpu_presence_box_mean_matches_the_cpu_filter() {
 /// one rounding however the backend fuses it, so the minimum itself is compared exactly; at any
 /// other `omega` a fused multiply-add may round once where the CPU rounds twice.
 #[test]
-fn slow_gpu_presence_box_minimum_matches_the_cpu_filter() {
-    let test = "slow_gpu_presence_box_minimum_matches_the_cpu_filter";
+#[slow]
+fn gpu_presence_box_minimum_matches_the_cpu_filter() {
+    let test = "gpu_presence_box_minimum_matches_the_cpu_filter";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -440,8 +443,9 @@ fn slow_gpu_presence_box_minimum_matches_the_cpu_filter() {
 /// The self-guided smoother, the four passes Texture and Clarity run, against the CPU's, at
 /// Texture's and Clarity's regularizations and the radii they reach.
 #[test]
-fn slow_gpu_presence_self_guided_filter_matches_the_cpu_filter() {
-    let test = "slow_gpu_presence_self_guided_filter_matches_the_cpu_filter";
+#[slow]
+fn gpu_presence_self_guided_filter_matches_the_cpu_filter() {
+    let test = "gpu_presence_self_guided_filter_matches_the_cpu_filter";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -511,8 +515,9 @@ fn slow_gpu_presence_self_guided_filter_matches_the_cpu_filter() {
 /// The guided filter Dehaze refines its transmission with, against the CPU's, at its
 /// regularization.
 #[test]
-fn slow_gpu_presence_guided_filter_matches_the_cpu_filter() {
-    let test = "slow_gpu_presence_guided_filter_matches_the_cpu_filter";
+#[slow]
+fn gpu_presence_guided_filter_matches_the_cpu_filter() {
+    let test = "gpu_presence_guided_filter_matches_the_cpu_filter";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -738,8 +743,9 @@ fn gpu_presence_soft_clip_matches_the_cpu() {
 /// at the threshold taken in row-major order. Against the CPU's preparation from the host's
 /// reduction of the same stage.
 #[test]
-fn slow_gpu_presence_atmospheric_light_matches_the_cpu() {
-    let test = "slow_gpu_presence_atmospheric_light_matches_the_cpu";
+#[slow]
+fn gpu_presence_atmospheric_light_matches_the_cpu() {
+    let test = "gpu_presence_atmospheric_light_matches_the_cpu";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -950,8 +956,9 @@ fn measure_unit(
 /// drawn codes reported beside it. Dehaze reads the light its light link computes from the whole
 /// stage.
 #[test]
-fn slow_gpu_presence_units_meet_the_spatial_limits() {
-    let test = "slow_gpu_presence_units_meet_the_spatial_limits";
+#[slow]
+fn gpu_presence_units_meet_the_spatial_limits() {
+    let test = "gpu_presence_units_meet_the_spatial_limits";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -1013,8 +1020,9 @@ fn slow_gpu_presence_units_meet_the_spatial_limits() {
 /// The same stacks on the byte path, over an 8-bit source: the operation's input and output are
 /// clamped where the CPU quantizes its frames.
 #[test]
-fn slow_gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
-    let test = "slow_gpu_presence_on_the_byte_path_meets_the_spatial_limits";
+#[slow]
+fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
+    let test = "gpu_presence_on_the_byte_path_meets_the_spatial_limits";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -1097,8 +1105,9 @@ fn slow_gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
 /// boundary, so a plan with Basic before it compiles none of Presence's passes again, and one with
 /// Detail before it only Detail's own.
 #[test]
-fn slow_gpu_presence_pass_pipelines_are_shared_across_plans() {
-    let test = "slow_gpu_presence_pass_pipelines_are_shared_across_plans";
+#[slow]
+fn gpu_presence_pass_pipelines_are_shared_across_plans() {
+    let test = "gpu_presence_pass_pipelines_are_shared_across_plans";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -1259,8 +1268,9 @@ fn gpu_presence_passes_that_read_only_planes_read_no_input() {
 /// and with Clarity and Dehaze, unmasked and masked by a feathered radial, on the byte path, the
 /// linear path and in the GPU shape a drag draws.
 #[test]
-fn slow_gpu_presence_texture_band_in_one_channel_draws_what_two_did() {
-    let test = "slow_gpu_presence_texture_band_in_one_channel_draws_what_two_did";
+#[slow]
+fn gpu_presence_texture_band_in_one_channel_draws_what_two_did() {
+    let test = "gpu_presence_texture_band_in_one_channel_draws_what_two_did";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -1338,8 +1348,9 @@ fn slow_gpu_presence_texture_band_in_one_channel_draws_what_two_did() {
 /// Clarity drag runs none, a Texture drag 5 and a Dehaze drag 19, the light read from its plane:
 /// one link alone wrote its scratch last, so the pool it takes it from changes no count.
 #[test]
-fn slow_gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
-    let test = "slow_gpu_presence_a_drag_reruns_only_the_passes_it_changes";
+#[slow]
+fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
+    let test = "gpu_presence_a_drag_reruns_only_the_passes_it_changes";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -1436,8 +1447,9 @@ fn slow_gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
 /// of every pass draws, and so it does with the poison on, the scratch pool's textures holding NaN
 /// before each tick's passes.
 #[test]
-fn slow_gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
-    let test = "slow_gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero";
+#[slow]
+fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
+    let test = "gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -1603,8 +1615,9 @@ fn slow_gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
 /// far inside the spatial limits. At full resolution and at a Fit proxy's scale, on the linear
 /// path, both shapes reading one light.
 #[test]
-fn slow_gpu_presence_the_drafted_shape_draws_what_the_cpus_does() {
-    let test = "slow_gpu_presence_the_drafted_shape_draws_what_the_cpus_does";
+#[slow]
+fn gpu_presence_the_drafted_shape_draws_what_the_cpus_does() {
+    let test = "gpu_presence_the_drafted_shape_draws_what_the_cpus_does";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -1681,8 +1694,9 @@ mod measured;
 /// scale and at the exact stage, with Texture, Clarity and Dehaze, whose global estimate keeps the
 /// whole boundary, and with Clarity alone.
 #[test]
-fn slow_gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
-    let test = "slow_gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone";
+#[slow]
+fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
+    let test = "gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };

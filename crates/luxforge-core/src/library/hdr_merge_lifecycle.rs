@@ -23,6 +23,7 @@ use crate::{
         SensorLayout,
     },
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::{jpeg, temp_dir};
 use sha2::{Digest, Sha256};
 use std::{fs, sync::atomic::AtomicBool};
@@ -459,7 +460,8 @@ fn removal(asset: &AssetId) -> LibraryItem {
 /// visible together; a retry answers it again; and every row survives deleting the index and
 /// reopening the catalog, the stack still led by the same result over the same inputs.
 #[test]
-fn slow_hdr_merge_lifecycle_publication_survives_index_deletion_and_reopening() {
+#[slow]
+fn hdr_merge_lifecycle_publication_survives_index_deletion_and_reopening() {
     let mut bench = Bench::new("publication", 3);
     let hashes = bench.hashes();
     let provenance = bench.provenance(&[0, 1, 2], DeghostMode::Auto);
@@ -603,7 +605,8 @@ fn slow_hdr_merge_lifecycle_publication_survives_index_deletion_and_reopening() 
 /// reopening with every input offline, restores the same result without reading an input or
 /// merging again.
 #[test]
-fn slow_hdr_merge_lifecycle_creation_undo_after_an_edit_and_redo_with_the_inputs_offline() {
+#[slow]
+fn hdr_merge_lifecycle_creation_undo_after_an_edit_and_redo_with_the_inputs_offline() {
     let mut bench = Bench::new("undo", 3);
     let hashes = bench.hashes();
     // A collection with an unrelated member, which the creation adds the result to through its
@@ -1086,7 +1089,8 @@ fn hdr_merge_lifecycle_publication_rechecks_its_inputs() {
 /// was and every lifted trigger in place, and makes a stale inverse naming the deleted merge a
 /// conflict.
 #[test]
-fn slow_hdr_merge_lifecycle_empty_removed_purges_only_the_result() {
+#[slow]
+fn hdr_merge_lifecycle_empty_removed_purges_only_the_result() {
     let mut bench = Bench::new("purge", 6);
     let hashes = bench.hashes();
     let triggers = |bench: &Bench| -> Vec<(String, String)> {

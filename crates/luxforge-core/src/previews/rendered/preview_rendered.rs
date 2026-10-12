@@ -15,6 +15,7 @@ use crate::{
     previews::rendered::band_tiles::{BandTiles, Draw},
     tiles::{ReferenceTiles, TileFallback, TileUnavailable},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, paths, wait_for, wait_until};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -257,7 +258,8 @@ fn keys_name_asset_entry_tier_and_generation_and_a_commit_makes_new_ones() {
 /// Both come from one preparation, encode to JPEGs of their sizes, are never labelled approximate,
 /// are the same bytes every time whether or not the index directory exists, and follow a commit.
 #[test]
-fn slow_a_grid_tier_is_the_exact_render_area_averaged_and_both_tiers_share_one_preparation() {
+#[slow]
+fn a_grid_tier_is_the_exact_render_area_averaged_and_both_tiers_share_one_preparation() {
     let path = generated_jpeg("rendered-proxy", 1200, 800);
     let (mut service, asset) = edited("rendered-proxy", &path);
     let request = plan_render(&service, &asset, None, &BOTH).unwrap();
@@ -360,7 +362,8 @@ fn slow_a_grid_tier_is_the_exact_render_area_averaged_and_both_tiers_share_one_p
 /// each tier, so neither tier approximates its entry: the grid tier is the exact render reduced,
 /// and neither says it is approximate.
 #[test]
-fn slow_a_spatial_stack_is_rendered_exactly_and_never_approximated() {
+#[slow]
+fn a_spatial_stack_is_rendered_exactly_and_never_approximated() {
     let path = generated_jpeg("rendered-spatial", 1200, 800);
     let (mut service, asset) = edited("rendered-spatial", &path);
     service
@@ -961,7 +964,8 @@ fn reference_for(reason: Option<&str>) -> RenderedBy {
 /// stage already fits; and the tiers name the GPU, as their preview does. A stream whose codes
 /// differ from the reference's draws tiers that differ, so the tiers are the stream's pixels.
 #[test]
-fn slow_a_tier_the_tile_service_draws_is_its_bands_reduced_and_names_the_gpu() {
+#[slow]
+fn a_tier_the_tile_service_draws_is_its_bands_reduced_and_names_the_gpu() {
     for (label, width, height) in [
         ("rendered-bands", 2600, 1700),
         ("rendered-bands-fit", 1200, 800),
@@ -1016,7 +1020,8 @@ fn slow_a_tier_the_tile_service_draws_is_its_bands_reduced_and_names_the_gpu() {
 /// the budget, and a device lost after three bands of a stream whose codes differ from the
 /// reference's, of which nothing is kept. Every tier is then the reference's, byte for byte.
 #[test]
-fn slow_a_service_that_cannot_draw_has_the_reference_draw_every_tier_naming_why() {
+#[slow]
+fn a_service_that_cannot_draw_has_the_reference_draw_every_tier_naming_why() {
     let path = generated_jpeg("rendered-fallback", 2600, 1700);
     let (service, asset) = edited("rendered-fallback", &path);
     let request = plan_render(&service, &asset, None, &BOTH).unwrap();

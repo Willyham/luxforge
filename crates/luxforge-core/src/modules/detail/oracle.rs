@@ -2,6 +2,7 @@ use super::*;
 use crate::modules::{Parallelism, Planes, PlanesMut, Region, SamplingScale, Stage, ToolModule};
 use crate::render::spatial::{SpatialPlan, TileScratch, Tiling, fill_planes, run_tile};
 use luxforge_reference::{SplitMix64, srgb};
+use luxforge_test_macros::slow;
 use serde::Deserialize;
 use serde_json::json;
 use std::{f64::consts::PI, fs, path::PathBuf};
@@ -403,7 +404,8 @@ fn detail_constants_are_bit_identical_and_greys_stay_neutral() {
 }
 
 #[test]
-fn slow_detail_multi_unit_tiles_match_whole_frame_bit_for_bit_and_reuse_scratch() {
+#[slow]
+fn detail_multi_unit_tiles_match_whole_frame_bit_for_bit_and_reuse_scratch() {
     let stage = Stage {
         width: 97,
         height: 61,

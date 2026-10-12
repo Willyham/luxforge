@@ -8,6 +8,7 @@ use crate::{
     LinearImage, LinearSettings, PreviewSource, Raster, analysis::reduce,
     artifacts::derived_source::merged_planes,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::{jpeg as fixture, temp_dir};
 use std::fs;
 
@@ -242,7 +243,8 @@ fn a_derived_source_opens_samples_analyses_and_exports_through_the_owner() {
 /// source's name and the chunk's, and a missing manifest refuses them at once; its history and its
 /// state read throughout and nothing renders from anything else.
 #[test]
-fn slow_a_damaged_derived_source_fails_preparation_sampling_and_export_by_name() {
+#[slow]
+fn a_damaged_derived_source_fails_preparation_sampling_and_export_by_name() {
     let opened = Opened::damaged("corrupt", |root, manifest| {
         let chunk = crate::artifacts::derived_source::source_object_path(
             root,

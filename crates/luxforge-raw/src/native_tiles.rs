@@ -188,6 +188,7 @@ pub(super) extern "C" fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     use std::time::{Duration, Instant};
 
     struct JobTracker {
@@ -294,7 +295,8 @@ mod tests {
     /// Every job runs exactly once and never more than the lane cap at once, for every worker
     /// limit, including more lanes than jobs and a single job.
     #[test]
-    fn slow_refill_runs_every_job_once_within_the_lane_cap() {
+    #[slow]
+    fn refill_runs_every_job_once_within_the_lane_cap() {
         let cancel = AtomicBool::new(false);
         let width = rayon::current_num_threads();
         for jobs in [1, 2, 17, 64] {

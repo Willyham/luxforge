@@ -32,6 +32,7 @@ serde_json.workspace = true
 cc = { version = "=1.4.7", features = ["parallel"] }
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 sha2.workspace = true
 serde_json.workspace = true

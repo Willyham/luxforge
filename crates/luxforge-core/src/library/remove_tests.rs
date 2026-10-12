@@ -12,6 +12,7 @@ use crate::{
     },
     seed::{CatalogSeeder, SeedAsset, SeedKind},
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths::temp_path;
 use std::path::PathBuf;
 
@@ -126,7 +127,8 @@ fn triggers(service: &EditorService) -> Vec<(String, String)> {
 /// says how many removed photographs are left; the next emptying takes the rest, and one with none
 /// removed deletes nothing. The photographs not removed keep every row.
 #[test]
-fn slow_remove_emptying_takes_the_earliest_removed_first_within_its_bound() {
+#[slow]
+fn remove_emptying_takes_the_earliest_removed_first_within_its_bound() {
     let (path, assets) = seeded("bound");
     let mut service = EditorService::open(&path).unwrap();
     let kept_before: Vec<[i64; 6]> = [0, 2]
@@ -169,7 +171,8 @@ fn slow_remove_emptying_takes_the_earliest_removed_first_within_its_bound() {
 /// stays. A removed photograph's artifact reference goes with it; the artifact another photograph
 /// still references stays.
 #[test]
-fn slow_remove_emptying_restores_the_triggers_it_lifts_and_a_failure_keeps_everything() {
+#[slow]
+fn remove_emptying_restores_the_triggers_it_lifts_and_a_failure_keeps_everything() {
     let (path, assets) = seeded("triggers");
     let mut service = EditorService::open(&path).unwrap();
     let artifact = format!("artifact-{}", "ab".repeat(32));

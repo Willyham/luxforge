@@ -188,6 +188,7 @@ pub fn run(root: &Path, args: &mut Args) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_test_macros::slow;
     use std::{fs, path::PathBuf};
 
     struct Repository {
@@ -256,7 +257,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_release_pushes_one_annotated_tag_after_checks_and_honors_push_destination() {
+    #[slow]
+    fn release_pushes_one_annotated_tag_after_checks_and_honors_push_destination() {
         let repo = Repository::new();
         let fetch_remote = repo._temp.path().join("unrelated-fetch.git");
         repo.git(&["init", "--bare", fetch_remote.to_str().unwrap()]);
@@ -304,7 +306,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_release_dry_run_and_check_failure_leave_refs_unchanged() {
+    #[slow]
+    fn release_dry_run_and_check_failure_leave_refs_unchanged() {
         let repo = Repository::new();
         repo.start(true, &mut || panic!("dry-run must not run quick checks"))
             .unwrap();
@@ -317,7 +320,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_release_refuses_dirty_staged_untracked_branch_and_detached_states() {
+    #[slow]
+    fn release_refuses_dirty_staged_untracked_branch_and_detached_states() {
         let repo = Repository::new();
         fs::write(repo.root.join("untracked"), "untracked").unwrap();
         assert!(
@@ -351,7 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_release_refuses_local_and_remote_version_aliases() {
+    #[slow]
+    fn release_refuses_local_and_remote_version_aliases() {
         let repo = Repository::new();
         repo.git(&["tag", "v0.1.0"]);
         assert!(
@@ -369,7 +374,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_release_requires_committed_workflow_single_origin_and_matching_live_main() {
+    #[slow]
+    fn release_requires_committed_workflow_single_origin_and_matching_live_main() {
         let repo = Repository::new();
         repo.git(&["remote", "remove", "origin"]);
         assert!(
@@ -417,7 +423,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_release_rechecks_state_after_checks() {
+    #[slow]
+    fn release_rechecks_state_after_checks() {
         for mutation in ["dirty", "branch", "commit", "remote", "destination"] {
             let repo = Repository::new();
             let mut checks = || {
@@ -463,7 +470,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn slow_release_rejected_push_retains_local_tag_without_remote_changes() {
+    #[slow]
+    fn release_rejected_push_retains_local_tag_without_remote_changes() {
         use std::os::unix::fs::PermissionsExt;
         let repo = Repository::new();
         let hook = repo.remote.join("hooks/pre-receive");

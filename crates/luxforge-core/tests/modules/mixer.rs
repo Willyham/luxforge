@@ -16,6 +16,7 @@ use luxforge_core::{
     Mutation, MutationOutcome, SnapshotId, current_effect_format,
 };
 use luxforge_reference::{self as reference, grade, mixer::RANGE_NAMES};
+use luxforge_test_macros::slow;
 use luxforge_testbase::paths;
 use luxforge_testkit::fixtures::{self, linear_source_of, recipe, source_of};
 use luxforge_testkit::fixtures::{render, render_linear};
@@ -517,7 +518,8 @@ fn grading_payloads() -> Vec<(&'static str, Value)> {
 /// 8-bit path and the RAW linear path: every rendered code equals the reference's code except
 /// within the shared code band of a threshold.
 #[test]
-fn slow_grading_matches_the_reference_through_the_real_render_path() {
+#[slow]
+fn grading_matches_the_reference_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
     let (width, height, pixels) = colourful_image();
     let source = source_of(width, height, &pixels);

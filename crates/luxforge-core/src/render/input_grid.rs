@@ -352,6 +352,7 @@ fn build<D: PixelDomain, P: Copy>(
 mod tests {
     use super::*;
     use crate::{Layer, LinearImage, LinearSettings, SourceImage, StageSize};
+    use luxforge_test_macros::slow;
     use serde_json::json;
 
     fn source() -> SourceImage {
@@ -416,7 +417,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_detail_input_grid_equals_the_exact_prefix_on_both_domains_at_dense_and_sparse_cells() {
+    #[slow]
+    fn detail_input_grid_equals_the_exact_prefix_on_both_domains_at_dense_and_sparse_cells() {
         let registry = ModuleRegistry::builtin();
         let jpeg = source();
         let recipe = recipe();
@@ -574,7 +576,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_detail_input_grid_tracks_warped_content_cells_and_lens_only_cache_changes() {
+    #[slow]
+    fn detail_input_grid_tracks_warped_content_cells_and_lens_only_cache_changes() {
         let registry = ModuleRegistry::builtin();
         let jpeg = source();
         let context = RenderContext::new();
@@ -794,7 +797,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_detail_input_grid_uses_the_full_recipe_byte_boundary_width() {
+    #[slow]
+    fn detail_input_grid_uses_the_full_recipe_byte_boundary_width() {
         let registry = ModuleRegistry::developer();
         let jpeg = source();
         let context = RenderContext::new();

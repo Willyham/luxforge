@@ -18,6 +18,7 @@ luxforge-reference = { path = "../luxforge-reference", optional = true }
 qualification = ["dep:luxforge-testbase", "dep:luxforge-reference"]
 
 [dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-reference = { path = "../luxforge-reference" }
 

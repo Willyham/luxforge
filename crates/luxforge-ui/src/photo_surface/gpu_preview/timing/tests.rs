@@ -10,6 +10,7 @@ use super::super::{DrawingPath, GpuBoundary, GpuProgram};
 use super::*;
 use iced::widget::shader::{Primitive as _, Viewport};
 use iced::{Rectangle, Size};
+use luxforge_test_macros::slow;
 use luxforge_testbase::{Distribution, wait_until};
 use std::{
     sync::Arc,
@@ -47,8 +48,9 @@ fn clock(pipeline: &PhotoPipeline) -> Arc<PassClock> {
 /// been done, and the next submit — Iced's own, every frame it draws — reports it. The figure then
 /// runs to that submit, which is why it is at most a frame late while frames keep coming.
 #[test]
-fn slow_a_pass_is_reported_complete_by_a_later_submit_without_a_poll() {
-    let test = "slow_a_pass_is_reported_complete_by_a_later_submit_without_a_poll";
+#[slow]
+fn a_pass_is_reported_complete_by_a_later_submit_without_a_poll() {
+    let test = "a_pass_is_reported_complete_by_a_later_submit_without_a_poll";
     let Some((device, queue)) = headless(test) else {
         return;
     };

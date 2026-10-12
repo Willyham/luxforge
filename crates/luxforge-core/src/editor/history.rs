@@ -889,6 +889,7 @@ mod tests {
         SHRINK_ACTION, SHRINK_EFFECT, ShrinkModule, brushed, commit, fixture, mutation, next_entry,
         shrink, stroke, temp,
     };
+    use luxforge_test_macros::slow;
     use rusqlite::Connection;
     use serde_json::Map;
     use std::sync::Arc;
@@ -1360,7 +1361,8 @@ mod tests {
     /// has lost, which a registry check alone admits, and a stack whose provider this build does
     /// not have. Nothing is written, and undo still reaches the refused stack.
     #[test]
-    fn slow_restore_refuses_a_stack_exactly_as_a_commit_of_it_is_refused() {
+    #[slow]
+    fn restore_refuses_a_stack_exactly_as_a_commit_of_it_is_refused() {
         /// Restore `target` over the current entry, then commit its stack through the commit path,
         /// and return both refusals after checking that neither wrote anything.
         fn refusals(service: &mut EditorService, asset: &AssetId, target: &EntryId) -> [Error; 2] {

@@ -12,6 +12,7 @@ use super::*;
 use crate::{Cancel, Error, ErrorKind};
 use luxforge_reference::hdr::{self as reference, Camera, Exposure, Noise};
 use luxforge_reference::hdr_align::{self as geometry, Rigid};
+use luxforge_test_macros::slow;
 
 const W: usize = 384;
 const H: usize = 256;
@@ -202,7 +203,8 @@ fn options_default_to_auto_and_describe_their_schema() {
 }
 
 #[test]
-fn slow_proxies_reduce_whole_boxes_and_stream_in_bands() {
+#[slow]
+fn proxies_reduce_whole_boxes_and_stream_in_bands() {
     // 2100 wide reduces by 3: 700 × 116 proxy pixels, the last 2 rows unread.
     let (width, height) = (2100, 350);
     let scene = geometry::textured_scene(3);
@@ -309,7 +311,8 @@ fn known_motions() -> Vec<Rigid> {
 }
 
 #[test]
-fn slow_registers_known_rigid_motions_across_exposures() {
+#[slow]
+fn registers_known_rigid_motions_across_exposures() {
     let scene = geometry::textured_scene(11);
     let offsets = [-2.0, 0.0, 2.0];
     let motions = known_motions();
@@ -361,7 +364,8 @@ fn slow_registers_known_rigid_motions_across_exposures() {
 }
 
 #[test]
-fn slow_registers_through_a_reduced_proxy() {
+#[slow]
+fn registers_through_a_reduced_proxy() {
     // 1300 wide reduces by 2; the motion is fitted on the proxy and reported at full resolution.
     let (width, height) = (1300, 300);
     let scene = geometry::textured_scene(5);
@@ -382,7 +386,8 @@ fn slow_registers_through_a_reduced_proxy() {
 }
 
 #[test]
-fn slow_detail_at_the_sampling_limit_does_not_pull_a_fit() {
+#[slow]
+fn detail_at_the_sampling_limit_does_not_pull_a_fit() {
     // Texture with gratings 3.3 and 3.7 pixels apart, ±1.2 stops, near the frames' sampling
     // limit: sampled bilinearly in the turned and shifted input alone, softened by a sub-pixel
     // phase that varies over the frame, and read as recorded in the reference, it pulled each fit
@@ -408,7 +413,8 @@ fn slow_detail_at_the_sampling_limit_does_not_pull_a_fit() {
 }
 
 #[test]
-fn slow_a_still_fit_is_the_identity_and_a_small_motion_is_not() {
+#[slow]
+fn a_still_fit_is_the_identity_and_a_small_motion_is_not() {
     // A still bracket with noise: each fit lands within its own uncertainty of no motion and is
     // recorded as the identity, with how far it was from it, so the whole frame is covered.
     let scene = geometry::textured_scene(11);
@@ -468,7 +474,8 @@ fn slow_a_still_fit_is_the_identity_and_a_small_motion_is_not() {
 }
 
 #[test]
-fn slow_chains_a_wide_bracket_through_its_aligned_exposures() {
+#[slow]
+fn chains_a_wide_bracket_through_its_aligned_exposures() {
     // Across a scene spanning about 18 stops (a 14-stop ramp under the texture, centred 1.5 stops
     // under the reference's): the input six stops under the reference shares a band under two
     // stops wide with it, a small part of the frame that the search counts its overlap against,
@@ -521,7 +528,8 @@ fn slow_chains_a_wide_bracket_through_its_aligned_exposures() {
 }
 
 #[test]
-fn slow_coverage_is_the_largest_rectangle_every_input_records() {
+#[slow]
+fn coverage_is_the_largest_rectangle_every_input_records() {
     let cases: Vec<Vec<Rigid>> = vec![
         known_motions(),
         vec![Rigid::identity(W, H), Rigid::identity(W, H)],
@@ -849,7 +857,8 @@ fn merge(frames: &[Exposure], offsets: &[f64], reference: usize, deghost: Deghos
 }
 
 #[test]
-fn slow_moving_subject_shows_one_exposure_without_a_double_image() {
+#[slow]
+fn moving_subject_shows_one_exposure_without_a_double_image() {
     // The disc moves across the frame; the reference (input 1) records it at (190, 128).
     let positions = [(120.0, 100.0), (190.0, 128.0), (260.0, 150.0)];
     let offsets = [-1.5, 0.0, 1.5];
@@ -921,7 +930,8 @@ fn slow_moving_subject_shows_one_exposure_without_a_double_image() {
 }
 
 #[test]
-fn slow_a_moving_subject_the_reference_clipped_falls_back_to_a_usable_exposure() {
+#[slow]
+fn a_moving_subject_the_reference_clipped_falls_back_to_a_usable_exposure() {
     // A bright disc: clipped in the reference and the longer exposure, recorded by the shorter.
     let positions = [(150.0, 110.0), (180.0, 120.0), (210.0, 130.0)];
     let offsets = [-3.0, 0.0, 1.5];
@@ -954,7 +964,8 @@ fn slow_a_moving_subject_the_reference_clipped_falls_back_to_a_usable_exposure()
 }
 
 #[test]
-fn slow_aligned_proxies_measure_unrecorded_exposures() {
+#[slow]
+fn aligned_proxies_measure_unrecorded_exposures() {
     let scene = geometry::textured_scene(11);
     let offsets = [-2.0, 0.0, 2.0];
     let frames = bracket(&scene, W, H, &offsets, &known_motions(), Some(40));
@@ -991,7 +1002,8 @@ fn slow_aligned_proxies_measure_unrecorded_exposures() {
 }
 
 #[test]
-fn slow_local_disagreement_leaves_the_global_fit_and_is_found_as_motion() {
+#[slow]
+fn local_disagreement_leaves_the_global_fit_and_is_found_as_motion() {
     // Parallax-like: a near object (a block of the scene) shifts differently from the background
     // in one input.
     let motions = [Rigid::identity(W, H), Rigid::new(W, H, 0.3, (4.0, -2.0))];
@@ -1104,7 +1116,8 @@ fn a_still_surface_in_the_reference_roll_off_is_not_motion() {
 }
 
 #[test]
-fn slow_refuses_unalignable_brackets() {
+#[slow]
+fn refuses_unalignable_brackets() {
     let cancel = Cancel::new();
     let still = [Rigid::identity(W, H), Rigid::identity(W, H)];
     let check_reference = |frames: Vec<Exposure>, reference: usize| {
@@ -1228,7 +1241,8 @@ fn slow_refuses_unalignable_brackets() {
 }
 
 #[test]
-fn slow_alignment_off_still_validates_framing() {
+#[slow]
+fn alignment_off_still_validates_framing() {
     let scene = geometry::textured_scene(11);
     let still = [Rigid::identity(W, H), Rigid::identity(W, H)];
     // Framed as one: identity, with the framing evidence recorded.
@@ -1300,7 +1314,8 @@ fn slow_alignment_off_still_validates_framing() {
 }
 
 #[test]
-fn slow_cancellation_stops_every_stage() {
+#[slow]
+fn cancellation_stops_every_stage() {
     let scene = geometry::textured_scene(11);
     let motions = known_motions();
     let frames = bracket(&scene, W, H, &[-2.0, 0.0, 2.0], &motions, None);

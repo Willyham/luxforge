@@ -7,19 +7,17 @@
 //! same time, each in its package's directory as Cargo runs it, and prints one line per binary as
 //! it finishes. A failing binary's whole output is printed after the rest.
 //!
-//! A quick run leaves out every test whose own name begins with [`SLOW`], and the doctests, and
-//! says how many tests it left out. The whole run leaves out nothing.
+//! A quick run leaves out every test marked `#[slow]` ([`slow_tests`]), and the doctests, and says
+//! how many tests it left out. The whole run leaves out nothing.
 use crate::*;
 use std::{
+    collections::BTreeMap,
     io::{Read, Seek, SeekFrom},
     process::Stdio,
     sync::{OnceLock, mpsc},
     thread,
     time::{Duration, Instant},
 };
-
-/// The prefix of a test's own name (the last segment of its path) that keeps it out of a quick run.
-pub const SLOW: &str = "slow_";
 
 struct Binary {
     /// `package kind target`, as the line for this binary reads.
@@ -87,9 +85,60 @@ fn build(root: &Path) -> Result<Vec<Binary>> {
     Ok(binaries)
 }
 
-/// Whether a listed test's own name marks it as slow.
-fn slow(name: &str) -> bool {
-    name.rsplit("::").next().unwrap_or(name).starts_with(SLOW)
+/// The tests of a binary's JSON listing (`--list --format json`) marked `#[slow]`, by name. The
+/// listing gives each test's source file, relative to `root`, and the line of its name; the mark
+/// is one of the attribute lines above that line. libtest's JSON is unstable, so the listing is
+/// asked for with `RUSTC_BOOTSTRAP`; the toolchain is pinned, and a listing this cannot read
+/// fails the run rather than letting it leave nothing out.
+fn slow_tests(root: &Path, listing: &str) -> Result<Vec<String>> {
+    let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut slow = Vec::new();
+    let mut read = false;
+    for line in listing.lines() {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        read = true;
+        if event["type"] != "test" || event["event"] != "discovered" {
+            continue;
+        }
+        let (Some(name), Some(path), Some(at)) = (
+            event["name"].as_str(),
+            event["source_path"].as_str(),
+            event["start_line"].as_u64(),
+        ) else {
+            return Err(format!("A listed test without its name, source or line: {line}").into());
+        };
+        if !sources.contains_key(path) {
+            let text = fs::read_to_string(root.join(path))
+                .map_err(|e| format!("Reading {path} for its tests' marks: {e}"))?;
+            sources.insert(path.into(), text.lines().map(str::to_owned).collect());
+        }
+        let lines = &sources[path];
+        let at = usize::try_from(at).unwrap_or(usize::MAX);
+        if marked_slow(&lines[..at.saturating_sub(1).min(lines.len())]) {
+            slow.push(name.to_owned());
+        }
+    }
+    ensure(read, "A test listing that is not libtest's JSON")?;
+    Ok(slow)
+}
+
+/// Whether the attributes that end `above`, the lines before a test's name, hold `#[slow]`. They
+/// are read upwards to the end of the item before, past comments.
+fn marked_slow(above: &[String]) -> bool {
+    for line in above.iter().rev().map(|line| line.trim()) {
+        if line.starts_with("//") {
+            continue;
+        }
+        if line.is_empty() || line.ends_with(['}', ';', '{']) {
+            return false;
+        }
+        if line == "#[slow]" || (line.starts_with("#[") && line.ends_with("::slow]")) {
+            return true;
+        }
+    }
+    false
 }
 
 fn command(binary: &Binary) -> Command {
@@ -128,7 +177,7 @@ fn captured(mut command: Command) -> std::io::Result<(std::process::ExitStatus, 
 }
 
 /// One binary's run: in a quick run, its slow tests listed first and skipped by exact name.
-fn run_one(binary: &Binary, quick: bool) -> Outcome {
+fn run_one(root: &Path, binary: &Binary, quick: bool) -> Outcome {
     let started = Instant::now();
     let mut outcome = Outcome {
         label: binary.label.clone(),
@@ -141,7 +190,8 @@ fn run_one(binary: &Binary, quick: bool) -> Outcome {
     let mut args: Vec<String> = Vec::new();
     if quick {
         let mut list = command(binary);
-        list.args(["--list", "--format", "terse"]);
+        list.args(["--list", "--format", "json", "-Z", "unstable-options"])
+            .env("RUSTC_BOOTSTRAP", "1");
         let listed = match captured(list) {
             Ok((status, listed)) if status.success() => listed,
             Ok((_, listed)) => {
@@ -154,14 +204,17 @@ fn run_one(binary: &Binary, quick: bool) -> Outcome {
                 return outcome;
             }
         };
+        let slow = match slow_tests(root, &listed) {
+            Ok(slow) => slow,
+            Err(e) => {
+                outcome.counts = e.to_string();
+                return outcome;
+            }
+        };
         args.push("--exact".into());
-        for name in listed
-            .lines()
-            .filter_map(|line| line.strip_suffix(": test"))
-            .filter(|name| slow(name))
-        {
+        for name in slow {
             args.push("--skip".into());
-            args.push(name.into());
+            args.push(name);
             outcome.left_out += 1;
         }
     }
@@ -209,7 +262,7 @@ fn run(root: &Path, binaries: &[Binary], quick: bool) -> Result {
     let outcomes = thread::scope(|scope| {
         for binary in binaries {
             let sender = sender.clone();
-            scope.spawn(move || sender.send(run_one(binary, quick)));
+            scope.spawn(move || sender.send(run_one(root, binary, quick)));
         }
         drop(sender);
         receiver
@@ -360,11 +413,51 @@ pub fn check(root: &Path, quick: bool) -> Result {
 mod tests {
     use super::*;
 
+    fn above(source: &str) -> Vec<String> {
+        source.lines().map(str::to_owned).collect()
+    }
+
     #[test]
-    fn only_a_test_whose_own_name_begins_with_the_prefix_is_slow() {
-        assert!(slow("slow_whole_conformance"));
-        assert!(slow("render::spatial::tests::slow_a_point_query"));
-        assert!(!slow("render::slow_tests::a_point_query"));
-        assert!(!slow("transport::tests::a_slow_server_times_out"));
+    fn a_test_is_slow_when_its_own_attributes_hold_the_mark() {
+        assert!(marked_slow(&above("#[test]\n#[slow]")));
+        assert!(marked_slow(&above(
+            "#[test]\n#[luxforge_test_macros::slow]\n#[cfg(unix)]"
+        )));
+        assert!(marked_slow(&above(
+            "}\n\n/// Every code { round } trips.\n#[test]\n// A note.\n#[slow]"
+        )));
+        assert!(!marked_slow(&above(
+            "#[test]\n#[slow]\nfn other() {}\n#[test]"
+        )));
+        assert!(!marked_slow(&above("#[slow]\n\n#[test]")));
+        assert!(!marked_slow(&above(
+            "#[test]\n#[slow_tests]\n#[ignore = \"slow\"]"
+        )));
+    }
+
+    #[test]
+    fn the_listing_names_each_marked_test_and_refuses_one_without_its_source() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "#[test]\n#[slow]\nfn sweep() {}\n\n#[test]\nfn quick() {}\n",
+        )
+        .unwrap();
+        let event = |name: &str, line: u32| {
+            format!(
+                "{{ \"type\": \"test\", \"event\": \"discovered\", \"name\": \"{name}\", \
+                 \"source_path\": \"src/lib.rs\", \"start_line\": {line} }}"
+            )
+        };
+        let listing = format!(
+            "{{ \"type\": \"suite\", \"event\": \"discovery\" }}\n{}\n{}",
+            event("tests::sweep", 3),
+            event("tests::quick", 6)
+        );
+        assert_eq!(slow_tests(root.path(), &listing).unwrap(), ["tests::sweep"]);
+        let bare = r#"{ "type": "test", "event": "discovered", "name": "tests::quick" }"#;
+        assert!(slow_tests(root.path(), bare).is_err());
+        assert!(slow_tests(root.path(), "tests::quick: test").is_err());
     }
 }

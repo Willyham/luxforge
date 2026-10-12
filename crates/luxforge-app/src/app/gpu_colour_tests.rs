@@ -28,6 +28,7 @@ use luxforge_gpu::{
 };
 use luxforge_reference::look::{STANDARD, standard_knots};
 use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -590,7 +591,8 @@ fn gpu_colour_white_balance_meets_the_pointwise_limits() {
 }
 
 #[test]
-fn slow_gpu_colour_tone_meets_the_pointwise_limits() {
+#[slow]
+fn gpu_colour_tone_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
     for field in ["contrast", "highlights", "shadows", "whites", "blacks"] {
         for value in [-100.0, 100.0] {
@@ -618,7 +620,7 @@ fn slow_gpu_colour_tone_meets_the_pointwise_limits() {
         cases.push((name.to_owned(), basic(payload)));
     }
     qualify(
-        "slow_gpu_colour_tone_meets_the_pointwise_limits",
+        "gpu_colour_tone_meets_the_pointwise_limits",
         "lf_basic_tone",
         cases,
         GRID,
@@ -626,7 +628,8 @@ fn slow_gpu_colour_tone_meets_the_pointwise_limits() {
 }
 
 #[test]
-fn slow_gpu_colour_colour_adjust_meets_the_pointwise_limits() {
+#[slow]
+fn gpu_colour_colour_adjust_meets_the_pointwise_limits() {
     let cases = [
         (-100.0, 0.0),
         (100.0, 0.0),
@@ -646,7 +649,7 @@ fn slow_gpu_colour_colour_adjust_meets_the_pointwise_limits() {
     })
     .to_vec();
     qualify(
-        "slow_gpu_colour_colour_adjust_meets_the_pointwise_limits",
+        "gpu_colour_colour_adjust_meets_the_pointwise_limits",
         "lf_basic_colour_adjust",
         cases,
         GRID,
@@ -654,7 +657,8 @@ fn slow_gpu_colour_colour_adjust_meets_the_pointwise_limits() {
 }
 
 #[test]
-fn slow_gpu_colour_tone_curve_meets_the_pointwise_limits() {
+#[slow]
+fn gpu_colour_tone_curve_meets_the_pointwise_limits() {
     let zigzag: Vec<[f64; 2]> = (0..16)
         .map(|k| {
             let x = f64::from(k) / 15.0;
@@ -693,7 +697,7 @@ fn slow_gpu_colour_tone_curve_meets_the_pointwise_limits() {
     })
     .to_vec();
     qualify(
-        "slow_gpu_colour_tone_curve_meets_the_pointwise_limits",
+        "gpu_colour_tone_curve_meets_the_pointwise_limits",
         "lf_curve_tone_curve",
         cases,
         GRID,
@@ -714,7 +718,8 @@ fn look(knots: &[[f64; 2]], chroma: f64, knee: f64, amount: f64) -> Layer {
 }
 
 #[test]
-fn slow_gpu_colour_look_meets_the_pointwise_limits() {
+#[slow]
+fn gpu_colour_look_meets_the_pointwise_limits() {
     let standard = standard_knots(&STANDARD);
     let lifted = [[0.0, 0.08], [0.2, 0.3], [0.7, 0.8], [1.3, 0.95]];
     let cases = [
@@ -734,7 +739,7 @@ fn slow_gpu_colour_look_meets_the_pointwise_limits() {
     .map(|(name, layer)| (name.to_owned(), layer))
     .to_vec();
     qualify(
-        "slow_gpu_colour_look_meets_the_pointwise_limits",
+        "gpu_colour_look_meets_the_pointwise_limits",
         "lf_look_look",
         cases,
         GRID,
@@ -746,7 +751,8 @@ const RANGES: [&str; 8] = [
 ];
 
 #[test]
-fn slow_gpu_colour_mixer_meets_the_pointwise_limits() {
+#[slow]
+fn gpu_colour_mixer_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
     for property in ["hue", "saturation", "luminance"] {
         for value in [-100, 100] {
@@ -800,7 +806,7 @@ fn slow_gpu_colour_mixer_meets_the_pointwise_limits() {
         ),
     ));
     qualify(
-        "slow_gpu_colour_mixer_meets_the_pointwise_limits",
+        "gpu_colour_mixer_meets_the_pointwise_limits",
         "lf_mixer_mixer",
         cases,
         GRID,
@@ -812,7 +818,8 @@ fn slow_gpu_colour_mixer_meets_the_pointwise_limits() {
 /// into the tonal luminance at a shared and a separate width, Global's luminance alone, opposing
 /// tints and grading over moved HSL fields, where the HSL stage runs first in the same round trip.
 #[test]
-fn slow_gpu_colour_grade_meets_the_pointwise_limits() {
+#[slow]
+fn gpu_colour_grade_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
     for wheel in ["shadows", "midtones", "highlights", "global"] {
         for (hue, luminance) in [(30, 100), (210, -100)] {
@@ -895,7 +902,7 @@ fn slow_gpu_colour_grade_meets_the_pointwise_limits() {
         ),
     ));
     qualify(
-        "slow_gpu_colour_grade_meets_the_pointwise_limits",
+        "gpu_colour_grade_meets_the_pointwise_limits",
         "lf_mixer_mixer",
         cases,
         GRID,
@@ -903,7 +910,8 @@ fn slow_gpu_colour_grade_meets_the_pointwise_limits() {
 }
 
 #[test]
-fn slow_gpu_colour_vignette_meets_the_pointwise_limits() {
+#[slow]
+fn gpu_colour_vignette_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
     for amount in [-100, 100] {
         for roundness in [-100, 0, 100] {
@@ -933,7 +941,7 @@ fn slow_gpu_colour_vignette_meets_the_pointwise_limits() {
     ));
     // A 3:2 stage, so the shape is not a circle.
     qualify(
-        "slow_gpu_colour_vignette_meets_the_pointwise_limits",
+        "gpu_colour_vignette_meets_the_pointwise_limits",
         "lf_vignette_vignette",
         cases,
         (384, 256),

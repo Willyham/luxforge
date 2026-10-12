@@ -26,6 +26,7 @@ use crate::{
     modules::{Global, Parallelism, Planes, PlanesMut, Region, SpatialUnit, Stage},
 };
 use luxforge_reference::SplitMix64;
+use luxforge_test_macros::slow;
 
 // ---------------------------------------------------------------------------------------------
 // The frozen passes.
@@ -839,10 +840,11 @@ fn the_vertical_mean_matches_the_tap_by_tap_reference_bit_for_bit() {
 const EPSILONS: [f32; 5] = [1.0e-2, 2.5e-3, 1.0e-4, 1.0e-9, 4.0];
 
 /// The frozen filters run serially: their serial and pooled outputs are equal, as the box tests
-/// above and `slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one` hold them, and
+/// above and `a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one` hold them, and
 /// the production filters are held to them under both parallelisms.
 #[test]
-fn slow_the_guided_filters_match_the_tap_by_tap_reference_bit_for_bit() {
+#[slow]
+fn the_guided_filters_match_the_tap_by_tap_reference_bit_for_bit() {
     let mut rng = SplitMix64(0x6E1D_ED00);
     let mut compared = 0;
     for (width, height) in FRAMES {
@@ -991,7 +993,7 @@ impl Unit {
     }
 
     /// The frozen unit's output, serially: its serial and pooled outputs are equal, as
-    /// `slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one` held it while it was
+    /// `a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one` held it while it was
     /// the production code.
     fn reference(
         &self,
@@ -1134,7 +1136,8 @@ const STAGES: [(u32, u32); 7] = [
 /// the unit's halo, sometimes more), scratch and output holding stale values, and both
 /// parallelisms against the serial reference.
 #[test]
-fn slow_the_units_match_their_frozen_passes_bit_for_bit() {
+#[slow]
+fn the_units_match_their_frozen_passes_bit_for_bit() {
     let mut rng = SplitMix64(0x9E5E_4CE0);
     let mut compared = 0;
     for (width, height) in STAGES {
