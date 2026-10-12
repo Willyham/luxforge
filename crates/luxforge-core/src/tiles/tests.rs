@@ -9,11 +9,50 @@ use luxforge_testbase::HANG;
 use std::sync::atomic::AtomicUsize;
 
 fn band(y0: u32, rows: u32, width: u32) -> Band {
+    Band::eight(y0, rows, vec![7; (width * rows * 4) as usize])
+}
+
+fn band16(y0: u32, rows: u32, width: u32) -> Band {
     Band {
         y0,
         rows,
-        rgba: vec![7; (width * rows * 4) as usize],
+        pixels: Pixels::Sixteen(vec![7_000; (width * rows * 4) as usize]),
     }
+}
+
+/// A stream is the shape of the output it was asked for: a resized output's size and a 16-bit
+/// output's depth, so a band of the other depth ends it with an error, and an 8-bit read of a 16-bit
+/// band is refused rather than narrowed.
+#[test]
+fn a_band_stream_is_the_shape_of_its_output() {
+    let output = OutputSpec {
+        width: 3,
+        height: 5,
+        depth: Depth::Sixteen,
+    };
+    let (sender, mut stream) = BandStream::channel(output, Answered::gpu());
+    assert_eq!(stream.output(), output);
+    assert_eq!((stream.width, stream.height), (3, 5));
+    assert!(sender.send(Ok(band16(0, 2, 3))));
+    assert!(sender.send(Ok(band16(2, 3, 3))));
+    let first = stream.next().unwrap().unwrap();
+    assert_eq!(first, band16(0, 2, 3));
+    assert_eq!(first.rgba8().unwrap_err().kind.code(), "internal");
+    assert_eq!(first.into_rgba8().unwrap_err().kind.code(), "internal");
+    assert!(stream.next().unwrap().is_ok());
+    assert!(stream.next().is_none());
+
+    let (sender, mut stream) = BandStream::channel(output, Answered::gpu());
+    assert!(sender.send(Ok(band(0, 2, 3))));
+    assert_eq!(
+        stream.next().unwrap().unwrap_err().kind.code(),
+        "internal",
+        "an 8-bit band in a 16-bit stream"
+    );
+    let (sender, mut stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
+    assert!(sender.send(Ok(band16(0, 2, 3))));
+    assert_eq!(stream.next().unwrap().unwrap_err().kind.code(), "internal");
+    assert_eq!(band(0, 1, 3).into_rgba8().unwrap(), vec![7; 12]);
 }
 
 /// A stream hands its bands over in order and ends at its stage's last row; a band out of place,
@@ -21,7 +60,7 @@ fn band(y0: u32, rows: u32, width: u32) -> Band {
 /// stream refuses its provider's next band, which abandons the export.
 #[test]
 fn a_band_stream_hands_its_bands_in_order_and_ends_at_its_last_row() {
-    let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+    let (sender, mut stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
     // Both bands wait for the encoder at once, which is as many as a stream holds.
     assert!(sender.send(Ok(band(0, 2, 3))));
     assert!(sender.send(Ok(band(2, 3, 3))));
@@ -31,7 +70,7 @@ fn a_band_stream_hands_its_bands_in_order_and_ends_at_its_last_row() {
     assert!(stream.next().is_none(), "the last row has arrived");
 
     for wrong in [band(1, 2, 3), band(0, 2, 4), band(0, 6, 3)] {
-        let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+        let (sender, mut stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
         assert!(sender.send(Ok(wrong.clone())));
         assert_eq!(
             stream.next().unwrap().unwrap_err().kind.code(),
@@ -39,19 +78,19 @@ fn a_band_stream_hands_its_bands_in_order_and_ends_at_its_last_row() {
             "{} rows from row {} in {} bytes",
             wrong.rows,
             wrong.y0,
-            wrong.rgba.len()
+            wrong.pixels.rows().len()
         );
         assert!(stream.next().is_none(), "an error ends the stream");
     }
 
-    let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+    let (sender, mut stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
     assert!(sender.send(Ok(band(0, 2, 3))));
     drop(sender);
     assert!(stream.next().unwrap().is_ok());
     assert_eq!(stream.next().unwrap().unwrap_err().kind.code(), "internal");
     assert!(stream.next().is_none());
 
-    let (sender, stream) = BandStream::channel(3, 5, Answered::gpu());
+    let (sender, stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
     drop(stream);
     assert!(
         !sender.send(Ok(band(0, 2, 3))),
@@ -67,9 +106,10 @@ fn a_band_stream_hands_its_bands_in_order_and_ends_at_its_last_row() {
 fn a_waking_stream_tells_its_provider_of_each_band_taken_and_of_its_drop() {
     let woken = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&woken);
-    let (sender, mut stream) = BandStream::waking(3, 5, Answered::gpu(), move || {
-        counted.fetch_add(1, Ordering::SeqCst);
-    });
+    let (sender, mut stream) =
+        BandStream::waking(OutputSpec::full(3, 5), Answered::gpu(), move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
     assert!(sender.send(Ok(band(0, 2, 3))));
     assert!(sender.send(Ok(band(2, 3, 3))));
     assert_eq!(woken.load(Ordering::SeqCst), 0, "nothing taken yet");
@@ -92,7 +132,7 @@ fn a_waking_stream_tells_its_provider_of_each_band_taken_and_of_its_drop() {
     assert!(sender.abandoned());
     assert!(!sender.send(Ok(band(0, 2, 3))));
 
-    let (sender, stream) = BandStream::channel(3, 5, Answered::gpu());
+    let (sender, stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
     assert!(!sender.abandoned());
     drop(stream);
     assert!(sender.abandoned());
@@ -108,7 +148,7 @@ fn a_stream_the_gpu_cannot_go_on_drawing_names_why() {
         requested: 1_331_500_000,
         budget: 805_306_368,
     };
-    let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+    let (sender, mut stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
     assert!(sender.send(Ok(band(0, 2, 3))));
     assert!(sender.fall_back(budget.clone()));
     assert!(stream.next().unwrap().is_ok());
@@ -126,7 +166,7 @@ fn a_stream_the_gpu_cannot_go_on_drawing_names_why() {
     assert!(stream.next().is_none(), "the fallback ends the stream");
 
     let lost = TileFallback::Unavailable(TileUnavailable::DeviceLost);
-    let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+    let (sender, mut stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
     assert!(sender.fall_back(lost.clone()));
     let ended = stream.next().unwrap().unwrap_err();
     assert_eq!(
@@ -136,7 +176,7 @@ fn a_stream_the_gpu_cannot_go_on_drawing_names_why() {
     assert_eq!(stream.fallback(), Some(&lost));
 
     for error in [Error::cancelled("stop"), Error::internal("a panic")] {
-        let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+        let (sender, mut stream) = BandStream::channel(OutputSpec::full(3, 5), Answered::gpu());
         assert!(sender.send(Err(error.clone())));
         assert_eq!(stream.next().unwrap().unwrap_err().kind, error.kind);
         assert_eq!(stream.fallback(), None, "{error:?} names no fallback");

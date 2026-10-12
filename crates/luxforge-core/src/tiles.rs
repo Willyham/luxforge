@@ -62,12 +62,13 @@ pub(crate) mod grid;
 pub mod output;
 mod reference;
 pub mod region;
+pub use crate::render::export_output::{LANCZOS_LOBES, RESAMPLE_BAND_ROWS, Taps, lanczos_taps};
 pub use analysis::ANALYSIS_QUEUE_CAPACITY;
 pub(crate) use analysis::AnalysisWorker;
 pub use grid::{
     ClipDetection, GridRead, MAX_SIDE as GRID_MAX_SIDE, SampleGrid, SensorClip, read as read_grid,
 };
-pub use output::{Depth, OutputSpec, PixelRows, Pixels};
+pub use output::{Depth, OutputFrame, OutputSpec, PixelRows, Pixels, reference_output};
 
 #[cfg(test)]
 pub(crate) use reference::Hold;
@@ -110,12 +111,20 @@ pub trait TileService: Send + Sync {
     /// before its next row or tile.
     fn disconnect(&self, client: ClientId);
 
-    /// Render `evaluation`'s output stage for an export, under `cancel`, as bands in order, which
-    /// the export lane encodes as they arrive; or say why the reference renders it instead, and
-    /// the lane renders its own reference frame. The provider renders on its own thread, so this
-    /// never waits for the render. A provider that cannot go on drawing a stream ends it naming
-    /// why ([`BandSender::fall_back`]), and the lane renders the export again with the reference.
-    fn stream(&self, evaluation: &Evaluation, cancel: &Cancel) -> Result<BandStream, TileFallback>;
+    /// Render `evaluation`'s `output` for an export, under `cancel`, as bands of the output's width
+    /// and depth in order, which the export lane encodes as they arrive; or say why the reference
+    /// renders it instead, and the lane renders its own reference output ([`reference_output`]).
+    /// `output` is the output stage's own size ([`OutputSpec::full`]) or smaller, which the
+    /// provider resamples as the reference does, and 8 or 16 bits a channel. The provider renders
+    /// on its own thread, so this never waits for the render. A provider that cannot go on drawing
+    /// a stream ends it naming why ([`BandSender::fall_back`]), and the lane renders the export
+    /// again with the reference.
+    fn stream(
+        &self,
+        evaluation: &Evaluation,
+        output: OutputSpec,
+        cancel: &Cancel,
+    ) -> Result<BandStream, TileFallback>;
 
     /// Stop: cancel the call being answered, drop the waiting calls unanswered, and return once
     /// the service's threads have ended. A call submitted afterwards is dropped unanswered.
@@ -711,23 +720,56 @@ pub fn clipped(rect: Region, stage: Stage) -> Region {
     }
 }
 
-/// One band of an export's output stage: `rows` whole rows from row `y0`, each opaque RGBA8, row by
-/// row.
+/// One band of an export's output: `rows` whole rows from row `y0`, each the output's width of
+/// opaque RGBA pixels at the output's depth, row by row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Band {
     pub y0: u32,
     pub rows: u32,
-    pub rgba: Vec<u8>,
+    pub pixels: Pixels,
 }
 
-/// An export's output stage as its provider renders it: bands received in order, top to bottom,
-/// at most [`EXPORT_BANDS_IN_FLIGHT`] of them waiting for the encoder, with the renderer that drew
-/// them. Dropping it abandons the stream: its provider's next send fails, and it renders nothing
-/// more for it. A stream its provider could not go on drawing says why ([`Self::fallback`]).
+impl Band {
+    /// A band of 8-bit codes.
+    pub fn eight(y0: u32, rows: u32, rgba: Vec<u8>) -> Self {
+        Self {
+            y0,
+            rows,
+            pixels: Pixels::Eight(rgba),
+        }
+    }
+
+    /// Its 8-bit codes, for a reader that asked for an 8-bit output: `internal` for a band of
+    /// another depth, which its stream never sends it.
+    pub fn into_rgba8(self) -> Result<Vec<u8>, Error> {
+        match self.pixels {
+            Pixels::Eight(rgba) => Ok(rgba),
+            Pixels::Sixteen(_) => Err(Error::internal(
+                "a 16-bit band reached a reader of 8-bit codes",
+            )),
+        }
+    }
+
+    /// [`Self::into_rgba8`], borrowed.
+    pub fn rgba8(&self) -> Result<&[u8], Error> {
+        match &self.pixels {
+            Pixels::Eight(rgba) => Ok(rgba),
+            Pixels::Sixteen(_) => Err(Error::internal(
+                "a 16-bit band reached a reader of 8-bit codes",
+            )),
+        }
+    }
+}
+
+/// An export's output as its provider renders it: bands received in order, top to bottom, at most
+/// [`EXPORT_BANDS_IN_FLIGHT`] of them waiting for the encoder, with the renderer that drew them.
+/// Dropping it abandons the stream: its provider's next send fails, and it renders nothing more
+/// for it. A stream its provider could not go on drawing says why ([`Self::fallback`]).
 pub struct BandStream {
     bands: Receiver<Result<Band, Ended>>,
     width: u32,
     height: u32,
+    depth: Depth,
     /// The first row of the band expected next; the stage's height once the stream has ended.
     next: u32,
     answered: Answered,
@@ -755,10 +797,10 @@ struct Ended {
 }
 
 impl BandStream {
-    /// A stream of a `width` × `height` output stage drawn by the renderer `answered` names, and
-    /// the end its provider sends the bands into.
-    pub fn channel(width: u32, height: u32, answered: Answered) -> (BandSender, Self) {
-        Self::with_wake(width, height, answered, None)
+    /// A stream of `output` drawn by the renderer `answered` names, and the end its provider sends
+    /// the bands into.
+    pub fn channel(output: OutputSpec, answered: Answered) -> (BandSender, Self) {
+        Self::with_wake(output, answered, None)
     }
 
     /// [`Self::channel`] for a provider that renders on a thread of its own which must never wait
@@ -768,17 +810,15 @@ impl BandStream {
     /// room for it and sleeps, rather than blocking on a full channel, until it does. `wake` runs
     /// on the encoder's thread: it only notes the room and wakes the provider.
     pub fn waking(
-        width: u32,
-        height: u32,
+        output: OutputSpec,
         answered: Answered,
         wake: impl Fn() + Send + 'static,
     ) -> (BandSender, Self) {
-        Self::with_wake(width, height, answered, Some(Box::new(wake)))
+        Self::with_wake(output, answered, Some(Box::new(wake)))
     }
 
     fn with_wake(
-        width: u32,
-        height: u32,
+        output: OutputSpec,
         answered: Answered,
         wake: Option<Box<dyn Fn() + Send>>,
     ) -> (BandSender, Self) {
@@ -786,8 +826,9 @@ impl BandStream {
         let abandoned = Arc::new(AtomicBool::new(false));
         let stream = Self {
             bands,
-            width,
-            height,
+            width: output.width,
+            height: output.height,
+            depth: output.depth,
             next: 0,
             answered,
             fallback: None,
@@ -802,6 +843,15 @@ impl BandStream {
         &self.answered
     }
 
+    /// The output its bands make up: their width, the rows they add up to and their depth.
+    pub fn output(&self) -> OutputSpec {
+        OutputSpec {
+            width: self.width,
+            height: self.height,
+            depth: self.depth,
+        }
+    }
+
     /// Why the provider stopped drawing the stream, once it has ended for a reason the reference
     /// renders the export for instead ([`BandSender::fall_back`]): `None` while it goes on, once
     /// it is whole, and after a cancellation or an error of its own.
@@ -813,10 +863,11 @@ impl BandStream {
 impl Iterator for BandStream {
     type Item = Result<Band, Error>;
 
-    /// The next band, waiting for its provider to render it: `None` once the stage's last row has
+    /// The next band, waiting for its provider to render it: `None` once the output's last row has
     /// arrived, and after an error. A band that does not start where the last one ended, holds no
-    /// row, runs past the stage or holds the wrong number of bytes is an error, as is a provider
-    /// that stops before the last row; the provider's own error ends the stream too.
+    /// row, runs past the output, is of another depth or holds the wrong number of samples is an
+    /// error, as is a provider that stops before the last row; the provider's own error ends the
+    /// stream too.
     fn next(&mut self) -> Option<Self::Item> {
         if self.next >= self.height {
             return None;
@@ -843,19 +894,22 @@ impl Iterator for BandStream {
             }
         };
         let end = u64::from(band.y0) + u64::from(band.rows);
-        let bytes = u64::from(self.width) * u64::from(band.rows) * 4;
+        let samples = u64::from(self.width) * u64::from(band.rows) * 4;
         if band.y0 != row
             || band.rows == 0
             || end > u64::from(self.height)
-            || band.rgba.len() as u64 != bytes
+            || band.pixels.depth() != self.depth
+            || band.pixels.rows().len() as u64 != samples
         {
             return Some(Err(Error::internal(format!(
-                "the tile stream sent {} rows from row {} in {} bytes where rows of {} pixels \
-                 from row {row} of {} were next",
+                "the tile stream sent {} rows from row {} in {} samples of {} bytes where rows of \
+                 {} pixels of {} bytes from row {row} of {} were next",
                 band.rows,
                 band.y0,
-                band.rgba.len(),
+                band.pixels.rows().len(),
+                band.pixels.depth().bytes(),
                 self.width,
+                self.depth.bytes(),
                 self.height
             ))));
         }

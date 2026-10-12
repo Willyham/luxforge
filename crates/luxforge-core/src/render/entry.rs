@@ -259,6 +259,44 @@ impl<'a> Render<'a> {
         }
     }
 
+    /// The whole frame's terminal values encoded once at 16 bits rather than 8: the values
+    /// [`Self::frame`] quantizes to its codes, quantized instead through the 16-bit output
+    /// quantizer ([`super::export_output::WideTerminal`]). What an export's 16-bit output is, and
+    /// what a resized output resamples, so neither is quantized to 8 bits first. Six bytes a pixel,
+    /// inside the evaluated-frame limit. A cancelled token answers
+    /// [`crate::ErrorKind::Cancelled`].
+    pub(crate) fn wide_frame(&self) -> Result<super::export_output::WideTerminal, Error> {
+        let cancel = &self.options.cancel;
+        match self.source {
+            RenderSource::Byte(image) => {
+                let (rgb, stage) = super::byte::rasterize_wide(
+                    image,
+                    &self.compiled,
+                    cancel,
+                    self.options.tiling,
+                    self.context,
+                )?;
+                Ok(super::export_output::WideTerminal::words(
+                    stage.width,
+                    stage.height,
+                    rgb,
+                ))
+            }
+            RenderSource::Linear { image, settings } => {
+                cancel.check()?;
+                let evaluation =
+                    self.evaluation(Linear::new(image, settings)?, SpatialMode::Frames)?;
+                let stage = evaluation.stage();
+                let bytes = linear::rasterize_wide(&evaluation, cancel, self.context)?;
+                Ok(super::export_output::WideTerminal::bytes(
+                    stage.width,
+                    stage.height,
+                    bytes,
+                ))
+            }
+        }
+    }
+
     /// The input of the layer that begins at `position` — a segment and an operation index of this
     /// render's compilation — held over the window of its received stage that the output stage's
     /// `rect` reads at full scale: the visible region and every margin the boundaries after it

@@ -39,7 +39,7 @@ use crate::{
         },
     },
     jobs::{JobControl, JobKind, NewJob, Work},
-    tiles::{BandStream, TileService, TileStatus},
+    tiles::{BandStream, OutputSpec, TileService, TileStatus},
 };
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
@@ -497,7 +497,8 @@ pub(super) fn write(
     } else if tiles.status() == TileStatus::Reference(None) {
         None
     } else {
-        match tiles.stream(&evaluation, control.render_cancel()) {
+        let output = OutputSpec::full(identity.width, identity.height);
+        match tiles.stream(&evaluation, output, control.render_cancel()) {
             Ok(stream) => {
                 let size = (identity.width, identity.height);
                 match streamed(stream, size, destination, &encoding, phase, encoded)? {
@@ -582,7 +583,7 @@ fn streamed(
     let exif = encoding.exif(size);
     let bands = stream
         .by_ref()
-        .map(|band| band.map(|band| (band.rows, band.rgba)));
+        .map(|band| band.and_then(|band| Ok((band.rows, band.into_rgba8()?))));
     let result = encode_jpeg_rows(
         &mut staged,
         size,

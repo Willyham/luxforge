@@ -1696,7 +1696,12 @@ impl TileService for StubTiles {
 
     fn disconnect(&self, _: ClientId) {}
 
-    fn stream(&self, evaluation: &Evaluation, cancel: &Cancel) -> Result<BandStream, TileFallback> {
+    fn stream(
+        &self,
+        evaluation: &Evaluation,
+        output: crate::tiles::OutputSpec,
+        cancel: &Cancel,
+    ) -> Result<BandStream, TileFallback> {
         self.streams.fetch_add(1, Ordering::SeqCst);
         let (rows, stop) = match self.behaviour.lock().unwrap().clone() {
             Behaviour::Refuse(reason) => return Err(reason),
@@ -1704,7 +1709,8 @@ impl TileService for StubTiles {
         };
         let identity = evaluation.identity().expect("the export's identity");
         let width = identity.width;
-        let (sender, stream) = BandStream::channel(width, identity.height, Answered::gpu());
+        assert!(output.is_full(width, identity.height), "a full-size export");
+        let (sender, stream) = BandStream::channel(output, Answered::gpu());
         let (evaluation, cancel) = (evaluation.clone(), cancel.clone());
         let (gate, hold, sent) = (
             Arc::clone(&self.gate),
@@ -1741,11 +1747,11 @@ impl TileService for StubTiles {
                     sender.send(Err(cancelled));
                     return;
                 }
-                let band = Band {
-                    y0: index as u32 * rows,
-                    rows: (rgba.len() / stride) as u32,
-                    rgba: rgba.to_vec(),
-                };
+                let band = Band::eight(
+                    index as u32 * rows,
+                    (rgba.len() / stride) as u32,
+                    rgba.to_vec(),
+                );
                 if !sender.send(Ok(band)) {
                     return;
                 }

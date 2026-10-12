@@ -99,3 +99,123 @@ impl PixelRows<'_> {
         self.len() == 0
     }
 }
+
+impl OutputSpec {
+    /// Refuse, with `validation`, an output with an empty side or larger than its
+    /// `stage_width` × `stage_height` stage on either side: an export is never enlarged.
+    pub fn check(&self, stage_width: u32, stage_height: u32) -> Result<(), crate::Error> {
+        if self.width == 0
+            || self.height == 0
+            || self.width > stage_width
+            || self.height > stage_height
+        {
+            return Err(crate::Error::validation(format!(
+                "a {}x{} output cannot be rendered from the {stage_width}x{stage_height} output \
+                 stage: it is never larger than the stage, nor empty",
+                self.width, self.height
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The whole of an export's output as the reference renderer renders it ([`reference_output`]):
+/// `width` × `height` opaque RGBA pixels at the output's depth. A full-size 8-bit output is the
+/// reference's own frame, shared rather than copied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputFrame {
+    pub width: u32,
+    pub height: u32,
+    samples: FrameSamples,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FrameSamples {
+    /// The reference's own 8-bit frame, as `Render::frame` answered it.
+    Shared(std::sync::Arc<Vec<u8>>),
+    Owned(Pixels),
+}
+
+impl OutputFrame {
+    /// The bits per channel it holds.
+    pub fn depth(&self) -> Depth {
+        match &self.samples {
+            FrameSamples::Shared(_) => Depth::Eight,
+            FrameSamples::Owned(pixels) => pixels.depth(),
+        }
+    }
+
+    /// Its rows, as an encoder reads them, without a copy.
+    pub fn rows(&self) -> PixelRows<'_> {
+        match &self.samples {
+            FrameSamples::Shared(rgba) => PixelRows::Eight(rgba),
+            FrameSamples::Owned(pixels) => pixels.rows(),
+        }
+    }
+
+    /// Its pixels, owned: a full-size 8-bit frame is copied only while another holds it, as the
+    /// prepared source does for a stack that changes nothing.
+    pub fn into_pixels(self) -> Pixels {
+        match self.samples {
+            FrameSamples::Shared(rgba) => Pixels::Eight(
+                std::sync::Arc::try_unwrap(rgba).unwrap_or_else(|rgba| (*rgba).clone()),
+            ),
+            FrameSamples::Owned(pixels) => pixels,
+        }
+    }
+
+    /// The reference's 8-bit frame it shares, for a test that proves it was not copied.
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> Option<&std::sync::Arc<Vec<u8>>> {
+        match &self.samples {
+            FrameSamples::Shared(rgba) => Some(rgba),
+            FrameSamples::Owned(_) => None,
+        }
+    }
+}
+
+/// `evaluation`'s output for an export, `output`, from the reference renderer under `cancel`: what
+/// the export lane renders in place of `evaluation.exact(..).frame(..)`
+/// (`docs/design/export-settings.md`, "Rendering").
+///
+/// - **Full size, 8 bits.** The exact frame itself, stamped with `snapshot_id`, byte for byte and
+///   shared rather than copied.
+/// - **Full size, 16 bits.** The frame's terminal values encoded once at 16 bits instead of 8
+///   (`Render::wide_frame`), opaque.
+/// - **Smaller.** Those 16-bit values resampled in linear light by the separable Lanczos-3 filter
+///   (`render::export_output`), clamped and encoded once at the output's depth.
+///
+/// An output with an empty side or past the stage is refused with `validation`; every frame is
+/// held to the evaluated-frame limit at its depth, the 16-bit terminal at six bytes a pixel and the
+/// output beside it. A cancellation answers `cancelled`, never a partial frame.
+pub fn reference_output(
+    evaluation: &crate::Evaluation,
+    output: OutputSpec,
+    snapshot_id: crate::SnapshotId,
+    cancel: &crate::Cancel,
+) -> Result<OutputFrame, crate::Error> {
+    let render = evaluation.exact(cancel)?;
+    let (width, height) = render.stage();
+    output.check(width, height)?;
+    let full = output.is_full(width, height);
+    if full && output.depth == Depth::Eight {
+        let frame = render.frame(snapshot_id)?;
+        return Ok(OutputFrame {
+            width: frame.width,
+            height: frame.height,
+            samples: FrameSamples::Shared(frame.rgba),
+        });
+    }
+    let terminal = render.wide_frame()?;
+    drop(render);
+    let pixels = if full {
+        Pixels::Sixteen(terminal.into_rgba16(cancel)?)
+    } else {
+        crate::render::export_output::resample(&terminal, output, cancel)?
+    };
+    Ok(OutputFrame {
+        width: output.width,
+        height: output.height,
+        samples: FrameSamples::Owned(pixels),
+    })
+}
