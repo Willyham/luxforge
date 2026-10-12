@@ -331,7 +331,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                         code,
                         linear,
                         CODE_BAND,
-                        &format!("{name} channel {channel}"),
+                        format_args!("{name} channel {channel}"),
                     );
                     let deviation = (i32::from(pixel[channel]) - i32::from(code)).unsigned_abs();
                     if f64::from(deviation) > worst {
@@ -375,7 +375,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                         code,
                         reference_linear,
                         CODE_BAND,
-                        &format!("{name} channel {channel}"),
+                        format_args!("{name} channel {channel}"),
                     );
                     let deviation = (i32::from(pixel[channel]) - i32::from(code)).unsigned_abs();
                     if f64::from(deviation) > worst {
@@ -556,7 +556,7 @@ fn grading_matches_the_reference_through_the_real_render_path() {
                         code,
                         expected[channel],
                         CODE_BAND,
-                        &format!("{name} {path} pixel {index} channel {channel}"),
+                        format_args!("{name} {path} pixel {index} channel {channel}"),
                     );
                 }
             }

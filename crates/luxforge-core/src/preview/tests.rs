@@ -1388,10 +1388,11 @@ fn the_exact_phase_publishes_its_progress_until_it_ends() {
         json!({"sharpening": 60, "luminance": 30}),
     );
     let generation = queue.request(held_behind(&gate, None, vec![detail]));
+    // The phase reads 0 of 0 between starting and planning its tiles: wait for planned tiles.
     let progress = wait_for("the exact phase never finished its tiles", || {
-        queue
-            .progress()
-            .filter(|progress| progress.counts.done == progress.counts.planned)
+        queue.progress().filter(|progress| {
+            progress.counts.planned > 0 && progress.counts.done == progress.counts.planned
+        })
     });
     assert_eq!(progress.generation, generation);
     assert!(progress.counts.planned > 0, "{progress:?}");

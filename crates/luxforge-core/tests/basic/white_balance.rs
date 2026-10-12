@@ -111,7 +111,7 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
                     expected,
                     linear,
                     CODE_BAND,
-                    &format!(
+                    format_args!(
                         "{:?} channel {channel} at ({temperature}, {tint})",
                         case.input_rgb_u8
                     ),
@@ -183,7 +183,7 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
                 luxforge_reference::srgb::code(value),
                 value,
                 CODE_BAND,
-                &format!("{input:?} channel {channel}"),
+                format_args!("{input:?} channel {channel}"),
             );
         }
     }

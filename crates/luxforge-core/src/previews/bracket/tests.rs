@@ -286,10 +286,20 @@ fn jpeg(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The fingerprint of a shot of `scene`, through its grid tier's JPEG.
+/// The fingerprint of a shot of `scene`, through its grid tier's JPEG. A scene is its seed and
+/// whether it is fog, so a shot of it renders once per process: the brackets repeat their
+/// exposures across runs and curves.
 fn fingerprint(scene: &Scene, shot: &Shot) -> Fingerprint {
-    Fingerprint::of_jpeg(&jpeg(WIDTH, HEIGHT, &render(scene, shot, WIDTH, HEIGHT)))
-        .expect("a fingerprint")
+    static PRINTS: std::sync::Mutex<BTreeMap<(u64, bool, String), Fingerprint>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let key = (scene.seed, scene.fog, format!("{shot:?}"));
+    if let Some(print) = PRINTS.lock().unwrap().get(&key) {
+        return print.clone();
+    }
+    let print = Fingerprint::of_jpeg(&jpeg(WIDTH, HEIGHT, &render(scene, shot, WIDTH, HEIGHT)))
+        .expect("a fingerprint");
+    PRINTS.lock().unwrap().insert(key, print.clone());
+    print
 }
 
 fn prints(scene: &Scene, shots: &[Shot]) -> Vec<Fingerprint> {

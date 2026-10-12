@@ -417,7 +417,10 @@ fn a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
 /// The output stage and the stage the last layer receives, read through the worker and through
 /// the reference service at the cells of a 9 × 9 grid, for every family on both paths: within
 /// the family's class's display limit — mean ΔE00, p99 and the signed mean ΔL\*, a worst block
-/// having no meaning over scattered points — with each figure printed.
+/// having no meaning over scattered points — with each figure printed. The worker reads each
+/// stage whole, once, and its cells are taken from that read: that a point read through the
+/// worker is the whole stage's code there, bit for bit, is
+/// [`a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit`]'s.
 #[test]
 #[slow]
 fn a_read_is_within_the_display_limit_of_the_reference_service() {
@@ -466,11 +469,17 @@ fn a_read_is_within_the_display_limit_of_the_reference_service() {
                         )
                     })
                     .collect();
-                let (gpu, _) = call(&service, client, &stack, &reads);
+                let (whole, _) = call(
+                    &service,
+                    client,
+                    &stack,
+                    &[(stage, WHOLE, ReadValues::Codes)],
+                );
+                let gpu = &whole[0];
+                assert_eq!(gpu.answered, Answered::gpu(), "{family} on {path}");
                 let (cpu, _) = call(&reference, client, &stack, &reads);
                 let (mut delta_e, mut delta_l) = (Vec::new(), Vec::new());
-                for ((_, rect, _), (gpu, cpu)) in reads.iter().zip(gpu.iter().zip(&cpu)) {
-                    assert_eq!(gpu.answered, Answered::gpu(), "{family} on {path}");
+                for ((_, rect, _), cpu) in reads.iter().zip(&cpu) {
                     let (ours, theirs) = (
                         gpu.code(rect.x0, rect.y0).expect("the GPU's code"),
                         cpu.code(rect.x0, rect.y0).expect("the reference's code"),

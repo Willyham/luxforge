@@ -116,7 +116,7 @@ fn by_the_design(input: &SampleGrid) -> AutoToneValues {
 /// [`by_the_design`] through the model `compile` builds.
 fn by_the_design_through(
     input: &SampleGrid,
-    compile: impl Fn(AutoToneValues) -> Result<Vec<ColorOperation>, Error>,
+    compile: impl Fn(AutoToneValues) -> Result<Vec<ColorOperation>, Error> + Sync,
 ) -> AutoToneValues {
     let targets = AutoToneTargets::default();
     let stats = |values: AutoToneValues, chroma: bool| {
@@ -130,9 +130,11 @@ fn by_the_design_through(
         .unwrap()
     };
     // Step 1: the median nearest the target on the 0.01 EV grid (the lower on a tie), then the
-    // highest Exposure at or below it whose near-white fraction is within the guard.
+    // highest Exposure at or below it whose near-white fraction is within the guard. The 801
+    // evaluations are independent, so they run on the pool, in order.
     let exposure = |values: AutoToneValues| {
         let all: Vec<Statistics> = (-400..=400)
+            .into_par_iter()
             .map(|e| {
                 stats(
                     AutoToneValues {
@@ -720,7 +722,7 @@ fn reduced_cases() -> Vec<(&'static str, SampleGrid)> {
 #[test]
 #[slow]
 fn the_reduction_locates_and_the_whole_sample_decides_every_value_and_statistic() {
-    for (name, input) in reduced_cases() {
+    reduced_cases().into_par_iter().for_each(|(name, input)| {
         let search = ExposureSearch::Monotone;
         let whole = |stride| {
             solve_reduced(
@@ -754,7 +756,7 @@ fn the_reduction_locates_and_the_whole_sample_decides_every_value_and_statistic(
             .unwrap(),
             "{name}: the reported statistics are the whole sample's"
         );
-    }
+    });
 }
 
 /// The solve is the same on every size of the shared pool: each chunk of the sample is one task,
@@ -841,7 +843,7 @@ fn the_coarse_to_fine_exposure_equals_the_exhaustive_design_through_a_look() {
         operations.push(unit.clone());
         Ok(operations)
     };
-    for (name, input) in reduced_cases() {
+    reduced_cases().into_par_iter().for_each(|(name, input)| {
         let exhaustive = by_the_design_through(&input, with_look);
         for stride in [1, 4, 10, input.rgb.len() / 1024] {
             let report = solve_reduced(
@@ -855,5 +857,5 @@ fn the_coarse_to_fine_exposure_equals_the_exhaustive_design_through_a_look() {
             .unwrap();
             assert_eq!(report.values, exhaustive, "{name} at stride {stride}");
         }
-    }
+    });
 }

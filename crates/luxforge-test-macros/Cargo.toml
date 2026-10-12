@@ -11,6 +11,10 @@ publish.workspace = true
 # that may depend on no workspace crate may still name this one.
 [lib]
 proc-macro = true
+# Nothing to test here: every crate's tests use the attribute. A proc-macro's test binary links
+# the standard library dynamically, so it would run only under Cargo.
+test = false
+doctest = false
 
 [lints]
 workspace = true
