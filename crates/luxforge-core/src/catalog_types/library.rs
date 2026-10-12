@@ -661,6 +661,9 @@ pub struct DevelopedPick {
     pub used: Option<PathBuf>,
     pub asset_id: AssetId,
     pub outcome: DevelopOutcome,
+    /// The catalog folder the photograph is in after the Develop: the one it was filed in, or a
+    /// linked or relinked photograph's own.
+    pub folder_id: CatalogFolderId,
 }
 
 /// One pick a Develop did not bring in, with the refusal's code and words; it stays picked.

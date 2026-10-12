@@ -9,8 +9,9 @@ use crate::{
     ErrorKind,
     artifacts::derived_source::{payload_work, read_derived_source},
     catalog_types::{
-        AssetRowId, Collection, CollectionId, CollectionKind, HdrDevelopment, HdrParameters,
-        HdrResolution, MERGE_PROVENANCE_FORMAT, MembershipValue, MergeInput, MergeProvider,
+        AssetRowId, CatalogFolderId, Collection, CollectionId, CollectionKind, HdrDevelopment,
+        HdrParameters, HdrResolution, MERGE_PROVENANCE_FORMAT, MembershipValue, MergeInput,
+        MergeProvider,
     },
     editor::{distinct_jpeg, insert_collection, mutation},
     index::volume_of,
@@ -261,7 +262,10 @@ impl Bench {
             &Publication {
                 provenance,
                 source,
-                catalog_folder_id: &folder,
+                folder: &crate::library::develop::Destination::Existing {
+                    folder_id: folder.clone(),
+                    days: false,
+                },
                 file_name: &name,
                 header: &HeaderMetadata::default(),
                 place: None,

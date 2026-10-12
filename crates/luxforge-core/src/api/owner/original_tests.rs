@@ -222,7 +222,7 @@ fn develop(service: &mut EditorService, files: Vec<ReadFile>) -> (Vec<AssetId>, 
     }
     let created = decided
         .iter()
-        .map(|decided| decided.reported().asset_id)
+        .map(|decided| decided.asset_id().clone())
         .collect();
     (created, refused)
 }

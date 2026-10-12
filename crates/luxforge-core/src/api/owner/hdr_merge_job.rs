@@ -358,7 +358,7 @@ impl Bench {
         json!({
             "kind": "hdr",
             "targets": {"kind": "paths", "paths": self.paths(bracket)},
-            "folder_id": self.folder,
+            "folder": {"kind": "existing", "folder_id": self.folder},
             "mutation": envelope(request),
         })
     }
@@ -514,7 +514,8 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
     let paths = bench.paths(0);
 
     // Planning reads headers only: these files are in no index or catalog, so the exposures wait
-    // for a fit and no folder holds them yet.
+    // for a fit, and the result would be filed by the place their folder on disk names, which no
+    // catalog folder is yet.
     let plan = bench.ok(
         "merge.plan",
         json!({"targets": {"kind": "paths", "paths": paths}}),
@@ -526,11 +527,9 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
     assert_eq!(plan["inputs"].as_array().unwrap().len(), 3);
     assert_eq!(plan["inputs"][0]["path"], json!(paths[0]));
     assert!(plan.get("folder").is_none());
-    assert!(
-        plan["folder_reason"]
-            .as_str()
-            .unwrap()
-            .contains("folder.create")
+    assert_eq!(
+        plan["suggested_folder"],
+        json!({"kind": "place", "name": "bracket"})
     );
     assert_eq!(plan["provider"]["module"], job::PROVIDER_MODULE);
     assert_eq!(plan["provider"]["available"], true);
@@ -540,12 +539,13 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
     );
     assert_eq!(bench.reads(), 0, "planning reads no pixels");
 
-    // Without a folder the request is refused, and nothing starts.
+    // A folder choice naming no folder is refused, and nothing starts.
     let refused = bench.failure(
         "merge.create",
         json!({
             "kind": "hdr",
             "targets": {"kind": "paths", "paths": paths},
+            "folder": {"kind": "existing", "folder_id": crate::catalog_types::CatalogFolderId::new()},
             "mutation": envelope("no-folder"),
         }),
     );
@@ -698,7 +698,7 @@ fn hdr_merge_job_plans_creates_and_reuses_one_result_through_the_registry() {
         json!({
             "kind": "hdr",
             "targets": {"kind": "assets", "asset_ids": [result["result_asset_id"], bench.photograph]},
-            "folder_id": bench.folder,
+            "folder": {"kind": "existing", "folder_id": bench.folder},
             "mutation": envelope("of-a-result"),
         }),
     );
@@ -889,7 +889,7 @@ fn hdr_merge_job_queue_pressure_slow_reads_and_disconnect() {
             json!({
                 "kind": "hdr",
                 "targets": {"kind": "paths", "paths": [&bench.files[0], &bench.files[6], &bench.files[7]]},
-                "folder_id": bench.folder,
+                "folder": {"kind": "existing", "folder_id": bench.folder},
                 "mutation": envelope("claimed"),
             }),
         )
@@ -1102,6 +1102,110 @@ fn hdr_merge_job_publishes_alone_and_reuses_an_exact_repeat_without_a_change() {
     }
     assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 1);
     assert_eq!(bench.untouched(), before);
+    bench.originals_unchanged();
+}
+
+/// With no folder named, `merge.create` files the result by the folder choice `merge.plan`
+/// proposes for the reference frame, making the folders it needs as a change of their own just
+/// before the publication's: undoing the merge keeps its result, in Removed, in those folders, and
+/// leaves them. A later merge the same proposal files finds them and makes none.
+#[test]
+fn hdr_merge_job_files_the_result_by_the_proposal_and_its_undo_leaves_the_folders() {
+    let bench = Bench::new("filed", 2);
+    let without_folder = |bracket: usize, request: &str| {
+        let mut params = bench.create_params(bracket, request);
+        params.as_object_mut().unwrap().remove("folder");
+        let job = bench.ok("merge.create", params);
+        let read = bench.settled(&job["job_id"]);
+        assert_eq!(read["status"], "ready", "{read}");
+        read["result"].clone()
+    };
+    let path_of = |folder_id: &Value| {
+        let folders = bench.ok("folder.list", json!({}))["folders"].clone();
+        let mut names = Vec::new();
+        let mut at = folder_id.as_str().map(str::to_owned);
+        while let Some(id) = at {
+            let folder = folders
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|folder| folder["id"] == id)
+                .unwrap_or_else(|| panic!("no folder {id}"))
+                .clone();
+            names.push(folder["name"].as_str().unwrap().to_owned());
+            at = folder["parent_id"].as_str().map(str::to_owned);
+        }
+        names.reverse();
+        names.join(" › ")
+    };
+    // The frames record no capture time: Undated › the folder on disk they are in.
+    let result = without_folder(0, "filed");
+    assert_eq!(path_of(&result["catalog_folder_id"]), "Undated › bracket");
+    let publication = result["change"].as_u64().expect("the publication's change");
+    let made = bench.ok("library.inspect", json!({"sequence": publication - 1}));
+    assert_eq!(
+        (
+            &made["change"]["method"],
+            &made["change"]["request_id"],
+            &made["change"]["label"]
+        ),
+        (
+            &json!("folder.create"),
+            &json!("filed"),
+            &json!("Created folders Undated › bracket")
+        ),
+        "{made}"
+    );
+    let kinds: Vec<&Value> = made["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| &row["item"]["kind"])
+        .collect();
+    assert_eq!(kinds, [&json!("catalog-folder"), &json!("catalog-folder")]);
+    let publication = bench.ok("library.inspect", json!({"sequence": publication}));
+    assert!(
+        publication["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["item"]["kind"] != "catalog-folder"),
+        "{publication}"
+    );
+
+    // Undone, the result is in Removed in the folder it was filed in, which stays.
+    let undone = bench.ok("library.undo", json!({"mutation": envelope("undo")}));
+    assert_eq!(undone["outcome"], "applied", "{undone}");
+    let state = bench.ok(
+        "asset.state",
+        json!({"asset_id": result["result_asset_id"]}),
+    );
+    assert!(state["asset"].is_object(), "{state}");
+    assert_eq!(path_of(&result["catalog_folder_id"]), "Undated › bracket");
+    assert_eq!(
+        bench.count(&format!(
+            "SELECT COUNT(*) FROM assets WHERE id = '{}' AND removed_ms IS NOT NULL",
+            result["result_asset_id"].as_str().unwrap()
+        )),
+        1
+    );
+    // Undoing the folders as well is refused while they hold the result.
+    let refused = bench.failure(
+        "library.undo",
+        json!({"mutation": envelope("undo-folders")}),
+    );
+    assert_eq!(refused["code"], "conflict", "{refused}");
+    let redone = bench.ok("library.redo", json!({"mutation": envelope("redo")}));
+    assert_eq!(redone["outcome"], "applied", "{redone}");
+
+    // Another bracket from the same folder finds them.
+    let made = bench.count("SELECT COUNT(*) FROM library_changes WHERE method = 'folder.create'");
+    let second = without_folder(1, "filed-again");
+    assert_eq!(second["catalog_folder_id"], result["catalog_folder_id"]);
+    assert_eq!(
+        bench.count("SELECT COUNT(*) FROM library_changes WHERE method = 'folder.create'"),
+        made
+    );
     bench.originals_unchanged();
 }
 
