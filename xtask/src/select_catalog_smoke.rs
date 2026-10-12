@@ -799,7 +799,8 @@ pub fn verify(
         frame,
         "catalog-exported",
         "batch.export",
-        json!({"targets": {"kind": "selection"}, "destination": export}),
+        json!({"targets": {"kind": "selection"},
+               "settings": crate::export_smoke::export_settings(Path::new(export.as_str().unwrap_or_default()))}),
     )?;
     let exported = batch_ended(frame, "catalog-exported", "batch-export")?;
     // Each file written names its renderer, as a single export's result does.

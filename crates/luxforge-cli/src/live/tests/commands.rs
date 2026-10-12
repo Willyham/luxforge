@@ -413,12 +413,12 @@ fn job_session(method: &'static str, ownership: &'static str, last: Value) -> En
 }
 
 fn exporting(last: Value) -> Endpoint {
-    job_session("export.jpeg", "catalog", last)
+    job_session("export.write", "catalog", last)
 }
 
 const EXPORT: &[&str] = &[
     "call",
-    "export.jpeg",
+    "export.write",
     "--params",
     r#"{"asset_id": "a", "destination": "/tmp/out.jpg"}"#,
     "--wait",
@@ -437,7 +437,7 @@ fn luxforge_ctl_commands_wait_follows_a_job_to_its_end_on_one_connection() {
     let requests = endpoint.requests();
     assert_eq!(
         methods(&requests),
-        ["schema.list", "export.jpeg", "job.wait", "job.wait"]
+        ["schema.list", "export.write", "job.wait", "job.wait"]
     );
     let hold = luxforge_core::MAX_EVENT_WAIT_MS;
     assert_eq!(
@@ -455,7 +455,7 @@ fn luxforge_ctl_commands_wait_follows_a_job_to_its_end_on_one_connection() {
     assert_eq!(printed, json!({"job_id": "job-1", "status": "queued"}));
     assert_eq!(
         methods(&endpoint.requests()),
-        ["schema.list", "export.jpeg", "job.read"]
+        ["schema.list", "export.write", "job.read"]
     );
 }
 

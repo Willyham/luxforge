@@ -26,6 +26,17 @@ use crate::{
     *,
 };
 use luxforge_evidence as script;
+
+/// Today's export settings for a run's own API export into `folder`: a full-size quality-90 JPEG
+/// at 4:4:4 with no metadata, each batch file named `<stem>-edited.jpg`, as the desktop's
+/// Select batch writes. A single export names its destination, inside `folder`.
+pub(crate) fn export_settings(folder: &Path) -> Value {
+    json!(luxforge_core::ExportSettings {
+        folder: luxforge_core::ExportFolder::Path(folder.to_path_buf()),
+        suffix: "-edited".into(),
+        ..luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)
+    })
+}
 use luxforge_reference::preview_error::{self, Class, Rgb8};
 
 pub const FIXTURE: &str = "fixtures/s0/orientation-6.jpg";
@@ -381,7 +392,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )?;
         ensure(
             export["queued"]["entry_id"] == json!(entry)
-                && export["queued"]["keep_metadata"] == json!(keep),
+                && export["queued"]["settings"]["metadata"]
+                    == json!(if keep { "all" } else { "none" }),
             format!(
                 "The {step} job is not the displayed entry's: {}",
                 export["queued"]

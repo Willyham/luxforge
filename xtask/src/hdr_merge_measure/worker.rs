@@ -602,8 +602,9 @@ impl Editing {
             _ => {
                 let destination = self.exports.join(format!("export-{turn}.jpg"));
                 let accepted = session.ask(
-                    "export.jpeg",
+                    "export.write",
                     json!({"asset_id": self.asset, "destination": destination,
+                           "settings": crate::export_smoke::export_settings(&self.exports),
                            "mutation": session.mutation("export")}),
                 )?;
                 let job = job_id(&accepted)?;
@@ -800,8 +801,9 @@ fn reopen(job: &Job) -> Result<Value> {
     let destination = job.dir.join("result.jpg");
     let started = Instant::now();
     let accepted = session.ask(
-        "export.jpeg",
-        json!({"asset_id": asset, "destination": destination, "mutation": session.mutation("export")}),
+        "export.write",
+        json!({"asset_id": asset, "destination": destination, "settings": crate::export_smoke::export_settings(&job.dir),
+               "mutation": session.mutation("export")}),
     )?;
     let exported = session.finished(&accepted)?;
     let export_ms = ms(started.elapsed());
@@ -886,8 +888,9 @@ fn natural(job: &Job) -> Result<Value> {
                 let asset = run["result"]["result_asset_id"].clone();
                 let destination = job.dir.join(format!("natural-{at}.jpg"));
                 let accepted = session.ask(
-                    "export.jpeg",
+                    "export.write",
                     json!({"asset_id": asset, "destination": destination,
+                           "settings": crate::export_smoke::export_settings(&job.dir),
                            "mutation": session.mutation("export")}),
                 )?;
                 session.finished(&accepted)?;
