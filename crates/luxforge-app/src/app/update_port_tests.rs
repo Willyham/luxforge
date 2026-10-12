@@ -634,13 +634,14 @@ fn placed(location: luxforge_install::Location) -> Placement {
 
 #[test]
 fn move_to_applications_a_release_outside_applications_can_move_and_nothing_else() {
-    let port = MovePort {
-        build: Some(7),
-        placement: placed(luxforge_install::Location::Elsewhere),
-    };
+    let port = MovePort::new(Some(7), placed(luxforge_install::Location::Elsewhere));
     let status = port.status();
     assert_eq!(
-        (status.updater, status.build, status.can_move_to_applications),
+        (
+            status.updater,
+            status.build,
+            status.can_move_to_applications
+        ),
         (
             Updater::Unavailable(UnavailableReason::OutsideApplications),
             Some(7),
@@ -670,5 +671,24 @@ fn move_to_applications_a_release_outside_applications_can_move_and_nothing_else
     )
     .unwrap_err();
     assert_eq!(refused.data.unwrap()["reason"], json!("in-applications"));
+    assert!(crate::app::relaunch::take().is_none());
+}
+
+#[test]
+fn move_to_applications_answers_at_once_and_reports_a_failed_move() {
+    // A bundle no Applications folder holds, which the move refuses on its own thread: it is
+    // already in Applications, so nothing is read beyond the destination or written anywhere.
+    let mut placement = placed(luxforge_install::Location::Applications);
+    placement.original = "/Users/someone/Downloads/Luxforge Move Test 7f3a.app".into();
+    placement.bundle = placement.original.clone();
+    let port = MovePort::new(Some(7), placement);
+    port.move_to_applications(false).unwrap();
+    wait_until("the failed move", || port.status().error.is_some());
+    let status = port.status();
+    assert_eq!(
+        status.error.as_deref(),
+        Some("Luxforge is already in an Applications folder")
+    );
+    assert!(status.can_move_to_applications, "it may be tried again");
     assert!(crate::app::relaunch::take().is_none());
 }

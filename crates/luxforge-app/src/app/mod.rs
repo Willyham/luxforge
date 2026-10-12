@@ -197,6 +197,7 @@ pub(crate) mod slider;
 #[cfg(test)]
 mod slider_tests;
 mod snapshot;
+pub(crate) mod sparkle_port;
 mod sync;
 #[cfg(test)]
 mod sync_tests;
@@ -215,7 +216,6 @@ pub(crate) mod unsupported_catalog;
 mod unsupported_catalog_tests;
 pub(crate) mod update;
 pub(crate) mod update_fixture;
-pub(crate) mod sparkle_port;
 pub(crate) mod update_port;
 #[cfg(test)]
 mod update_tests;

@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; the [desktop's offer, Settings group and palette entry](#the-desktop); the [move into Applications](#moving-into-applications) with its launch question; and [feed publication and the feed route](#publishing-and-serving-the-feeds). A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism (Sparkle) is not built yet, and the production key, the API host and its update store are not in place, so no build updates itself today.
+Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; the [desktop's offer, Settings group and palette entry](#the-desktop); the [move into Applications](#moving-into-applications) with its launch question; [feed publication and the feed route](#publishing-and-serving-the-feeds); and the [macOS Sparkle port](#macos-sparkle), with Sparkle embedded in the release bundle and a local end-to-end update journey. A Linux or macOS release build updates itself once the update key is committed; until then it reports `no-update-key`. The production key, the API host and its update store are not in place, so no build updates itself today.
 
 ## Outcome and scope
 
@@ -283,28 +283,35 @@ An evidence launch scripts what the port reports with `--update-fixture FILE` ([
 
 **Pinning and embedding**
 
-- Pin the latest stable Sparkle 2 release at implementation time, 2.9 or later. Use the official release archive, fetched by `xtask` and verified by SHA-256. Its MIT licence joins the notices.
-- The release bundle embeds `Contents/Frameworks/Sparkle.framework` with its `Autoupdate` and `Updater.app`. Luxforge is not sandboxed, so Sparkle's XPC services are removed.
-- The editor loads the framework at run time from its own bundle. A development build or test bundle without it reports `unavailable` rather than failing to start.
-- The bridge uses the existing `objc2` crates.
+- Sparkle 2.10.0 is pinned: the official archive `Sparkle-2.10.0.tar.xz` (16,319,840 bytes, SHA-256 `c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c`, tag commit `eef1a539`). `release-build` downloads it once into `target/sparkle/2.10.0/` and checks its length and hash before every extraction (`xtask/src/sparkle.rs`); no Sparkle binary is committed. Its MIT licence, with the external licences it lists, is in the notices (`native/sparkle-2.10.0/`, macOS only) and its provenance in `crates/luxforge-sparkle/THIRD_PARTY.md`.
+- The release bundle embeds `Contents/Frameworks/Sparkle.framework`, copied with `ditto` so its symbolic links stay, with `Autoupdate` and `Updater.app`. Luxforge is not sandboxed, so the XPC services are removed, and the changed framework is sealed ad hoc until `release-sign` signs it. The development `package` bundle has no framework.
+- The editor loads the framework at run time from its own bundle with `NSBundle`; nothing links it. The bridge is the leaf crate `luxforge-sparkle` (objc2, block2 and dispatch2). A bundle without the framework, as any development build, reports `development-build`; one whose framework does not load says why on standard error and reports the same.
 
-**Info.plist** gains:
+**Info.plist** (`release_build::info_plist`) gains:
 
-- `SUFeedURL`;
-- `SUPublicEDKey`;
-- `SUEnableAutomaticChecks` set to true, which suppresses Sparkle's permission prompt;
-- `SUScheduledCheckInterval` of 86,400 seconds;
-- `SUVerifyUpdateBeforeExtraction`;
-- `SURequireSignedFeed`, if the pinned Sparkle can sign the generated feed in the release workflow. Otherwise signed archives alone are the guarantee, and the design records that.
+- `SUFeedURL`, the macOS feed from `release/update.json` (`…/v1/updates/macos-arm64/appcast.xml`);
+- `SUPublicEDKey`, only when `release/update.json` commits a key; without one the app reports `no-update-key`;
+- `SUEnableAutomaticChecks` true, which suppresses Sparkle's permission prompt;
+- `SUScheduledCheckInterval` 86,400 seconds;
+- `SUVerifyUpdateBeforeExtraction` true.
 
-**The updater**
+**`SURequireSignedFeed` is not set.** Sparkle 2.10 could check a signed feed, and signing one is a small addition to `update-feed`, but the feed is regenerated in the **Update feeds** workflow, and the update key reaches only the release workflow's one signing step. Signing the feed would hand the key to a second workflow that runs on every release and by hand. What a signed feed adds is small: archives are EdDSA-verified before extraction and must keep the app's Developer ID signature, the feed comes over HTTPS from the API, and Sparkle never installs an older build. A tampered feed could still mislabel a release's catalog format or point its release notes elsewhere; a mislabelled catalog format change leads to the [unsupported-catalog launch](#launching-past-an-unsupported-catalog), not to lost data. Signed archives over HTTPS are the guarantee.
 
-- An `SPUUpdater` runs with a custom user driver implemented in Rust. It forwards every Sparkle event into the port's state and answers Sparkle's reply blocks from the commands.
-- The delegate filters channels.
-- The delegate also stops an update that changes the catalog format from being installed silently.
-- Relaunch is postponed until the quit path has closed the catalog.
+**Which launch gets it.** A release build (compiled with `LUXFORGE_RELEASE_VERSION`) launched by a person, from a bundle that embeds the framework and names `SUPublicEDKey`, is classified with `luxforge-install`'s `classify`, through an injectable location check. In `/Applications` or `~/Applications` it gets the Sparkle port. Anywhere else, translocated or on a disk image or read-only volume, it gets the move port: `unavailable` with `outside-applications` and `can_move_to_applications` ([below](#moving-into-applications)). Hidden, evidence and test-receiver launches stay `development-build`, except the update journey's bundles ([evidence](#acceptance-and-evidence)).
 
-**Signing.** The release signing sequence signs Sparkle's nested code before the helpers and the app: `Autoupdate`, then `Updater.app`, then the framework. It still never uses recursive signing.
+**The bridge** (`luxforge-sparkle`). Sparkle runs on AppKit's main thread, which is iced's update loop. Every command the port sends is queued onto the main dispatch queue and returns at once; Sparkle reads the feed, downloads, verifies and extracts on its own threads. An `SPUUpdater` runs with a user driver and a delegate defined in Rust (`define_class!`), so no Sparkle window is shown. Each Sparkle callback becomes a plain `Event` for the port, which only records it and wakes whoever waits:
+
+- **User driver.** The found update (version, build, release notes link, channel, length and `luxforge:catalogFormat` from the item's properties), download progress, extraction, readiness, installation, errors and "no update". The found and ready reply blocks are held and answered from the port's commands, with Install, Dismiss or Skip. The permission request is answered with automatic checks on.
+- **Delegate.** `allowedChannelsForUpdater:` follows the pre-release flag. `updater:shouldPostponeRelaunchForUpdate:untilInvokingBlock:` postpones a relaunch until the catalog has closed. The cycle's end, aborts and "no update" end a check. Sparkle's own release notes and permission prompt are refused.
+
+**The port** (`app/sparkle_port.rs`). Every `UpdatePort` call returns at once.
+
+- **Preferences.** Every `apply` sets Sparkle's `automaticallyChecksForUpdates` to `update_checks`, at launch and on every change. Sparkle's `automaticallyDownloadsUpdates` is always off: Sparkle's automatic driver installs without the user driver, so it could not tell a catalog format change from any other update. The port downloads per item instead, when the person asks or `installs_automatically` allows it, so an update that changes the catalog format is never prepared silently. Luxforge's skip is its own: an offer is dismissed, never skipped in Sparkle, and Sparkle's skip keys are cleared at start.
+- **Checks.** Sparkle schedules the daily check; the port asks for one more 10 seconds after the first policy with checks on. `update.check` asks Sparkle to check now or joins the running check; an offer Sparkle holds is dismissed first so the feed is read again.
+- **Installing.** `update.install` downloads what is missing, then posts the ordinary close through the same wake signal as the Linux port. The close's joins run on the runtime's blocking pool, so the main thread stays free for Sparkle. Once the catalog owner has joined, `at_quit` answers Install on the ready update and waits up to 20 seconds for Sparkle's installer to take it, then the app exits; the installer replaces the bundle and relaunches it. An update installed automatically is left to the installer, which replaces the app after it terminates without relaunching. An update no longer wanted is cancelled at quit.
+- **Updater.app** shows its own progress window only when replacing the app takes more than 0.7 seconds after the app has exited. It is Sparkle's, not Luxforge's, and is accepted.
+
+**Signing.** `release-sign` signs `Sparkle.framework/Versions/B/Autoupdate`, then `Versions/B/Updater.app`, then the framework, then the helpers and the app, each with the hardened runtime and a secure timestamp and never with `--deep`.
 
 **Downloads.** The macOS download becomes a disk image, `luxforge-<version>-macos-arm64.dmg`:
 
@@ -344,7 +351,7 @@ The question is a non-modal card in the stack of workspace notices, under the up
 
 A failure is shown in the card in plain words, with Try again and Not now.
 
-Until the app moves, `update.status` reports `unavailable` with the reason `outside-applications`, once the macOS port reports it.
+Until the app moves, `update.status` reports `unavailable` with the reason `outside-applications` and `can_move_to_applications`.
 
 **The hand-off to the Sparkle port.** The move is one crate, `luxforge-install`, which depends on no workspace crate, so the desktop's question and the macOS update port call the same code:
 
@@ -352,7 +359,7 @@ Until the app moves, `update.status` reports `unavailable` with the reason `outs
 - `move_to_applications(placement, roots, replace, env) -> Result<Moved, MoveError>`, with `Roots::standard()` and the `System` environment; `MoveError::Existing(path)` is the `existing-app` refusal, and each error names a `reason()`;
 - `Relaunch::moved(&moved).start(&System)`, which trashes the original and starts the waiter.
 
-The desktop's relaunch hook (`app/relaunch.rs`) runs work once the quit path has closed the catalog: `relaunch(Relaunch)` holds one relaunch for the quit path, and `request_quit()` closes the window the way its close button does, from any thread. The macOS port's `move_to_applications(replace)` calls the move, then those two. While the port's `update.status` reports `can_move_to_applications`, the desktop's question sends `update.move-to-applications` with `replace` instead of moving itself; until then it calls `luxforge-install` directly.
+The desktop's relaunch hook (`app/relaunch.rs`) runs work once the quit path has closed the catalog: `relaunch(Relaunch)` holds one relaunch for the quit path, and `request_quit()` closes the window the way its close button does, from any thread. A release outside Applications gets the move port (`app/update_port.rs`), whose `move_to_applications(replace)` answers at once: an app already at the destination without `replace` is refused there and then as `existing-app` (a `conflict`); otherwise the move runs on its own thread, then `relaunch(Relaunch::moved(..))` and `request_quit()`. A move that fails becomes the status's `error`, and `can_move_to_applications` stays true so it can be tried again. The Sparkle port, which runs only from Applications, refuses the call as `not-supported`. While the port's `update.status` reports `can_move_to_applications`, the desktop's question sends `update.move-to-applications` with `replace` instead of moving itself; until then it calls `luxforge-install` directly.
 
 **Evidence.** `--evidence-move-to-applications`, honoured only with `--evidence-dir`, shows the question once the workspace is usable wherever the run's app is, so it can be captured; its buttons move nothing and log `move_to_applications_skipped`. The `move-to-applications` smoke scenario captures it, with its state under `move_to_applications` in the frame and `move_question_classified` and `move_question_shown` in the log. The real translocated first launch from the disk image is part of final qualification.
 
@@ -473,7 +480,7 @@ Ordinary tests are built with each part:
 - **Feed publication.** The workflow rules in `check-repository`, the deploy archive, the store's installer and the route, against fixture releases. A local dry run goes from fixture builds through `update-record`, the workflow's record selection and `update-feed --deploy` to `install-feeds.py` and the ingress answering the feeds.
 - **Linux engine.** Refusing a bad signature, a truncated or oversized download, path traversal and a mismatched `build.json`. Swap and recovery in temporary directories. The notify-only fallback.
 - **Command and preference schema and authority**, and UI/API parity.
-- **A local end-to-end macOS update** from one bundle to a newer one, through Sparkle with a temporary test signing identity, in background-only bundles that never take focus.
+- **A local end-to-end macOS update** from one bundle to a newer one, through Sparkle with a temporary test signing identity, in background-only bundles that never take focus: `cargo xtask update-journey --output NEW` ([development](../engineering/development.md#the-macos-update-journey)). Build 1 checks a loopback feed signed with a throwaway Ed25519 key, offers and installs build 2 through the port, quits; Sparkle's installer replaces the bundle and relaunches it, and the relaunch reports build 2 through `luxforge-ctl`. Every launch keeps its files under the data root the bundle's `LuxforgeUpdateJourneyRoot` names. `codesign` refuses the temporary self-signed identity as untrusted, and trusting it would change the person's trust settings, so the journey signs ad hoc and records the refusal; Sparkle accepts the ad hoc signatures because both builds share the EdDSA key. A Developer ID signature, the hardened runtime and Gatekeeper on an installed update are left to qualification.
 - **A rendered check** of the offer, the Settings group, the move question and the unsupported-catalog launch, with correlated state and logs.
 
 Qualification comes last, on real signed release candidates through the pre-release channel:

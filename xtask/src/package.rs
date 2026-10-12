@@ -295,122 +295,122 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     bundled_data_notices(root, out)?;
     lens_resources(root, &out.join("data/lensfun"))?;
     let mut dependencies = json!({
-            "target":target,
-            "packages":packages,
-            "native_sources":[
-                {
-                    "name":"LibRaw",
-                    "version":"0.22.2",
-                    "revision":"b93f6e45c194f5df9b02a43b1af9a54b4f41f33f",
-                    "selected_license":"LGPL-2.1",
-                    "notices":"native/libraw-0.22.2",
-                    "build":"Bundled source; no USE_ZLIB, USE_JPEG, USE_RAWSPEED, USE_DNGSDK, USE_LCMS"
-                },
-                {
-                    "name":"librtprocess",
-                    "version":"0.11.0",
-                    "revision":"9a858270acb2096e2e403d932760ee688fcac425",
-                    "selected_license":"GPL-3.0-or-later",
-                    "notices":"native/librtprocess-9a858270",
-                    "build":"Bundled RCD, Markesteijn and border source; no OpenMP"
-                },
-                {
-                    "name":"RawSpeed",
-                    "version":"develop (no release)",
-                    "revision":"c835b05aecfacb7343f7c424abd620aa12116c3f",
-                    "selected_license":"LGPL-2.0-or-later (code; per-file exceptions in THIRD_PARTY.md) AND CC-BY-SA-3.0 (data/cameras.xml)",
-                    "notices":"native/rawspeed-c835b05a",
-                    "build":"Bundled library source and embedded cameras.xml; C++20, generic CPU; no OpenMP, zlib or libjpeg; not yet routed"
-                },
-                {
-                    "name":"pugixml",
-                    "version":"1.16",
-                    "revision":"c8033ce9d039e7f9d134877c363397b3cfe20816",
-                    "selected_license":"MIT",
-                    "notices":"native/pugixml-1.16",
-                    "build":"Bundled source built with RawSpeed; PUGIXML_NO_XPATH"
-                },
-                {
-                    "name":"libjpeg-turbo (mozjpeg-sys)",
-                    "version":"mozjpeg-sys 2.2.3",
-                    "revision":"93e9c78d0e9afb018a224e1105f06e48aec77766",
-                    "selected_license":"IJG AND BSD-3-Clause AND Zlib",
-                    "notices":"licenses/mozjpeg-sys-2.2.3",
-                    "provenance":"native/luxforge-jpeg/THIRD_PARTY.md",
-                    "build":"Crate-bundled source built with cc; with_simd (NEON on aarch64, portable C on x86_64 without NASM) and unwinding only"
-                },
-                {
-                    "name":"ONNX Runtime",
-                    "version":"1.28.0",
-                    "revision":"da9b5e364c465de65c49d91e696cd6485270757f",
-                    "selected_license":"MIT (bundled libraries listed in ThirdPartyNotices.txt)",
-                    "notices":"native/onnxruntime-1.28.0",
-                    "provenance":"native/luxforge-onnx/THIRD_PARTY.md",
-                    "build":"pyke's attested prebuilt static archive (pykeio/ort-artifacts 25d68de6) pinned by SHA-256; Core ML provider on macOS, DirectML on Windows, CPU on Linux"
-                },
-                {
-                    "name":"stable-diffusion.cpp",
-                    "version":"master-956-1b0ba10",
-                    "revision":"1b0ba10893f4e2e0656103011fc1c4645a02a734",
-                    "selected_license":"MIT (bundled third-party sources: nlohmann/json MIT, zip Unlicense, miniz MIT, darts-clone BSD-2-Clause, Oniguruma BSD-2-Clause, utf8proc MIT)",
-                    "notices":"native/stable-diffusion.cpp-1b0ba108",
-                    "provenance":"native/luxforge-diffusion/THIRD_PARTY.md",
-                    "build":"Bundled source subset built with cc and one staged patch; macOS and Linux only, not Windows"
-                },
-                {
-                    "name":"ggml",
-                    "version":"0.25.3",
-                    "revision":"d25b121ce1d6ae0c7e62ad080460d9fc1e46dd93",
-                    "selected_license":"MIT",
-                    "notices":"native/ggml-d25b121c",
-                    "provenance":"native/luxforge-diffusion/THIRD_PARTY.md",
-                    "build":"Bundled source built with cc; Metal and CPU backends on macOS, CPU on Linux"
-                }
-            ],
-            "native_provenance":"native/luxforge-raw/THIRD_PARTY.md",
-            "bundled_fonts":[
-                {
-                    "name":"Inter",
-                    "version":"4.1",
-                    "revision":"e3a3d4c57d5ecc01453a575621882a384c1995a3",
-                    "files":["Inter-Regular.ttf","Inter-SemiBold.ttf"],
-                    "license":"OFL-1.1",
-                    "notices":"fonts/inter-4.1",
-                    "provenance":"fonts/luxforge-ui/THIRD_PARTY.md"
-                }
-            ],
-            "bundled_data":[
-                {
-                    "name":"GeoNames cities15000 (modified extract)",
-                    "downloaded":"2026-09-30",
-                    "source":"https://download.geonames.org/export/dump/cities15000.zip",
-                    "source_sha256":"44347468d5656101a999ba0cbb64b0cbdc7c2b48de83c8f6e129b50e697dd05d",
-                    "files":["places.tsv"],
-                    "license":"CC-BY-4.0",
-                    "license_url":"https://creativecommons.org/licenses/by/4.0/",
-                    "notices":"data/luxforge-core",
-                    "provenance":"data/luxforge-core/THIRD_PARTY.md"
-                },{
-                "name":"Lensfun distortion profile index",
-                "version":"0.3.4",
-                "revision":"101c745e847a5de4a1e569a94368ce2027198598",
-                "license":"CC-BY-SA-3.0",
-                "files":LENS_FILES,
-                "notices":"data/lensfun",
-                "provenance":"data/lensfun/provenance.json",
-                "modifications":"Filtered version-1 XML converted to an offline rectilinear distortion index"
+        "target":target,
+        "packages":packages,
+        "native_sources":[
+            {
+                "name":"LibRaw",
+                "version":"0.22.2",
+                "revision":"b93f6e45c194f5df9b02a43b1af9a54b4f41f33f",
+                "selected_license":"LGPL-2.1",
+                "notices":"native/libraw-0.22.2",
+                "build":"Bundled source; no USE_ZLIB, USE_JPEG, USE_RAWSPEED, USE_DNGSDK, USE_LCMS"
+            },
+            {
+                "name":"librtprocess",
+                "version":"0.11.0",
+                "revision":"9a858270acb2096e2e403d932760ee688fcac425",
+                "selected_license":"GPL-3.0-or-later",
+                "notices":"native/librtprocess-9a858270",
+                "build":"Bundled RCD, Markesteijn and border source; no OpenMP"
+            },
+            {
+                "name":"RawSpeed",
+                "version":"develop (no release)",
+                "revision":"c835b05aecfacb7343f7c424abd620aa12116c3f",
+                "selected_license":"LGPL-2.0-or-later (code; per-file exceptions in THIRD_PARTY.md) AND CC-BY-SA-3.0 (data/cameras.xml)",
+                "notices":"native/rawspeed-c835b05a",
+                "build":"Bundled library source and embedded cameras.xml; C++20, generic CPU; no OpenMP, zlib or libjpeg; not yet routed"
+            },
+            {
+                "name":"pugixml",
+                "version":"1.16",
+                "revision":"c8033ce9d039e7f9d134877c363397b3cfe20816",
+                "selected_license":"MIT",
+                "notices":"native/pugixml-1.16",
+                "build":"Bundled source built with RawSpeed; PUGIXML_NO_XPATH"
+            },
+            {
+                "name":"libjpeg-turbo (mozjpeg-sys)",
+                "version":"mozjpeg-sys 2.2.3",
+                "revision":"93e9c78d0e9afb018a224e1105f06e48aec77766",
+                "selected_license":"IJG AND BSD-3-Clause AND Zlib",
+                "notices":"licenses/mozjpeg-sys-2.2.3",
+                "provenance":"native/luxforge-jpeg/THIRD_PARTY.md",
+                "build":"Crate-bundled source built with cc; with_simd (NEON on aarch64, portable C on x86_64 without NASM) and unwinding only"
+            },
+            {
+                "name":"ONNX Runtime",
+                "version":"1.28.0",
+                "revision":"da9b5e364c465de65c49d91e696cd6485270757f",
+                "selected_license":"MIT (bundled libraries listed in ThirdPartyNotices.txt)",
+                "notices":"native/onnxruntime-1.28.0",
+                "provenance":"native/luxforge-onnx/THIRD_PARTY.md",
+                "build":"pyke's attested prebuilt static archive (pykeio/ort-artifacts 25d68de6) pinned by SHA-256; Core ML provider on macOS, DirectML on Windows, CPU on Linux"
+            },
+            {
+                "name":"stable-diffusion.cpp",
+                "version":"master-956-1b0ba10",
+                "revision":"1b0ba10893f4e2e0656103011fc1c4645a02a734",
+                "selected_license":"MIT (bundled third-party sources: nlohmann/json MIT, zip Unlicense, miniz MIT, darts-clone BSD-2-Clause, Oniguruma BSD-2-Clause, utf8proc MIT)",
+                "notices":"native/stable-diffusion.cpp-1b0ba108",
+                "provenance":"native/luxforge-diffusion/THIRD_PARTY.md",
+                "build":"Bundled source subset built with cc and one staged patch; macOS and Linux only, not Windows"
+            },
+            {
+                "name":"ggml",
+                "version":"0.25.3",
+                "revision":"d25b121ce1d6ae0c7e62ad080460d9fc1e46dd93",
+                "selected_license":"MIT",
+                "notices":"native/ggml-d25b121c",
+                "provenance":"native/luxforge-diffusion/THIRD_PARTY.md",
+                "build":"Bundled source built with cc; Metal and CPU backends on macOS, CPU on Linux"
+            }
+        ],
+        "native_provenance":"native/luxforge-raw/THIRD_PARTY.md",
+        "bundled_fonts":[
+            {
+                "name":"Inter",
+                "version":"4.1",
+                "revision":"e3a3d4c57d5ecc01453a575621882a384c1995a3",
+                "files":["Inter-Regular.ttf","Inter-SemiBold.ttf"],
+                "license":"OFL-1.1",
+                "notices":"fonts/inter-4.1",
+                "provenance":"fonts/luxforge-ui/THIRD_PARTY.md"
+            }
+        ],
+        "bundled_data":[
+            {
+                "name":"GeoNames cities15000 (modified extract)",
+                "downloaded":"2026-09-30",
+                "source":"https://download.geonames.org/export/dump/cities15000.zip",
+                "source_sha256":"44347468d5656101a999ba0cbb64b0cbdc7c2b48de83c8f6e129b50e697dd05d",
+                "files":["places.tsv"],
+                "license":"CC-BY-4.0",
+                "license_url":"https://creativecommons.org/licenses/by/4.0/",
+                "notices":"data/luxforge-core",
+                "provenance":"data/luxforge-core/THIRD_PARTY.md"
             },{
-                "name":"Omarchy themes (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord, Everforest)",
-                "version":"quattro",
-                "revision":"035ce29f03bdd97a09af80ef5f2d22d7a98930d6",
-                "license":"MIT",
-                "files":["colors.toml of each theme, compiled into the binary"],
-                "notices":"themes/omarchy",
-                "provenance":"themes/omarchy/NOTICE.md",
-                "modifications":"None"
-            }],
-            "review_status":"Inventory only; manual license, native and asset reviews deferred"
-        });
+            "name":"Lensfun distortion profile index",
+            "version":"0.3.4",
+            "revision":"101c745e847a5de4a1e569a94368ce2027198598",
+            "license":"CC-BY-SA-3.0",
+            "files":LENS_FILES,
+            "notices":"data/lensfun",
+            "provenance":"data/lensfun/provenance.json",
+            "modifications":"Filtered version-1 XML converted to an offline rectilinear distortion index"
+        },{
+            "name":"Omarchy themes (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord, Everforest)",
+            "version":"quattro",
+            "revision":"035ce29f03bdd97a09af80ef5f2d22d7a98930d6",
+            "license":"MIT",
+            "files":["colors.toml of each theme, compiled into the binary"],
+            "notices":"themes/omarchy",
+            "provenance":"themes/omarchy/NOTICE.md",
+            "modifications":"None"
+        }],
+        "review_status":"Inventory only; manual license, native and asset reviews deferred"
+    });
     if macos {
         dependencies["native_sources"]
             .as_array_mut()

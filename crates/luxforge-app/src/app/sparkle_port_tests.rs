@@ -135,10 +135,9 @@ fn sparkle(found: Option<Item>) -> Script {
             Event::Extracting,
             Event::Ready,
         ],
-        Command::Answer(Reply::Found, Choice::Dismiss) => vec![
-            Event::Dismissed,
-            Event::CycleFinished { error: None },
-        ],
+        Command::Answer(Reply::Found, Choice::Dismiss) => {
+            vec![Event::Dismissed, Event::CycleFinished { error: None }]
+        }
         Command::Answer(Reply::Ready, Choice::Install) => {
             vec![Event::Installing { terminated: false }]
         }
@@ -251,11 +250,8 @@ impl Owner {
     }
 
     fn skip(&self, version: &str) -> Value {
-        self.call(
-            "update.skip",
-            json!({"version": version}),
-        )
-        .unwrap()
+        self.call("update.skip", json!({"version": version}))
+            .unwrap()
     }
 
     fn stop(mut self) {
@@ -298,10 +294,7 @@ fn sparkle_takes_the_persons_preferences_and_never_downloads_on_its_own() {
         ]
     );
     owner
-        .call(
-            "preferences.set",
-            json!({"update_checks": false}),
-        )
+        .call("preferences.set", json!({"update_checks": false}))
         .unwrap();
     wait_until("the policy applied", || {
         fixture.sparkle.commands().last()
@@ -368,10 +361,7 @@ fn sparkle_installs_automatically_only_an_update_with_this_catalog_format() {
         (Some(CATALOG_FORMAT + 1), false),
         (None, false),
     ] {
-        let fixture = Fixture::new(
-            "automatic",
-            sparkle(Some(item("0.2.0", 42, format))),
-        );
+        let fixture = Fixture::new("automatic", sparkle(Some(item("0.2.0", 42, format))));
         let owner = Owner::start(
             &fixture,
             Some(json!({"format": 1, "update_install_automatically": true})),
@@ -461,7 +451,10 @@ fn sparkle_a_requested_install_downloads_quits_and_installs_once_the_catalog_clo
 
 #[test]
 fn sparkle_a_postponed_relaunch_quits_first_and_resumes_at_quit() {
-    let fixture = Fixture::new("postponed", sparkle(Some(item("0.2.0", 42, Some(CATALOG_FORMAT)))));
+    let fixture = Fixture::new(
+        "postponed",
+        sparkle(Some(item("0.2.0", 42, Some(CATALOG_FORMAT)))),
+    );
     let owner = Owner::start(&fixture, None);
     owner.call("update.check", json!({})).unwrap();
     owner.install().unwrap();
@@ -471,7 +464,9 @@ fn sparkle_a_postponed_relaunch_quits_first_and_resumes_at_quit() {
     fixture.sparkle.raise(Event::RelaunchPostponed);
     wait_until("another quit request", || fixture.quits() == 2);
     owner.stop();
-    fixture.sparkle.raise(Event::Installing { terminated: false });
+    fixture
+        .sparkle
+        .raise(Event::Installing { terminated: false });
     assert_eq!(fixture.port.at_quit(QUICK, QUICK), AtQuit::Installed);
     assert!(fixture.sparkle.commands().contains(&Command::Resume));
     assert!(
@@ -498,16 +493,17 @@ fn sparkle_an_installer_that_does_not_take_the_update_fails_the_quit_hook() {
     wait_until("the quit request", || fixture.quits() == 1);
     owner.stop();
     assert!(matches!(
-        fixture
-            .port
-            .at_quit(Duration::from_millis(50), QUICK),
+        fixture.port.at_quit(Duration::from_millis(50), QUICK),
         AtQuit::Failed(_)
     ));
 }
 
 #[test]
 fn sparkle_a_skip_dismisses_the_offer_and_cancels_a_prepared_install() {
-    let fixture = Fixture::new("skip", sparkle(Some(item("0.2.0", 42, Some(CATALOG_FORMAT)))));
+    let fixture = Fixture::new(
+        "skip",
+        sparkle(Some(item("0.2.0", 42, Some(CATALOG_FORMAT)))),
+    );
     let owner = Owner::start(&fixture, None);
     owner.call("update.check", json!({})).unwrap();
     let skipped = owner.skip("0.2.0");
@@ -534,7 +530,10 @@ fn sparkle_a_skip_dismisses_the_offer_and_cancels_a_prepared_install() {
     wait_until("the cancellation", || owner.status()["ready"] == false);
     assert_eq!(
         fixture.sparkle.answers(),
-        vec![(Reply::Found, Choice::Install), (Reply::Ready, Choice::Skip)]
+        vec![
+            (Reply::Found, Choice::Install),
+            (Reply::Ready, Choice::Skip)
+        ]
     );
     owner.stop();
     assert_eq!(fixture.port.at_quit(QUICK, QUICK), AtQuit::Nothing);
@@ -564,14 +563,20 @@ fn sparkle_an_installation_no_longer_wanted_is_cancelled_at_quit() {
     assert_eq!(fixture.port.at_quit(QUICK, QUICK), AtQuit::Nothing);
     assert_eq!(
         fixture.sparkle.answers(),
-        vec![(Reply::Found, Choice::Install), (Reply::Ready, Choice::Skip)]
+        vec![
+            (Reply::Found, Choice::Install),
+            (Reply::Ready, Choice::Skip)
+        ]
     );
-    assert_eq!(fixture.port.status().ready, false);
+    assert!(!fixture.port.status().ready);
 }
 
 #[test]
 fn sparkle_a_check_while_an_offer_is_held_reads_the_feed_again() {
-    let fixture = Fixture::new("recheck", sparkle(Some(item("0.2.0", 42, Some(CATALOG_FORMAT)))));
+    let fixture = Fixture::new(
+        "recheck",
+        sparkle(Some(item("0.2.0", 42, Some(CATALOG_FORMAT)))),
+    );
     let owner = Owner::start(&fixture, None);
     owner.call("update.check", json!({})).unwrap();
     let again = owner.call("update.check", json!({})).unwrap();

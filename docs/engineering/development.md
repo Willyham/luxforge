@@ -830,6 +830,14 @@ The payload must look like a release one. Copy the debug `luxforge` into a direc
 
 To serve a feed as the API does, write one with `cargo xtask update-feed --deploy NEW_FILE.tar`, install it with `services/usage-statistics/install-feeds.py STORE`, and run the usage statistics ingress with `LUXFORGE_INGEST_UPDATES_DIR=STORE/current`; the feed is then at `http://LISTEN/v1/updates/linux-x86_64/appcast.xml` ([publishing and serving the feeds](../design/auto-update.md#publishing-and-serving-the-feeds)).
 
+### The macOS update journey
+
+`cargo xtask update-journey --output NEW` updates a macOS bundle end to end through [Sparkle](../design/auto-update.md#macos-sparkle), on macOS only, and takes a few minutes the first time while it builds. It builds the editor and `luxforge-ctl` with a release version into `target/update-journey/`, fetches the pinned Sparkle, and makes two background-only bundles of the same editor, builds 1 and 2, under the identifier `org.luxforge.update-journey`. Build 2 is zipped, signed with a throwaway Ed25519 key and served from a loopback appcast. Build 1 runs as a hidden evidence run that checks, takes the offer and installs; Sparkle replaces the bundle and relaunches it, and the journey asks the relaunch for `update.status` through `luxforge-ctl --catalog` and requires build 2.
+
+Every launch keeps its files under `NEW/data`, which the bundles name in `LuxforgeUpdateJourneyRoot`, never in the person's catalog. A temporary self-signed identity lives in a keychain under `NEW/identity`, passed explicitly to `codesign`; `codesign` refuses it as untrusted, so the bundles are signed ad hoc and `summary.json` records the refusal. The login keychain, the default keychain and the search list are left alone, and the temporary keychain is deleted at the end. Cleanup also stops any journey process and removes Sparkle's defaults, caches and HTTP storage for the identifier.
+
+`NEW/summary.json` records each stage, where the journey stopped if it did, the frontmost application sampled throughout (a journey app must never be frontmost) and the cleanup. Beside it are the feed server's `requests.log`, build 1's `evidence-1/`, `relaunched-status.json` and Sparkle's unified log in `sparkle-log.json`.
+
 ### Browsing the component gallery
 
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in

@@ -83,6 +83,7 @@ mod sparkle;
 mod stats;
 mod theme_smoke;
 mod unsupported_catalog_smoke;
+mod update_journey;
 mod usage_backend_smoke;
 mod usage_measure;
 mod usage_receiver;
@@ -209,6 +210,7 @@ fn main_result() -> Result {
             )?;
         }
         "release-sign" => release_sign::run(&root, &mut a)?,
+        "update-journey" => update_journey::run(&root, &mut a)?,
         "release-assemble" => {
             let tag = a.value("--tag")?.ok_or("Required: --tag")?;
             let input = absolute(&root, &a.path("--input")?);

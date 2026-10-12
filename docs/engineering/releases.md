@@ -32,6 +32,8 @@ Open GitHub **Actions → Release builds** for logs and the public pre-release u
 - `release.json`, per-platform build records and `SHA256SUMS` for the final files.
 - `luxforge-VERSION-updates.json`, the signed update record, once [automatic updates](#automatic-updates) are switched on. It is not listed in `SHA256SUMS` or `release.json`.
 
+The macOS app embeds Sparkle 2.10.0's `Sparkle.framework` for its updater. `release-build` downloads the official archive once into `target/sparkle/2.10.0/`, refuses it unless its length (16,319,840 bytes) and SHA-256 are the pinned ones (`xtask/src/sparkle.rs`), and copies the framework into `Luxforge.app/Contents/Frameworks/` without its XPC services; no Sparkle binary is committed. The app's `Info.plist` names the macOS feed, the committed public key (none while `release/update.json` has none), daily automatic checks and verification of an archive before it is extracted. Signing signs Sparkle's `Autoupdate`, `Updater.app` and the framework before the helpers and the app.
+
 The Linux build uses Ubuntu 24.04/glibc 2.39. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
 
 ## One-time hosted macOS signing setup
@@ -51,7 +53,7 @@ In Xcode's **Manage Certificates**, export the **Developer ID Application** iden
 
 Then add the **repository variable** `LUXFORGE_SIGN_MACOS` with value `true`. Unset or `false` creates explicitly unsigned candidates; any other value is rejected. If `true`, missing credentials or a signing/notarization failure fail the macOS build and prevent publication. No unsigned fallback is uploaded as a successful signed build.
 
-Apple credentials reach only the macOS signing step, after compilation/checks. The runner imports them into a temporary Keychain, signs CLI helpers then the app with hardened runtime and timestamp, requires an **Accepted** notary submission, staples/validates the app and recreates its ZIP. It then creates the disk image from the stapled app, signs it with the same identity and a timestamp, requires an **Accepted** submission for it too, staples/validates it and assesses it with `spctl --type open`, all before final checksums. `target.json` records both submissions and the final ZIP and disk image hashes. The temporary Keychain and P12 are removed on success or failure. Build/cache/upload steps do not receive those secret values; credential files are outside artifact/cache directories. Only the final publication job has repository write permission, and it receives no Apple credentials. Workflows do not run on pull requests.
+Apple credentials reach only the macOS signing step, after compilation/checks. The runner imports them into a temporary Keychain, signs Sparkle's nested code, the CLI helpers, then the app with hardened runtime and timestamp, requires an **Accepted** notary submission, staples/validates the app and recreates its ZIP. It then creates the disk image from the stapled app, signs it with the same identity and a timestamp, requires an **Accepted** submission for it too, staples/validates it and assesses it with `spctl --type open`, all before final checksums. `target.json` records both submissions and the final ZIP and disk image hashes. The temporary Keychain and P12 are removed on success or failure. Build/cache/upload steps do not receive those secret values; credential files are outside artifact/cache directories. Only the final publication job has repository write permission, and it receives no Apple credentials. Workflows do not run on pull requests.
 
 
 ## Automatic updates
@@ -67,7 +69,7 @@ Only one workflow step receives each key: **Sign the update record** receives `L
 
 Do these in order. Until the last one, releases publish no record and no feed.
 
-1. **Generate the update key** on your Mac with Sparkle's `generate_keys`. Download the official Sparkle 2 release archive from [Sparkle's releases](https://github.com/sparkle-project/Sparkle/releases), the version the macOS build embeds, and check it against the SHA-256 the release states. Unpack it, then run:
+1. **Generate the update key** on your Mac with Sparkle's `generate_keys`, from Sparkle 2.10.0, the version the macOS build embeds: download [`Sparkle-2.10.0.tar.xz`](https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz) and check that `shasum -a 256` prints `c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c`. Unpack it into a new folder, then run:
 
    ```sh
    ./bin/generate_keys --account luxforge-updates
