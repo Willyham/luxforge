@@ -75,7 +75,10 @@ use luxforge_core::{
     ProxyBounds, Raster, Region, RenderOptions, RendererReason,
     analysis::Report,
     overview_size,
-    tiles::{Answered as Drawn, ReadStage, ReadValues, TileCall, TileFallback, TileService},
+    tiles::{
+        Answered as Drawn, Depth, OutputSpec, PixelRows, ReadStage, ReadValues, TileCall,
+        TileFallback, TileService, reference_output,
+    },
 };
 use luxforge_gpu::{
     GpuPlan, GpuProgram, GpuSource, GpuStep, MaskedColour, TexelMap, headless::HeadlessSurface,
@@ -114,12 +117,12 @@ impl Exporters {
     }
 }
 
-/// The GPU's export of a stack: the codes of its output stage, three bytes a pixel, as the first
-/// worker's stream handed them to the encoder, whether the second's were the same bytes, and the
-/// bands and tiles the first drew it in; or why the GPU did not export it.
+/// The GPU's export of a stack: the codes of its output, three a pixel, as the first worker's
+/// stream handed them to the encoder, whether the second's were the same codes, and the bands and
+/// tiles the first drew it in; or why the GPU did not export it.
 enum Exported {
     Drawn {
-        codes: Vec<u8>,
+        codes: Codes,
         repeatable: bool,
         bands: u64,
         tiles: u64,
@@ -127,15 +130,58 @@ enum Exported {
     Gap(String),
 }
 
-/// `evaluation`'s output stage streamed through each of `exporters`' workers in turn, the second
-/// compared band by band with the first.
-fn exported(exporters: &Exporters, evaluation: &Evaluation) -> Exported {
+/// An export's codes, three a pixel, at its depth.
+#[derive(Clone, Debug, PartialEq)]
+enum Codes {
+    Eight(Vec<u8>),
+    Sixteen(Vec<u16>),
+}
+
+impl Codes {
+    /// No codes at `depth`.
+    fn empty(depth: Depth) -> Self {
+        match depth {
+            Depth::Eight => Self::Eight(Vec::new()),
+            Depth::Sixteen => Self::Sixteen(Vec::new()),
+        }
+    }
+
+    /// The red, green and blue of every pixel of `rows`, which must be of this depth.
+    fn of(rows: PixelRows<'_>) -> Self {
+        let mut codes = Self::empty(rows.depth());
+        codes.extend(rows);
+        codes
+    }
+
+    /// `rows`' red, green and blue added; nothing for rows of another depth.
+    fn extend(&mut self, rows: PixelRows<'_>) {
+        match (self, rows) {
+            (Self::Eight(codes), PixelRows::Eight(rgba)) => codes.extend(rgb_of(rgba)),
+            (Self::Sixteen(codes), PixelRows::Sixteen(rgba)) => codes.extend(
+                rgba.chunks_exact(4)
+                    .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]),
+            ),
+            _ => {}
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Eight(codes) => codes.len(),
+            Self::Sixteen(codes) => codes.len(),
+        }
+    }
+}
+
+/// `evaluation`'s `output` streamed through each of `exporters`' workers in turn, the second
+/// compared with the first.
+fn exported(exporters: &Exporters, evaluation: &Evaluation, output: OutputSpec) -> Exported {
     let [one, two] = &exporters.workers;
     let before = one.figures();
-    let (mut codes, mut taken) = (Vec::new(), 0);
-    if let Err(reason) = streamed(one, evaluation, |rgba| {
+    let (mut codes, mut taken) = (Codes::empty(output.depth), 0);
+    if let Err(reason) = streamed(one, evaluation, output, |rows| {
         taken += 1;
-        codes.extend(rgb_of(rgba));
+        codes.extend(rows);
     }) {
         return Exported::Gap(reason);
     }
@@ -145,17 +191,13 @@ fn exported(exporters: &Exporters, evaluation: &Evaluation) -> Exported {
         let after = one.figures();
         (after.bands - before.bands >= taken).then_some(after)
     });
-    let (mut at, mut repeatable) = (0, true);
-    let again = streamed(two, evaluation, |rgba| {
-        let band: Vec<u8> = rgb_of(rgba).collect();
-        repeatable &= codes.get(at..at + band.len()) == Some(band.as_slice());
-        at += band.len();
-    });
+    let mut again_codes = Codes::empty(output.depth);
+    let again = streamed(two, evaluation, output, |rows| again_codes.extend(rows));
     if let Err(reason) = again {
         return Exported::Gap(format!("the second worker: {reason}"));
     }
     Exported::Drawn {
-        repeatable: repeatable && at == codes.len(),
+        repeatable: again_codes == codes,
         codes,
         bands: after.bands - before.bands,
         tiles: after.tiles - before.tiles,
@@ -168,20 +210,21 @@ fn rgb_of(rgba: &[u8]) -> impl Iterator<Item = u8> + '_ {
         .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
 }
 
-/// Stream `evaluation`'s output stage through `worker`, handing each band's codes to `take`; why
-/// the reference renders the export instead when the worker refuses the stream or stops drawing
-/// it, as the export's result names it, or why the stream failed.
+/// Stream `evaluation`'s `output` through `worker`, handing each band's rows to `take`; why the
+/// reference renders the export instead when the worker refuses the stream or stops drawing it, as
+/// the export's result names it, or why the stream failed.
 fn streamed(
     worker: &GpuTiles,
     evaluation: &Evaluation,
-    mut take: impl FnMut(&[u8]),
+    output: OutputSpec,
+    mut take: impl FnMut(PixelRows<'_>),
 ) -> Result<(), String> {
     let mut stream = worker
-        .stream(evaluation, &Cancel::new())
+        .stream(evaluation, output, &Cancel::new())
         .map_err(|fallback| refused(&fallback))?;
     while let Some(band) = stream.next() {
         match band {
-            Ok(band) => take(&band.rgba),
+            Ok(band) => take(band.pixels.rows()),
             Err(error) => {
                 return Err(match stream.fallback() {
                     Some(fallback) => refused(fallback),
@@ -412,7 +455,7 @@ pub(crate) fn against_reference(test: &str) {
     let exporters = settings
         .kinds
         .iter()
-        .any(|kind| matches!(kind, Kind::Export | Kind::Sample))
+        .any(|kind| kind.export() || *kind == Kind::Sample)
         .then(|| Exporters::new(test))
         .flatten();
     if let Some(exporters) = &exporters {
@@ -671,13 +714,30 @@ fn measure(
                 eprintln!("{cell}: sample: {measured}");
                 measured
             }
-            Kind::Export => {
+            Kind::Export | Kind::ExportResized | Kind::Export16 => {
+                let output = export_output(*kind, stage);
                 let drawn = match exporters {
-                    Some(exporters) => exported(exporters, &evaluation),
+                    Some(exporters) => exported(exporters, &evaluation, output),
                     None => Exported::Gap("no adapter for the GPU tile workers".to_owned()),
                 };
-                let measured = export_kind(&reference, drawn, class)?;
-                eprintln!("{cell}: export: {measured}");
+                // The reference export: the exact frame itself at full size and 8 bits, which
+                // is the reference frame above, and otherwise its output as the export lane's
+                // reference renders it.
+                let expected = match *kind {
+                    Kind::Export => Codes::Eight(rgb(&reference)),
+                    _ => Codes::of(
+                        reference_output(
+                            &evaluation,
+                            output,
+                            evaluation.entry().snapshot.id.clone(),
+                            &Cancel::never(),
+                        )
+                        .map_err(|error| error.to_string())?
+                        .rows(),
+                    ),
+                };
+                let measured = export_kind(&expected, output, drawn, class)?;
+                eprintln!("{cell}: {}: {measured}", kind.name());
                 measured
             }
             Kind::Overview => {
@@ -1248,6 +1308,56 @@ fn compare(candidate: &[u8], reference: &[u8], size: (u32, u32)) -> Result<Stati
     preview_error::statistics_of(width as usize, height as usize, &delta_e, &delta_l)
 }
 
+/// [`compare`] of two 16-bit frames, ΔE00 from their 16-bit values, in bands of rows.
+fn compare16(candidate: &[u16], reference: &[u16], size: (u32, u32)) -> Result<Statistics, String> {
+    let (width, height) = size;
+    let (candidate, reference) = (
+        preview_error::Rgb16::new(width, height, candidate)?,
+        preview_error::Rgb16::new(width, height, reference)?,
+    );
+    let parts = std::thread::scope(|scope| {
+        bands(height)
+            .into_iter()
+            .map(|rows| {
+                scope.spawn(move || preview_error::differences16(candidate, reference, rows))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|band| band.join().expect("a band of the comparison"))
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let pixels = width as usize * height as usize;
+    let (mut delta_e, mut delta_l) = (Vec::with_capacity(pixels), Vec::with_capacity(pixels));
+    for (e, l) in parts {
+        delta_e.extend(e);
+        delta_l.extend(l);
+    }
+    preview_error::statistics_of(width as usize, height as usize, &delta_e, &delta_l)
+}
+
+/// The output an export kind streams of a `stage` output stage: the stage itself at 8 bits for
+/// [`Kind::Export`] and at 16 bits for [`Kind::Export16`]; for [`Kind::ExportResized`], at 8 bits,
+/// its long edge 2048 pixels, or half the stage's for a stage of 4096 or less, both sides scaled by
+/// that one factor and rounded, at least one pixel.
+fn export_output(kind: Kind, stage: (u32, u32)) -> OutputSpec {
+    match kind {
+        Kind::ExportResized => {
+            let long = stage.0.max(stage.1);
+            let target = (long / 2).clamp(1, 2048);
+            let side = |length: u32| {
+                ((u64::from(length) * u64::from(target) + u64::from(long) / 2) / u64::from(long))
+                    .clamp(1, u64::from(length)) as u32
+            };
+            OutputSpec::full(side(stage.0), side(stage.1))
+        }
+        Kind::Export16 => OutputSpec {
+            depth: Depth::Sixteen,
+            ..OutputSpec::full(stage.0, stage.1)
+        },
+        _ => OutputSpec::full(stage.0, stage.1),
+    }
+}
+
 /// `raster`'s pixels, three bytes each.
 fn rgb(raster: &Raster) -> Vec<u8> {
     raster
@@ -1730,8 +1840,13 @@ fn sample_kind(
 /// limit of `class` over every pixel of the codes each encodes — the GPU's stream's and the
 /// reference's exact whole frame, `reference` — and repeatable, its second stream the same bytes;
 /// or a gap naming why the GPU did not export it, never a pass.
-fn export_kind(reference: &Raster, exported: Exported, class: Class) -> Result<Value, String> {
-    let stage = [reference.width, reference.height];
+fn export_kind(
+    expected: &Codes,
+    output: OutputSpec,
+    exported: Exported,
+    class: Class,
+) -> Result<Value, String> {
+    let stage = [output.width, output.height];
     let (codes, repeatable, bands, tiles) = match exported {
         Exported::Gap(reason) => {
             return Ok(json!({
@@ -1747,25 +1862,35 @@ fn export_kind(reference: &Raster, exported: Exported, class: Class) -> Result<V
             tiles,
         } => (codes, repeatable, bands, tiles),
     };
-    let expected = rgb(reference);
     if codes.len() != expected.len() {
         return Err(format!(
-            "the GPU's export holds {} codes where the reference's {} × {} stage holds {}",
+            "the GPU's export holds {} codes where the reference's {} × {} output holds {}",
             codes.len(),
             stage[0],
             stage[1],
             expected.len()
         ));
     }
+    let size = (output.width, output.height);
+    let measured = match (&codes, expected) {
+        (Codes::Eight(codes), Codes::Eight(expected)) => compare(codes, expected, size)?,
+        (Codes::Sixteen(codes), Codes::Sixteen(expected)) => compare16(codes, expected, size)?,
+        _ => return Err("the GPU's export and the reference's differ in depth".to_owned()),
+    };
     let error = tolerance::ExportError {
-        statistics: compare(&codes, &expected, (reference.width, reference.height))?,
+        statistics: measured,
         repeatable,
     };
     Ok(json!({
         "status": "measured",
         "renderer": "gpu",
-        "against": "the reference export's codes: the exact whole frame its encoder reads",
-        "stage": stage,
+        "against": "the reference export's codes at the same size and depth: what its encoder \
+                    reads",
+        "output": stage,
+        "depth": match output.depth {
+            Depth::Eight => 8,
+            Depth::Sixteen => 16,
+        },
         "bands": bands,
         "tiles": tiles,
         "statistics": statistics(&error.statistics),
@@ -2062,9 +2187,11 @@ fn the_sample_comparison_reads_the_reference_at_its_points_and_judges_a_gpus_ans
 
 #[test]
 fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
-    let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
+    let reference = Codes::Eight(rgb(&raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30])));
+    let output = OutputSpec::full(40, 30);
     let gap = export_kind(
         &reference,
+        output,
         Exported::Gap("the reference renders it: no-program".into()),
         Class::Pointwise,
     )
@@ -2072,13 +2199,19 @@ fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
     assert_eq!(gap["status"], "gap", "never a pass");
     assert_eq!(gap["reason"], "the reference renders it: no-program");
     assert_eq!(gap["reference"]["stage"], json!([40, 30]));
-    let drawn = |codes: Vec<u8>, repeatable| Exported::Drawn {
+    let drawn = |codes: Codes, repeatable| Exported::Drawn {
         codes,
         repeatable,
         bands: 2,
         tiles: 4,
     };
-    let judged = export_kind(&reference, drawn(rgb(&reference), true), Class::Pointwise).unwrap();
+    let judged = export_kind(
+        &reference,
+        output,
+        drawn(reference.clone(), true),
+        Class::Pointwise,
+    )
+    .unwrap();
     assert_eq!(
         (judged["passed"].clone(), judged["repeatable"].clone()),
         (json!(true), json!(true))
@@ -2088,12 +2221,72 @@ fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
         (json!(2), json!(4))
     );
     // Within the limit but not the same bytes twice: not a pass.
-    let judged = export_kind(&reference, drawn(rgb(&reference), false), Class::Pointwise).unwrap();
+    let judged = export_kind(
+        &reference,
+        output,
+        drawn(reference.clone(), false),
+        Class::Pointwise,
+    )
+    .unwrap();
     assert_eq!(judged["passed"], false);
-    let far = rgb(&raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 90]));
-    let judged = export_kind(&reference, drawn(far, true), Class::Spatial).unwrap();
+    let far = Codes::Eight(rgb(&raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 90])));
+    let judged = export_kind(&reference, output, drawn(far, true), Class::Spatial).unwrap();
     assert_eq!(judged["passed"], false, "{judged}");
-    assert!(export_kind(&reference, drawn(vec![0; 9], true), Class::Pointwise).is_err());
+    let short = drawn(Codes::Eight(vec![0; 9]), true);
+    assert!(export_kind(&reference, output, short, Class::Pointwise).is_err());
+    // At 16 bits, ΔE00 from the 16-bit values: a code apart is within any limit, a step of 8 bits
+    // in every channel's eighth bit is not nothing, and a depth apart is an error.
+    let wide = |offset: u16| {
+        Codes::Sixteen(
+            (0..40u16 * 30)
+                .flat_map(|index| [index * 50, 30_000 + offset, 9_000])
+                .collect(),
+        )
+    };
+    let output16 = OutputSpec {
+        depth: Depth::Sixteen,
+        ..output
+    };
+    let judged = export_kind(&wide(0), output16, drawn(wide(1), true), Class::Pointwise).unwrap();
+    assert_eq!(
+        (judged["passed"].clone(), judged["depth"].clone()),
+        (json!(true), json!(16))
+    );
+    assert!(judged["statistics"]["mean"].as_f64().unwrap() > 0.0);
+    assert!(
+        export_kind(
+            &wide(0),
+            output16,
+            drawn(reference.clone(), true),
+            Class::Pointwise
+        )
+        .is_err()
+    );
+}
+
+/// The resized kind's output keeps the stage's shape, its long edge 2048 or half the stage's.
+#[test]
+fn an_export_kinds_output_is_its_stage_resized_or_widened() {
+    assert_eq!(
+        export_output(Kind::ExportResized, (6000, 4000)),
+        OutputSpec::full(2048, 1365)
+    );
+    assert_eq!(
+        export_output(Kind::ExportResized, (97, 61)),
+        OutputSpec::full(48, 30)
+    );
+    assert_eq!(
+        export_output(Kind::ExportResized, (1, 1)),
+        OutputSpec::full(1, 1)
+    );
+    assert_eq!(
+        export_output(Kind::Export, (97, 61)),
+        OutputSpec::full(97, 61)
+    );
+    assert_eq!(
+        export_output(Kind::Export16, (97, 61)).depth,
+        Depth::Sixteen
+    );
 }
 
 /// The GPU's export of a stack streamed through two workers on this host's adapter, as the export
@@ -2133,32 +2326,52 @@ fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
         recipe,
         None,
     );
-    let Exported::Drawn {
-        codes,
-        repeatable,
-        bands,
-        tiles,
-    } = exported(&exporters, &evaluation)
-    else {
-        panic!("{test}: the stream was refused");
-    };
-    assert!(repeatable, "two devices, the same bytes");
-    assert_eq!(codes.len(), rgb(&frame).len());
-    assert_eq!(bands, u64::from(frame.height.div_ceil(64)));
-    assert!(tiles >= bands);
-    let judged = export_kind(
-        &frame,
-        Exported::Drawn {
+    let stage = (frame.width, frame.height);
+    for kind in [Kind::Export, Kind::ExportResized, Kind::Export16] {
+        let output = export_output(kind, stage);
+        let Exported::Drawn {
             codes,
             repeatable,
             bands,
             tiles,
-        },
-        Class::Spatial,
-    )
-    .unwrap();
-    eprintln!("{test}: {judged}");
-    assert_eq!(judged["passed"], true, "{judged}");
+        } = exported(&exporters, &evaluation, output)
+        else {
+            panic!("{test}: {}: the stream was refused", kind.name());
+        };
+        assert!(repeatable, "{}: two devices, the same bytes", kind.name());
+        let expected = match kind {
+            Kind::Export => Codes::Eight(rgb(&frame)),
+            _ => Codes::of(
+                reference_output(
+                    &evaluation,
+                    output,
+                    luxforge_core::SnapshotId::new(),
+                    &Cancel::never(),
+                )
+                .unwrap()
+                .rows(),
+            ),
+        };
+        assert_eq!(codes.len(), expected.len(), "{}", kind.name());
+        if kind == Kind::Export {
+            assert_eq!(bands, u64::from(frame.height.div_ceil(64)));
+            assert!(tiles >= bands);
+        }
+        let judged = export_kind(
+            &expected,
+            output,
+            Exported::Drawn {
+                codes,
+                repeatable,
+                bands,
+                tiles,
+            },
+            Class::Spatial,
+        )
+        .unwrap();
+        eprintln!("{test}: {}: {judged}", kind.name());
+        assert_eq!(judged["passed"], true, "{}: {judged}", kind.name());
+    }
 }
 
 #[test]
