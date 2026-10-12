@@ -146,6 +146,15 @@ pub struct WindowFrame {
     pub y: f32,
 }
 
+/// The remembered settings of the person's last HDR merge, which the desktop's ⌥-click merges
+/// with: alignment and deghosting. The folder is not remembered: each merge's plan proposes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HdrMergePreference {
+    pub alignment: crate::merge::hdr::AlignmentMode,
+    pub deghost: crate::merge::hdr::DeghostMode,
+}
+
 /// The stored preferences: each field holds the person's explicit choice, or nothing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -184,6 +193,9 @@ pub(crate) struct Preferences {
     /// The folder `export.plan` suggests while it exists; the original's folder when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) export_folder: Option<PathBuf>,
+    /// The last HDR merge's alignment and deghosting; the defaults when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) hdr_merge: Option<HdrMergePreference>,
     /// The feature flags the person chose, by identity, exactly as stored: a value no flag claims,
     /// or one that does not fit its flag, is kept for [`crate::flags`] to report.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -369,6 +381,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) brush: Option<Option<BrushPreference>>,
     pub(crate) window: Option<Option<WindowFrame>>,
     pub(crate) export_folder: Option<Option<PathBuf>>,
+    pub(crate) hdr_merge: Option<Option<HdrMergePreference>>,
     pub(crate) theme: Option<Option<String>>,
 }
 
@@ -400,6 +413,7 @@ impl PreferenceChange {
         put(&mut preferences.brush, self.brush);
         put(&mut preferences.window, self.window);
         put(&mut preferences.export_folder, self.export_folder);
+        put(&mut preferences.hdr_merge, self.hdr_merge);
         put(&mut preferences.theme, self.theme);
     }
 }
@@ -587,6 +601,10 @@ mod tests {
                 y: 25.0,
             })),
             export_folder: Some(Some(PathBuf::from("/Users/someone/Exports"))),
+            hdr_merge: Some(Some(HdrMergePreference {
+                alignment: crate::merge::hdr::AlignmentMode::Off,
+                deghost: crate::merge::hdr::DeghostMode::Auto,
+            })),
             theme: Some(Some(STORED_THEME.to_owned())),
         }
     }
@@ -709,6 +727,10 @@ mod tests {
             reopened.export_folder.as_deref(),
             Some(Path::new("/Users/someone/Exports"))
         );
+        assert_eq!(
+            reopened.hdr_merge.map(|last| last.alignment),
+            Some(crate::merge::hdr::AlignmentMode::Off)
+        );
         assert_eq!(reopened.theme(), STORED_THEME);
         let launch = LaunchPreferences::read(Some(root.clone()));
         assert!(launch.problem.is_none());
@@ -747,6 +769,7 @@ mod tests {
             brush: Some(None),
             window: Some(None),
             export_folder: Some(None),
+            hdr_merge: Some(None),
             theme: Some(None),
         };
         let (_, after) = store.set(reset).unwrap();

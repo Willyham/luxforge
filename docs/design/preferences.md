@@ -4,7 +4,7 @@ Status: implemented, at the owner's request of 2026-10-04 and on the [decisions]
 
 The person's preferences live outside every catalog, in the host's `preferences.json` beside the [feature flags](settings-and-flags.md). This design adds two kinds of preference to the one Auto collapse history row the Settings sheet's **General** tab has today:
 
-- **Remembered state.** Choices the person already makes in the workspace, kept across launches with no row of their own: panel visibility, the thirds and clipping overlays, the brush, the window's frame and the last export folder.
+- **Remembered state.** Choices the person already makes in the workspace, kept across launches with no row of their own: panel visibility, the thirds and clipping overlays, the brush, the window's frame, the last export folder and the last HDR merge's settings.
 - **General rows.** Choices with no other home: whether new RAW photos get their lens profile, which look they start from, the mask overlay colour, the canvas background, the interface size and where the catalog lives.
 
 ## Rules
@@ -34,6 +34,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `brush` | `{size, feather, flow}`, or `null` | `null`: the neutral brush | remembered | next launch |
 | `window` | `{width, height, x, y}` in the system's points, or `null` | `null`: 1440 × 900, placed by the system | remembered | next launch |
 | `export_folder` | absolute path of a folder, or `null` | `null`: the original's folder | remembered | next export |
+| `hdr_merge` | `{alignment, deghost}`, each `auto` or `off`, or `null` | `null`: both Auto | remembered | next ⌥-click merge |
 
 ### Protected usage statistics record
 
@@ -105,6 +106,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
   - **Limit.** A secondary display larger than the main one, to its right or below it, can be taken for the main one, so a frame running past its edge can be moved to the main display. Exact placement needs the native screen frames.
   - **Events.** The event log records `window_fitted` and `window_moved_to_main_display`.
 - **Remembered export folder.** After an export whose destination the person chose in the save dialog succeeds, the desktop stores the destination's folder. When `export_folder` is stored and is an existing folder, `export.plan` suggests `<export_folder>/<stem>-edited.jpg`, counting up within that folder. Otherwise it suggests the original's folder as today. An export with a destination given by an evidence step or an API client stores nothing.
+- **Remembered HDR merge.** When a merge this desktop asked for starts, the desktop stores its alignment and deghosting as `hdr_merge`, if they differ from what is stored. ⌥-click on Pick merged or Import merged merges with them, and the [merge preview](panorama-merge.md#the-merge-preview) opens with them; with nothing stored, both are Auto. The folder, the reference and exposure overrides belong to one bracket and are not remembered.
 
 ## Desktop writes
 
