@@ -222,8 +222,9 @@ impl HeadlessSurface {
     }
 
     /// Exhaust all but `free` bytes of the pipeline's GPU-preview budget, as a busy desktop's
-    /// other surfaces would; `None` restores it.
+    /// other surfaces would, once everything released has retired; `None` restores it.
     pub fn leave_budget(&self, free: Option<u64>) {
+        self.retired();
         self.pipeline
             .set_gpu_budget(free.map_or(super::GPU_PREVIEW_BUDGET, |free| {
                 self.pipeline.figures.preview.in_use() + free

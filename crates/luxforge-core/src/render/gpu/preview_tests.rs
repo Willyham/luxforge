@@ -688,5 +688,8 @@ fn an_overview_is_a_second_reduction_of_the_same_tiles() {
         width: 120,
         height: 120,
     });
-    assert_eq!(small.overview.map(|overview| overview.view), Some((120, 80)));
+    assert_eq!(
+        small.overview.map(|overview| overview.view),
+        Some((120, 80))
+    );
 }

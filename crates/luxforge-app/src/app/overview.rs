@@ -242,7 +242,9 @@ pub(crate) enum Work {
         cancel: Cancel,
     },
     /// Sweep the held picture at rest again with the overview reduced beside it, as `version`.
-    Sweep { version: u64 },
+    Sweep {
+        version: u64,
+    },
 }
 
 /// A finished reduction's answer, checked against the version it was started as.
@@ -436,10 +438,9 @@ impl Overviews {
         };
         let wanted = desired.key.as_ref();
         // A finished overview of the content shown becomes the settled one.
-        if let Some(pending) = self
-            .pending
-            .take_if(|pending| pending.done && Some(&pending.key) == wanted && held(pending.version))
-        {
+        if let Some(pending) = self.pending.take_if(|pending| {
+            pending.done && Some(&pending.key) == wanted && held(pending.version)
+        }) {
             self.settled = Some(Made {
                 key: pending.key,
                 version: pending.version,
@@ -467,7 +468,9 @@ impl Overviews {
             return Work::None;
         }
         let needs = |key: &OverviewKey| {
-            self.settled.as_ref().is_none_or(|settled| settled.key != *key)
+            self.settled
+                .as_ref()
+                .is_none_or(|settled| settled.key != *key)
                 && self
                     .unavailable
                     .as_ref()
@@ -700,7 +703,8 @@ pub(crate) fn key_of(
 impl Editor {
     /// What the minimap shows now ([`MinimapOverview`]): read by the canvas, plain data.
     pub(crate) fn minimap_overview(&self) -> MinimapOverview {
-        self.overviews.minimap(self.overview_desired(false).as_ref())
+        self.overviews
+            .minimap(self.overview_desired(false).as_ref())
     }
 
     /// The overview the minimap needs now, if the view shows one; with `lend`, the retained frame
@@ -710,9 +714,7 @@ impl Editor {
             luxforge_core::Zoom::Percent { value } => value,
             luxforge_core::Zoom::Fit => return None,
         };
-        if percent < MINIMAP_ZOOM
-            || self.select_shown()
-            || self.presentation.render_error.is_some()
+        if percent < MINIMAP_ZOOM || self.select_shown() || self.presentation.render_error.is_some()
         {
             return None;
         }
@@ -802,7 +804,10 @@ impl Editor {
         // Another photograph, none, or Select: everything goes.
         if asset.is_none()
             || self.select_shown()
-            || self.overviews.asset().is_some_and(|held| Some(held) != asset.as_ref())
+            || self
+                .overviews
+                .asset()
+                .is_some_and(|held| Some(held) != asset.as_ref())
         {
             let held = self.overviews.holds_anything();
             self.overviews.release();
@@ -817,9 +822,11 @@ impl Editor {
         let facts = self.overview_facts(desired.as_ref());
         let work = self.overviews.reconcile(desired.as_ref(), &facts);
         // A view change that found the overview ready reused it.
-        if matches!(self.overviews.minimap(desired.as_ref()), MinimapOverview::Ready(_))
-            && (before.zoom != self.session.preview.view.zoom
-                || before.geometry != self.view_geometry())
+        if matches!(
+            self.overviews.minimap(desired.as_ref()),
+            MinimapOverview::Ready(_)
+        ) && (before.zoom != self.session.preview.view.zoom
+            || before.geometry != self.view_geometry())
         {
             self.overviews.reused();
         }
@@ -841,12 +848,13 @@ impl Editor {
                 });
                 super::tasks::owner_task(
                     move || {
-                        let result = luxforge_core::reduce_overview(lent.pixels(), stage, size, &cancel)
-                            .map_err(|error| match error.kind {
-                                luxforge_core::ErrorKind::Cancelled => ReduceError::Cancelled,
-                                luxforge_core::ErrorKind::ResourceLimit => ReduceError::Bound,
-                                _ => ReduceError::Failed(error.detail),
-                            });
+                        let result =
+                            luxforge_core::reduce_overview(lent.pixels(), stage, size, &cancel)
+                                .map_err(|error| match error.kind {
+                                    luxforge_core::ErrorKind::Cancelled => ReduceError::Cancelled,
+                                    luxforge_core::ErrorKind::ResourceLimit => ReduceError::Bound,
+                                    _ => ReduceError::Failed(error.detail),
+                                });
                         // The frame is lent back as the reduction ends.
                         drop(lent);
                         Reduced { version, result }
@@ -863,7 +871,10 @@ impl Editor {
 
     /// Evidence: what the minimap shows, the lifecycle, and what the photograph's surface `drawn`
     /// last reported of its overviews and the pipeline's overview bytes.
-    pub(crate) fn minimap_overview_summary(&self, drawn: &luxforge_ui::SurfaceDiagnostics) -> Value {
+    pub(crate) fn minimap_overview_summary(
+        &self,
+        drawn: &luxforge_ui::SurfaceDiagnostics,
+    ) -> Value {
         let minimap = self.minimap_overview();
         let (state, shown) = match &minimap {
             MinimapOverview::None => ("none", None),
@@ -913,8 +924,8 @@ impl Editor {
         #[cfg(test)]
         let surface = self.gpu.overview_report;
         #[cfg(not(test))]
-        let surface = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
-            .gpu_overview;
+        let surface =
+            luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_overview;
         let sweep = self.overviews.sweep_version();
         Facts {
             moving: self.core_gesture().is_some(),
@@ -923,9 +934,7 @@ impl Editor {
             surface,
             sweepable: desired
                 .filter(|desired| desired.stage.kind == StageKind::Output && gpu_allowed)
-                .filter(|_| {
-                    self.presentation.compare_after.is_none() || self.document.compare_hold
-                })
+                .filter(|_| self.presentation.compare_after.is_none() || self.document.compare_hold)
                 .and_then(|desired| self.gpu_rest_overview_key(&desired.asset)),
             sweep_failed: sweep.is_some_and(|version| self.gpu_rest_overview_failed(version)),
         }

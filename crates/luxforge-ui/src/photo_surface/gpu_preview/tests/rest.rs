@@ -832,12 +832,14 @@ fn a_picture_at_rest_reduces_its_tiles_to_the_overview_its_surface_keeps() {
             assert_eq!(overview.reducing, None);
             assert!(overview.bytes > 0 && overview.bytes <= OVERVIEW_GPU_BUDGET);
             // Read live, the reduction's buffers perhaps retired since: the texture at least.
-            assert!(
-                (64 * 48 * 4..=OVERVIEW_GPU_BUDGET).contains(&seen.gpu_preview_overview_bytes)
-            );
+            assert!((64 * 48 * 4..=OVERVIEW_GPU_BUDGET).contains(&seen.gpu_preview_overview_bytes));
             break;
         }
-        assert_eq!(overview.holds(7), None, "frame {frames}: before the last tile");
+        assert_eq!(
+            overview.holds(7),
+            None,
+            "frame {frames}: before the last tile"
+        );
         assert!(frames < 6, "the rest was never drawn");
     }
     // Drawn alone, one to one: each pixel the reference's area average of the tiles' codes within
@@ -903,9 +905,16 @@ fn a_picture_at_rest_reduces_its_tiles_to_the_overview_its_surface_keeps() {
     }
     let figures = diagnostics(&pipeline, ID).gpu_overview.expect("figures");
     assert!(figures.holds(7).is_some() && figures.holds(8).is_some());
-    assert_eq!((figures.builds, figures.uploads, figures.upload_bytes), (1, 1, 16 * 12 * 4));
+    assert_eq!(
+        (figures.builds, figures.uploads, figures.upload_bytes),
+        (1, 1, 16 * 12 * 4)
+    );
     let uploaded = paint_into(&device, &queue, &mut pipeline, &overview_draw(8), (64, 48));
-    assert!(uploaded.chunks_exact(4).all(|pixel| pixel == [200, 90, 40, 255]));
+    assert!(
+        uploaded
+            .chunks_exact(4)
+            .all(|pixel| pixel == [200, 90, 40, 255])
+    );
     // A want naming only the upload retires the reduced one.
     let only = PhotoPrimitive {
         overview: Some(OverviewWant {

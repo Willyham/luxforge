@@ -107,7 +107,10 @@ fn a_swept_overview_is_adopted_ready_and_reused_with_no_work() {
     // often reconciled, and the same image.
     let held = facts(&[(version, (256, 171))]);
     for _ in 0..5 {
-        assert!(matches!(overviews.reconcile(Some(&wanted), &held), Work::None));
+        assert!(matches!(
+            overviews.reconcile(Some(&wanted), &held),
+            Work::None
+        ));
     }
     assert_eq!(overviews.counters().gpu_builds, 1);
     assert_eq!(overviews.counters().cpu_builds, 0);
@@ -160,8 +163,14 @@ fn a_retained_frame_is_reduced_on_a_worker_and_uploaded_once() {
         MinimapOverview::Pending { .. }
     ));
     let held = facts(&[(version, (256, 171))]);
-    assert!(matches!(overviews.reconcile(Some(&wanted), &held), Work::None));
-    assert!(overviews.handed().upload.is_none(), "its codes go once held");
+    assert!(matches!(
+        overviews.reconcile(Some(&wanted), &held),
+        Work::None
+    ));
+    assert!(
+        overviews.handed().upload.is_none(),
+        "its codes go once held"
+    );
     assert_eq!(overviews.handed().keep, Some(version));
     assert!(matches!(
         overviews.minimap(Some(&wanted)),
