@@ -877,7 +877,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "view.set",
         ViewSet,
         view_set,
-        "session view state; returns the session"
+        "this client's view: zoom and pan, stored as given in its session and changing no recipe, history, preview content or other client's view; pan is the scroll offset of the zoomed stage's top-left corner from the viewport's top-left, in the desktop's logical layout pixels, where a stage pixel spans percent / 100 / display scale of them (display scale is physical pixels per logical pixel); the desktop draws it clamped to 0..max(0, stage extent × that scale − viewport extent) per axis and centres an axis the stage fits, and ignores it at Fit; returns the session, whose preview.view holds the pan as stored"
     ),
     service!(
         "workspace.set",
@@ -2130,8 +2130,8 @@ host_params! {
 host_params! {
     pub(super) struct ViewSet {
         zoom: Option<Zoom> = json("{mode: fit} or {mode: percent, value: 10..1600}"),
-        pan_x: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
-        pan_y: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
+        pan_x: Option<f32> = number(f32::MIN as f64, f32::MAX as f64).notes("logical pixels from the zoomed stage's left edge to the viewport's; default the session's"),
+        pan_y: Option<f32> = number(f32::MIN as f64, f32::MAX as f64).notes("logical pixels from the zoomed stage's top edge to the viewport's; default the session's"),
     }
 }
 

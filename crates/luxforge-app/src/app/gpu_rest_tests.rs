@@ -1307,7 +1307,7 @@ pub(super) fn at_full_size(tiles: &luxforge_core::RestTiles) -> luxforge_gpu::Re
 /// one that reaches past the split, with content operations before them, a masked Presence layer
 /// after a global one, three sweeps through both stage textures, and a lens warp in the last
 /// sweep.
-fn staged_families() -> Vec<(&'static str, Recipe)> {
+pub(super) fn staged_families() -> Vec<(&'static str, Recipe)> {
     let presence = || {
         Layer::new(
             PRESENCE_EFFECT,

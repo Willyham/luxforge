@@ -176,6 +176,10 @@ pub use render::gpu::{
     gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps, plan_stream_sweeps,
     plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
 };
+pub use render::overview::{
+    OVERVIEW_BOUNDS, OVERVIEW_CPU_BYTES, OVERVIEW_GPU_BYTES, Overview, overview_cpu_bytes,
+    overview_reduction, overview_size, reduce_overview,
+};
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,

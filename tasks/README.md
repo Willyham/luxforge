@@ -68,9 +68,9 @@ Import from and alignment with Lightroom Classic.
 
 | Plan | Purpose |
 | --- | --- |
-| [Preset interaction](interface/preset-interaction.json) | Amount and reversible hover delivered through shared drafts; native rendered and scoped checks pass, with the aggregate quick gate open for unrelated native filesystem-watcher failures |
+| [Preset interaction](interface/preset-interaction.json) | Amount and reversible hover delivered through shared drafts; native rendered and scoped checks pass, with native filesystem-watcher qualification tracked in its separate required gate |
 | [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Implemented with quick and native M2 / Metal verification; final corpus qualification pending: copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through `edit.apply-settings` and `batch.apply-settings` with a `paste` origin |
-| [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Planned whole-image overview at percentage zoom ≥200, with owner-chosen click/drag navigation through `view.set`, bounded GPU/reference rendering, working integration first and final qualification/measurement; implementation awaits authorization |
+| [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Implemented whole-image overview at percentage zoom ≥200, with click/drag navigation through `view.set` and bounded GPU/reference rendering; the background zoom journey passes on the M4. GPU corpus qualification, wider rendered coverage and measurements remain open |
 
 ### Project (`project/`)
 
@@ -78,6 +78,7 @@ Owner decisions, release preparation, host services and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
+| [Watcher verification](project/watcher-verification.json) ([contract](../docs/engineering/watcher-verification.md)) | Implemented and locally verified on macOS: deterministic owner/index-lane watcher checks in quick and a separate required real-platform delivery/recovery gate for watcher changes and releases; Windows/Linux and hosted execution remain unrun |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](project/product-decisions.json) | Open product questions |
 | [Tag-triggered builds](project/tag-release-builds.json) ([design](../docs/design/tag-release-builds.md)) | Implemented guarded one-command initiation from clean synchronized main, versioned macOS/Linux build candidates, short/full SemVer tag identity, optional signing/notarization, integrity checks and automatic pre-release CI; hosted credentials and actual hosted/native qualification remain external inputs |

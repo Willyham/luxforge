@@ -37,6 +37,16 @@ pub(crate) enum ViewMessage {
     Panned(f32, f32),
     /// A pan round trip completed.
     PanSynced(Result<ClientSession, String>),
+    /// The left button went down on the high-zoom minimap at this point of its image area, in
+    /// logical pixels: centre the view there, or grab the viewport's rectangle.
+    MinimapPress(iced::Point),
+    /// The pointer moved, the button still held since a minimap press, to this point of the image
+    /// area — inside the card or not.
+    MinimapDrag(iced::Point),
+    /// The button held since a minimap press came up.
+    MinimapRelease,
+    /// A wheel over the minimap, as the scrollable's offset it would move by, in logical pixels.
+    MinimapWheel(f32, f32),
     /// Show or hide one side panel; the owner holds the flag.
     TogglePanel(Panel),
     /// Show or hide the thirds overlay.

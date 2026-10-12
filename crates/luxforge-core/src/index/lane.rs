@@ -38,6 +38,10 @@
 //!   of the headers read. Each committed batch advances the index's revision in the same transaction
 //!   and is announced as one event ([`LaneEvent::Committed`]).
 mod keep;
+#[cfg(test)]
+mod test_watch;
+#[cfg(test)]
+pub(crate) use test_watch::InjectedWatcher;
 
 use super::{
     IndexDb, database,
@@ -121,6 +125,18 @@ pub(crate) struct LaneConfig {
     /// The path of every header read the lane takes in, for a test that counts them.
     #[cfg(test)]
     pub reads: Arc<Mutex<Vec<PathBuf>>>,
+    #[cfg(test)]
+    pub injected_watcher: Option<InjectedWatcher>,
+}
+
+impl LaneConfig {
+    fn current_cursor(&self, path: &Path) -> Option<luxforge_watch::Resume> {
+        #[cfg(test)]
+        if let Some(watcher) = &self.injected_watcher {
+            return Some(watcher.cursor());
+        }
+        luxforge_watch::current_cursor(path)
+    }
 }
 
 /// One piece of the lane's work.
@@ -417,7 +433,11 @@ impl Coordinator {
     /// in turn, until the lane stops. Between them the thread blocks on its channel.
     fn run(mut self, watcher_inputs: SyncSender<Input>) {
         self.exclusions = self.config.own.exclusions();
-        let watcher = self.keeper.start(watcher_inputs);
+        let watcher = self.keeper.start(
+            watcher_inputs,
+            #[cfg(test)]
+            self.config.injected_watcher.clone(),
+        );
         (self.config.post)(LaneEvent::Started { watcher });
         loop {
             if self.mailbox.stopping.load(Ordering::SeqCst) {
@@ -1111,7 +1131,7 @@ impl Run<'_> {
         // Where an indexed folder's notifications would resume if it were watched from now, read
         // before the walk, so what changes during it is replayed. It reads no file.
         let cursor = (kind == RootKind::Indexed)
-            .then(|| luxforge_watch::current_cursor(&canonical))
+            .then(|| self.config.current_cursor(&canonical))
             .flatten();
         let walked = self.list(&canonical, &volume, about)?;
         self.batch.push(Write::Root(IndexRoot {

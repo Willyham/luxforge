@@ -3,12 +3,12 @@
   "plan_id": "minimap",
   "title": "Develop minimap at 200% and above",
   "objective": "Deliver a bounded whole-image overview with a visible-region rectangle and owner-chosen click/drag navigation at percentage zoom >=200, through existing view.set state, with native rendered evidence and declared-tolerance GPU correctness.",
-  "context_summary": "The owner requested a plan, not implementation. The inclusive 200% threshold is explicit. The owner chose click-to-jump and dragging the viewport rectangle. Lower-right placement and other layout/engineering defaults remain proposed recommendations; implementation awaits a separate instruction. Routine sizes, styling and code organization are delegated within the design contract. No external inputs block working delivery: use generated 24 MP/60 MP images and current supplied RAW fixtures; missing native Windows/Linux evidence stays unrun. Geometry/API projection and overview rendering are independent outputs consumed by integration. Re-review against current main and use the roadmap high-tier model minimum. No implementation approval, owner-review or research task is inserted.",
+  "context_summary": "The owner asked on 2026-10-12 for this plan to be built. The inclusive 200% threshold is explicit. The owner chose click-to-jump and dragging the viewport rectangle. Lower-right placement and other layout/engineering defaults are the recorded defaults. Routine sizes, styling and code organization are delegated within the design contract. No external inputs block working delivery: use generated 24 MP/60 MP images and current supplied RAW fixtures; missing native Windows/Linux evidence stays unrun. Geometry/API projection and overview rendering are independent outputs consumed by integration. Re-review against current main and use the roadmap high-tier model minimum. No implementation approval, owner-review or research task is inserted.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Define shared minimap placement, viewport projection and pan conversion using the existing view command.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Deliver pure geometry/model helpers consumed by TASK-003; do not build the widget or change authoritative recipe state.",
@@ -78,7 +78,7 @@
     {
       "id": "TASK-002",
       "description": "Provide a bounded, identity-keyed whole-stage overview from the existing GPU tile sweep and reference fallback.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Deliver the overview result/lifecycle and narrow surface presentation seam consumed by TASK-003. No second source residency, GPU device or full-photo texture.",
@@ -166,7 +166,7 @@
     {
       "id": "TASK-003",
       "description": "Integrate the minimap widget, view-only navigation and targeted background rendered proof.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -261,7 +261,7 @@
     {
       "id": "TASK-004",
       "description": "Qualify overview output and high-zoom interactions, measure once, and publish current documentation.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],

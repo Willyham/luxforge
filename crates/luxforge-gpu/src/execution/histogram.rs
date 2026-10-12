@@ -691,6 +691,7 @@ fn retire(figures: &Signals, retirement: &mpsc::Sender<Retired>, buffer: wgpu::B
         held: Held::Buffer(buffer),
         bytes,
         scratch: 0,
+        overview: 0,
     })) && let Retired::Preview(retired) = error.0
     {
         // The worker has ended with the device: its resources are gone with it.
