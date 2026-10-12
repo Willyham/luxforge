@@ -6461,9 +6461,10 @@ impl luxforge_core::tiles::TileService for HeldTiles {
     fn stream(
         &self,
         evaluation: &luxforge_core::Evaluation,
+        output: luxforge_core::tiles::OutputSpec,
         cancel: &luxforge_core::Cancel,
     ) -> Result<luxforge_core::tiles::BandStream, luxforge_core::tiles::TileFallback> {
-        self.reference.stream(evaluation, cancel)
+        self.reference.stream(evaluation, output, cancel)
     }
 
     fn stop(&self) {

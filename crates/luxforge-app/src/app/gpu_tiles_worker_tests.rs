@@ -18,6 +18,10 @@
 //! - **Streams.** A stream's bands, stitched, are the whole stage the surface draws, bit for bit;
 //!   two streams, on one device and on two, are byte-identical; a cancelled stream stops between
 //!   tiles and lets go of what it held.
+//! - **Resampled streams.** An output smaller than its stage, or at 16 bits, is within its class's
+//!   display limit of the reference output over every pixel, in bands of a cut's rows; it lets go
+//!   of its held output stage when it ends or is cancelled, ends naming `tiles-budget` when that
+//!   stage and its largest cut do not fit, and an output larger than its stage is refused.
 //! - **Exports.** Through a catalog owner's export lane, as the desktop's launch hands it the
 //!   worker: a GPU export, decoded, is within its class's display limit of the reference export
 //!   decoded, over every pixel, on generated photographs and the corpus's Presence fixture; two
@@ -39,18 +43,21 @@ use crate::adapters;
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
     Evaluation, GpuFallback, HostConfig, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT,
-    PreviewSource, Recipe, Region, RenderContext, TilePlan, plan_read, plan_stream_sweeps_at,
+    PreviewSource, Recipe, Region, RenderContext, SnapshotId, TilePlan, plan_read,
+    plan_stream_sweeps_at,
     tiles::{
-        Answered, BandStream, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, ReadAnswer, ReadPixels,
-        ReadStage, ReadValues, ReferenceTiles, TileCall, TileFallback, TileService, TileStatus,
-        TileUnavailable,
+        Answered, BandStream, Depth, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, OutputSpec, PixelRows,
+        Pixels, ReadAnswer, ReadPixels, ReadStage, ReadValues, ReferenceTiles, TileCall,
+        TileFallback, TileService, TileStatus, TileUnavailable, reference_output,
     },
 };
 use luxforge_gpu::{
-    Derivation, GpuBoundary, GpuPlan, GpuSource, headless::HeadlessSurface, tiles::GPU_TILE_BUDGET,
-    tiles::TileEnd, tiles::TilePixels,
+    Derivation, GpuBoundary, GpuPlan, GpuSource, headless::HeadlessSurface,
+    resample::RESAMPLE_ROWS, tiles::GPU_TILE_BUDGET, tiles::TileEnd, tiles::TilePixels,
 };
-use luxforge_reference::preview_error::{Class, ciede2000, lab_from_srgb8, statistics_of};
+use luxforge_reference::preview_error::{
+    Class, Statistics, ciede2000, lab_from_srgb8, statistics_of,
+};
 use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, HANG, paths, wait_until};
 use serde_json::{Value, json};
@@ -240,6 +247,12 @@ fn code(value: f32) -> u8 {
         .partition_point(|threshold| *threshold <= value) as u8
 }
 
+/// The full-size 8-bit output of `stack`'s output stage: today's export.
+fn whole(stack: &Evaluation) -> OutputSpec {
+    let identity = stack.identity().expect("the stack's identity");
+    OutputSpec::full(identity.width, identity.height)
+}
+
 /// Every band of `stream` in order, stitched into its output stage's codes, each band checked to
 /// start where the last ended and to be at most `side` rows.
 fn stitched(stream: BandStream, side: u32) -> Vec<u8> {
@@ -249,7 +262,7 @@ fn stitched(stream: BandStream, side: u32) -> Vec<u8> {
         assert_eq!(band.y0, rows, "bands in order");
         assert!(band.rows <= side, "a band is one row of tiles");
         rows += band.rows;
-        rgba.extend(band.rgba);
+        rgba.extend(band.into_rgba8().expect("8-bit codes"));
     }
     rgba
 }
@@ -743,7 +756,7 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         unit: "unprogrammed".into(),
     });
     assert_eq!(
-        service.stream(&unlit, &Cancel::new()).err(),
+        service.stream(&unlit, whole(&unlit), &Cancel::new()).err(),
         Some(why.clone()),
         "a stream of it is refused at once"
     );
@@ -784,7 +797,10 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         Answered::reference(Some(refusal.clone()))
     );
     assert_eq!(answers[0].pixels, expected[0].pixels);
-    assert_eq!(refused.stream(&held, &Cancel::new()).err(), Some(refusal));
+    assert_eq!(
+        refused.stream(&held, whole(&held), &Cancel::new()).err(),
+        Some(refusal)
+    );
     settle(&refused, client);
     assert_eq!(refused.figures().adapter, None, "nothing was opened");
 
@@ -867,7 +883,9 @@ fn an_interactive_read_waits_behind_at_most_two_export_tiles() {
     // Held before the stream's beginning, then before its first tile.
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &Cancel::new())
+        .expect("a stream");
     wait_until("the worker held before the stream begins", || {
         begin.holding()
     });
@@ -1052,7 +1070,7 @@ fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
             let before = service.figures();
             let stream = |service: &GpuTiles| {
                 let bands = service
-                    .stream(&stack, &Cancel::new())
+                    .stream(&stack, whole(&stack), &Cancel::new())
                     .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
                 assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
                 stitched(bands, STAGED_SIDE)
@@ -1090,7 +1108,8 @@ fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
 /// Every family on both paths streamed in tiles of [`SIDE`], the worker's scratch starting from
 /// NaN, two tiles in flight and each band's window of the source uploaded once: its bands,
 /// stitched, are bit for bit the whole output stage the photo surface's own drawing draws as one
-/// region on another device of the same adapter, so its tiles carry no seam.
+/// region on another device of the same adapter, so its tiles carry no seam; and a full-size 8-bit
+/// output is never resampled nor holds its output stage.
 #[test]
 #[slow]
 fn a_stream_is_the_whole_stage_render_bit_for_bit() {
@@ -1123,7 +1142,7 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
             settle(&service, client);
             let before = service.figures();
             let bands = service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
             assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
             let rgba = stitched(bands, SIDE);
@@ -1141,6 +1160,9 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
                 "{what}: one upload a band"
             );
             assert_eq!((after.in_flight, after.in_use), (0, 0), "{what}");
+            // The full-size 8-bit output is its tiles' own codes, never resampled.
+            assert_eq!(after.resampled, before.resampled, "{what}: not resampled");
+            assert_eq!(after.stage_bytes, 0, "{what}: no output stage held");
             eprintln!(
                 "{test}: {what}: {} x {} in tiles of {SIDE}, bit for bit the surface's region",
                 plan.size.width, plan.size.height
@@ -1191,7 +1213,9 @@ fn two_streams_are_byte_identical() {
                 let stack = stack(&source, &recipe);
                 let stream = |service: &GpuTiles| {
                     stitched(
-                        service.stream(&stack, &Cancel::new()).expect("a stream"),
+                        service
+                            .stream(&stack, whole(&stack), &Cancel::new())
+                            .expect("a stream"),
                         u32::MAX,
                     )
                 };
@@ -1230,7 +1254,9 @@ fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
     let cancel = Cancel::new();
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &cancel).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &cancel)
+        .expect("a stream");
     drop(stack);
     wait_until("the worker held before the stream begins", || {
         begin.holding()
@@ -1286,7 +1312,9 @@ fn a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled(
     let cancel = Cancel::new();
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &cancel).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &cancel)
+        .expect("a stream");
     wait_until("the worker held before the stream begins", || {
         begin.holding()
     });
@@ -1357,6 +1385,335 @@ fn a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled(
     eprintln!("{test}: {drawing:?} then {after:?}");
 }
 
+/// The outputs a resampled stream of a `stage` output stage is asked for: smaller at 8 bits, smaller
+/// at 16 bits, and the stage itself at 16 bits.
+fn resampled_outputs(stage: OutputSpec) -> [(&'static str, OutputSpec); 3] {
+    let scaled = |numerator: u32, denominator: u32| {
+        OutputSpec::full(
+            (stage.width * numerator / denominator).max(1),
+            (stage.height * numerator / denominator).max(1),
+        )
+    };
+    [
+        ("smaller at 8 bits", scaled(5, 12)),
+        (
+            "smaller at 16 bits",
+            OutputSpec {
+                depth: Depth::Sixteen,
+                ..scaled(2, 3)
+            },
+        ),
+        (
+            "full size at 16 bits",
+            OutputSpec {
+                depth: Depth::Sixteen,
+                ..stage
+            },
+        ),
+    ]
+}
+
+/// Every band of a resampled `stream` in order, stitched into its output's samples at its depth,
+/// each band checked to start where the last ended, to be at most [`RESAMPLE_ROWS`] rows and of the
+/// output's depth: the samples and how many bands there were.
+fn stitched_output(stream: BandStream) -> (Pixels, u32) {
+    let output = stream.output();
+    let (mut eight, mut sixteen, mut rows, mut bands) = (Vec::new(), Vec::new(), 0, 0);
+    for band in stream {
+        let band = band.unwrap_or_else(|error| panic!("a band: {error:?}"));
+        assert_eq!(band.y0, rows, "bands in order");
+        assert!(
+            band.rows <= RESAMPLE_ROWS,
+            "a band is at most one cut's rows"
+        );
+        assert_eq!(
+            band.pixels.depth(),
+            output.depth,
+            "a band at the output's depth"
+        );
+        rows += band.rows;
+        bands += 1;
+        match band.pixels {
+            Pixels::Eight(rgba) => eight.extend(rgba),
+            Pixels::Sixteen(rgba) => sixteen.extend(rgba),
+        }
+    }
+    assert_eq!(rows, output.height, "every row of the output");
+    let pixels = match output.depth {
+        Depth::Eight => Pixels::Eight(eight),
+        Depth::Sixteen => Pixels::Sixteen(sixteen),
+    };
+    (pixels, bands)
+}
+
+/// `candidate` against `reference`, two outputs of `output`'s size and depth, by the preview error
+/// statistics over every pixel, ΔE00 from their own depth's values.
+fn output_against(candidate: &Pixels, reference: PixelRows<'_>, output: OutputSpec) -> Statistics {
+    use luxforge_reference::preview_error::{Rgb8, Rgb16, compare, differences16};
+    fn rgb<T: Copy>(rgba: &[T]) -> Vec<T> {
+        rgba.chunks_exact(4)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .collect()
+    }
+    let (width, height) = (output.width, output.height);
+    match (candidate.rows(), reference) {
+        (PixelRows::Eight(ours), PixelRows::Eight(theirs)) => {
+            let (ours, theirs) = (rgb(ours), rgb(theirs));
+            compare(
+                Rgb8::new(width, height, &ours).expect("the candidate"),
+                Rgb8::new(width, height, &theirs).expect("the reference"),
+                [0, 0, width, height],
+            )
+            .expect("the statistics")
+        }
+        (PixelRows::Sixteen(ours), PixelRows::Sixteen(theirs)) => {
+            let (ours, theirs) = (rgb(ours), rgb(theirs));
+            let (delta_e, delta_l) = differences16(
+                Rgb16::new(width, height, &ours).expect("the candidate"),
+                Rgb16::new(width, height, &theirs).expect("the reference"),
+                0..height,
+            )
+            .expect("the differences");
+            statistics_of(width as usize, height as usize, &delta_e, &delta_l)
+                .expect("the statistics")
+        }
+        _ => panic!("the outputs differ in depth"),
+    }
+}
+
+/// The class of display limit a family's output is judged by: spatial for a stack with a spatial
+/// step, pointwise otherwise.
+fn class_of(family: &str) -> Class {
+    if ["Presence", "Detail", "Heal", "lens"]
+        .iter()
+        .any(|spatial| family.contains(spatial))
+    {
+        Class::Spatial
+    } else {
+        Class::Pointwise
+    }
+}
+
+/// Every family on both paths, and a staged stack whose output stage is cut in several bands,
+/// streamed smaller at 8 and 16 bits and at full size at 16 bits — its tiles drawn into the held
+/// output stage, its cuts resampled and encoded and read back at the output's depth, the worker's
+/// scratch starting from NaN — is within its class's display limit of the reference output over
+/// every pixel, a 16-bit output judged from its 16-bit values. Each stream is counted resampled,
+/// peaks within [`GPU_TILE_BUDGET`] and, once it ends, holds nothing but the 16-bit thresholds a
+/// 16-bit cut made.
+#[test]
+#[slow]
+fn a_resampled_stream_is_within_the_display_limit_of_the_reference_output() {
+    let test = "a_resampled_stream_is_within_the_display_limit_of_the_reference_output";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.poison(true);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let thresholds = luxforge_gpu::resample::WIDE_THRESHOLDS as u64 * 4;
+    let mut wide = false;
+    let mut cases: Vec<(String, PreviewSource, &'static str, Recipe)> = Vec::new();
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        for (family, recipe) in families() {
+            cases.push((path.into(), source(format), family, recipe));
+        }
+    }
+    let (family, recipe) = staged_families().swap_remove(0);
+    cases.push((
+        "the byte path, staged".into(),
+        staged_source(BoundaryFormat::Half),
+        family,
+        recipe,
+    ));
+    for (path, source, family, recipe) in cases {
+        let stack = stack(&source, &recipe);
+        let class = class_of(family);
+        for (asked, output) in resampled_outputs(whole(&stack)) {
+            let what = format!("{family} on {path}, {asked}");
+            settle(&service, client);
+            let before = service.figures();
+            let bands = service
+                .stream(&stack, output, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+            assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
+            assert_eq!(bands.output(), output, "{what}: the stream's shape");
+            let (pixels, count) = stitched_output(bands);
+            let reference = reference_output(&stack, output, SnapshotId::new(), &Cancel::never())
+                .unwrap_or_else(|error| panic!("{what}: the reference: {error:?}"));
+            let statistics = output_against(&pixels, reference.rows(), output);
+            let verdict = luxforge_reference::preview_error::verdict(&statistics, class);
+            eprintln!(
+                "{test}: {what}: {} x {} in {count} bands, {} limits: {statistics:?}",
+                output.width,
+                output.height,
+                class.name()
+            );
+            assert!(verdict.passed(), "{what}: {statistics:?} past the limits");
+            assert_eq!(
+                count,
+                output.height.div_ceil(RESAMPLE_ROWS),
+                "{what}: one band a cut's rows"
+            );
+            wide |= output.depth == Depth::Sixteen;
+            settle(&service, client);
+            let after = service.figures();
+            assert_eq!(after.resampled - before.resampled, 1, "{what}: resampled");
+            assert!(after.peak <= GPU_TILE_BUDGET, "{what}: {after:?}");
+            let kept = if wide { thresholds } else { 0 };
+            assert_eq!(
+                (after.stage_bytes, after.in_use, after.in_flight),
+                (kept, kept, 0),
+                "{what}: nothing held once it ends but the 16-bit thresholds"
+            );
+        }
+    }
+    eprintln!("{test}: the worker's figures {:?}", service.figures());
+}
+
+/// A resampled stream held before its second tile into the held output stage holds that stage,
+/// charged; cancelled there, it draws nothing more, ends `cancelled` and lets go of the held stage
+/// with the rest of what its runner held.
+#[test]
+fn a_cancelled_resampled_stream_stops_between_tiles_and_frees_its_held_stage() {
+    let test = "a_cancelled_resampled_stream_stops_between_tiles_and_frees_its_held_stage";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence after Detail")
+        .expect("the family");
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
+    let (_, output) = resampled_outputs(whole(&stack))[0];
+    let cancel = Cancel::new();
+    let begin = shut();
+    service.hold_steps(Some(Arc::clone(&begin)));
+    let mut bands = service.stream(&stack, output, &cancel).expect("a stream");
+    wait_until("the worker held before the stream begins", || {
+        begin.holding()
+    });
+    let first = next_step(&service, &begin);
+    let second = next_step(&service, &first);
+    let drawing = service.figures();
+    let held = u64::from(WIDTH) * u64::from(HEIGHT) * 16;
+    assert_eq!(drawing.resampled, 1, "the stream is resampled");
+    assert!(
+        drawing.stage_bytes >= held && drawing.in_use >= drawing.stage_bytes,
+        "its output stage held, charged, while it draws: {drawing:?}"
+    );
+    assert_eq!(drawing.bands, 0, "no band before its tiles are drawn");
+
+    cancel.cancel();
+    service.hold_steps(None);
+    second.open();
+    let ended = loop {
+        match bands.next().expect("the end") {
+            Ok(_) => {}
+            Err(ended) => break ended,
+        }
+    };
+    assert_eq!(ended.kind.code(), "cancelled");
+    assert!(bands.next().is_none(), "nothing after the cancellation");
+    settle(&service, client);
+    let after = service.figures();
+    assert_eq!(
+        (after.stage_bytes, after.in_use, after.in_flight),
+        (0, 0, 0),
+        "the held output stage let go with the rest"
+    );
+    eprintln!("{test}: {drawing:?} then {after:?}");
+}
+
+/// A resampled stream whose held output stage and largest cut do not fit the stream's budget ends
+/// naming `tiles-budget`, what it would hold and the budget, before it holds anything: the export
+/// lane's cue to render the whole export again with the reference.
+#[test]
+fn a_resampled_stream_past_its_budget_ends_naming_tiles_budget() {
+    let test = "a_resampled_stream_past_its_budget_ends_naming_tiles_budget";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "a colour stack")
+        .expect("the family");
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
+    // Room for the held output stage alone, none for a cut beside it.
+    let budget = u64::from(WIDTH) * u64::from(HEIGHT) * 16;
+    service.budget_streams(Some(budget));
+    for (asked, output) in resampled_outputs(whole(&stack)) {
+        let mut bands = service
+            .stream(&stack, output, &Cancel::new())
+            .expect("a stream");
+        let ended = bands.next().expect("the end").expect_err("past the budget");
+        let data = ended.data.as_deref().cloned().unwrap_or_default();
+        assert_eq!(data["fallback"], "tiles-budget", "{asked}: {ended:?}");
+        assert_eq!(data["budget"], budget, "{asked}: {ended:?}");
+        assert!(
+            data["requested"]
+                .as_u64()
+                .is_some_and(|requested| requested > budget),
+            "{asked}: {ended:?}"
+        );
+        assert!(
+            matches!(bands.fallback(), Some(TileFallback::Budget { .. })),
+            "{asked}"
+        );
+        assert!(bands.next().is_none(), "{asked}: nothing after the end");
+    }
+    settle(&service, client);
+    let after = service.figures();
+    assert_eq!(after.resampled, 0, "no stream held its output stage");
+    assert_eq!(
+        (after.stage_bytes, after.in_use, after.in_flight),
+        (0, 0, 0),
+        "nothing held"
+    );
+    eprintln!("{test}: {after:?}");
+}
+
+/// A stream asked for an output larger than its output stage, or with an empty side, ends at once
+/// with `validation`, drawing nothing.
+#[test]
+fn a_stream_larger_than_its_stage_or_empty_is_refused() {
+    let test = "a_stream_larger_than_its_stage_or_empty_is_refused";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    let (_, recipe) = families().swap_remove(0);
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
+    let stage = whole(&stack);
+    for (asked, output) in [
+        ("wider", OutputSpec::full(stage.width + 1, stage.height)),
+        ("taller", OutputSpec::full(stage.width, stage.height + 1)),
+        ("empty", OutputSpec::full(0, stage.height)),
+    ] {
+        let mut bands = service
+            .stream(&stack, output, &Cancel::new())
+            .expect("a stream");
+        let ended = bands.next().expect("the end").expect_err("refused");
+        assert_eq!(ended.kind.code(), "validation", "{asked}: {ended:?}");
+        assert!(bands.next().is_none(), "{asked}");
+    }
+    assert_eq!(service.figures().streams, 0, "nothing drawn");
+}
+
 /// A stream whose device is lost before a tile ends naming `device-lost` in its error's data, the
 /// export lane's cue to render it again with the reference; from then on the status names it, a
 /// read is the reference's naming it, and a stream is refused at once.
@@ -1377,7 +1734,9 @@ fn a_lost_device_ends_the_stream_with_device_lost() {
     let stack = stack(&source(BoundaryFormat::Half), &recipe);
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &Cancel::new())
+        .expect("a stream");
     wait_until("the worker held before the stream begins", || {
         begin.holding()
     });
@@ -1403,7 +1762,10 @@ fn a_lost_device_ends_the_stream_with_device_lost() {
         &[point(ReadStage::Output, 3, 3, ReadValues::Codes)],
     );
     assert_eq!(answers[0].answered, Answered::reference(Some(lost.clone())));
-    assert_eq!(service.stream(&stack, &Cancel::new()).err(), Some(lost));
+    assert_eq!(
+        service.stream(&stack, whole(&stack), &Cancel::new()).err(),
+        Some(lost)
+    );
     eprintln!("{test}: {:?}", service.figures());
 }
 
@@ -1892,7 +2254,9 @@ fn the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs() {
         let (stack, _) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe));
         let begin = shut();
         service.hold_steps(Some(Arc::clone(&begin)));
-        let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+        let mut bands = service
+            .stream(&stack, whole(&stack), &Cancel::new())
+            .expect("a stream");
         drop(stack);
         wait_until("the worker held before the stream begins", || {
             begin.holding()
@@ -2017,12 +2381,13 @@ fn a_measured_export_staged_is_chained() {
             let started = std::time::Instant::now();
             let mut rgba = Vec::new();
             for band in service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"))
             {
                 rgba.extend(
                     band.unwrap_or_else(|error| panic!("{what}: {error:?}"))
-                        .rgba,
+                        .into_rgba8()
+                        .expect("8-bit codes"),
                 );
             }
             let wall = started.elapsed();
@@ -2154,7 +2519,7 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
             assert!(drawn.figures.sweeps >= 2, "{what}: drawn in sweeps");
             settle(&service, client);
             let bands = service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
             assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
             let rgba = stitched(bands, STAGED_SIDE);
@@ -2222,7 +2587,7 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
                 );
             }
             let bands = stage_free
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: stage-free: {fallback:?}"));
             assert_eq!(bands.answered(), &Answered::gpu(), "{what}: stage-free");
             let free = stitched(bands, STAGED_SIDE);
@@ -2275,10 +2640,14 @@ fn code_structure_export_measurement() {
             let started = std::time::Instant::now();
             let mut bytes = 0usize;
             for band in service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .expect("a GPU stream")
             {
-                bytes += band.expect("a complete band").rgba.len();
+                bytes += band
+                    .expect("a complete band")
+                    .rgba8()
+                    .expect("8-bit codes")
+                    .len();
             }
             let ms = started.elapsed().as_secs_f64() * 1e3;
             assert_eq!(bytes, dimensions.0 as usize * dimensions.1 as usize * 4);
@@ -2592,10 +2961,14 @@ fn repair_step_stream_and_reads_measurement() {
         let started = Instant::now();
         let mut bytes = 0usize;
         for band in service
-            .stream(&stack, &Cancel::new())
+            .stream(&stack, whole(&stack), &Cancel::new())
             .expect("a GPU stream")
         {
-            bytes += band.expect("a complete band").rgba.len();
+            bytes += band
+                .expect("a complete band")
+                .rgba8()
+                .expect("8-bit codes")
+                .len();
         }
         let stream_ms = started.elapsed().as_secs_f64() * 1e3;
         assert_eq!(bytes, width as usize * height as usize * 4);
