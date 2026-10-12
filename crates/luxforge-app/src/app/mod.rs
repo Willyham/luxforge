@@ -215,6 +215,7 @@ pub(crate) mod unsupported_catalog;
 mod unsupported_catalog_tests;
 pub(crate) mod update;
 pub(crate) mod update_fixture;
+pub(crate) mod sparkle_port;
 pub(crate) mod update_port;
 #[cfg(test)]
 mod update_tests;

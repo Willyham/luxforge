@@ -2118,6 +2118,7 @@ dependencies = [
  "luxforge-net",
  "luxforge-onnx",
  "luxforge-reference",
+ "luxforge-sparkle",
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
@@ -2323,6 +2324,16 @@ dependencies = [
  "luxforge-test-macros",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "luxforge-sparkle"
+version = "0.0.0"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
