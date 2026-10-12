@@ -73,7 +73,6 @@ mod gpu_notice_tests;
 #[cfg(test)]
 mod gpu_presence_tests;
 pub(crate) mod gpu_preview;
-pub(crate) mod minimap;
 #[cfg(test)]
 mod gpu_preview_tests;
 #[cfg(test)]
@@ -100,6 +99,7 @@ pub(crate) mod gpu_warm;
 mod gpu_white_balance_tests;
 #[cfg(test)]
 mod gpu_window_tests;
+pub(crate) mod minimap;
 pub(crate) mod overview;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
 pub(crate) mod copy_settings;

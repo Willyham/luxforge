@@ -102,7 +102,10 @@ impl Minimap {
 
     fn to_window(&self, rect: Rectangle) -> Rectangle {
         let origin = self.area_origin();
-        Rectangle::new(Point::new(origin.x + rect.x, origin.y + rect.y), rect.size())
+        Rectangle::new(
+            Point::new(origin.x + rect.x, origin.y + rect.y),
+            rect.size(),
+        )
     }
 
     /// The thumbnail, in the window's logical pixels.
@@ -246,18 +249,28 @@ impl Editor {
         self.minimap_nav.counters.presses += 1;
         let Some(minimap) = self.minimap(&self.surfaces()).filter(|m| m.navigable) else {
             self.minimap_nav.counters.inert += 1;
-            self.event("minimap_pressed", || json!({"point":[point.x,point.y],"inert":"not navigable"}));
+            self.event(
+                "minimap_pressed",
+                || json!({"point":[point.x,point.y],"inert":"not navigable"}),
+            );
             return Task::none();
         };
         let Some(press) = minimap.overview.press(&minimap.viewport, point) else {
             self.minimap_nav.counters.inert += 1;
-            self.event("minimap_pressed", || json!({"point":[point.x,point.y],"inert":"letterbox"}));
+            self.event(
+                "minimap_pressed",
+                || json!({"point":[point.x,point.y],"inert":"letterbox"}),
+            );
             return Task::none();
         };
         self.minimap_nav.drag = Some(Drag {
             grab: press.grab,
             stage: minimap.viewport.stage(),
-            asset: self.document.state.as_ref().map(|state| state.asset.id.clone()),
+            asset: self
+                .document
+                .state
+                .as_ref()
+                .map(|state| state.asset.id.clone()),
         });
         self.event(
             "minimap_pressed",
@@ -319,10 +332,7 @@ impl Editor {
             return Task::none();
         }
         self.minimap_nav.counters.wheels += 1;
-        operation::scroll_by(
-            super::crop::SURFACE_ID,
-            AbsoluteOffset { x, y },
-        )
+        operation::scroll_by(super::crop::SURFACE_ID, AbsoluteOffset { x, y })
     }
 
     /// A key or window event while a drag is held: Escape ends it and is consumed, so it never

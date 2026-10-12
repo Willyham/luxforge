@@ -136,7 +136,10 @@ impl Editor {
     }
 
     /// [`Self::minimap_viewport`] over the stage `surfaces` draws.
-    pub(crate) fn minimap_viewport_in(&self, surfaces: &crate::view::Surfaces<'_>) -> Option<Viewport> {
+    pub(crate) fn minimap_viewport_in(
+        &self,
+        surfaces: &crate::view::Surfaces<'_>,
+    ) -> Option<Viewport> {
         if self.document.state.is_none() || self.gallery_page().is_some() || self.select_shown() {
             return None;
         }
@@ -230,7 +233,10 @@ impl Editor {
         }
         // A pinch over the minimap is the minimap's: it never zooms the photograph under it.
         if self.minimap_holds(Point::new(input.x as f32, input.y as f32)) {
-            self.event("view_pinch_held", || json!({"by":"minimap","pointer":[input.x,input.y]}));
+            self.event(
+                "view_pinch_held",
+                || json!({"by":"minimap","pointer":[input.x,input.y]}),
+            );
             return Task::none();
         }
         let stage = self

@@ -144,57 +144,192 @@ const PLAN: [(&str, Kind, Zoom, Over); 44] = [
     ("idle-fit", Kind::Wait, Zoom::Fit, Over::Nothing),
     ("50", Kind::View, Zoom::Percent(50.0), Over::Nothing),
     ("100", Kind::View, Zoom::Percent(100.0), Over::Nothing),
-    ("pinch-in", Kind::Pinch(1.2), Zoom::Percent(120.0), Over::Nothing),
-    ("pinch-out", Kind::Pinch(1.0 / 1.2), Zoom::Percent(100.0), Over::Nothing),
+    (
+        "pinch-in",
+        Kind::Pinch(1.2),
+        Zoom::Percent(120.0),
+        Over::Nothing,
+    ),
+    (
+        "pinch-out",
+        Kind::Pinch(1.0 / 1.2),
+        Zoom::Percent(100.0),
+        Over::Nothing,
+    ),
     ("idle-100", Kind::Wait, Zoom::Percent(100.0), Over::Nothing),
     ("120", Kind::View, Zoom::Percent(120.0), Over::Nothing),
     ("800", Kind::View, Zoom::Percent(800.0), Over::Nothing),
     ("1600", Kind::View, Zoom::Percent(1600.0), Over::Nothing),
-    ("pan-centre", Kind::Pan(0.5, 0.5), Zoom::Percent(1600.0), Over::Nothing),
-    ("idle-1600", Kind::Wait, Zoom::Percent(1600.0), Over::Nothing),
-    ("pan-corner", Kind::Pan(1.0, 1.0), Zoom::Percent(1600.0), Over::Nothing),
+    (
+        "pan-centre",
+        Kind::Pan(0.5, 0.5),
+        Zoom::Percent(1600.0),
+        Over::Nothing,
+    ),
+    (
+        "idle-1600",
+        Kind::Wait,
+        Zoom::Percent(1600.0),
+        Over::Nothing,
+    ),
+    (
+        "pan-corner",
+        Kind::Pan(1.0, 1.0),
+        Zoom::Percent(1600.0),
+        Over::Nothing,
+    ),
     // The minimap's threshold, then navigation from it at 200%.
     ("199.9", Kind::View, Zoom::Percent(199.9), Over::Nothing),
     ("200", Kind::View, AT_200, Over::Nothing),
-    ("mm-click", minimap(MinimapStep::Click(image(0.25, 0.3))), AT_200, Over::Nothing),
-    ("mm-click-2", minimap(MinimapStep::Click(image(0.7, 0.6))), AT_200, Over::Nothing),
-    ("mm-api", minimap(MinimapStep::Api(image(0.25, 0.3))), AT_200, Over::Nothing),
+    (
+        "mm-click",
+        minimap(MinimapStep::Click(image(0.25, 0.3))),
+        AT_200,
+        Over::Nothing,
+    ),
+    (
+        "mm-click-2",
+        minimap(MinimapStep::Click(image(0.7, 0.6))),
+        AT_200,
+        Over::Nothing,
+    ),
+    (
+        "mm-api",
+        minimap(MinimapStep::Api(image(0.25, 0.3))),
+        AT_200,
+        Over::Nothing,
+    ),
     (
         "mm-grab",
         minimap(MinimapStep::Press(MinimapPoint::Rectangle([0.75, 0.25]))),
         AT_200,
         Over::Nothing,
     ),
-    ("mm-drag", minimap(MinimapStep::Move(image(0.5, 0.5))), AT_200, Over::Nothing),
-    ("mm-drag-out", minimap(MinimapStep::Move(image(1.6, 1.4))), AT_200, Over::Nothing),
-    ("mm-release", minimap(MinimapStep::Release(image(1.6, 1.4))), AT_200, Over::Nothing),
+    (
+        "mm-drag",
+        minimap(MinimapStep::Move(image(0.5, 0.5))),
+        AT_200,
+        Over::Nothing,
+    ),
+    (
+        "mm-drag-out",
+        minimap(MinimapStep::Move(image(1.6, 1.4))),
+        AT_200,
+        Over::Nothing,
+    ),
+    (
+        "mm-release",
+        minimap(MinimapStep::Release(image(1.6, 1.4))),
+        AT_200,
+        Over::Nothing,
+    ),
     (
         "mm-letterbox",
         minimap(MinimapStep::Click(MinimapPoint::Card([0.01, 0.5]))),
         AT_200,
         Over::Nothing,
     ),
-    ("mm-wheel", minimap(MinimapStep::Wheel([0.0, 120.0])), AT_200, Over::Nothing),
-    ("mm-pinch", minimap(MinimapStep::Pinch(0.25)), AT_200, Over::Nothing),
+    (
+        "mm-wheel",
+        minimap(MinimapStep::Wheel([0.0, 120.0])),
+        AT_200,
+        Over::Nothing,
+    ),
+    (
+        "mm-pinch",
+        minimap(MinimapStep::Pinch(0.25)),
+        AT_200,
+        Over::Nothing,
+    ),
     // A crop draft: a held drag ended by Escape, which leaves the draft open.
     ("crop", Kind::Tool(Tool::CropStart), AT_200, Over::Crop),
-    ("crop-press", minimap(MinimapStep::Press(image(0.3, 0.3))), AT_200, Over::Crop),
+    (
+        "crop-press",
+        minimap(MinimapStep::Press(image(0.3, 0.3))),
+        AT_200,
+        Over::Crop,
+    ),
     ("crop-escape", Kind::Tool(Tool::Escape), AT_200, Over::Crop),
-    ("crop-move", minimap(MinimapStep::Move(image(0.6, 0.6))), AT_200, Over::Crop),
-    ("crop-release", minimap(MinimapStep::Release(image(0.6, 0.6))), AT_200, Over::Crop),
-    ("crop-click", minimap(MinimapStep::Click(image(0.7, 0.4))), AT_200, Over::Crop),
-    ("crop-cancel", Kind::Tool(Tool::CropCancel), AT_200, Over::Nothing),
+    (
+        "crop-move",
+        minimap(MinimapStep::Move(image(0.6, 0.6))),
+        AT_200,
+        Over::Crop,
+    ),
+    (
+        "crop-release",
+        minimap(MinimapStep::Release(image(0.6, 0.6))),
+        AT_200,
+        Over::Crop,
+    ),
+    (
+        "crop-click",
+        minimap(MinimapStep::Click(image(0.7, 0.4))),
+        AT_200,
+        Over::Crop,
+    ),
+    (
+        "crop-cancel",
+        Kind::Tool(Tool::CropCancel),
+        AT_200,
+        Over::Nothing,
+    ),
     // The neutral picker, an armed brush and Compare.
-    ("picker", Kind::Tool(Tool::Mode(BASIC_MODULE)), AT_200, Over::Picker),
-    ("picker-click", minimap(MinimapStep::Click(image(0.3, 0.7))), AT_200, Over::Picker),
-    ("picker-left", Kind::Tool(Tool::Mode(POINTER_MODE)), AT_200, Over::Nothing),
-    ("mask", Kind::Tool(Tool::Mode(MASK_MODE)), AT_200, Over::Brush),
+    (
+        "picker",
+        Kind::Tool(Tool::Mode(BASIC_MODULE)),
+        AT_200,
+        Over::Picker,
+    ),
+    (
+        "picker-click",
+        minimap(MinimapStep::Click(image(0.3, 0.7))),
+        AT_200,
+        Over::Picker,
+    ),
+    (
+        "picker-left",
+        Kind::Tool(Tool::Mode(POINTER_MODE)),
+        AT_200,
+        Over::Nothing,
+    ),
+    (
+        "mask",
+        Kind::Tool(Tool::Mode(MASK_MODE)),
+        AT_200,
+        Over::Brush,
+    ),
     ("brush", Kind::Tool(Tool::ArmBrush), AT_200, Over::Brush),
-    ("brush-click", minimap(MinimapStep::Click(image(0.6, 0.3))), AT_200, Over::Brush),
-    ("brush-left", Kind::Tool(Tool::Mode(POINTER_MODE)), AT_200, Over::Nothing),
-    ("compare", Kind::Tool(Tool::CompareTap), AT_200, Over::Compare),
-    ("compare-click", minimap(MinimapStep::Click(image(0.4, 0.5))), AT_200, Over::Compare),
-    ("compare-exit", Kind::Tool(Tool::CompareTap), AT_200, Over::Nothing),
+    (
+        "brush-click",
+        minimap(MinimapStep::Click(image(0.6, 0.3))),
+        AT_200,
+        Over::Brush,
+    ),
+    (
+        "brush-left",
+        Kind::Tool(Tool::Mode(POINTER_MODE)),
+        AT_200,
+        Over::Nothing,
+    ),
+    (
+        "compare",
+        Kind::Tool(Tool::CompareTap),
+        AT_200,
+        Over::Compare,
+    ),
+    (
+        "compare-click",
+        minimap(MinimapStep::Click(image(0.4, 0.5))),
+        AT_200,
+        Over::Compare,
+    ),
+    (
+        "compare-exit",
+        Kind::Tool(Tool::CompareTap),
+        AT_200,
+        Over::Nothing,
+    ),
     ("fit", Kind::View, Zoom::Fit, Over::Nothing),
 ];
 
@@ -568,9 +703,8 @@ fn same_canvas(
             f64::from(x) >= l && f64::from(x) < r && f64::from(y) >= t && f64::from(y) < b
         })
     };
-    Ok((top..bottom).all(|y| {
-        (left..right).all(|x| over_card(x, y) || a.get_pixel(x, y) == b.get_pixel(x, y))
-    }))
+    Ok((top..bottom)
+        .all(|y| (left..right).all(|x| over_card(x, y) || a.get_pixel(x, y) == b.get_pixel(x, y))))
 }
 
 fn number(value: &Value, what: &str) -> Result<u64> {
@@ -678,7 +812,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         // a mask's overlay, Compare's halves — so the texture and sample checks are a plain
         // canvas's.
         let texture = if plain {
-            check_texture(frame, *kind, *zoom, stage, events).map_err(|error| format!("{what}: {error}"))?
+            check_texture(frame, *kind, *zoom, stage, events)
+                .map_err(|error| format!("{what}: {error}"))?
         } else {
             Value::Null
         };
@@ -759,10 +894,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 // The minimap's overview is work of its own that may land while the picture idles;
                 // its card is held to the idle check too once it showed the same overview before.
                 let settled_card = {
-                    let (a, b) = (
-                        &frames[index - 1]["state"]["minimap"],
-                        &state["minimap"],
-                    );
+                    let (a, b) = (&frames[index - 1]["state"]["minimap"], &state["minimap"]);
                     a["state"] == b["state"] && a["overview"] == b["overview"]
                 };
                 let rect = canvas_rect(frame)?;
@@ -918,8 +1050,8 @@ struct Grab {
 }
 
 fn pair(value: &Value, what: &str) -> Result<(f64, f64)> {
-    let [a, b]: [f64; 2] = serde_json::from_value(value.clone())
-        .map_err(|_| format!("no {what}: {value}"))?;
+    let [a, b]: [f64; 2] =
+        serde_json::from_value(value.clone()).map_err(|_| format!("no {what}: {value}"))?;
     Ok((a, b))
 }
 
@@ -1061,7 +1193,9 @@ fn check_minimap(
     );
     let source = (f64::from(source.0), f64::from(source.1));
     ensure(
-        near(size.0, source.0, 0.5) && near(size.1, source.1, 0.5) && snapped == (over != Over::Crop),
+        near(size.0, source.0, 0.5)
+            && near(size.1, source.1, 0.5)
+            && snapped == (over != Over::Crop),
         format!("the stage is {size:?} snapped {snapped} over {over:?}, the source {source:?}"),
     )?;
     let surface_view = &state["surface"]["view"];
@@ -1078,7 +1212,10 @@ fn check_minimap(
     let scale = minimap["scale"].as_f64().ok_or("no scale")?;
     ensure(
         near(scale, view.scale, 1e-5),
-        format!("the card's scale is {scale}, {percent}% at {scale_factor} is {}", view.scale),
+        format!(
+            "the card's scale is {scale}, {percent}% at {scale_factor} is {}",
+            view.scale
+        ),
     )?;
     let card_pan = pair(&minimap["pan"], "card pan")?;
     ensure(
@@ -1182,8 +1319,8 @@ fn check_minimap(
         let contains = |[x, y, w, h]: [f64; 4], (px, py): (f64, f64)| {
             px >= x && px < x + w && py >= y && py < y + h
         };
-        let routed: Vec<String> = serde_json::from_value(step_record["routed_messages"].clone())
-            .unwrap_or_default();
+        let routed: Vec<String> =
+            serde_json::from_value(step_record["routed_messages"].clone()).unwrap_or_default();
         let point = step_record["window_point"]
             .as_array()
             .map(|_| pair(&step_record["window_point"], "window point"))
@@ -1201,7 +1338,11 @@ fn check_minimap(
                 };
                 ensure(
                     counted("presses")? == 1 && counted("inert")? == u64::from(inert),
-                    format!("press counted {}, inert {}", counted("presses")?, counted("inert")?),
+                    format!(
+                        "press counted {}, inert {}",
+                        counted("presses")?,
+                        counted("inert")?
+                    ),
                 )?;
                 *grab = match step {
                     MinimapStep::Press(_) if !inert => Some(Grab { at, pan: expected }),
@@ -1234,7 +1375,10 @@ fn check_minimap(
                 )
             }
             MinimapStep::Pinch(_) => {
-                ensure(counted("pinches")? == 1, "the pinch was not held by the card")?;
+                ensure(
+                    counted("pinches")? == 1,
+                    "the pinch was not held by the card",
+                )?;
                 (from, PAN_SLACK)
             }
             MinimapStep::Api(_) => {
@@ -1258,7 +1402,10 @@ fn check_minimap(
         )?;
         ensure(
             minimap["dragging"] == json!(grab.is_some()),
-            format!("dragging is {}, the journey holds {grab:?}", minimap["dragging"]),
+            format!(
+                "dragging is {}, the journey holds {grab:?}",
+                minimap["dragging"]
+            ),
         )?;
         // Routed events publish only the minimap's own messages: nothing reaches the tool, the
         // divider or the photograph beneath the card.
@@ -1290,7 +1437,14 @@ fn check_minimap(
     // masks unchanged, Compare's divider where it was.
     if let Kind::Minimap(_) = kind {
         let previous = &frames[index - 1]["state"];
-        for field in ["draft", "mask_draft", "stack", "masks", "comparison", "compare"] {
+        for field in [
+            "draft",
+            "mask_draft",
+            "stack",
+            "masks",
+            "comparison",
+            "compare",
+        ] {
             ensure(
                 state[field] == previous[field],
                 format!(
@@ -1338,7 +1492,9 @@ fn check_thumbnail(
     let capture = frame.image()?;
     let pixel = |x: f64, y: f64| {
         let (x, y) = ((x * scale).floor() as u32, (y * scale).floor() as u32);
-        capture.get_pixel(x.min(capture.width() - 1), y.min(capture.height() - 1)).0
+        capture
+            .get_pixel(x.min(capture.width() - 1), y.min(capture.height() - 1))
+            .0
     };
     let caption = 20.0;
     let clear = |x: f64, y: f64| {

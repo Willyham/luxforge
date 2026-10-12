@@ -95,7 +95,10 @@ fn at_400(catalog: &std::path::Path) -> Editor {
     drawn_picture(&mut editor, (6000, 4000));
     editor.view_state.window = (1440.0, 900.0);
     editor.view_state.set_system_scale_factor(2.0);
-    view_set(&mut editor, json!({"zoom": {"mode": "percent", "value": 400.0}}));
+    view_set(
+        &mut editor,
+        json!({"zoom": {"mode": "percent", "value": 400.0}}),
+    );
     editor
 }
 
@@ -124,10 +127,16 @@ fn the_card_shows_at_200_percent_and_only_navigates_once_its_overview_is_the_sta
     assert!(empty.minimap(&empty.surfaces()).is_none(), "no photograph");
     finish(empty, catalog.clone());
     let mut editor = at_400(&catalog);
-    view_set(&mut editor, json!({"zoom": {"mode": "percent", "value": 199.9}}));
+    view_set(
+        &mut editor,
+        json!({"zoom": {"mode": "percent", "value": 199.9}}),
+    );
     assert!(editor.minimap(&editor.surfaces()).is_none(), "199.9%");
     assert!(editor.surfaces().minimap.is_none());
-    view_set(&mut editor, json!({"zoom": {"mode": "percent", "value": 200.0}}));
+    view_set(
+        &mut editor,
+        json!({"zoom": {"mode": "percent", "value": 200.0}}),
+    );
     // Shown at once, pending: a quiet placeholder with no rectangle, and a press does nothing.
     let model = editor.surfaces().minimap.expect("a card at 200%");
     assert_eq!(model.shows, Shows::Pending);
@@ -171,7 +180,11 @@ fn a_press_centres_the_real_view_and_a_drag_keeps_its_grab_and_clamps() {
     assert_eq!(editor.view_state.local_pan, (5551.0, 3585.0));
     assert!(editor.minimap_nav.drag.is_some());
     let _ = editor.minimap_drag(Point::new(90.0, 60.0));
-    assert_eq!(pan(&editor), (5551.0, 3585.0), "a still pointer moves nothing");
+    assert_eq!(
+        pan(&editor),
+        (5551.0, 3585.0),
+        "a still pointer moves nothing"
+    );
     editor.minimap_end("release");
     // A press inside the rectangle grabs it where it is: the view stays.
     let rectangle = editor.surfaces().minimap.unwrap().rectangle.unwrap();
@@ -181,7 +194,10 @@ fn a_press_centres_the_real_view_and_a_drag_keeps_its_grab_and_clamps() {
     // Dragged 18 × 12 points: 600 × 400 stage pixels, 1200 × 800 logical, the grab kept.
     let _ = editor.minimap_drag(Point::new(113.0, 77.0));
     let (x, y) = pan(&editor);
-    assert!((x - 6751.0).abs() < 0.01 && (y - 4385.0).abs() < 0.01, "{x} {y}");
+    assert!(
+        (x - 6751.0).abs() < 0.01 && (y - 4385.0).abs() < 0.01,
+        "{x} {y}"
+    );
     // Far outside the card the pan clamps at the stage's far edges.
     let _ = editor.minimap_drag(Point::new(1000.0, 1000.0));
     assert_eq!(pan(&editor), (12000.0 - 898.0, 8000.0 - 830.0));
@@ -221,7 +237,10 @@ fn escape_and_focus_loss_end_a_drag_and_escape_goes_no_further() {
     );
     let _ = editor.minimap_press(Point::new(30.0, 30.0));
     let held = pan(&editor);
-    assert!(editor.minimap_key(&escape()).is_some(), "consumed by the drag");
+    assert!(
+        editor.minimap_key(&escape()).is_some(),
+        "consumed by the drag"
+    );
     assert!(editor.minimap_nav.drag.is_none());
     let _ = editor.minimap_drag(Point::new(150.0, 100.0));
     assert_eq!(pan(&editor), held, "the last view stays");
@@ -260,7 +279,10 @@ fn a_pinch_over_the_card_is_the_cards_and_a_changed_stage_ends_a_drag() {
     });
     assert_ne!(editor.session.preview.view.zoom, view.zoom);
     // Another stage under a drag ends it, keeping the view.
-    view_set(&mut editor, json!({"zoom": {"mode": "percent", "value": 400.0}}));
+    view_set(
+        &mut editor,
+        json!({"zoom": {"mode": "percent", "value": 400.0}}),
+    );
     let _ = editor.minimap_press(Point::new(30.0, 30.0));
     assert!(editor.minimap_nav.drag.is_some());
     let held = pan(&editor);
@@ -270,5 +292,54 @@ fn a_pinch_over_the_card_is_the_cards_and_a_changed_stage_ends_a_drag() {
     let _ = after_message(&mut editor, &before);
     assert!(editor.minimap_nav.drag.is_none());
     assert_eq!(pan(&editor), held);
+    finish(editor, catalog);
+}
+
+/// A GPU sweep the lifecycle let go — its overview stale before it was adopted — is swept again
+/// over the same held tiles under the new version, rather than lost each time because the tiles
+/// held already carry an overview: the minimap then waits on a sweep that is drawn.
+#[test]
+fn a_sweep_let_go_is_swept_again_over_the_tiles_held() {
+    use crate::app::gpu_preview_tests::{catalog, deliver_until};
+    let catalog = catalog("minimap-resweep");
+    let (mut editor, _, _) = real_photo(&catalog);
+    deliver_until(&mut editor, "the open's frame", |editor| {
+        editor.presentation.presenter.photo().is_some()
+    });
+    editor.renderer.stage = Some(luxforge_gpu::GpuStageState::Available);
+    // The GPU presents the photograph, so no frame of it is retained to lend: the overview is the
+    // GPU's sweep. The surface is no test's; its presentation is stood in for.
+    editor.presentation.gpu_presented = Some(editor.presentation.presented_content);
+    view_set(
+        &mut editor,
+        json!({"zoom": {"mode": "percent", "value": 400.0}}),
+    );
+    let _ = editor.zoom_changed(&luxforge_core::Zoom::Fit);
+    deliver_until(&mut editor, "a sweep over a picture at rest", |editor| {
+        let sweep = editor.overviews.sweep_version();
+        sweep.is_some() && editor.gpu_rest_held_overview() == Some(sweep)
+    });
+    let first = editor.overviews.sweep_version().unwrap();
+    assert!(
+        editor
+            .overview_desired(false)
+            .is_some_and(|desired| desired.key.is_some()),
+        "the content presented before the view first wanted an overview is keyed"
+    );
+    // The lifecycle lets it go, as a stale sweep goes; the next message asks for another.
+    editor.overviews.sweep_lost(first);
+    let _ = editor.update(Message::Preview(
+        crate::app::message::preview::PreviewMessage::Poll,
+    ));
+    let second = editor
+        .overviews
+        .sweep_version()
+        .expect("another sweep awaited");
+    assert_ne!(second, first);
+    assert_eq!(
+        editor.gpu_rest_held_overview(),
+        Some(Some(second)),
+        "the held tiles are swept as the new version"
+    );
     finish(editor, catalog);
 }
