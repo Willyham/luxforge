@@ -234,17 +234,35 @@ It checks each file against its pin first and stops on one that differs, clones 
 
 Flags are yours, outside any catalog, in the application configuration directory beside the Performance preference. Any client reads and changes them with `flags.list` and `flags.set {flag, value}` (`null` resets), and an open Settings sheet follows another client's change. Developer mode, **Luminance and colour range masks** (`masks.range-selections`) and **Generative fill** (`ai.generative`, off by default; off, Luxforge shows nothing of generative fill: no Remove in the Corrections band, no AI editing section and none of its models in Settings › Models) are the product flags today; developer mode also lists two proof flags, Proof choice and Proof number, which change nothing.
 
-### Optional usage statistics
+### Optional usage and performance statistics
 
-Luxforge can share [usage and performance statistics](design/usage-statistics.md) if you agree, but production reporting is not switched on in any build yet: its destination, `api.luxforge.app`, has no ingestion service, so an ordinary launch shows no notice and no Privacy tab and sends nothing. What follows is how the feature works where it is enabled, which today is only an automated evidence run given a local test receiver (`--usage-test-receiver`).
+Visible developer builds (debug builds, builds without an embedded clean revision, or Developer mode)
+can send optional statistics to `https://api.luxforge.app/v1/usage/batches?tenant=test`. These are test
+data and production dashboards exclude them. The startup notice names that destination; sharing
+starts only after you agree. **No thanks**, Escape or closing the notice leaves sharing off. The
+notice is asked once per retained configuration. Settings › Privacy lets you change the choice at any
+time, with the same disclosure and a collapsed **What is sent** list.
 
-Sharing starts off. The first time Luxforge opens with a configuration that has made no choice, a small notice asks **Help improve Luxforge?**, with **Share statistics** and **No thanks**; Escape or closing it is No thanks. It asks once per configuration and never again, whatever you answered. **Settings › Privacy** has the **Share usage and performance statistics** switch, the same short disclosure and a collapsed **What is sent** list; turning the switch on or off applies at once.
+Reports contain timed usage events and approved app/OS/CPU/GPU/memory details, linked by random
+installation/session IDs and a keyed image ID. They exclude your name, contact details, IP address,
+photos, filenames, metadata and editing values. Sharing off stops collection, cancels delivery and
+removes the installation ID; turning it on again creates new IDs. Unrevisioned developer builds
+report `0.0.0+000000e71de5`; builds with an embedded clean revision report their version and revision.
 
-While sharing is on, Luxforge records which features and tools you use and when, how many images are added and exported, how long operations and previews take, process performance samples and approved app/OS/CPU/GPU/memory details, and sends them in the background about every ten minutes. A random installation ID, a per-launch session ID and, in Develop, an image ID let a session's or an image's activity be followed in order. The image ID is a keyed hash that cannot be matched to the file without a key that never leaves the computer. Reports never include names, contact details, IP addresses, photos, filenames, photo metadata or editing values. Delivery is best effort: nothing is kept on disk, nothing waits for the network, and quitting discards anything unsent. Turning sharing off stops recording, cancels an upload in flight, clears unsent data and removes the local installation ID and image key; turning it on again creates fresh ones, so image IDs change too.
+Ordinary revisioned release builds remain disabled pending Will's production activation decision;
+they show no notice or Privacy tab and never send to the test tenant. Hidden, background, headless,
+test and evidence launches remain suppressed, except isolated evidence explicitly given a test receiver.
 
-What the notice promises about the receiving end (no IP address recorded anywhere, reports deleted 90 days after they arrive) can only be kept by a deployed service, which is why reporting stays off until one exists and has passed its [deployment checklist](../services/usage-statistics/DEPLOYMENT.md). The open-source reference backend in `services/usage-statistics/` keeps them and has been checked against the desktop on one machine; no live service has been. Whatever is collected describes the sessions of people who chose to share, with gaps, and each session's last minutes are never sent, so the numbers are estimates, not counts of people or computers.
+The hosted backend keeps raw batches in R2 for 90 days and sampled Analytics Engine points for
+Cloudflare's three months. Exact histories come from R2; weighted analytics are estimates. Neither
+store keeps IP addresses or request headers; the edge uses a transient IP-based WAF rate limit.
+Delivery is best effort and loses each session's last minutes. Session/installation counts are not
+counts of people or computers. The [deployment checklist](../services/usage-statistics/DEPLOYMENT.md)
+separates live test checks from production activation.
 
-Agents and scripts read the choice and delivery counts with `usage.read`, and can turn sharing off with `usage.set {"enabled": false}`, for example `luxforge-ctl call usage.set --params '{"enabled": false}'` against the running desktop. Turning it on needs permission authority, which the desktop's notice and Privacy switch have and `luxforge-ctl` does not.
+Agents and scripts can read the choice with `usage.read` and disable sharing with
+`usage.set {"enabled": false}`. Enabling it requires permission authority, available to the desktop
+notice and Privacy switch, but not `luxforge-ctl`.
 
 ### Developer components gallery
 

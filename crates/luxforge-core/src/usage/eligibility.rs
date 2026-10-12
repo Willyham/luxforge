@@ -2,13 +2,10 @@
 //! revision) and the production activation switch
 //! ([design](../../../../docs/design/usage-statistics.md#build-identity-and-activation)).
 //!
-//! A launch is eligible in exactly two ways: production, which needs the activation switch on, a
-//! build `cargo xtask package` revisioned from a clean tree, a release (not debug) build and an
-//! ordinary visible desktop launch; or explicit test eligibility, which names a loopback receiver
-//! and can never reach [`super::DESTINATION`]. Every other launch is ineligible with one fixed
-//! [`Reason`], whatever consent is stored. Eligibility never grants consent: an eligible launch
-//! still collects nothing until a person opts in.
-use super::DESTINATION;
+//! Visible developer builds send to the fixed test tenant; ordinary revisioned release builds
+//! need production activation. Explicit evidence receivers remain opt-in test eligibility.
+//! Eligibility never grants consent: every eligible launch still needs the person's choice.
+use super::{DESTINATION, TEST_DESTINATION, TEST_RELEASE};
 use crate::Error;
 use serde::Serialize;
 use std::net::IpAddr;
@@ -31,7 +28,7 @@ const RELEASE_REVISION_CHARS: usize = 12;
 pub enum Reason {
     /// The person has not opted in, opted out, or this process stopped after a revocation.
     Choice,
-    /// A debug/developer, hidden, background, evidence, test or headless launch.
+    /// A hidden, background, evidence, test or headless launch.
     LaunchMode,
     /// The executable carries no clean source revision.
     Build,
@@ -114,8 +111,8 @@ impl BuildIdentity {
     }
 }
 
-/// A local receiver for tests and evidence runs: a plain-HTTP URL on a loopback address with an
-/// explicit port. It can never be the production destination.
+/// A receiver for tests and evidence: loopback HTTP with an explicit port, or exactly the hosted
+/// test destination. It can never be the production destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestReceiver {
     url: String,
@@ -123,8 +120,14 @@ pub struct TestReceiver {
 
 impl TestReceiver {
     /// `url` when it is `http://` on `localhost`, `127.0.0.0/8` or `[::1]` with an explicit port,
-    /// and carries no credentials, query or fragment; otherwise a validation error.
+    /// and carries no credentials, query or fragment, or exactly [`TEST_DESTINATION`]; otherwise
+    /// a validation error. No other remote URL or query string is allowed.
     pub fn loopback(url: &str) -> Result<Self, Error> {
+        if url == TEST_DESTINATION {
+            return Ok(Self {
+                url: url.to_owned(),
+            });
+        }
         let refused = |why: &str| Error::validation(format!("a test receiver {why}"));
         let parsed = url::Url::parse(url).map_err(|_| refused("must be an absolute URL"))?;
         if parsed.scheme() != "http" {
@@ -165,14 +168,16 @@ pub enum Eligibility {
     /// Production reporting to [`DESTINATION`]. Only [`Eligibility::production`] answers it, and
     /// only with the activation switch on.
     Production { release: String },
-    /// Explicit test eligibility: a loopback receiver, without the switch or a packaged build.
+    /// A visible debug, unrevisioned or developer launch, always to the hosted test tenant.
+    Developer { release: String },
+    /// Explicit test eligibility: a test receiver, without the switch or a packaged build.
     Test(TestReceiver),
     /// Not eligible, for this reason.
     Ineligible(Reason),
 }
 
 impl Eligibility {
-    /// The eligibility of a launch of this executable: [`PRODUCTION_ACTIVE`], the embedded
+    /// The production or developer-test eligibility of a launch of this executable: [`PRODUCTION_ACTIVE`], the embedded
     /// [`BuildIdentity`], whether this is a debug build and the host's launch mode.
     pub fn production(launch: LaunchMode) -> Self {
         Self::decide(
@@ -183,15 +188,22 @@ impl Eligibility {
         )
     }
 
-    /// Explicit test eligibility with a loopback receiver. For isolated test and evidence hosts
+    /// Explicit test eligibility with a validated test receiver. For isolated test and evidence hosts
     /// only; it still collects nothing without stored consent.
     pub fn test(receiver: TestReceiver) -> Self {
         Self::Test(receiver)
     }
 
-    /// The fixed order of the production checks: the activation switch, then the build, then the
-    /// launch. Private, so no caller can choose an active switch.
+    /// Visible developer launches bypass production activation and always use the test tenant.
+    /// Other launches keep the production check order: activation, build, launch.
     fn decide(active: bool, build: &BuildIdentity, launch: LaunchMode, debug_build: bool) -> Self {
+        if matches!(launch, LaunchMode::Interactive | LaunchMode::Developer)
+            && (debug_build || build.release().is_none() || launch == LaunchMode::Developer)
+        {
+            return Self::Developer {
+                release: build.release().unwrap_or_else(|| TEST_RELEASE.to_owned()),
+            };
+        }
         if !active {
             return Self::Ineligible(Reason::InactiveDestination);
         }
@@ -216,20 +228,21 @@ impl Eligibility {
         }
     }
 
-    /// Where an eligible launch sends: the test receiver's URL, otherwise [`DESTINATION`], which is
+    /// Where an eligible launch sends: the developer test tenant, test receiver, or [`DESTINATION`], which is
     /// also what an ineligible launch reports as the disclosed destination.
     pub fn destination(&self) -> &str {
         match self {
             Self::Test(receiver) => receiver.url(),
+            Self::Developer { .. } => TEST_DESTINATION,
             _ => DESTINATION,
         }
     }
 
-    /// The release a batch reports: the packaged build's, or this executable's for any other
-    /// launch (`None` when it carries no revision).
+    /// The release a batch reports: its embedded revision, or the synthetic developer release.
+    /// Explicit evidence hosts may override the executable's release in their supervisor.
     pub fn release(&self) -> Option<String> {
         match self {
-            Self::Production { release } => Some(release.clone()),
+            Self::Production { release } | Self::Developer { release } => Some(release.clone()),
             _ => BuildIdentity::current().release(),
         }
     }
@@ -242,95 +255,91 @@ mod tests {
     const REVISION: &str = "9d4138ca1f2e5b7a0c3d4e5f60718293a4b5c6d7";
 
     #[test]
-    fn usage_the_activation_switch_is_off_and_every_production_launch_reports_it() {
-        const {
-            assert!(
-                !PRODUCTION_ACTIVE,
-                "turning production on is a separate change"
-            )
-        };
-        for launch in [
-            LaunchMode::Interactive,
-            LaunchMode::Developer,
-            LaunchMode::Headless,
-        ] {
-            assert_eq!(
-                Eligibility::production(launch),
-                Eligibility::Ineligible(Reason::InactiveDestination)
-            );
-        }
-        let packaged = BuildIdentity::new("0.0.0", Some(REVISION));
+    fn usage_production_activation_stays_off() {
+        const { assert!(!PRODUCTION_ACTIVE, "activation is a separate change") };
+        let packaged = BuildIdentity::new("0.1.0", Some(REVISION));
+        let off = Eligibility::decide(false, &packaged, LaunchMode::Interactive, false);
+        assert_eq!(off, Eligibility::Ineligible(Reason::InactiveDestination));
+        let on = Eligibility::decide(true, &packaged, LaunchMode::Interactive, false);
+        assert_eq!(on.destination(), DESTINATION);
+        assert_eq!(on.release().as_deref(), Some("0.1.0+9d4138ca1f2e"));
         assert_eq!(
-            Eligibility::decide(false, &packaged, LaunchMode::Interactive, false),
-            Eligibility::Ineligible(Reason::InactiveDestination)
+            on,
+            Eligibility::Production {
+                release: "0.1.0+9d4138ca1f2e".into()
+            }
         );
     }
 
     #[test]
-    fn usage_an_unrevisioned_build_is_ineligible_and_a_packaged_one_reports_its_release() {
+    fn usage_visible_developer_builds_always_report_to_test_with_a_valid_release() {
         for revision in [
             None,
             Some(""),
+            Some("dirty"),
             Some("9d4138ca1f2e"),
             Some("9D4138CA1F2E5B7A0C3D4E5F60718293A4B5C6D7"),
-            Some("dirty"),
+            Some(REVISION),
         ] {
-            let build = BuildIdentity::new("0.0.0", revision);
-            assert_eq!(build.release(), None, "{revision:?}");
-            assert_eq!(
-                Eligibility::decide(true, &build, LaunchMode::Interactive, false),
-                Eligibility::Ineligible(Reason::Build),
-                "{revision:?}"
-            );
-        }
-        let packaged = BuildIdentity::new("0.0.0", Some(REVISION));
-        assert_eq!(packaged.revision(), Some(REVISION));
-        assert_eq!(packaged.release().as_deref(), Some("0.0.0+9d4138ca1f2e"));
-        assert!(super::super::Release::parse(&packaged.release().unwrap()).is_some());
-        assert_eq!(
-            Eligibility::decide(true, &packaged, LaunchMode::Interactive, false),
-            Eligibility::Production {
-                release: "0.0.0+9d4138ca1f2e".into()
+            let build = BuildIdentity::new("0.1.0-rc.1+build.5", revision);
+            for active in [false, true] {
+                for debug in [false, true] {
+                    for launch in [LaunchMode::Interactive, LaunchMode::Developer] {
+                        let eligibility = Eligibility::decide(active, &build, launch, debug);
+                        if !debug && build.release().is_some() && launch == LaunchMode::Interactive
+                        {
+                            continue;
+                        }
+                        assert!(matches!(eligibility, Eligibility::Developer { .. }));
+                        assert_eq!(eligibility.destination(), TEST_DESTINATION);
+                        let release = eligibility.release().unwrap();
+                        assert_eq!(
+                            release,
+                            build.release().unwrap_or_else(|| TEST_RELEASE.into())
+                        );
+                        assert!(super::super::Release::parse(&release).is_some());
+                    }
+                }
             }
-        );
-        let tagged = BuildIdentity::new("0.1.0-rc.1+build.5", Some(REVISION));
-        assert_eq!(tagged.release().as_deref(), Some("0.1.0+9d4138ca1f2e"));
-        assert!(super::super::Release::parse(&tagged.release().unwrap()).is_some());
-        // An ordinary test build of the core has no embedded revision.
+        }
+    }
+
+    #[test]
+    fn usage_suppressed_launches_never_get_developer_eligibility() {
+        for active in [false, true] {
+            for revision in [None, Some(REVISION)] {
+                for debug in [false, true] {
+                    let build = BuildIdentity::new("0.0.0", revision);
+                    for launch in [
+                        LaunchMode::Hidden,
+                        LaunchMode::Background,
+                        LaunchMode::Evidence,
+                        LaunchMode::Test,
+                        LaunchMode::Headless,
+                    ] {
+                        let eligibility = Eligibility::decide(active, &build, launch, debug);
+                        assert!(
+                            !eligibility.is_eligible(),
+                            "{active} {revision:?} {debug} {launch:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn usage_build_identity_retains_only_a_clean_revision_and_numeric_version() {
+        let build = BuildIdentity::new("0.1.0-rc.1+build.5", Some(REVISION));
+        assert_eq!(build.revision(), Some(REVISION));
+        assert_eq!(build.release().as_deref(), Some("0.1.0+9d4138ca1f2e"));
         if option_env!("LUXFORGE_SOURCE_REVISION").is_none() {
             assert_eq!(BuildIdentity::current().release(), None);
         }
     }
 
     #[test]
-    fn usage_every_launch_but_an_ordinary_release_desktop_is_ineligible() {
-        let packaged = BuildIdentity::new("0.0.0", Some(REVISION));
-        for launch in [
-            LaunchMode::Developer,
-            LaunchMode::Hidden,
-            LaunchMode::Background,
-            LaunchMode::Evidence,
-            LaunchMode::Test,
-            LaunchMode::Headless,
-        ] {
-            assert_eq!(
-                Eligibility::decide(true, &packaged, launch, false),
-                Eligibility::Ineligible(Reason::LaunchMode),
-                "{launch:?}"
-            );
-        }
-        assert_eq!(
-            Eligibility::decide(true, &packaged, LaunchMode::Interactive, true),
-            Eligibility::Ineligible(Reason::LaunchMode),
-            "a debug build is a developer launch"
-        );
-        let ineligible = Eligibility::Ineligible(Reason::LaunchMode);
-        assert!(!ineligible.is_eligible());
-        assert_eq!(ineligible.destination(), DESTINATION);
-    }
-
-    #[test]
-    fn usage_test_eligibility_takes_only_a_loopback_receiver() {
+    fn usage_test_eligibility_takes_only_loopback_or_exactly_the_hosted_test_url() {
         for url in [
             "http://127.0.0.1:8123/v1/usage/batches",
             "http://localhost:9000/",
@@ -342,8 +351,19 @@ mod tests {
             assert_ne!(eligibility.destination(), DESTINATION);
             assert!(eligibility.destination().starts_with("http://"));
         }
+        let hosted = Eligibility::test(TestReceiver::loopback(TEST_DESTINATION).unwrap());
+        assert_eq!(hosted.destination(), TEST_DESTINATION);
         for url in [
             DESTINATION,
+            "https://api.luxforge.app/v1/usage/batches?tenant=prod",
+            "https://api.luxforge.app/v1/usage/batches?tenant=test&x=1",
+            "https://api.luxforge.app/v1/usage/batches?tenant=%74est",
+            "https://api.luxforge.app/v1/usage/batches?tenant=test#fragment",
+            "https://api.luxforge.app:443/v1/usage/batches?tenant=test",
+            "https://user@api.luxforge.app/v1/usage/batches?tenant=test",
+            "https://other.example/v1/usage/batches?tenant=test",
+            "http://api.luxforge.app/v1/usage/batches?tenant=test",
+            "http://127.0.0.1:8123/v1/usage/batches?tenant=test",
             "https://127.0.0.1:8123/",
             "http://api.luxforge.app:80/v1/usage/batches",
             "http://10.0.0.2:8123/",
