@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "note": "The generative fill's comparison cases (scripts/generative_kit.py). A case with `paste` is the corpus case of that id, its stroke a horizontal brush covering the pasted object's region; a case with `image` is a real object, its stroke `points` (fractions of the upright image's width and height) and `radius` (fractions of its height), as the editor's brush takes them.",
+  "cases": [
+    {
+      "id": "bridge-boy",
+      "image": "private:z6-bridge.jpg",
+      "points": [[0.4264, 0.4894], [0.4264, 0.6812]],
+      "radius": 0.0546,
+      "note": "The known removal: the boy walking on the bamboo bridge, a real object on structured texture"
+    },
+    {
+      "id": "water-minnewanka",
+      "paste": "water-minnewanka",
+      "note": "A pasted object over a moored boat on a lake: whether the fill rebuilds the boat"
+    },
+    {
+      "id": "people-utrecht-pub",
+      "paste": "people-utrecht-pub",
+      "note": "A pasted object over walkers and a pub window: people and lettering"
+    }
+  ]
+}
