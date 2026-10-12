@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Nothing here is built yet. Updates remain manual until it is.
+Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. The update feed format, record signing and feed generation, and the core's update state, commands, preferences and flag are built; no platform mechanism or desktop interface is, so every build reports `unavailable` and updates remain manual.
 
 ## Outcome and scope
 
@@ -189,6 +189,29 @@ Two preferences are set through `preferences.set`, with the existing preference 
 - `update_install_automatically`, default `false`.
 
 Luxforge's preferences are authoritative: the macOS port applies them to Sparkle at every launch and on every change. A skipped version is held in the same configuration. The commands are listed in `schema.list`, so `luxforge-ctl` exposes them with no further work.
+
+**How the core does it.** The model lives in `luxforge_core::update`.
+
+- **The port.** `HostConfig::updates` holds an optional `UpdatePort`, which the desktop implements per platform.
+  - The owner calls `attach` once as it starts, then `apply` with an `UpdatePolicy`. It applies the policy again whenever `update_checks`, `update_install_automatically`, the skipped version or the pre-release flag changes.
+  - `status`, `check`, `request_install`, `skip` and `move_to_applications` each return at once. The port does its work on its own workers.
+  - The port reports changes through the owner's `UpdateNotifier`, which never blocks, whatever thread signals it.
+- **No updater.** A host with no port, such as `luxforge-json`, reports `unavailable` with `headless`. A desktop that must not update itself passes an `UnavailablePort` naming its reason: `development-build` for a development build, `no-update-key` for a release without the key. An unavailable mechanism is never asked to check.
+- **Checks are answered with their outcome.** `update.check` starts one check on the port, which ends it with a `CheckDone`. The call is held, as `events.wait` is, until the check ends or 60 seconds pass.
+  - A check already running is joined, never repeated.
+  - At most 8 calls are held. A call past that, or from a caller that may not wait, is answered at once with `checking: true`.
+  - Dropping a `CheckDone` ends the check too.
+- **Events.** A change the port reports, other than download progress alone, is announced as an `update.status` event with the request id `update:<n>`. A client watching the event log reads `update.status` again. `update.skip`, an accepted `update.install` and a changed update preference are announced under their own requests.
+- **The skipped version** is `update_skipped_version` in `preferences.json`. Only `update.skip` writes it, and `preferences.read` shows it. `preferences.set` cannot change or reset it, as for the usage statistics record. `update.skip` takes any client, as `preferences.set` does.
+- **Rules the core decides.** Ports cannot decide these differently:
+  - `catalog_format_change` compares the feed item's `luxforge:catalogFormat` with the build's catalog format.
+  - `UpdatePolicy::installs_automatically` is true only while checks and automatic installation are both on, for a followed, unskipped version with no catalog format change.
+  - A pre-release item is not offered while `updates.prerelease-channel` is off.
+- **Install and move.** `update.install` and `update.move-to-applications` carry a `{request_id, actor}` envelope, and the owner answers a retry with its first answer.
+  - Each `not-ready` refusal names a `data.reason`: the mechanism's reason, `notify-only` (a `linux-notify` installation), `no-update` or `not-supported` (a port that cannot move).
+  - A `conflict` names the running jobs in `data.jobs`. The jobs that hold an update back are export, batch export, HDR merge, develop picks, batch settings, module install and removal, and tasks. Previews, analysis, source preparation and listings do not.
+  - An update that changes the catalog format installs when explicitly asked.
+- **Tests** drive the commands through `luxforge_core::update::testing::FakeUpdatePort`, which the core's `test-holds` feature exposes to other crates' tests.
 
 **Installing.** Install-and-relaunch goes through the app's ordinary quit path:
 

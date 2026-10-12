@@ -63,7 +63,7 @@
     {
       "id": "TASK-002",
       "description": "Add the core update model: the update port, update.* commands, update preferences and the pre-release channel flag.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The core owns state, commands and preferences; a host port in HostConfig performs the platform mechanism. luxforge-json and development builds have no port and report unavailable with a reason.",

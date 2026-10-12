@@ -93,6 +93,7 @@ fn defaults() -> Value {
 /// record stored, which no `preferences.set` can change.
 fn answered(mut preferences: Value) -> Value {
     preferences["usage_statistics"] = json!({"prompt_shown": false, "enabled": false});
+    preferences["update_skipped_version"] = Value::Null;
     preferences
 }
 
@@ -119,6 +120,8 @@ fn settable() -> Value {
         "export_folder": null,
         "hdr_merge": null,
         "theme": "luxforge.dark",
+        "update_checks": true,
+        "update_install_automatically": false,
     })
 }
 
@@ -142,7 +145,7 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
     sorted.sort();
     assert_eq!(
         sorted, names,
-        "every preference but the protected record can be set"
+        "every preference but the protected records can be set"
     );
 
     let catalog = harness.dir.join("Photos").join("catalog.sqlite");
@@ -168,6 +171,8 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "export_folder": exports,
         "hdr_merge": {"alignment": "off", "deghost": "auto"},
         "theme": "luxforge.dark",
+        "update_checks": false,
+        "update_install_automatically": true,
     });
     assert_eq!(
         harness.ok("set", "preferences.set", chosen.clone()),
@@ -345,6 +350,8 @@ fn only_a_change_to_a_general_row_is_announced() {
         ),
         ("catalog-reset", json!({"catalog": null})),
         ("export-reset", json!({"export_folder": null})),
+        ("checks", json!({"update_checks": false})),
+        ("automatic", json!({"update_install_automatically": true})),
     ] {
         harness.ok(id, "preferences.set", params);
     }
@@ -358,7 +365,9 @@ fn only_a_change_to_a_general_row_is_announced() {
             "background",
             "size",
             "catalog",
-            "catalog-reset"
+            "catalog-reset",
+            "checks",
+            "automatic"
         ]
     );
 }

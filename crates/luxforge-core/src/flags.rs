@@ -24,6 +24,11 @@ pub const RANGE_MASKS: &str = "masks.range-selections";
 /// patch renders.
 pub const AI_GENERATIVE: &str = "ai.generative";
 
+/// The update check follows the `prerelease` channel as well as the default one, so release
+/// candidates are offered: how they are qualified (`docs/design/auto-update.md`). Off, a
+/// pre-release is never offered.
+pub const PRERELEASE_CHANNEL: &str = "updates.prerelease-channel";
+
 /// When a flag's consumer reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -135,6 +140,13 @@ const FLAGS: &[FlagSpec] = &[
         id: AI_GENERATIVE,
         title: "Generative fill",
         description: "Offers the Generative fill tier in Remove when a generative model is installed; an accepted fill renders the same either way.",
+        kind: FlagKind::Toggle { default: false },
+        applies: Applies::Live,
+    },
+    FlagSpec {
+        id: PRERELEASE_CHANNEL,
+        title: "Pre-release updates",
+        description: "Offers release candidates from the pre-release update channel as well as releases.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
     },
@@ -325,15 +337,22 @@ impl LaunchFlags {
 /// A live toggle's value now: what the host forced, or else its stored value when that fits, or
 /// else its default, which is also what a store that cannot be read gives.
 pub(crate) fn live_toggle(store: &PreferenceStore, launch: &LaunchFlags, id: &str) -> bool {
+    let stored = store.read().ok().map(|preferences| preferences.flags);
+    live_toggle_in(stored.as_ref(), launch, id)
+}
+
+/// [`live_toggle`] from flags already read: `None` for a store that could not be read.
+pub(crate) fn live_toggle_in(
+    stored: Option<&BTreeMap<String, Value>>,
+    launch: &LaunchFlags,
+    id: &str,
+) -> bool {
     let Some(flag) = FLAGS.iter().find(|flag| flag.id == id) else {
         return false;
     };
     let value = match launch.forced(id) {
         Some(value) => value.clone(),
-        None => {
-            let stored = store.read().ok().map(|preferences| preferences.flags);
-            effective(flag, stored.as_ref().and_then(|flags| flags.get(id))).0
-        }
+        None => effective(flag, stored.and_then(|flags| flags.get(id))).0,
     };
     value.as_bool().unwrap_or(false)
 }
@@ -570,13 +589,14 @@ mod tests {
                 .map(|flag| flag.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(false), ["developer", RANGE_MASKS, AI_GENERATIVE]);
+        assert_eq!(ids(false), ["developer", RANGE_MASKS, AI_GENERATIVE, PRERELEASE_CHANNEL]);
         assert_eq!(
             ids(true),
             [
                 "developer",
                 RANGE_MASKS,
                 AI_GENERATIVE,
+                PRERELEASE_CHANNEL,
                 "proof.choice",
                 "proof.number"
             ]
