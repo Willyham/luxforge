@@ -67,6 +67,17 @@ The [RAW backend selection](../research/raw-backend-selection.md) records pinned
 
 The [module capabilities](../design/module-capabilities.md) transport and secret store, which live in `luxforge-net` so that `luxforge-core` and its test binaries link none of them (only `url`, `idna_adapter` and `zeroize` below are the core's), add `rustls` 0.23.45 with only the `ring` provider (no aws-lc-rs or CMake) and TLS 1.2/1.3, `rustls-platform-verifier` 0.7.0 so certificates are checked by the operating system's own verifier on macOS and Windows (native roots with webpki on Linux), `url` 2.5.8 with `idna_adapter` pinned to 1.0.0, the IDNA back end without Unicode data (a non-ASCII host is refused, punycode is accepted, and no ICU4X crate is built), `ureq` 3.4.2 with no features for the transport's HTTP/1.1, whose agent runs on the transport's own resolver, socket and rustls session (it adds `ureq-proto` 0.6.4 with its `client` feature, which the transport also names, `http` 1.5.0, `httparse` 1.10.1, `base64` 0.23.1 and `utf8-zero` 0.8.1, all MIT or Apache-2.0, and no TLS, pool, proxy or compression code), `security-framework` 3.7.0 for the macOS Keychain (macOS only, keychain item APIs only) and `zeroize` 1.9.0. `ring` carries native C and assembly. The verifier's CDLA-licensed root bundle is a wasm32-only dependency, outside the three audited target graphs, so `deny.toml` is unchanged and the license and source checks pass. As with every other dependency, passing the automated checks is not the deferred manual review.
 
+## Update feed dependencies
+
+The [update feed](../design/auto-update.md#the-feed) crate, `luxforge-update`, adds no package to the lockfile. Every dependency is pinned in the workspace manifest to the version and features already resolved:
+
+- `ring` 0.17.14 (Apache-2.0 AND ISC; native C and assembly), whose Ed25519 signs and verifies, with the default features `rustls` already builds;
+- `base64` 0.23.1 (MIT or Apache-2.0) with `std`, as `ureq` builds it;
+- `memmap2` 0.9.11 (MIT or Apache-2.0), as `fontdb` builds it;
+- `roxmltree` 0.20.0, `semver` 1.0.28, `serde`, `serde_json` and `zeroize` 1.9.0.
+
+`ring`'s Ed25519 takes the whole message as one slice. An archive is therefore mapped read-only rather than read onto the heap, in one function that allows `unsafe` by name beside its `SAFETY:` comment; the rest of the crate denies it. `xtask-cli` now builds this crate, and so `ring`'s native code, for `update-record` and `update-feed`. It is the one workspace crate `xtask-cli` may build, and it builds no image, codec, database or GUI crate; `cargo xtask check-repository` enforces both. As with every other dependency, passing the automated checks is not the deferred manual review.
+
 ## Usage statistics dependencies
 
 The [usage statistics](../design/usage-statistics.md) consent record's image key is 32 bytes of the operating system's cryptographic randomness from `getrandom` 0.4.3 (MIT or Apache-2.0), a direct dependency of `luxforge-core` with no features. It is the version `uuid` already draws its v4 IDs from, so it adds no package to the lockfile.
