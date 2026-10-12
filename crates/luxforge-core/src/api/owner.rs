@@ -1627,6 +1627,8 @@ fn owner_loop(
         // answers it on time; with none held the owner sleeps on a plain receive.
         owner.expire_event_waits();
         owner.wake_job_waits();
+        // A merge preview left idle closes on the same wake-up.
+        merge::expire_previews(&mut owner);
         let message = match owner.next_event_deadline() {
             None => match receiver.recv() {
                 Ok(message) => message,
@@ -2343,6 +2345,7 @@ impl Owner {
             .iter()
             .map(|held| held.wait.deadline)
             .chain(self.job_waits.iter().filter_map(|held| held.deadline))
+            .chain(self.catalog.merge.previews.next_idle())
             .min()
     }
 
@@ -2648,6 +2651,7 @@ impl Owner {
         self.job_waits.retain(|held| held.client != client);
         self.jobs
             .watched_jobs(self.job_waits.iter().map(|held| &held.job));
+        merge::disconnect_previews(self, client);
         self.catalog.disconnect(client, &mut self.jobs);
     }
 

@@ -173,13 +173,16 @@ struct Dispatch {
     hold: Option<Hold>,
 }
 
-/// Which of the owner's two lanes of this shape a [`LibraryLane`] is: the library lane, or the
-/// merge lane (`super::merge`), which runs one HDR merge at a time with at most one waiting. Each
-/// has its own worker thread and its own [`CatalogMessage`] variant, and the same job machinery.
+/// Which of the owner's lanes of this shape a [`LibraryLane`] is: the library lane; the merge lane
+/// (`super::merge`), which runs one merge or preparing merge preview at a time with at most one
+/// waiting; or the merge preview lane, which draws merge previews again from their retained proxies
+/// (`merge.preview-update`), so an update never waits behind a merge. Each has its own worker
+/// thread and its own [`CatalogMessage`] variant, and the same job machinery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LaneKind {
     Library,
     Merge,
+    Preview,
 }
 
 impl LaneKind {
@@ -187,6 +190,7 @@ impl LaneKind {
         match self {
             Self::Library => "luxforge-library",
             Self::Merge => "luxforge-merge",
+            Self::Preview => "luxforge-merge-preview",
         }
     }
 
@@ -195,6 +199,7 @@ impl LaneKind {
         match self {
             Self::Library => LANE_QUEUE,
             Self::Merge => super::merge::MERGE_QUEUE,
+            Self::Preview => super::merge::PREVIEW_QUEUE,
         }
     }
 
@@ -202,6 +207,7 @@ impl LaneKind {
         match self {
             Self::Library => "library",
             Self::Merge => "merge",
+            Self::Preview => "merge preview",
         }
     }
 
@@ -210,6 +216,7 @@ impl LaneKind {
         match self {
             Self::Library => CatalogMessage::Library(message),
             Self::Merge => CatalogMessage::Merge(message),
+            Self::Preview => CatalogMessage::MergePreview(message),
         }
     }
 
@@ -218,6 +225,7 @@ impl LaneKind {
         match self {
             Self::Library => &mut owner.catalog.library,
             Self::Merge => &mut owner.catalog.merge.lane,
+            Self::Preview => &mut owner.catalog.merge.updates,
         }
     }
 }
@@ -289,6 +297,45 @@ impl LibraryLane {
                 self.kind.name()
             )));
         }
+        let job_id = task.job_id.clone();
+        let queued = self.open(jobs, task);
+        self.waiting.push_back(queued);
+        self.dispatch(jobs);
+        let status = jobs
+            .read(&job_id)
+            .map_or(JobStatus::Queued, |record| record.status);
+        Ok(JobStarted {
+            job_id,
+            status,
+            deduplicated: false,
+        })
+    }
+
+    /// Queue `task` straight behind `after`, a job of this lane's that it continues (a merge or an
+    /// update of a merge preview still preparing), outside the waiting bound: it is the same work
+    /// carried on, never a request of its own. Behind the running job when `after` is not waiting.
+    pub(super) fn queue_after(&mut self, jobs: &mut Jobs, task: Task, after: &JobId) -> JobStarted {
+        let job_id = task.job_id.clone();
+        let at = self
+            .waiting
+            .iter()
+            .position(|queued| queued.job_id == *after)
+            .map_or(0, |at| at + 1);
+        let queued = self.open(jobs, task);
+        self.waiting.insert(at, queued);
+        self.dispatch(jobs);
+        let status = jobs
+            .read(&job_id)
+            .map_or(JobStatus::Queued, |record| record.status);
+        JobStarted {
+            job_id,
+            status,
+            deduplicated: false,
+        }
+    }
+
+    /// Open `task` as a `queued` catalog job, for the waiting queue.
+    fn open(&self, jobs: &mut Jobs, task: Task) -> Queued {
         let Task {
             job_id,
             job,
@@ -305,7 +352,7 @@ impl LibraryLane {
             origin: Some(origin),
             control: control.clone(),
         });
-        self.waiting.push_back(Queued {
+        Queued {
             job_id: job_id.clone(),
             control,
             activity: ActivitySpec {
@@ -316,16 +363,7 @@ impl LibraryLane {
                 job_id: Some(job_id.to_string()),
             },
             work,
-        });
-        self.dispatch(jobs);
-        let status = jobs
-            .read(&job_id)
-            .map_or(JobStatus::Queued, |record| record.status);
-        Ok(JobStarted {
-            job_id,
-            status,
-            deduplicated: false,
-        })
+        }
     }
 
     /// Whether a job queued now would be refused: one runs and as many as may wait already do.
@@ -518,7 +556,7 @@ pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage)
             name_the_job(owner, first, &job_id);
             announce_end(owner, &job_id);
             owner.jobs.finish(&job_id, result.map(Output::Value));
-            if kind == LaneKind::Merge {
+            if kind != LaneKind::Library {
                 super::merge::ended(owner, &job_id);
             }
             owner.record_announced();
@@ -530,6 +568,7 @@ pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage)
             match kind {
                 LaneKind::Library => catalog.library.dispatch(jobs),
                 LaneKind::Merge => catalog.merge.lane.dispatch(jobs),
+                LaneKind::Preview => catalog.merge.updates.dispatch(jobs),
             }
         }
         LibraryMessage::Partial {
@@ -567,7 +606,7 @@ pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage)
 pub(super) fn cancelled(owner: &mut Owner, kind: LaneKind, job_id: &JobId) {
     if kind.of(owner).unqueue(job_id) {
         announce_end(owner, job_id);
-        if kind == LaneKind::Merge {
+        if kind != LaneKind::Library {
             super::merge::ended(owner, job_id);
         }
     }

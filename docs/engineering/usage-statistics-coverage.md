@@ -206,6 +206,9 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `merge.create` | `interaction` `hdr-merge` | When an HDR merge is accepted, with no image; a panorama merge is exempt (no approved event; never counted as `hdr-merge`). Pick merged's membership change is part of it. A refusal or a retry records nothing; the merge job's terminal outcome records no `operation.end` (open). |
 | `merge.inspect` | Exempt (read) | Reads a merge. |
 | `merge.plan` | Exempt (read) | Plans a merge; its `merge.create` is the operation. |
+| `merge.preview` | Exempt (read) | Draws a merge before it is made, publishing nothing; its `merge.create` (Pick merged or Import merged) is the operation and records `hdr-merge`. No preview event exists without the owner's approval. |
+| `merge.preview-close` | Exempt (internal) | Ends a preview session (Cancel on the sheet); nothing was made. |
+| `merge.preview-update` | Exempt (read) | Draws the open preview again for a setting change, each step of a stepper one request; the setting is recorded with the merge it is used for. |
 | `merge.remove` | `interaction` merge-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `merge.rerun` | `interaction` `hdr-merge` | When an HDR merge's rerun is accepted, as `merge.create`; a panorama merge is exempt. The job's terminal outcome records no `operation.end` (open). |
 | `merge.restore` | `interaction` merge-restore | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
