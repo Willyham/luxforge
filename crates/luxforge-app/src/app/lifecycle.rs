@@ -5,17 +5,22 @@ use super::{
     gpu_tiles::GpuTiles,
     message::{Message, view::ViewMessage},
     tasks,
+    unsupported_catalog::{Shell, Unsupported},
 };
-use crate::Config;
+use crate::{Config, state::unsupported_catalog::Refusal};
 use iced::Task;
 use luxforge_cli::Paths;
 use luxforge_core::{
     ClientAuthority, ClientId, ErrorKind, HostConfig, LocalServer, ModuleRegistry, OwnerHandle,
-    capabilities::secrets::{MemorySecretStore, SecretStore},
+    capabilities::{
+        secrets::{MemorySecretStore, SecretStore},
+        transport::Transport,
+    },
 };
 use luxforge_net::{HttpTransport, platform_secret_store};
 use serde_json::json;
 use std::{
+    path::Path,
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
@@ -45,7 +50,11 @@ const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis
 /// resolved paths, and the secret store and network transport it uses. An evidence run keeps all
 /// of it inside its evidence directory with an in-memory store, so it never touches the person's
 /// configuration or login keychain. Nothing is created here: the host creates a directory on its
-/// first write, and the transport builds its TLS configuration on its first request. `tiles` is
+/// first write, and the transport builds its TLS configuration on its first request. The update
+/// port is chosen for the launch ([`super::update_port::select`]); only a release build touches the
+/// disk here: a Linux payload port probes once beside its payload whether it can replace itself,
+/// and a macOS bundle that embeds Sparkle is classified (translocation and its volume) and loads
+/// the framework. `tiles` is
 /// the launch's GPU tile worker, which the owner's export lane streams every export through and
 /// which starts nothing until the first export asks it.
 pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
@@ -54,17 +63,18 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         None => platform_secret_store(),
     };
     let paths = config.paths.as_ref();
+    let transport: Arc<dyn Transport> = Arc::new(HttpTransport::system());
     HostConfig {
         usage_consent: Arc::new(luxforge_core::usage::Usage::new(usage_eligibility(config))),
         preferences_dir: paths.map(|paths| paths.config.clone()),
         config_dir: paths.map(Paths::module_config),
         resource_dir: paths.map(Paths::module_resources),
         secrets,
+        // A Linux release build's payload updater reads its feed and archives over the system
+        // transport; every other launch gets an unavailable port naming why.
+        updates: Some(super::update_port::select(config, transport.clone())),
         // A developer run installs the developer models from memory.
-        transport: luxforge_core::DeveloperModels::for_run(
-            config.developer,
-            Arc::new(HttpTransport::system()),
-        ),
+        transport: luxforge_core::DeveloperModels::for_run(config.developer, transport),
         // What a model's machine minimum is held against in the Models tab and at install.
         machine_memory_bytes: luxforge_core::capabilities::host::installed_memory_bytes(),
         launch_flags: config.launch_flags.clone(),
@@ -147,6 +157,8 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     // streams through it, and the renderer report names it the window's adapter once known.
     let tiles = super::gpu_tiles::launch(launch);
     let host = host_config(&config, tiles);
+    // An evidence launch's scripted update port, in place of the platform's (`--update-fixture`).
+    let host = super::update_fixture::installed(config.update_fixture.as_ref(), host);
     // The notice and the Privacy tab exist exactly where the host can act on them.
     config.usage_eligible = host.usage_consent.eligibility().is_eligible();
     // The process's statistics supervisor, for an eligible launch only, registered before the
@@ -157,30 +169,6 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
         config.usage_receiver.is_some(),
         !config.hidden || config.evidence.is_some(),
     );
-    let (owner, join) =
-        OwnerHandle::start_with_host(&catalog, registry, host).map_err(|error| {
-            match error.kind {
-                ErrorKind::Conflict => format!(
-                    "another Luxforge instance owns the catalog {}; close it or pass --catalog",
-                    catalog.display()
-                ),
-                _ => format!("cannot open catalog {}: {error}", catalog.display()),
-            }
-        })?;
-    let session_file = luxforge_core::live_session_file(&catalog);
-    // Owning the catalog proves any same-catalog session file from an earlier process is stale.
-    if session_file.exists() {
-        let _ = std::fs::remove_file(&session_file);
-    }
-    let live_server = start_live_session(&mut config, &owner, &catalog, &session_file);
-    // Queue only the first command-line file. The source worker can read and decode it while
-    // Iced/AppKit initializes, without making the window thread read the image or changing the
-    // normal adoption, history and error path. Evidence mode opens later files in order as usual.
-    let client = owner.register_with(ClientAuthority::Permissions);
-    let initial_import = config
-        .files
-        .front()
-        .map(|path| tasks::start_import(&owner, client, path));
     let hidden = config.hidden;
     let position = config.opening.map(|opening| opening.position());
     // Iced opens the window at its settings' size times the application's scale factor, the
@@ -190,26 +178,50 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
             .interface_size
             .unwrap_or(luxforge_core::preferences::DEFAULT_INTERFACE_SIZE),
     );
-    let boot = Mutex::new(Some(Boot {
-        owner,
-        join,
-        live_server,
+    let prepared = Prepared {
         config,
-        client: Some(client),
-        initial_import,
+        registry,
+        host,
         window: size,
-    }));
+    };
+    // A refused evidence run that was given no choice for the sheet says so here, after its window.
+    let problem = Arc::new(Mutex::new(None));
+    let start = match own(&prepared, &catalog) {
+        Ok((owner, join)) => Start::Editor(boot(prepared, owner, join, &catalog)),
+        Err(error) => {
+            let offered = prepared
+                .config
+                .launch_catalog
+                .as_ref()
+                .and_then(|launch| Refusal::offered(launch, &error));
+            match offered {
+                // The remembered or default catalog is refused as another version's: the window
+                // opens on the sheet instead of the launch failing.
+                Some(refusal) => Start::Unsupported(refusal, prepared),
+                None => return Err(refused(&catalog, &error)),
+            }
+        }
+    };
+    let shell = Mutex::new(Some(start));
+    let exit = problem.clone();
     let application = iced::application(
-        move || {
-            Editor::new(
-                boot.lock()
-                    .expect("boot state is never poisoned")
-                    .take()
-                    .expect("the editor boots once"),
-            )
+        move || match shell
+            .lock()
+            .expect("boot state is never poisoned")
+            .take()
+            .expect("the shell boots once")
+        {
+            Start::Editor(boot) => {
+                let (editor, task) = Editor::new(boot);
+                (Shell::Editor(Box::new(editor)), task)
+            }
+            Start::Unsupported(refusal, prepared) => {
+                let (sheet, task) = Unsupported::new(refusal, prepared, exit.clone());
+                (Shell::Unsupported(Box::new(sheet)), task)
+            }
         },
-        Editor::update,
-        Editor::view,
+        Shell::update,
+        Shell::view,
     )
     .title("Luxforge")
     // An invisible window still owns a real surface and renders through it, so a hidden launch
@@ -221,10 +233,10 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     ))
     // The interface size scales everything Iced draws. Every physical-pixel computation reads the
     // view state's combined factor, so 100% zoom stays one source pixel per display pixel.
-    .scale_factor(Editor::interface_scale)
+    .scale_factor(Shell::interface_scale)
     // A function of the state, which Iced reads again after every update.
-    .theme(Editor::theme)
-    .subscription(Editor::subscription);
+    .theme(Shell::theme)
+    .subscription(Shell::subscription);
     // The bundled typeface is registered once, before the first frame, from bytes compiled into
     // the binary; every text run after that resolves it from the renderer's font database.
     luxforge_ui::theme::FONT_FILES
@@ -232,7 +244,83 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
         .fold(application, |application, file| application.font(file))
         .default_font(luxforge_ui::theme::FONT)
         .run()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    match problem.lock().expect("never poisoned").take() {
+        Some(problem) => Err(problem),
+        None => Ok(()),
+    }
+}
+
+/// What the window boots into: the editor over the catalog the launch opened, or the
+/// unsupported-catalog sheet over the one it could not.
+enum Start {
+    Editor(Boot),
+    Unsupported(Refusal, Prepared),
+}
+
+/// What a launch holds before its catalog opens: its configuration, registry, capability host and
+/// window size. The unsupported-catalog sheet keeps it for the catalog Start a new catalog opens.
+#[derive(Clone)]
+pub(crate) struct Prepared {
+    pub(crate) config: Config,
+    pub(crate) registry: Arc<ModuleRegistry>,
+    pub(crate) host: HostConfig,
+    pub(crate) window: (f32, f32),
+}
+
+/// Take ownership of `catalog` for this launch, or the core's refusal.
+pub(crate) fn own(
+    prepared: &Prepared,
+    catalog: &Path,
+) -> Result<(OwnerHandle, JoinHandle<()>), luxforge_core::Error> {
+    OwnerHandle::start_with_host(catalog, prepared.registry.clone(), prepared.host.clone())
+}
+
+/// The command line's message for a catalog the launch could not open and offers nothing for.
+pub(crate) fn refused(catalog: &Path, error: &luxforge_core::Error) -> String {
+    match error.kind {
+        ErrorKind::Conflict => format!(
+            "another Luxforge instance owns the catalog {}; close it or pass --catalog",
+            catalog.display()
+        ),
+        _ => format!("cannot open catalog {}: {error}", catalog.display()),
+    }
+}
+
+/// The editor's boot over `catalog`, which `owner` now holds: its live session, its own client and
+/// the first command-line file's import, started before the window opens.
+pub(crate) fn boot(
+    prepared: Prepared,
+    owner: OwnerHandle,
+    join: JoinHandle<()>,
+    catalog: &Path,
+) -> Boot {
+    let Prepared {
+        mut config, window, ..
+    } = prepared;
+    let session_file = luxforge_core::live_session_file(catalog);
+    // Owning the catalog proves any same-catalog session file from an earlier process is stale.
+    if session_file.exists() {
+        let _ = std::fs::remove_file(&session_file);
+    }
+    let live_server = start_live_session(&mut config, &owner, catalog, &session_file);
+    // Queue only the first command-line file. The source worker can read and decode it while
+    // Iced/AppKit initializes, without making the window thread read the image or changing the
+    // normal adoption, history and error path. Evidence mode opens later files in order as usual.
+    let client = owner.register_with(ClientAuthority::Permissions);
+    let initial_import = config
+        .files
+        .front()
+        .map(|path| tasks::start_import(&owner, client, path));
+    Boot {
+        owner,
+        join,
+        live_server,
+        config,
+        client: Some(client),
+        initial_import,
+        window,
+    }
 }
 
 /// Serve the live session on loopback and register it in the per-user registry of running
@@ -266,7 +354,7 @@ fn start_live_session(
 
 impl Editor {
     /// The window closed: stop the live server and the owner, finish the log and exit once the
-    /// owner thread has joined.
+    /// owner thread has joined, installing a staged update first.
     pub(super) fn close(&mut self) -> Task<Message> {
         // The window's frame is asked for once and stored through the writer, which the close
         // then waits for like any other write.
@@ -301,17 +389,44 @@ impl Editor {
         self.owner.stop();
         let join = self.owner_join.take();
         let log = self.log.diagnostics.take();
-        Task::perform(
-            async move {
+        // A relaunch or an update's install waits for the catalog to close: it runs once the
+        // owner's thread has joined, and its outcome is the log's last event. Off the update loop,
+        // on the runtime's blocking pool ([`super::tasks::owner_work`]): the joins wait, and
+        // Sparkle's installer needs AppKit's main thread, which is the update loop's, to answer
+        // while the quit hook waits for it.
+        let after = super::relaunch::take();
+        let line = after.as_ref().map(|_| {
+            (
+                self.log.run_id.clone(),
+                self.log.started,
+                self.activity.requested,
+            )
+        });
+        super::tasks::owner_work(move || {
+            let Some(after) = after else {
                 if let Some(log) = log {
                     log.finish();
                 }
                 if let Some(join) = join {
                     let _ = join.join();
                 }
-            },
-            |_| (),
-        )
+                // The catalog is closed: a staged update may now replace the app, and one the
+                // person asked for starts the new version in place of this process.
+                super::update_port::at_quit();
+                return;
+            };
+            if let Some(join) = join {
+                let _ = join.join();
+            }
+            let detail = super::relaunch::run(after);
+            if let Some(log) = log {
+                if let Some((run_id, started, request)) = line {
+                    log.event(json!({"event":"after_close","run_id":run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"request_id":request,"generation":request,"detail":detail}));
+                }
+                log.finish();
+            }
+            super::update_port::at_quit();
+        })
         .then(|_| iced::exit())
     }
 }

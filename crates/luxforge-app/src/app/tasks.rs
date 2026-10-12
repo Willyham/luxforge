@@ -184,6 +184,10 @@ pub(crate) struct SyncResult {
     /// A `usage.*` method changed the usage statistics consent, which an eligible desktop reads
     /// again.
     pub(crate) usage: bool,
+    /// The update state may have moved: an `update.*` event, the port's own among them, or a
+    /// preference or flag change, which the update policy follows. The desktop reads
+    /// `update.status` again.
+    pub(crate) updates: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -204,6 +208,7 @@ impl SyncResult {
             themes: false,
             library: None,
             usage: false,
+            updates: false,
             own: Vec::new(),
         }
     }
@@ -2166,6 +2171,14 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("usage."));
+    // The update status follows the port's own events, `update.skip` and `update.install`, and
+    // the preferences and the flag its policy is read from.
+    let updates = flags
+        || preferences
+        || events
+            .events
+            .iter()
+            .any(|event| event.method.starts_with("update."));
     let asset = held.as_ref().is_some_and(|(asset_id, held)| {
         events.gap
             || events.events.iter().any(|event| {
@@ -2198,6 +2211,7 @@ pub(crate) fn sync_now(
         themes,
         library: library_change,
         usage,
+        updates,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2935,6 +2949,7 @@ mod tests {
             themes: false,
             library: None,
             usage: false,
+            updates: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));

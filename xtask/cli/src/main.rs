@@ -23,6 +23,7 @@ const FULL_COMMANDS: &[&str] = &[
     "package",
     "release-build",
     "release-sign",
+    "update-journey",
     "editor-acceptance",
     "editor-performance",
     "detail-performance",
@@ -86,6 +87,8 @@ fn main_result() -> Result<ExitCode> {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
+        "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "check" => {
             let quick = a.flag("--quick");
             a.done()?;
@@ -98,8 +101,17 @@ fn main_result() -> Result<ExitCode> {
         }
         "test" => {
             let quick = a.flag("--quick");
+            let native = a.flag("--native-watchers");
             a.done()?;
-            check::tests(&root, quick)?;
+            xtask_cli::ensure(
+                !(quick && native),
+                "--quick and --native-watchers are separate gates",
+            )?;
+            if native {
+                check::native_watchers(&root)?;
+            } else {
+                check::tests(&root, quick)?;
+            }
         }
         "build" | "fmt" | "lint" => {
             let release = a.flag("--release");
@@ -198,6 +210,8 @@ mod tests {
                 "release",
                 "release-tag",
                 "release-assemble",
+                "update-record",
+                "update-feed",
                 "check-repository",
                 "test",
                 "build",

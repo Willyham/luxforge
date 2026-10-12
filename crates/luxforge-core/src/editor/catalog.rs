@@ -19,7 +19,7 @@ use std::{
 /// ([`MERGE_SCHEMA`]). A catalog is marked by [`CATALOG_APPLICATION_ID`] as well as its format, so
 /// a database without the mark is not taken for one. Every other marker, earlier or later, is
 /// refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 1;
+pub const CATALOG_FORMAT: i64 = 1;
 /// SQLite's `application_id` for a Luxforge catalog, `LXFC`.
 pub(crate) const CATALOG_APPLICATION_ID: i64 = 0x4C58_4643;
 pub(super) const ASSET_COLUMNS: &str =
@@ -87,7 +87,17 @@ pub(crate) fn now_ms() -> i64 {
 /// index in this process's memory and never creates a `<catalog>-shm` file, and the empty
 /// transaction takes the lock now, so a second owner is refused here rather than at its first
 /// write.
-pub(super) fn lock(connection: &Connection) -> Result<i64, Error> {
+///
+/// Until [`accept`], closing the connection does not checkpoint when `found_log`, a write-ahead log
+/// already beside the file: a refused catalog left with one, as a catalog an earlier version
+/// stopped without closing is, keeps its log and every byte of the catalog rather than having the
+/// log folded in and removed as the refusal closes. A log SQLite creates itself on reading a
+/// catalog in write-ahead mode holds nothing, and closing removes it again.
+pub(super) fn lock(connection: &Connection, found_log: bool) -> Result<i64, Error> {
+    connection.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        found_log,
+    )?;
     connection.execute_batch(
         "PRAGMA foreign_keys=ON;
          PRAGMA locking_mode=EXCLUSIVE;
@@ -97,13 +107,20 @@ pub(super) fn lock(connection: &Connection) -> Result<i64, Error> {
     Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
 }
 
+/// Take a catalog [`lock`] found this build opens: closing it checkpoints its log again.
+pub(super) fn accept(connection: &Connection) -> Result<(), Error> {
+    connection.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        false,
+    )?;
+    Ok(())
+}
+
 /// Refuse a database of the current format that does not carry [`CATALOG_APPLICATION_ID`].
 pub(super) fn require_application_id(connection: &Connection) -> Result<(), Error> {
     let id: i64 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if id != CATALOG_APPLICATION_ID {
-        return Err(Error::incompatible(
-            "database is not marked as a Luxforge catalog; choose a new catalog path",
-        ));
+        return Err(Error::unmarked_catalog(CATALOG_FORMAT, CATALOG_FORMAT));
     }
     Ok(())
 }
@@ -1263,6 +1280,19 @@ mod tests {
                 "the refused catalog keeps every byte"
             );
             assert!(
+                !luxforge_testbase::paths::wal(&catalog).exists(),
+                "a refused catalog in write-ahead mode gets no log beside it"
+            );
+            if marker != 0 {
+                assert_eq!(
+                    (
+                        error.refused_catalog_format(),
+                        error.expected_catalog_format()
+                    ),
+                    (Some(marker), Some(CATALOG_FORMAT))
+                );
+            }
+            assert!(
                 !default_artifact_root(&catalog).exists(),
                 "a refused catalog gets no artifact directory"
             );
@@ -1549,7 +1579,8 @@ mod tests {
         assert!(!luxforge_testbase::paths::shm(&catalog).exists());
         drop(service);
         let connection = Connection::open(&catalog).unwrap();
-        assert_eq!(lock(&connection).unwrap(), CATALOG_FORMAT);
+        assert_eq!(lock(&connection, false).unwrap(), CATALOG_FORMAT);
+        accept(&connection).unwrap();
         configure(&connection, true).unwrap();
         assert_eq!(
             journal(&connection),
@@ -1579,6 +1610,59 @@ mod tests {
             "catalog cannot keep a write-ahead log (SQLite kept its memory journal); \
              choose a catalog file on a local disk"
         );
+    }
+
+    /// A refused catalog left with a write-ahead log, as one an earlier version stopped without
+    /// closing is, keeps both files byte for byte: the refusing connection neither checkpoints the
+    /// log into the catalog nor removes it as it closes. The refusal names the marker it read.
+    #[test]
+    fn a_refused_catalog_keeps_its_write_ahead_log_byte_for_byte() {
+        for marker in [16, CATALOG_FORMAT + 1] {
+            let source = temp("refused-wal-source.sqlite");
+            let mut service = EditorService::open(&source).unwrap();
+            service.import(&fixture()).unwrap();
+            drop(service);
+            // The marker and a row are committed to the log and never checkpointed: the files
+            // are copied while the connection that wrote them is still open.
+            let connection = Connection::open(&source).unwrap();
+            connection
+                .execute_batch(&format!(
+                    "PRAGMA journal_mode=WAL;
+                     PRAGMA wal_autocheckpoint=0;
+                     CREATE TABLE later_version(value INTEGER);
+                     INSERT INTO later_version VALUES (1);
+                     PRAGMA user_version={marker};"
+                ))
+                .unwrap();
+            let catalog = temp("refused-wal.sqlite");
+            let wal = luxforge_testbase::paths::wal(&catalog);
+            std::fs::copy(&source, &catalog).unwrap();
+            std::fs::copy(luxforge_testbase::paths::wal(&source), &wal).unwrap();
+            drop(connection);
+            let before = (
+                std::fs::read(&catalog).unwrap(),
+                std::fs::read(&wal).unwrap(),
+            );
+            assert!(
+                !before.1.is_empty(),
+                "the log holds the uncheckpointed commits"
+            );
+            let error = EditorService::open(&catalog).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.refused_catalog_format(), Some(marker));
+            assert_eq!(
+                (
+                    std::fs::read(&catalog).unwrap(),
+                    std::fs::read(&wal).unwrap()
+                ),
+                before,
+                "the refused catalog and its log keep every byte"
+            );
+            assert!(!luxforge_testbase::paths::shm(&catalog).exists());
+            for path in [&source, &catalog, &wal] {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
     }
 
     /// A file refused at open keeps every byte, its journal mode included: a file on a rollback

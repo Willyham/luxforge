@@ -8,7 +8,7 @@
 //! it finishes. A failing binary's whole output is printed after the rest.
 //!
 //! A quick run leaves out every test marked `#[slow]` ([`marked_slow_tests`]), and the doctests, and says
-//! how many tests it left out. The whole run leaves out nothing.
+//! how many tests it left out. Ordinary runs exclude native watcher delivery, selected by a separate gate.
 use crate::*;
 use std::{
     collections::BTreeMap,
@@ -18,6 +18,52 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+/// Tests that require real OS watcher delivery, selected by the dedicated native gate.
+pub const NATIVE: &str = "native_watch_";
+
+#[derive(Clone, Copy)]
+enum Selection {
+    Ordinary { quick: bool },
+    NativeWatchers,
+}
+
+struct Selected {
+    names: Vec<String>,
+    excluded: Vec<String>,
+    slow_left_out: usize,
+    native_left_out: usize,
+}
+
+fn select(listed: &str, slow: &[String], selection: Selection) -> Selected {
+    let mut selected = Selected {
+        names: Vec::new(),
+        excluded: Vec::new(),
+        slow_left_out: 0,
+        native_left_out: 0,
+    };
+    for name in listed
+        .lines()
+        .filter_map(|line| line.strip_suffix(": test"))
+    {
+        let native = name.rsplit("::").next().unwrap_or(name).starts_with(NATIVE);
+        match selection {
+            Selection::NativeWatchers if !native => continue,
+            Selection::Ordinary { .. } if native => {
+                selected.native_left_out += 1;
+                selected.excluded.push(name.to_owned());
+                continue;
+            }
+            Selection::Ordinary { quick: true } if slow.iter().any(|marked| marked == name) => {
+                selected.slow_left_out += 1;
+                selected.excluded.push(name.to_owned());
+                continue;
+            }
+            _ => selected.names.push(name.to_owned()),
+        }
+    }
+    selected
+}
 
 struct Binary {
     /// `package kind target`, as the line for this binary reads.
@@ -33,7 +79,9 @@ struct Outcome {
     passed: bool,
     /// The `test result:` line's counts, or the reason there is none.
     counts: String,
-    left_out: usize,
+    slow_left_out: usize,
+    native_left_out: usize,
+    selected: usize,
     output: String,
 }
 
@@ -176,46 +224,81 @@ fn captured(mut command: Command) -> std::io::Result<(std::process::ExitStatus, 
     Ok((status, text))
 }
 
-/// One binary's run: in a quick run, its slow tests listed first and skipped by exact name.
-fn run_one(root: &Path, binary: &Binary, quick: bool) -> Outcome {
+/// List and select one binary's tests, then run only that exact selection.
+fn run_one(root: &Path, binary: &Binary, selection: Selection) -> Option<Outcome> {
     let started = Instant::now();
     let mut outcome = Outcome {
         label: binary.label.clone(),
         elapsed: Duration::ZERO,
         passed: false,
         counts: String::new(),
-        left_out: 0,
+        slow_left_out: 0,
+        native_left_out: 0,
+        selected: 0,
         output: String::new(),
     };
-    let mut args: Vec<String> = Vec::new();
+    let mut list = command(binary);
+    let quick = matches!(selection, Selection::Ordinary { quick: true });
     if quick {
-        let mut list = command(binary);
         list.args(["--list", "--format", "json", "-Z", "unstable-options"])
             .env("RUSTC_BOOTSTRAP", "1");
-        let listed = match captured(list) {
-            Ok((status, listed)) if status.success() => listed,
-            Ok((_, listed)) => {
-                outcome.counts = "could not list its tests".into();
-                outcome.output = listed;
-                return outcome;
-            }
-            Err(e) => {
-                outcome.counts = format!("could not start: {e}");
-                return outcome;
-            }
-        };
+    } else {
+        list.args(["--list", "--format", "terse"]);
+    }
+    let listed = match captured(list) {
+        Ok((status, listed)) if status.success() => listed,
+        Ok((_, listed)) => {
+            outcome.counts = "could not list its tests".into();
+            outcome.output = listed;
+            return Some(outcome);
+        }
+        Err(e) => {
+            outcome.counts = format!("could not start: {e}");
+            return Some(outcome);
+        }
+    };
+    let (listed, slow) = if quick {
         let slow = match marked_slow_tests(root, &listed) {
             Ok(slow) => slow,
             Err(e) => {
                 outcome.counts = e.to_string();
-                return outcome;
+                return Some(outcome);
             }
         };
-        args.push("--exact".into());
-        for name in slow {
-            args.push("--skip".into());
-            args.push(name);
-            outcome.left_out += 1;
+        let names = listed
+            .lines()
+            .filter_map(|line| {
+                let event: Value = serde_json::from_str(line).ok()?;
+                (event["type"] == "test" && event["event"] == "discovered")
+                    .then(|| event["name"].as_str().map(|name| format!("{name}: test")))?
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        (names, slow)
+    } else {
+        (listed, Vec::new())
+    };
+    let selected = select(&listed, &slow, selection);
+    outcome.slow_left_out = selected.slow_left_out;
+    outcome.native_left_out = selected.native_left_out;
+    outcome.selected = selected.names.len();
+    // Keep exclusion counts visible even for a binary with no ordinary tests left.
+    if selected.names.is_empty() {
+        if matches!(selection, Selection::NativeWatchers) {
+            return None;
+        }
+        outcome.passed = true;
+        outcome.counts = "no ordinary tests selected".into();
+        return Some(outcome);
+    }
+    let mut args = vec!["--exact".to_owned()];
+    match selection {
+        Selection::NativeWatchers => args.extend(selected.names),
+        Selection::Ordinary { .. } => {
+            for name in selected.excluded {
+                args.push("--skip".into());
+                args.push(name);
+            }
         }
     }
     if let Some(threads) = test_threads() {
@@ -242,60 +325,93 @@ fn run_one(root: &Path, binary: &Binary, quick: bool) -> Outcome {
                         .join(", ")
                 })
                 .unwrap_or_else(|| format!("no test result, {status}"));
+            if outcome.passed && matches!(selection, Selection::NativeWatchers) {
+                let passed = output.lines().find_map(|line| {
+                    line.strip_prefix("test result: ok. ")?
+                        .split_once(" passed;")?
+                        .0
+                        .parse::<usize>()
+                        .ok()
+                });
+                if passed != Some(outcome.selected) {
+                    outcome.passed = false;
+                    outcome
+                        .counts
+                        .push_str("; native gate did not execute every selected test");
+                }
+            }
             outcome.output = output;
         }
         Err(e) => outcome.counts = format!("could not start: {e}"),
     }
     outcome.elapsed = started.elapsed();
-    outcome
+    Some(outcome)
 }
 
-/// Builds and runs every test binary at once, then, outside a quick run, the doctests.
-pub fn tests(root: &Path, quick: bool) -> Result {
-    run(root, &build(root)?, quick)
-}
-
-/// Runs every one of `binaries` at once, then, outside a quick run, the doctests.
-fn run(root: &Path, binaries: &[Binary], quick: bool) -> Result {
+/// Ordinary tests run concurrently; the native gate runs its selected binaries one at a time.
+fn run_selected(root: &Path, binaries: &[Binary], selection: Selection) -> Result {
     let started = Instant::now();
-    let (sender, receiver) = mpsc::channel();
-    let outcomes = thread::scope(|scope| {
-        for binary in binaries {
-            let sender = sender.clone();
-            scope.spawn(move || sender.send(run_one(root, binary, quick)));
-        }
-        drop(sender);
-        receiver
+    let print = |o: &Outcome| {
+        println!(
+            "{} {:>5.1} s  {} ({}{}{})",
+            if o.passed && o.selected == 0 {
+                "SKIP"
+            } else if o.passed {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+            o.elapsed.as_secs_f64(),
+            o.label,
+            o.counts,
+            if o.slow_left_out > 0 {
+                format!(", {} slow left out", o.slow_left_out)
+            } else {
+                String::new()
+            },
+            if o.native_left_out > 0 {
+                format!(", {} native left out", o.native_left_out)
+            } else {
+                String::new()
+            }
+        );
+    };
+    let outcomes = if matches!(selection, Selection::NativeWatchers) {
+        binaries
             .iter()
-            .inspect(|o| {
-                let left_out = if o.left_out > 0 {
-                    format!(", {} slow left out", o.left_out)
-                } else {
-                    String::new()
-                };
-                println!(
-                    "{} {:>5.1} s  {} ({}{left_out})",
-                    if o.passed { "PASS" } else { "FAIL" },
-                    o.elapsed.as_secs_f64(),
-                    o.label,
-                    o.counts,
-                );
-            })
+            .filter_map(|binary| run_one(root, binary, selection))
+            .inspect(&print)
             .collect::<Vec<_>>()
-    });
+    } else {
+        let (sender, receiver) = mpsc::channel();
+        thread::scope(|scope| {
+            for binary in binaries {
+                let sender = sender.clone();
+                scope.spawn(move || sender.send(run_one(root, binary, selection)));
+            }
+            drop(sender);
+            receiver
+                .into_iter()
+                .flatten()
+                .inspect(&print)
+                .collect::<Vec<_>>()
+        })
+    };
     let failed: Vec<&Outcome> = outcomes.iter().filter(|o| !o.passed).collect();
     for o in &failed {
         println!("\n==== {} ====\n{}", o.label, o.output);
     }
-    let left_out: usize = outcomes.iter().map(|o| o.left_out).sum();
+    let slow: usize = outcomes.iter().map(|o| o.slow_left_out).sum();
+    let native: usize = outcomes.iter().map(|o| o.native_left_out).sum();
+    let selected: usize = outcomes.iter().map(|o| o.selected).sum();
     println!(
-        "{} test binaries in {:.1} s{}",
+        "{} test binaries in {:.1} s; {selected} selected, {slow} slow and {native} native left out{}",
         outcomes.len(),
         started.elapsed().as_secs_f64(),
-        if quick {
-            format!("; {left_out} slow tests and the doctests left out")
+        if matches!(selection, Selection::Ordinary { quick: true }) {
+            "; doctests left out"
         } else {
-            String::new()
+            ""
         }
     );
     ensure(
@@ -309,6 +425,19 @@ fn run(root: &Path, binaries: &[Binary], quick: bool) -> Result {
                 .join(", ")
         ),
     )?;
+    if matches!(selection, Selection::NativeWatchers) {
+        ensure(
+            selected > 0,
+            "No native watcher tests available on this platform; native qualification did not run",
+        )?;
+    }
+    Ok(())
+}
+
+/// Ordinary correctness tests, excluding native delivery; the non-quick run includes doctests.
+pub fn tests(root: &Path, quick: bool) -> Result {
+    let binaries = build(root)?;
+    run_selected(root, &binaries, Selection::Ordinary { quick })?;
     if !quick {
         let status = cargo_command()
             .current_dir(root)
@@ -317,6 +446,11 @@ fn run(root: &Path, binaries: &[Binary], quick: bool) -> Result {
         ensure(status.success(), "Doctests failed")?;
     }
     Ok(())
+}
+
+/// The required real-platform watcher gate. A successful ordinary run never implies this passed.
+pub fn native_watchers(root: &Path) -> Result {
+    run_selected(root, &build(root)?, Selection::NativeWatchers)
 }
 
 /// Whether every workspace package is formatted, each package's `cargo fmt --check` at once:
@@ -399,7 +533,8 @@ pub fn check(root: &Path, quick: bool) -> Result {
             {
                 failures.push("The tests did not run.".into());
             }
-            Ok(binaries) => failures.extend(text(run(root, &binaries, quick)).err()),
+            Ok(binaries) => failures
+                .extend(text(run_selected(root, &binaries, Selection::Ordinary { quick })).err()),
         }
         failures
     });
@@ -462,5 +597,119 @@ mod tests {
         let bare = r#"{ "type": "test", "event": "discovered", "name": "tests::quick" }"#;
         assert!(marked_slow_tests(root.path(), bare).is_err());
         assert!(marked_slow_tests(root.path(), "tests::quick: test").is_err());
+    }
+
+    #[test]
+    fn ordinary_and_native_selection_are_disjoint_and_use_the_tests_own_name() {
+        let listed = "module::fast: test\nmodule::heavy: test\nmodule::native_watch_delivery: test\nnative_watch_module::ordinary: test\nmodule::native_renderer: test\n";
+        let quick = select(
+            listed,
+            &["module::heavy".into()],
+            Selection::Ordinary { quick: true },
+        );
+        assert_eq!(
+            quick.names,
+            [
+                "module::fast",
+                "native_watch_module::ordinary",
+                "module::native_renderer"
+            ]
+        );
+        assert_eq!((quick.slow_left_out, quick.native_left_out), (1, 1));
+        let ordinary = select(
+            listed,
+            &["module::heavy".into()],
+            Selection::Ordinary { quick: false },
+        );
+        assert_eq!(
+            ordinary.names,
+            [
+                "module::fast",
+                "module::heavy",
+                "native_watch_module::ordinary",
+                "module::native_renderer"
+            ]
+        );
+        let native = select(listed, &["module::heavy".into()], Selection::NativeWatchers);
+        assert_eq!(native.names, ["module::native_watch_delivery"]);
+        assert!(
+            ordinary
+                .names
+                .iter()
+                .all(|name| !native.names.contains(name))
+        );
+    }
+
+    #[test]
+    fn an_empty_native_gate_fails_instead_of_claiming_qualification() {
+        assert!(
+            run_selected(Path::new("."), &[], Selection::NativeWatchers)
+                .unwrap_err()
+                .to_string()
+                .contains("No native watcher tests")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[luxforge_test_macros::slow]
+    fn the_runner_routes_exact_tests_and_rejects_ignored_native_tests() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("test-fixture");
+        let write = |result: &str| {
+            fs::write(&executable, format!(r#"#!/bin/sh
+if [ "$1" = --list ]; then
+    if [ "$3" = json ]; then
+        printf '%s\n' '{{ "type": "test", "event": "discovered", "name": "module::fast", "source_path": "fixture.rs", "start_line": 2 }}' \
+            '{{ "type": "test", "event": "discovered", "name": "module::heavy", "source_path": "fixture.rs", "start_line": 5 }}' \
+            '{{ "type": "test", "event": "discovered", "name": "module::native_watch_delivery", "source_path": "fixture.rs", "start_line": 8 }}' \
+            '{{ "type": "test", "event": "discovered", "name": "native_watch_module::ordinary", "source_path": "fixture.rs", "start_line": 10 }}'
+    else
+        printf '%s\n' 'module::fast: test' 'module::heavy: test' 'module::native_watch_delivery: test' 'native_watch_module::ordinary: test'
+    fi
+    exit 0
+fi
+printf '%s\n' "$@" > "$0.trace"
+printf '%s\n' '{result}'
+"#)).unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        fs::write(dir.path().join("fixture.rs"), "#[test]\nfn fast() {}\n#[test]\n#[slow]\nfn heavy() {}\n#[test]\n#[slow]\nfn delivery() {}\n#[test]\nfn ordinary() {}\n").unwrap();
+        let threads = test_threads()
+            .map(|n| format!("--test-threads={n}\n"))
+            .unwrap_or_default();
+        let binary = Binary {
+            label: "fixture".into(),
+            executable: executable.clone(),
+            dir: dir.path().to_path_buf(),
+        };
+        write("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out");
+        assert!(
+            run_one(dir.path(), &binary, Selection::NativeWatchers)
+                .unwrap()
+                .passed
+        );
+        assert_eq!(
+            fs::read_to_string(executable.with_extension("trace")).unwrap(),
+            format!("--exact\nmodule::native_watch_delivery\n{threads}")
+        );
+        assert!(
+            run_one(dir.path(), &binary, Selection::Ordinary { quick: true })
+                .unwrap()
+                .passed
+        );
+        assert_eq!(
+            fs::read_to_string(executable.with_extension("trace")).unwrap(),
+            format!(
+                "--exact\n--skip\nmodule::heavy\n--skip\nmodule::native_watch_delivery\n{threads}"
+            )
+        );
+        write("test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out");
+        assert!(
+            !run_one(dir.path(), &binary, Selection::NativeWatchers)
+                .unwrap()
+                .passed
+        );
     }
 }

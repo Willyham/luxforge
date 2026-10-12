@@ -39,6 +39,7 @@ Flags today:
 | `developer` | toggle | launch | on in debug builds, off in optimized builds | always | The desktop serves the test modules (the pixel and controls proofs) and shows the Developer button and its components gallery |
 | `masks.range-selections` | toggle | live | off | always | Luminance and colour range masks: the New mask and Add component menus, their keys and the palette offer the two range kinds, and `mask.create-<kind>` and `mask.add-<kind>` accept them ([gated kinds](#gated-mask-kinds)) |
 | `ai.generative` | toggle | live | off | always | Generative fill: whether `task.fill-generative` is offered, and whether the desktop shows Remove, the AI editing section and the generative models in Settings › Models ([gated generative fill](#gated-generative-fill)); never how an accepted fill renders |
+| `updates.prerelease-channel` | toggle | live | off | always | The update check follows the `prerelease` channel as well as the default one, so release candidates are offered ([automatic updates](auto-update.md#the-feed)); off, `update.status` never offers a pre-release |
 | `proof.choice` | choice: `first`, `second`, `third` | live | `first` | developer runs only | Nothing; a fixture for the choice control |
 | `proof.number` | number: 0 to 100, step 5 | live | 50 | developer runs only | Nothing; a fixture for the number control |
 

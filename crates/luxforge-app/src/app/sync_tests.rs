@@ -321,6 +321,7 @@ fn nothing_new() -> tasks::SyncResult {
         themes: false,
         library: None,
         usage: false,
+        updates: false,
         own: Vec::new(),
     }
 }

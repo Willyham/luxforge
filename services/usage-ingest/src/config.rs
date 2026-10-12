@@ -1,6 +1,7 @@
 //! Configuration: defaults, and the environment variables that override them.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,9 @@ pub struct Config {
     pub stats_interval: Duration,
     /// The `Retry-After` for a refused connection or a full queue, in seconds.
     pub retry_after_secs: u64,
+    /// The update store: `<dir>/<target>/appcast.xml` is served at
+    /// `/v1/updates/<target>/appcast.xml`. No default; without it the feed route answers `404`.
+    pub updates_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -54,6 +58,7 @@ impl Config {
             forward_timeout: Duration::from_secs(5),
             stats_interval: Duration::from_secs(60),
             retry_after_secs: 30,
+            updates_dir: None,
         }
     }
 
@@ -138,6 +143,12 @@ impl Config {
             "LUXFORGE_INGEST_RETRY_AFTER_SECS",
             &mut config.retry_after_secs,
         )?;
+        if let Some(dir) = get("LUXFORGE_INGEST_UPDATES_DIR") {
+            if dir.is_empty() {
+                return Err("LUXFORGE_INGEST_UPDATES_DIR is not valid".to_owned());
+            }
+            config.updates_dir = Some(PathBuf::from(dir));
+        }
         Ok(config)
     }
 }
@@ -153,6 +164,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.max_connections, 128);
+        assert_eq!(config.updates_dir, None);
         assert!(Config::from_vars(|_| None).is_err());
     }
 

@@ -82,6 +82,8 @@ mod gpu_repair_plan_tests;
 #[cfg(test)]
 mod gpu_repair_tests;
 #[cfg(test)]
+mod gpu_rest_overview_tests;
+#[cfg(test)]
 mod gpu_rest_tests;
 #[cfg(test)]
 mod gpu_source_tests;
@@ -97,6 +99,8 @@ pub(crate) mod gpu_warm;
 mod gpu_white_balance_tests;
 #[cfg(test)]
 mod gpu_window_tests;
+pub(crate) mod minimap;
+pub(crate) mod overview;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
 pub(crate) mod copy_settings;
 pub(crate) mod corrections;
@@ -134,6 +138,9 @@ pub(crate) mod message;
 pub(crate) mod motion;
 #[cfg(test)]
 mod motion_tests;
+pub(crate) mod move_to_applications;
+#[cfg(test)]
+mod move_to_applications_tests;
 pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
@@ -161,6 +168,7 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+mod relaunch;
 mod remembered;
 #[cfg(test)]
 mod remembered_tests;
@@ -193,6 +201,7 @@ pub(crate) mod slider;
 #[cfg(test)]
 mod slider_tests;
 mod snapshot;
+pub(crate) mod sparkle_port;
 mod sync;
 #[cfg(test)]
 mod sync_tests;
@@ -206,6 +215,14 @@ pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;
 pub(crate) mod thumbnails;
+pub(crate) mod unsupported_catalog;
+#[cfg(test)]
+mod unsupported_catalog_tests;
+pub(crate) mod update;
+pub(crate) mod update_fixture;
+pub(crate) mod update_port;
+#[cfg(test)]
+mod update_tests;
 pub(crate) mod usage;
 pub(crate) mod usage_device;
 #[cfg(test)]
@@ -502,6 +519,10 @@ pub(crate) struct Editor {
     /// GPU display/analysis resources for committed and drafted content, and the warm
     /// list of the committed stack.
     pub(crate) gpu: gpu_preview::GpuPreviews,
+    /// The high-zoom minimap's overview of the stage the canvas navigates ([`overview`]).
+    pub(crate) overviews: overview::Overviews,
+    /// The minimap's navigation: its drag in progress and what its input did ([`minimap`]).
+    pub(crate) minimap_nav: minimap::Navigation,
     /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
     /// The open draft's ticks the GPU does not draw: held, or waiting for their reference frame.
@@ -522,6 +543,11 @@ pub(crate) struct Editor {
     /// The window visibility last reported to the usage statistics supervisor
     /// ([`usage_supervisor`]), once the native gate is ready.
     pub(crate) usage_reported_presented: Option<bool>,
+    /// Automatic updates: the status as last read, the calls in flight and Later ([`update`]).
+    pub(crate) updates: state::update::Updates,
+    /// The question a macOS release build asks when it runs outside Applications
+    /// ([`move_to_applications`]).
+    pub(crate) move_question: state::move_to_applications::MoveQuestion,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -568,7 +594,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 30] = [
+const AFTER_MESSAGE: [AfterMessage; 34] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -581,6 +607,8 @@ const AFTER_MESSAGE: [AfterMessage; 30] = [
     gpu_preview::after_message,
     gpu_settle::after_message,
     gpu_counts::after_message,
+    overview::after_message,
+    minimap::after_message,
     motion::after_message,
     renderer::after_message,
     mask_panel::after_message,
@@ -599,6 +627,8 @@ const AFTER_MESSAGE: [AfterMessage; 30] = [
     drawn_frames::after_message,
     themes::after_message,
     usage::after_message,
+    update::after_message,
+    move_to_applications::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -613,7 +643,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 16] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 18] = [
     keymap::subscription,
     view_state::subscription,
     visibility::subscription,
@@ -630,6 +660,8 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 16] = [
     develop::subscription,
     long_work::subscription,
     palette::subscription,
+    update_port::subscription,
+    relaunch::subscription,
 ];
 
 /// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the
@@ -659,6 +691,15 @@ impl Editor {
         // The desktop's own client may grant module permissions: it does so only after the person
         // presses Allow in its consent notice.
         let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
+        // Decided once: a person-launched macOS release build asks to move into Applications, and
+        // an evidence run asks only when told to, so the question can be captured.
+        let asker = state::move_to_applications::Asker::of(
+            option_env!("LUXFORGE_RELEASE_VERSION").is_some(),
+            cfg!(target_os = "macos"),
+            config.hidden,
+            config.evidence.is_some(),
+            config.evidence_move,
+        );
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
             let mut evidence = Evidence::new(dir, queue, std::mem::take(&mut config.script));
@@ -734,6 +775,8 @@ impl Editor {
             long_work: long_work::LongWork::watching(&owner, presentation_visible),
             develop: Default::default(),
             gpu: Default::default(),
+            overviews: Default::default(),
+            minimap_nav: Default::default(),
             gpu_settle: Default::default(),
             motion: Default::default(),
             drawn_frames: Default::default(),
@@ -746,6 +789,8 @@ impl Editor {
             },
             usage_image: Default::default(),
             usage_reported_presented: None,
+            updates: Default::default(),
+            move_question: state::move_to_applications::MoveQuestion::new(asker),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -844,6 +889,8 @@ impl Editor {
         let themes = editor.list_themes();
         // The flags, for what a live flag gates outside the Settings sheet.
         let flags = editor.read_flag_values(false);
+        // The update status, off the update loop: an offer waits for nothing the first frame needs.
+        let updates = editor.read_updates();
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
                 Some(path) => editor.open_queued(path, initial_import),
@@ -870,6 +917,7 @@ impl Editor {
                 presets,
                 themes,
                 flags,
+                updates,
                 first,
             ]),
         )
@@ -1059,6 +1107,7 @@ impl Editor {
         let inputs = self.inputs();
         workspace.derive(&inputs);
         workspace.copy_settings = self.copy_model();
+        workspace.move_notice = state::move_to_applications::notice(&self.move_question);
         workspace.canvas.covered = workspace.covers_canvas();
         for entry in &mut workspace.palette.entries {
             if let state::palette::PaletteAction::Host(command) = entry.action {
@@ -1081,6 +1130,7 @@ impl Editor {
     pub(crate) fn inputs(&self) -> state::Inputs<'_> {
         state::Inputs {
             usage: &self.usage,
+            updates: &self.updates,
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -1184,6 +1234,10 @@ impl Editor {
         }
         match message {
             Message::Key(event, status) => {
+                // A minimap drag takes Escape before anything under it, and ends on focus loss.
+                if let Some(task) = self.minimap_key(&event) {
+                    return task;
+                }
                 // The whole keyboard table is one pure function; only its result reaches the state.
                 match keymap::keymap(&event, status, &self.key_context()) {
                     Some(message) => self.dispatch(message),
@@ -1211,6 +1265,7 @@ impl Editor {
             Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
             Message::Usage(message) => self.usage_update(message),
+            Message::Update(message) => self.update_message(message),
             Message::Preferences(message) => self.preferences_update(message),
             Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),
@@ -1219,6 +1274,10 @@ impl Editor {
             Message::Select(message) => self.select_update(message),
             Message::LongWork(message) => self.long_work_update(message),
             Message::Develop(message) => self.develop_update(message),
+            Message::MoveToApplications(message) => self.move_update(message),
+            // An answer the sheet asked for before this catalog opened, such as the releases
+            // page's opener, arriving after it did.
+            Message::UnsupportedCatalog(_) => Task::none(),
             Message::Close => self.close(),
         }
     }
@@ -1315,6 +1374,7 @@ impl Editor {
         surfaces.compare_change = after.map(|(_, change)| change);
         surfaces.compare_rest = after_rest;
         surfaces.dissolve = self.gpu_settle.dissolve();
+        surfaces.overview = Some(self.overviews.handed());
         if self
             .presentation
             .compare_after
@@ -1347,6 +1407,7 @@ impl Editor {
                 surfaces.gpu_tag = None;
             }
         }
+        surfaces.minimap = self.minimap_model(&surfaces);
         surfaces
     }
 

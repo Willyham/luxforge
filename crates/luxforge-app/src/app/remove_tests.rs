@@ -27,10 +27,7 @@ use crate::{
     Config,
     brush::Modifiers,
     state::{
-        GENERATING,
-        capabilities::Operation,
-        remove::{RemoveModel, TierAction},
-        settings,
+        GENERATING, capabilities::Operation, fill_setup::SetupAction, remove::RemoveModel, settings,
     },
 };
 use iced::keyboard::{Key, Modifiers as Keys, key::Named};
@@ -482,11 +479,12 @@ fn same_request(copied: Value, sent: &(String, Value)) {
     );
 }
 
-/// With the experiment on, Remove joins Heal and Clone, and with no model installed names why no
-/// tier is offered with its one action, the model's download through the capability driver; once
-/// it is installed the Generative tier is listed.
+/// With the experiment on, Remove joins Heal and Clone, and with no model installed shows AI
+/// editing's setup in place of the Fill setting: what it does, its download and Set up, which
+/// installs through the capability driver and its consent notice; once it is installed the
+/// Generative tier is listed.
 #[test]
-fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
+fn remove_shows_the_setup_until_the_model_is_installed() {
     let mut filling = Filling::opened();
     let band = &filling.editor.workspace.corrections;
     assert!(band.active);
@@ -499,37 +497,38 @@ fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
         .unoffered
         .clone()
         .expect("the model is missing");
+    assert_eq!(unoffered.reason, "Set up AI editing first");
     assert_eq!(
         filling.model().generate_reason.as_deref(),
-        Some("Generative fill needs its model installed, also listed in Settings \u{203a} Models")
+        Some("Set up AI editing first")
     );
     assert_eq!(
-        unoffered.reason,
-        "Generative fill needs its model installed, also listed in Settings \u{203a} Models"
+        filling.editor.status.text, "Set up AI editing first",
+        "the status bar says what to do"
+    );
+    let line = unoffered.setup.expect("the setup's main line");
+    assert_eq!(
+        line.text,
+        "Remove objects and fill in parts of a photo. AI editing runs on this computer, so your \
+         photos stay on it."
     );
     assert_eq!(
-        filling.editor.status.text,
-        "Generative fill needs its model installed, also listed in Settings \u{203a} Models \u{b7} \
-         Download",
-        "the status bar says why and what to do"
+        line.detail.as_deref(),
+        Some("One-time download \u{b7} 46 B")
     );
-    let Some((
-        label,
-        TierAction::Download {
-            module_id,
-            resource,
-        },
-    )) = unoffered.action
-    else {
-        panic!("a Download action: {unoffered:?}");
+    let Some((label, action)) = line.action else {
+        panic!("a Set up action: {line:?}");
     };
-    assert_eq!(label, "Download");
-    assert_eq!((module_id.as_str(), resource.as_str()), (AI, GENERATOR));
-    // Download goes through the capability driver, which asks for consent before anything.
-    filling.remove(RemoveMessage::Download {
-        module_id: module_id.clone(),
-        resource: resource.clone(),
-    });
+    assert_eq!(label, "Set up");
+    assert_eq!(
+        action,
+        SetupAction::Install {
+            module_id: AI.into(),
+            resource: GENERATOR.into()
+        }
+    );
+    // Set up goes through the capability driver, which asks for consent before anything.
+    filling.remove(RemoveMessage::Setup(action));
     let started = filling.editor.capability_started.clone();
     assert_eq!(
         started,
@@ -543,6 +542,14 @@ fn remove_names_why_no_tier_is_offered_and_offers_its_one_action() {
     filling.answer_capabilities();
     let notice = &filling.editor.workspace.canvas.notices[0];
     assert!(notice.title.contains("download"), "{}", notice.title);
+    assert!(
+        notice.body.starts_with(
+            "Set up AI editing: download the model that removes and fills, which runs on this \
+             computer"
+        ),
+        "{}",
+        notice.body
+    );
 
     filling.install(GENERATOR);
     filling.refresh_tiers();
@@ -670,7 +677,7 @@ fn the_experiment_toggle_shows_remove_and_leaves_it_when_turned_off() {
             .unoffered
             .as_ref()
             .map(|unoffered| unoffered.reason.as_str()),
-        Some("Generative fill needs its model installed, also listed in Settings \u{203a} Models")
+        Some("Set up AI editing first")
     );
 
     filling.toggle(false);
@@ -879,11 +886,11 @@ fn regenerate_adds_one_and_accept_commits_the_chosen_candidate_as_one_entry() {
     assert_eq!(record["candidates"][0]["state"], "accepted", "{record}");
 }
 
-/// A prompt makes the action Replace. Without the text encoder the field offers its download and
+/// A prompt makes the action Replace. Without the Replace add-on the field offers its Add and
 /// Generate sends nothing; with it the prompt is sent and the entry is labelled with it. The
 /// field holds at most the declared 256 characters.
 #[test]
-fn a_prompt_replaces_and_without_the_encoder_generates_nothing() {
+fn a_prompt_replaces_and_without_the_addon_generates_nothing() {
     let mut filling = Filling::opened();
     filling.ready();
     filling.paint();
@@ -893,25 +900,27 @@ fn a_prompt_replaces_and_without_the_encoder_generates_nothing() {
     filling.remove(RemoveMessage::Prompt("a red  bicycle ".into()));
     let model = filling.model();
     assert_eq!(model.action, "Replace");
-    let encoder = model.encoder.clone().expect("the encoder's download");
-    assert_eq!(encoder.resource, ENCODER);
+    let addon = model.addon.clone().expect("the Replace add-on");
+    assert_eq!(addon.resource.as_deref(), Some(ENCODER));
+    assert_eq!(addon.text, "Add Replace to fill with what you describe.");
+    assert_eq!(addon.action.map(|(label, _)| label).as_deref(), Some("Add"));
     assert_eq!(
         model.generate_reason.as_deref(),
-        Some("Replace needs the text encoder installed")
+        Some("Add Replace to fill with what you describe")
     );
     filling.remove(RemoveMessage::Generate);
     assert!(
         filling.editor.remove_reads.last_request.is_none(),
-        "nothing is sent without the encoder"
+        "nothing is sent without the add-on"
     );
     assert_eq!(
         filling.editor.status.text,
-        "Replace needs the text encoder installed"
+        "Add Replace to fill with what you describe"
     );
 
     filling.install(ENCODER);
     filling.refresh_tiers();
-    assert_eq!(filling.model().encoder, None);
+    assert_eq!(filling.model().addon, None);
     let copied = filling.copy(RemoveRequest::Generate);
     filling.remove(RemoveMessage::Generate);
     let sent = filling.editor.remove_reads.last_request.clone().unwrap();

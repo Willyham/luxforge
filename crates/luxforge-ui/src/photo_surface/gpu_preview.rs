@@ -163,7 +163,7 @@ impl PhotoPipeline {
             surface.state.rest_output(),
         );
     }
-    fn sync_picture(
+    pub(super) fn sync_picture(
         &self,
         device: &wgpu::Device,
         held: &mut Option<Picture>,

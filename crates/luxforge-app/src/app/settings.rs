@@ -45,6 +45,7 @@ impl Editor {
                 // statistics consent, which another process may have changed. The Models tab reads
                 // the status of every module that holds a model, which a load, an unload or an
                 // idle release may have changed since it was last read.
+                // The Updates group shows the update status, read again as the sheet opens.
                 let statuses = if tab == SettingsTab::Models {
                     self.read_model_statuses()
                 } else {
@@ -55,6 +56,7 @@ impl Editor {
                     self.list_themes(),
                     self.read_usage(),
                     statuses,
+                    self.read_updates(),
                 ]);
             }
             SettingsMessage::Close => {

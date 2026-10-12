@@ -59,9 +59,8 @@ pub(crate) use test_support::{
     synthetic_raw_metadata,
 };
 
-pub(crate) use catalog::{
-    CATALOG_FORMAT, decode, default_artifact_root, encode, insert_entry, now_ms, write,
-};
+pub use catalog::CATALOG_FORMAT;
+pub(crate) use catalog::{decode, default_artifact_root, encode, insert_entry, now_ms, write};
 pub(crate) use catalog_rows::capture_of;
 pub(crate) use catalog_rows::{
     NewAsset, insert_asset, insert_capture, insert_catalog_folder, insert_collection,
@@ -752,21 +751,26 @@ impl EditorService {
                 Error::catalog(format!("cannot create catalog directory: {}", e.kind()))
             })?;
         }
+        // Whether a write-ahead log is already beside the file, which a refusal leaves as it is.
+        let found_log = {
+            let mut log = path.as_os_str().to_owned();
+            log.push("-wal");
+            std::path::Path::new(&log).symlink_metadata().is_ok()
+        };
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_millis(100))?;
         // The format is checked under the lock and before the journal is set, so a refused file —
         // an unsupported catalog, or a database that is not one — keeps every byte, its journal
-        // mode included.
-        let version = catalog::lock(&connection)?;
+        // mode and its log included.
+        let version = catalog::lock(&connection, found_log)?;
         match version {
             0 => catalog::require_empty(&connection)?,
             CATALOG_FORMAT => catalog::require_application_id(&connection)?,
             other => {
-                return Err(Error::incompatible(format!(
-                    "catalog format {other} is not supported; expected {CATALOG_FORMAT}; choose a new catalog path"
-                )));
+                return Err(Error::unsupported_catalog(other, CATALOG_FORMAT));
             }
         }
+        catalog::accept(&connection)?;
         // A commit is durable wherever durable writes reach the drive (`atomic_file::FLUSHES`),
         // which only a test build turns off.
         catalog::configure(&connection, crate::atomic_file::FLUSHES)?;

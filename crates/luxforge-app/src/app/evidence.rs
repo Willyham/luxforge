@@ -8,10 +8,12 @@ mod develop;
 mod grid;
 mod long_work;
 mod loupe;
+mod minimap;
 mod select;
 mod select_catalog;
 mod select_merge;
 mod select_missing;
+mod update;
 mod usage;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
@@ -94,6 +96,8 @@ pub(crate) struct Evidence {
     pub(crate) view_idle: Option<ViewIdleObservation>,
     /// A native idle check, with the same streams suspended until its window ends.
     pub(crate) idle: Option<IdleObservation>,
+    /// A minimap step waiting for the card to be able to navigate.
+    pub(crate) minimap: Option<minimap::PendingMinimap>,
     /// Permit a diagnostic capture of a blank/stale result after a failed view-idle check.
     pub(crate) allow_unready_capture: bool,
     /// This capture was armed by the mask overlay, so it must show one.
@@ -225,6 +229,7 @@ impl Evidence {
             capture_pending: false,
             view_idle: None,
             idle: None,
+            minimap: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,
@@ -568,9 +573,16 @@ pub(crate) enum Settle {
     UsageNotice,
     /// The usage statistics consent's read, or its last outstanding write, answered.
     Usage,
+    /// The update offer is on screen.
+    UpdateOffer,
+    /// An update step's call answered, or was refused.
+    Update,
     /// The Corrections workspace has finished what a step started: its draft ended or was refused,
     /// its request answered, and its list and pins describe the entry on screen.
     Corrections,
+    /// A minimap step's routed mouse events were dispatched through the window's widgets, and the
+    /// messages they published handled.
+    Minimap,
 }
 
 impl Settle {
@@ -611,7 +623,10 @@ impl Settle {
             Self::DevelopAhead => "develop_ahead",
             Self::UsageNotice => "usage_notice",
             Self::Usage => "usage",
+            Self::UpdateOffer => "update_offer",
+            Self::Update => "update",
             Self::Corrections => "corrections",
+            Self::Minimap => "minimap",
         }
     }
 
@@ -1422,11 +1437,13 @@ impl Editor {
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
             Step::Usage(step) => self.usage_step(step),
+            Step::Update(step) => self.update_step(step),
             Step::Wait { ms } => self.wait_step(ms),
             Step::Open { path } => self.open_step(path),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
+            Step::Minimap(step) => self.minimap_step(step),
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
             Step::Correction(step) => self.correction_step(step),
@@ -4549,6 +4566,7 @@ impl Editor {
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
             PaletteAction::Theme(id) => self.arm_theme_settle(id),
+            PaletteAction::CheckForUpdates => self.await_step(Settle::Update),
             PaletteAction::Host(_) => self.await_step(Settle::Quiet),
             // A reveal is local view state, unless it has to show the tools panel first.
             PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
@@ -5008,8 +5026,18 @@ impl Editor {
     /// A host method the running step called answered: adopt the library it listed, record what it
     /// said, and capture the frame, once a capability method's module has been read again.
     pub(crate) fn host_answered(&mut self, result: Result<HostAnswer, String>) -> Task<Message> {
+        let mut follow = Task::none();
         match result {
             Ok(answer) => {
+                // A `view.set` on this client's own session is this client's view: the desktop
+                // follows it as it follows its own input.
+                if answer.method == "view.set"
+                    && let Ok(session) = serde_json::from_value::<luxforge_core::ClientSession>(
+                        answer.result.clone(),
+                    )
+                {
+                    follow = self.follow_view(session);
+                }
                 if let Some(presets) = answer.presets {
                     self.adopt_presets(presets, answer.sequence);
                 }
@@ -5028,7 +5056,7 @@ impl Editor {
             }
         }
         self.settle_step(Settle::Host, "host_answered");
-        Task::none()
+        follow
     }
 
     /// A `mask.*` command the running step sent was refused by the host.
@@ -5343,6 +5371,12 @@ impl Editor {
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
             Outcome::UsageNotice => self.settle_step(Settle::UsageNotice, by),
             Outcome::UsageAnswered => self.settle_step(Settle::Usage, by),
+            Outcome::UpdateOffer => {
+                if self.workspace_update_offered() {
+                    self.settle_step(Settle::UpdateOffer, by);
+                }
+            }
+            Outcome::UpdateAnswered => self.settle_step(Settle::Update, by),
             // A theme chosen is drawn by a read and stored by a write, which answer in either
             // order: the step settles on whichever lands last.
             Outcome::PreferencesWritten | Outcome::ThemeDrawn => {
@@ -5846,6 +5880,8 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 /// first arrow once the look-ahead is warm, and the GPU identity hook follows the photograph at
 /// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    let minimap = editor.minimap_step_when_navigable();
+    editor.settle_minimap();
     editor.settle_when_quiet();
     editor.settle_corrections();
     editor.settle_capability();
@@ -5865,7 +5901,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         Some(hook) if fit => hook.follow(photo),
         _ => Task::none(),
     };
-    Task::batch([arrows, identity])
+    Task::batch([minimap, arrows, identity])
 }
 
 #[cfg(test)]
@@ -6410,6 +6446,7 @@ mod tests {
             capture_pending: false,
             view_idle: None,
             idle: None,
+            minimap: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,

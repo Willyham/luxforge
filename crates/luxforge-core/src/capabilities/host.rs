@@ -115,6 +115,13 @@ pub struct HostConfig {
     /// [`Self::preferences_dir`]. Every host but an eligible desktop or an explicit test host
     /// passes a headless one, which is never eligible.
     pub usage_consent: Arc<crate::usage::consent::Usage>,
+    /// The platform's update mechanism ([`crate::update::UpdatePort`]), which `update.*` commands
+    /// drive: the desktop's Sparkle or payload updater in a release build, or an
+    /// [`crate::update::UnavailablePort`] naming why a desktop must not update itself, such as a
+    /// development build's `development-build`. `None`, a host without a desktop such as
+    /// `luxforge-json`, reports `unavailable` with the reason `headless`. Nothing is checked unless
+    /// a port is given.
+    pub updates: Option<Arc<dyn crate::update::UpdatePort>>,
 }
 
 impl HostConfig {
@@ -140,6 +147,7 @@ impl HostConfig {
             tiles: None,
             usage: Arc::new(crate::usage::Collector::new()),
             usage_consent: Arc::new(crate::usage::consent::Usage::headless()),
+            updates: None,
         }
     }
 }
@@ -169,6 +177,10 @@ impl std::fmt::Debug for HostConfig {
             .field("tiles", &self.tiles.as_ref().map(|tiles| tiles.status()))
             .field("usage", &self.usage.gate().current().is_some())
             .field("usage_consent", &self.usage_consent)
+            .field(
+                "updates",
+                &self.updates.as_ref().map(|port| port.status().updater),
+            )
             .finish()
     }
 }
@@ -391,6 +403,11 @@ impl CapabilityHost {
     /// The renderer the host said it draws with when it started ([`HostConfig::renderer`]).
     pub(crate) fn launch_renderer(&self) -> crate::Renderer {
         self.config.renderer
+    }
+
+    /// The platform's update mechanism, if the host has one ([`HostConfig::updates`]).
+    pub(crate) fn updates(&self) -> Option<&Arc<dyn crate::update::UpdatePort>> {
+        self.config.updates.as_ref()
     }
 
     /// The process-wide usage statistics collector ([`HostConfig::usage`]).

@@ -5,7 +5,7 @@
 //! FSEvents to deliver a change is marked `#[slow]`, so the quick tier leaves it out.
 #![cfg(target_os = "macos")]
 use luxforge_test_macros::slow;
-use luxforge_testbase::{paths::temp_dir, wait_until};
+use luxforge_testbase::{paths::temp_dir, try_wait_for, wait_until};
 use luxforge_watch::{
     RescanReason, Resume, VolumeEvent, WatchEvent, WatchRoot, Watcher, current_cursor,
 };
@@ -40,9 +40,15 @@ impl<T: Into<WatchEvent>> Events<T> {
         root: u64,
         done: impl Fn(&[WatchEvent]) -> bool,
     ) -> Vec<WatchEvent> {
-        wait_until(what, || {
+        try_wait_for(what, || {
             self.seen.extend(self.receiver.try_iter().map(Into::into));
-            done(&about(&self.seen, root))
+            done(&about(&self.seen, root)).then_some(())
+        })
+        .unwrap_or_else(|hung| {
+            panic!(
+                "{hung}; root {root} received: {:?}",
+                about(&self.seen, root)
+            )
         });
         about(&self.seen, root)
     }
@@ -106,7 +112,7 @@ fn folder(name: &str) -> PathBuf {
 
 #[test]
 #[slow]
-fn changes_in_a_watched_folder_arrive_as_paths_under_the_root_as_given() {
+fn native_watch_changes_in_a_watched_folder_arrive_as_paths_under_the_root_as_given() {
     let dir = folder("watch-changes");
     fs::write(dir.join("b.jpg"), b"b").unwrap();
     let (sender, receiver) = sync_channel::<WatchEvent>(64);
@@ -167,7 +173,7 @@ fn changes_in_a_watched_folder_arrive_as_paths_under_the_root_as_given() {
 
 #[test]
 #[slow]
-fn a_watcher_started_again_replays_what_changed_while_none_ran() {
+fn native_watch_a_watcher_started_again_replays_what_changed_while_none_ran() {
     let dir = folder("watch-replay");
     fs::write(dir.join("kept.jpg"), b"k").unwrap();
     fs::write(dir.join("renamed.jpg"), b"r").unwrap();
@@ -256,7 +262,8 @@ fn a_watcher_started_again_replays_what_changed_while_none_ran() {
 
 #[test]
 #[slow]
-fn a_new_root_listed_after_reading_its_cursor_replays_what_changed_during_the_listing() {
+fn native_watch_a_new_root_listed_after_reading_its_cursor_replays_what_changed_during_the_listing()
+{
     let dir = folder("watch-cursor");
     let cursor = current_cursor(&dir).expect("the data volume keeps a history");
     // What the first listing would have missed.
@@ -304,9 +311,68 @@ fn attempted(root: u64, what: impl Fn(&WatchEvent) -> bool) -> bool {
         .any(|event| event.root() == Some(root) && what(event))
 }
 
+/// Overflow recovery starts with a rescan and ends at the first caught-up event. The reader may
+/// drain later live changes in the same poll, so the caught-up need not be the last event seen.
+fn assert_overflow_recovered(seen: &[WatchEvent], id: u64, dir: &Path) {
+    assert_eq!(
+        seen[0],
+        WatchEvent::Rescan {
+            root: id,
+            subtree: dir.to_path_buf(),
+            reason: RescanReason::Overflow,
+        },
+        "{seen:?}"
+    );
+    assert!(matches!(caught_up(seen), Some(Some(_))), "{seen:?}");
+    let paid = seen
+        .iter()
+        .position(|event| matches!(event, WatchEvent::CaughtUp { .. }))
+        .expect("the caught-up was seen above");
+    assert!(
+        seen[..paid]
+            .iter()
+            .all(|event| matches!(event, WatchEvent::Rescan { .. })),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn overflow_recovery_can_be_drained_with_a_later_live_change() {
+    let dir = PathBuf::from("/photos");
+    let (sender, receiver) = sync_channel::<WatchEvent>(3);
+    for event in [
+        WatchEvent::Rescan {
+            root: 1,
+            subtree: dir.clone(),
+            reason: RescanReason::Overflow,
+        },
+        WatchEvent::CaughtUp {
+            root: 1,
+            cursor: Some(Resume {
+                volume: [1; 16],
+                event_id: 2,
+            }),
+        },
+        WatchEvent::Changed {
+            root: 1,
+            paths: vec![dir.join("late.jpg")],
+            cursor: Some(Resume {
+                volume: [1; 16],
+                event_id: 3,
+            }),
+        },
+    ] {
+        sender.send(event).unwrap();
+    }
+    let mut events = Events::new(receiver);
+    let seen = events.until("overflow recovery", 1, |seen| caught_up(seen).is_some());
+    assert_eq!(seen.len(), 3, "the reader drains the live change too");
+    assert_overflow_recovered(&seen, 1, &dir);
+}
+
 #[test]
 #[slow]
-fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
+fn native_watch_a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     let dir = folder("watch-overflow");
     let id = 90_001;
     // The channel starts full, and nothing reads it until the watcher owes an overflow rescan.
@@ -340,22 +406,7 @@ fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     let seen = events.until("the rescan and the caught-up", id, |seen| {
         caught_up(seen).is_some()
     });
-    let overflow = WatchEvent::Rescan {
-        root: id,
-        subtree: dir.clone(),
-        reason: RescanReason::Overflow,
-    };
-    assert_eq!(seen[0], overflow, "{seen:?}");
-    assert!(
-        matches!(
-            seen.last(),
-            Some(WatchEvent::CaughtUp {
-                cursor: Some(_),
-                ..
-            })
-        ),
-        "{seen:?}"
-    );
+    assert_overflow_recovered(&seen, id, &dir);
     // Once it is paid, changes are sent as they come.
     fs::write(dir.join("next.jpg"), b"n").unwrap();
     let seen = events.until("the next change", id, |seen| {
@@ -365,21 +416,12 @@ fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     // but a rescan comes before the caught-up. `fseventsd` can number the write's event after the
     // replay ended when it lags behind under load, and that report then arrives live once nothing
     // is owed, after the caught-up, as any later change does.
-    let paid = seen
-        .iter()
-        .position(|event| matches!(event, WatchEvent::CaughtUp { .. }))
-        .expect("the caught-up was seen above");
-    assert!(
-        seen[..paid]
-            .iter()
-            .all(|event| matches!(event, WatchEvent::Rescan { .. })),
-        "{seen:?}"
-    );
+    assert_overflow_recovered(&seen, id, &dir);
 }
 
 #[test]
 #[slow]
-fn a_removed_root_sends_nothing_more_and_a_dropped_watcher_closes_the_channel() {
+fn native_watch_a_removed_root_sends_nothing_more_and_a_dropped_watcher_closes_the_channel() {
     let (first, second) = (folder("watch-removed"), folder("watch-kept"));
     let (sender, receiver) = sync_channel::<WatchEvent>(64);
     let mut events = Events::new(receiver);
@@ -407,7 +449,7 @@ fn a_removed_root_sends_nothing_more_and_a_dropped_watcher_closes_the_channel() 
 }
 
 #[test]
-fn a_file_is_not_a_root() {
+fn native_watch_a_file_is_not_a_root() {
     let dir = folder("watch-file");
     fs::write(dir.join("a.jpg"), b"a").unwrap();
     let (sender, _receiver) = sync_channel::<WatchEvent>(4);

@@ -321,6 +321,8 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-input/src",
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
+    "crates/luxforge-install/src",
+    "crates/luxforge-sparkle/src",
 ];
 
 /// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
@@ -340,6 +342,8 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-input",
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
+    "crates/luxforge-install",
+    "crates/luxforge-sparkle",
 ];
 
 const SOURCE_RULES: &[SourceRule] = &[
@@ -979,6 +983,9 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             "crates/luxforge-gpu/src/retirement.rs",
+            // The GPU's wait for a submission, which rests between looks instead of the Metal
+            // backend's whole-millisecond sleep.
+            "crates/luxforge-gpu/src/execution/submission.rs",
             // The fake inference runtime's step delay, which stands in for a model's step time in
             // developer runs and in the port's own tests of slow generation.
             "crates/luxforge-core/src/inference/fake.rs",
@@ -1008,6 +1015,12 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/app/mask_coverage.rs",
             // The desktop's GPU tile worker, asleep while no call or export tile waits for it.
             "crates/luxforge-app/src/app/gpu_tiles.rs",
+            // The Linux payload updater's check worker, asleep until a request or its next daily
+            // check.
+            "crates/luxforge-app/src/app/update_port.rs",
+            // The macOS update port's quit hook, waiting off the update loop for Sparkle's
+            // installer to take or cancel an update.
+            "crates/luxforge-app/src/app/sparkle_port.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1115,6 +1128,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
+            // The Linux payload updater's port: its check worker and one download thread at a
+            // time; and the macOS move port's one move into Applications.
+            "crates/luxforge-app/src/app/update_port.rs",
             // The backend's one retirement lane and the current preview pipeline compiler.
             "crates/luxforge-gpu/src/retirement.rs",
             "crates/luxforge-gpu/src/execution/compile.rs",
@@ -1170,12 +1186,22 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--gpu-adapters\"",
             "\"--usage-test-receiver\"",
             "\"--evidence-config\"",
+            "\"--evidence-catalog\"",
+            "\"--evidence-unsupported-catalog\"",
+            "\"--evidence-move-to-applications\"",
             "spawn_editor",
             "editor_args",
         ],
         scope: &["xtask"],
         types: &["rs"],
-        allowed: &["xtask/src/scenario/launch.rs", "xtask/src/launch.rs"],
+        allowed: &[
+            "xtask/src/scenario/launch.rs",
+            "xtask/src/launch.rs",
+            // The update journey launches its own background-only Sparkle bundles, which must be
+            // the bundles Sparkle replaces, not a temporary bundle around the binary; its
+            // arguments still come from `editor_args`.
+            "xtask/src/update_journey.rs",
+        ],
         mode: Match::Whole,
         tests: false,
         once: false,
@@ -1320,6 +1346,8 @@ enum Depends {
     /// Any workspace crate: a `luxforge` name, or any path. [`TEST_MACROS`] is not one: it depends
     /// on no crate (`dependency-free-test-macros`), so naming it reaches nothing.
     WorkspaceCrate,
+    /// Any workspace crate but these, each of which a rule of its own keeps a leaf.
+    WorkspaceCrateExcept(&'static [&'static str]),
 }
 
 /// The test attributes (`#[slow]`), which every crate's tests may name, the leaves' included.
@@ -1395,19 +1423,51 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "wgpu",
             "naga",
         ]),
-        manifests: &["xtask/cli"],
+        manifests: &["xtask/cli", "crates/luxforge-update"],
         tables: EVERY_TABLE,
         allowed: &[],
-        reason: "xtask-cli may not build images, native codecs, databases or GUI/GPU tooling",
+        reason: "xtask-cli, and the update feed crate it builds, may not build images, native \
+                 codecs, databases or GUI/GPU tooling",
     },
     DependencyRule {
         name: "photo-free-xtask-cli",
-        refuses: Depends::WorkspaceCrate,
+        refuses: Depends::WorkspaceCrateExcept(&["luxforge-update"]),
         manifests: &["xtask/cli"],
         tables: EVERY_TABLE,
         allowed: &[],
-        reason: "xtask-cli may depend on no workspace crate and no path, so repository checks \
-                 and dependency audits never compile the photo core or native codecs",
+        reason: "xtask-cli may depend on no workspace crate and no path but the leaf \
+                 luxforge-update, so repository checks and dependency audits never compile the \
+                 photo core or native codecs",
+    },
+    // xtask-cli builds the update feed crate, and the Linux updater links it, so it stays a leaf:
+    // nothing it builds against can bring the photo core, the GUI or a desktop crate to either.
+    DependencyRule {
+        name: "update-feed-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-update"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-update may depend on no workspace crate and no path",
+    },
+    // The desktop's move question and the macOS update port both call the move into
+    // Applications, so it stays a leaf either can link: no core, GUI or desktop crate.
+    DependencyRule {
+        name: "install-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-install"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-install may depend on no workspace crate and no path but in its tests",
+    },
+    // The Sparkle bridge carries plain values between Sparkle and the desktop's port, which makes
+    // every decision, so it stays a leaf: no core, GUI or desktop crate.
+    DependencyRule {
+        name: "sparkle-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-sparkle"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-sparkle may depend on no workspace crate and no path",
     },
     DependencyRule {
         name: "image-jpeg-feature",
@@ -2049,6 +2109,9 @@ impl Depends {
                 !named(&|n| n == TEST_MACROS)
                     && (dependency.path || named(&|n| n.starts_with("luxforge")))
             }
+            Depends::WorkspaceCrateExcept(except) => {
+                Depends::WorkspaceCrate.refuses(dependency) && !named(&|n| except.contains(&n))
+            }
         }
     }
 }
@@ -2594,6 +2657,12 @@ pub fn check(root: &Path) -> Result {
         services(root)?
     );
     println!("PASS {}", crate::onnxruntime::check(root)?);
+    println!(
+        "PASS {} workflow(s): pinned actions, stated and least permissions, {} scoped secret(s) \
+         each in one script step",
+        crate::workflows::check(root)?,
+        crate::workflows::SCOPED_SECRETS.len()
+    );
     Ok(())
 }
 #[cfg(test)]
@@ -2859,6 +2928,29 @@ mod tests {
             )],
         );
         assert!(refusal(root, &rules, path).contains("may not build images"));
+        // The update feed crate is the one workspace library it may build, and it is a leaf.
+        write_all(
+            root,
+            &[(
+                path,
+                "[dependencies]\nluxforge-update = { path = \"../../crates/luxforge-update\" }\n",
+            )],
+        );
+        assert!(read(root, &rules).is_ok());
+        let update = "crates/luxforge-update/Cargo.toml";
+        let rules = ["update-feed-leaf", "xtask-cli-no-photo-dependencies"];
+        write_all(root, &[(update, "[dependencies]\nring = \"0.17\"\n")]);
+        assert!(read(root, &rules).is_ok());
+        write_all(
+            root,
+            &[(
+                update,
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n",
+            )],
+        );
+        assert!(refusal(root, &rules, update).contains("no workspace crate and no path"));
+        write_all(root, &[(update, "[dependencies]\niced = \"0.14\"\n")]);
+        assert!(refusal(root, &rules, update).contains("may not build images"));
     }
     #[test]
     fn layer_boundaries_reject_a_forbidden_import() {

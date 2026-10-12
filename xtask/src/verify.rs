@@ -296,6 +296,10 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             ..spec("check", "headless", &["check"])
         });
         specs.push(Spec {
+            output: false,
+            ..spec("native-watchers", "native", &["test", "--native-watchers"])
+        });
+        specs.push(Spec {
             result: Some("result.json"),
             ..spec("editor-acceptance", "headless", &["editor-acceptance"])
         });
@@ -1625,13 +1629,20 @@ mod tests {
         assert_eq!(plan(Tier::Quick, None, true)[0].args, ["check", "--quick"]);
         assert_eq!(plan(Tier::Rendered, None, true)[0].args, ["check"]);
         let rendered = names(Tier::Rendered, None, true);
-        assert_eq!(&rendered[..2], ["check", "editor-acceptance"]);
         assert_eq!(
-            rendered.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
+            &rendered[..3],
+            ["check", "native-watchers", "editor-acceptance"]
         );
         assert_eq!(
-            &rendered[2..6],
+            plan(Tier::Rendered, None, true)[1].args,
+            ["test", "--native-watchers"]
+        );
+        assert_eq!(
+            rendered.len(),
+            3 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
+        );
+        assert_eq!(
+            &rendered[3..7],
             [
                 "smoke-detail",
                 "smoke-detail-fit",
@@ -1647,6 +1658,7 @@ mod tests {
             names(Tier::Timing, None, true),
             [
                 "check",
+                "native-watchers",
                 "editor-acceptance",
                 "editor-performance",
                 "editor-latency",
@@ -1659,9 +1671,12 @@ mod tests {
         // Without a manifest, `full` lists `raw-editor` and `raw-authentic`, skipped, and has no
         // source to build a `raw-panel` or RAW `performance` component from.
         let full = names(Tier::Full, None, true);
-        assert_eq!(&full[..2], ["check", "editor-acceptance"]);
         assert_eq!(
-            full[2] == "smoke-visibility-monitoring",
+            &full[..3],
+            ["check", "native-watchers", "editor-acceptance"]
+        );
+        assert_eq!(
+            full[3] == "smoke-visibility-monitoring",
             cfg!(target_os = "macos")
         );
         // The release gate alone after the pool, given the manifest when there is one and the
@@ -1692,7 +1707,7 @@ mod tests {
         );
         assert_eq!(
             full.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.full()).count() + 1 + 9
+            3 + smoke::SCENARIOS.iter().filter(|s| s.full()).count() + 1 + 9
         );
         // Missing generated fixtures are produced first, and only where a tier needs them.
         assert_eq!(names(Tier::Quick, None, false)[0], "check");

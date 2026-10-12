@@ -114,3 +114,100 @@ client addresses. Deployment existence is reported by Will; it is not proof that
    revisioned release desktop's consent/disclosure/routing and distribute the eligible build.
 
 Never infer production activation from test traffic, deployment availability or a successful `202`.
+
+## 16. The update feed route
+
+These are deployment instructions for the local reference ingress's implemented feed route.
+They do not describe a live Cloudflare update service: the hosted backend currently serves usage
+batches only, with other paths reaching its fallback Worker. Serving update feeds there requires
+Will's separate backend and publication configuration work. The app's update implementation and
+the reference installer remain available for independent local testing.
+
+The reference ingress also answers Luxforge's update feeds,
+`GET` and `HEAD /v1/updates/<target>/appcast.xml`, from the same ingress ([design](../../docs/design/auto-update.md#publishing-and-serving-the-feeds)). The
+release workflow's **Update feeds** run regenerates them after every release and sends them over SSH to
+an account whose only command installs them into the update store. The route is independent of the
+statistics switch: it can go live before or after [activation](#activation-checklist). A person
+fetching a feed crosses the same hosting and proxy as a batch, so the same promise holds, and steps 2
+to 6 and 10 must have passed for this host first. **None of this has been done.** The commands below
+that need no host ran against a local ingress serving a store filled by `install-feeds.py`; the rest
+name what to look at and what result is required.
+
+The update feed URL is compiled into every release, so once a release that uses it is published the
+route must stay for as long as that release is in use. What serves it behind the API can change.
+
+1. **The store and the publication account.** On the host, create a system account, for example
+   `luxforge-feeds`, with no password and no other rights, and the store directory it alone owns, for
+   example `/srv/luxforge/updates` (mode 0755). Install `install-feeds.py` from the deployed commit
+   where that account can run but not change it, for example `/opt/luxforge/install-feeds.py`, owned by
+   root, mode 0755.
+2. **The publication key.** On an administrator's machine, generate a key used for nothing else:
+
+   ```sh
+   ssh-keygen -t ed25519 -N '' -C luxforge-update-feeds -f luxforge-update-feeds
+   ```
+
+   Make its public half the account's only `~/.ssh/authorized_keys` entry, restricted and forced to the
+   installer:
+
+   ```text
+   restrict,command="/usr/bin/python3 -I /opt/luxforge/install-feeds.py /srv/luxforge/updates" ssh-ed25519 AAAA… luxforge-update-feeds
+   ```
+
+   `restrict` turns off forwarding, a terminal and the account's rc file, and the forced command runs
+   in place of whatever a client asks for. Store the private half as the repository secret
+   `LUXFORGE_UPDATE_PUBLISH_SSH_KEY` ([operator guide](../../docs/engineering/releases.md#automatic-updates)),
+   then delete both files.
+3. **The publication listener.** GitHub-hosted runners publish from changing addresses, so the listener
+   must accept SSH from the internet. Keep it apart from administration: a separate `sshd` listener, or
+   a `Match User luxforge-feeds` block, that admits only that account, by public key only, with
+   `DisableForwarding yes` and `PermitTTY no`. Its log records the runners' addresses, which are
+   GitHub's and not a client's; keep it out of the route's proxy and logs anyway. Take the host key line
+   for the repository variable `LUXFORGE_UPDATE_PUBLISH_KNOWN_HOSTS` from outside with
+   `ssh-keyscan -p PORT -t ed25519 api.luxforge.app`, and confirm that `ssh-keygen -lf -` on that line
+   prints the fingerprint `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints on the host. Set
+   `LUXFORGE_UPDATE_PUBLISH_DESTINATION` to `ssh://luxforge-feeds@api.luxforge.app:PORT`.
+4. **The ingress.** Set `LUXFORGE_UPDATE_STORE=/srv/luxforge/updates` in `.env`. Compose mounts it
+   read-only at `/srv/updates` and points `LUXFORGE_INGEST_UPDATES_DIR` at `/srv/updates/current`.
+   The ingress runs as the image's non-root user, which reads the store through the modes the
+   installer writes (0755 directories, 0644 files). Recreate the ingress. Until the first publication
+   every feed answers `404`.
+5. **A first publication.** With `LUXFORGE_PUBLISH_UPDATES` set to `true`, run **Actions → Update
+   feeds → Run workflow** on `main`, or let the next release run it. The publication step's log ends
+   with `install-feeds: installed feeds-…`, and the run keeps the archive it sent as its
+   `update-feeds` artifact. To check the installer on the host by hand, as the account and from the
+   deployed commit:
+
+   ```sh
+   python3 -I /opt/luxforge/install-feeds.py /srv/luxforge/updates < luxforge-update-feeds.tar
+   ```
+
+6. **Check the route from outside**, from another network:
+
+   ```sh
+   for target in linux-x86_64 macos-arm64; do
+     curl -sS -D - -o "$target.xml" "https://api.luxforge.app/v1/updates/$target/appcast.xml"
+     tar -xOf luxforge-update-feeds.tar "$target/appcast.xml" | cmp - "$target.xml"
+   done
+   curl -sS -o /dev/null -w '%{http_code}
+' 'https://api.luxforge.app/v1/updates/linux-x86_64/appcast.xml?x=1'   # 404
+   curl -sS -o /dev/null -w '%{http_code}
+' -X POST https://api.luxforge.app/v1/updates/linux-x86_64/appcast.xml  # 405
+   curl -sS -o /dev/null -w '%{http_code}
+' http://api.luxforge.app/v1/updates/linux-x86_64/appcast.xml  # closed, refused or a redirect to HTTPS
+   ```
+
+   Each feed answers `200` with `content-type: application/rss+xml; charset=utf-8` and
+   `cache-control: public, max-age=900`, no `set-cookie`, no header the proxy added, and the bytes of
+   the run's `update-feeds` artifact (`luxforge-update-feeds.tar`). The macOS feed has no item until a
+   notarized release is published. Then repeat [privacy checks](#activation-checklist)
+   with its sentinel request also sent as a `GET` of a feed: no hop may hold it.
+7. **Rollback.** Run **Update feeds** again to replace a wrong publication. In an emergency, an
+   administrator points the link back at the previous publication the installer kept:
+
+   ```sh
+   cd /srv/luxforge/updates && ln -s feeds-PREVIOUS .current-new && mv -T .current-new current
+   ```
+
+Record each step's output in the deployment record. The route counts as live only when step 6 passes
+against the real name.

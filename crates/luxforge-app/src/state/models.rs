@@ -110,7 +110,10 @@ pub(crate) fn model_modules<'a>(
 
 /// The resources `module` holds through `local-runtime` capabilities, in declaration order: those
 /// behind an experiment flag only while it is on, so a model nobody can use yet is not listed.
-fn held<'a>(module: &'a ModuleDescriptor, flags: Option<&FlagList>) -> Vec<&'a ResourceDescriptor> {
+pub(crate) fn held<'a>(
+    module: &'a ModuleDescriptor,
+    flags: Option<&FlagList>,
+) -> Vec<&'a ResourceDescriptor> {
     module
         .resources
         .iter()
@@ -369,7 +372,7 @@ fn row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::capabilities::{ModuleStatus, ResidentModel, RuntimeStatus};
+    use crate::state::capabilities::{ModuleStatus, ResidentModel, RuntimeStatus, resource_detail};
 
     fn module() -> ModuleDescriptor {
         serde_json::from_value(json!({
@@ -442,6 +445,15 @@ mod tests {
             "klein-4b-q4_0-3b1f5a9d-lora-0e3f5879-cond-ba26d15a"
         );
         assert_eq!(version_label(""), "");
+    }
+
+    #[test]
+    fn a_tools_panel_resource_row_names_only_a_numbered_version() {
+        assert_eq!(resource_detail("1", 20), "v1 · 20 B");
+        assert_eq!(
+            resource_detail("klein-4b-q4_0-3b1f5a9d-lora-0e3f5879-cond-ba26d15a", 20),
+            "20 B"
+        );
     }
 
     #[test]

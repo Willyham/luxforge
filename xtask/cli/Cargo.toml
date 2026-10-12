@@ -15,8 +15,13 @@ regex.workspace = true
 percent-encoding.workspace = true
 tempfile = "=3.27.0"
 time.workspace = true
-semver = "=1.0.28"
+semver.workspace = true
 sha2.workspace = true
+# The update records and feeds `update-record` and `update-feed` write.
+luxforge-update = { path = "../../crates/luxforge-update" }
+zeroize.workspace = true
+# The deploy archive `update-feed --deploy` writes; the version the update crate already pins.
+tar = { version = "=0.4.46", default-features = false }
 
 [target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
 sha2 = { workspace = true, features = ["asm"] }

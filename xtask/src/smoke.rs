@@ -15,14 +15,15 @@ use crate::{
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
-    minify_smoke as minify, mixer_smoke as mixer, no_gpu_render_smoke as no_gpu_render,
+    minify_smoke as minify, mixer_smoke as mixer,
+    move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
     performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
     raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_smoke as select, settings_smoke as settings, theme_smoke as theme,
-    usage_backend_smoke as usage_backend, usage_smoke as usage, viewport_smoke as viewport,
-    vignette_smoke as vignette, visibility_smoke as visibility, workspace_smoke as workspace,
-    zoom_smoke as zoom, *,
+    unsupported_catalog_smoke as unsupported_catalog, usage_backend_smoke as usage_backend,
+    usage_smoke as usage, viewport_smoke as viewport, vignette_smoke as vignette,
+    visibility_smoke as visibility, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -78,6 +79,8 @@ pub struct LaunchSpec {
     /// A loopback receiver giving the launch explicit usage statistics test eligibility, so it
     /// shows the startup notice and the Privacy tab.
     pub usage_receiver: Option<&'static str>,
+    /// Show the move into Applications question wherever the run's app is, so it can be captured.
+    pub move_question: bool,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
     /// A process deadline of its own in place of the run's.
@@ -95,6 +98,7 @@ pub const APP: LaunchSpec = LaunchSpec {
     no_gpu_render: false,
     developer: false,
     usage_receiver: None,
+    move_question: false,
     watch: None,
     deadline: None,
 };
@@ -467,9 +471,12 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: zoom::SCENARIO,
-        about: "Percentage and pinch zooms, pans and idle frames over the 24 MP and 60 MP JPEGs, one run each",
+        about: "Percentage and pinch zooms, pans and idle frames, and the high-zoom minimap's threshold, navigation and interception over a crop draft, the neutral picker, a brush and Compare, over the 24 MP and 60 MP JPEGs, one run each",
         launches: &[LaunchSpec {
             plan: zoom::plan,
+            // Forty-seven frames, the minimap's gestures among them, each of which may wait for
+            // its overview.
+            deadline: Some(Duration::from_secs(150)),
             ..APP
         }],
         verify: zoom::verify,
@@ -1100,6 +1107,31 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: move_to_applications::SCENARIO,
+        about: "The Move Luxforge to Applications question in a background launch given --evidence-move-to-applications: absent from the opened frame, then shown with the design's words, Move and relaunch, Not now and Don't ask again off, for the run's bundle classified elsewhere with the Trash as its cleanup; the log classifies then shows it once, nothing moves, and the card is drawn over the bottom of the workspace",
+        launches: &[LaunchSpec {
+            plan: move_to_applications::plan,
+            move_question: true,
+            ..APP
+        }],
+        verify: move_to_applications::verify,
+        source: Source::Fixtures(&[move_to_applications::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(move_to_applications::NOTE),
+        own: None,
+    },
+    Scenario {
+        name: unsupported_catalog::SCENARIO,
+        about: "A remembered catalog another version made: the window opens on the unsupported-catalog sheet naming format 16 and format 1, the catalog unchanged and the releases page, then Start a new catalog creates and remembers catalog (format 1).sqlite beside it and the fixture opens in the editor over it; the refused catalog, its artifacts and its index keep every byte",
+        // Its one launch names a catalog the run seeds before it.
+        launches: &[],
+        verify: unsupported_catalog::verify,
+        source: Source::Fixtures(&[unsupported_catalog::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(unsupported_catalog::NOTE),
+        own: Some(unsupported_catalog::run),
+    },
+    Scenario {
         name: "gallery",
         about: "All 136 widget gallery states across twenty-one pages",
         launches: &[LaunchSpec {
@@ -1571,6 +1603,9 @@ pub(crate) fn launch_of(
     }
     if let Some(url) = spec.usage_receiver {
         launch = launch.usage_receiver(url);
+    }
+    if spec.move_question {
+        launch = launch.move_question();
     }
     launch = launch.open_all(sources);
     if plan.scripted() {

@@ -1260,7 +1260,7 @@ fn gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time() {
 /// The stacks whose one light reads a spatial layer before it: the owner's masked Dehaze behind
 /// Clarity, Dehaze −100 behind a sharpening Detail, and a masked Dehaze behind Texture and Clarity
 /// with a Basic layer between, whose colour run the sweep before the light runs too.
-fn behind_spatial() -> Vec<(&'static str, Recipe, usize)> {
+pub(super) fn behind_spatial() -> Vec<(&'static str, Recipe, usize)> {
     vec![
         (
             "a masked Dehaze behind Clarity",

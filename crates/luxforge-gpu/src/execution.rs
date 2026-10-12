@@ -781,6 +781,9 @@ pub struct Figures {
     peak: AtomicU64,
     /// Of `in_use`, every slot's pool of scratch textures, resident or retiring.
     scratch: AtomicU64,
+    /// Of `in_use`, the minimap overview's storage, resident, in progress or retiring, held within
+    /// [`overview::OVERVIEW_GPU_BUDGET`] ([`Figures::charge_overview`]).
+    overview: AtomicU64,
     passes: AtomicU64,
     /// Compute passes the spatial steps have dispatched.
     spatial_passes: AtomicU64,
@@ -839,6 +842,11 @@ impl Figures {
 
     pub fn scratch(&self) -> u64 {
         self.scratch.load(Ordering::Acquire)
+    }
+
+    /// The minimap overview's storage charged now, resident, in progress and retiring together.
+    pub fn overview(&self) -> u64 {
+        self.overview.load(Ordering::Acquire)
     }
 
     pub fn passes(&self) -> u64 {
@@ -928,6 +936,35 @@ impl Figures {
         }
     }
 
+    /// Charge `bytes` of the minimap overview's storage: within [`overview::OVERVIEW_GPU_BUDGET`]
+    /// beside every overview allocation charged already, resident, in progress or retiring, and
+    /// within the GPU-preview budget beside everything else. Neither is charged when either refuses.
+    fn charge_overview(&self, bytes: u64) -> Result<(), GpuFallback> {
+        let cap = overview::OVERVIEW_GPU_BUDGET;
+        let mut held = self.overview();
+        loop {
+            if held.saturating_add(bytes) > cap {
+                return Err(GpuFallback::BudgetExceeded {
+                    requested: bytes,
+                    in_use: held,
+                    budget: cap,
+                });
+            }
+            match self.overview.compare_exchange_weak(
+                held,
+                held + bytes,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(now) => held = now,
+            }
+        }
+        self.charge(bytes).inspect_err(|_| {
+            self.overview.fetch_sub(bytes, Ordering::AcqRel);
+        })
+    }
+
     /// Count what one buffer's blocks update wrote, and in tests what it compared and copied.
     fn blocks_updated(&self, update: &blocks::Update) {
         self.block_words
@@ -966,6 +1003,8 @@ enum Held {
     Rest(Box<rest::RestParts>),
     /// A staged picture at rest's stage textures.
     Stage(Vec<wgpu::Texture>),
+    /// The minimap overview's storage: a reduction's parts, or a finished overview's texture.
+    Overview(Box<overview::OverviewHeld>),
 }
 
 /// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it,
@@ -974,6 +1013,8 @@ pub struct RetiredPreview {
     held: Held,
     bytes: u64,
     scratch: u64,
+    /// Of `bytes`, the minimap overview's ([`Figures::overview`]).
+    overview: u64,
 }
 
 /// Ends one retirement: the resources go and their charge with them.
@@ -982,10 +1023,15 @@ pub fn finish_retirement(figures: &Signals, retired: RetiredPreview, failed: boo
         held,
         bytes,
         scratch,
+        overview,
     } = retired;
     drop(held);
     figures.preview.discharge(bytes);
     figures.preview.scratch.fetch_sub(scratch, Ordering::AcqRel);
+    figures
+        .preview
+        .overview
+        .fetch_sub(overview, Ordering::AcqRel);
     figures.retirement_pending.fetch_sub(1, Ordering::AcqRel);
     if failed {
         figures.diagnostics().gpu_retirement_failures += 1;
@@ -1073,6 +1119,10 @@ pub struct SpatialSlot {
     filled: Option<u64>,
     /// The buffers a read set derived from the source is drawn with.
     fill_buffers: Option<fill::FillBuffers>,
+    /// The planes the applies read already hold the step's values, solved by an earlier tick over
+    /// the same input and words, which reads them alone: no read set is filled and no pass runs
+    /// ([`SpatialSlot::solved`]).
+    solved: bool,
 }
 
 impl SpatialSlot {
@@ -1088,7 +1138,24 @@ impl SpatialSlot {
             valid: None,
             filled: None,
             fill_buffers: None,
+            solved: false,
         }
+    }
+
+    /// Planes whose kept textures another evaluation of the same step over the same input left
+    /// holding what the applies read: each tick binds them for the frame's pass alone, filling no
+    /// read set and running no pass. The tile runner's kept repair results
+    /// ([`tiles`] docs), which only a step whose passes read no window can be.
+    fn solved(planes: spatial::Planes, pool: &mut spatial::Pool) -> Self {
+        Self {
+            solved: true,
+            ..Self::new(planes, pool)
+        }
+    }
+
+    /// Its planes, for a later evaluation to read solved ([`SpatialSlot::solved`]).
+    fn into_planes(self) -> spatial::Planes {
+        self.planes
     }
 
     /// The groups that bind the planes, when they have been built.
@@ -1152,6 +1219,17 @@ impl SpatialSlot {
     ) -> Result<(u64, Option<spatial::Rect>), GpuFallback> {
         #[cfg(any(test, feature = "qualification"))]
         pool.poison(device, encoder);
+        if self.solved {
+            // The kept planes hold what the applies read: the frame's group alone binds them.
+            if !self.bound(pipeline, pool) {
+                self.groups = Some((
+                    pipeline,
+                    pool.generation(),
+                    spatial::Groups::fragment(device, compiled, &self.planes, pool),
+                ));
+            }
+            return Ok((0, dirty.map(|_| spatial::Rect::whole(size))));
+        }
         if !self.bound(pipeline, pool) {
             self.groups = Some((
                 pipeline,
@@ -3610,7 +3688,12 @@ impl Executor {
             | Held::Link(_)
             | Held::Source(_)
             | Held::Rest(_)
-            | Held::Stage(_) => 0,
+            | Held::Stage(_)
+            | Held::Overview(_) => 0,
+        };
+        let overview = match &held {
+            Held::Overview(_) => bytes,
+            _ => 0,
         };
         if let Err(error) = self
             .retirement_sender
@@ -3618,6 +3701,7 @@ impl Executor {
                 held,
                 bytes,
                 scratch,
+                overview,
             }))
             && let super::Retired::Preview(retired) = error.0
         {
@@ -3840,9 +3924,11 @@ pub use compile::GpuOptions;
 pub use source::{AxisCoverage, Derivation, GpuSource, Reduction, SourceFigures, SourceKind};
 use source::{Layouts as SourceLayouts, SourceSlot};
 mod stage;
+mod submission;
 pub use compile::{GpuWarm, PIPELINE_CACHE, WarmUpFigures};
 pub use stage::gpu_stage_refused;
 pub use stage::{GpuStageState, refuse_gpu_stage};
+pub(crate) use submission::wait_for_submission;
 mod tail;
 pub use tail::{GpuTail, OutputEncoding, install_output_encoding, output_encoding};
 mod mask;
@@ -3865,6 +3951,11 @@ pub mod clipping;
 pub use clipping::ClipMarks;
 pub mod histogram;
 
+pub mod overview;
+pub use overview::{
+    OVERVIEW_GPU_BUDGET, OverviewFigures, OverviewShown, OverviewStore, OverviewUpload,
+    OverviewWant, RestOverview,
+};
 mod rest;
 pub use rest::{
     CountsOutcome, EvaluationFigures, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures,

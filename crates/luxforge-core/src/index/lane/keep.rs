@@ -73,6 +73,8 @@ pub(crate) const GONE_WAITING: usize = luxforge_watch::MAX_PATHS;
 #[derive(Default)]
 pub(super) struct Keeper {
     watcher: Option<Watcher>,
+    #[cfg(test)]
+    injected: Option<(super::InjectedWatcher, SyncSender<Input>)>,
     /// Why there is no watcher, when there is none.
     unavailable: Option<String>,
     roots: Vec<Kept>,
@@ -105,7 +107,16 @@ struct Kept {
 impl Keeper {
     /// Start the watcher, its events arriving on `inputs`: `Err` with why, when the platform
     /// offers none.
-    pub(super) fn start(&mut self, inputs: SyncSender<Input>) -> Result<(), String> {
+    pub(super) fn start(
+        &mut self,
+        inputs: SyncSender<Input>,
+        #[cfg(test)] injected: Option<super::InjectedWatcher>,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(watcher) = injected {
+            self.injected = Some((watcher, inputs));
+            return Ok(());
+        }
         match Watcher::start(inputs) {
             Ok(watcher) => {
                 self.watcher = Some(watcher);
@@ -122,6 +133,10 @@ impl Keeper {
     /// Stop the watcher: every stream stops and its sender drops.
     pub(super) fn stop(&mut self) {
         self.watcher = None;
+        #[cfg(test)]
+        {
+            self.injected = None;
+        }
     }
 
     fn index_of(&self, id: u64) -> Option<usize> {
@@ -159,24 +174,34 @@ impl Keeper {
         }
         let watching = if on_network(mounts, &root.path) {
             Err(ON_NETWORK.to_owned())
-        } else if let Some(watcher) = &mut self.watcher {
-            watcher
-                .add_root(WatchRoot {
+        } else {
+            let watched = {
+                let plan = WatchRoot {
                     id: root.id,
                     path: root.path.clone(),
                     resume,
-                })
-                .map_err(|error| match error.kind() {
+                };
+                #[cfg(test)]
+                if let Some((watcher, inputs)) = &self.injected {
+                    Some(watcher.add_root(inputs, plan))
+                } else {
+                    self.watcher.as_mut().map(|watcher| watcher.add_root(plan))
+                }
+                #[cfg(not(test))]
+                self.watcher.as_mut().map(|watcher| watcher.add_root(plan))
+            };
+            match watched {
+                Some(result) => result.map_err(|error| match error.kind() {
                     std::io::ErrorKind::NotFound => {
                         "it is not there: its volume is not connected, or it moved".to_owned()
                     }
                     _ => format!("its changes cannot be followed: {error}"),
-                })
-        } else {
-            Err(self
-                .unavailable
-                .clone()
-                .unwrap_or_else(|| "changes are not followed on this system".into()))
+                }),
+                None => Err(self
+                    .unavailable
+                    .clone()
+                    .unwrap_or_else(|| "changes are not followed on this system".into())),
+            }
         };
         root.active = watching.is_ok();
         post(LaneEvent::Watching {
@@ -709,7 +734,7 @@ impl Keeper {
         let completed = listed.is_ok();
         self.listed_own(run, index, true, listed)?;
         let cursor = match run.listed.drain(..).find_map(|listed| listed.cursor) {
-            None if !completed => luxforge_watch::current_cursor(&path),
+            None if !completed => run.config.current_cursor(&path),
             cursor => cursor,
         };
         if there {

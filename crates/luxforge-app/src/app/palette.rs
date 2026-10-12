@@ -101,6 +101,9 @@ impl Editor {
                     Some(PaletteAction::Theme(id)) => {
                         self.dispatch(Message::Theme(ThemeMessage::Choose(id)))
                     }
+                    Some(PaletteAction::CheckForUpdates) => self.dispatch(Message::Update(
+                        crate::app::message::update::UpdateMessage::Check,
+                    )),
                     None => Task::none(),
                 };
             }
