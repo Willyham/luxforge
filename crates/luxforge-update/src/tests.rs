@@ -461,6 +461,13 @@ fn feeds_refuse_non_rising_builds_duplicates_unpublished_assets_and_other_keys()
         generate(&other_key, &all, &[]).unwrap_err().code(),
         "record-key-mismatch"
     );
+    // A release signed by a retired key is withdrawn, and then left out rather than refused.
+    let retired = [Withdrawal {
+        tag: "v0.1.0".into(),
+        reason: "signed by a retired key".into(),
+    }];
+    let feeds = generate(&other_key, &all, &retired).unwrap();
+    assert_eq!(feeds.appcasts[&Target::LinuxX86_64].items.len(), 1);
     // With no committed key, records are not held to one.
     let feeds = feed::generate(&FeedInputs {
         records: &other_key,

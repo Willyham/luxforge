@@ -42,7 +42,9 @@ LUXFORGE_INGRESS_PORT=$port
 LUXFORGE_INGRESS_ID_INTERVAL_SECS=$id_interval
 LUXFORGE_INGRESS_ID_BURST=$id_burst
 LUXFORGE_INGRESS_STATS_INTERVAL_SECS=5
+LUXFORGE_UPDATE_STORE=$work/update-store
 EOF
+mkdir "$work/update-store"
 
 cleanup() {
   docker compose --env-file "$work/env" -p "$project" down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1 || true

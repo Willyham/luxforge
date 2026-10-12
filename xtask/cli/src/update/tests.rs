@@ -75,7 +75,11 @@ fn update_record_signs_the_final_archives_as_sparkle_does() {
     let input = builds(dir.path(), "v0.2-rc.1", "41", "notarized");
     let output = dir.path().join("luxforge-0.2.0-rc.1-updates.json");
     let config = config(Some(SPARKLE_TEST_PUBLIC_KEY));
-    let signed = record(&config, &input, &output, "v0.2-rc.1", &key).unwrap();
+    let Recorded {
+        record: signed,
+        notes,
+    } = record(&config, &input, &output, "v0.2-rc.1", &key).unwrap();
+    assert!(notes.is_empty());
     assert_eq!(signed.tag, "v0.2-rc.1");
     assert_eq!(signed.version, "0.2.0-rc.1");
     assert_eq!(signed.channel, Channel::Prerelease);
@@ -118,17 +122,49 @@ fn update_record_signs_the_final_archives_as_sparkle_does() {
 }
 
 #[test]
-fn update_record_marks_an_unnotarized_macos_archive() {
+fn update_record_leaves_out_an_unnotarized_macos_archive() {
     let dir = tempfile::tempdir().unwrap();
     let key = read_key(&key_file(dir.path(), SPARKLE_TEST_KEY)).unwrap();
+    for status in ["unsigned", "pending", "failed"] {
+        let input = builds(dir.path(), "v0.1", "3", status);
+        let output = dir.path().join(status);
+        fs::create_dir(&output).unwrap();
+        let output = output.join("luxforge-0.1.0-updates.json");
+        let Recorded { record, notes } =
+            record(&config(None), &input, &output, "v0.1", &key).unwrap();
+        // No macOS entry: the update key signs nothing a feed may not list.
+        assert_eq!(
+            record.archives.keys().copied().collect::<Vec<_>>(),
+            [Target::LinuxX86_64]
+        );
+        assert_eq!(
+            notes,
+            [format!(
+                "macos-arm64: the build is {status}, not notarized; \
+                 luxforge-0.1.0-macos-arm64.zip is not signed or recorded"
+            )]
+        );
+        assert_eq!(record.channel, Channel::Default);
+        let written = fs::read_to_string(&output).unwrap();
+        assert!(!written.contains("macos"), "{written}");
+        assert_eq!(UpdateRecord::parse(written.as_bytes()).unwrap(), record);
+        fs::remove_dir_all(&input).unwrap();
+    }
+    // The macOS build is still checked as release-assemble checks it.
     let input = builds(dir.path(), "v0.1", "3", "unsigned");
+    fs::write(
+        input.join("macos-arm64/luxforge-0.1.0-macos-arm64.zip"),
+        "changed",
+    )
+    .unwrap();
     let output = dir.path().join("luxforge-0.1.0-updates.json");
-    let record = record(&config(None), &input, &output, "v0.1", &key).unwrap();
-    assert_eq!(
-        record.archives[&Target::MacosArm64].signing,
-        SigningStatus::Unsigned
+    assert!(
+        record(&config(None), &input, &output, "v0.1", &key)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("checksum")
     );
-    assert_eq!(record.channel, Channel::Default);
 }
 
 #[test]
@@ -139,7 +175,8 @@ fn update_record_refuses_wrong_keys_outputs_and_builds() {
     let output = dir.path().join("luxforge-0.3.0-updates.json");
     let refused = |config: &UpdateConfig, input: &Path, output: &Path, tag: &str| {
         record(config, input, output, tag, &key)
-            .unwrap_err()
+            .err()
+            .unwrap()
             .to_string()
     };
     let other = SigningKey::from_seed(&[3; 32])
@@ -339,10 +376,8 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
         &output,
     )
     .unwrap();
-    assert_eq!(
-        generated.notes,
-        ["v0.1.0: macos-arm64 archive is unsigned, not notarized; not listed"]
-    );
+    // The unsigned macOS build of v0.1.0 has no record entry, so no feed lists it.
+    assert!(generated.notes.is_empty(), "{:?}", generated.notes);
     let mac = fs::read_to_string(output.join("macos-arm64/appcast.xml")).unwrap();
     let linux = fs::read_to_string(output.join("linux-x86_64/appcast.xml")).unwrap();
     let mac_items = Appcast::parse(&mac).unwrap().appcast.items;
@@ -425,6 +460,37 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
         .unwrap_err()
         .to_string()
         .contains("must be new")
+    );
+
+    // The deploy archive holds exactly each target's feed, as the store installs it.
+    let archive = dir.path().join("luxforge-update-feeds.tar");
+    deploy(&generated, &archive).unwrap();
+    let entries = deploy_entries(&archive);
+    assert_eq!(
+        entries.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(),
+        ["macos-arm64/appcast.xml", "linux-x86_64/appcast.xml"]
+    );
+    for (name, mode, bytes) in &entries {
+        assert_eq!(*mode, 0o644);
+        assert_eq!(bytes, &fs::read(output.join(name)).unwrap(), "{name}");
+    }
+    let again_archive = dir.path().join("again.tar");
+    deploy(&generated, &again_archive).unwrap();
+    assert_eq!(
+        fs::read(&archive).unwrap(),
+        fs::read(&again_archive).unwrap()
+    );
+    assert!(
+        deploy(&generated, &archive)
+            .unwrap_err()
+            .to_string()
+            .contains("must be new")
+    );
+    assert!(
+        deploy(&generated, &dir.path().join("feeds.tgz"))
+            .unwrap_err()
+            .to_string()
+            .contains("*.tar")
     );
 
     // A withdrawn release is left out; an unpublished asset and a stray file are refused.
@@ -513,6 +579,25 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
         .to_string()
         .contains("holds the record of v0.1.0")
     );
+}
+
+/// Each entry of a deploy archive: its path, mode and bytes. Every entry must be a regular file.
+fn deploy_entries(path: &Path) -> Vec<(String, u32, Vec<u8>)> {
+    let mut archive = tar::Archive::new(fs::File::open(path).unwrap());
+    archive
+        .entries()
+        .unwrap()
+        .map(|entry| {
+            let mut entry = entry.unwrap();
+            assert_eq!(entry.header().entry_type(), tar::EntryType::Regular);
+            assert_eq!(entry.header().mtime().unwrap(), 0);
+            let name = entry.path().unwrap().to_string_lossy().into_owned();
+            let mode = entry.header().mode().unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            (name, mode, bytes)
+        })
+        .collect()
 }
 
 fn config_with_other_key() -> UpdateConfig {

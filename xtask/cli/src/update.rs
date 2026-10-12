@@ -1,6 +1,7 @@
 //! Update records and feeds: `update-record` signs a release's final archives into its
 //! `luxforge-<version>-updates.json`, and `update-feed` regenerates every target's appcast from the
-//! records of every published release. Neither prints, logs or writes the private key.
+//! records of every published release, and with `--deploy` the archive the release workflow
+//! publishes to the API's update store. Neither prints, logs or writes the private key.
 use crate::release_artifacts::{TARGETS, archive_name, verify_record};
 use crate::release_tag::ReleaseTag;
 use crate::{Args, Result, ensure};
@@ -30,13 +31,16 @@ pub fn run_record(root: &Path, args: &mut Args) -> Result {
     args.done()?;
     let config = UpdateConfig::load_from_repository(root)?;
     let key = read_key(&key_file)?;
-    let record = record(
+    let Recorded { record, notes } = record(
         &config,
         &input,
         &output,
         tag.to_str().ok_or("Tag encoding")?,
         &key,
     )?;
+    for note in &notes {
+        println!("NOTE {note}");
+    }
     for (target, archive) in &record.archives {
         println!(
             "{target}: {} ({} bytes, build {}, {})",
@@ -72,16 +76,24 @@ pub fn read_key(path: &Path) -> Result<SigningKey> {
     Ok(SigningKey::from_sparkle_export(&text)?)
 }
 
+/// A written update record, and a note for each archive it leaves out.
+pub struct Recorded {
+    pub record: UpdateRecord,
+    pub notes: Vec<String>,
+}
+
 /// Signs the final archives `release-assemble` reads from `input` (`<platform>/target.json` and
 /// its archive for each target) and writes the record to `output`, a new file named
 /// `luxforge-<version>-updates.json`. The key's public key must be `config`'s when it commits one.
+/// A macOS archive that is not notarized is checked like the others but neither signed nor
+/// recorded, so the update key signs nothing a feed may not list.
 pub fn record(
     config: &UpdateConfig,
     input: &Path,
     output: &Path,
     tag: &str,
     key: &SigningKey,
-) -> Result<UpdateRecord> {
+) -> Result<Recorded> {
     let tag = ReleaseTag::parse(tag)?;
     let name = UpdateRecord::file_name(&tag.version);
     ensure(
@@ -97,6 +109,7 @@ pub fn record(
         return Err(luxforge_update::Error::KeyMismatch.into());
     }
     let mut archives = BTreeMap::new();
+    let mut notes = Vec::new();
     for &(rust_target, platform) in TARGETS {
         let target = Target::from_rust_target(rust_target).ok_or("Unknown release target")?;
         let directory = input.join(platform);
@@ -133,6 +146,13 @@ pub fn record(
             None
         };
         let file = archive_name(&tag, rust_target)?;
+        if target.is_macos() && signing != SigningStatus::Notarized {
+            notes.push(format!(
+                "{target}: the build is {}, not notarized; {file} is not signed or recorded",
+                signing.as_str()
+            ));
+            continue;
+        }
         let path = directory.join(&file);
         let (ed_signature, length) = key.sign_file(&path)?;
         ensure(
@@ -173,15 +193,16 @@ pub fn record(
         .create_new(true)
         .open(output)?
         .write_all(record.to_json().as_bytes())?;
-    Ok(record)
+    Ok(Recorded { record, notes })
 }
 
 /// `cargo xtask update-feed --records DIR --published FILE --output NEW_DIR [--withdrawn FILE]
-/// [--repository OWNER/NAME]`.
+/// [--repository OWNER/NAME] [--deploy NEW_FILE]`.
 pub fn run_feed(root: &Path, args: &mut Args) -> Result {
     let records = args.path("--records")?;
     let published = args.path("--published")?;
     let output = args.path("--output")?;
+    let deploy_path = args.value("--deploy")?.map(std::path::PathBuf::from);
     let withdrawn = args
         .value("--withdrawn")?
         .map(Into::into)
@@ -192,6 +213,9 @@ pub fn run_feed(root: &Path, args: &mut Args) -> Result {
         None => feed::DEFAULT_REPOSITORY,
     };
     args.done()?;
+    if let Some(path) = &deploy_path {
+        ensure_new_deploy(path)?;
+    }
     let config = UpdateConfig::load_from_repository(root)?;
     let feeds = feeds(
         &config, &records, &published, &withdrawn, repository, &output,
@@ -209,6 +233,56 @@ pub fn run_feed(root: &Path, args: &mut Args) -> Result {
             appcast.items.len()
         );
     }
+    if let Some(path) = &deploy_path {
+        deploy(&feeds, path)?;
+        println!("Deploy archive: {}", path.display());
+    }
+    Ok(())
+}
+
+/// The largest feed the API serves, and the clients read.
+const MAX_DEPLOY_FEED: usize = luxforge_update::MAX_APPCAST_BYTES;
+
+fn ensure_new_deploy(path: &Path) -> Result {
+    ensure(
+        path.extension().is_some_and(|e| e == "tar"),
+        "The deploy archive must be named *.tar",
+    )?;
+    ensure(!path.exists(), "The deploy archive output must be new")
+}
+
+/// Writes the deploy archive the API's update store installs (`install-feeds.py`): an
+/// uncompressed ustar archive holding exactly `<target>/appcast.xml` for each feed, as regular
+/// files in target order with fixed metadata, so the same feeds write the same bytes.
+pub fn deploy(feeds: &Feeds, path: &Path) -> Result {
+    ensure_new_deploy(path)?;
+    let mut entries = Vec::new();
+    for (target, appcast) in &feeds.appcasts {
+        let xml = appcast.to_xml();
+        ensure(
+            xml.len() <= MAX_DEPLOY_FEED,
+            format!("The {target} feed is larger than the API serves"),
+        )?;
+        entries.push((target.feed_path(), xml));
+    }
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    let mut archive = tar::Builder::new(std::io::BufWriter::new(file));
+    for (name, xml) in &entries {
+        let mut header = tar::Header::new_ustar();
+        header.set_path(name)?;
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(xml.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_cksum();
+        archive.append(&header, xml.as_bytes())?;
+    }
+    archive.into_inner()?.flush()?;
     Ok(())
 }
 

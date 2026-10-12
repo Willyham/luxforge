@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; and the [desktop's offer, Settings group and palette entry](#the-desktop). A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism, the move into Applications and feed publication are not built yet, and the feed route and production key are not in place, so no build updates itself today.
+Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; the [desktop's offer, Settings group and palette entry](#the-desktop); and [feed publication and the feed route](#publishing-and-serving-the-feeds). A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism and the move into Applications are not built yet, and the production key, the API host and its update store are not in place, so no build updates itself today.
 
 ## Outcome and scope
 
@@ -102,15 +102,16 @@ The `luxforge-update` crate is the format's one home: the record, the appcast wr
 - checks each `target.json` as `release-assemble` does, and refuses a dirty or rehearsal build;
 - reads the build number, `catalog_format` and, on macOS, `minimum_system_version` from `target.json`, and requires one build number across targets. The release build records `luxforge_core::CATALOG_FORMAT` and the bundle's `LSMinimumSystemVersion` there;
 - signs each archive through a read-only memory map and verifies the signature it made;
-- records a macOS archive that is not notarized with its status, so feed generation leaves it out;
+- leaves out a macOS archive that is not notarized, with a note: it checks that build's `target.json` and archive as it does the others, but neither signs nor records it, so the update key signs nothing a feed may not list;
 - writes only a new file named `luxforge-<version>-updates.json`.
 
-`cargo xtask update-feed --records DIR --published FILE --output NEW_DIR [--withdrawn FILE] [--repository OWNER/NAME]` writes `<target>/appcast.xml` for `macos-arm64`, `linux-x86_64` and any other target a record names.
+`cargo xtask update-feed --records DIR --published FILE --output NEW_DIR [--withdrawn FILE] [--repository OWNER/NAME] [--deploy NEW_FILE.tar]` writes `<target>/appcast.xml` for `macos-arm64`, `linux-x86_64` and any other target a record names.
 
 - `--records` holds only `luxforge-<version>-updates.json` files, each with its own version's record.
 - `--published` is GitHub's release list as `gh api --paginate --slurp repos/Willyham/luxforge/releases` writes it; one page is also read. The command reads each release's `tag_name`, `draft` and `published_at` and each asset's `name`, `size` and `state`. Drafts, releases without a publication time and assets that are not `uploaded` are not published. An item's `pubDate` is its release's `published_at`.
 - `--withdrawn` defaults to the checked-in `release/withdrawn-updates.json`: a JSON array of `{"tag": "v0.2.0", "reason": "…"}`, each tag once.
 - `--repository` defaults to `Willyham/luxforge`. Enclosure URLs are `https://github.com/<repository>/releases/download/<tag>/<file>` and the item link is `…/releases/tag/<tag>`, with every character outside URL-unreserved ones, such as `+`, percent-encoded.
+- `--deploy` also writes the deploy archive the update store installs: an uncompressed ustar archive holding exactly `<target>/appcast.xml` for each feed, as regular files in target order with mode 0644, owner 0 and time 0, so the same feeds write the same bytes. A feed over 4 MiB is refused, as no client reads one.
 
 It refuses, by name:
 
@@ -118,7 +119,7 @@ It refuses, by name:
 - two records for one tag or one SemVer version (`duplicate-release`);
 - build numbers that do not strictly rise with SemVer precedence within a target (`build-not-rising`). Every record counts, withdrawn or left out, because a person may have installed it;
 - a listed archive whose release or asset is not published (`unpublished-asset`), or is published at another length (`asset-length-mismatch`);
-- once `release/update.json` commits a public key, a record signed by another key (`record-key-mismatch`). Releases signed by a retired key are withdrawn.
+- once `release/update.json` commits a public key, a record signed by another key (`record-key-mismatch`), unless its release is withdrawn. Releases signed by a retired key are withdrawn, and then left out.
 
 It leaves out, with a note, withdrawn releases and macOS archives that are not notarized. Items are newest first, and the same inputs write the same bytes.
 
@@ -133,19 +134,48 @@ It leaves out, with a note, withdrawn releases and macOS archives that are not n
 
 `newest_eligible` chooses the highest build above the current one on a followed channel. A channel it does not know is never followed.
 
-**Serving.** The release workflow generates the feeds and publishes them to the API's update store. The API answers `GET /v1/updates/<target>/appcast.xml` with them as static content. The route:
+### Publishing and serving the feeds
 
-- takes no query string, cookies or authentication;
-- sets cache headers that let a new release reach clients within an hour;
-- keeps no record of client addresses, headers or bodies, as for usage statistics.
+Publication is off until the operator sets the repository variable `LUXFORGE_PUBLISH_UPDATES` to `true` ([operator guide](../engineering/releases.md#automatic-updates)). Unset or `false` publishes no record and no feed; any other value fails the release's identity job.
 
-The store and the publication mechanism are delegated to the backend's deployment. One example is object storage behind the API's reverse proxy, written with a scoped credential that only the workflow's feed step receives. The route joins the backend's deployment checklist.
+**Signing the record.** The [release workflow](tag-release-builds.md)'s publish job signs the record after `release-assemble` has verified both candidates and before the draft release is created:
+
+1. A step without the key builds the xtask binary.
+2. The step **Sign the update record** is the only one that receives `LUXFORGE_UPDATE_SIGNING_KEY`. It refuses a missing secret and a `release/update.json` with no public key. It writes the key to a private temporary file, removes it from the environment and runs `update-record` with the built binary, so no compiler or build script runs beside the key. The file is deleted when the step ends, whatever its outcome.
+3. `luxforge-<version>-updates.json` is uploaded with the other assets. `SHA256SUMS` and `release.json` do not list it.
+
+A failure in either step fails the job before anything is published.
+
+**Publishing the feeds.** The **Update feeds** workflow (`.github/workflows/update-feeds.yml`) runs after every successful release run, and by hand from `main` after a withdrawal. It holds only `contents: read`, so it cannot alter a release, and its failure leaves the release as it was published. Its runs are serialised, and each regenerates every feed from all releases, so the last to finish is current. It:
+
+1. lists the releases with `gh api --paginate --slurp` and downloads each published release's uploaded `luxforge-*-updates.json` (a release without one is not listed);
+2. builds the xtask binary and runs `update-feed --deploy` over them, with the repository it runs in;
+3. keeps the deploy archive as the `update-feeds` Actions artifact for 30 days;
+4. in the step **Publish the feeds to the update store**, the only one that receives `LUXFORGE_UPDATE_PUBLISH_SSH_KEY`, sends the archive over SSH to `LUXFORGE_UPDATE_PUBLISH_DESTINATION` (`ssh://USER@HOST[:PORT]`), checking the host key against `LUXFORGE_UPDATE_PUBLISH_KNOWN_HOSTS`.
+
+`cargo xtask check-repository` holds every workflow to these rules: each action pinned to a full commit, a top-level `permissions` block, write permission for the release's publish job `contents` only, no `secrets: inherit`, `toJSON(secrets)`, `pull_request_target` or `write-all`, and each of the two keys named exactly once, in its own script step.
+
+**The store and the publication mechanism** were delegated to the backend's deployment. The choice, recorded here, is the simplest that fits the [usage statistics reference](../../services/usage-statistics/README.md): one host and one API process, behind a proxy that forwards every path unchanged.
+
+- **The store** is a directory on the API host. `STORE/current` is a link to the latest publication, `STORE/feeds-<UTC time>/`, which holds `<target>/appcast.xml`.
+- **Publication** uses an SSH key that is `restrict`ed in `authorized_keys` and forced to run `install-feeds.py STORE` ([script](../../services/usage-statistics/install-feeds.py)), for an account that owns only the store. The key can do nothing but hand over a deploy archive.
+  - The script refuses, changing nothing, an archive over 16 MiB, a member other than a released target's `appcast.xml` regular file, a feed over 4 MiB, a missing `macos-arm64` or `linux-x86_64` feed, and a feed that is not UTF-8 RSS with a channel. A DTD or entity declaration is refused before parsing.
+  - Otherwise it writes and syncs a new publication, then replaces the `current` link at once, so the route answers the old feeds or the new ones and never a mixture. It keeps the previous publication for a manual rollback and removes older ones. Publications hold a lock on `STORE/.lock`.
+- **The route** is served by the API's existing process, the [usage statistics ingress](../../services/usage-ingest/README.md), from `LUXFORGE_INGEST_UPDATES_DIR` (`STORE/current`, mounted read-only). Without that setting the route does not exist. For `GET` and `HEAD /v1/updates/<target>/appcast.xml`, the route:
+  - answers `200` with `Content-Type: application/rss+xml; charset=utf-8` and `Cache-Control: public, max-age=900`, so a new release reaches clients within an hour, through any cache;
+  - answers `404` for a target with no feed, a feed over 4 MiB or any query string, and `405` with `Allow: GET, HEAD` for another method;
+  - reads no request header, cookie or address and sets no cookie;
+  - logs nothing but two aggregate counters, `feeds_served` and `feeds_missing`;
+  - reads a feed again only when its file changes, so at most one copy of each target's feed is held in memory.
+
+  The statistics route's global and per-installation limits do not apply to it; the connection cap and the request timeout do.
+- **The local reference stack** mounts `LUXFORGE_UPDATE_STORE` (default `./update-store`) into its ingress, so the route can be exercised before production exists.
 
 The operator provisions:
 
 - the production `api.luxforge.app`, which usage statistics also awaits;
-- the update store;
-- the publication credential.
+- the update store and the publication account ([deployment checklist](../../services/usage-statistics/DEPLOYMENT.md#16-the-update-feed-route));
+- the secrets and variables.
 
 No v0.1 build may be published as release-ready until the route answers over HTTPS.
 
@@ -425,6 +455,7 @@ Ordinary tests are built with each part:
 - **Feed generation and signing**, against test keys:
   - a cross-check with the pinned Sparkle's own signature verification;
   - refusing unsigned macOS archives and non-rising build numbers.
+- **Feed publication.** The workflow rules in `check-repository`, the deploy archive, the store's installer and the route, against fixture releases. A local dry run goes from fixture builds through `update-record`, the workflow's record selection and `update-feed --deploy` to `install-feeds.py` and the ingress answering the feeds.
 - **Linux engine.** Refusing a bad signature, a truncated or oversized download, path traversal and a mismatched `build.json`. Swap and recovery in temporary directories. The notify-only fallback.
 - **Command and preference schema and authority**, and UI/API parity.
 - **A local end-to-end macOS update** from one bundle to a newer one, through Sparkle with a temporary test signing identity, in background-only bundles that never take focus.
@@ -435,5 +466,5 @@ Qualification comes last, on real signed release candidates through the pre-rele
 - an M4 update from one candidate to the next;
 - a clean-account or second-Mac update from the DMG, including the move into Applications, in a foreground session the owner authorizes;
 - a native Ubuntu 24.04 payload update;
-- the feed route answering at `api.luxforge.app`;
+- the feed route answering at `api.luxforge.app`, published by a hosted Update feeds run;
 - a catalog-format-change offer and launch.

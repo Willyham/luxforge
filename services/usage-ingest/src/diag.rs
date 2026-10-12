@@ -37,6 +37,8 @@ counters!(
     connections_timed_out,
     forwarded,
     forward_failed,
+    feeds_served,
+    feeds_missing,
 );
 
 impl Counters {
