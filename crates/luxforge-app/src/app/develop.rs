@@ -266,6 +266,8 @@ pub(crate) fn strip_query(folder: &CatalogFolderId) -> ViewQuery {
             key: SortKey::CaptureTime,
             descending: false,
         },
+        // One run in capture order, with no day or camera groups reordering it.
+        grouping: luxforge_core::catalog_types::Grouping::None,
         ..ViewQuery::of(ViewSource::CatalogFolder {
             folder_id: folder.clone(),
             subfolders: true,
