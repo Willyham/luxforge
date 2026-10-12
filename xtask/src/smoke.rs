@@ -124,8 +124,25 @@ pub struct Scenario {
 }
 
 impl Scenario {
-    /// Whether `verify --tier rendered` runs it: everything a checkout can open.
+    /// Whether `verify --tier rendered` runs it: everything a checkout can open but the
+    /// [`full_only`](Self::full_only) ones.
     pub fn rendered(&self) -> bool {
+        self.checkout() && !self.full_only()
+    }
+
+    /// Whether `verify --tier full` runs it: everything a checkout can open.
+    pub fn full(&self) -> bool {
+        self.checkout()
+    }
+
+    /// Whether only `full` runs it: `visibility-monitoring`'s nine 30-second observations hold
+    /// its editor for about five minutes, longer than the rest of the rendered pool together.
+    pub fn full_only(&self) -> bool {
+        self.name == visibility::SCENARIO
+    }
+
+    /// Whether a checkout can open it on this platform without anything the owner supplies.
+    fn checkout(&self) -> bool {
         !matches!(self.source, Source::Supplied { .. })
             && (![visibility::SCENARIO, histogram::HIDDEN_SCENARIO].contains(&self.name)
                 || cfg!(target_os = "macos"))
@@ -2313,6 +2330,10 @@ mod tests {
         assert!(find("look").is_ok_and(|look| !look.rendered()));
         assert!(find("raw-corrections").is_ok_and(|raw| !raw.rendered()));
         assert!(find(usage_backend::SCENARIO).is_ok_and(|backend| !backend.rendered()));
+        assert!(
+            find(visibility::SCENARIO).is_ok_and(|visibility| !visibility.rendered()
+                && visibility.full() == cfg!(target_os = "macos"))
+        );
         // The filmstrip takes a RAW source, and runs without one, its RAW steps pending.
         assert!(find("filmstrip").is_ok_and(|filmstrip| filmstrip.rendered()));
         assert_eq!(

@@ -249,12 +249,13 @@ pub fn tests(root: &Path, quick: bool) -> Result {
     Ok(())
 }
 
-/// The repository and dependency-policy checks, formatting, Clippy and the tests. The first three
-/// share nothing with the build, so they run beside Clippy and the tests rather than before them.
-/// `quick` leaves the slow tests and the doctests out ([`tests`]).
+/// The repository and dependency-policy checks and formatting, then Clippy and the tests. The
+/// first three take seconds and build nothing, so they run first, together, and a failure among
+/// them ends the check before anything is compiled. `quick` leaves the slow tests and the
+/// doctests out ([`tests`]).
 pub fn check(root: &Path, quick: bool) -> Result {
     let text = |result: Result| result.map_err(|e| e.to_string());
-    let (repository, formatted, built) = thread::scope(|scope| {
+    let (repository, formatted) = thread::scope(|scope| {
         let repository = scope
             .spawn(|| text(repository::check(root).and_then(|()| policy::checked(root).map(drop))));
         let formatted = scope.spawn(|| {
@@ -273,17 +274,21 @@ pub fn check(root: &Path, quick: bool) -> Result {
                 ))
             }
         });
-        let built = text(cargo(root, "lint", false).and_then(|()| tests(root, quick)));
         let joined = |handle: thread::ScopedJoinHandle<'_, std::result::Result<(), String>>| {
             handle.join().unwrap_or_else(|_| Err("panicked".into()))
         };
-        (joined(repository), joined(formatted), built)
+        (joined(repository), joined(formatted))
     });
-    let failures: Vec<String> = [repository, formatted, built]
+    let failures: Vec<String> = [repository, formatted]
         .into_iter()
         .filter_map(std::result::Result::err)
         .collect();
-    ensure(failures.is_empty(), failures.join("\n"))
+    ensure(
+        failures.is_empty(),
+        format!("{}\nClippy and the tests did not run.", failures.join("\n")),
+    )?;
+    cargo(root, "lint", false)?;
+    tests(root, quick)
 }
 #[cfg(test)]
 mod tests {

@@ -236,7 +236,7 @@ timing run elsewhere on the host. Run each check where its answer can change wha
 | Change complete: code, tests and docs | `verify --tier quick`, once, before handing off. After a failure, fix it and rerun only what failed (the named test or the one scenario), then `quick` once more. |
 | Integration point | `rendered` for a change touching rendering or the UI; `timing` for a change under `crates/` that can affect cost. |
 | Milestone claim | `full`, with `--manifest`. |
-| Release | `gpu-qualification` with `--manifest`, the release gate: `rendered` and `full` run it after their scenarios. |
+| Release | `gpu-qualification` with `--manifest`, the release gate: `full` runs it after its scenarios. |
 
 Timing runs wait until feature work is complete: the `timing` tier, `editor-performance`,
 `editor-latency`, `detail-performance`, `detail-grid-performance`, `measure`, the drag-tick benchmark
@@ -380,8 +380,8 @@ and [Rust restrictions](https://github.com/mozilla/sccache/blob/v0.18.0/docs/Rus
 broader modes are avoided. Build scripts, linking, Clippy checks and tests still run normally;
 a cache hit never counts as verification.
 
-For diagnosis, `LUXFORGE_CACHE_OFF=1 tools/cargo-cached ...` bypasses this wrapper and invokes Cargo
-with the caller's environment. `LUXFORGE_SCCACHE_ROOT` selects a different pinned installation;
+For diagnosis, `LUXFORGE_CACHE_OFF=1 tools/cargo-cached ...` bypasses the compiler cache and invokes
+Cargo with the caller's environment; the build volume and the build slots below still apply. `LUXFORGE_SCCACHE_ROOT` selects a different pinned installation;
 `LUXFORGE_SCCACHE_CACHE` selects an isolated cache/server for probes. Never use those overrides to
 share one cache directory between separate servers. The cache probes use their own temporary
 namespace and stop only their own server:
@@ -425,6 +425,46 @@ compilation. The experimental compiler cache was external to the editor, keyed b
 flags with that experimental path normalization, with a 10 GiB disk bound; the fully populated
 RAW experiment retained 55 MiB, with its hit counts and rebuild cost above.
 
+### The build volume and build slots
+
+Several agent sessions share the owner's M4. `tools/cargo-cached` keeps them from slowing each other
+down in two ways.
+
+**Build volume.** Build output is millions of small writes. On the system volume, `fseventsd` and
+Spotlight process every one of them, and a backlogged `fseventsd` delivers change notifications
+minutes late. When `/Volumes/LuxforgeBuild` exists, the wrapper makes a worktree's missing `target`
+a link to that worktree's own directory on it, `targets/<worktree>-<hash>`. Every Cargo then builds
+there, wrapped or not, and Cargo metadata still reports `target`. An existing `target` directory is
+never moved: remove it (`cargo clean`) to move that worktree's builds onto the volume.
+`LUXFORGE_BUILD_ROOT` selects another root, and setting it empty turns the link off. An explicit
+`CARGO_TARGET_DIR` is left alone. The owner creates the volume once, with Spotlight off and no
+FSEvents log:
+
+```sh
+diskutil apfs addVolume disk3 APFS LuxforgeBuild    # the container of the system volume (diskutil list)
+sudo mdutil -i off -d /Volumes/LuxforgeBuild
+sudo mkdir -p /Volumes/LuxforgeBuild/.fseventsd && sudo touch /Volumes/LuxforgeBuild/.fseventsd/no_log
+```
+
+Removing a worktree, or running `cargo clean` in it, removes only the link, not the directory on
+the volume. `tools/cargo-cached --prune-targets` lists the volume directories no worktree links to
+any more, and `--prune-targets --delete` removes them.
+
+**Build slots.** At most `LUXFORGE_BUILD_SLOTS` (default 3) building commands run at once on the
+host. Any further command prints the commands holding the slots and waits its turn.
+`tools/cargo-cached --slots` lists the holders. Oversubscribing the cores makes every build and test
+run slower and pushes hang bounds past their limits, so queueing finishes more work.
+
+Commands that build nothing take no slot: `fmt`, `metadata`, `tree`, `clean` and the wrapper's own
+options. `xtask develop` takes none either, since its editor stays open. A whole `xtask verify` or
+`check` holds one slot from start to finish, and the Cargo commands it starts inherit that slot
+(`LUXFORGE_BUILD_SLOT`). A slot is a directory under `~/.cache/luxforge/build-slots` that names its
+owner's pid and start time. A slot whose owner has exited is reclaimed by the next command, so a
+killed build never blocks one for long. `LUXFORGE_BUILD_SLOTS=0` turns the limit off for a run.
+
+`python3 -m unittest discover -s tools -p 'test_build_slots.py' -v` tests the link, pruning,
+queueing, reclaiming, exit status and exempt commands against a fake Cargo. CI runs it.
+
 ### Further workflow tuning
 
 Keep rustfmt and Clippy: formatting and compiler-aware Rust diagnostics have different jobs, and
@@ -457,8 +497,9 @@ not just a build-time comparison.
 
 ### How `check` runs the tests
 
-`check` runs the repository and dependency-policy checks and formatting beside Clippy and the tests,
-since they share nothing with the build. `check` and `test` build every test binary through one
+`check` runs the repository and dependency-policy checks and formatting first, together: they take
+seconds and build nothing, so a failure among them ends the check before Clippy and the tests
+compile anything. `check` and `test` build every test binary through one
 `cargo test --no-run`, then run all of them at once, each as its own process in its package's
 directory as Cargo runs it, and print one line per binary with its elapsed time and a failing
 binary's whole output after the rest. `cargo test` runs its binaries one after another, so a
@@ -572,9 +613,9 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario, including the macOS-only `visibility-monitoring` and `hidden-analysis`, `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `copy-settings` (mixed-kind white balance with a RAW `--source`), `export`, `settings`, `usage`, `theme`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, `select`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `hdr-merge`, `hdr-merge-view`, `loupe`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool, then `gpu-qualification`, the release gate, alone, given `--manifest` when the run has one |
+| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario but `visibility-monitoring`, including the macOS-only `hidden-analysis`, `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `copy-settings` (mixed-kind white balance with a RAW `--source`), `export`, `settings`, `usage`, `theme`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, `select`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `hdr-merge`, `hdr-merge-view`, `loupe`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
-| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel`, a `smoke --scenario look`, a `smoke --scenario raw-detail` and a `smoke --scenario raw-corrections` run per manifest source and one `smoke --scenario performance` run over the first manifest source; its timing part adds an `editor-latency --mode corrections` run per manifest source (`editor-latency-corrections-<id>`) |
+| `full` | rendered plus the macOS-only `visibility-monitoring` scenario in its pool, then `gpu-qualification`, the release gate, alone, given `--manifest` when the run has one, plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel`, a `smoke --scenario look`, a `smoke --scenario raw-detail` and a `smoke --scenario raw-corrections` run per manifest source and one `smoke --scenario performance` run over the first manifest source; its timing part adds an `editor-latency --mode corrections` run per manifest source (`editor-latency-corrections-<id>`) |
 
 When to run each tier is in [when to verify](#when-to-verify). `hardening` needs only `--binary` and
 runs in `full` whether or not a manifest is given. Without a manifest, `full` lists `raw-editor` and
@@ -672,7 +713,7 @@ smoke run per manifest source and one RAW `performance` smoke run over the first
 
 ### Rendered scenario cost: why every scenario stays in `rendered`
 
-Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. `usage` is three short launches, about 9 s in all, and stays because it is the only rendered check of usage statistics across launches and through delivery; its script moves the statistics clock forward rather than waiting ten real minutes. The summary records the load average for timing components only. The Performance scenario has a 75-second process ceiling around the editor's 60-second script deadline, allowing its full 60 MP render and fixed sampler windows to report a result. Its checks validate sampled state and completion; latency measurements use the timing tier's quiet-host conditions. External memory comparisons use observation intervals wholly before and after each app sample, excluding calls that overlap it; the complete intervals must stay within 1,000 ms, with the existing 8 MiB memory slack.
+Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered` but `visibility-monitoring`, whose nine 30-second observations hold its editor for about five minutes, longer than the rest of the pool together: `full` runs it, beside the release gate, which can take hours. `full` otherwise adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. `usage` is three short launches, about 9 s in all, and stays because it is the only rendered check of usage statistics across launches and through delivery; its script moves the statistics clock forward rather than waiting ten real minutes. The summary records the load average for timing components only. The Performance scenario has a 75-second process ceiling around the editor's 60-second script deadline, allowing its full 60 MP render and fixed sampler windows to report a result. Its checks validate sampled state and completion; latency measurements use the timing tier's quiet-host conditions. External memory comparisons use observation intervals wholly before and after each app sample, excluding calls that overlap it; the complete intervals must stay within 1,000 ms, with the existing 8 MiB memory slack.
 
 ## Extended camera corpus
 
