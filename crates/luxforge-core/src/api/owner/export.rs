@@ -1,6 +1,7 @@
-//! The export methods and the export job (`docs/design/export.md`). `export.plan` and
-//! `export.jpeg` plan on the catalog owner in `O(layers)`, with short file-system checks on the
-//! destination and the original's directory; the job renders, encodes and publishes on the `export`
+//! The export methods and the export job (`docs/design/export.md`,
+//! `docs/design/export-settings.md`). `export.plan` and `export.write` plan on the catalog owner in
+//! `O(layers)`, with short file-system checks on the destination and the export's folder; the job
+//! renders, encodes and publishes on the `export`
 //! lane of the owner's one job table: one running and four waiting, never superseded, read with
 //! `job.read` and cancelled only by `job.cancel` or the owner stopping. A client disconnecting
 //! leaves its exports running, as it leaves capability jobs.
@@ -12,17 +13,30 @@
 //! (`luxforge-json`), and when the provider says why it cannot, at once or part-way, in which case
 //! the export starts again from nothing: GPU and reference pixels are never mixed in one file. A
 //! written file's result names the renderer that rendered it, and why the reference did.
+//!
+//! Until the new encoders and resized renders are wired in, `export.write` and `batch.export` write
+//! what this pipeline can: a full-size, quality-90, 4:4:4 JPEG, streamed without optimisation or a
+//! file-size limit, at any metadata level and density ([`writable_now`]). Every other setting is
+//! refused by name as not yet available, never ignored; `export.plan` answers for every setting.
+//!
+//! The `export.presets.*` methods keep the person's export presets beside the preferences
+//! ([`crate::export::presets`]).
 use super::{Call, Owner};
 use crate::{
     AssetId, EntryId, Error, JobId, JobStatus, Renderer, RendererReason,
     activity::ActivitySpec,
     api::announce_once,
-    api::params::host_params,
+    api::params::{NoParams, host_params},
     editor::ExportPlan,
     export::{
-        CaptureMetadata,
+        CaptureMetadata, QUALITY,
         encode::{BASELINE_90, encode_jpeg, encode_jpeg_rows},
+        presets,
         publish::{self, Destination, Staged},
+        settings::{
+            Chroma, ExportFolder, ExportFormat, ExportSettings, FOLDER_MISSING, FormatSettings,
+            MetadataLevel, Notice, OutputSize,
+        },
     },
     jobs::{JobControl, JobKind, NewJob, Work},
     tiles::{BandStream, TileService, TileStatus},
@@ -44,90 +58,201 @@ pub(super) const CANCELLED: &str = "the export was cancelled";
 #[cfg(test)]
 pub(super) type Hold = Arc<dyn Fn(&'static str) + Send + Sync>;
 
+/// The `settings` parameter's notes, which point at the one description in `schema.list`.
+pub(in crate::api) const SETTINGS_NOTES: &str =
+    "ExportSettings, as schema.list's export_settings describes";
+
 host_params! {
     /// `export.plan`.
     pub(in crate::api) struct ExportPlanParams {
         asset_id: AssetId = asset(),
+        settings: ExportSettings = json(SETTINGS_NOTES),
         entry_id: Option<EntryId> = entry().notes("a saved entry of the asset; default its current entry"),
     }
 }
 
 host_params! {
-    /// `export.jpeg`.
-    pub(in crate::api) struct ExportJpeg {
+    /// `export.write`.
+    pub(in crate::api) struct ExportWrite {
         asset_id: AssetId = asset(),
-        destination: PathBuf = path().notes("an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists"),
+        settings: ExportSettings = json(SETTINGS_NOTES),
+        destination: PathBuf = path().notes("an absolute path whose extension matches settings.format (.jpg or .jpeg, .webp, .tif or .tiff), whose parent directory exists and at which nothing exists"),
         mutation: MutationRequest,
         entry_id: Option<EntryId> = entry().notes("a saved entry of the asset; default its current entry"),
-        keep_metadata: Option<bool> = boolean().default(false).notes("write the original's supported EXIF fields"),
-        pixels_per_inch: Option<u16> = integer(1, 65535).notes("the JFIF header's density, which sizes the file in viewers such as Preview and in print; default none, a unitless 1:1 aspect ratio"),
         reference: Option<bool> = boolean().default(false).notes("render through the reference renderer, the CPU render every GPU output is measured against, rather than the GPU; the result's renderer then names the reference with the reason requested"),
         acknowledge_stale: Option<crate::StaleAcknowledgement> = json("{entry_id, operations: [correction-…]}: export the entry's stale frozen patches as they render; required, naming exactly the frozen entry and its stale corrections, when it has any (export.plan lists them), and ignored when it has none"),
     }
 }
 
-/// `export.plan`: the output stage from the compiled recipe and a suggested destination in the
-/// remembered export folder while it exists, or beside the original, which costs reading the small
-/// preferences file and at most 64 names in that folder. Nothing is rendered or prepared. A
-/// preferences file that cannot be read suggests beside the original; the desktop reports that
-/// failure when it reads the preferences itself. A derived photograph has no original file to name
-/// a destination after, so nothing is suggested for it.
+host_params! {
+    /// `export.presets.create`.
+    pub(in crate::api) struct PresetCreate {
+        name: String = string(presets::MAX_NAME).notes("1 to 64 characters, no control character and no leading or trailing space, unique ignoring case across every preset, built-in ones included"),
+        settings: ExportSettings = json(SETTINGS_NOTES),
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    /// `export.presets.update`.
+    pub(in crate::api) struct PresetUpdate {
+        preset_id: String = string(presets::MAX_ID).notes("a preset of the person's own, as export.presets.list answers it"),
+        mutation: MutationRequest,
+        name: Option<String> = string(presets::MAX_NAME).notes("the new name; unchanged when left out"),
+        settings: Option<ExportSettings> = json("the new settings, ExportSettings as schema.list's export_settings describes; unchanged when left out"),
+    }
+}
+
+host_params! {
+    /// `export.presets.delete`.
+    pub(in crate::api) struct PresetDelete {
+        preset_id: String = string(presets::MAX_ID).notes("a preset of the person's own"),
+        mutation: MutationRequest,
+    }
+}
+
+/// `export.plan`: what an export of the entry with `settings` would be, rendering and preparing
+/// nothing: the output stage from the compiled recipe and the output size the settings give it,
+/// the physical size at their density, the suggested destination in their folder (at most 64 names
+/// read), the encoder's held-memory estimate and the notices, and the stale frozen patches an
+/// export must acknowledge. A derived photograph has no original file to name a destination after,
+/// so nothing is suggested for it.
 pub(in crate::api) fn plan(
     owner: &mut Owner,
     _: &Call<'_>,
     params: ExportPlanParams,
 ) -> Result<Value, Error> {
+    let settings = params.settings;
     let target = owner
         .service
         .export_target(&params.asset_id, params.entry_id.as_ref())?;
-    let remembered = owner
-        .host
-        .preferences
-        .read()
-        .ok()
-        .and_then(|preferences| preferences.export_folder)
-        .filter(|folder| folder.is_dir());
     let original = target.original.as_deref();
+    let identity = target.evaluation.identity()?;
+    let stage = (identity.width, identity.height);
+    let output = settings.output_size(stage);
+    let folder = settings.folder.resolve(original);
+    let notices = settings.notices(output, folder.as_deref());
     let suggested = match (
-        remembered
-            .as_deref()
-            .or(original.and_then(std::path::Path::parent)),
+        folder.as_deref().filter(|folder| folder.is_dir()),
         original
             .and_then(std::path::Path::file_stem)
             .and_then(|stem| stem.to_str()),
     ) {
-        (Some(directory), Some(stem)) => publish::suggest(directory, stem),
+        (Some(directory), Some(stem)) => {
+            publish::suggest(directory, stem, &settings.suffix, settings.format())
+        }
         _ => None,
     };
-    let identity = target.evaluation.identity()?;
     // The frozen patches the planned entry would export stale, which an export must acknowledge.
     let (_, stale) = owner
         .service
         .export_stale(&params.asset_id, Some(&identity.entry_id))?;
-    Ok(json!({
+    let mut answer = json!({
         "asset_id": identity.asset_id,
         "entry_id": identity.entry_id,
         "snapshot_id": identity.snapshot_id,
-        "width": identity.width,
-        "height": identity.height,
+        "stage": {"width": stage.0, "height": stage.1},
+        "output": {"width": output.0, "height": output.1},
         // A name that is not UTF-8 is not suggested rather than suggested wrongly.
         "suggested": suggested.as_deref().and_then(|path| path.to_str()),
+        "estimate": settings.held_bytes(output),
+        "notices": notices,
         "stale": stale,
-    }))
+    });
+    if let Some(density) = settings.pixels_per_inch {
+        answer["physical"] = physical(output, density);
+    }
+    Ok(answer)
 }
 
-/// `export.jpeg`: check the destination, freeze the entry and queue one job on the export lane.
-/// An obvious refusal — a destination's shape or an existing file, an unknown asset or entry, a
-/// stack the host cannot evaluate, a missing original — is answered now and queues nothing; an
-/// unprepared source is `preparation-required` with the source job the owner queued for it. The
-/// answer echoes `keep_metadata` and `reference` as the job was accepted with them, and the job
-/// streams through the owner's tile service unless `reference` asks for the reference renderer.
-pub(in crate::api) fn jpeg(
+/// The physical size of an `output` at `density` pixels per inch, in inches and centimetres, each
+/// to a hundredth.
+fn physical((width, height): (u32, u32), density: u16) -> Value {
+    let inches = |side: u32| f64::from(side) / f64::from(density);
+    let hundredths = |value: f64| (value * 100.0).round() / 100.0;
+    json!({
+        "inches": {"width": hundredths(inches(width)), "height": hundredths(inches(height))},
+        "centimetres": {
+            "width": hundredths(inches(width) * 2.54),
+            "height": hundredths(inches(height) * 2.54),
+        },
+    })
+}
+
+/// Refuse every setting today's pipeline cannot honour yet, by name: it writes a full-size,
+/// quality-90, 4:4:4 JPEG, streamed without optimisation or a limit, at any metadata level,
+/// density, folder and suffix. Nothing is ever ignored.
+pub(super) fn writable_now(settings: &ExportSettings) -> Result<(), Error> {
+    let not_yet = |field: &str, what: String| {
+        Err(Error::validation(format!(
+            "settings.{field} {what} is not yet available for export"
+        ))
+        .with_data(json!({"field": format!("settings.{field}"), "reason": "not-yet-available"})))
+    };
+    match settings.format {
+        FormatSettings::Jpeg {
+            quality,
+            chroma,
+            limit_bytes,
+        } => {
+            if quality != QUALITY {
+                return not_yet("quality", format!("{quality} (only {QUALITY})"));
+            }
+            if chroma != Chroma::Full {
+                return not_yet("chroma", format!("{} (only 444)", chroma.as_str()));
+            }
+            if limit_bytes.is_some() {
+                return not_yet("limit_bytes", "(a file-size limit)".into());
+            }
+        }
+        FormatSettings::Webp { .. } | FormatSettings::Tiff { .. } => {
+            return not_yet(
+                "format",
+                format!("{} (only jpeg)", settings.format().as_str()),
+            );
+        }
+    }
+    if settings.size != OutputSize::Full {
+        return not_yet("size", "other than {fit: full}".into());
+    }
+    if settings.optimise {
+        return not_yet("optimise", "true".into());
+    }
+    Ok(())
+}
+
+/// The notice that refuses an export of a `stage` with `settings`, from the photograph's
+/// `original`, as `export.plan` shows it. An original's own folder that is missing is left to the
+/// source's refusal, which says why (`source-unavailable` for a missing original or an offline
+/// volume); a derived photograph, which has no original's folder, is refused here.
+pub(super) fn refusing_notice(
+    settings: &ExportSettings,
+    stage: (u32, u32),
+    original: Option<&std::path::Path>,
+) -> Option<Notice> {
+    let folder = settings.folder.resolve(original);
+    let source_reports = settings.folder == ExportFolder::Original && original.is_some();
+    settings
+        .notices(settings.output_size(stage), folder.as_deref())
+        .into_iter()
+        .find(|notice| notice.refuses && !(source_reports && notice.code == FOLDER_MISSING))
+}
+
+/// `export.write`: check the settings and the destination, freeze the entry and queue one job on the
+/// export lane. An obvious refusal — a setting not yet available, a destination's shape or an
+/// existing file, an unknown asset or entry, a stack the host cannot evaluate, a notice that
+/// refuses the export, a missing original — is answered now and queues nothing; an unprepared
+/// source is `preparation-required` with the source job the owner queued for it. The answer echoes
+/// the settings and `reference` as the job was accepted with them, and the job streams through the
+/// owner's tile service unless `reference` asks for the reference renderer.
+pub(in crate::api) fn write_file(
     owner: &mut Owner,
     call: &Call<'_>,
-    params: ExportJpeg,
+    params: ExportWrite,
 ) -> Result<Value, Error> {
-    let destination = Destination::check(&params.destination)?;
+    let settings = params.settings;
+    writable_now(&settings)?;
+    let destination = Destination::check(&params.destination, settings.format())?;
     // Stale frozen patches are written only as acknowledged, refused before any job or
     // preparation; an omitted entry is the current one now, so a commit since the plan makes an
     // old acknowledgement name another entry.
@@ -142,11 +267,22 @@ pub(in crate::api) fn jpeg(
             .as_ref()
             .map(|ack| (&ack.entry_id, ack.operations.as_slice())),
     )?;
+    // The notices that refuse an export are the plan's, checked before anything is prepared.
+    let target = owner
+        .service
+        .export_target(&params.asset_id, Some(&entry_id))?;
+    let stage = target.evaluation.identity()?;
+    if let Some(notice) = refusing_notice(
+        &settings,
+        (stage.width, stage.height),
+        target.original.as_deref(),
+    ) {
+        return Err(notice.refusal());
+    }
+    drop(target);
     let plan = owner
         .service
         .export_plan(&params.asset_id, Some(&entry_id))?;
-    let keep_metadata = params.keep_metadata.unwrap_or(false);
-    let pixels_per_inch = params.pixels_per_inch;
     let reference = params.reference.unwrap_or(false);
     let job_id = JobId::new();
     let control = JobControl::new();
@@ -155,9 +291,7 @@ pub(in crate::api) fn jpeg(
         plan,
         acknowledged: acknowledged.clone(),
         destination: destination.clone(),
-        keep_metadata,
-        pixels_per_inch,
-        reference,
+        options: Options::of(&settings, reference),
         tiles: Arc::clone(&owner.tiles),
         control: control.clone(),
         #[cfg(test)]
@@ -175,7 +309,11 @@ pub(in crate::api) fn jpeg(
             grants: Vec::new(),
             activity: Some(ActivitySpec {
                 kind: "export",
-                label: "Exporting JPEG",
+                label: match settings.format() {
+                    ExportFormat::Jpeg => "Exporting JPEG",
+                    ExportFormat::Webp => "Exporting WebP",
+                    ExportFormat::Tiff => "Exporting TIFF",
+                },
                 detail: destination
                     .path()
                     .file_name()
@@ -204,8 +342,7 @@ pub(in crate::api) fn jpeg(
         "destination": destination.path(),
         "width": identity.width,
         "height": identity.height,
-        "keep_metadata": keep_metadata,
-        "pixels_per_inch": pixels_per_inch,
+        "settings": settings,
         "reference": reference,
         "acknowledged_stale": acknowledged,
     }))
@@ -228,10 +365,7 @@ struct ExportJob {
     /// The stale frozen patches the export was accepted to write, which its result echoes.
     acknowledged: Vec<crate::StaleCorrection>,
     destination: Destination,
-    keep_metadata: bool,
-    pixels_per_inch: Option<u16>,
-    /// The export asked for the reference renderer.
-    reference: bool,
+    options: Options,
     /// The owner's tile service, which renders the export's bands on the GPU.
     tiles: Arc<dyn TileService>,
     control: Arc<JobControl>,
@@ -255,9 +389,7 @@ impl ExportJob {
             plan,
             acknowledged,
             destination,
-            keep_metadata,
-            pixels_per_inch,
-            reference,
+            options,
             tiles,
             control,
             #[cfg(test)]
@@ -275,11 +407,7 @@ impl ExportJob {
         write(
             plan,
             &destination,
-            Options {
-                keep_metadata,
-                pixels_per_inch,
-                reference,
-            },
+            options,
             tiles.as_ref(),
             &control,
             &phase,
@@ -293,29 +421,40 @@ impl ExportJob {
     }
 }
 
-/// A file [`write`] wrote: the answer `export.jpeg`'s job records, and the renderer it names, for
+/// A file [`write`] wrote: the answer `export.write`'s job records, and the renderer it names, for
 /// `batch.export`'s report.
 pub(super) struct Written {
-    /// `{path, bytes, width, height, metadata, renderer}`.
+    /// `{path, bytes, width, height, format, quality, optimised, metadata, renderer}`.
     pub(super) result: Value,
     pub(super) renderer: Renderer,
 }
 
-/// How one export is written: its metadata and density, and whether it asked for the reference
-/// renderer.
+/// How one export is written: what of its settings the pipeline reads ([`writable_now`] has
+/// refused the rest), and whether it asked for the reference renderer.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Options {
-    pub(super) keep_metadata: bool,
+    pub(super) metadata: MetadataLevel,
     /// The JFIF density, if any.
     pub(super) pixels_per_inch: Option<u16>,
     /// The export asked for the reference renderer.
     pub(super) reference: bool,
 }
 
-/// One export's work once its entry is frozen, shared by `export.jpeg`'s job and each photograph of
+impl Options {
+    pub(super) fn of(settings: &ExportSettings, reference: bool) -> Self {
+        Self {
+            metadata: settings.metadata,
+            pixels_per_inch: settings.pixels_per_inch,
+            reference,
+        }
+    }
+}
+
+/// One export's work once its entry is frozen, shared by `export.write`'s job and each photograph of
 /// `batch.export`: render the entry, encode it into a temporary file beside `destination` and
 /// publish that under the destination's name without replacing anything, answering `{path, bytes,
-/// width, height, metadata, renderer}` with the renderer ([`Written`]).
+/// width, height, format, quality, optimised, metadata, renderer}` with the renderer
+/// ([`Written`]).
 ///
 /// Unless the export asked for the reference renderer or the host has no GPU provider, `tiles`
 /// renders the output stage in bands that the encoder takes as they arrive; when the service says
@@ -343,10 +482,11 @@ pub(super) fn write(
         evaluation,
         capture,
     } = plan;
+    let capture = capture.at_level(options.metadata);
     let encoding = Encoding {
         control,
         capture: &capture,
-        keep_metadata: options.keep_metadata,
+        metadata: options.metadata,
         pixels_per_inch: options.pixels_per_inch,
     };
     // Which renderer renders the file, and why the reference does: the reference when the export
@@ -403,18 +543,22 @@ pub(super) fn write(
     written(destination, staged, size, &encoding, renderer)
 }
 
-/// What every encode of one export shares: its control, the original's metadata and its options.
+/// What every encode of one export shares: its control, the original's metadata at the export's
+/// level and its options.
 struct Encoding<'a> {
     control: &'a JobControl,
+    /// The fields the export's metadata level keeps.
     capture: &'a CaptureMetadata,
-    keep_metadata: bool,
+    metadata: MetadataLevel,
     pixels_per_inch: Option<u16>,
 }
 
 impl Encoding<'_> {
-    /// The EXIF payload of a `size` output, with Keep metadata.
+    /// The EXIF payload of a `size` output: none at level none, and otherwise the level's fields
+    /// with the structural ones.
     fn exif(&self, (width, height): (u32, u32)) -> Option<Vec<u8>> {
-        self.keep_metadata
+        self.metadata
+            .writes_exif()
             .then(|| self.capture.exif_payload(width, height))
     }
 }
@@ -464,7 +608,8 @@ fn streamed(
 }
 
 /// Publish `staged`, the encoded `size` output, under the destination's name, and answer the
-/// written file: its path, length, size, the EXIF fields kept and the renderer that rendered it.
+/// written file: its path, length, size, format, the quality used, whether it was optimised, the
+/// EXIF fields kept and the renderer that rendered it.
 fn written(
     destination: &Destination,
     staged: Staged,
@@ -473,20 +618,85 @@ fn written(
     renderer: Renderer,
 ) -> Result<Written, Error> {
     let bytes = staged.publish()?;
-    let metadata = if encoding.keep_metadata {
-        encoding.capture.field_names()
-    } else {
-        Vec::new()
-    };
+    // The level's fields: none at level none, whose capture holds none.
+    let metadata = encoding.capture.field_names();
     Ok(Written {
         result: json!({
             "path": destination.path(),
             "bytes": bytes,
             "width": width,
             "height": height,
+            "format": ExportFormat::Jpeg.as_str(),
+            "quality": QUALITY,
+            "optimised": false,
             "metadata": metadata,
             "renderer": renderer,
         }),
         renderer,
     })
+}
+
+/// `export.presets.list`: the built-in presets, then the person's by name, each `{preset_id, name,
+/// builtin, settings}`.
+pub(in crate::api) fn presets_list(
+    owner: &mut Owner,
+    _: &Call<'_>,
+    _: NoParams,
+) -> Result<Value, Error> {
+    let presets = owner.host.preferences.export_presets().list()?;
+    Ok(json!({ "presets": presets }))
+}
+
+/// `export.presets.create`: one stored preset, announced.
+pub(in crate::api) fn presets_create(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: PresetCreate,
+) -> Result<Value, Error> {
+    let preset = owner
+        .host
+        .preferences
+        .export_presets()
+        .create(&params.name, params.settings)?;
+    announce_once(&mut owner.announced, &call.origin);
+    Ok(json!({ "preset": preset }))
+}
+
+/// `export.presets.update`: a preset of the person's own renamed, given new settings, or both,
+/// announced. A built-in preset is refused with `validation`.
+pub(in crate::api) fn presets_update(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: PresetUpdate,
+) -> Result<Value, Error> {
+    let preset = owner.host.preferences.export_presets().update(
+        &params.preset_id,
+        params.name.as_deref(),
+        params.settings,
+    )?;
+    announce_once(&mut owner.announced, &call.origin);
+    Ok(json!({ "preset": preset }))
+}
+
+/// `export.presets.delete`: a preset of the person's own removed, announced when it was there. A
+/// built-in preset is refused with `validation`.
+pub(in crate::api) fn presets_delete(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: PresetDelete,
+) -> Result<Value, Error> {
+    let deleted = owner
+        .host
+        .preferences
+        .export_presets()
+        .delete(&params.preset_id)?;
+    if deleted {
+        announce_once(&mut owner.announced, &call.origin);
+    }
+    let outcome = if deleted {
+        crate::MutationOutcome::Applied
+    } else {
+        crate::MutationOutcome::NoOp
+    };
+    Ok(json!({"outcome": outcome, "deleted": deleted}))
 }

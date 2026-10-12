@@ -73,7 +73,7 @@ pub(crate) fn host_feature(method: &str, params: &Value) -> Option<(Feature, Emi
         "edit.apply-settings" => (settings_feature(params), OnChange),
         // Jobs, recorded when accepted; their outcomes are the job's own events.
         "batch.apply-settings" => (settings_feature(params), OnSuccess),
-        "export.jpeg" => (F::Export, OnSuccess),
+        "export.write" => (F::Export, OnSuccess),
         "batch.export" => (F::ExportBatch, OnSuccess),
         // A panorama merge is an explicit exemption until the owner approves a panorama-merge
         // event; it is never counted as hdr-merge. A rerun that names no kind reruns the merge's

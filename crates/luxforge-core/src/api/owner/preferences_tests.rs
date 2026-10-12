@@ -117,7 +117,7 @@ fn settable() -> Value {
         },
         "brush": null,
         "window": null,
-        "export_folder": null,
+        "export_last": null,
         "hdr_merge": null,
         "theme": "luxforge.dark",
         "update_checks": true,
@@ -169,7 +169,10 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         },
         "brush": {"size": 0.05, "feather": 20.0, "flow": 75.0},
         "window": {"width": 1280.0, "height": 800.0, "x": -40.5, "y": 25.0},
-        "export_folder": exports,
+        "export_last": {
+            "settings": crate::export::settings::baseline_json_in(&exports),
+            "preset_id": "luxforge.print",
+        },
         "hdr_merge": {"alignment": "off", "deghost": "auto"},
         "theme": "luxforge.dark",
         "update_checks": false,
@@ -255,10 +258,21 @@ fn every_bad_preference_is_refused_by_name_and_writes_nothing() {
         ),
         (json!({"catalog": ""}), "catalog must not be empty"),
         (
-            json!({"export_folder": "Exports"}),
-            "export_folder must be an absolute path",
+            json!({"export_last": {
+                "settings": crate::export::settings::baseline_json_in(std::path::Path::new("Exports")),
+                "preset_id": null,
+            }}),
+            "export_last: settings.folder must be",
         ),
-        (json!({"export_folder": 3}), "parameter export_folder"),
+        (
+            json!({"export_last": {"settings": {"format": "png"}, "preset_id": null}}),
+            "export_last: settings.format must be",
+        ),
+        (
+            json!({"export_last": {"settings": crate::export::settings::baseline_json(), "preset_id": ""}}),
+            "export_last.preset_id must be",
+        ),
+        (json!({"export_last": 3}), "export_last: "),
         (
             json!({"workspace": {"thirds": true}}),
             "workspace: missing field",
@@ -335,7 +349,10 @@ fn only_a_change_to_a_general_row_is_announced() {
             "window",
             json!({"window": {"width": 900, "height": 700, "x": 10, "y": 20}}),
         ),
-        ("export", json!({"export_folder": exports})),
+        (
+            "export",
+            json!({"export_last": {"settings": crate::export::settings::baseline_json_in(&exports), "preset_id": null}}),
+        ),
         // Choosing a default explicitly shows nothing new.
         ("lens-default", json!({"auto_lens_profile": true})),
         ("collapse", json!({"auto_collapse_history": false})),
@@ -351,7 +368,7 @@ fn only_a_change_to_a_general_row_is_announced() {
             json!({"catalog": harness.dir.join("elsewhere.sqlite")}),
         ),
         ("catalog-reset", json!({"catalog": null})),
-        ("export-reset", json!({"export_folder": null})),
+        ("export-reset", json!({"export_last": null})),
         ("checks", json!({"update_checks": false})),
         ("automatic", json!({"update_install_automatically": true})),
         ("ask-to-move", json!({"update_ask_to_move": false})),

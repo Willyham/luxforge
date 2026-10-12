@@ -15,7 +15,9 @@
 pub(crate) mod encode;
 pub(crate) mod limit;
 pub(crate) mod metadata;
+pub(crate) mod presets;
 pub(crate) mod publish;
+pub(crate) mod settings;
 
 pub use metadata::{CaptureInfo, CaptureMetadata};
 

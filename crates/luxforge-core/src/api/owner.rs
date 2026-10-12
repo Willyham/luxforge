@@ -3152,7 +3152,7 @@ host_params! {
         workspace: Option<Option<Value>> = json("{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, all booleans; null resets it to the workspace's defaults"),
         brush: Option<Option<Value>> = json("{size, feather, flow}, each within the range mask.add-stroke declares for it; null resets it to the neutral brush"),
         window: Option<Option<Value>> = json("{width, height, x, y} in the system's points: width and height within 320..=16384 and a finite position; null resets it to the default frame"),
-        export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
+        export_last: Option<Option<Value>> = json("{settings, preset_id}: the last export the person started that succeeded, ExportSettings as schema.list's export_settings describes and the preset it came from or null; stored by the desktop after such an export, never by the export itself; null forgets it"),
         hdr_merge: Option<Option<Value>> = json("{alignment, deghost}, each auto or off: the remembered settings of the last HDR merge, which the desktop's option-click merges with; null resets it to the defaults"),
         theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
         update_checks: Option<Option<bool>> = boolean().notes("check for updates at launch and then daily; null resets it to on"),
@@ -3195,7 +3195,7 @@ pub(super) fn preferences_set(
         workspace: decoded("workspace", params.workspace)?,
         brush: decoded("brush", params.brush)?,
         window: decoded("window", params.window)?,
-        export_folder: params.export_folder,
+        export_last: decoded("export_last", params.export_last)?,
         hdr_merge: decoded("hdr_merge", params.hdr_merge)?,
         theme: match params.theme {
             // Luxforge Dark is the default, so choosing it removes the stored choice.
@@ -6111,8 +6111,8 @@ mod tests {
             &owner,
             client,
             "export",
-            "export.jpeg",
-            json!({
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json(),
                 "asset_id": asset,
                 "destination": exports.join("agree.jpg"),
                 "mutation": envelope(),
@@ -6867,9 +6867,8 @@ mod tests {
         // export: the event is recorded when the job has written its file, so the retry is sent
         // after that, and answers with the same job rather than a conflict on the file it wrote.
         let exported = temp("retry-families-export.jpg");
-        let export =
-            json!({"asset_id": asset, "destination": exported, "mutation": request("export-1")});
-        let first = ok(&owner, client, "export", "export.jpeg", export.clone());
+        let export = json!({"asset_id": asset, "settings": crate::export::settings::baseline_json(), "destination": exported, "mutation": request("export-1")});
+        let first = ok(&owner, client, "export", "export.write", export.clone());
         assert_eq!(first["deduplicated"], json!(false));
         luxforge_testbase::wait_until("the export to finish", || {
             ok(
@@ -6884,15 +6883,15 @@ mod tests {
         let (events, exported_at) = events_after(&owner, client, 0);
         assert_eq!(
             events.last(),
-            Some(&("export.jpeg".to_owned(), "export".to_owned()))
+            Some(&("export.write".to_owned(), "export".to_owned()))
         );
-        let retried = ok(&owner, client, "export", "export.jpeg", export);
+        let retried = ok(&owner, client, "export", "export.write", export);
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["job_id"], first["job_id"]);
         assert_eq!(events_after(&owner, client, 0).1, exported_at);
         conflict(
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": temp("retry-families-other.jpg"), "mutation": request("export-1")}),
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json(), "asset_id": asset, "destination": temp("retry-families-other.jpg"), "mutation": request("export-1")}),
         );
         std::fs::remove_file(exported).unwrap();
 
@@ -7325,7 +7324,7 @@ mod tests {
         for name in [
             "pick.develop",
             "artifact.collect",
-            "export.jpeg",
+            "export.write",
             "draft.commit",
         ] {
             assert!(checked.contains(&name), "{name}");

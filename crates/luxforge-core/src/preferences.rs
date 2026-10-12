@@ -155,6 +155,17 @@ pub struct HdrMergePreference {
     pub deghost: crate::merge::hdr::DeghostMode,
 }
 
+/// The remembered last export (`docs/design/export-settings.md`, API): the settings the person last
+/// exported with and the preset they came from, if any. The desktop stores it only after an export
+/// the person started succeeds; Export again reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportLast {
+    pub settings: crate::export::settings::ExportSettings,
+    /// The preset the settings came from, unchanged, or `None`.
+    pub preset_id: Option<String>,
+}
+
 /// The stored preferences: each field holds the person's explicit choice, or nothing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,9 +201,9 @@ pub(crate) struct Preferences {
     pub(crate) brush: Option<BrushPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) window: Option<WindowFrame>,
-    /// The folder `export.plan` suggests while it exists; the original's folder when absent.
+    /// The last export's settings and preset; nothing until an export succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) export_folder: Option<PathBuf>,
+    pub(crate) export_last: Option<ExportLast>,
     /// The last HDR merge's alignment and deghosting; the defaults when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) hdr_merge: Option<HdrMergePreference>,
@@ -362,18 +373,28 @@ impl Preferences {
             crate::update::check_version(version)
                 .map_err(|reason| format!("update_skipped_version: {reason}"))?;
         }
-        for (name, path) in [
-            ("catalog", &self.catalog),
-            ("export_folder", &self.export_folder),
-        ] {
-            match path {
-                Some(path) if path.as_os_str().is_empty() => {
-                    return Err(format!("{name} must not be empty"));
-                }
-                Some(path) if !path.is_absolute() => {
-                    return Err(format!("{name} must be an absolute path"));
-                }
-                _ => {}
+        match &self.catalog {
+            Some(path) if path.as_os_str().is_empty() => {
+                return Err("catalog must not be empty".into());
+            }
+            Some(path) if !path.is_absolute() => {
+                return Err("catalog must be an absolute path".into());
+            }
+            _ => {}
+        }
+        if let Some(last) = &self.export_last {
+            last.settings
+                .check()
+                .map_err(|error| format!("export_last.{}", error.detail))?;
+            if let Some(preset_id) = &last.preset_id
+                && (preset_id.is_empty()
+                    || preset_id.len() > crate::export::presets::MAX_ID
+                    || preset_id.chars().any(char::is_control))
+            {
+                return Err(format!(
+                    "export_last.preset_id must be a preset id of 1..={} printable characters",
+                    crate::export::presets::MAX_ID
+                ));
             }
         }
         Ok(())
@@ -420,7 +441,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) workspace: Option<Option<WorkspacePreference>>,
     pub(crate) brush: Option<Option<BrushPreference>>,
     pub(crate) window: Option<Option<WindowFrame>>,
-    pub(crate) export_folder: Option<Option<PathBuf>>,
+    pub(crate) export_last: Option<Option<ExportLast>>,
     pub(crate) hdr_merge: Option<Option<HdrMergePreference>>,
     pub(crate) theme: Option<Option<String>>,
     pub(crate) update_checks: Option<Option<bool>>,
@@ -455,7 +476,7 @@ impl PreferenceChange {
         put(&mut preferences.workspace, self.workspace);
         put(&mut preferences.brush, self.brush);
         put(&mut preferences.window, self.window);
-        put(&mut preferences.export_folder, self.export_folder);
+        put(&mut preferences.export_last, self.export_last);
         put(&mut preferences.hdr_merge, self.hdr_merge);
         put(&mut preferences.theme, self.theme);
         put(&mut preferences.update_checks, self.update_checks);
@@ -467,13 +488,21 @@ impl PreferenceChange {
     }
 }
 
-pub(crate) struct PreferenceStore(Option<JsonDocument<Preferences>>);
+pub(crate) struct PreferenceStore(Option<JsonDocument<Preferences>>, Option<PathBuf>);
 
 impl PreferenceStore {
     pub(crate) fn new(dir: Option<PathBuf>) -> Self {
-        Self(dir.map(|dir| {
-            JsonDocument::new(dir, "preferences.json", MAX_BYTES, 1).checked(Preferences::check)
-        }))
+        Self(
+            dir.clone().map(|dir| {
+                JsonDocument::new(dir, "preferences.json", MAX_BYTES, 1).checked(Preferences::check)
+            }),
+            dir,
+        )
+    }
+
+    /// The person's export presets, in the same configuration directory.
+    pub(crate) fn export_presets(&self) -> crate::export::presets::ExportPresetStore {
+        crate::export::presets::ExportPresetStore::new(self.1.clone())
     }
 
     pub(crate) fn read(&self) -> Result<Preferences, Error> {
@@ -666,7 +695,17 @@ mod tests {
                 x: -40.5,
                 y: 25.0,
             })),
-            export_folder: Some(Some(PathBuf::from("/Users/someone/Exports"))),
+            export_last: Some(Some(ExportLast {
+                settings: crate::export::settings::ExportSettings {
+                    folder: crate::export::settings::ExportFolder::Path(PathBuf::from(
+                        "/Users/someone/Exports",
+                    )),
+                    ..crate::export::settings::ExportSettings::baseline(
+                        crate::export::settings::MetadataLevel::All,
+                    )
+                },
+                preset_id: Some("luxforge.print".into()),
+            })),
             hdr_merge: Some(Some(HdrMergePreference {
                 alignment: crate::merge::hdr::AlignmentMode::Off,
                 deghost: crate::merge::hdr::DeghostMode::Auto,
@@ -793,8 +832,16 @@ mod tests {
         assert_eq!(reopened.brush.unwrap().feather, 20.0);
         assert_eq!(reopened.window.unwrap().x, -40.5);
         assert_eq!(
-            reopened.export_folder.as_deref(),
-            Some(Path::new("/Users/someone/Exports"))
+            reopened
+                .export_last
+                .as_ref()
+                .map(|last| (&last.settings.folder, last.preset_id.as_deref())),
+            Some((
+                &crate::export::settings::ExportFolder::Path(PathBuf::from(
+                    "/Users/someone/Exports"
+                )),
+                Some("luxforge.print")
+            ))
         );
         assert_eq!(
             reopened.hdr_merge.map(|last| last.alignment),
@@ -839,7 +886,7 @@ mod tests {
             workspace: Some(None),
             brush: Some(None),
             window: Some(None),
-            export_folder: Some(None),
+            export_last: Some(None),
             hdr_merge: Some(None),
             theme: Some(None),
             update_checks: Some(None),
@@ -961,17 +1008,32 @@ mod tests {
             ),
             (
                 PreferenceChange {
-                    export_folder: Some(Some(PathBuf::from("Exports"))),
+                    export_last: Some(Some(ExportLast {
+                        settings: crate::export::settings::ExportSettings {
+                            folder: crate::export::settings::ExportFolder::Path(PathBuf::from(
+                                "Exports",
+                            )),
+                            ..crate::export::settings::ExportSettings::baseline(
+                                crate::export::settings::MetadataLevel::All,
+                            )
+                        },
+                        preset_id: None,
+                    })),
                     ..PreferenceChange::default()
                 },
-                "export_folder must be an absolute path",
+                "export_last.settings.folder must be",
             ),
             (
                 PreferenceChange {
-                    export_folder: Some(Some(PathBuf::new())),
+                    export_last: Some(Some(ExportLast {
+                        settings: crate::export::settings::ExportSettings::baseline(
+                            crate::export::settings::MetadataLevel::All,
+                        ),
+                        preset_id: Some(String::new()),
+                    })),
                     ..PreferenceChange::default()
                 },
-                "export_folder must not be empty",
+                "export_last.preset_id must be",
             ),
             (
                 PreferenceChange {
@@ -1032,7 +1094,12 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
             })),
-            export_folder: Some(Some(PathBuf::from("/tmp"))),
+            export_last: Some(Some(ExportLast {
+                settings: crate::export::settings::ExportSettings::baseline(
+                    crate::export::settings::MetadataLevel::All,
+                ),
+                preset_id: None,
+            })),
             // A default chosen explicitly shows the same as the default.
             auto_lens_profile: Some(Some(true)),
             raw_look: Some(Some(RawLook::Standard)),
