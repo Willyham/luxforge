@@ -1652,7 +1652,7 @@ pub fn markdown(report: &Value) -> String {
         }
     }
     text.push_str(
-        "\nEvery figure is CIEDE2000 in f64 from 8-bit sRGB through linear light, XYZ and CIELAB under D65 (luxforge_reference::preview_error). The pixels are deterministic on one machine and driver; across machines the last digit may differ. A run's duration is not a measurement.\n",
+        "\nEvery figure is CIEDE2000 in f64 from 8-bit sRGB, export-16bit's from 16-bit sRGB, through linear light, XYZ and CIELAB under D65 (luxforge_reference::preview_error). The pixels are deterministic on one machine and driver; across machines the last digit may differ. A run's duration is not a measurement.\n",
     );
     text
 }

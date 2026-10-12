@@ -13,13 +13,14 @@
 //!   a second sums each output row's taps down it, clamps to `[0, 1]` with NaN taken to 0, encodes
 //!   once at the output's depth and packs the codes four bytes a pixel, or eight, into a buffer
 //!   copied out for the runner to read back. Each sum is taken in ascending order in `f32`; the
-//!   taps are the core's own (`luxforge_core::tiles::lanczos_taps`), narrowed to `f32`. A side kept
+//!   taps are the core's own Lanczos-3 taps, handed over and narrowed to `f32`. A side kept
 //!   at its size has one tap of weight one, which copies its values exactly.
 //! - **Encoding.** 8-bit codes through the installed output encoding's thresholds, as the photo
 //!   surface's output quantizer encodes them ([`super::tail::encoding`]); 16-bit codes through the
 //!   core's 16-bit thresholds ([`install_wide_encoding`]), searched in a storage buffer.
 //! - **Bounds.** A cut's window is at most the device's largest texture side, at most 8,192, either
-//!   way, and at most [`RESAMPLE_SCRATCH_TEXELS`] texels; a cut holds at most
+//!   way, and at most [`RESAMPLE_SCRATCH_TEXELS`] texels, so one output pixel's taps span at most
+//!   2,048 × 2,048 stage pixels at an even reduction, about 340 times; a cut holds at most
 //!   [`RESAMPLE_ROWS`] output rows ([`resample_cuts`]). Its scratch, its sums, its taps, its codes
 //!   and its readback are charged before anything is created ([`resample_charge`]).
 use super::GpuFallback;
@@ -116,10 +117,16 @@ pub fn resample_cuts(
         height,
         limit: side,
     };
-    let (x0, x1) = span(columns).ok_or(refused(0, 0))?;
+    span(columns).ok_or(refused(0, 0))?;
     span(rows).ok_or(refused(0, 0))?;
-    // The rows a band's window may hold, its width at most the stage's columns or the side.
-    let across = (x1 - x0).min(side);
+    // The rows a band's window may hold: as many as leave room across for the widest one output
+    // column's taps, so a band is cut across into windows as narrow as one column needs.
+    let across = columns
+        .iter()
+        .map(|taps| taps.weights.len() as u32)
+        .max()
+        .unwrap_or(1)
+        .clamp(1, side);
     let tallest = (RESAMPLE_SCRATCH_TEXELS / u64::from(across)).min(u64::from(side)) as u32;
     let mut cuts = Vec::new();
     let mut top = 0;
