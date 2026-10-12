@@ -16,7 +16,6 @@ use super::{
 };
 use crate::state::canvas::{CanvasModel, PhotoView, ZoomView};
 use iced::{Point, Rectangle, Size};
-use luxforge_core::Zoom;
 
 /// The least percentage zoom the minimap is shown at. 200% itself shows it.
 pub(crate) const THRESHOLD: f32 = 200.0;
@@ -24,15 +23,7 @@ pub(crate) const THRESHOLD: f32 = 200.0;
 /// The percentage a view at `zoom` shows the minimap at, or `None` when it shows none: the stored
 /// value, never the rounded text the title bar shows, decides, and Fit never shows it whatever
 /// percentage it comes to.
-pub(crate) fn eligible(zoom: &Zoom) -> Option<f32> {
-    match zoom {
-        Zoom::Fit => None,
-        Zoom::Percent { value } => eligible_view(ZoomView::Percent(*value)),
-    }
-}
-
-/// [`eligible`] for the canvas model's zoom.
-pub(crate) fn eligible_view(zoom: ZoomView) -> Option<f32> {
+pub(crate) fn eligible(zoom: ZoomView) -> Option<f32> {
     match zoom {
         ZoomView::Percent(value) if value >= THRESHOLD => Some(value),
         _ => None,
@@ -454,17 +445,15 @@ mod tests {
 
     #[test]
     fn the_stored_percentage_decides_and_fit_never_shows_the_minimap() {
-        assert_eq!(eligible(&Zoom::Fit), None);
-        assert_eq!(eligible(&Zoom::Percent { value: 199.9 }), None);
+        assert_eq!(eligible(ZoomView::Fit), None);
+        assert_eq!(eligible(ZoomView::Percent(199.9)), None);
         // The title bar rounds 199.9 to 200%, which never decides.
         assert_eq!(crate::state::title::percent_text(199.9), "200%");
-        assert_eq!(eligible(&Zoom::Percent { value: 200.0 }), Some(200.0));
-        assert_eq!(eligible(&Zoom::Percent { value: 200.1 }), Some(200.1));
-        assert_eq!(eligible(&Zoom::Percent { value: 1600.0 }), Some(1600.0));
-        assert_eq!(eligible(&Zoom::Percent { value: f32::NAN }), None);
-        assert_eq!(eligible_view(ZoomView::Fit), None);
-        assert_eq!(eligible_view(ZoomView::Percent(199.99)), None);
-        assert_eq!(eligible_view(ZoomView::Percent(200.0)), Some(200.0));
+        assert_eq!(eligible(ZoomView::Percent(199.99)), None);
+        assert_eq!(eligible(ZoomView::Percent(200.0)), Some(200.0));
+        assert_eq!(eligible(ZoomView::Percent(200.1)), Some(200.1));
+        assert_eq!(eligible(ZoomView::Percent(1600.0)), Some(1600.0));
+        assert_eq!(eligible(ZoomView::Percent(f32::NAN)), None);
     }
 
     #[test]

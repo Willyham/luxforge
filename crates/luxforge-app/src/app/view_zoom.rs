@@ -3,7 +3,7 @@
 use super::{Editor, message::Message, outcome::Outcome, tasks};
 use crate::{
     layout,
-    state::canvas::PhotoView,
+    state::canvas::{PhotoView, ZoomView},
     view::{
         canvas::FIT_PADDING,
         canvas_view::{CanvasView, overhang, scrolled_origin},
@@ -135,7 +135,10 @@ impl Editor {
         if self.document.state.is_none() || self.gallery_page().is_some() || self.select_shown() {
             return None;
         }
-        let percent = minimap_geometry::eligible(&self.session.preview.view.zoom)?;
+        let Zoom::Percent { value } = self.session.preview.view.zoom else {
+            return None;
+        };
+        let percent = minimap_geometry::eligible(ZoomView::Percent(value))?;
         let stage = NavStage::drawn(&self.workspace.canvas, &self.surfaces())?;
         let [left, top, right, bottom] = layout::canvas_logical(
             self.view_state.window,
