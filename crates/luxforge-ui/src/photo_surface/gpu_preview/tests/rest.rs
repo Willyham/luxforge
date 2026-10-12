@@ -842,7 +842,15 @@ fn a_picture_at_rest_reduces_its_tiles_to_the_overview_its_surface_keeps() {
     }
     // Drawn alone, one to one: each pixel the reference's area average of the tiles' codes within
     // a code, as the view's is.
-    let overview_draw = |version| PhotoPrimitive::overview(ID, version, Vector::ZERO, Size::new(64.0, 48.0));
+    let overview_draw = |version| {
+        let visible = crate::photo_surface::Visible {
+            clip: iced::Rectangle::new(iced::Point::ORIGIN, Size::new(64.0, 48.0)),
+            offset: Vector::ZERO,
+            size: Size::new(64.0, 48.0),
+            bright: None,
+        };
+        PhotoPrimitive::overview(ID, version, visible, 0.0)
+    };
     let drawn = paint_into(&device, &queue, &mut pipeline, &overview_draw(7), (64, 48));
     let held = held_codes(&rgba);
     for y in 0..48usize {
