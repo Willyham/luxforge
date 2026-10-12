@@ -78,7 +78,7 @@
     {
       "id": "TASK-002",
       "description": "Provide a bounded, identity-keyed whole-stage overview from the existing GPU tile sweep and reference fallback.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Deliver the overview result/lifecycle and narrow surface presentation seam consumed by TASK-003. No second source residency, GPU device or full-photo texture.",
@@ -166,7 +166,7 @@
     {
       "id": "TASK-003",
       "description": "Integrate the minimap widget, view-only navigation and targeted background rendered proof.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -261,7 +261,7 @@
     {
       "id": "TASK-004",
       "description": "Qualify overview output and high-zoom interactions, measure once, and publish current documentation.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
