@@ -516,6 +516,12 @@ it as cheap as what it proves allows. A slow test runs by hand like any other, f
 `cargo test -p luxforge-core --lib spatial::tests::slow_`. The field-patch conformance test is one:
 `editor-acceptance` runs the same suite in release in a quarter of the time.
 
+A test that waits for the platform's change notifications (FSEvents, inotify,
+`ReadDirectoryChangesW`) to deliver a real change is also named `slow_`, however quick it is
+alone: the delivery latency is the host's, not the test's, and a loaded macOS host delivers
+FSEvents 15 s to 2 min late. Such tests run in every tier above quick and in CI; the quick tier
+keeps the index lane's tests that drive it through injected events, gates and a fixed mount table.
+
 ### Tests skip the disk flush
 
 Every durable write in the core, the catalog's commits aside, makes its bytes durable through one
