@@ -46,11 +46,11 @@ use luxforge_core::{
         UnavailableReason, UpdateNotifier, UpdatePolicy, UpdatePort, Updater,
     },
 };
+use luxforge_install::{MoveError, Placement, Roots};
 use luxforge_update::{
     AppcastItem, Channel, PublicKey, UpdateConfig,
     payload::{Cancel, Fetch, FetchKind, FetchRequest, Mode, Payload, Staged},
 };
-use luxforge_install::{MoveError, Placement, Roots};
 use serde_json::json;
 use std::{
     ffi::OsString,
@@ -101,6 +101,11 @@ const NOTIFY_ONLY: &str = "notify-only";
 /// loopback feed signed with a test key. Its launches, automated as they are, get the Sparkle port
 /// whatever the location check says, and keep their window hidden.
 pub(crate) const JOURNEY_KEY: &str = "LuxforgeUpdateJourney";
+
+/// The `Info.plist` key naming a journey bundle's data root, used as `--data-root` by every
+/// launch of that bundle, Sparkle's relaunch included, so a journey never opens the person's
+/// catalog. A journey bundle without it does not start.
+pub(crate) const JOURNEY_ROOT_KEY: &str = "LuxforgeUpdateJourneyRoot";
 
 /// What a launch's update port is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,9 +261,18 @@ pub(crate) fn journey_launch() -> bool {
         && luxforge_sparkle::info_value(JOURNEY_KEY).as_deref() == Some("1")
 }
 
+/// A journey launch's data root ([`JOURNEY_ROOT_KEY`]), when its bundle names a non-empty one.
+pub(crate) fn journey_root() -> Option<PathBuf> {
+    luxforge_sparkle::info_value(JOURNEY_ROOT_KEY)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+}
+
 /// The build number a macOS bundle states (`CFBundleVersion`).
 fn bundle_build() -> Option<u64> {
-    luxforge_sparkle::info_value("CFBundleVersion")?.parse().ok()
+    luxforge_sparkle::info_value("CFBundleVersion")?
+        .parse()
+        .ok()
 }
 
 /// The core's view of an item Sparkle found. An item without a readable `luxforge:catalogFormat`
@@ -309,7 +323,12 @@ pub(super) fn select_with(
     let platform = if linux {
         Platform::Linux
     } else if cfg!(target_os = "macos") {
-        Platform::Macos(bundle.as_ref().map(|(_, held, _)| *held).unwrap_or_default())
+        Platform::Macos(
+            bundle
+                .as_ref()
+                .map(|(_, held, _)| *held)
+                .unwrap_or_default(),
+        )
     } else {
         Platform::Other
     };
@@ -327,10 +346,10 @@ pub(super) fn select_with(
     ) {
         Choice::Unavailable(UnavailableReason::OutsideApplications) => {
             let (_, _, placement) = bundle.expect("only a classified bundle is outside");
-            Arc::new(MovePort {
-                build: bundle_build(),
-                placement: placement.expect("only a classified bundle is outside"),
-            })
+            Arc::new(MovePort::new(
+                bundle_build(),
+                placement.expect("only a classified bundle is outside"),
+            ))
         }
         Choice::Unavailable(reason) => Arc::new(UnavailablePort {
             reason,
@@ -394,27 +413,50 @@ pub(super) fn select_with(
     }
 }
 
-/// The port of a macOS release outside Applications (`docs/design/auto-update.md#moving-into-applications`):
-/// it cannot update until it moves, so `update.status` reports `unavailable` with the reason
-/// `outside-applications`, and `can_move_to_applications`. `update.move-to-applications` copies,
-/// verifies and places the app with `luxforge-install`, then hands the relaunch to the quit path
-/// ([`super::relaunch`]) and asks for the ordinary close, so the catalog closes before the app
-/// starts from its new place.
+/// The port of a macOS release outside Applications
+/// (`docs/design/auto-update.md#moving-into-applications`): it cannot update until it moves, so
+/// `update.status` reports `unavailable` with the reason `outside-applications`, and
+/// `can_move_to_applications`. `update.move-to-applications` answers at once: an app already in
+/// the destination is refused there and then as `existing-app` unless `replace`, and otherwise the
+/// copy, its signature check and its placing (`luxforge-install`) run on a thread of their own.
+/// A finished move hands the relaunch to the quit path ([`super::relaunch`]) and asks for the
+/// ordinary close, so the catalog closes before the app starts from its new place; a failed one
+/// is the status's `error`.
 struct MovePort {
     build: Option<u64>,
     placement: Placement,
+    state: Arc<Mutex<MoveState>>,
+}
+
+#[derive(Default)]
+struct MoveState {
+    notifier: Option<UpdateNotifier>,
+    moving: bool,
+    error: Option<String>,
+}
+
+impl MovePort {
+    fn new(build: Option<u64>, placement: Placement) -> Self {
+        Self {
+            build,
+            placement,
+            state: Arc::default(),
+        }
+    }
 }
 
 impl UpdatePort for MovePort {
-    fn attach(&self, _: UpdateNotifier) {}
+    fn attach(&self, notifier: UpdateNotifier) {
+        locked(&self.state).notifier = Some(notifier);
+    }
 
     fn status(&self) -> PortStatus {
+        let state = locked(&self.state);
         PortStatus {
             build: self.build,
-            can_move_to_applications: true,
-            ..PortStatus::idle(Updater::Unavailable(
-                UnavailableReason::OutsideApplications,
-            ))
+            can_move_to_applications: !state.moving,
+            error: state.error.clone(),
+            ..PortStatus::idle(Updater::Unavailable(UnavailableReason::OutsideApplications))
         }
     }
 
@@ -433,11 +475,50 @@ impl UpdatePort for MovePort {
 
     fn skip(&self, _: &str) {}
 
-    /// The move runs here, on the owner thread, as the command's answer needs it: the copy and its
-    /// signature check take a few seconds for the person who asked, after which the app quits.
     fn move_to_applications(&self, replace: bool) -> Result<(), Error> {
-        move_into_applications(&self.placement, replace, &luxforge_install::System)
+        let env = luxforge_install::System;
+        let destination = luxforge_install::destination(&self.placement, &Roots::standard(), &env)
+            .map_err(move_refusal)?;
+        if destination.existing && !replace {
+            return Err(move_refusal(MoveError::Existing(destination.app)));
+        }
+        let notifier = {
+            let mut state = locked(&self.state);
+            if state.moving {
+                return Err(Error::not_ready("Luxforge is moving into Applications")
+                    .with_data(json!({ "reason": "moving" })));
+            }
+            state.moving = true;
+            state.error = None;
+            state.notifier.clone()
+        };
+        notify(notifier);
+        let (placement, state) = (self.placement.clone(), self.state.clone());
+        std::thread::Builder::new()
+            .name("luxforge-move".into())
+            .spawn(move || {
+                let failed = move_into_applications(&placement, replace, &env).err();
+                let notifier = {
+                    let mut state = locked(&state);
+                    state.moving = false;
+                    state.error = failed.map(|error| error.detail);
+                    state.notifier.clone()
+                };
+                notify(notifier);
+            })
+            .map_err(|error| {
+                locked(&self.state).moving = false;
+                Error::internal(format!("could not start the move: {error}"))
+            })?;
+        Ok(())
     }
+}
+
+/// A lock that outlives a panic of another holder.
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Move `placement`'s app into Applications, then hand its relaunch to the quit path and ask for
@@ -447,9 +528,8 @@ fn move_into_applications(
     replace: bool,
     env: &dyn luxforge_install::MoveEnv,
 ) -> Result<(), Error> {
-    let moved =
-        luxforge_install::move_to_applications(placement, &Roots::standard(), replace, env)
-            .map_err(move_refusal)?;
+    let moved = luxforge_install::move_to_applications(placement, &Roots::standard(), replace, env)
+        .map_err(move_refusal)?;
     super::relaunch::relaunch(luxforge_install::Relaunch::moved(&moved));
     super::relaunch::request_quit();
     Ok(())

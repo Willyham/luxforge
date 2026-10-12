@@ -523,9 +523,8 @@ impl UpdatePort for SparklePort {
         let shared = &self.shared;
         let mut state = shared.lock();
         if state.status.available.is_none() {
-            return Err(
-                Error::not_ready("no update is available").with_data(json!({"reason": "no-update"}))
-            );
+            return Err(Error::not_ready("no update is available")
+                .with_data(json!({"reason": "no-update"})));
         }
         state.install_requested = true;
         match state.held {

@@ -23,6 +23,7 @@ const FULL_COMMANDS: &[&str] = &[
     "package",
     "release-build",
     "release-sign",
+    "update-journey",
     "editor-acceptance",
     "editor-performance",
     "detail-performance",

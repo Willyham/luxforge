@@ -40,7 +40,9 @@ pub fn fetch(root: &Path) -> Result<PathBuf> {
     let extracted = cache.join("extracted");
     let marker = extracted.join(".sha256");
     if fs::read_to_string(&marker).is_ok_and(|text| text == SHA256)
-        && extracted.join("Sparkle.framework/Versions/B/Sparkle").is_file()
+        && extracted
+            .join("Sparkle.framework/Versions/B/Sparkle")
+            .is_file()
     {
         return Ok(extracted);
     }

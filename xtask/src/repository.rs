@@ -1126,7 +1126,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
             // The Linux payload updater's port: its check worker and one download thread at a
-            // time.
+            // time; and the macOS move port's one move into Applications.
             "crates/luxforge-app/src/app/update_port.rs",
             // The backend's one retirement lane and the current preview pipeline compiler.
             "crates/luxforge-gpu/src/retirement.rs",
@@ -1191,7 +1191,14 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         scope: &["xtask"],
         types: &["rs"],
-        allowed: &["xtask/src/scenario/launch.rs", "xtask/src/launch.rs"],
+        allowed: &[
+            "xtask/src/scenario/launch.rs",
+            "xtask/src/launch.rs",
+            // The update journey launches its own background-only Sparkle bundles, which must be
+            // the bundles Sparkle replaces, not a temporary bundle around the binary; its
+            // arguments still come from `editor_args`.
+            "xtask/src/update_journey.rs",
+        ],
         mode: Match::Whole,
         tests: false,
         once: false,

@@ -82,9 +82,17 @@ pub(crate) fn start(bundle: &Path, listener: Arc<dyn Listener>) -> Result<(), St
     // SAFETY: loading a bundle runs its initializers. This is the framework the release build
     // embedded and signed with the app, at the bundle's own path; Sparkle 2 has no initializer
     // with side effects beyond registering its classes.
-    unsafe { framework.loadAndReturnError() }
-        .map_err(|error| format!("Sparkle.framework could not be loaded: {}", describe(&error)))?;
-    for class in [c"SPUUpdater", c"SUUpdatePermissionResponse", c"SUAppcastItem"] {
+    unsafe { framework.loadAndReturnError() }.map_err(|error| {
+        format!(
+            "Sparkle.framework could not be loaded: {}",
+            describe(&error)
+        )
+    })?;
+    for class in [
+        c"SPUUpdater",
+        c"SUUpdatePermissionResponse",
+        c"SUAppcastItem",
+    ] {
         if AnyClass::get(class).is_none() {
             return Err(format!(
                 "Sparkle.framework has no {} class",
@@ -261,7 +269,9 @@ fn describe(error: &NSError) -> String {
 }
 
 fn text(object: Option<Retained<NSString>>) -> Option<String> {
-    object.map(|text| text.to_string()).filter(|text| !text.is_empty())
+    object
+        .map(|text| text.to_string())
+        .filter(|text| !text.is_empty())
 }
 
 /// The plain values of an `SUAppcastItem`.
@@ -291,7 +301,10 @@ fn item(item: &AnyObject) -> Item {
     }
 }
 
-fn hold(slot: impl FnOnce(&mut Native) -> &mut Option<RcBlock<dyn Fn(NSInteger)>>, block: &Block<dyn Fn(NSInteger)>) {
+fn hold(
+    slot: impl FnOnce(&mut Native) -> &mut Option<RcBlock<dyn Fn(NSInteger)>>,
+    block: &Block<dyn Fn(NSInteger)>,
+) {
     let copied = block.copy();
     NATIVE.with(|native| *slot(&mut native.borrow_mut()) = Some(copied));
 }

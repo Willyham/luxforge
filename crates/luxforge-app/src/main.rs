@@ -210,12 +210,20 @@ impl Config {
 }
 
 fn arguments() -> Result<Config, String> {
+    // The end-to-end update journey's bundles never show a window and keep their files under the
+    // data root their bundle names, the relaunch Sparkle makes without arguments included.
+    let journey = app::update_port::journey_launch();
     let mut config = Config {
-        // The end-to-end update journey's bundles never show a window, the relaunch Sparkle
-        // makes without arguments included.
-        hidden: app::update_port::journey_launch(),
+        hidden: journey,
+        data_root: journey.then(app::update_port::journey_root).flatten(),
         ..Config::default()
     };
+    if journey && config.data_root.is_none() {
+        return Err(format!(
+            "an update journey bundle must name its data root ({})",
+            app::update_port::JOURNEY_ROOT_KEY
+        ));
+    }
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
