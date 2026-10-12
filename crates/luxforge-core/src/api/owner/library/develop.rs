@@ -63,7 +63,9 @@ pub(in crate::api) fn pick_develop(
             &DEVELOP_PICKS,
             None,
             call.origin.clone(),
-            encode(&develop::recorded_report(&parts))?,
+            encode(&develop::recorded_report(&parts, |asset| {
+                develop::folder_of(&owner.service.connection, asset)
+            })?)?,
         ));
     }
     let in_view = match params.targets {
@@ -365,7 +367,14 @@ fn commit(
         develop::write(tx, request, &artifact_root, destination, &decided, now)
     }) {
         Ok(answer) => {
-            report.developed = decided.iter().map(Decided::reported).collect();
+            let catalog = &owner.service.connection;
+            report.developed = decided
+                .iter()
+                .map(|decided| {
+                    let folder = develop::folder_of(catalog, decided.asset_id())?;
+                    Ok(decided.reported(folder))
+                })
+                .collect::<Result<_, Error>>()?;
             report.changes.extend(answer.change);
             let created = report
                 .developed
