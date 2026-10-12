@@ -232,11 +232,12 @@ pub(crate) struct TileWorkerFigures {
     /// now.
     pub(crate) staged: u64,
     pub(crate) stage_bytes: u64,
-    /// Tiles the runner drew, reads' and streams' alike, program sequences it compiled and lights
-    /// it computed, each once for the tiles that read it.
+    /// Tiles the runner drew, reads' and streams' alike, program sequences it compiled, and lights
+    /// it computed and repair steps it solved, each once for the tiles that read it.
     pub(crate) tiles: u64,
     pub(crate) compiles: u64,
     pub(crate) lights: u64,
+    pub(crate) repairs: u64,
     /// The bytes the runner holds now, as charged, and the most it has held at once.
     pub(crate) in_use: u64,
     pub(crate) peak: u64,
@@ -280,6 +281,7 @@ impl Figures {
             tiles: self.runner.runs,
             compiles: self.runner.compiles,
             lights: self.runner.lights,
+            repairs: self.runner.repairs,
             in_use: self.runner.in_use,
             peak: self.runner.peak,
             in_flight: self.runner.in_flight,
@@ -2134,6 +2136,7 @@ impl TileWorkerFigures {
             "tiles": self.tiles,
             "compiles": self.compiles,
             "lights": self.lights,
+            "repairs": self.repairs,
             "in_use_bytes": self.in_use,
             "peak_bytes": self.peak,
             "in_flight": self.in_flight,
