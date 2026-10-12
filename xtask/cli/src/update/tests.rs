@@ -1,5 +1,5 @@
 use super::*;
-use crate::release_artifacts::archive_record;
+use crate::release_artifacts::{archive_record, disk_image_name};
 use luxforge_update::{Appcast, PublicKey, Signature};
 use serde_json::json;
 
@@ -46,6 +46,11 @@ fn builds(dir: &Path, tag: &str, build: &str, mac_status: &str) -> std::path::Pa
         let mut record = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":build,"catalog_format":1,"target":rust_target,"profile":"release","working_tree_dirty":false,"rehearsal":false,"release_ready":false,"signing":{"status":if mac {mac_status} else {"not-applicable"}},"archive":archive_record(&archive).unwrap()});
         if mac {
             record["minimum_system_version"] = json!("14.0");
+            // The download beside the update archive; the update record never signs it.
+            let image = directory.join(disk_image_name(&tag, rust_target).unwrap().unwrap());
+            fs::write(&image, b"disk image download").unwrap();
+            record["disk_image"] = archive_record(&image).unwrap();
+            record["signing"]["disk_image"] = json!({"status": mac_status});
         }
         fs::write(
             directory.join("target.json"),
@@ -91,6 +96,8 @@ fn update_record_signs_the_final_archives_as_sparkle_does() {
     let written = fs::read(&output).unwrap();
     assert_eq!(UpdateRecord::parse(&written).unwrap(), signed);
     assert!(!String::from_utf8_lossy(&written).contains(SPARKLE_TEST_KEY));
+    // The disk image is a download, not an update archive.
+    assert!(!String::from_utf8_lossy(&written).contains(".dmg"));
     // The same builds and key write the same record.
     let again = dir.path().join("again");
     fs::create_dir(&again).unwrap();
@@ -199,7 +206,7 @@ fn update_record_refuses_wrong_keys_outputs_and_builds() {
         ),
         (
             "macos-arm64",
-            |v| v["signing"]["status"] = json!("maybe"),
+            |v| v["signing"] = json!({"status": "maybe", "disk_image": {"status": "maybe"}}),
             "no known signing status",
         ),
         (
@@ -360,10 +367,25 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
     );
     // Each listed archive verifies against the committed key from the feed alone.
     let public = config.public_key.unwrap();
-    // `files` lists each build's Linux archive before its macOS one.
+    // Each build also published its macOS disk image, which no feed lists.
+    let asset = |suffix: &str| {
+        let found: Vec<_> = archives[1]
+            .iter()
+            .filter(|p| p.to_string_lossy().ends_with(suffix))
+            .collect();
+        assert_eq!(found.len(), 1, "{suffix}");
+        found[0]
+    };
+    assert!(
+        mac_items
+            .iter()
+            .chain(&linux_items)
+            .all(|item| !item.enclosure.url.ends_with(".dmg"))
+    );
+    asset(".dmg");
     for (item, path) in [
-        (&mac_items[0], &archives[1][1]),
-        (&linux_items[0], &archives[1][0]),
+        (&mac_items[0], asset(".zip")),
+        (&linux_items[0], asset(".tar.gz")),
     ] {
         assert!(
             item.enclosure

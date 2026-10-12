@@ -275,7 +275,14 @@ Layout and wording are delegated, within the [develop workspace](develop-workspa
 - it holds `Luxforge.app` and an Applications link;
 - it is Developer ID signed, notarized and stapled.
 
-The notarized ZIP stays as the update archive, and both are listed in `SHA256SUMS` and `release.json`.
+The notarized ZIP stays as the update archive, and both are listed in `SHA256SUMS` and `release.json`. The update record signs only the ZIP.
+
+Implemented choices:
+
+- **Format.** A read-only, zlib-compressed `UDZO` image with an HFS+ volume named `Luxforge`, made by `hdiutil create -srcfolder` from a staging folder holding a `ditto` copy of the app and a symbolic link `Applications` → `/Applications`.
+- **Layout.** Finder's default window. No `.DS_Store`, background or icon positions are written; Finder scripting is never used.
+- **Order.** `release-sign` creates the image after the app is stapled and its final ZIP recreated. It signs the image with the same identity and `--timestamp`, without the hardened runtime option, then verifies it, submits it to `notarytool` and requires Accepted. It staples and validates the image and assesses it with `spctl --assess --type open --context context:primary-signature`. `target.json` records the image's name, size and hash as `disk_image`, and its submission under `signing.disk_image`.
+- **Unsigned candidates.** `release-build` makes the same image from the unsigned app, labelled `signing.disk_image.status` `unsigned`. Assembly refuses a macOS record whose image is missing, altered or labelled differently from the app.
 
 ### Moving into Applications
 

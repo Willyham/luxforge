@@ -3,7 +3,7 @@ use crate::*;
 use xtask_cli::release_tag::ReleaseTag;
 
 pub use xtask_cli::release_artifacts::{
-    TARGETS, archive_name, archive_record, platform, verify_record,
+    TARGETS, archive_name, archive_record, disk_image_name, platform, verify_record,
 };
 pub const EXECUTABLES: &[&str] = &["luxforge", "luxforge-json", "luxforge-ctl"];
 /// `LSMinimumSystemVersion`, which `target.json` also records for the update feed.
@@ -48,6 +48,62 @@ pub fn archive_payload(out: &Path, tag: &ReleaseTag, target: &str) -> Result<Pat
         package::archive(&out.join("Luxforge"), &archive)?;
     }
     Ok(archive)
+}
+
+/// Creates the macOS download from `out/Luxforge.app`, replacing an earlier one: a compressed,
+/// read-only HFS+ disk image named `Luxforge` holding a copy of the app and an `Applications`
+/// link, in Finder's default window. hdiutil's occasional "Resource busy" on hosted runners is
+/// retried twice.
+pub fn create_disk_image(out: &Path, tag: &ReleaseTag) -> Result<PathBuf> {
+    ensure(
+        cfg!(target_os = "macos"),
+        "macOS disk image creation requires hdiutil",
+    )?;
+    let name = disk_image_name(tag, TARGETS[0].0)?.ok_or("macOS has a disk image")?;
+    let image = out.join(name);
+    let staging = out.join("disk-image-staging");
+    ensure(
+        !staging.exists(),
+        "A previous disk image staging folder remains",
+    )?;
+    fs::create_dir(&staging)?;
+    let outcome = (|| -> Result {
+        let status = Command::new("ditto")
+            .arg(out.join("Luxforge.app"))
+            .arg(staging.join("Luxforge.app"))
+            .status()?;
+        ensure(
+            status.success(),
+            "Copying the app into the disk image staging folder failed",
+        )?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/Applications", staging.join("Applications"))?;
+        if image.exists() {
+            fs::remove_file(&image)?;
+        }
+        let mut failure = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 {
+                let _ = fs::remove_file(&image);
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            let result = Command::new("hdiutil")
+                .args(["create", "-quiet", "-volname", "Luxforge", "-fs", "HFS+"])
+                .args(["-format", "UDZO", "-imagekey", "zlib-level=9", "-srcfolder"])
+                .arg(&staging)
+                .arg(&image)
+                .output()?;
+            if result.status.success() {
+                return Ok(());
+            }
+            failure = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+        }
+        Err(format!("Disk image creation failed: {failure}").into())
+    })();
+    let cleanup = fs::remove_dir_all(&staging);
+    outcome?;
+    cleanup?;
+    Ok(image)
 }
 
 fn build_number(value: &str) -> Result {
@@ -149,13 +205,18 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
     fs::write(
         resource_root.join("README.txt"),
         format!(
-            "Luxforge {} build candidate ({}, {}).\nThis is not a qualified public release. Source/licence/advisory review and native GPU/corpus/installation qualification remain open. macOS signing/notarization status is recorded beside the archive in target.json.\n\nmacOS: copy Luxforge.app to Applications; command lines are in Contents/Helpers. Linux: extract Luxforge and run ./Luxforge/luxforge; command lines are adjacent. Linux requires compatible Vulkan drivers, libxkbcommon/X11/Wayland libraries and a working XDG file-chooser portal/backend.\n\nUpdates replace the application, keeping originals, catalogs, artifacts and settings. Back up catalogs with associated artifacts while the owner is closed. Unsupported catalog/recipe formats are refused, with no migrations promised.\n",
+            "Luxforge {} build candidate ({}, {}).\nThis is not a qualified public release. Source/licence/advisory review and native GPU/corpus/installation qualification remain open. macOS signing/notarization status is recorded beside the downloads in target.json.\n\nmacOS: open the disk image (.dmg) and drag Luxforge to Applications, then open it from Applications; command lines are in Luxforge.app/Contents/Helpers. The macOS ZIP holds the same app and is the update archive. Linux: extract Luxforge and run ./Luxforge/luxforge; command lines are adjacent. Linux requires compatible Vulkan drivers, libxkbcommon/X11/Wayland libraries and a working XDG file-chooser portal/backend.\n\nUpdates replace the application, keeping originals, catalogs, artifacts and settings. Back up catalogs with associated artifacts while the owner is closed. Unsupported catalog/recipe formats are refused, with no migrations promised.\n",
             tag.version, tag.tag, target
         ),
     )?;
     let metadata = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":number,"catalog_format":luxforge_core::CATALOG_FORMAT,"revision":revision,"target":target,"profile":"release","working_tree_dirty":dirty,"usage_release":luxforge_core::usage::BuildIdentity::new(&tag.version,embedded).release(),"rehearsal":allow_dirty,"lock_sha256":lock,"rustc":output(root,"rustc",&["--version"])?.trim(),"executable_hash_kind":"before-signing","executables":executable_hashes,"release_ready":false});
     write_json(&resource_root.join("build.json"), &metadata)?;
     let archive = archive_payload(out, &tag, &target)?;
+    let disk_image = if target == TARGETS[0].0 {
+        Some(create_disk_image(out, &tag)?)
+    } else {
+        None
+    };
     ensure(
         hash(&root.join("Cargo.lock"))? == lock
             && output(root, "git", &["rev-parse", "HEAD"])?.trim() == revision,
@@ -170,14 +231,20 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
     )?;
     let mut record = metadata;
     record["working_tree_dirty"] = json!(dirty || dirty_after);
-    record["signing"] =
-        json!({"status":if target == TARGETS[0].0 {"unsigned"} else {"not-applicable"}});
+    record["signing"] = json!({"status":"not-applicable"});
     if target == TARGETS[0].0 {
         record["minimum_system_version"] = json!(MACOS_MINIMUM_SYSTEM_VERSION);
+        record["signing"] = json!({"status":"unsigned","disk_image":{"status":"unsigned"}});
     }
     record["archive"] = archive_record(&archive)?;
+    if let Some(image) = &disk_image {
+        record["disk_image"] = archive_record(image)?;
+    }
     write_json(&out.join("target.json"), &record)?;
     println!("Build candidate: {}", archive.display());
+    if let Some(image) = disk_image {
+        println!("Disk image (unsigned): {}", image.display());
+    }
     Ok(())
 }
 

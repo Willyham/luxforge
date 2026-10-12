@@ -119,6 +119,7 @@ jobs:
           name: ${{ matrix.platform }}
           path: |
             artifacts/release/luxforge-*.zip
+            artifacts/release/luxforge-*.dmg
             artifacts/release/luxforge-*.tar.gz
             artifacts/release/target.json
           if-no-files-found: error
