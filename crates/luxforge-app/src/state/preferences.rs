@@ -98,7 +98,9 @@ preferences! {
     /// The remembered window frame, or `None` for the system's placement.
     window: Option<WindowFrame>,
     /// The last export the person started, whose folder `export.plan` suggests, or `None`.
-    export_last: Option<ExportLast>,
+    /// Boxed: the settings would otherwise more than double the size of every message that
+    /// carries the preferences.
+    export_last: Option<Box<ExportLast>>,
     /// The last HDR merge's alignment and deghosting, which ⌥-click merges with, or `None` for
     /// the defaults.
     hdr_merge: Option<HdrMergePreference>,

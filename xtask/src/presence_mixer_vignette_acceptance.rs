@@ -433,7 +433,7 @@ fn grading_journey(
             owner,
             editor,
             "export.write",
-            json!({"asset_id": asset, "destination": destination, "settings": crate::export_smoke::export_settings(&exports),
+            json!({"asset_id": asset, "destination": destination, "settings": crate::export_smoke::export_settings(exports),
                    "mutation": {"request_id": client::request_id(request), "actor": "editor-acceptance"}}),
         )?;
         let settled = client::settle(owner, editor, &accepted["job_id"])?;
