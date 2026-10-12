@@ -760,7 +760,7 @@ impl EditorService {
         let version = catalog::lock(&connection)?;
         match version {
             0 => catalog::require_empty(&connection)?,
-            CATALOG_FORMAT => {}
+            CATALOG_FORMAT => catalog::require_application_id(&connection)?,
             other => {
                 return Err(Error::incompatible(format!(
                     "catalog format {other} is not supported; expected {CATALOG_FORMAT}; choose a new catalog path"

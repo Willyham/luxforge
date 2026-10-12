@@ -162,13 +162,13 @@ fn luxforge_ctl_commands_fail_on_a_catalog_without_a_session_with_the_session_st
 fn luxforge_ctl_commands_status_reads_the_session_and_the_catalog() {
     let endpoint = session(|request| match request["method"].as_str() {
         Some("session.state") => Reply::Result(json!({"authority": "edit"})),
-        Some("catalog.info") => Reply::Result(json!({"format": 16})),
+        Some("catalog.info") => Reply::Result(json!({"format": 1})),
         other => panic!("unexpected {other:?}"),
     });
     let printed = ctl(&endpoint, &["status"]).printed();
     assert_eq!(
         printed,
-        json!({"session": {"authority": "edit"}, "catalog": {"format": 16}})
+        json!({"session": {"authority": "edit"}, "catalog": {"format": 1}})
     );
     assert_eq!(
         methods(&endpoint.requests()),

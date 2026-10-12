@@ -12,7 +12,7 @@
       "dependencies": [],
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
-        "Add `MergeKind::Panorama`; kind-tagged `MergeProvenance` format 2 (HDR parameters/resolution unchanged inside the `hdr` variant); nullable `merge_inputs.offset_ev` with the reference ordinal from provenance; catalog format 16 refusing earlier catalogs without migration; and kind-tagged `match_key`.",
+        "Add `MergeKind::Panorama`; kind-tagged `MergeProvenance` format 2 (HDR parameters/resolution unchanged inside the `hdr` variant); nullable `merge_inputs.offset_ev` with the reference ordinal from provenance; the current catalog format refusing earlier catalogs without migration; and kind-tagged `match_key`.",
         "Commands: `merge.plan`, `merge.create` and `merge.rerun` take `kind` (required on plan); HDR's options move under `hdr`; per-kind input bounds and typed refusals; a field of the other kind is `validation`. Accept `panorama` in schemas only once TASK-008 registers its provider; until then a panorama request is refused `not-ready` naming the missing provider, never a placeholder control.",
         "One merge lane for both kinds: one running and one waiting, `resource-limit` beyond; per-kind job kinds, stages, temporary-disk ceilings and scratch limits; spool reads by bands instead of a seek and read a row, for HDR now.",
         "Desktop merge state, menu, sheet, pending row, badges, stack words and refusals take the kind from the plan or stack rather than constants; HDR's visible behaviour and words stay as they are.",
@@ -78,7 +78,7 @@
         }
       ],
       "acceptance_criteria": [
-        "HDR merge, lifecycle, browse, job and end-to-end tests pass unchanged in behaviour against the kind-tagged shapes and format 16; an earlier catalog is refused explicitly.",
+        "HDR merge, lifecycle, browse, job and end-to-end tests pass unchanged in behaviour against the kind-tagged shapes and the current catalog format; an earlier catalog is refused explicitly.",
         "Schemas describe `kind` and per-kind options; a cross-kind field, an out-of-range input count and an unregistered provider name their cause.",
         "Spool reads are band reads with the same bytes; HDR fusion output stays bit-identical; both kinds share the lane bounds.",
         "Documentation of HDR's stored shapes and commands matches the new shapes."
