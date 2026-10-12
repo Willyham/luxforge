@@ -1360,6 +1360,11 @@ impl Editor {
                     content: &self.select.state.content,
                     images: self.select.previews.grid(&self.select.state.rows),
                     loupe: self.loupe_images(),
+                    merge_picture: self
+                        .select
+                        .merge_picture
+                        .as_ref()
+                        .map(|picture| &picture.handle),
                 },
             ),
             None => view::workspace(
@@ -1437,6 +1442,7 @@ impl Editor {
                 || self.select.state.indexed_menu.is_some()
                 || self.select.state.forget.is_some(),
             loupe_open: self.loupe_open(),
+            merge_sheet_open: self.select_shown() && self.select.state.merge.sheet.is_some(),
             develop_confirm: self.develop.state.confirm.is_some(),
             development_set: self.develop.state.set.is_some(),
             copy_settings_modal: if self.view_state.copy_settings.confirm.is_some() {

@@ -627,8 +627,15 @@ pub(crate) fn change_text(change: &LibraryChange) -> String {
 
 /// What a refused undo or redo says: the first item that changed since, by its file's name where
 /// it has one, and how many others did, from the refusal's `data` (`{items, count}`). `None` when
-/// the refusal carries no items.
-pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Option<String> {
+/// the refusal carries no items. A merge stack is named by its kind, which `stack_kind` reads from
+/// a row of the view that shows it.
+pub(crate) fn refusal_text(
+    gesture: LibraryGesture,
+    data: Option<&Value>,
+    stack_kind: impl Fn(
+        &luxforge_core::catalog_types::MergeId,
+    ) -> Option<luxforge_core::catalog_types::MergeKind>,
+) -> Option<String> {
     let data = data?;
     let first: LibraryItem = serde_json::from_value(data.get("items")?.get(0)?.clone()).ok()?;
     // A photograph sent back, or one that cannot be, is refused with the core's own reason, which
@@ -646,7 +653,9 @@ pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Opt
         }
         LibraryItem::CatalogFolder { .. } => "a catalog folder".to_owned(),
         LibraryItem::Collection { .. } => "a collection".to_owned(),
-        LibraryItem::MergeStack { .. } => "an HDR stack".to_owned(),
+        LibraryItem::MergeStack { merge_id } => {
+            super::select_merge::stack_name(stack_kind(merge_id)).to_owned()
+        }
         LibraryItem::SetMember { .. } => "the Development set".to_owned(),
         _ => "a photograph".to_owned(),
     };
@@ -1163,6 +1172,21 @@ impl RowCache {
         self.blocks
             .get(&(position / ROW_BLOCK))?
             .get((position % ROW_BLOCK) as usize)
+    }
+
+    /// The kind of the merge stack `merge_id`, from any row held of it: its result's or an
+    /// original's.
+    pub(crate) fn stack_kind(
+        &self,
+        merge_id: &luxforge_core::catalog_types::MergeId,
+    ) -> Option<luxforge_core::catalog_types::MergeKind> {
+        self.blocks
+            .values()
+            .flatten()
+            .chain(self.carried.values())
+            .filter_map(|row| row.stack.as_ref())
+            .find(|stack| stack.merge_id == *merge_id)
+            .map(|stack| stack.kind)
     }
 
     /// The row to draw at `position`: this revision's, or else one carried from the last.

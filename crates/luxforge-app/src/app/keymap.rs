@@ -13,11 +13,13 @@ use crate::app::message::{
     loupe::LoupeMessage,
     select::{SelectMessage, Step},
     select_catalog::CatalogMessage,
+    select_merge::MergeMessage,
 };
 use crate::state::host_commands::HostCommand;
 use crate::state::palette::Panel;
 use crate::state::select::{SelectPanel, Shown};
 use crate::state::select_catalog::CatalogAction;
+use crate::state::select_merge::MergeAction;
 use iced::{
     Event, Subscription,
     event::Status,
@@ -158,6 +160,9 @@ pub(crate) struct KeyContext {
     pub(crate) select_menu_open: bool,
     /// The loupe is open over Select's centre, so Escape returns to the grid.
     pub(crate) loupe_open: bool,
+    /// The merge preview sheet is open: it is modal, so Escape cancels it and no other key reaches
+    /// the grid behind it.
+    pub(crate) merge_sheet_open: bool,
     /// Develop N's confirmation is open, so Escape cancels it and Return develops.
     pub(crate) develop_confirm: bool,
     /// Develop has a development set, so `←` and `→` move through it.
@@ -734,6 +739,24 @@ fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
 /// `Cmd+Return` the picks in view, through Develop N's confirmation, which Escape cancels and
 /// Return confirms; the loupe's keys are the loupe's.
 fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<Message> {
+    // ⌥ held turns a merge action into a merge at once with the last settings, and the menu's
+    // merge items drop their ellipsis, so the modifier is followed whatever has focus.
+    if let Keys::ModifiersChanged(modifiers) = keyboard {
+        return Some(Message::Select(SelectMessage::Merge(MergeMessage::Option(
+            modifiers.alt(),
+        ))));
+    }
+    if context.merge_sheet_open {
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Select(SelectMessage::Merge(MergeMessage::Act(
+                MergeAction::SheetClose,
+            )))),
+            _ => None,
+        };
+    }
     let Keys::KeyPressed {
         key,
         modifiers,
@@ -1332,6 +1355,7 @@ mod tests {
             select: false,
             select_menu_open: false,
             loupe_open: false,
+            merge_sheet_open: false,
             develop_confirm: false,
             development_set: false,
             copy_settings_modal: None,

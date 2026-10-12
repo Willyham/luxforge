@@ -1,29 +1,40 @@
 //! Merges in the Select workspace ([HDR merge design](../../../../docs/design/hdr-merge.md),
-//! "Grid workflow"), as plain data: the requests Pick merged and Import merged send, the Merge
-//! options… form, the one pending merge row this desktop draws while its job runs, a merge's end
-//! in words, and the words a result's stack badge and its originals' notes show. Every decision is
-//! the owner's: the plan says whether the frames merge and why not, the job says how far it has
-//! got and how it ended, and a view's rows say which result leads which originals. Every word that
-//! names a kind comes from the request's, the plan's, the claim's or the row's `kind`
-//! ([`words`]); a bracket's header and the selection menu's merge entries are HDR's.
+//! "Grid workflow"; the [merge preview](../../../../docs/design/panorama-merge.md#the-merge-preview)),
+//! as plain data: the requests Pick merged and Import merged send, the merge preview sheet that
+//! opens first ([`sheet`]), the one pending merge row this desktop draws while its job runs, a
+//! merge's end in words, and the words a result's stack badge and its originals' notes show. Every
+//! decision is the owner's: the plan says whether the frames merge and why not, the preview job
+//! draws the merge and finds its refusals, the merge job says how far it has got and how it ended,
+//! and a view's rows say which result leads which originals. Every word that names a kind comes
+//! from the request's, the plan's, the claim's or the row's `kind` ([`words`]); a bracket's header
+//! and the selection menu's merge group are HDR's, the only kind with a provider.
+pub(crate) mod sheet;
+#[cfg(test)]
+mod tests;
+
 use luxforge_core::{
     AssetId, MutationRequest,
     catalog_types::{
-        CatalogFolderId, FolderChoice, MergeAnswer, MergeId, MergeKind, MergePlan, RowStack,
-        StackExpansion, StackRole, Targets, ViewSource,
+        CatalogFolderId, FolderChoice, MergeAnswer, MergeId, MergeKind, MergePlan, MergePreviewId,
+        RowStack, StackExpansion, StackRole, Targets, ViewSource,
     },
+    merge::hdr::{AlignmentMode, DeghostMode},
+    preferences::HdrMergePreference,
 };
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::LazyLock};
 
+pub(crate) use sheet::{PreviewSheet, SheetModel};
+
 /// How Select names a merge kind. HDR's are the words HDR has always shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KindWords {
-    /// "HDR", "Panorama": a result's badge, its Info band and a failed merge's row.
+    /// "HDR", "Panorama": a result's badge, its Info band, a failed merge's row and the selection
+    /// menu's group.
     pub(crate) title: &'static str,
     /// "HDR", "Pano": the badge where the long words do not fit.
     pub(crate) short: &'static str,
-    /// "HDR", "panorama": the kind within a sentence ("Merging HDR").
+    /// "HDR", "panorama": the kind within a sentence ("Merging HDR", "Merge HDR").
     pub(crate) noun: &'static str,
     /// "an HDR stack", "a panorama stack".
     pub(crate) stack: &'static str,
@@ -71,6 +82,11 @@ pub(crate) const fn words(kind: MergeKind) -> &'static KindWords {
     }
 }
 
+/// How a library change's merge stack is named when its row says the kind, and when no row does.
+pub(crate) fn stack_name(kind: Option<MergeKind>) -> &'static str {
+    kind.map_or("a merge stack", |kind| words(kind).stack)
+}
+
 /// Which of the two creation modes a gesture asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MergeMode {
@@ -85,6 +101,16 @@ impl MergeMode {
         match self {
             Self::Pick => "Pick merged",
             Self::Import => "Import merged",
+        }
+    }
+
+    /// The selection menu's item: "Pick merged…", whose ellipsis says the preview opens first;
+    /// without it while ⌥ is held, when a press merges at once.
+    pub(crate) fn item(self, option: bool) -> String {
+        if option {
+            self.label().to_owned()
+        } else {
+            format!("{}\u{2026}", self.label())
         }
     }
 
@@ -112,6 +138,20 @@ impl Toggle {
             Self::Off => "off",
         }
     }
+
+    fn alignment(mode: AlignmentMode) -> Self {
+        match mode {
+            AlignmentMode::Auto => Self::Auto,
+            AlignmentMode::Off => Self::Off,
+        }
+    }
+
+    fn deghost(mode: DeghostMode) -> Self {
+        match mode {
+            DeghostMode::Auto => Self::Auto,
+            DeghostMode::Off => Self::Off,
+        }
+    }
 }
 
 /// Where the result goes: the plan's proposal (or, when it proposes none, the new folder it
@@ -126,7 +166,8 @@ pub(crate) enum FolderPick {
     },
 }
 
-/// What Merge options… may change; every field left alone is the core's default, sent as nothing.
+/// What a merge is asked with beside its frames; every field left alone is the core's default,
+/// sent as nothing.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct MergeOptions {
     pub(crate) alignment: Toggle,
@@ -139,6 +180,31 @@ pub(crate) struct MergeOptions {
 }
 
 impl MergeOptions {
+    /// The options of the person's last HDR merge, remembered: its alignment and deghosting, or
+    /// the defaults when none is remembered. The folder comes from each merge's plan.
+    pub(crate) fn last(remembered: Option<HdrMergePreference>) -> Self {
+        let remembered = remembered.unwrap_or_default();
+        Self {
+            alignment: Toggle::alignment(remembered.alignment),
+            deghost: Toggle::deghost(remembered.deghost),
+            ..Self::default()
+        }
+    }
+
+    /// What the desktop remembers of these options once a merge of them starts.
+    pub(crate) fn remembered(&self) -> HdrMergePreference {
+        HdrMergePreference {
+            alignment: match self.alignment {
+                Toggle::Auto => AlignmentMode::Auto,
+                Toggle::Off => AlignmentMode::Off,
+            },
+            deghost: match self.deghost {
+                Toggle::Auto => DeghostMode::Auto,
+                Toggle::Off => DeghostMode::Off,
+            },
+        }
+    }
+
     /// The override of `path`, if one is set.
     pub(crate) fn override_of(&self, path: &std::path::Path) -> Option<f64> {
         self.overrides
@@ -153,6 +219,35 @@ impl MergeOptions {
         if let Some(offset) = offset {
             self.overrides.push((path, offset));
         }
+    }
+
+    /// The kind's options object (`hdr`) as an agent writes it: every choice the person made,
+    /// and nothing for a default. The same object goes to `merge.preview`, every
+    /// `merge.preview-update` (whole, as the preview's options from then on) and `merge.create`,
+    /// so a merge from a preview names exactly the options its newest revision drew.
+    pub(crate) fn wire(&self) -> serde_json::Map<String, Value> {
+        let mut chosen = serde_json::Map::new();
+        if self.alignment != Toggle::Auto {
+            chosen.insert("alignment".into(), json!(self.alignment.wire()));
+        }
+        if self.deghost != Toggle::Auto {
+            chosen.insert("deghost".into(), json!(self.deghost.wire()));
+        }
+        if let Some(reference) = &self.reference {
+            chosen.insert("reference".into(), json!(reference));
+        }
+        if !self.overrides.is_empty() {
+            chosen.insert(
+                "exposure_overrides".into(),
+                Value::Array(
+                    self.overrides
+                        .iter()
+                        .map(|(path, offset)| json!({"path": path, "offset_ev": offset}))
+                        .collect(),
+                ),
+            );
+        }
+        chosen
     }
 }
 
@@ -182,53 +277,72 @@ pub(crate) fn plan_params(kind: MergeKind, targets: &Targets, options: &MergeOpt
 
 /// The options the person changed, under the kind's own field (`hdr`): none is sent as nothing.
 fn add_options(params: &mut Value, kind: MergeKind, options: &MergeOptions) {
-    let mut changed = serde_json::Map::new();
-    if options.alignment != Toggle::Auto {
-        changed.insert("alignment".into(), json!(options.alignment.wire()));
-    }
-    if options.deghost != Toggle::Auto {
-        changed.insert("deghost".into(), json!(options.deghost.wire()));
-    }
-    if let Some(reference) = &options.reference {
-        changed.insert("reference".into(), json!(reference));
-    }
-    if !options.overrides.is_empty() {
-        changed.insert(
-            "exposure_overrides".into(),
-            Value::Array(
-                options
-                    .overrides
-                    .iter()
-                    .map(|(path, offset)| json!({"path": path, "offset_ev": offset}))
-                    .collect(),
-            ),
-        );
-    }
-    if !changed.is_empty() {
-        params[kind.as_str()] = Value::Object(changed);
+    let chosen = options.wire();
+    if !chosen.is_empty() {
+        params[kind.as_str()] = Value::Object(chosen);
     }
 }
 
-/// `merge.create`'s parameters: a merge of `request`'s kind and frames as planned (`plan_id`),
-/// into `folder`, joining the current development set for Pick merged.
+/// `merge.create`'s parameters: a merge of `request`'s kind and frames into `folder`, joining the
+/// current development set for Pick merged. From a preview it names the preview, which it
+/// continues, and no plan: the preview's latest revision is what it merges. Otherwise it names the
+/// plan it was planned as.
 pub(crate) fn create_params(
     request: &MergeRequest,
-    plan_id: &str,
+    from: CreateFrom<'_>,
     folder: &CatalogFolderId,
     mutation: &MutationRequest,
 ) -> Value {
     let mut params = json!({
         "kind": request.kind,
         "targets": request.targets,
-        "plan_id": plan_id,
         "folder_id": folder,
         "mutation": mutation,
     });
+    match from {
+        CreateFrom::Plan(plan_id) => params["plan_id"] = json!(plan_id),
+        CreateFrom::Preview(preview_id) => params["preview_id"] = json!(preview_id),
+    }
     add_options(&mut params, request.kind, &request.options);
     if request.mode == MergeMode::Pick {
         params["add_to_development_set"] = json!(true);
     }
     params
+}
+
+/// What a `merge.create` continues: the plan it was planned as, or the open preview.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CreateFrom<'a> {
+    Plan(&'a str),
+    Preview(&'a MergePreviewId),
+}
+
+/// `merge.preview`'s parameters: a preview of `request`'s kind and frames with its options, of
+/// the plan `plan_id` made for them.
+pub(crate) fn preview_params(request: &MergeRequest, plan_id: Option<&str>) -> Value {
+    let mut params = json!({"kind": request.kind, "targets": request.targets});
+    if let Some(plan_id) = plan_id {
+        params["plan_id"] = json!(plan_id);
+    }
+    add_options(&mut params, request.kind, &request.options);
+    params
+}
+
+/// `merge.preview-update`'s parameters: the preview's options from now on, whole, under the
+/// kind's field; an empty object is every default.
+pub(crate) fn preview_update_params(
+    kind: MergeKind,
+    preview_id: &MergePreviewId,
+    options: &MergeOptions,
+) -> Value {
+    let mut params = json!({"preview_id": preview_id});
+    params[kind.as_str()] = Value::Object(options.wire());
+    params
+}
+
+/// `merge.preview-close`'s parameters.
+pub(crate) fn preview_close_params(preview_id: &MergePreviewId) -> Value {
+    json!({"preview_id": preview_id})
 }
 
 /// `folder.create`'s parameters for the new folder a plan suggests.
@@ -254,16 +368,21 @@ pub(crate) fn expanded_params(merge: &MergeId, expansion: StackExpansion, revisi
     json!({"merge_id": merge, "expansion": expansion.as_str(), "revision": revision})
 }
 
+/// The message of a typed refusal's `data` or object, or of a refusal with none.
+pub(crate) fn refusal_message(refusal: Option<&Value>, fallback: &str) -> String {
+    refusal
+        .and_then(|refusal| refusal["message"].as_str())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
 /// How a plan refuses: its refusal's message, or what keeps it from merging.
 pub(crate) fn plan_refusal(plan: &MergePlan) -> Option<String> {
     if !plan.suitable {
-        return Some(
-            plan.refusal
-                .as_ref()
-                .and_then(|refusal| refusal["message"].as_str())
-                .unwrap_or("These frames are not a bracket the merge can take")
-                .to_owned(),
-        );
+        return Some(refusal_message(
+            plan.refusal.as_ref(),
+            "These frames are not a bracket the merge can take",
+        ));
     }
     if !plan.provider.available {
         return Some(
@@ -402,19 +521,6 @@ pub(crate) fn finished_text(answer: &MergeAnswer, mode: MergeMode) -> String {
     }
 }
 
-/// The Merge options… form: the frames and mode it was opened for, the plan it shows, what the
-/// person changed, and a refusal from planning again.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct MergeForm {
-    pub(crate) request: MergeRequest,
-    /// The plan for the options as they are; `None` while it is being made.
-    pub(crate) plan: Option<MergePlan>,
-    pub(crate) refusal: Option<String>,
-    /// The catalog's folders, for choosing another, and whether their menu is open.
-    pub(crate) folders: Vec<(CatalogFolderId, String)>,
-    pub(crate) folder_menu: bool,
-}
-
 /// A merge in Removed that the person can put back: offered after a merge request finds it, and
 /// in a removed result's menu.
 #[derive(Clone, Debug, PartialEq)]
@@ -454,12 +560,16 @@ pub(crate) enum MergeMenuKind {
 /// The Select workspace's merge state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SelectMerge {
-    pub(crate) form: Option<MergeForm>,
+    /// The merge preview sheet, while it is open.
+    pub(crate) sheet: Option<PreviewSheet>,
     /// The merge being started: its plan, folder and create in one owner task.
     pub(crate) starting: Option<MergeRequest>,
     pub(crate) pending: Option<PendingMerge>,
     pub(crate) put_back: Option<PutBack>,
     pub(crate) menu: Option<MergeMenu>,
+    /// ⌥ is held: the menu's items drop their ellipsis, and a press on a merge action merges at
+    /// once with the last settings rather than opening the preview.
+    pub(crate) option: bool,
 }
 
 impl SelectMerge {
@@ -470,20 +580,33 @@ impl SelectMerge {
             .filter(|pending| pending.failed.is_none())
             .map(|pending| pending.job.as_str())
     }
+
+    /// The open preview's job while it prepares or redraws, for its `job.wait` reader.
+    pub(crate) fn preview_job(&self) -> Option<&str> {
+        self.sheet.as_ref().and_then(|sheet| sheet.job.as_deref())
+    }
+
+    /// A merge of this desktop's is starting or running: one at a time.
+    pub(crate) fn busy(&self) -> bool {
+        self.starting.is_some() || self.running_job().is_some()
+    }
 }
+
+/// Why a merge cannot start while another of this desktop's runs.
+pub(crate) const BUSY: &str = "A merge is running: wait for it or cancel it";
 
 // -- The model the views draw -------------------------------------------------------------------
 
-/// A merge gesture of the menu, the form, the pending row or the Info panel.
+/// A merge gesture of the menu, the header, the sheet, the pending row or the Info panel.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MergeAction {
-    /// The selection's Pick merged or Import merged of a kind, with the defaults.
+    /// The selection's Pick merged or Import merged of a kind: the preview, or with ⌥ held a
+    /// merge at once with the last settings.
     Start(MergeKind, MergeMode),
-    /// Merge options… for the selection, for a merge of a kind.
-    Options(MergeKind),
-    /// The form's Pick merged or Import merged, with its options.
-    FormStart(MergeMode),
-    FormClose,
+    /// The sheet's Pick merged or Import merged, with its options.
+    SheetMerge(MergeMode),
+    /// The sheet's Cancel, its close button, Escape or a press beside it.
+    SheetClose,
     Alignment(Toggle),
     Deghost(Toggle),
     Reference(PathBuf),
@@ -492,6 +615,8 @@ pub(crate) enum MergeAction {
         path: PathBuf,
         offset: Option<f64>,
     },
+    /// Show deghost overlay.
+    Overlay(bool),
     FolderMenu(bool),
     Folder(FolderPick),
     /// The pending row's Cancel, or Dismiss once it failed.
@@ -519,39 +644,9 @@ pub(crate) struct MenuEntryModel {
 pub(crate) struct MenuModel {
     pub(crate) x: f32,
     pub(crate) y: f32,
+    /// The group's name over its entries ("HDR"), for a selection's merges.
+    pub(crate) heading: Option<&'static str>,
     pub(crate) entries: Vec<MenuEntryModel>,
-}
-
-/// One frame of the form: its name, its exposure as planned or set, whether it is the reference.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FrameRow {
-    pub(crate) path: PathBuf,
-    pub(crate) name: String,
-    /// "−2 EV", or "measured from the pixels" while the metadata cannot say.
-    pub(crate) exposure: String,
-    /// The offset the steppers move from: the override, or the planned one.
-    pub(crate) offset: Option<f64>,
-    pub(crate) overridden: bool,
-    pub(crate) reference: bool,
-}
-
-/// The Merge options… form as drawn.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FormModel {
-    pub(crate) title: String,
-    /// Pick merged's hint for the form's kind.
-    pub(crate) hint: &'static str,
-    pub(crate) frames: Vec<FrameRow>,
-    pub(crate) alignment: Toggle,
-    pub(crate) deghost: Toggle,
-    pub(crate) folder: String,
-    /// The folders to choose from while the folder menu is open.
-    pub(crate) folder_choices: Option<Vec<(String, FolderPick)>>,
-    /// Why the frames cannot merge with these options, from the plan.
-    pub(crate) refusal: Option<String>,
-    pub(crate) planning: bool,
-    /// The buttons work: a suitable plan, no merge already running.
-    pub(crate) enabled: bool,
 }
 
 /// The notice offering Put back merge for a merge found in Removed.
@@ -565,7 +660,7 @@ pub(crate) struct PutBackModel {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct MergeModel {
     pub(crate) menu: Option<MenuModel>,
-    pub(crate) form: Option<FormModel>,
+    pub(crate) sheet: Option<SheetModel>,
     pub(crate) put_back: Option<PutBackModel>,
 }
 
@@ -582,37 +677,29 @@ fn entry(label: impl Into<String>, action: Option<MergeAction>) -> MenuEntryMode
 /// The merge state's model.
 pub(crate) fn derive(merge: &SelectMerge) -> MergeModel {
     // A merge already starting or running: one at a time from this desktop.
-    let busy = merge.starting.is_some() || merge.running_job().is_some();
-    let busy_reason = || "A merge is running: wait for it or cancel it".to_owned();
+    let busy = merge.busy();
     let menu = merge.menu.as_ref().map(|menu| {
+        let mut heading = None;
         let entries = match &menu.kind {
-            MergeMenuKind::Frames {
-                kind,
-                count,
-                refusal,
-            } => {
-                let mut entries = Vec::new();
+            MergeMenuKind::Frames { kind, refusal, .. } => {
+                heading = Some(words(*kind).title);
                 let reason = if busy {
-                    Some(busy_reason())
+                    Some(BUSY.to_owned())
                 } else {
                     refusal.clone()
                 };
-                for mode in [MergeMode::Pick, MergeMode::Import] {
-                    let mut item = entry(
-                        mode.label(),
-                        reason.is_none().then_some(MergeAction::Start(*kind, mode)),
-                    );
-                    item.hint = Some(mode.hint(*kind));
-                    item.reason = reason.clone();
-                    entries.push(item);
-                }
-                let mut options = entry(
-                    "Merge options\u{2026}",
-                    refusal.is_none().then_some(MergeAction::Options(*kind)),
-                );
-                options.trailing = Some(format!("{count} frames"));
-                entries.push(options);
-                entries
+                [MergeMode::Pick, MergeMode::Import]
+                    .into_iter()
+                    .map(|mode| {
+                        let mut item = entry(
+                            mode.item(merge.option),
+                            reason.is_none().then_some(MergeAction::Start(*kind, mode)),
+                        );
+                        item.hint = Some(mode.hint(*kind));
+                        item.reason = reason.clone();
+                        item
+                    })
+                    .collect()
             }
             MergeMenuKind::Stack {
                 merge_id,
@@ -655,104 +742,22 @@ pub(crate) fn derive(merge: &SelectMerge) -> MergeModel {
         MenuModel {
             x: menu.x,
             y: menu.y,
+            heading,
             entries,
         }
     });
-    let form = merge.form.as_ref().map(|form| form_model(form, busy));
+    let sheet = merge
+        .sheet
+        .as_ref()
+        .map(|sheet| sheet::model(sheet, busy.then_some(BUSY)));
     let put_back = merge.put_back.as_ref().map(|put_back| PutBackModel {
         merge_id: put_back.merge_id.clone(),
         body: "This exact merge is in Removed: put it back rather than merging it again".to_owned(),
     });
     MergeModel {
         menu,
-        form,
+        sheet,
         put_back,
-    }
-}
-
-fn form_model(form: &MergeForm, busy: bool) -> FormModel {
-    let options = &form.request.options;
-    let plan = form.plan.as_ref();
-    let frames = plan.map_or_else(Vec::new, |plan| {
-        plan.inputs
-            .iter()
-            .enumerate()
-            .map(|(at, input)| {
-                let overridden = options.override_of(&input.path);
-                let planned = plan
-                    .exposures
-                    .as_ref()
-                    .and_then(|exposures| exposures.inputs.get(at))
-                    .map(|exposure| exposure.offset_ev);
-                let offset = overridden.or(planned);
-                let exposure = match offset {
-                    Some(offset) => {
-                        ev_words(offset).map_or_else(|| format!("{offset:+.2} EV"), str::to_owned)
-                    }
-                    None => "measured from the pixels".to_owned(),
-                };
-                let reference = match &options.reference {
-                    Some(reference) => *reference == input.path,
-                    None => plan.reference == Some(input.ordinal),
-                };
-                FrameRow {
-                    path: input.path.clone(),
-                    name: input.file_name.clone(),
-                    exposure,
-                    offset,
-                    overridden: overridden.is_some(),
-                    reference,
-                }
-            })
-            .collect()
-    });
-    let proposed = plan.map(|plan| match (&plan.folder, &plan.suggested_folder) {
-        (Some(folder), _) => folder.name.clone(),
-        (None, Some(FolderChoice::New { name, .. })) => {
-            format!("New folder \u{201c}{name}\u{201d}")
-        }
-        _ => plan
-            .folder_reason
-            .clone()
-            .unwrap_or_else(|| "Choose a folder".to_owned()),
-    });
-    let folder = match &options.folder {
-        FolderPick::Existing { name, .. } => name.clone(),
-        FolderPick::Proposed => proposed.clone().unwrap_or_else(|| "\u{2026}".to_owned()),
-    };
-    let folder_choices = form.folder_menu.then(|| {
-        let mut choices = Vec::with_capacity(form.folders.len() + 1);
-        if let Some(proposed) = &proposed {
-            choices.push((proposed.clone(), FolderPick::Proposed));
-        }
-        for (folder_id, name) in &form.folders {
-            choices.push((
-                name.clone(),
-                FolderPick::Existing {
-                    folder_id: folder_id.clone(),
-                    name: name.clone(),
-                },
-            ));
-        }
-        choices
-    });
-    let refusal = form.refusal.clone().or_else(|| plan.and_then(plan_refusal));
-    let kind = form.request.kind;
-    FormModel {
-        title: format!(
-            "Merge options \u{b7} {} {}",
-            form.request.frames,
-            words(kind).frames
-        ),
-        hint: MergeMode::Pick.hint(kind),
-        frames,
-        alignment: options.alignment,
-        deghost: options.deghost,
-        folder,
-        folder_choices,
-        planning: plan.is_none() && form.refusal.is_none(),
-        enabled: plan.is_some() && refusal.is_none() && !busy,
-        refusal,
     }
 }
 
@@ -914,113 +919,4 @@ fn expanded(stack: &RowStack) -> bool {
     stack
         .expansion
         .is_some_and(|expansion| expansion != StackExpansion::Collapsed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use luxforge_core::catalog_types::FileId;
-
-    fn request(mode: MergeMode) -> MergeRequest {
-        MergeRequest {
-            kind: MergeKind::Hdr,
-            targets: Targets::Files {
-                file_ids: vec![FileId(1), FileId(2), FileId(3)],
-            },
-            mode,
-            options: MergeOptions::default(),
-            source: None,
-            anchor: 0,
-            frames: 3,
-        }
-    }
-
-    /// The defaults send nothing but the frames; every option changed is sent as an agent writes
-    /// it, and Pick merged alone joins the development set.
-    #[test]
-    fn hdr_merge_requests_send_only_what_was_chosen() {
-        let mutation = MutationRequest {
-            request_id: "r".into(),
-            actor: "desktop".into(),
-        };
-        let folder = CatalogFolderId::new();
-        let pick = request(MergeMode::Pick);
-        assert_eq!(
-            plan_params(pick.kind, &pick.targets, &pick.options),
-            json!({"kind": "hdr", "targets": {"kind": "files", "file_ids": [1, 2, 3]}})
-        );
-        assert_eq!(
-            create_params(&pick, "plan", &folder, &mutation),
-            json!({
-                "kind": "hdr",
-                "targets": {"kind": "files", "file_ids": [1, 2, 3]},
-                "plan_id": "plan",
-                "folder_id": folder,
-                "add_to_development_set": true,
-                "mutation": {"request_id": "r", "actor": "desktop"},
-            })
-        );
-        let mut import = request(MergeMode::Import);
-        import.options = MergeOptions {
-            alignment: Toggle::Off,
-            deghost: Toggle::Off,
-            reference: Some("/a/2.NEF".into()),
-            overrides: vec![("/a/1.NEF".into(), -2.0)],
-            folder: FolderPick::Proposed,
-        };
-        let params = create_params(&import, "plan", &folder, &mutation);
-        assert_eq!(params["kind"], "hdr");
-        assert_eq!(
-            params["hdr"],
-            json!({
-                "alignment": "off",
-                "deghost": "off",
-                "reference": "/a/2.NEF",
-                "exposure_overrides": [{"path": "/a/1.NEF", "offset_ev": -2.0}],
-            })
-        );
-        for moved in ["alignment", "deghost", "reference", "exposure_overrides"] {
-            assert!(params.get(moved).is_none(), "{moved} is under hdr");
-        }
-        assert!(params.get("add_to_development_set").is_none());
-    }
-
-    #[test]
-    fn hdr_merge_words_are_made_once_and_name_the_input_or_stage() {
-        assert_eq!(
-            stack_words(MergeKind::Hdr, 3),
-            ("HDR \u{b7} 3 exposures", "HDR \u{b7} 3")
-        );
-        assert_eq!(stack_words(MergeKind::Hdr, 40), ("HDR", "HDR"));
-        assert_eq!(
-            MergeMode::Pick.hint(MergeKind::Hdr),
-            "Merge HDR and add to Development set"
-        );
-        assert_eq!(
-            MergeMode::Import.hint(MergeKind::Hdr),
-            "Merge HDR into the catalog only"
-        );
-        let mut pending = PendingMerge::new("job".into(), request(MergeMode::Pick));
-        assert_eq!(pending.title(), "Merging HDR \u{b7} 3 exposures");
-        pending.failed = Some("no".into());
-        assert_eq!(pending.title(), "HDR merge failed \u{b7} 3 exposures");
-        assert_eq!(ev_words(-2.0), Some("\u{2212}2 EV"));
-        assert_eq!(ev_words(0.0), Some("0 EV"));
-        assert_eq!(ev_words(0.123), None);
-        let failed = json!({
-            "status": "failed",
-            "error": {"code": "unsupported-input", "message": "it could not be developed",
-                      "data": {"path": "/x/DSC_0002.NEF"}},
-        });
-        assert_eq!(
-            failure_text(&failed),
-            "DSC_0002.NEF: it could not be developed"
-        );
-        let staged = json!({
-            "status": "failed",
-            "error": {"code": "internal", "message": "out of memory"},
-            "result": {"stage": {"stage": "aligning"}},
-        });
-        assert_eq!(failure_text(&staged), "While aligning: out of memory");
-    }
 }

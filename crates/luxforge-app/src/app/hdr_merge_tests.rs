@@ -317,7 +317,16 @@ fn start(editor: &mut Editor) -> MergeRequest {
         .starting
         .clone()
         .expect("a merge starting");
-    let result = start_now(&editor.owner, editor.client, &request);
+    // A merge from the sheet continues its preview; with ⌥ held there is none.
+    let preview = editor
+        .select
+        .state
+        .merge
+        .sheet
+        .as_ref()
+        .filter(|sheet| sheet.merging.is_some())
+        .and_then(|sheet| sheet.preview_id.clone());
+    let result = start_now(&editor.owner, editor.client, &request, preview.as_ref());
     merge(
         editor,
         MergeMessage::Started {
@@ -490,6 +499,8 @@ fn members(owner: &OwnerHandle, client: ClientId) -> Vec<String> {
 fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_set() {
     let bench = Bench::new("pick");
     let mut editor = bench.open();
+    // ⌥ held: each merge action merges at once with the last settings, without the preview.
+    merge(&mut editor, MergeMessage::Option(true));
     let agent = editor.owner.register();
     assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 5);
     let (number, labels) = bracket_header(&editor).expect("the bracket's header");
@@ -694,6 +705,8 @@ fn planned_targets(files: &[Value]) -> Value {
 fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     let bench = Bench::new("selection");
     let mut editor = bench.open();
+    // ⌥ held: each merge action merges at once with the last settings, without the preview.
+    merge(&mut editor, MergeMessage::Option(true));
     let agent = editor.owner.register();
 
     // Two singles of one exposure: the menu's merges say what the core said.
@@ -711,6 +724,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .menu
         .clone()
         .expect("the menu");
+    assert_eq!(menu.heading, Some("HDR"));
     assert_eq!(menu.entries[0].label, "Pick merged");
     assert_eq!(
         menu.entries[0].hint,
@@ -730,7 +744,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     plan(&mut editor);
     let menu = editor.workspace.select.merge.menu.clone().unwrap();
     assert!(menu.entries[1].action.is_some(), "{menu:?}");
-    assert_eq!(menu.entries[2].trailing.as_deref(), Some("3 frames"));
+    assert_eq!(menu.entries.len(), 2, "no Merge options…: {menu:?}");
     act(
         &mut editor,
         MergeAction::Start(MergeKind::Hdr, MergeMode::Import),
@@ -917,6 +931,8 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
 fn hdr_merge_pending_row_cancels_and_a_failure_names_its_input() {
     let bench = Bench::new("pending");
     let mut editor = bench.open();
+    // ⌥ held: each merge action merges at once with the last settings, without the preview.
+    merge(&mut editor, MergeMessage::Option(true));
     let agent = editor.owner.register();
     let (number, _) = bracket_header(&editor).unwrap();
 
