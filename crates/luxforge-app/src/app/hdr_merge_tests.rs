@@ -20,16 +20,20 @@ use crate::{
     },
     state::{
         select::{Block, InfoModel, MomentAction},
-        select_merge::{MergeAction, MergeRequest, ev_words, plan_refusal},
+        select_merge::{
+            FolderPick, MergeAction, MergeForm, MergeRequest, ev_words, folder_choice, form_model,
+            plan_refusal,
+        },
     },
 };
 use iced::{Point, Size, keyboard::Modifiers};
 use luxforge_core::{
     SourceTag, SyntheticFrame,
     catalog_types::{
-        CameraBody, CaptureTime, Dimensions, ExifOrientation, Exposure, FileRecord, FileSignature,
-        HeaderMetadata, HeaderState, IndexRoot, IndexedFolder, MergePlan, RootKind, RowItem,
-        StackExpansion, StackRole, ViewSource, Volume, VolumeId,
+        CameraBody, CaptureTime, CatalogFolderId, Dimensions, ExifOrientation, Exposure,
+        FileRecord, FileSignature, FolderChoice, HeaderMetadata, HeaderState, IndexRoot,
+        IndexedFolder, MergePlan, RootKind, RowItem, StackExpansion, StackRole, ViewSource, Volume,
+        VolumeId,
     },
     seed::{CatalogSeeder, IndexSeeder},
 };
@@ -493,7 +497,7 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
         },
     );
     assert_eq!(editor.status.text, "Merging HDR\u{2026}");
-    start(&mut editor);
+    let request = start(&mut editor);
     let (title, _, button, failed) = pending_row(&editor).expect("the pending row");
     assert_eq!(title, "Merging HDR \u{b7} 3 exposures");
     assert_eq!(button, "Cancel");
@@ -504,7 +508,7 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
         "nothing is hidden before the merge is published"
     );
     // What the desktop sent is what a JSON client writes: the frames by identity, as planned, into
-    // the folder the plan suggested and the desktop made.
+    // the folder choice the plan suggested, whose folders the merge makes; nothing else first.
     let files: Vec<Value> = (0..3)
         .map(|at| match editor.select.state.rows.row(at).unwrap().item {
             RowItem::File { file_id } => json!(file_id),
@@ -519,9 +523,45 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
     let (plan, _) = call(&editor.owner, agent, "merge.plan", planned).unwrap();
     let plan: MergePlan = serde_json::from_value(plan).unwrap();
     assert!(plan_refusal(&plan).is_none(), "{plan:?}");
-    let folder = sent_merge(&editor, "folder.create");
-    assert!(folder["name"].as_str().is_some_and(|name| !name.is_empty()));
+    let methods: Vec<&Value> = editor
+        .select
+        .merge_sent
+        .as_ref()
+        .and_then(Value::as_array)
+        .map(|sent| sent.iter().map(|sent| &sent["method"]).collect())
+        .unwrap_or_default();
+    assert_eq!(methods, [&json!("merge.plan"), &json!("merge.create")]);
+    let Some(FolderChoice::Place { name: place }) = plan.suggested_folder.clone() else {
+        panic!("a new catalog's merge is filed by place: {plan:?}");
+    };
+    assert!(plan.folder.is_none(), "{plan:?}");
     let created = sent_merge(&editor, "merge.create");
+    assert_eq!(created["folder"], json!({"kind": "place", "name": place}));
+    // Merge options… says the place the merge makes; a folder chosen there is sent as itself.
+    let mut form = MergeForm {
+        request: request.clone(),
+        plan: Some(plan.clone()),
+        refusal: None,
+        folders: Vec::new(),
+        folder_menu: false,
+    };
+    assert_eq!(
+        form_model(&form, false).folder,
+        format!("New place \u{201c}{place}\u{201d}")
+    );
+    let chosen = CatalogFolderId::new();
+    form.request.options.folder = FolderPick::Existing {
+        folder_id: chosen.clone(),
+        name: "Travel \u{203a} Alps".into(),
+    };
+    assert_eq!(form_model(&form, false).folder, "Travel \u{203a} Alps");
+    assert_eq!(
+        folder_choice(&form.request.options, &plan),
+        Some(FolderChoice::Existing {
+            folder_id: chosen,
+            days: false,
+        })
+    );
     assert_eq!(created["kind"], "hdr");
     assert_eq!(created["targets"], planned_targets(&files));
     assert_eq!(created["plan_id"], json!(plan.plan_id));
@@ -587,20 +627,29 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
         !editor.select.state.rows.cell(at).unwrap().picked,
         "a result is never shown picked"
     );
-    // In the catalog folder the plan named, as a second client reads it.
+    // In the folder of the place the plan named, as a second client reads it.
     let folders: luxforge_core::catalog_types::CatalogFolders = serde_json::from_value(
         call(&editor.owner, agent, "folder.list", json!({}))
             .unwrap()
             .0,
     )
     .unwrap();
-    let named = folders
-        .folders
-        .iter()
-        .find(|held| Some(held.name.as_str()) == folder["name"].as_str())
-        .expect("the plan's folder");
-    assert_eq!(leader.folder_id.as_ref(), Some(&named.id));
+    let by_id = |id: Option<&CatalogFolderId>| {
+        folders
+            .folders
+            .iter()
+            .find(|held| Some(&held.id) == id)
+            .expect("a listed folder")
+    };
+    // The bracket's frames carry no capture day, so the place is filed under Undated, with no day.
+    let named = by_id(leader.folder_id.as_ref());
     assert_eq!(named.count, 1);
+    assert!(named.name.eq_ignore_ascii_case(&place), "{named:?}");
+    let undated = by_id(named.parent_id.as_ref());
+    assert!(
+        undated.name == "Undated" && undated.parent_id.is_none(),
+        "{undated:?}"
+    );
     let InfoModel::One(info) = &editor.workspace.select.info else {
         panic!("one item: {:?}", editor.workspace.select.info);
     };

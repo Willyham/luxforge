@@ -22,7 +22,8 @@
 //!
 //! The catalog the first launch left is read (`hdr-merge-after-first.json`); the brackets' folder
 //! is renamed, so no original can be read; and the second launch, in [`second_plan`] order, opens
-//! the result from its catalog folder in Develop and inspects it. The folder is named back, the
+//! the result from its catalog folder in Develop and inspects it, the folder pressed by its path
+//! from the top level with each folder on the way opened. The folder is named back, the
 //! catalog read again (`hdr-merge-after.json`) and every frame's hash checked.
 use crate::{
     generate_catalog,
@@ -121,8 +122,9 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
 /// The second launch's frames, over the catalog the first left with the brackets offline: the
 /// result's catalog folder, the result opened in Develop, and its merge inspected.
 pub fn second_plan(after: &Value) -> Result<Plan> {
-    let folder = after["reopen"]["folder"]
+    let folder = after["reopen"]["path"]
         .as_str()
+        .filter(|path| !path.is_empty())
         .ok_or("The first launch's catalog names no folder for the result")?;
     let position = after["reopen"]["position"]
         .as_u64()
@@ -325,6 +327,18 @@ fn after(catalog: &Path, results: &[Value]) -> Result<Value> {
             row_in(json!({"kind": "catalog-folder", "folder_id": folder["id"]}))?["position"]
                 .clone()
         };
+        // The folder by its path from the top level, as the sources panel nests it.
+        let listed = folders["folders"].as_array().cloned().unwrap_or_default();
+        let mut path = Vec::new();
+        let mut at = folder["id"].clone();
+        while !at.is_null() && path.len() <= listed.len() {
+            let Some(held) = listed.iter().find(|held| held["id"] == at) else {
+                break;
+            };
+            path.push(held["name"].as_str().unwrap_or_default().to_owned());
+            at = held["parent_id"].clone();
+        }
+        path.reverse();
         let journal = ask(owner, client, "library.journal", json!({"limit": 500}))?;
         let changes: Vec<Value> = journal["changes"]
             .as_array()
@@ -338,7 +352,8 @@ fn after(catalog: &Path, results: &[Value]) -> Result<Value> {
             "merges": merges,
             "history": history["entries"],
             "photograph": photograph,
-            "reopen": {"folder": folder["name"], "folder_id": folder["id"], "position": position},
+            "reopen": {"folder": folder["name"], "folder_id": folder["id"],
+                "path": path.join(" \u{203a} "), "position": position},
             "changes": changes,
         }))
     })
@@ -529,6 +544,27 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     ensure(
         create["params"]["kind"] == "hdr" && create["params"]["mutation"]["actor"] == "desktop",
         format!("merging: Merge HDR sent {create}"),
+    )?;
+    // Into the plan's proposal, whose folders the merge makes: nothing but the plan and the merge
+    // is sent.
+    let proposed = if plan["folder"].is_object() {
+        json!({"kind": "existing", "folder_id": plan["folder"]["folder_id"]})
+    } else {
+        plan["suggested_folder"].clone()
+    };
+    let methods: Vec<&Value> = sent
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|request| &request["method"])
+        .collect();
+    ensure(
+        create["params"]["folder"] == proposed
+            && methods == [&json!("merge.plan"), &json!("merge.create")],
+        format!(
+            "merging: sent {methods:?}, into {}, the plan proposes {proposed}",
+            create["params"]["folder"]
+        ),
     )?;
     checks.note(
         merging,
@@ -844,8 +880,10 @@ mod tests {
         first.validate().unwrap();
         assert!(first.scripted());
         assert_eq!(first.len(), 23);
-        let second =
-            second_plan(&json!({"reopen": {"folder": "Jun 2026", "position": 0}})).unwrap();
+        let second = second_plan(
+            &json!({"reopen": {"path": "2026 \u{203a} Still \u{203a} 12 Jun", "position": 0}}),
+        )
+        .unwrap();
         second.validate().unwrap();
         assert_eq!(second.len(), 6);
         // Registered, opening nothing a checkout lacks, so `verify --tier rendered` runs it.

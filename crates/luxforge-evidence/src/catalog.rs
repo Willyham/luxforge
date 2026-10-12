@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 
 /// One gesture on the catalog.
 ///
-/// `{"source": "Konstanz · Sep 2026"}` presses the catalog folder, year or collection row of that
-/// name (a year opens or closes). `{"search": "Luzern"}` types that text into the search field.
+/// `{"source": "Konstanz · Sep 2026"}` presses the catalog folder or collection row of that name;
+/// a folder named by its path from the top level (`"2026 › Konstanz › 12 Sep"`) is pressed once
+/// each closed folder on the way is opened by its disclosure. `{"search": "Luzern"}` types that text into the search field.
 /// `"metadata"` presses the Metadata chip. `{"facet": {"column": "camera", "value": "iPhone 15
 /// Pro"}}` presses the Metadata browser's value of that label. `{"edited": "Not edited"}` chooses
 /// from the Edited chip's menu. `{"rename": {"folder": "A", "name": "B"}}` chooses Rename… from

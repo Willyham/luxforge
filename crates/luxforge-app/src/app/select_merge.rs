@@ -37,15 +37,15 @@ use crate::app::{
 };
 use crate::state::select::{Block, LibraryGesture, MomentAction};
 use crate::state::select_merge::{
-    self as model, FolderPick, MergeAction, MergeForm, MergeMenu, MergeMenuKind, MergeOptions,
-    MergeRequest, PendingMerge, PutBack, Started,
+    self as model, MergeAction, MergeForm, MergeMenu, MergeMenuKind, MergeOptions, MergeRequest,
+    PendingMerge, PutBack, Started,
 };
 use iced::Task;
 use luxforge_core::{
     ClientId, ClientSession, OwnerHandle,
     catalog_types::{
-        CatalogFolders, FolderChoice, ItemRef, MergeAnswer, MergePlan, MergeState, RowItem,
-        StackExpansion, StackRole, Targets, ViewFilter, ViewSummary,
+        ItemRef, MergeAnswer, MergePlan, MergeState, RowItem, StackExpansion, StackRole, Targets,
+        ViewFilter, ViewSummary,
     },
 };
 use serde_json::{Value, json};
@@ -116,49 +116,10 @@ pub(crate) fn start_now(
             result_asset_id: existing.result_asset_id.clone(),
         });
     }
-    let folder = match (&request.options.folder, &plan.folder) {
-        (FolderPick::Existing { folder_id, .. }, _) => folder_id.clone(),
-        (FolderPick::Proposed, Some(proposal)) => proposal.folder_id.clone(),
-        (FolderPick::Proposed, None) => {
-            // Until `merge.create` files a place itself, a place is the top-level folder of its
-            // name, found ignoring case as the core compares names, or made.
-            let place = match &plan.suggested_folder {
-                Some(FolderChoice::Place { name }) => Some(name.to_lowercase()),
-                _ => None,
-            };
-            let found = match place {
-                Some(place) => {
-                    let listed = call_detailed(owner, client, "folder.list", json!({}))
-                        .map_err(|error| error.message)?;
-                    parse::<CatalogFolders>(listed)?
-                        .folders
-                        .into_iter()
-                        .find(|folder| {
-                            folder.parent_id.is_none() && folder.name.to_lowercase() == place
-                        })
-                        .map(|folder| folder.id)
-                }
-                None => None,
-            };
-            if let Some(folder) = found {
-                folder
-            } else {
-                let Some(params) = model::suggested_folder_params(&plan, &mutation()) else {
-                    return answer(Started::Refused(plan.folder_reason.clone().unwrap_or_else(
-                        || {
-                            "Choose a catalog folder for the merge in Merge options\u{2026}"
-                                .to_owned()
-                        },
-                    )));
-                };
-                sent.push(json!({"method": "folder.create", "params": params}));
-                let created = call_detailed(owner, client, "folder.create", params)
-                    .map_err(|error| format!("Could not make the folder: {}", error.message))?;
-                parse(created["folder"]["id"].clone())?
-            }
-        }
-    };
-    let params = model::create_params(request, &plan.plan_id, &folder, &mutation());
+    // The folder the person chose or the plan's proposal; any folders it needs, `merge.create`
+    // makes in the same change.
+    let folder = model::folder_choice(&request.options, &plan);
+    let params = model::create_params(request, &plan.plan_id, folder.as_ref(), &mutation());
     sent.push(json!({"method": "merge.create", "params": params}));
     match call_detailed(owner, client, "merge.create", params) {
         Ok(created) => {
@@ -273,10 +234,14 @@ impl Editor {
                     .folders
                     .as_ref()
                     .map(|folders| {
+                        // Each by its path from the top level, "2026 › Konstanz › 12 Sep".
                         folders
                             .folders
                             .iter()
-                            .map(|folder| (folder.id.clone(), folder.name.clone()))
+                            .map(|folder| {
+                                let path = crate::app::develop::folder_path(folders, &folder.id);
+                                (folder.id.clone(), path.join(" \u{203a} "))
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
