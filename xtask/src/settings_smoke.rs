@@ -688,7 +688,9 @@ fn correlated(step: &str, frame: &Frame) -> Result<Value> {
             // The machine's own memory, which the desktop read from the operating system.
             && memory.is_some_and(|memory| memory >= 1 << 30)
             && machine.starts_with("This machine has ")
-            && machine.ends_with("of memory. Proof segmenter needs 2 GB.")
+            // luxforge.ai's models are named first, then the proof's.
+            && machine.contains("FLUX.2 klein 4B with the object removal LoRA needs 16 GB")
+            && machine.ends_with("; Proof segmenter needs 2 GB.")
             && tab["tiers"] == json!([])
             && tab["errors"] == json!([]),
         format!("Step {step:?}'s Models tab does not match the module.status it holds: {tab}"),
