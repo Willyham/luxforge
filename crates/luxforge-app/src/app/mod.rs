@@ -594,7 +594,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 33] = [
+const AFTER_MESSAGE: [AfterMessage; 34] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
