@@ -14,7 +14,7 @@
 //! on the reference and on the GPU, judges every cell with these functions.
 
 use crate::{
-    preview_error::{self, Class, Rgb8, Statistics},
+    preview_error::{self, Class, Rgb8, Rgb16, Statistics},
     srgb,
 };
 
@@ -31,6 +31,10 @@ pub enum Kind {
     Sample,
     /// An export.
     Export,
+    /// An export resized smaller than its output stage, at 8 bits.
+    ExportResized,
+    /// An export at its output stage's size, encoded at 16 bits.
+    Export16,
     /// The high-zoom minimap's settled overview: the whole output stage reduced to at most
     /// 256 × 256 pixels.
     Overview,
@@ -38,12 +42,14 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in the order a report lists them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::PictureAtRest,
         Self::PictureInMotion,
         Self::Histogram,
         Self::Sample,
         Self::Export,
+        Self::ExportResized,
+        Self::Export16,
         Self::Overview,
     ];
 
@@ -54,8 +60,15 @@ impl Kind {
             Self::Histogram => "histogram",
             Self::Sample => "sample",
             Self::Export => "export",
+            Self::ExportResized => "export-resized",
+            Self::Export16 => "export-16bit",
             Self::Overview => "overview",
         }
+    }
+
+    /// Whether the kind is an export, of any size or depth.
+    pub const fn export(self) -> bool {
+        matches!(self, Self::Export | Self::ExportResized | Self::Export16)
     }
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -87,6 +100,15 @@ impl Kind {
                  the reference frame's byte there"
             }
             Self::Export => "The reference export: the stack's exact whole frame",
+            Self::ExportResized => {
+                "The reference export at the same size: the stack's exact whole frame's terminal \
+                 values at 16 bits, resampled in linear light by the separable Lanczos-3 filter, \
+                 clamped and encoded once at 8 bits"
+            }
+            Self::Export16 => {
+                "The reference export at 16 bits: the stack's exact whole frame's terminal values \
+                 encoded once at 16 bits"
+            }
             Self::Overview => {
                 "The reference frame reduced to the overview's size, at most 256 × 256: the \
                  stack's exact whole frame reduced by an area-weighted box average of its linear \
@@ -110,9 +132,13 @@ impl Kind {
                 "Equal to the byte on screen; against the reference, the display limit of the \
                  recipe's class over the samples: mean ΔE00, p99 ΔE00 and signed mean ΔL*"
             }
-            Self::Export => {
+            Self::Export | Self::ExportResized => {
                 "The display limit of the recipe's class over every pixel of the export; the same \
                  bytes from two runs on one machine and driver"
+            }
+            Self::Export16 => {
+                "The display limit of the recipe's class over every pixel of the export, ΔE00 \
+                 from the 16-bit values; the same bytes from two runs on one machine and driver"
             }
         }
     }
@@ -687,6 +713,28 @@ pub fn export(
     })
 }
 
+/// [`export`] of a 16-bit export, ΔE00 from the 16-bit values of every pixel.
+pub fn export16(
+    candidate: Rgb16<'_>,
+    repeat: Rgb16<'_>,
+    reference: Rgb16<'_>,
+) -> Result<ExportError, String> {
+    if reference.width() == 0 || reference.height() == 0 {
+        return Err("an empty 16-bit export".to_owned());
+    }
+    let (delta_e, delta_l) =
+        preview_error::differences16(candidate, reference, 0..reference.height())?;
+    Ok(ExportError {
+        statistics: preview_error::statistics_of(
+            reference.width() as usize,
+            reference.height() as usize,
+            &delta_e,
+            &delta_l,
+        )?,
+        repeatable: candidate == repeat,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,6 +755,32 @@ mod tests {
         assert_eq!(Kind::parse("picture"), None, "the picture is two kinds");
         let pictures: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.picture()).collect();
         assert_eq!(pictures, [Kind::PictureAtRest, Kind::PictureInMotion]);
+        let exports: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.export()).collect();
+        assert_eq!(exports, [Kind::Export, Kind::ExportResized, Kind::Export16]);
+        assert_eq!(Kind::parse("export-16bit"), Some(Kind::Export16));
+    }
+
+    /// A 16-bit export is held to the reference by ΔE00 from its 16-bit values: two codes a step
+    /// apart differ by far less than a step of 8 bits, equal frames by nothing, and a repeat of
+    /// other bytes is not repeatable.
+    #[test]
+    fn a_16_bit_export_is_compared_at_16_bits() {
+        let frame = |offset: u16| -> Vec<u16> {
+            (0..6 * 4)
+                .flat_map(|index| [index as u16 * 2000 + offset, 30_000, 50_000 - offset])
+                .collect()
+        };
+        let (reference, near) = (frame(0), frame(1));
+        fn rgb(values: &[u16]) -> Rgb16<'_> {
+            Rgb16::new(6, 4, values).unwrap()
+        }
+        let same = export16(rgb(&reference), rgb(&reference), rgb(&reference)).unwrap();
+        assert_eq!(same.statistics.max, 0.0);
+        assert!(same.repeatable);
+        let error = export16(rgb(&near), rgb(&reference), rgb(&reference)).unwrap();
+        assert!(!error.repeatable);
+        assert!(error.statistics.max > 0.0 && error.statistics.max < 0.01);
+        assert!(Rgb16::new(6, 5, &reference).is_err());
     }
 
     #[test]
