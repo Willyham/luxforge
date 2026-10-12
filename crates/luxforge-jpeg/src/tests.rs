@@ -138,6 +138,7 @@ pub(crate) fn baseline(width: u32, height: u32, chroma: (u8, u8)) -> Vec<u8> {
     let settings = Settings {
         quality: 88,
         chroma,
+        optimise: false,
         segments: &[],
         icc: None,
         pixels_per_inch: None,
@@ -773,6 +774,7 @@ fn encode_with(icc: Option<&[u8]>, segments: &[(u8, &[u8])]) -> Result<Vec<u8>, 
     let settings = Settings {
         quality: 90,
         chroma: (1, 1),
+        optimise: false,
         pixels_per_inch: None,
         segments,
         icc,
@@ -832,6 +834,7 @@ fn the_jfif_header_carries_the_density_asked_for() {
         let settings = Settings {
             quality: 90,
             chroma: (1, 1),
+            optimise: false,
             pixels_per_inch,
             segments: &[],
             icc: None,
@@ -915,7 +918,7 @@ const PINNED_DIGESTS: [(&str, &str); 6] = [
 
 /// What a test's step returns: its own stop, or the crate's error.
 #[derive(Debug)]
-enum Stepped {
+pub(crate) enum Stepped {
     Stop,
     Jpeg(JpegError),
 }
@@ -934,15 +937,16 @@ fn an_encode_stops_where_its_step_says() {
     let settings = Settings {
         quality: 90,
         chroma: (1, 1),
+        optimise: false,
         pixels_per_inch: None,
         segments: &[],
         icc: None,
     };
     let mut seen = Vec::new();
     let mut out = Vec::new();
-    let error = encode(&mut out, 40, 40, &rgba, &settings, &mut |rows| {
-        seen.push(rows);
-        if rows >= 32 {
+    let error = encode(&mut out, 40, 40, &rgba, &settings, &mut |progress| {
+        seen.push(progress.rows);
+        if progress.rows >= 32 {
             Err(Stepped::Stop)
         } else {
             Ok(())
@@ -954,8 +958,8 @@ fn an_encode_stops_where_its_step_says() {
 
     let mut seen = Vec::new();
     let mut whole = Vec::new();
-    encode(&mut whole, 40, 40, &rgba, &settings, &mut |rows| {
-        seen.push(rows);
+    encode(&mut whole, 40, 40, &rgba, &settings, &mut |progress| {
+        seen.push(progress.rows);
         Ok::<_, Stepped>(())
     })
     .unwrap();
@@ -1014,8 +1018,8 @@ fn streamed(
         let rows = (*sizes.next().unwrap()).min(height as usize - at);
         let band = &rgba[at * stride..(at + rows) * stride];
         encoder
-            .write_rows(rows, band, &mut |done| {
-                steps.push(done);
+            .write_rows(rows, band, &mut |progress| {
+                steps.push(progress.rows);
                 Ok::<_, JpegError>(())
             })
             .unwrap();
@@ -1039,15 +1043,23 @@ fn streamed_bands_encode_the_bytes_the_whole_frame_does() {
         pixels_per_inch: None,
         quality: 90,
         chroma: (1, 1),
+        optimise: false,
         segments: &segments,
         icc: Some(&profile),
     };
     let mut whole = Vec::new();
     let mut whole_steps = Vec::new();
-    encode(&mut whole, width, height, &rgba, &settings, &mut |rows| {
-        whole_steps.push(rows);
-        Ok::<_, JpegError>(())
-    })
+    encode(
+        &mut whole,
+        width,
+        height,
+        &rgba,
+        &settings,
+        &mut |progress| {
+            whole_steps.push(progress.rows);
+            Ok::<_, JpegError>(())
+        },
+    )
     .unwrap();
     let strips: Vec<usize> = (0..height as usize).step_by(STRIP_ROWS).collect();
     assert_eq!(whole_steps, [strips.as_slice(), &[613]].concat());
@@ -1088,6 +1100,7 @@ fn a_streamed_encode_cancels_between_strips_and_writes_nothing_more() {
         pixels_per_inch: None,
         quality: 90,
         chroma: (1, 1),
+        optimise: false,
         segments: &[],
         icc: None,
     };
@@ -1106,9 +1119,9 @@ fn a_streamed_encode_cancels_between_strips_and_writes_nothing_more() {
         let band = bands
             .next()
             .expect("the step stops the encode before the end");
-        let result = encoder.write_rows(band.len() / stride, band, &mut |rows| {
-            seen.push(rows);
-            if rows >= 96 {
+        let result = encoder.write_rows(band.len() / stride, band, &mut |progress| {
+            seen.push(progress.rows);
+            if progress.rows >= 96 {
                 Err(Stepped::Stop)
             } else {
                 Ok(())
@@ -1169,6 +1182,7 @@ fn a_short_band_is_an_error_not_an_abort() {
         pixels_per_inch: None,
         quality: 90,
         chroma: (1, 1),
+        optimise: false,
         segments: &[],
         icc: None,
     };
@@ -1177,7 +1191,7 @@ fn a_short_band_is_an_error_not_an_abort() {
         Ok::<_, JpegError>(())
     })
     .unwrap();
-    let mut ok = |_: usize| Ok::<_, JpegError>(());
+    let mut ok = |_: Progress| Ok::<_, JpegError>(());
     let refusal = |error: JpegError| match error {
         JpegError::Internal(why) => why,
         other => panic!("refused by libjpeg rather than by name: {other:?}"),

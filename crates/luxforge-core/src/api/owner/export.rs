@@ -21,7 +21,7 @@ use crate::{
     editor::ExportPlan,
     export::{
         CaptureMetadata,
-        encode::{encode_jpeg, encode_jpeg_rows},
+        encode::{BASELINE_90, encode_jpeg, encode_jpeg_rows},
         publish::{self, Destination, Staged},
     },
     jobs::{JobControl, JobKind, NewJob, Work},
@@ -392,6 +392,7 @@ pub(super) fn write(
     encode_jpeg(
         &mut staged,
         &frame,
+        &BASELINE_90,
         exif.as_deref(),
         options.pixels_per_inch,
         encoded,
@@ -442,6 +443,7 @@ fn streamed(
         &mut staged,
         size,
         bands,
+        &BASELINE_90,
         exif.as_deref(),
         encoding.pixels_per_inch,
         encoded,

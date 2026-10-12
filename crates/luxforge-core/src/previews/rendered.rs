@@ -879,6 +879,7 @@ fn encode(raster: &Raster, cancel: &Cancel) -> Result<Vec<u8>, Error> {
     let settings = Settings {
         quality: RENDERED_JPEG_QUALITY,
         chroma: RENDERED_CHROMA,
+        optimise: false,
         segments: &[],
         icc: None,
         pixels_per_inch: None,
