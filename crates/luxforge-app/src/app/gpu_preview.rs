@@ -297,7 +297,15 @@ fn rest_of(
             Ok(Some(grid)) => Some(grid),
         },
     };
-    rest_over(&source.gpu, stage.as_deref(), tiles, versions, version, overview).map(Some)
+    rest_over(
+        &source.gpu,
+        stage.as_deref(),
+        tiles,
+        versions,
+        version,
+        overview,
+    )
+    .map(Some)
 }
 
 /// `tiles` over the source `gpu` as the surfaces draw them under `version`, through `stage`, the
@@ -486,8 +494,15 @@ pub(crate) fn rest_now(
     let mut versions = version;
     // An overview the tiles carry is swept under the rest's own version.
     let overview = tiles.overview.as_ref().map(|_| version);
-    rest_over(gpu, stage.as_deref(), tiles, &mut versions, version, overview)
-        .map_err(str::to_owned)
+    rest_over(
+        gpu,
+        stage.as_deref(),
+        tiles,
+        &mut versions,
+        version,
+        overview,
+    )
+    .map_err(str::to_owned)
 }
 
 /// A boundary derived for the release gate's harness, where its texels lie in the plan's boundary
@@ -2336,10 +2351,7 @@ impl Editor {
         }) {
             return;
         }
-        let overview = tiles
-            .overview
-            .as_ref()
-            .and(self.overviews.sweep_version());
+        let overview = tiles.overview.as_ref().and(self.overviews.sweep_version());
         self.gpu.rests += 2;
         self.gpu.rest = Some(HeldRest {
             tiles,
@@ -2628,7 +2640,8 @@ impl Editor {
         #[cfg(test)]
         let figures: Option<luxforge_gpu::RestFigures> = None;
         #[cfg(not(test))]
-        let figures = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_rest;
+        let figures =
+            luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_rest;
         figures.is_some_and(|figures| {
             (figures.version == held.versions.picture || figures.version == held.versions.counts)
                 && figures.fallback.is_some()
@@ -2643,7 +2656,10 @@ impl Editor {
             return;
         };
         let content = held.content;
-        let tiles = held.tiles.clone().with_overview(luxforge_core::OVERVIEW_BOUNDS);
+        let tiles = held
+            .tiles
+            .clone()
+            .with_overview(luxforge_core::OVERVIEW_BOUNDS);
         self.overviews.swept();
         self.gpu_rest_from(Some(tiles), true);
         match self.gpu.rest.as_mut() {

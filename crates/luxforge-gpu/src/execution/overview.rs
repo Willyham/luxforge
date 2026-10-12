@@ -193,7 +193,10 @@ impl State {
 /// An overview texture of `size`, written through its storage view by a reduction's quantization
 /// or by an upload, sampled through an sRGB view as the photograph's textures are, and its
 /// placement uniform. Charged by the caller first.
-pub(super) fn overview_texture(device: &wgpu::Device, size: (u32, u32)) -> (Output, wgpu::TextureView) {
+pub(super) fn overview_texture(
+    device: &wgpu::Device,
+    size: (u32, u32),
+) -> (Output, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("luxforge.gpu_overview.output"),
         size: wgpu::Extent3d {
@@ -260,7 +263,10 @@ impl Executor {
             self.retire_overview(OverviewHeld::Texture(Box::new(old.output)), old.bytes);
         }
         store.builds += 1;
-        if store.refused.is_some_and(|(version, _)| version == finished.version) {
+        if store
+            .refused
+            .is_some_and(|(version, _)| version == finished.version)
+        {
             store.refused = None;
         }
         store.held.push(finished);
@@ -305,7 +311,9 @@ impl Executor {
         let Some(upload) = want.upload.as_ref().filter(|upload| {
             want.wants(upload.version)
                 && !store.held.iter().any(|held| held.version == upload.version)
-                && store.refused.is_none_or(|(version, _)| version != upload.version)
+                && store
+                    .refused
+                    .is_none_or(|(version, _)| version != upload.version)
         }) else {
             return;
         };

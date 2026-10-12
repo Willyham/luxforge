@@ -62,6 +62,8 @@
 //!   leaves the picture at rest for the surface's [`super::overview::OverviewStore`]. Its parts are
 //!   charged to the overview's ledger ([`super::overview::OVERVIEW_GPU_BUDGET`]) after the rest's
 //!   own; one it cannot reserve is refused by version, and the picture at rest is drawn without it.
+//!   It yields to the picture at rest: a tile the budget refuses later, nothing retiring, lets the
+//!   overview in progress go, refused by version, and is drawn a frame later without it.
 //! - **Figures.** What its tiles did, for attributing a slow picture at rest
 //!   ([`RestFigures`]): their evaluations summed — refits, rebinds, links run, lights encoded or
 //!   restored, window texels — the frames a tile waited for a retirement, and each tile's GPU span
@@ -739,6 +741,9 @@ pub struct RestSlot {
     /// The minimap overview's reduction in progress, until its last tile is in and the finished
     /// overview leaves for the surface's store.
     overview: Option<OverviewReduce>,
+    /// An overview in progress let go for a tile the budget refused, and why, until the surface
+    /// records its refusal.
+    overview_yielded: Option<(u64, GpuFallback)>,
     /// The rest output holds every tile's reduction, quantized, and the counts are read back.
     done: bool,
     /// The last frame found the next tile waiting for its sequence, its source or a retirement.
@@ -1040,6 +1045,12 @@ impl Executor {
             passes.as_deref(),
         );
         slot.prepare_us += started.elapsed().as_micros() as u64;
+        if let Some((version, fallback)) = slot.overview_yielded.take() {
+            surface.overview_refused(version, fallback);
+        }
+        let Some(slot) = surface.rest.as_deref_mut() else {
+            return;
+        };
         // A finished overview leaves the picture at rest for the surface's store, its accumulator,
         // tables and parameters retired; the texture stays charged to the overview's ledger.
         if let Some(overview) = slot.overview.take_if(|overview| overview.done) {
@@ -1108,8 +1119,10 @@ impl Executor {
                         return;
                     }
                     Err(fallback) => {
-                        slot.fallback = Some(fallback);
-                        self.release_gpu(&mut slot.tile);
+                        if !self.yield_overview(slot, &fallback) {
+                            slot.fallback = Some(fallback);
+                            self.release_gpu(&mut slot.tile);
+                        }
                         return;
                     }
                 }
@@ -1157,8 +1170,10 @@ impl Executor {
                     return;
                 }
                 Err(fallback) => {
-                    slot.fallback = Some(fallback);
-                    self.release_gpu(&mut slot.tile);
+                    if !self.yield_overview(slot, &fallback) {
+                        slot.fallback = Some(fallback);
+                        self.release_gpu(&mut slot.tile);
+                    }
                     return;
                 }
             }
@@ -1295,6 +1310,27 @@ impl Executor {
         // Nothing reads the stage textures again.
         self.release_stages(slot);
         self.figures.wake();
+    }
+
+    /// Let `slot`'s overview in progress go for a tile the budget refused with `fallback`: retired,
+    /// refused by version, and the tile drawn a frame later, once the retirement returns its
+    /// charge. The overview never costs the picture at rest its tiles. False, changing nothing,
+    /// for another fallback or with no overview in progress.
+    fn yield_overview(&self, slot: &mut RestSlot, fallback: &GpuFallback) -> bool {
+        if !matches!(fallback, GpuFallback::BudgetExceeded { .. }) {
+            return false;
+        }
+        let Some(overview) = slot.overview.take() else {
+            return false;
+        };
+        self.retire_overview(
+            super::overview::OverviewHeld::Parts(Box::new(overview.reduce.parts)),
+            overview.bytes,
+        );
+        slot.overview_yielded = Some((overview.version, fallback.clone()));
+        slot.waiting = true;
+        slot.retirement_waits += 1;
+        true
     }
 
     /// Fit `slot`'s tile slot for `plan`, a later sweep's tile, and copy its boundary, the window
@@ -1581,6 +1617,7 @@ impl Executor {
             reduce,
             bytes,
             overview: None,
+            overview_yielded: None,
             done: false,
             waiting: false,
             prepare_us: 0,

@@ -2252,10 +2252,15 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_backdrop = drawn_backdrop;
         diagnostic.drawn_rest_dissolve = drawn_rest_dissolve;
         diagnostic.gpu_rest = surface.rest_figures();
-        diagnostic.gpu_overview = Some(surface.overview_figures(pipeline.figures.preview.overview()));
+        diagnostic.gpu_overview =
+            Some(surface.overview_figures(pipeline.figures.preview.overview()));
         // A finished overview held, or one refused, wakes the desktop once, as a status does.
-        let overview_changed = diagnostic.gpu_overview.map(|figures| (figures.held, figures.refused))
-            != previous.gpu_overview.map(|figures| (figures.held, figures.refused));
+        let overview_changed = diagnostic
+            .gpu_overview
+            .map(|figures| (figures.held, figures.refused))
+            != previous
+                .gpu_overview
+                .map(|figures| (figures.held, figures.refused));
         diagnostic.drawn_content = drawn_content;
         let newly_drawn =
             drawn_full_version.is_some() && previous.drawn_full_version != drawn_full_version;

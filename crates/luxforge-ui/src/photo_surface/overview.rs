@@ -117,7 +117,14 @@ impl PhotoPrimitive {
         let (viewport, destination) = physical_rects(*bounds, self.offset, self.size, scale);
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
-        write_uniforms(queue, picture, viewport, destination, [x0, y0, x1, y1], turn);
+        write_uniforms(
+            queue,
+            picture,
+            viewport,
+            destination,
+            [x0, y0, x1, y1],
+            turn,
+        );
     }
 
     /// An overview primitive's `draw`: the overview alone, when the surface holds it.
