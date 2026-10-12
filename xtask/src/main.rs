@@ -218,6 +218,8 @@ fn main_result() -> Result {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
+        "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
         "develop" => {
             let debug = a.flag("--debug");

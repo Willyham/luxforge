@@ -1320,6 +1320,8 @@ enum Depends {
     /// Any workspace crate: a `luxforge` name, or any path. [`TEST_MACROS`] is not one: it depends
     /// on no crate (`dependency-free-test-macros`), so naming it reaches nothing.
     WorkspaceCrate,
+    /// Any workspace crate but these, each of which a rule of its own keeps a leaf.
+    WorkspaceCrateExcept(&'static [&'static str]),
 }
 
 /// The test attributes (`#[slow]`), which every crate's tests may name, the leaves' included.
@@ -1395,19 +1397,31 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "wgpu",
             "naga",
         ]),
-        manifests: &["xtask/cli"],
+        manifests: &["xtask/cli", "crates/luxforge-update"],
         tables: EVERY_TABLE,
         allowed: &[],
-        reason: "xtask-cli may not build images, native codecs, databases or GUI/GPU tooling",
+        reason: "xtask-cli, and the update feed crate it builds, may not build images, native \
+                 codecs, databases or GUI/GPU tooling",
     },
     DependencyRule {
         name: "photo-free-xtask-cli",
-        refuses: Depends::WorkspaceCrate,
+        refuses: Depends::WorkspaceCrateExcept(&["luxforge-update"]),
         manifests: &["xtask/cli"],
         tables: EVERY_TABLE,
         allowed: &[],
-        reason: "xtask-cli may depend on no workspace crate and no path, so repository checks \
-                 and dependency audits never compile the photo core or native codecs",
+        reason: "xtask-cli may depend on no workspace crate and no path but the leaf \
+                 luxforge-update, so repository checks and dependency audits never compile the \
+                 photo core or native codecs",
+    },
+    // xtask-cli builds the update feed crate, and the Linux updater links it, so it stays a leaf:
+    // nothing it builds against can bring the photo core, the GUI or a desktop crate to either.
+    DependencyRule {
+        name: "update-feed-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-update"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-update may depend on no workspace crate and no path",
     },
     DependencyRule {
         name: "image-jpeg-feature",
@@ -2048,6 +2062,9 @@ impl Depends {
             Depends::WorkspaceCrate => {
                 !named(&|n| n == TEST_MACROS)
                     && (dependency.path || named(&|n| n.starts_with("luxforge")))
+            }
+            Depends::WorkspaceCrateExcept(except) => {
+                Depends::WorkspaceCrate.refuses(dependency) && !named(&|n| except.contains(&n))
             }
         }
     }
@@ -2859,6 +2876,29 @@ mod tests {
             )],
         );
         assert!(refusal(root, &rules, path).contains("may not build images"));
+        // The update feed crate is the one workspace library it may build, and it is a leaf.
+        write_all(
+            root,
+            &[(
+                path,
+                "[dependencies]\nluxforge-update = { path = \"../../crates/luxforge-update\" }\n",
+            )],
+        );
+        assert!(read(root, &rules).is_ok());
+        let update = "crates/luxforge-update/Cargo.toml";
+        let rules = ["update-feed-leaf", "xtask-cli-no-photo-dependencies"];
+        write_all(root, &[(update, "[dependencies]\nring = \"0.17\"\n")]);
+        assert!(read(root, &rules).is_ok());
+        write_all(
+            root,
+            &[(
+                update,
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n",
+            )],
+        );
+        assert!(refusal(root, &rules, update).contains("no workspace crate and no path"));
+        write_all(root, &[(update, "[dependencies]\niced = \"0.14\"\n")]);
+        assert!(refusal(root, &rules, update).contains("may not build images"));
     }
     #[test]
     fn layer_boundaries_reject_a_forbidden_import() {
