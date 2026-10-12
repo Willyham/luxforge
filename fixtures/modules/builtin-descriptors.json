@@ -1137,7 +1137,7 @@
           },
           {
             "id": "mask.create-luminance-range",
-            "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add",
+            "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": 0.0,
@@ -1200,7 +1200,7 @@
           },
           {
             "id": "mask.add-luminance-range",
-            "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+            "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": null,
@@ -1374,7 +1374,7 @@
           },
           {
             "id": "mask.create-colour-range",
-            "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add",
+            "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": 50.0,
@@ -1397,7 +1397,7 @@
           },
           {
             "id": "mask.add-colour-range",
-            "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+            "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
             "parameters": [
               {
                 "default": null,
@@ -7830,7 +7830,7 @@
       "mask.add-colour-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+        "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "refine": "how tight the selection around each sampled colour is; a higher refine is always a narrower selection, geometrically between a whole colour family at 0 and one flat patch at 100"
         },
@@ -8080,7 +8080,7 @@
       "mask.add-luminance-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+        "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "high": "the bright edge of the band, on the histogram's own axis; it may not be below the dark edge",
           "high_feather": "how far above the bright edge the selection ramps away, in the same units; 0 is a hard edge and anything else is at least 1",
@@ -8462,7 +8462,7 @@
       "mask.create-colour-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add",
+        "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "refine": "how tight the selection around each sampled colour is; a higher refine is always a narrower selection, geometrically between a whole colour family at 0 and one flat patch at 100"
         },
@@ -8570,7 +8570,7 @@
       "mask.create-luminance-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add",
+        "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
         "optional": {
           "high": "the bright edge of the band, on the histogram's own axis; it may not be below the dark edge",
           "high_feather": "how far above the bright edge the selection ramps away, in the same units; 0 is a hard edge and anything else is at least 1",

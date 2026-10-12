@@ -6962,7 +6962,20 @@ mod tests {
                 "http://127.0.0.1:9",
             )))
             .unwrap();
-        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        // The range mask experiment on, so a range kind's create is answered on its fields rather
+        // than refused for the flag first.
+        let (owner, join) = OwnerHandle::start_with_host(
+            &catalog,
+            Arc::new(registry),
+            HostConfig {
+                launch_flags: crate::flags::LaunchFlags::resolve(
+                    None,
+                    &[(crate::flags::RANGE_MASKS, json!(true), "test")],
+                ),
+                ..HostConfig::unconfigured()
+            },
+        )
+        .unwrap();
         let client = owner.register();
         let schema = ok(&owner, client, "schema", "schema.list", json!({}));
         let listed = schema["methods"].as_object().expect("the methods");
