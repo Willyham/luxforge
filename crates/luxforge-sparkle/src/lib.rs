@@ -34,18 +34,6 @@ pub fn framework_present(bundle: &Path) -> bool {
     framework_path(bundle).join("Sparkle").is_file()
 }
 
-/// The app bundle an executable runs from: `<bundle>/Contents/MacOS/<executable>`. `None` for an
-/// executable outside a bundle, such as one `cargo` built.
-pub fn bundle_of(executable: &Path) -> Option<PathBuf> {
-    let macos = executable.parent()?;
-    let contents = macos.parent()?;
-    let bundle = contents.parent()?;
-    (macos.file_name()? == "MacOS"
-        && contents.file_name()? == "Contents"
-        && bundle.extension()? == "app")
-        .then(|| bundle.to_path_buf())
-}
-
 /// How far an update Sparkle offers has come, as `SPUUserUpdateState` tells it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -245,22 +233,6 @@ pub fn info_value(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_bundle_is_found_from_its_executable_only() {
-        assert_eq!(
-            bundle_of(Path::new("/Applications/Luxforge.app/Contents/MacOS/luxforge")),
-            Some(PathBuf::from("/Applications/Luxforge.app"))
-        );
-        for outside in [
-            "/Users/someone/luxforge/target/release/luxforge",
-            "/Applications/Luxforge.app/Contents/Helpers/luxforge-ctl",
-            "/tmp/Luxforge/Contents/MacOS/luxforge",
-            "luxforge",
-        ] {
-            assert_eq!(bundle_of(Path::new(outside)), None, "{outside}");
-        }
-    }
 
     #[test]
     fn the_framework_is_present_only_with_its_binary() {

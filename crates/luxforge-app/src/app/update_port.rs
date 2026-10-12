@@ -9,7 +9,8 @@
 //! with the configuration's feed base URL and key. On macOS it is the Sparkle port, when the app
 //! runs from a bundle that embeds `Sparkle.framework` and names `SUPublicEDKey` (the bundle
 //! `release-build` makes) and the [`LocationCheck`] places the bundle in Applications; outside
-//! them it reports `outside-applications`. Every other launch gets an [`UnavailablePort`]:
+//! them its [`MovePort`] reports `outside-applications` and moves the app into Applications when
+//! asked. Every other launch gets an [`UnavailablePort`]:
 //! development and test builds, and hidden, evidence and test-receiver launches, which is how
 //! smoke, verify and background runs start, so none of them ever contacts the real feed. A debug
 //! Linux build may be pointed at a local feed and key for a manual test ([`DEV_FEED`],
@@ -34,7 +35,7 @@ use super::{Editor, message::Message, sparkle_port::SparklePort, waker::Signal};
 use crate::Config;
 use iced::Subscription;
 use luxforge_core::{
-    Error,
+    Error, ErrorKind,
     capabilities::{
         endpoint::{EndpointClass, parse_endpoint},
         transport::{Method, RedirectPolicy, SendOptions, Transport, TransportRequest},
@@ -49,11 +50,12 @@ use luxforge_update::{
     AppcastItem, Channel, PublicKey, UpdateConfig,
     payload::{Cancel, Fetch, FetchKind, FetchRequest, Mode, Payload, Staged},
 };
+use luxforge_install::{MoveError, Placement, Roots};
 use serde_json::json;
 use std::{
     ffi::OsString,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock},
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -112,32 +114,13 @@ enum Choice {
     Sparkle,
 }
 
-/// Where a macOS app bundle runs, as far as updating it goes. The move into Applications
-/// (`docs/design/auto-update.md#moving-into-applications`) supplies the real classification; until
-/// it is wired in, every bundle counts as in Applications.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Placement {
-    /// In `/Applications` or `~/Applications`, on a writable volume, not translocated.
-    #[default]
-    Applications,
-    /// Translocated, on a disk image or read-only volume, or elsewhere: it cannot replace itself.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the move into Applications supplies the check that reports it"
-        )
-    )]
-    Outside,
-}
+/// Classifies where a macOS app bundle runs (`luxforge_install::classify`), injected so tests
+/// can place a bundle anywhere.
+pub(crate) type LocationCheck = Arc<dyn Fn(&Path) -> Placement + Send + Sync>;
 
-/// Classifies the running bundle's location ([`Placement`]), injected so that the move into
-/// Applications can supply its own.
-pub(crate) type LocationCheck = Arc<dyn Fn(&std::path::Path) -> Placement + Send + Sync>;
-
-/// The location check until the move into Applications provides one: every bundle is in place.
-pub(crate) fn in_applications() -> LocationCheck {
-    Arc::new(|_| Placement::default())
+/// The real location check: translocation, the volume and the Applications folders.
+pub(crate) fn system_location() -> LocationCheck {
+    Arc::new(luxforge_install::classify)
 }
 
 /// The platform a launch runs on, and on macOS what its bundle holds.
@@ -157,7 +140,9 @@ struct Bundle {
     key: bool,
     /// Its `Info.plist` sets [`JOURNEY_KEY`].
     journey: bool,
-    placement: Placement,
+    /// The [`LocationCheck`] put it outside `/Applications` and `~/Applications`, translocated,
+    /// or on a disk image or read-only volume, where it cannot replace itself.
+    outside: bool,
 }
 
 /// A development feed and key from the environment.
@@ -223,10 +208,9 @@ fn choose(
             Platform::Macos(bundle) if !bundle.key => {
                 Choice::Unavailable(UnavailableReason::NoUpdateKey)
             }
-            Platform::Macos(Bundle {
-                placement: Placement::Outside,
-                ..
-            }) => Choice::Unavailable(UnavailableReason::OutsideApplications),
+            Platform::Macos(bundle) if bundle.outside => {
+                Choice::Unavailable(UnavailableReason::OutsideApplications)
+            }
             Platform::Macos(_) => Choice::Sparkle,
             // Windows has no updater yet.
             Platform::Other => Choice::Unavailable(UnavailableReason::DevelopmentBuild),
@@ -242,18 +226,25 @@ fn choose(
     }
 }
 
-/// The running macOS bundle, when the executable runs from one, and what it holds.
-fn running_bundle(location: &LocationCheck) -> Option<(PathBuf, Bundle)> {
-    let executable = std::env::current_exe().ok()?;
-    let path = luxforge_sparkle::bundle_of(&executable)?;
+/// The running macOS bundle, when the executable runs from one, what it holds, and where it is.
+/// Only a bundle that could update (it embeds Sparkle and names a key, and is no journey's) is
+/// classified: a few file system and Security calls, at launch.
+fn running_bundle(location: &LocationCheck) -> Option<(PathBuf, Bundle, Option<Placement>)> {
+    let path = luxforge_install::running_bundle()?;
     let named = |key: &str| luxforge_sparkle::info_value(key).is_some_and(|v| !v.is_empty());
+    let framework = luxforge_sparkle::framework_present(&path);
+    let key = named("SUPublicEDKey");
+    let journey = luxforge_sparkle::info_value(JOURNEY_KEY).as_deref() == Some("1");
+    let placement = (framework && key && !journey).then(|| location(&path));
     let bundle = Bundle {
-        framework: luxforge_sparkle::framework_present(&path),
-        key: named("SUPublicEDKey"),
-        journey: luxforge_sparkle::info_value(JOURNEY_KEY).as_deref() == Some("1"),
-        placement: location(&path),
+        framework,
+        key,
+        journey,
+        outside: placement
+            .as_ref()
+            .is_some_and(|placement| !placement.location.in_applications()),
     };
-    Some((path, bundle))
+    Some((path, bundle, placement))
 }
 
 /// Whether this launch is one of the end-to-end update journey's ([`JOURNEY_KEY`]): a release
@@ -293,7 +284,7 @@ pub(crate) fn feed_update_from(item: &luxforge_sparkle::Item) -> FeedUpdate {
 /// The update port for this launch ([module documentation](self)), with every bundle counted as in
 /// Applications. A payload or Sparkle port it creates is also the one [`at_quit`] installs through.
 pub(super) fn select(config: &Config, transport: Arc<dyn Transport>) -> Arc<dyn UpdatePort> {
-    select_with(config, transport, in_applications())
+    select_with(config, transport, system_location())
 }
 
 /// [`select`] with the location check that classifies a macOS bundle.
@@ -318,7 +309,7 @@ pub(super) fn select_with(
     let platform = if linux {
         Platform::Linux
     } else if cfg!(target_os = "macos") {
-        Platform::Macos(bundle.as_ref().map(|(_, held)| *held).unwrap_or_default())
+        Platform::Macos(bundle.as_ref().map(|(_, held, _)| *held).unwrap_or_default())
     } else {
         Platform::Other
     };
@@ -334,6 +325,13 @@ pub(super) fn select_with(
         RELEASE_UPDATE_CONFIG,
         development,
     ) {
+        Choice::Unavailable(UnavailableReason::OutsideApplications) => {
+            let (_, _, placement) = bundle.expect("only a classified bundle is outside");
+            Arc::new(MovePort {
+                build: bundle_build(),
+                placement: placement.expect("only a classified bundle is outside"),
+            })
+        }
         Choice::Unavailable(reason) => Arc::new(UnavailablePort {
             reason,
             build: if release && linux {
@@ -345,7 +343,7 @@ pub(super) fn select_with(
             },
         }),
         Choice::Sparkle => {
-            let Some((path, _)) = bundle else {
+            let Some((path, _, _)) = bundle else {
                 return Arc::new(UnavailablePort::new(UnavailableReason::DevelopmentBuild));
             };
             let (port, listener) =
@@ -393,6 +391,77 @@ pub(super) fn select_with(
             let _ = INSTALLED.set(port.clone());
             port
         }
+    }
+}
+
+/// The port of a macOS release outside Applications (`docs/design/auto-update.md#moving-into-applications`):
+/// it cannot update until it moves, so `update.status` reports `unavailable` with the reason
+/// `outside-applications`, and `can_move_to_applications`. `update.move-to-applications` copies,
+/// verifies and places the app with `luxforge-install`, then hands the relaunch to the quit path
+/// ([`super::relaunch`]) and asks for the ordinary close, so the catalog closes before the app
+/// starts from its new place.
+struct MovePort {
+    build: Option<u64>,
+    placement: Placement,
+}
+
+impl UpdatePort for MovePort {
+    fn attach(&self, _: UpdateNotifier) {}
+
+    fn status(&self) -> PortStatus {
+        PortStatus {
+            build: self.build,
+            can_move_to_applications: true,
+            ..PortStatus::idle(Updater::Unavailable(
+                UnavailableReason::OutsideApplications,
+            ))
+        }
+    }
+
+    fn apply(&self, _: &UpdatePolicy) {}
+
+    fn check(&self, done: CheckDone) {
+        done.finish();
+    }
+
+    fn request_install(&self) -> Result<(), Error> {
+        Err(
+            Error::not_ready("Luxforge can update once it is in Applications")
+                .with_data(json!({ "reason": UnavailableReason::OutsideApplications.as_str() })),
+        )
+    }
+
+    fn skip(&self, _: &str) {}
+
+    /// The move runs here, on the owner thread, as the command's answer needs it: the copy and its
+    /// signature check take a few seconds for the person who asked, after which the app quits.
+    fn move_to_applications(&self, replace: bool) -> Result<(), Error> {
+        move_into_applications(&self.placement, replace, &luxforge_install::System)
+    }
+}
+
+/// Move `placement`'s app into Applications, then hand its relaunch to the quit path and ask for
+/// the ordinary close. A Luxforge already there is refused as `existing-app` unless `replace`.
+fn move_into_applications(
+    placement: &Placement,
+    replace: bool,
+    env: &dyn luxforge_install::MoveEnv,
+) -> Result<(), Error> {
+    let moved =
+        luxforge_install::move_to_applications(placement, &Roots::standard(), replace, env)
+            .map_err(move_refusal)?;
+    super::relaunch::relaunch(luxforge_install::Relaunch::moved(&moved));
+    super::relaunch::request_quit();
+    Ok(())
+}
+
+/// A move's refusal as `update.move-to-applications` answers it: `conflict` with `data.reason`
+/// `existing-app` and `data.path` for an app in the way, `not-ready` with the reason otherwise.
+fn move_refusal(error: MoveError) -> Error {
+    match &error {
+        MoveError::Existing(path) => Error::new(ErrorKind::Conflict, error.to_string())
+            .with_data(json!({ "reason": error.reason(), "path": path })),
+        _ => Error::not_ready(error.to_string()).with_data(json!({ "reason": error.reason() })),
     }
 }
 

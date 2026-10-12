@@ -51,9 +51,10 @@ const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis
 /// of it inside its evidence directory with an in-memory store, so it never touches the person's
 /// configuration or login keychain. Nothing is created here: the host creates a directory on its
 /// first write, and the transport builds its TLS configuration on its first request. The update
-/// port is chosen for the launch ([`super::update_port::select`]); only a Linux release build's
-/// payload port touches the disk here, probing once beside its payload whether it can replace
-/// itself. `tiles` is
+/// port is chosen for the launch ([`super::update_port::select`]); only a release build touches the
+/// disk here: a Linux payload port probes once beside its payload whether it can replace itself,
+/// and a macOS bundle that embeds Sparkle is classified (translocation and its volume) and loads
+/// the framework. `tiles` is
 /// the launch's GPU tile worker, which the owner's export lane streams every export through and
 /// which starts nothing until the first export asks it.
 pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
