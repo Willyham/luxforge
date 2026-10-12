@@ -1010,7 +1010,7 @@ mod tests {
         let first = first_plan(&expected).unwrap();
         first.validate().unwrap();
         assert!(first.scripted());
-        assert_eq!(first.len(), 20);
+        assert_eq!(first.len(), 27);
         let second =
             second_plan(&json!({"reopen": {"folder": "Jun 2026", "position": 0}})).unwrap();
         second.validate().unwrap();
