@@ -17,7 +17,8 @@
 //!   good, and nothing waits for a recovery.
 //! - **A tile.** [`TileRunner::submit`] draws a plan as the photo surface draws each tile of its
 //!   picture at rest: a fresh evaluation — every link, every spatial pass and the output, no link
-//!   state, plane or schedule kept from an earlier tile — over a boundary cut on the GPU from a
+//!   state, plane or schedule kept from an earlier tile, but a repair step's solved planes, which
+//!   no window decides (**Repairs**) — over a boundary cut on the GPU from a
 //!   window of the source ([`Derivation::Cut`], [`GpuSource::window`]), through the stage's one
 //!   compile, its chain of links and its pool of scratch planes, ending in the CPU's output
 //!   quantizer's codes ([`TileEnd::Codes`]), or in the linear values that quantizer reads
@@ -31,8 +32,10 @@
 //!   same window reads again — the desktop's worker hands every tile of a band its band's window, so
 //!   each band's rows are uploaded once — and the slot of its last tile's shape ([`SlotKey`]): the
 //!   boundary, each link's intermediate and buffers, a tail's intermediate and the output, which a
-//!   next tile of that shape draws into again, each written whole before it is read; and at most
-//!   two readback copies. A tile of another window or shape lets the old one go first.
+//!   next tile of that shape draws into again, each written whole before it is read; at most
+//!   two readback copies; and the solved planes of the last [`TILE_REPAIRS`] repair steps its
+//!   tiles read (**Repairs**). A tile of another window or shape lets the old window or slot go
+//!   first, and a tile of another source the solved planes.
 //! - **A repair's read set.** A repair step holds every rectangle its operations read in an atlas
 //!   of its own ([`super::fill`]), wherever it lies, so a tile's window holds its own rectangle and
 //!   halos, never a source across the frame. Beside the window, the runner holds a window of the
@@ -51,6 +54,19 @@
 //!   ([`light::LightInput::Stage`]) is reduced instead from the stage texture the sweep before the
 //!   reading one wrote ([`light::read_staged_light`]), once, before that sweep's first tile, and
 //!   kept under its input's identity.
+//! - **Repairs.** A repair step's passes read its input only through its read set and write only
+//!   planes of fixed sizes in atlas texels; only its apply, in the link's frame, reads the
+//!   boundary's window. So what its kept planes hold once its passes have run — the read set, the
+//!   composite its apply reads and the state chained groups leave — is a function of the read
+//!   set's contents, the source's pixels at its rectangles as the cut derives them, bit for bit
+//!   whether copied from the boundary or derived from a window of the source ([`super::fill`]),
+//!   and of the step's own words and blocks. The runner keeps a repair link's kept planes once a
+//!   tile has solved them, keyed by the source's version and kind, the boundary's format, the
+//!   rectangles and the step's program, words, blocks, planes, passes and applies ([`repair_key`]),
+//!   never by the tile's window or its boundary's version; a later tile whose link has that key
+//!   binds them for its frame and fills no read set and runs none of the step's passes
+//!   ([`super::SpatialSlot`]), so a stream's tiles and a call's reads solve each repair step once
+//!   (`repairs` in the figures). A tile copied out of a stage texture reads none and keeps none.
 //! - **Bounds.** Everything a tile creates is charged to [`GPU_TILE_BUDGET`], beside and apart from
 //!   the photo surface's GPU-preview budget, before anything is created: the window of the source,
 //!   the boundary, each link's intermediate, words and blocks, every link's kept planes and the
@@ -60,20 +76,25 @@
 //!   them; when only those pass the budget the tile waits for the GPU first. A light computed for
 //!   it is charged on its own before, its link, the largest window of the source one of its tiles
 //!   is cut from and its readback ([`light::read_light_charge`]), beside what the runner keeps. A
-//!   tile past it is refused (`tiles-budget`) having created and compiled nothing. Between tiles
-//!   the runner holds the window, the slot and the spare readback copies
+//!   tile past it is refused (`tiles-budget`) having created and compiled nothing. The solved
+//!   repair planes a tile reads are charged with its links' kept planes; those it does not read
+//!   are charged beside it, and go first when only they pass the budget. Between tiles the runner
+//!   holds the window, the slot, the spare readback copies and the solved repair planes
 //!   ([`TileRunner::release`] lets them go, [`TileRunner::abandon`] the tiles in flight), and at
 //!   most [`TILE_PIPELINE_CACHE`] compiled sequences beside its spatial passes' own cache of 64
-//!   modules; a tile's planes and pool go as it is submitted, and the device frees them once the
-//!   GPU is done with them; dropping the runner releases the rest. The window's upload passes
+//!   modules; a tile's planes and pool, but the repair planes it keeps, go as it is submitted,
+//!   and the device frees them once the GPU is done with them; dropping the runner releases the
+//!   rest. The window's upload passes
 //!   through wgpu's staging, one copy of the window's bytes until the GPU is done with it, which,
 //!   as the photo surface's own uploads, is not charged.
 //! - **Figures.** Each tile's time on its caller's thread, split into the lights it computed, the
 //!   window's upload, fitting the slot and encoding its work, the wait for its device once it is
 //!   finished and the readback ([`TileTimes`]): the last tile's and every tile's summed, with the
-//!   tiles in flight, the windows uploaded and the slots created ([`TileFigures`]).
+//!   tiles in flight, the windows uploaded, the slots created, the lights computed and the repair
+//!   steps solved ([`TileFigures`]).
 //! - **Determinism.** One device, one driver: the same plan over the same window draws the same
-//!   bytes every run, each a fresh evaluation in a fixed order with no float atomics.
+//!   bytes every run, each a fresh evaluation in a fixed order with no float atomics, a repair's
+//!   kept planes the same bits its passes would write again.
 //! - **Why the reference would answer instead.** Every failure is shaped as the core's tile
 //!   contract carries it, though this crate names no core type: unavailable (`no-adapter`,
 //!   `refused`, `device-lost`, `adapter-mismatch`), the budget (`tiles-budget`), or the plan's own
@@ -120,6 +141,11 @@ pub const TILE_PIPELINE_CACHE: usize = 65;
 /// How many lights a tile runner keeps, the least recently computed let go first: a stream's or a
 /// call's plan reads at most one for each estimating layer, and every tile of it reads the same.
 pub const TILE_LIGHTS: usize = 8;
+
+/// How many repair steps' solved planes a tile runner keeps, the least recently read let go first:
+/// a plan holds at most one repair layer, and a stage's codes and linear values plan it with planes
+/// of two formats.
+pub const TILE_REPAIRS: usize = 2;
 
 /// What a run reads back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -243,6 +269,9 @@ pub struct TileFigures {
     pub runs: u64,
     /// Lights it has computed and read back, each once for every tile that reads it.
     pub lights: u64,
+    /// Repair steps it has solved — their read set filled and every pass run — each once for every
+    /// tile that reads the solved planes it keeps.
+    pub repairs: u64,
     /// Where its last tile's time went, and every tile's summed ([`TileTimes`]).
     pub last: TileTimes,
     pub total: TileTimes,
@@ -303,6 +332,9 @@ pub struct TileRunner {
     sequences: Lru<Key, Sequence>,
     /// The lights it computed last, each under its key ([`light_key`]).
     lights: Lru<u64, [f32; 4]>,
+    /// The repair steps' planes it solved last, the most recently read last, at most
+    /// [`TILE_REPAIRS`] ([module](self) docs).
+    repairs: Vec<KeptRepair>,
     support: Support,
     /// The passes that cut a boundary from the window; none while the core's output encoding,
     /// whose decode table a JPEG's cut reads, is not installed, so a run makes them once it is.
@@ -668,6 +700,7 @@ impl TileRunner {
             light_sweep: None,
             sequences: Lru::new(TILE_PIPELINE_CACHE),
             lights: Lru::new(TILE_LIGHTS),
+            repairs: Vec::new(),
             support,
             layouts,
             lost,
@@ -701,6 +734,7 @@ impl TileRunner {
         self.drop_window();
         self.drop_slot();
         self.readbacks.clear();
+        self.repairs.clear();
         self.account();
     }
 
@@ -757,6 +791,12 @@ impl TileRunner {
             + self.light_sweep.as_ref().map_or(0, |sweep| sweep.bytes)
             + self.pinned()
             + self.spare()
+            + self.repair_bytes()
+    }
+
+    /// What the repair steps' solved planes it keeps take, as charged.
+    fn repair_bytes(&self) -> u64 {
+        self.repairs.iter().map(|kept| kept.planes.bytes).sum()
     }
 
     /// Hold `count` stage textures of `stage` in `format`, each a content stage in at most 2 × 2
@@ -902,7 +942,9 @@ impl TileRunner {
     /// - **Held between tiles.** The window of the source is uploaded unless the runner holds that
     ///   window already, so a caller handing every tile of a band the band's window uploads it
     ///   once; the slot's textures and buffers are kept for a next tile of the same shape
-    ///   ([`SlotKey`]), each tile still a fresh evaluation over them.
+    ///   ([`SlotKey`]), each tile still a fresh evaluation over them; and a repair step's solved
+    ///   planes are kept for a next tile of its step and source, which reads them solved
+    ///   ([module](self) docs, "Repairs").
     /// - **In flight.** At most [`TILES_IN_FLIGHT`] tiles are submitted and not read back: with as
     ///   many already, it refuses (`pipeline-failed`) having created nothing.
     /// - **Charged.** To [`GPU_TILE_BUDGET`] before anything is created: the window, the slot and
@@ -1027,11 +1069,25 @@ impl TileRunner {
         if self.slot.as_ref().is_some_and(|slot| slot.key != key) {
             self.drop_slot();
         }
+        // The repair steps' solved planes the tile reads, each charged with its link's kept planes;
+        // those of another source go, and those it does not read go first when it needs the room.
+        let repairs = repair_keys(plan, source, input);
+        self.repairs.retain(|kept| kept.version == source.version());
+        let unread = |kept: &[KeptRepair]| {
+            kept.iter()
+                .filter(|kept| !repairs.contains(&Some(kept.key)))
+                .map(|kept| kept.planes.bytes)
+                .sum::<u64>()
+        };
+        if single + self.pinned() + self.spare() + unread(&self.repairs) > GPU_TILE_BUDGET {
+            self.repairs
+                .retain(|kept| repairs.contains(&Some(kept.key)));
+        }
         if single + self.pinned() + self.spare() > GPU_TILE_BUDGET {
             self.settle();
             self.readbacks.clear();
         }
-        let requested = single + self.pinned() + self.spare();
+        let requested = single + self.pinned() + self.spare() + unread(&self.repairs);
         if requested > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
                 requested,
@@ -1050,7 +1106,7 @@ impl TileRunner {
         let submitted = self.encode(
             plan,
             (held.as_ref(), &reads, input, output),
-            (window, key, slot_bytes),
+            (window, key, slot_bytes, &repairs),
             &pipelines,
             &lights,
             &mut times,
@@ -1072,6 +1128,7 @@ impl TileRunner {
             (Ok(_), true) => {
                 // What it created is in doubt: nothing of it is kept.
                 self.drop_slot();
+                self.repairs.clear();
                 self.account();
                 return Err(TileFailure::PIPELINE_FAILED);
             }
@@ -1567,13 +1624,16 @@ impl TileRunner {
     /// window; every link before the last into its intermediate; the last into the output, through
     /// a geometry tail's intermediate when it holds one; and the output copied out. Each link's
     /// state, kept planes and pool are the tile's own, a fresh evaluation, and go as it returns, so
-    /// the device frees them once the GPU is done with them; the slot's textures and buffers stay
-    /// for the next tile of its shape, each written whole before it is read.
+    /// the device frees them once the GPU is done with them — but a repair link's kept planes,
+    /// keyed by `repairs` (one for each link, [`repair_keys`]): those
+    /// the runner keeps under the link's key are read solved, no read set filled and no pass run,
+    /// and a link's it does not are solved and kept. The slot's textures and buffers stay for the
+    /// next tile of its shape, each written whole before it is read.
     fn encode(
         &mut self,
         plan: &GpuPlan,
         (held, reads, input, output): (Option<&GpuSource>, &[GpuSource], TileInput, TileOutput),
-        (tile_window, key, slot_bytes): ([u32; 4], SlotKey, u64),
+        (tile_window, key, slot_bytes, repairs): ([u32; 4], SlotKey, u64, &[Option<u64>]),
         pipelines: &[(Compiled, u64)],
         lights: &[[f32; 4]],
         times: &mut TileTimes,
@@ -1615,10 +1675,10 @@ impl TileRunner {
         }
         let mut last_words = Vec::new();
         chain::pack_words(texels, output_offset(plan), chain.last, &mut last_words);
-        let derivation = plan
+        let (version, derivation) = plan
             .boundary
             .derivation()
-            .map(|(_, derivation)| derivation)
+            .map(|(version, derivation)| (*version, derivation))
             .ok_or(TileFailure::PIPELINE_FAILED)?;
         // The cut's words, for a boundary cut from the window of the source the runner holds.
         let cut = match input {
@@ -1634,6 +1694,25 @@ impl TileRunner {
             self.slot = Some(Slot::create(&self.device, key)?);
             self.figures.slots += 1;
         }
+        // The solved planes the runner keeps for each link that reads them, taken for the tile.
+        let mut solved: Vec<Option<spatial::Planes>> = repairs
+            .iter()
+            .map(|key| {
+                let at = self
+                    .repairs
+                    .iter()
+                    .position(|kept| Some(kept.key) == *key)?;
+                Some(self.repairs.remove(at).planes)
+            })
+            .collect();
+        let mut planes_of =
+            |link: usize, device: &wgpu::Device, key, pool: &mut spatial::Pool| match solved
+                .get_mut(link)
+                .and_then(Option::take)
+            {
+                Some(planes) => SpatialSlot::solved(planes, pool),
+                None => SpatialSlot::new(spatial::Planes::create(device, key), pool),
+            };
         let device = &self.device;
         let queue = &self.queue;
         let slot = self.slot.as_mut().expect("the slot fitted");
@@ -1757,12 +1836,8 @@ impl TileRunner {
                 bindings,
                 intermediate_bytes(size, key.shape.format),
             );
-            link.spatial = spatial::PlanesKey::of(steps, size, origin).map(|key| {
-                Box::new(SpatialSlot::new(
-                    spatial::Planes::create(device, key),
-                    &mut pool,
-                ))
-            });
+            link.spatial = spatial::PlanesKey::of(steps, size, origin)
+                .map(|key| Box::new(planes_of(links.len(), device, key, &mut pool)));
             link.write(queue, packed, steps);
             link.encode(
                 device,
@@ -1790,7 +1865,7 @@ impl TileRunner {
         let reads = links.last().map_or(&slot.boundary, |link| &link.texture);
         let bindings = self.bindings(reads, &slot.words.buffer, &slot.blocks.buffer);
         let mut last = spatial::PlanesKey::of(chain.last, size, origin)
-            .map(|key| SpatialSlot::new(spatial::Planes::create(device, key), &mut pool));
+            .map(|key| planes_of(chain.links.len(), device, key, &mut pool));
         if let Some(spatial) = last.as_mut() {
             spatial
                 .tick(
@@ -1849,6 +1924,26 @@ impl TileRunner {
             ),
             _ => return Err(TileFailure::PIPELINE_FAILED),
         }
+        // The repair links' planes, solved now or read solved: kept once the tile is submitted.
+        let spatials = links
+            .iter_mut()
+            .map(|link| link.spatial.take().map(|spatial| *spatial))
+            .chain(std::iter::once(last.take()));
+        let kept: Vec<(bool, KeptRepair)> = repairs
+            .iter()
+            .zip(spatials)
+            .filter_map(|(key, spatial)| {
+                let (key, spatial) = ((*key)?, spatial?);
+                Some((
+                    spatial.solved,
+                    KeptRepair {
+                        key,
+                        version,
+                        planes: spatial.into_planes(),
+                    },
+                ))
+            })
+            .collect();
         let readback = match output {
             // The output copied out, each row padded to the copy's alignment, into a copy a tile
             // read back left or a new one.
@@ -1950,6 +2045,13 @@ impl TileRunner {
             }
         };
         let index = queue.submit([encoder.finish()]);
+        for (read, repair) in kept {
+            self.figures.repairs += u64::from(!read);
+            self.repairs.push(repair);
+        }
+        if self.repairs.len() > TILE_REPAIRS {
+            self.repairs.drain(..self.repairs.len() - TILE_REPAIRS);
+        }
         let readback = readback.map(|(buffer, bytes, padded, end)| {
             let (sender, mapped) = mpsc::channel();
             buffer
@@ -2150,6 +2252,99 @@ impl<K, V> Lru<K, V> {
     fn len(&self) -> usize {
         self.entries.len()
     }
+}
+
+/// A repair step's solved planes, the link's kept textures, kept under their key for a source of
+/// `version` ([module](self) docs).
+struct KeptRepair {
+    key: u64,
+    version: u64,
+    planes: spatial::Planes,
+}
+
+/// The key of each link of `plan`, in chain order, whose solved planes the runner keeps
+/// ([`repair_key`]); `None` for every other link, and for every link of a tile copied out of a
+/// stage texture, whose boundary is no cut of the source.
+fn repair_keys(plan: &GpuPlan, source: &GpuSource, input: TileInput) -> Vec<Option<u64>> {
+    let chain = chain::chain(&plan.steps);
+    chain
+        .links
+        .iter()
+        .copied()
+        .chain(std::iter::once(chain.last))
+        .map(|steps| match input {
+            TileInput::Source => repair_key(source, plan.boundary.format(), steps),
+            TileInput::Stage(_) => None,
+        })
+        .collect()
+}
+
+/// What a link's solved planes are kept under, when its spatial step is a repair step whose result
+/// no window decides: a step holding its read set ([`super::ReadAtlas`]), every plane of a fixed
+/// size, no pass reading its input but through that set, and no mask. Its planes then hold a
+/// function of the read set's contents — the source's pixels at the rectangles, as its cut
+/// derives them, bit for bit wherever the boundary holds them ([`super::fill`]) — and of the
+/// step's own words and blocks alone. So the key is the source's version and kind, the boundary's
+/// format, the rectangles and the step: its program, words and blocks, its resident blocks' key,
+/// its clamp, planes, passes and applies. Never the window, the boundary's version or the texel
+/// map, which only the frame's apply reads.
+fn repair_key(source: &GpuSource, format: BoundaryFormat, steps: &[GpuStep]) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let Some(GpuStep::Spatial(step)) = steps.first() else {
+        return None;
+    };
+    let reads = step.reads.as_ref()?;
+    let fixed = step.planes.iter().all(|plane| {
+        matches!(
+            plane.size,
+            spatial::PlaneSize::Extent(luxforge_gpu_types::PlaneSize::Fixed { .. })
+        )
+    });
+    let held = step
+        .passes
+        .iter()
+        .all(|pass| !pass.reads_source && pass.source == 0);
+    if !fixed || !held || step.mask.is_some() {
+        return None;
+    }
+    let mut hasher = std::hash::DefaultHasher::new();
+    ("repair", source.version(), source.kind(), format, reads).hash(&mut hasher);
+    let program = &step.program;
+    (
+        program.entry.as_ref(),
+        program.source.as_ref(),
+        &program.words,
+        &program.block[..],
+    )
+        .hash(&mut hasher);
+    (
+        step.clamps,
+        &step.planes,
+        step.resident_key,
+        step.resident_len(),
+    )
+        .hash(&mut hasher);
+    for pass in &step.passes {
+        (
+            pass.kernel.as_ref(),
+            &pass.inputs,
+            pass.output,
+            pass.words,
+            pass.shape,
+            pass.unit,
+        )
+            .hash(&mut hasher);
+    }
+    for apply in &step.applies {
+        (
+            apply.function.as_ref(),
+            &apply.planes,
+            apply.words,
+            apply.identity,
+        )
+            .hash(&mut hasher);
+    }
+    Some(hasher.finish())
 }
 
 /// A window of `source` for each rectangle of `plan`'s repair read sets ([`super::ReadAtlas`]),
