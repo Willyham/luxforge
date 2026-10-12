@@ -363,7 +363,7 @@
     {
       "id": "TASK-007",
       "description": "Build the desktop's update offer, Settings Updates group and palette entry.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
