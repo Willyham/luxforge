@@ -272,6 +272,9 @@ pub struct FrameFacts {
     pub position: Option<GeoPosition>,
     pub body: BodyIndex,
     pub exposure: Exposure,
+    /// A merge's result: dated by its reference frame, but not a capture, so it links into no
+    /// burst or bracket.
+    pub merged: bool,
 }
 
 /// One event: frames `start..start + len` of [`EventSet::order`].

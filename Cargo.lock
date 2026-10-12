@@ -2314,6 +2314,7 @@ name = "luxforge-testkit"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-raw",
  "luxforge-reference",
  "luxforge-testbase",
  "serde_json",

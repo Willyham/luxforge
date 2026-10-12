@@ -30,6 +30,8 @@ fn summary(count: u32, groups: GroupLayout) -> ViewSummary {
         picked: 3,
         in_catalog: 0,
         unavailable: 0,
+        stacks: 0,
+        collapsed: 0,
         groups,
         library_sequence: LibraryChangeSeq(1),
         index_revision: 1,
@@ -126,7 +128,7 @@ fn moment(
         detail: detail.into(),
         evidence: evidence.map(Into::into),
         picked: None,
-        action: bracket.then(|| format!("Pick all {frames}")),
+        actions: moment_actions(bracket, 0, frames),
         frames,
         collapsed,
     }
@@ -140,7 +142,7 @@ fn numbered(block: Block, number: u32, picked: Option<&str>) -> Block {
             title,
             detail,
             evidence,
-            action,
+            actions,
             frames,
             collapsed,
             ..
@@ -151,7 +153,7 @@ fn numbered(block: Block, number: u32, picked: Option<&str>) -> Block {
             detail,
             evidence,
             picked: picked.map(Into::into),
-            action,
+            actions,
             frames,
             collapsed,
         },
@@ -231,10 +233,17 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
     // bracket does.
     let mut all = trip.clone();
     all.groups.moments[1].picked = 3;
-    assert!(grid_content(&all, &BTreeSet::new()).blocks.iter().any(|block| matches!(
-        block,
-        Block::Moment { index: 1, action: None, picked: Some(picked), .. } if picked == "3 picked"
-    )));
+    assert!(
+        grid_content(&all, &BTreeSet::new())
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                Block::Moment { index: 1, actions, picked: Some(picked), .. }
+                    if picked == "3 picked"
+                        && actions.iter().all(|action| !matches!(action, MomentAction::PickAll(_)))
+            ))
+    );
     let mut photos = trip.clone();
     photos.query = ViewQuery::of(ViewSource::AllPhotographs);
     assert!(
@@ -243,10 +252,7 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
             .iter()
             .all(|block| !matches!(
                 block,
-                Block::Moment {
-                    action: Some(_),
-                    ..
-                }
+                Block::Moment { actions, .. } if !actions.is_empty()
             ))
     );
     // The bracket's frames carry their steps as footers; nothing else has one.
@@ -487,6 +493,7 @@ fn the_select_sources_panel_lists_cards_volumes_folders_and_counts() {
             photographs: 842,
             recently_developed: 6,
             removed: 4,
+            removed_merges: 0,
             unavailable: 212,
             folders: 3,
             collections: 1,
@@ -1007,6 +1014,8 @@ fn row(position: u32) -> ViewRow {
         collections: Vec::new(),
         availability: FileAvailability::Available,
         preview: PreviewState::Pending,
+        stack: None,
+        reason: None,
     }
 }
 
@@ -1577,12 +1586,13 @@ fn select_picking_decides_sends_and_says_what_an_agent_sees() {
             Some(&json!({
                 "items": [{"kind": "pick", "path": "/Volumes/NIKON Z 8/DCIM/DSC_0412.NEF"}],
                 "count": 3,
-            }))
+            })),
+            |_| None,
         )
         .as_deref(),
         Some("Could not undo: DSC_0412.NEF and 2 other items changed since")
     );
-    assert_eq!(refusal_text(LibraryGesture::Redo, None), None);
+    assert_eq!(refusal_text(LibraryGesture::Redo, None, |_| None), None);
     assert_eq!(LibraryGesture::Undo.nothing(), "Nothing to undo");
     assert_eq!(LibraryGesture::Redo.method(), "library.redo");
 
@@ -1835,5 +1845,8 @@ fn a_send_back_is_said_as_the_core_records_and_refuses_it() {
     );
     let data =
         json!({"items": [{"kind": "developed-asset", "asset_id": AssetId::new()}], "count": 1});
-    assert_eq!(refusal_text(LibraryGesture::Undo, Some(&data)), None);
+    assert_eq!(
+        refusal_text(LibraryGesture::Undo, Some(&data), |_| None),
+        None
+    );
 }

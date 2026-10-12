@@ -358,6 +358,16 @@ impl Happened {
         }
     }
 
+    /// The same, an open naming the photograph `name` when there is one: what the title bar names
+    /// it ([`super::title::document_name`]), which for a merged photograph is its catalog name
+    /// rather than its source's locator.
+    pub(crate) fn naming(self, name: Option<String>) -> Self {
+        match (self, name) {
+            (Self::Opened { .. }, Some(file)) => Self::Opened { file },
+            (happened, _) => happened,
+        }
+    }
+
     pub(crate) fn sentence(&self) -> String {
         match self {
             Self::Pasted(sentence) => sentence.clone(),
@@ -901,6 +911,22 @@ mod tests {
         assert_eq!(
             Happened::Opened { file: file.clone() }.sentence(),
             format!("Opened {file}")
+        );
+        // An open names the photograph as the title bar does, a merged one by its catalog name;
+        // nothing else is renamed.
+        assert_eq!(
+            Happened::opened(&opened)
+                .naming(Some("DSC_0001 HDR".into()))
+                .sentence(),
+            "Opened DSC_0001 HDR"
+        );
+        assert_eq!(
+            Happened::opened(&opened).naming(None),
+            Happened::Opened { file: file.clone() }
+        );
+        assert_eq!(
+            Happened::NothingApplied.naming(Some("DSC_0001 HDR".into())),
+            Happened::NothingApplied
         );
         // The same current entry read again is not news.
         assert_eq!(Happened::between(Some(&opened), &opened, true, false), None);

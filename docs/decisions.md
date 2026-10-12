@@ -15,9 +15,9 @@ Decided on 2026-10-05 for the planned [visibility and monitoring](design/visibil
 - A fast, non-destructive desktop editor for professional and prosumer collections on macOS, Windows and Linux.
 - The owner's M4 MacBook Pro (M4 Pro, 14 CPU and 20 GPU cores, 48 GB unified memory, macOS 26.5.2) is the first target and the reference machine.
 - Engineering baselines: macOS 14+ arm64, Windows 11 24H2+ x64, Ubuntu 24.04 x64 with GNOME Wayland and X11. These are intended targets, not verified support; see [platforms](engineering/platforms.md).
-- Development packages stay unsigned. Tag-build candidates have optional explicit signing/notarization; stores, auto-update and a public release remain absent.
+- Development packages stay unsigned. Tag-build candidates have optional explicit signing/notarization; stores and a public release remain absent. [Automatic updates](#automatic-updates) are decided and ship with the first release.
 - Project code is GPL-3.0-or-later. Dependencies and extensions should be open source and license-compatible; no proprietary hosted service is a development prerequisite. The manual license, native and asset review is deferred and is not a passing result.
-- Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported; no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No public compatibility framework, cloud or accounts, marketplace or generalized processing graph.
+- Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported until 1.0.0, when catalogs gain guaranteed migrations ([catalog compatibility](#catalog-compatibility)); no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No public compatibility framework, cloud or accounts, marketplace or generalized processing graph.
 - Initial RAW targets are the original Nikon Z6 and the Fujifilm X100VI; implementation is requested, with the supplied DJI Air 2S DNG added for qualification. Benchmark established decoders before proposing a custom one.
 - RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. The development itself is neutral and selects no Adobe matching; new RAW photos start from a Luxforge look on top of it, with camera-preview matching as a setting ([RAW looks](#raw-looks)). See the [initial RAW design](design/initial-raw.md).
 - Lightroom Library and Develop are familiarity references; their sliders' responses are followed ([Lightroom alignment](#lightroom-alignment)). Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
@@ -29,11 +29,19 @@ The owner requested preparation for a v0.1 release on 2026-10-08. The [design](d
 
 
 The owner also requested implemented tag-triggered binary builds. Short `v0.1` normalizes to `0.1.0`; release tags supply the compiled application version without editing the workspace version/lockfile. The [tag workflow](design/tag-release-builds.md) builds macOS and Linux, optionally signs/notarizes macOS when hosted credentials are configured, and automatically publishes a GitHub pre-release after both builds and all asset uploads succeed. Assets are staged in a temporary draft before publication; a failed upload leaves it unpublished. Publication does not establish a release-ready verdict; source/policy/native/install gates remain open. The owner-requested `cargo xtask release TAG` requires clean synchronized main, runs quick checks, rechecks state and pushes one annotated tag; `--dry-run` checks Git state without mutation. No real release invocation or private credential export/upload is performed during implementation.
+## Automatic updates
+
+The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1, and decided: no launcher application, with an offer to move the app into Applications on macOS; Sparkle 2 on macOS; an in-house updater on Linux that replaces the user-level payload, falling back to offering a download when it cannot; Windows later on the same feed, key and commands; feeds served by the one backend API under `https://api.luxforge.app/v1/updates/`; and a release build that checks automatically without asking, offers what it finds, and installs automatically only when the person turns that on. The macOS download becomes a drag-to-Applications disk image. The [design](design/auto-update.md) and [task plan](../tasks/project/auto-update.json) describe the work; implementation is not authorized by the plan.
+
+## Catalog compatibility
+
+On 2026-10-12 the owner reset the catalog format to 1. Until 1.0.0, catalog format changes still need no migration and earlier formats are refused unchanged. From 1.0.0 onwards, every catalog format change ships with an automatic migration from each released format. Before then an update that changes the catalog format is flagged in its offer and never installed automatically, and the desktop launches past a catalog it cannot open with an offer to start a new one ([automatic updates](design/auto-update.md#launching-past-an-unsupported-catalog)).
+
 ## Editing and storage
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. **Auto collapse history** (owner, 2026-10-04) is a preference, on by default: an edit that sets the same control as the entry just committed hides that entry, and one that returns the control to where the run began moves back to the run's base without writing an entry. Collapsing hides entries and never deletes them; they stay in the catalog and reachable by id ([auto-collapse](design/versions-and-lineage.md#auto-collapse)). A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses its [current internal format](design/versions-and-lineage.md#storage-catalog-format-13); unsupported formats are refused.
+- History is a graph: entries keep their undo parent and nothing is truncated. **Auto collapse history** (owner, 2026-10-04) is a preference, on by default: an edit that sets the same control as the entry just committed hides that entry, and one that returns the control to where the run began moves back to the run's base without writing an entry. Collapsing hides entries and never deletes them; they stay in the catalog and reachable by id ([auto-collapse](design/versions-and-lineage.md#auto-collapse)). A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses its [current internal format](design/versions-and-lineage.md#storage-the-catalog-format); unsupported formats are refused.
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -113,7 +121,7 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
 - No remote provider adapter ships with the framework; the first real adapters arrive with [AI editing](design/ai-editing.md). `managed-storage` waits for its first consumer; `local-runtime` is defined by AI editing.
 - Revised by the owner on 2026-10-05: consent to send photo data to a provider is remembered per provider profile and data class until revoked, in place of per asset; the change lands with AI editing's remote tier.
-- Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-13) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
+- Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-the-catalog-format) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
 
 Revised by the owner on 2026-09-24, after the [architecture review](#architecture-review):
 
@@ -134,13 +142,13 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Speed and unused-tool bloat | Measure startup, loading, idle and first-use costs; keep the core small and initialize lazily |
 | Filtering, tagging and collections | Design one retrieval model from concrete workflows |
 | Full catalog with lazy shoot subsets | Keep catalog scale independent of decoded pixels; scope views to the working set |
-| Multi-selection and stacking | Multi-selection is delivered; result-led merge stacks are [planned](design/hdr-merge.md) |
-| Bracket and panorama identification | Brackets are detected; [HDR merging](#hdr-exposure-merges) is requested for planning; panorama stitching remains outside that plan |
+| Multi-selection and stacking | Multi-selection and result-led HDR merge stacks are delivered ([design](design/hdr-merge.md)) |
+| Bracket and panorama identification | Brackets are detected and [HDR merging](#hdr-exposure-merges) is implemented; [panorama merging](#panorama-merges) is planned from a selection, without automatic panorama grouping |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
 ## Presets
 
-The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (see [versions and lineage](design/versions-and-lineage.md#storage-catalog-format-13)), only field-patch actions presettable, `apply-settings` carrying its settings, Lightroom values transferred for the controls Luxforge has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (see [versions and lineage](design/versions-and-lineage.md#storage-the-catalog-format)), only field-patch actions presettable, `apply-settings` carrying its settings, Lightroom values transferred for the controls Luxforge has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
 
 ## Rendering memory
 
@@ -485,13 +493,40 @@ The final refinement task may build the grading-only slice of the alignment tool
 
 Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)):
 
-- Select's grid offers **Import merged** and **Pick merged** for exposure brackets, creates one HDR result shown as a virtual photograph and collapses the original frames into a stack.
+- Select's grid offers a merge for exposure brackets, creates one HDR result shown as a virtual photograph and collapses the original frames into a stack.
 - Keep the merged pixels durably on disk so ordinary reopening needs no repeated merge; source files stay unchanged and each bracket frame can still be picked independently.
 - A merge can be removed or undone without losing the originals. The planned lifecycle retains the generated result and edits for restoration through library undo/redo.
-- **Pick merged adds the result to the development set by default.** The design distinguishes Import's catalog-only result from Pick's appended set member and keeps Select open; ordinary file picks remain the existing workflow.
-- Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Do not implement or plan panorama stitching now.
+- **One Merge action** (owner, 2026-10-11, superseding Pick merged and Import merged): **Merge HDR** makes the result in its catalog folder and keeps Select open, since the development set Pick merged added to was removed ([Develop from catalog folders](#develop-from-catalog-folders)); ordinary file picks remain the existing workflow.
+- Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Panoramas were planned separately afterwards ([panorama merges](#panorama-merges)).
 
-The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract, so the storage, radiance and alignment tasks can start independently once implementation is authorized. This planning request does not authorize implementation.
+The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract. The owner authorized implementation on 2026-10-10.
+
+## Panorama merges
+
+Requested for design by the owner on 2026-10-11 ([design](design/panorama-merge.md), [task plan](../tasks/library/panorama-merge.json)), as a second merge kind beside [HDR exposure merges](#hdr-exposure-merges), with the same merge workflow (one **Merge panorama** action since 2026-10-11), stacks, lifecycle and saved derived source. The owner chose:
+
+- **RAW or JPEG frames.** Every frame of one merge is RAW, or every frame is JPEG; mixing them is refused. HDR panoramas (bracketed positions) are outside this plan, and HDR merges stay RAW-only.
+- **Selection only.** Selecting frames offers the panorama merge, and the job checks their overlap; automatic panorama detection or grouping stays a later catalog feature.
+- **Automatic crop with Boundary Warp.** The saved result is always the largest clean rectangle, with a Boundary Warp option (0–100) that bends the stitch to fill the rectangle instead; no empty pixels reach the editor.
+- **Raise the limits for derived sources** to about 65,000 pixels a side and 512 MP, rather than scaling a panorama down to the current 128 MP; camera files keep their current limits.
+
+The owner then chose, the same day, a **merge preview that opens first, for both kinds**. It works like Lightroom's Photo Merge preview:
+
+- The merge action opens a sheet with a picture built from the frames' proxies, the kind's settings and the merge button. ⌥-click merges at once with the kind's last settings.
+- The preview's reading and alignment are reused by the merge.
+- It replaces HDR's Merge options… sheet, and supersedes the HDR design's "no second approval round" for these actions.
+- The overlays are HDR's deghost overlay, and a panorama's crop and coverage and its frame outlines. Seams are not shown.
+
+Recorded defaults, delegated within that scope and open to the owner's correction: 2–32 frames; Auto, Perspective, Cylindrical and Spherical projections; Boundary Warp 0; frames more than 3 EV apart or registering as the same view are refused as a bracket; a detected lens profile is baked into RAW frames; the result is named with "Panorama"; a panorama is not counted in usage statistics until the owner approves a `panorama-merge` event. Numerical, solver, blending and layout details are delegated. Implementation is not authorized.
+
+## Develop from catalog folders
+
+Decided by the owner on 2026-10-11 ([design](design/develop-from-folders.md)), asking that choosing a catalog folder in Select change what Develop holds, that a parent folder be selectable as a whole, and that a place's photographs from several days be seen and developed together:
+
+- **The catalog folder is what Develop holds.** The development set is removed from the core, the API and the desktop; Develop's filmstrip is the catalog folder last chosen in Select, with its subfolders, and follows it live.
+- **Year › Place › Day.** Develop N files each photograph under a year folder, a place folder and a day folder ("2026 › Konstanz › 12 Sep"), reusing year and place folders by name.
+- **Years are real catalog folders**, selectable, renamable and movable; Select's computed year grouping is gone.
+- **One Merge action.** Merge HDR replaces Pick merged and Import merged, and the planned panorama merge follows.
 
 ## Corrections workspace
 

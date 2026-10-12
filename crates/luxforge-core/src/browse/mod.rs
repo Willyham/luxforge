@@ -38,6 +38,7 @@ mod filter;
 mod previews;
 mod rows;
 mod select;
+mod stacks;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
@@ -48,7 +49,10 @@ pub(crate) use events::{EventCache, event_list};
 pub(crate) use facets::facets;
 pub(crate) use rows::rows;
 pub(crate) use select::{SelectRequest, carry_over, select, selected_items};
-pub(crate) use view::{Context, Probe, View, evaluate};
+pub(crate) use stacks::{StackExpansions, inspect};
+#[cfg(test)]
+pub(crate) use view::evaluate;
+pub(crate) use view::{Context, Probe, View, evaluate_with};
 
 use crate::{
     EditorService, Error,
@@ -79,7 +83,7 @@ pub(crate) fn index_revision(index: &Connection) -> Result<u64, Error> {
 }
 
 /// The library change and index revision a view evaluated now would be stamped with: one read of
-/// each database.
+/// each.
 pub(crate) fn current_stamp(service: &EditorService) -> Result<ViewStamp, Error> {
     let library_sequence = service.library_sequence()?;
     let index_revision = index_revision(service.index()?.connection())?;

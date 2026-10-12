@@ -20,7 +20,7 @@ use iced::{Alignment, Length};
 pub enum WorkspaceTab {
     /// Browse files and the catalog, and pick (`G`).
     Select,
-    /// Edit the development set (`D`).
+    /// Edit the Develop folder's photographs (`D`).
     Develop,
 }
 

@@ -10,6 +10,7 @@ mod long_work;
 mod loupe;
 mod select;
 mod select_catalog;
+mod select_merge;
 mod select_missing;
 mod usage;
 use crate::state::MenuTarget;
@@ -140,6 +141,8 @@ pub(crate) struct Evidence {
     pub(crate) agent_host: Option<AgentHostWait>,
     /// What a running long-running-work step still waits for.
     pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
+    /// What a running HDR merge step still waits for.
+    pub(crate) merge_wait: Option<select_merge::MergeWait>,
     /// A running loupe `arrows` step's presses still to send. Its timer exists only
     /// while presses remain after the first.
     pub(crate) loupe_arrows: Option<loupe::HeldArrows>,
@@ -239,6 +242,7 @@ impl Evidence {
             agent_wait: None,
             agent_host: None,
             long_work_wait: None,
+            merge_wait: None,
             loupe_arrows: None,
             grid_scroll: None,
             sync: CaptureSync::default(),
@@ -551,7 +555,10 @@ pub(crate) enum Settle {
     /// Long-running work shows what a long-work step waits for: a view's progress sheet, the sheet
     /// sent to the background, or a cancelled job ended.
     LongWork,
-    /// Nothing developing picks or the development set asked for is in flight, and the photograph
+    /// An HDR merge step's pending row shows the job's progress, or the merge has ended and the
+    /// view read again holds its result.
+    Merge,
+    /// Nothing developing picks or the filmstrip asked for is in flight, and the photograph
     /// open in Develop has its exact frame on screen.
     Develop,
     /// The large previews Develop decodes ahead of a move are decoded.
@@ -599,6 +606,7 @@ impl Settle {
             Self::Select => "select",
             Self::MissingStop => "missing_stop",
             Self::LongWork => "long_work",
+            Self::Merge => "merge",
             Self::Develop => "develop",
             Self::DevelopAhead => "develop_ahead",
             Self::UsageNotice => "usage_notice",
@@ -680,7 +688,7 @@ impl Editor {
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
     /// and do not inherit a stale diagnostic from the ordinary photograph.
     pub(super) fn capture_photo_ready(&self) -> bool {
-        // A cached preview drawn while a photograph of the development set prepares is the
+        // A cached preview drawn while a photograph of the filmstrip prepares is the
         // photograph on screen, though no document is open.
         if (self.document.state.is_none() && self.develop.state.preview.is_none())
             || self.crop().is_some()
@@ -1742,6 +1750,7 @@ impl Editor {
             && self.preferences.reading.idle()
             && self.themes.listing.idle()
             && !self.settings.reading
+            && self.settings.flag_reads == 0
             && self.theme_settled();
         if followed {
             if let Some(evidence) = &mut self.evidence {
@@ -4437,6 +4446,13 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
+            // The Escape that leaves the Corrections mode waits for the session to follow it.
+            Some(Message::Corrections(
+                crate::app::message::corrections::CorrectionMessage::Escape,
+            )) if self.corrections_active() && self.correction_escape_leaves() => {
+                self.await_step(Settle::Session);
+                self.dispatch(Message::Key(event, status))
+            }
             // A Corrections key waits for what it started.
             Some(Message::Corrections(_)) | Some(Message::Draft(_))
                 if self.corrections_active() =>
@@ -4450,7 +4466,7 @@ impl Editor {
             // wait for and is captured with its reason.
             Some(Message::Select(_)) => {
                 let task = self.dispatch(Message::Key(event, status));
-                if self.develop.state.folder_loading {
+                if self.develop.state.entering {
                     self.await_develop();
                 } else if self.select_shown() {
                     self.await_step(Settle::Select);
@@ -4459,7 +4475,7 @@ impl Editor {
                 }
                 task
             }
-            // `D` and the development set's keys wait for what developing picks asked for.
+            // `D` and the filmstrip's keys wait for what developing picks asked for.
             Some(Message::Develop(_)) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.await_develop();
@@ -5393,6 +5409,7 @@ impl Editor {
             }
             Outcome::SelectSettled => self.select_settled(by),
             Outcome::LongWorkShown => self.long_work_shown(by),
+            Outcome::MergeShown => self.merge_shown(by),
         }
     }
 
@@ -6408,6 +6425,7 @@ mod tests {
             agent_wait: None,
             agent_host: None,
             long_work_wait: None,
+            merge_wait: None,
             loupe_arrows: None,
             grid_scroll: None,
             sync: CaptureSync::default(),

@@ -238,6 +238,11 @@ fn plan(owner: &Owner, item: &PreviewItem) -> Result<(RegionSource, Option<Asset
         }
         PreviewItem::Photo { asset_id, entry_id } => {
             let asset = owner.service.photo_original(asset_id, entry_id.as_ref())?;
+            if asset.source.derived().is_some() {
+                return Err(crate::artifacts::derived_source::no_original_file(
+                    "a 100% region of the original",
+                ));
+            }
             Ok((
                 RegionSource::Original(Box::new(asset)),
                 Some(asset_id.clone()),

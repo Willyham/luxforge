@@ -606,3 +606,67 @@ fn owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once(
     drop(service);
     std::fs::remove_file(catalog).unwrap();
 }
+
+/// A derived photograph (an HDR merge's result) had its optics corrected when it was made: its
+/// ledger reports every correction applied, so a lens profile is refused as one that would correct
+/// it twice, while a Lens layer with no profile is admitted. It offers what a JPEG offers and
+/// nothing of a RAW's: the development, with its sensor white balance, and the look are refused.
+#[test]
+fn derived_source_admission_refuses_baked_corrections_and_raw_only_modules() {
+    use crate::artifacts::derived_source::{DerivedColour, DerivedInterpretation, DerivedSourceId};
+    let registry = ModuleRegistry::builtin();
+    let source = SourceKind::Derived {
+        interpretation: DerivedInterpretation {
+            source_id: DerivedSourceId::parse(format!("source-{}", "a".repeat(64))).unwrap(),
+            width: 600,
+            height: 400,
+            colour: DerivedColour::LinearSrgbD65,
+        },
+    };
+    let asset = asset(source);
+    let ledger = SourceOptics::derived_ledger();
+    for entry in [&ledger.distortion, &ledger.lateral_ca, &ledger.shading] {
+        assert_eq!(entry.status, OpticalStatus::Applied);
+        assert_eq!(entry.provenance, "derived-source-baked");
+    }
+    assert_eq!(ledger.interpretation, "derived-linear");
+    let mut recipe = recipe(&asset.source, profile(SourceOptics::jpeg_ledger()));
+    let error = validate_source_recipe(&registry, &asset, &recipe).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Incompatible);
+    assert_eq!(error.data.unwrap()["reason"], "embedded-distortion-applied");
+    recipe.layers[0].payload = json!({"profile": null});
+    validate_source_recipe(&registry, &asset, &recipe).unwrap();
+    let metadata = synthetic_raw_metadata();
+    for layer in [
+        crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)
+            .unwrap()
+            .layer(LayerId::new()),
+        Layer::new(crate::LOOK_EFFECT, json!({})),
+    ] {
+        let effect = layer.effect_id.clone();
+        let recipe = Recipe {
+            layers: vec![layer],
+            ..Recipe::default()
+        };
+        assert!(
+            validate_source_recipe(&registry, &asset, &recipe).is_err(),
+            "{effect} is refused"
+        );
+    }
+    for module in registry.providers() {
+        let descriptor = module.descriptor();
+        assert_eq!(
+            descriptor.applies_to(crate::SourceTag::Derived),
+            descriptor.applies_to(crate::SourceTag::Jpeg),
+            "{}: a derived photograph offers what a JPEG does",
+            descriptor.id
+        );
+        if ["luxforge.raw", "luxforge.look"].contains(&descriptor.id.as_str()) {
+            assert!(
+                !descriptor.applies_to(crate::SourceTag::Derived),
+                "{}",
+                descriptor.id
+            );
+        }
+    }
+}

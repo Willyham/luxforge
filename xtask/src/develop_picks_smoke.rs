@@ -16,16 +16,18 @@
 //! The editor then opens that catalog with nothing open. Its frames, in [`plan`] order: `G` showing
 //! Select; the card's `DCIM` folder browsed; its first file clicked and picked with `P`; its second
 //! the same; its third clicked and picked with `P`, then Develop N's confirmation opened;
-//! Or add to an existing folder choosing "Portfolio picks"; a name typed over it, back to a new
-//! folder; Escape, which changes nothing; Develop N again; the name typed again; Develop, captured
-//! once the Develop has ended and Develop shows the first photograph it developed; the
-//! neighbours' large previews decoded; `→`, captured in the frame after the key with the next
+//! Or add to an existing folder choosing "Portfolio picks"; a place name typed over it, back to a
+//! place, with the year, place and day folders it makes shown beneath; Escape, which changes
+//! nothing; Develop N again; the place typed again; Develop, captured once the Develop has ended
+//! and Develop shows the first photograph it developed, with the place's folders in the filmstrip;
+//! the neighbours' large previews decoded; `→`, captured in the frame after the key with the next
 //! photograph's cached preview drawn; and that photograph's exact render.
 //!
 //! Every frame's confirmation is checked against the core's own `pick.plan` answer, the Develop's
 //! request against what an agent writes for the same choice, and its `job.read` record against
 //! where the catalog the editor left points each photograph (`develop-picks-after.json`): the two
-//! picks with copies at their copies, the third at the card. Each photograph drawn is its own:
+//! picks with copies at their copies, the third at the card, each filed under the place typed.
+//! Each photograph drawn is its own:
 //! the picture's middle against its file's, decoded independently.
 use crate::{
     generate_catalog,
@@ -35,7 +37,7 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, ClientId, EditorService, OwnerHandle};
-use luxforge_evidence::{self as script, DevelopStep, SelectStep, SetStep};
+use luxforge_evidence::{self as script, DevelopStep, SelectStep, StripStep};
 
 pub const SCENARIO: &str = "develop-picks";
 /// What `reproduce.md` says the run does before it launches.
@@ -59,7 +61,7 @@ const CARD: &str = "NIKON Z 8";
 const CARD_FOLDER: &str = "100NZ8_1";
 /// The catalog folder the run makes, which Or add to an existing folder offers.
 const EXISTING: &str = "Portfolio picks";
-/// The name typed over the proposed one.
+/// The place typed over the proposed one.
 const NAMED: &str = "Konstanz trip";
 /// The card's first files picked, and how many of them have copies.
 const PICKS: usize = 3;
@@ -126,7 +128,7 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         ),
         develop("developed", DevelopStep::Confirm),
         develop("ready", DevelopStep::Ready),
-        develop("next", DevelopStep::Step(SetStep::Next)),
+        develop("next", DevelopStep::Step(StripStep::Next)),
         develop("settled", DevelopStep::Settle),
     ]))
 }
@@ -488,8 +490,8 @@ fn drawn_luminance(frame: &Frame) -> Result<f64> {
     )
 }
 
-/// The confirmation a frame shows is the core's plan, its one event's folder as `field` or
-/// `existing` says, the card's picks with their copies said, and the request it would send.
+/// The confirmation a frame shows is the core's plan, its one event's folder as `field` (a place,
+/// with the folders it makes listed beneath) or `existing` says, the card's picks with their copies said, and the request it would send.
 fn confirmation(
     frame: &Frame,
     name: &str,
@@ -515,7 +517,17 @@ fn confirmation(
     ensure(
         event["tag"] == tag
             && match tag {
-                "new folder" => event["field"] == json!(value),
+                "place" => {
+                    event["field"] == json!(value)
+                        && event["folders"].as_array().is_some_and(|lines| {
+                            !lines.is_empty()
+                                && lines.iter().all(|line| {
+                                    line.as_str().is_some_and(|line| {
+                                        line.contains(&format!(" \u{203a} {}", value.unwrap_or("")))
+                                    })
+                                })
+                        })
+                }
                 _ => event["existing"] == json!(value),
             },
         format!("{name}: the event's folder is {event}"),
@@ -572,7 +584,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let proposed = event["folder"]["name"]
         .as_str()
-        .ok_or_else(|| format!("The core proposes no new folder: {event}"))?;
+        .filter(|_| event["folder"]["kind"] == "place")
+        .ok_or_else(|| format!("The core proposes no place: {event}"))?;
 
     // The card's folder is the core's view; the picks are Select's own `pick.set`s.
     let card = launch.at("card")?;
@@ -604,8 +617,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         active,
         "active",
         &expected,
-        json!({"kind": "new", "name": proposed}),
-        ("new folder", Some(proposed)),
+        json!({"kind": "place", "name": proposed}),
+        ("place", Some(proposed)),
     )?;
     let existing_id = expected["existing"]["id"].clone();
     confirmation(
@@ -615,13 +628,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"kind": "existing", "folder_id": existing_id}),
         ("existing folder", Some(EXISTING)),
     )?;
-    let named = json!({"kind": "new", "name": NAMED});
+    let named = json!({"kind": "place", "name": NAMED});
     confirmation(
         launch.at("named")?,
         "named",
         &expected,
         named.clone(),
-        ("new folder", Some(NAMED)),
+        ("place", Some(NAMED)),
     )?;
     // Escape changes nothing: no confirmation, nothing sent.
     let cancel = launch.at("cancel")?;
@@ -633,15 +646,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         launch.at("again")?,
         "again",
         &expected,
-        json!({"kind": "new", "name": proposed}),
-        ("new folder", Some(proposed)),
+        json!({"kind": "place", "name": proposed}),
+        ("place", Some(proposed)),
     )?;
     confirmation(
         launch.at("renamed")?,
         "renamed",
         &expected,
         named.clone(),
-        ("new folder", Some(NAMED)),
+        ("place", Some(NAMED)),
     )?;
 
     // Develop: the request the confirmation showed, its job ready, and Develop on what it answered.
@@ -708,19 +721,33 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             )?;
         }
     }
-    let set = &develop(developed)["set"];
+    // The filmstrip is the folder the photographs were filed into, beneath the place typed, open
+    // on the first photograph the Develop answered.
+    let strip = &develop(developed)["filmstrip"];
     let assets: Vec<&Value> = developed_list
         .iter()
         .map(|pick| &pick["asset_id"])
         .collect();
+    let held: Vec<&Value> = strip["assets"].as_array().into_iter().flatten().collect();
+    let sorted = |list: &[&Value]| {
+        let mut list: Vec<String> = list.iter().map(|asset| asset.to_string()).collect();
+        list.sort();
+        list
+    };
+    let active = strip["active"].as_u64().unwrap_or(u64::MAX) as usize;
     ensure(
-        set["assets"]
-            .as_array()
-            .map(|held| held.iter().collect::<Vec<_>>())
-            == Some(assets.clone())
-            && set["active"] == 0,
-        format!("developed: the set is {set}, the Develop answered {assets:?}"),
+        sorted(&held) == sorted(&assets)
+            && held.get(active) == Some(&assets[0])
+            && strip["folder"] == develop(developed)["folder"]
+            && strip["path"]
+                .as_array()
+                .is_some_and(|path| path.iter().any(|name| name == NAMED)),
+        format!("developed: the strip is {strip}, the Develop answered {assets:?}"),
     )?;
+    let next_asset = held
+        .get(active + 1)
+        .copied()
+        .ok_or_else(|| format!("developed: no photograph follows the first in {strip}"))?;
     ensure(
         developed.state()["select"]["shown"] == "develop"
             && develop(developed)["filmstrip_shown"] == true
@@ -728,19 +755,32 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && develop(developed)["document"]["asset_id"] == *assets[0],
         format!("developed: Develop shows {}", develop(developed)),
     )?;
+    // Year › place › day: the place in a year's folder, every photograph in a day's folder in it.
     let folders = after["folders"].as_array().ok_or("no folders")?;
-    let folder = folders
+    let by_id = |id: &Value| folders.iter().find(|folder| folder["id"] == *id);
+    let place = folders
         .iter()
         .find(|folder| folder["name"] == NAMED)
-        .ok_or("The catalog left has no folder named as typed")?;
+        .ok_or("The catalog left has no folder named as the place typed")?;
+    let year = by_id(&place["parent_id"]).ok_or("The place is not in a year's folder")?;
     ensure(
-        folder["count"] == PICKS
-            && after["photographs"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .all(|photo| photo["folder_id"] == folder["id"]),
-        format!("The folder typed holds {folder}"),
+        year["parent_id"].is_null()
+            && year["name"]
+                .as_str()
+                .is_some_and(|name| name.len() == 4 && name.bytes().all(|b| b.is_ascii_digit())),
+        format!("The place is in {year}"),
+    )?;
+    let photographs: Vec<&Value> = after["photographs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    ensure(
+        photographs.len() == PICKS
+            && photographs.iter().all(|photo| {
+                by_id(&photo["folder_id"]).is_some_and(|day| day["parent_id"] == place["id"])
+            }),
+        format!("The place typed holds {photographs:?}, its folders {folders:?}"),
     )?;
     ensure(
         after["picks"] == json!([]),
@@ -786,25 +826,25 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let state = develop(next);
     let (preview, timing) = (&state["preview"], &state["timing"]);
     ensure(
-        timing["asset_id"] == *assets[1]
+        timing["asset_id"] == *next_asset
             && !timing["preview_version"].is_null()
             && timing["presented_after"] == 1
-            && state["set"]["active"] == 1,
+            && state["filmstrip"]["active"] == active + 1,
         format!("next: the move's preview was not drawn in the frame after the key: {timing}"),
     )?;
     if preview.is_null() {
         ensure(
-            state["document"]["asset_id"] == *assets[1],
+            state["document"]["asset_id"] == *next_asset,
             format!("next: no preview, and {} open", state["document"]),
         )?;
     } else {
         ensure(
-            preview["asset_id"] == *assets[1]
+            preview["asset_id"] == *next_asset
                 && preview["drawn"] == true
                 // Before the open answers, nothing is open; after, the photograph at the preview's
                 // own entry, until its render replaces the preview.
                 && (state["document"].is_null()
-                    || (state["document"]["asset_id"] == *assets[1]
+                    || (state["document"]["asset_id"] == *next_asset
                         && state["document"]["entry_id"] == preview["entry_id"])),
             format!("next: the preview drawn is {preview}"),
         )?;
@@ -822,12 +862,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         next,
         "next: the picture's middle against its photograph's file",
         drawn_luminance(next)?,
-        file_luminance(&path_of(assets[1])?)?,
+        file_luminance(&path_of(next_asset)?)?,
         Tolerance::Within(DRAWN_TOLERANCE),
     )?;
     let settled = launch.at("settled")?;
     ensure(
-        develop(settled)["document"]["asset_id"] == *assets[1]
+        develop(settled)["document"]["asset_id"] == *next_asset
             && develop(settled)["preview"].is_null(),
         format!("settled: {}", develop(settled)),
     )?;
@@ -835,7 +875,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         settled,
         "settled: the render's middle against its photograph's file",
         drawn_luminance(settled)?,
-        file_luminance(&path_of(assets[1])?)?,
+        file_luminance(&path_of(next_asset)?)?,
         Tolerance::Within(DRAWN_TOLERANCE),
     )?;
     checks.write(

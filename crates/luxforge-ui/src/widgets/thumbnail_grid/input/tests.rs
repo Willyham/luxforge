@@ -1,6 +1,9 @@
 use super::*;
 use crate::widgets::thumbnail_grid::paint::TextStyle;
-use crate::{CellView, GridLayout, GridMetrics, MomentHeader, MomentKind, thumbnail_grid};
+use crate::{
+    CellStack, CellView, GridLayout, GridMetrics, HeaderAction, MomentHeader, MomentKind,
+    PendingRow, thumbnail_grid,
+};
 use iced::window;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -8,7 +11,9 @@ enum Message {
     Press(GridPress),
     Context(GridContext),
     Scroll(f32),
-    Action(u32),
+    Action(u32, u32),
+    Pending(u32),
+    Stack(u32),
     Viewport(Size),
 }
 
@@ -41,7 +46,7 @@ fn layout() -> GridLayout {
                     detail: "".into(),
                     evidence: None,
                     picked: None,
-                    action: Some("Pick all 3".into()),
+                    actions: vec![HeaderAction::new("Pick all 3")],
                 },
                 frames: 3,
                 collapsed: false,
@@ -59,6 +64,7 @@ fn grid(layout: &GridLayout, scroll: f32) -> ThumbnailGrid<'_, Message> {
         .on_context(Message::Context)
         .on_scroll(Message::Scroll)
         .on_moment_action(Message::Action)
+        .on_pending_action(Message::Pending)
         .viewport(BOUNDS.size())
         .on_viewport(Message::Viewport)
 }
@@ -194,7 +200,7 @@ fn the_action_button_publishes_its_moment_and_the_rest_of_the_header_nothing() {
         press(),
         Point::new(right - 30.0, frame.y + 14.0),
     );
-    assert_eq!(messages, [Message::Action(0)]);
+    assert_eq!(messages, [Message::Action(0, 0)]);
     assert!(response.capture);
     let (messages, _) = send(
         &grid,
@@ -210,7 +216,7 @@ fn the_action_button_publishes_its_moment_and_the_rest_of_the_header_nothing() {
         moved(Point::new(right - 30.0, frame.y + 14.0)),
         Point::new(right - 30.0, frame.y + 14.0),
     );
-    assert_eq!(input.hover, Hover::Action(0));
+    assert_eq!(input.hover, Hover::Action(0, 0));
     assert!(response.redraw);
     let (_, response) = send(
         &grid,
@@ -371,4 +377,126 @@ fn without_callbacks_nothing_is_published_or_captured() {
         assert!(messages.is_empty());
         assert!(!response.capture);
     }
+}
+
+/// Each of a header's buttons publishes its moment and which action it is.
+#[test]
+fn each_header_button_publishes_its_action() {
+    let layout = GridLayout::new(
+        vec![GridBlock::Moment {
+            header: MomentHeader {
+                kind: MomentKind::Bracket,
+                title: "Bracket".into(),
+                detail: "".into(),
+                evidence: None,
+                picked: None,
+                actions: vec![
+                    HeaderAction::new("Pick all 3"),
+                    HeaderAction::new("Import merged"),
+                    HeaderAction::primary("Pick merged"),
+                ],
+            },
+            frames: 3,
+            collapsed: false,
+        }],
+        GridMetrics::select(136.0),
+        BOUNDS.width,
+    );
+    let grid = grid(&layout, 0.0);
+    let mut input = Input::default();
+    let frame = layout.frames()[0];
+    let strip = paint::header_strip(&frame, layout.metrics(), 0.0);
+    let GridBlock::Moment { header, .. } = layout.block(0) else {
+        unreachable!()
+    };
+    let plan = paint::plan_header(header, strip, layout.metrics(), &mut Half);
+    assert_eq!(plan.actions.len(), 3);
+    for action in &plan.actions {
+        let (messages, _) = send(&grid, &mut input, press(), action.rect.center());
+        assert_eq!(messages, [Message::Action(0, action.index)]);
+        send(
+            &grid,
+            &mut input,
+            moved(action.rect.center()),
+            action.rect.center(),
+        );
+        assert_eq!(input.hover, Hover::Action(0, action.index));
+    }
+}
+
+/// A pending row's button publishes the row's number; the rest of the row is nothing.
+#[test]
+fn a_pending_row_s_button_publishes_its_row() {
+    let row = PendingRow {
+        title: "Merging HDR · 3 exposures".into(),
+        detail: "Reading 1 of 3".into(),
+        progress: Some(0.1),
+        action: Some("Cancel".into()),
+        failed: false,
+    };
+    let layout = GridLayout::new(
+        vec![GridBlock::Pending(row.clone()), GridBlock::Singles(4)],
+        GridMetrics::select(136.0),
+        BOUNDS.width,
+    );
+    let grid = grid(&layout, 0.0);
+    let mut input = Input::default();
+    let plan = paint::plan_pending(&layout, &layout.lines()[0], &row, 0.0, &mut Half);
+    let (_, button) = plan.action.unwrap();
+    let (messages, response) = send(&grid, &mut input, press(), button.center());
+    assert_eq!(messages, [Message::Pending(0)]);
+    assert!(response.capture);
+    send(&grid, &mut input, moved(button.center()), button.center());
+    assert_eq!(input.hover, Hover::Pending(0));
+    let (messages, _) = send(
+        &grid,
+        &mut input,
+        press(),
+        Point::new(plan.rect.x + 40.0, plan.rect.center_y()),
+    );
+    assert!(messages.is_empty(), "the title is not a button");
+}
+
+/// A press on a cell's stack badge publishes the cell's item and is no press on the cell; a press
+/// elsewhere on the cell is.
+#[test]
+fn a_stack_badge_publishes_its_item() {
+    let layout = GridLayout::new(
+        vec![GridBlock::Singles(4)],
+        GridMetrics::select(136.0),
+        BOUNDS.width,
+    );
+    let grid = thumbnail_grid(&layout, 0.0, |grid| CellView {
+        stack: (grid.item == 1).then_some(CellStack {
+            label: "HDR · 3 exposures",
+            short: "HDR · 3",
+            expanded: false,
+        }),
+        ..CellView::default()
+    })
+    .on_press(Message::Press)
+    .on_stack(Message::Stack)
+    .viewport(BOUNDS.size());
+    let mut input = Input::default();
+    let cell = layout.cell(1).rect;
+    let view = CellView {
+        stack: Some(CellStack {
+            label: "HDR · 3 exposures",
+            short: "HDR · 3",
+            expanded: false,
+        }),
+        ..CellView::default()
+    };
+    let (badge, _) =
+        paint::plan_stack(cell.position(), &view, layout.metrics(), &mut Half).unwrap();
+    let (messages, response) = send(&grid, &mut input, press(), badge.center());
+    assert_eq!(messages, [Message::Stack(1)]);
+    assert!(response.capture);
+    send(&grid, &mut input, moved(badge.center()), badge.center());
+    assert_eq!(input.hover, Hover::Stack(1));
+    let (messages, _) = send(&grid, &mut input, press(), cell.center());
+    assert!(matches!(
+        messages[..],
+        [Message::Press(GridPress { item: 1, .. })]
+    ));
 }

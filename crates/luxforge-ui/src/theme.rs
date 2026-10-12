@@ -716,6 +716,14 @@ pub const CELL_BADGE_SURFACE: Color = Color {
     b: 22.0 / 255.0,
     a: 0.934,
 };
+/// A stack's badge under the pointer, a press away from opening or closing it: the badge's plate,
+/// lighter.
+pub const CELL_BADGE_SURFACE_HOVERED: Color = Color {
+    r: 58.0 / 255.0,
+    g: 58.0 / 255.0,
+    b: 62.0 / 255.0,
+    a: 0.934,
+};
 /// The unavailable badge's text ("Offline", "Unreadable"), 10 pt semibold in [`CLIPPING_HIGHLIGHT`],
 /// fixed with the badge it is drawn on.
 pub const SIZE_CELL_UNAVAILABLE: f32 = 10.0;
@@ -736,6 +744,10 @@ pub const MOMENT_TAG_PADDING: f32 = 6.0;
 pub const MOMENT_TAG_HEIGHT: f32 = 14.0;
 pub const MOMENT_TAG_RADIUS: f32 = 4.0;
 pub const SIZE_MOMENT_TAG: f32 = 10.0;
+/// A pending row (a merge in progress): as tall as a moment's header with its padding above and
+/// below, its progress a 2 pt bar along its bottom, inset by the row's radius.
+pub const PENDING_ROW_HEIGHT: f32 = MOMENT_HEADER_HEIGHT + 2.0 * MOMENT_PADDING;
+pub const PENDING_BAR_HEIGHT: f32 = 2.0;
 /// A moment's action button (`.tb` at 22 pt, 8 pt in, 11 pt text).
 pub const MOMENT_ACTION_PADDING: f32 = 8.0;
 pub const SIZE_MOMENT_ACTION: f32 = 11.0;

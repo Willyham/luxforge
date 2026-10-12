@@ -42,6 +42,9 @@ pub struct Evaluation<S = PreviewSource> {
     /// The RAW sensor the source was developed from, which a sample grid reads its clipped flags
     /// from; only a grid read's evaluation holds it, for that call ([`Self::with_sensor`]).
     sensor: Option<Arc<dyn crate::tiles::SensorClip>>,
+    /// The kind of photograph the stack edits, which a linear source alone does not say: a RAW's
+    /// development and a derived source are both linear planes.
+    kind: crate::SourceTag,
 }
 
 struct Bound {
@@ -126,12 +129,19 @@ impl<S> Evaluation<S> {
         self.bound.compiled.as_ref().map_err(Clone::clone)
     }
 
+    /// The kind of photograph the stack edits, the `kind` tag `asset.state` reports: what a module
+    /// that applies to some kinds only is asked against.
+    pub(crate) fn kind(&self) -> crate::SourceTag {
+        self.kind
+    }
+
     /// This evaluation reading `source`.
     fn reading<T>(self, source: T) -> Evaluation<T> {
         Evaluation {
             bound: self.bound,
             source,
             sensor: self.sensor,
+            kind: self.kind,
         }
     }
 }
@@ -152,6 +162,10 @@ impl Evaluation {
         #[cfg(test)]
         context.note_compile();
         let compiled = registry.compile(width, height, &recipe);
+        let kind = match &source {
+            PreviewSource::Jpeg(_) => crate::SourceTag::Jpeg,
+            PreviewSource::Raw { .. } => crate::SourceTag::Raw,
+        };
         Self {
             bound: Arc::new(Bound {
                 entry: Arc::new(entry),
@@ -164,7 +178,14 @@ impl Evaluation {
             }),
             source,
             sensor: None,
+            kind,
         }
+    }
+
+    /// This evaluation of a photograph of `kind`, where its source alone does not say it: a
+    /// derived photograph's linear planes, which [`Self::new`] takes for a RAW's.
+    pub(crate) fn of_kind(self, kind: crate::SourceTag) -> Self {
+        Self { kind, ..self }
     }
 
     /// The buffer the stack is evaluated on.
@@ -367,6 +388,7 @@ impl EditorService {
         self.render.note_compile();
         let compiled = self.registry.compile(asset.width, asset.height, evaluated);
         let fingerprint = asset.fingerprint.clone();
+        let kind = asset.source.tag();
         Ok(Stack {
             asset,
             rule,
@@ -382,6 +404,7 @@ impl EditorService {
                 }),
                 source: (),
                 sensor: None,
+                kind,
             },
         })
     }
@@ -396,7 +419,7 @@ impl EditorService {
         let needs = stack.needs();
         let prepared =
             self.needing(needs, self.verified_prepared(&stack.asset, needs.developed))?;
-        let capture = capture_of(&prepared);
+        let capture = prepared.capture().clone();
         let source = self.needing(
             needs,
             source_of(prepared, stack.evaluation.recipe(), stack.rule),
@@ -541,7 +564,7 @@ impl EditorService {
         evaluation.compiled()?;
         Ok(ExportTarget {
             evaluation,
-            original: asset.locator,
+            original: asset.source.derived().is_none().then_some(asset.locator),
         })
     }
 
@@ -759,18 +782,18 @@ impl EditorService {
     }
 }
 
-/// The buffer a prepared source is evaluated on under `mode`: the decoded JPEG, or the developed
-/// RAW planes with the linear settings `recipe` asks for ([`raw_settings`]). `O(1)`; it reads no
-/// pixel.
 /// The RAW sensor a prepared source was developed from, for a sample grid's clipped flags; `None`
-/// for a JPEG. Shares the retained mosaic.
+/// for a JPEG and a derived source, which has no sensor. Shares the retained mosaic.
 pub(super) fn sensor_of(prepared: &PreparedSource) -> Option<Arc<dyn crate::tiles::SensorClip>> {
     match prepared {
-        PreparedSource::Jpeg(_) => None,
+        PreparedSource::Jpeg(_) | PreparedSource::Derived(_) => None,
         PreparedSource::Raw(raw) => Some(raw.sensor.clone() as Arc<dyn crate::tiles::SensorClip>),
     }
 }
 
+/// The buffer a prepared source is evaluated on under `mode`: the decoded JPEG, the developed RAW
+/// planes with the linear settings `recipe` asks for ([`raw_settings`]), or a derived source's
+/// planes as they are stored, which no setting changes. `O(1)`; it reads no pixel.
 pub(super) fn source_of(
     prepared: PreparedSource,
     recipe: &Recipe,
@@ -787,6 +810,12 @@ pub(super) fn source_of(
                 settings,
             })
         }
+        // The linear path's buffer, a RAW development's as much as a derived source's: signed,
+        // with headroom, and mapped to display codes only at the SDR boundary.
+        PreparedSource::Derived(derived) => Ok(PreviewSource::Raw {
+            image: derived.linear,
+            settings: crate::LinearSettings::default(),
+        }),
     }
 }
 
@@ -890,14 +919,6 @@ fn saved(entry_id: Option<&EntryId>) -> AnalysisSelection<'_> {
     match entry_id {
         Some(entry_id) => AnalysisSelection::Entry(entry_id),
         None => AnalysisSelection::Current,
-    }
-}
-
-/// The capture metadata the source worker read from the original when it prepared it.
-fn capture_of(prepared: &PreparedSource) -> Arc<CaptureMetadata> {
-    match prepared {
-        PreparedSource::Jpeg(image) => image.capture.clone(),
-        PreparedSource::Raw(raw) => raw.capture.clone(),
     }
 }
 

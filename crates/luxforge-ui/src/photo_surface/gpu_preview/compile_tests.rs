@@ -1,6 +1,7 @@
 //! Pipelines compile off the UI thread: a first-seen sequence draws the CPU frame and names it
-//! compiling until the compile thread has finished, warming compiles ahead of the first frame,
-//! holding keeps the slot behind the CPU frame, and the cache stays bounded.
+//! compiling until the compile thread has finished, a GPU frame over the same boundary stays on
+//! screen while a new sequence compiles, warming compiles ahead of the first frame, holding keeps
+//! the slot behind the CPU frame, and the cache stays bounded.
 use super::super::{PhotoPipeline, PhotoPrimitive, SurfaceId};
 use super::tests::{
     assert_codes, assert_cpu_frame, boundary_with_codes, diagnostics, headless, own_pipeline,
@@ -279,6 +280,71 @@ fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
     let again = diagnostics(&pipeline, ID);
     assert_eq!(again.drawn_gpu_tag, Some(13));
     assert_eq!(again.gpu_preview_peak_bytes, first.gpu_preview_peak_bytes);
+}
+
+/// A new sequence compiling over the boundary the GPU frame on screen was drawn from keeps that
+/// frame on screen, under its own tag, until the plan is drawn: never the CPU frame behind it, which
+/// for a stack presented on the GPU is an earlier stack's or an empty one. A plan over another
+/// boundary, another photograph or another part of it, waits behind the CPU frame as before.
+#[test]
+fn a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary() {
+    let test = "a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, codes) = boundary_with_codes(21);
+    let tagged = |plan: GpuPlan, tag: u64| {
+        with_options(
+            primitive(ID, Some(plan)),
+            GpuOptions {
+                tag: Some(tag),
+                ..GpuOptions::default()
+            },
+        )
+    };
+    let before = plan_of(&boundary, named("before_the_edit"));
+    pipeline.compile_now(&device, &before);
+    assert_codes(
+        &paint_prepared(&device, &queue, &mut pipeline, &tagged(before, 1)),
+        &codes,
+    );
+    assert_eq!(diagnostics(&pipeline, ID).drawn_gpu_tag, Some(1));
+    // The edit's sequence is first seen: it compiles, and the GPU frame on screen stays.
+    let after = plan_of(&boundary, named("after_the_edit"));
+    assert_codes(
+        &paint_prepared(&device, &queue, &mut pipeline, &tagged(after.clone(), 2)),
+        &codes,
+    );
+    let held = diagnostics(&pipeline, ID);
+    assert_eq!(held.gpu_fallback, Some(GpuFallback::Compiling));
+    assert_eq!(held.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(held.drawn_gpu_boundary, Some(21));
+    assert_eq!(
+        held.drawn_gpu_tag,
+        Some(1),
+        "the frame drawn is the earlier plan's"
+    );
+    assert!(!held.drawn_gpu_lapse);
+    compiled(&mut pipeline, &after.steps);
+    assert_codes(
+        &paint_prepared(&device, &queue, &mut pipeline, &tagged(after, 3)),
+        &codes,
+    );
+    assert_eq!(diagnostics(&pipeline, ID).drawn_gpu_tag, Some(3));
+    // Another boundary's plan compiling draws the CPU frame: the output on screen is not of it.
+    let (other, _) = boundary_with_codes(22);
+    let elsewhere = plan_of(&other, named("over_another_boundary"));
+    assert_cpu_frame(&paint_prepared(
+        &device,
+        &queue,
+        &mut pipeline,
+        &tagged(elsewhere, 4),
+    ));
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.gpu_fallback, Some(GpuFallback::Compiling));
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
+    assert_eq!(seen.drawn_gpu_tag, None);
 }
 
 /// The cache holds at most [`PIPELINE_CACHE`] sequences: warming more evicts the least recently

@@ -90,6 +90,17 @@ impl Editor {
                 self.outcome(Outcome::FlagsRead);
                 return applied;
             }
+            SettingsMessage::Flags { flags, change } => {
+                if change {
+                    self.settings.flag_reads = self.settings.flag_reads.saturating_sub(1);
+                }
+                match flags {
+                    // A read the sheet's own read overtook leaves the sheet's answer.
+                    Ok(flags) if !self.settings.reading => self.settings.flags = Some(flags),
+                    Ok(_) => {}
+                    Err(reason) => self.event("flags_read_failed", || json!({"reason": reason})),
+                }
+            }
             SettingsMessage::SetGeneral(row, value) => return self.set_general(row, value),
             SettingsMessage::CatalogFolder(folder) => return self.catalog_folder_chosen(folder),
             SettingsMessage::Set { flag, value } => {
@@ -197,6 +208,20 @@ impl Editor {
             |(flags, preferences)| {
                 Message::Settings(SettingsMessage::Listed { flags, preferences })
             },
+        )
+    }
+
+    /// Read the flags alone, off the update loop: what a live flag gates outside the sheet (the
+    /// range mask kinds the Masks panel offers) follows the person's choice from launch on. A read
+    /// that follows another client's `change` is counted until it answers.
+    pub(crate) fn read_flag_values(&mut self, change: bool) -> Task<Message> {
+        if change {
+            self.settings.flag_reads += 1;
+        }
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || listed(call(&owner, client, "flags.list", json!({}))),
+            move |flags| Message::Settings(SettingsMessage::Flags { flags, change }),
         )
     }
 
@@ -363,9 +388,10 @@ impl Editor {
     }
 
     /// Another client changed a flag, a preference, the theme library or the usage statistics
-    /// consent. An open sheet reads the flags and the preferences again; a closed one reads nothing
-    /// for a flag, but a preference is read again whatever is on screen, since the desktop applies
-    /// some of them to this session, the active theme among them. A theme event lists the library
+    /// consent. An open sheet reads the flags and the preferences again; a closed one reads the flags
+    /// alone for a flag, since a live flag gates what the desktop offers, and a preference is read
+    /// again whatever is on screen, since the desktop applies some of them to this session, the
+    /// active theme among them. A theme event lists the library
     /// again whether or not the sheet is open, since the palette lists the themes too. A consent
     /// change is read again in an eligible launch, so an open Privacy tab follows it.
     pub(crate) fn settings_changed_elsewhere(
@@ -382,10 +408,18 @@ impl Editor {
         };
         let read = if self.settings.open.is_some() && (flags || preferences) {
             self.read_flags()
-        } else if preferences {
-            self.read_preferences()
         } else {
-            Task::none()
+            let flags = if flags {
+                self.read_flag_values(true)
+            } else {
+                Task::none()
+            };
+            let preferences = if preferences {
+                self.read_preferences()
+            } else {
+                Task::none()
+            };
+            Task::batch([flags, preferences])
         };
         let consent = if usage {
             self.read_usage()

@@ -241,6 +241,13 @@ pub struct ViewSummary {
     pub in_catalog: u32,
     /// Items whose file is offline or missing.
     pub unavailable: u32,
+    /// Results in the view leading an HDR stack, and the originals a collapsed one hides: `count`
+    /// rows show photographs, results and the originals not hidden, `count + collapsed` items
+    /// match the query, as `browse.facets` counts them.
+    #[serde(default)]
+    pub stacks: u32,
+    #[serde(default)]
+    pub collapsed: u32,
     pub groups: GroupLayout,
     /// The library journal and the index revision the view was evaluated at: a later library change
     /// or index change marks it stale ([`BrowseSession::stale`]).
@@ -252,8 +259,22 @@ pub struct ViewSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "item", rename_all = "kebab-case")]
 pub enum RowItem {
-    File { file_id: FileId },
-    Photo { asset_id: AssetId },
+    File {
+        file_id: FileId,
+    },
+    Photo {
+        asset_id: AssetId,
+    },
+    /// An HDR stack's original shown by expanding it that is no item of the view's source: an
+    /// undeveloped input of a catalog view, or one outside the folder, event or card, missing or
+    /// offline. Its `path` is the original's; `stack.inspect` names the same original.
+    Input {
+        merge_id: super::MergeId,
+        ordinal: u32,
+        /// The original's index row, when the index lists it: what its preview is read as.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_id: Option<FileId>,
+    },
 }
 
 /// Where a row sits in its moment: the moment's index in the view summary's `groups.moments` and
@@ -323,6 +344,12 @@ pub struct ViewRow {
     pub collections: Vec<CollectionId>,
     pub availability: FileAvailability,
     pub preview: PreviewState,
+    /// The row's place in an HDR stack: a result leading one, or one of its originals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<super::RowStack>,
+    /// Why an original's row is not available, for a provenance row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// What `browse.rows` answers: rows `from..from + rows.len()` of the view at `revision`.
@@ -457,8 +484,8 @@ pub struct BrowseSession {
     pub evaluated_at: Option<ViewStamp>,
 }
 
-/// What a view was evaluated at: the catalog's latest library change and the index's revision.
-/// A view is stale once either has moved on.
+/// What a view was evaluated at: the catalog's latest library change and the index's revision. A
+/// view is stale once either has moved on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ViewStamp {
     pub library_sequence: LibraryChangeSeq,
@@ -541,9 +568,12 @@ mod tests {
             collections: Vec::new(),
             availability: FileAvailability::Available,
             preview: PreviewState::Thumbnail,
+            stack: None,
+            reason: None,
         };
         let json = serde_json::to_value(&row).unwrap();
         assert_eq!(json["item"], "file");
+        assert!(json.get("stack").is_none());
         assert_eq!(json["file_id"], 9);
         assert_eq!(json["path"], "/card/DSC_0001.NEF");
         assert_eq!(serde_json::from_value::<ViewRow>(json).unwrap(), row);

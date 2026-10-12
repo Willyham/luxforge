@@ -4,7 +4,9 @@
 //! catalog owner only stats files and reads the small manifest.
 use super::{
     ArtifactId, ArtifactMeta, ArtifactRecord, LiveArtifacts, MAX_ARTIFACT_BYTES, PreparedArtifact,
-    candidates::Candidates, lock,
+    candidates::Candidates,
+    derived_source::{self, LiveSources},
+    lock,
 };
 use crate::{
     Error, ErrorKind,
@@ -274,7 +276,7 @@ impl ArtifactWriter {
             Ok(mut entries) => entries.next().is_some(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(error) => return Err(file_error("cannot read artifact directory", error.kind())),
-        };
+        } || derived_source::holds_objects(&self.root)?;
         if occupied {
             return Err(Error::incompatible(format!(
                 "artifact directory {} holds objects but no manifest",
@@ -386,9 +388,9 @@ pub(crate) fn read_verified(
     })
 }
 
-/// One collection the catalog owner planned: how many rows it already removed and every artifact
-/// the catalog still records. Any other object file is garbage unless it is live: published while
-/// the service is open.
+/// One collection the catalog owner planned: how many rows it already removed, every artifact the
+/// catalog still records and every derived source object it still retains. Any other object file
+/// is garbage unless it is live: published while the service is open.
 #[derive(Debug)]
 pub(crate) struct Collection {
     pub(crate) root: PathBuf,
@@ -396,24 +398,32 @@ pub(crate) struct Collection {
     pub(crate) keep: HashSet<ArtifactId>,
     pub(crate) live: LiveArtifacts,
     pub(crate) rows: usize,
+    /// The SHA-256 of every source manifest and chunk the catalog's derived sources name.
+    pub(crate) keep_sources: HashSet<String>,
+    pub(crate) live_sources: LiveSources,
+    /// The derived source rows the owner already removed.
+    pub(crate) source_rows: usize,
     /// The catalog's candidate store, whose jobs' directories under `tmp/candidates/` are kept;
     /// every other one is what an earlier process left.
     pub(crate) candidates: Arc<Candidates>,
 }
 
-/// What a collection removed: rows, object files, stale staged files, and the candidate
-/// directories no job of this process holds.
+/// What a collection removed: rows, object files, derived source rows and objects, stale staged
+/// files, and the candidate directories no job of this process holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Collected {
     pub(crate) rows: usize,
     pub(crate) objects: usize,
     pub(crate) temporary: usize,
+    pub(crate) source_rows: usize,
+    pub(crate) source_objects: usize,
     pub(crate) candidates: usize,
 }
 
-/// Remove the object files the catalog no longer records and that are not live, staged files
-/// older than an hour and the candidate directories no job of this process holds. A root whose manifest does not name this catalog is left
-/// untouched, and a name that is not an artifact hash is never removed.
+/// Remove the object files the catalog no longer records and that are not live, the derived source
+/// objects it no longer retains and that are not live, staged files older than an hour and the
+/// candidate directories no job of this process holds. A root whose manifest does not name this
+/// catalog is left untouched, and a name that is not a hash is never removed.
 pub(crate) fn collect_files(
     collection: &Collection,
     cancel: &AtomicBool,
@@ -423,6 +433,8 @@ pub(crate) fn collect_files(
         rows: collection.rows,
         objects: 0,
         temporary: 0,
+        source_rows: collection.source_rows,
+        source_objects: 0,
         candidates: 0,
     };
     match root_state(root, &collection.catalog_id)? {
@@ -464,6 +476,12 @@ pub(crate) fn collect_files(
             Err(error) => return Err(file_error("cannot remove artifact", error.kind())),
         }
     }
+    collected.source_objects = derived_source::collect_source_objects(
+        root,
+        &collection.keep_sources,
+        &collection.live_sources,
+        cancel,
+    )?;
     let now = SystemTime::now();
     for entry in listing(&root.join(TEMPORARY))?.into_iter().flatten() {
         cancelled(cancel)?;
@@ -742,6 +760,9 @@ mod tests {
             keep: HashSet::from([kept.id.clone()]),
             live,
             rows: 2,
+            keep_sources: HashSet::new(),
+            live_sources: LiveSources::default(),
+            source_rows: 0,
             candidates,
         };
         let never = AtomicBool::new(false);
@@ -751,6 +772,8 @@ mod tests {
                 rows: 2,
                 objects: 1,
                 temporary: 1,
+                source_rows: 0,
+                source_objects: 0,
                 candidates: 2,
             }
         );

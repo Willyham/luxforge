@@ -13,6 +13,8 @@
 //! - [`browse`]: view queries, summaries, rows, facets and the selection.
 //! - [`library`]: picks, targets, catalog folders, collections, the journal, developing picks,
 //!   availability and missing originals, batch reports.
+//! - [`merge`]: merges' provenance, their result-led stacks and their lifecycle state, and how a
+//!   view shows a stack.
 //! - [`previews`]: preview tiers, items, origins and answers.
 //! - [`jobs`]: the long-running catalog work, each kind named once.
 //! - `api`: every catalog method's parameters, answer, envelope and error codes, declared once
@@ -28,6 +30,7 @@ pub mod header;
 pub mod identity;
 pub mod jobs;
 pub mod library;
+pub mod merge;
 pub mod organize;
 pub mod previews;
 
@@ -36,5 +39,6 @@ pub use disk::*;
 pub use header::*;
 pub use identity::*;
 pub use library::*;
+pub use merge::*;
 pub use organize::*;
 pub use previews::*;

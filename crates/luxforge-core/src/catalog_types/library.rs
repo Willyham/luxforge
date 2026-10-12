@@ -7,8 +7,8 @@
 //! most [`MAX_LIBRARY_BATCH`] items, never split silently. Library changes sit beside each
 //! photograph's history, never inside it.
 use super::{
-    CatalogFolderId, CollectionId, EventId, FileId, FileSignature, LibraryChangeSeq, ViewQuery,
-    VolumeId,
+    CatalogFolderId, CollectionId, EventId, FileId, FileSignature, LibraryChangeSeq, MergeId,
+    ViewQuery, VolumeId,
 };
 use crate::{AssetId, Error, JobId, MutationOutcome};
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,7 @@ pub struct LibraryChange {
 /// | `membership` | `collection-…/asset-…` | [`MembershipValue`] `{added_ms}` |
 /// | `indexed-folder` | the folder's path | the [`IndexedFolder`](super::IndexedFolder) |
 /// | `developed-asset` | the asset | [`DevelopedAssetValue`] `{path}` of the file it was developed from; a Develop's undo sends it back |
+/// | `merge-stack` | the merge | [`MergeStackValue`](super::MergeStackValue) `{state}`: `active`, `removed` or `undone`; `null` once Empty Removed deleted it |
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LibraryItem {
@@ -155,11 +156,14 @@ pub enum LibraryItem {
     DevelopedAsset {
         asset_id: AssetId,
     },
+    MergeStack {
+        merge_id: MergeId,
+    },
 }
 
 impl LibraryItem {
     /// Every `item_kind` the journal stores, in the order the table documents them.
-    pub const KINDS: [&'static str; 9] = [
+    pub const KINDS: [&'static str; 10] = [
         "pick",
         "asset-folder",
         "asset-removal",
@@ -169,6 +173,7 @@ impl LibraryItem {
         "membership",
         "indexed-folder",
         "developed-asset",
+        "merge-stack",
     ];
 
     /// The row's `item_kind`.
@@ -183,6 +188,7 @@ impl LibraryItem {
             Self::Membership { .. } => "membership",
             Self::IndexedFolder { .. } => "indexed-folder",
             Self::DevelopedAsset { .. } => "developed-asset",
+            Self::MergeStack { .. } => "merge-stack",
         }
     }
 
@@ -200,6 +206,7 @@ impl LibraryItem {
                 collection_id,
                 asset_id,
             } => format!("{collection_id}/{asset_id}"),
+            Self::MergeStack { merge_id } => merge_id.to_string(),
         }
     }
 
@@ -226,6 +233,9 @@ impl LibraryItem {
             },
             "collection" => Self::Collection {
                 collection_id: CollectionId::parse(key)?,
+            },
+            "merge-stack" => Self::MergeStack {
+                merge_id: MergeId::parse(key)?,
             },
             "membership" => {
                 let (collection, asset) = key
@@ -541,13 +551,23 @@ pub struct Collections {
     pub collections: Vec<Collection>,
 }
 
-/// The catalog folder an event's picks are developed into: an existing folder, or a new one with
+/// The catalog folder an event's picks are developed into, each photograph resolved by its own
+/// camera-local capture day as it is developed: a place, an existing folder, or a new one with
 /// this name (and parent).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FolderChoice {
+    /// Year › place › day: the top-level folder named after its capture day's year ("2026"), the
+    /// folder `name` in it, and the day's folder in that ("12 Sep"); a photograph with no capture
+    /// time goes to the top-level "Undated", then `name`. Each folder is found by its name among
+    /// its siblings, ignoring case, or made.
+    Place { name: String },
+    /// That folder; with `days`, the folder of a photograph's capture day inside it ("12 Sep"),
+    /// and the folder itself for one with no capture time.
     Existing {
         folder_id: CatalogFolderId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        days: bool,
     },
     New {
         name: String,
@@ -583,17 +603,30 @@ pub struct RemovablePicks {
 pub struct PlannedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<EventId>,
-    /// The event's name, which a new folder takes by default ("Konstanz · Sep 2026").
+    /// The event's name ("Konstanz · 12–13 Sep").
     pub name: String,
     pub count: u32,
-    /// The proposal: the folder an earlier Develop from the same event span made, or a new folder
-    /// named after the event.
+    /// The proposal: the folder an earlier Develop of the same event made, with day folders in
+    /// it, or the event's place (its place, else the user-named folder on disk that names it,
+    /// else "Unknown place"); for an undated event, the folder the newest photograph developed
+    /// from its folder on disk is in, or a place named after that folder.
     pub folder: FolderChoice,
     /// The proposed existing folder's name, for the confirmation to show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_name: Option<String>,
+    /// The distinct camera-local capture days of its picks, ascending: the day folders a place
+    /// or `days` choice files them in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub days: Vec<super::LocalDay>,
+    /// How many of its picks have no capture time the index knows.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub undated: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removable: Vec<RemovablePicks>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// What `pick.plan` answers: what a Develop of these picks would do, per event.
@@ -628,6 +661,9 @@ pub struct DevelopedPick {
     pub used: Option<PathBuf>,
     pub asset_id: AssetId,
     pub outcome: DevelopOutcome,
+    /// The catalog folder the photograph is in after the Develop: the one it was filed in, or a
+    /// linked or relinked photograph's own.
+    pub folder_id: CatalogFolderId,
 }
 
 /// One pick a Develop did not bring in, with the refusal's code and words; it stays picked.
@@ -830,14 +866,16 @@ pub struct CollectionAnswer {
     pub deduplicated: bool,
 }
 
-/// What `catalog.empty-removed` answers: how many removed photographs' records it deleted, and how
-/// many removed photographs past its bound ([`MAX_LIBRARY_BATCH`] a call) are left for another
-/// call. It is not a library change: nothing it deletes can be restored.
+/// What `catalog.empty-removed` answers: how many removed photographs' records it deleted, how many
+/// of them were saved merges' results (their provenance and stacks deleted with them; never their
+/// originals), and how many removed photographs past its bound ([`MAX_LIBRARY_BATCH`] a call) are
+/// left for another call. It is not a library change: nothing it deletes can be restored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyRemovedAnswer {
     pub outcome: MutationOutcome,
     pub deleted: u32,
+    pub merges: u32,
     pub remaining: u32,
     pub deduplicated: bool,
 }
@@ -880,6 +918,9 @@ pub struct CatalogCounts {
     /// days, not removed: Recently developed.
     pub recently_developed: u64,
     pub removed: u64,
+    /// Removed photographs that are saved merges' results, undone or removed: what emptying
+    /// Removed would discard with no undo to restore them.
+    pub removed_merges: u64,
     /// Photographs not removed whose original was last seen offline, missing or changed.
     pub unavailable: u64,
     pub folders: u64,
@@ -949,6 +990,9 @@ mod tests {
                 path: "/Users/a/Pictures".into(),
             },
             LibraryItem::DevelopedAsset { asset_id: asset },
+            LibraryItem::MergeStack {
+                merge_id: MergeId::new(),
+            },
         ];
         for (item, kind) in items.iter().zip(LibraryItem::KINDS) {
             assert_eq!(item.kind(), kind);

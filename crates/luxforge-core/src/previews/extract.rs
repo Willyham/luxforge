@@ -165,6 +165,11 @@ impl FileImages {
         control.checkpoint()?;
         let file = File::open(&record.path).map_err(|error| unavailable(record, error.kind()))?;
         match record.kind {
+            // The index lists files, never a derived photograph, whose camera-preview task ends
+            // before it opens anything (`camera.rs`).
+            SourceTag::Derived => Err(crate::artifacts::derived_source::no_original_file(
+                "a camera preview",
+            )),
             SourceTag::Jpeg => {
                 let header = match &record.header {
                     HeaderState::Ok(header) => Some(header),

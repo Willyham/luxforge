@@ -319,6 +319,7 @@ fn nothing_new() -> tasks::SyncResult {
         flags: false,
         preferences: false,
         themes: false,
+        library: None,
         usage: false,
         own: Vec::new(),
     }

@@ -31,6 +31,7 @@ pub(crate) mod remove;
 pub(crate) mod renderer;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
+pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod sync;
@@ -88,7 +89,7 @@ pub(crate) enum Message {
     Select(select::SelectMessage),
     /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
     LongWork(long_work::LongWorkMessage),
-    /// Developing picks and the development set: Develop N's confirmation, the filmstrip and moving
+    /// Developing picks and the Develop folder: Develop N's confirmation, the filmstrip and moving
     /// through it.
     Develop(develop::DevelopMessage),
     Close,

@@ -1041,7 +1041,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // `Distribution`; they use the same nearest rank. Auto's production image solver also
     // cannot depend on test tooling and needs an in-place selection within charged scratch, and so
     // does the generative fill's robust grain estimate (a median absolute deviation over a ring's
-    // samples), whose test restates it by sorting as its independent reference.
+    // samples), whose test restates it by sorting as its independent reference; the HDR exposure
+    // resolution's median reference and robust pairwise fit are production estimators, not timing
+    // figures.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -1061,6 +1063,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/modules/basic/auto/solve.rs",
             "crates/luxforge-core/src/modules/ai/fill/grain.rs",
             "crates/luxforge-core/src/modules/ai/fill/tests.rs",
+            "crates/luxforge-core/src/merge/hdr/exposure.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
             "crates/luxforge-reference/src/grade_response.rs",
@@ -1105,6 +1108,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The generative runtime's cancel watcher: one scoped thread, alive only while a
             // generation runs, that cancels stable-diffusion.cpp at its next step when the job is.
             "crates/luxforge-diffusion/src/native.rs",
+            // A closed merge preview's discard: one short thread a session, removing its spool
+            // and pictures off the owner.
+            "crates/luxforge-core/src/api/owner/merge_preview.rs",
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
@@ -1121,6 +1127,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "xtask/src/grade_align.rs",
             // `usage-measure`'s contending producers and the window detacher beside them.
             "xtask/src/usage_measure.rs",
+            // `hdr-merge-measure`'s scoped pool writing a photo-sized frame's bands.
+            "xtask/src/hdr_merge_measure/mod.rs",
         ],
         mode: Match::Whole,
         tests: false,
@@ -1234,6 +1242,9 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-ui/src/gallery_thumbnails.rs",
             "crates/luxforge-app/src/app/decoded_handles.rs",
+            // The merge preview sheet's picture: each revision's JPEG decoded once, its handle
+            // held while the sheet shows it.
+            "crates/luxforge-app/src/app/select_merge.rs",
         ],
         mode: Match::Whole,
         tests: true,

@@ -1,0 +1,865 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "panorama-merge",
+  "title": "Panorama merges and the merge preview",
+  "objective": "Open a merge preview first for HDR and panoramas, and turn a selection of overlapping RAW or JPEG frames into one durable, editable panorama in Select, with one Merge panorama action, a result-led stack, the HDR lifecycle, Boundary Warp and derived sources up to 512 MP, through the shared command service.",
+  "context_summary": "Design requested and scope chosen by the owner on 2026-10-11, with a merge preview that opens first for both kinds: RAW or JPEG frames (never mixed), selection only with no automatic grouping, automatic crop with Boundary Warp, and derived-source limits raised to 65,000 pixels a side and 512 MP. Implementation is not authorized. HDR merges are delivered; this plan generalizes their boundary (TASK-001) and reuses their storage, lifecycle, stacks and catalog folder choice. TASK-001 (boundary), TASK-003 (paged derived storage and preparation), TASK-006 (frame development) and TASK-007 (registration) can start together; TASK-004 (banded reference) and TASK-005 (GPU editing and export) bring paged sources to the editor, and TASK-008 adds the stitch. TASK-002 brings the merge preview to HDR first. Deliver a working, background-verified feature in TASK-011 before natural-panorama quality and photo-sized measurement in TASK-012. No HDR panoramas, automatic panorama detection, edge fill, manual control points, compatibility shims or approval/research task. Recorded defaults (2–32 frames, projections, Boundary Warp 0, the bracket refusals, a baked lens profile, a usage-statistics exemption) are in the design and decisions.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Generalize the merge boundary for a second kind, with HDR behaviour unchanged.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Add `MergeKind::Panorama`; kind-tagged `MergeProvenance` format 2 (HDR parameters/resolution unchanged inside the `hdr` variant); nullable `merge_inputs.offset_ev` with the reference ordinal from provenance; the current catalog format refusing earlier catalogs without migration; and kind-tagged `match_key`.",
+        "Commands: `merge.plan`, `merge.create` and `merge.rerun` take `kind` (required on plan); HDR's options move under `hdr`; per-kind input bounds and typed refusals; a field of the other kind is `validation`. Accept `panorama` in schemas only once TASK-008 registers its provider; until then a panorama request is refused `not-ready` naming the missing provider, never a placeholder control.",
+        "One merge lane for both kinds: one running and one waiting, `resource-limit` beyond; per-kind job kinds, stages, temporary-disk ceilings and scratch limits; spool reads by bands instead of a seek and read a row, for HDR now.",
+        "Desktop merge state, menu, sheet, pending row, badges, stack words and refusals take the kind from the plan or stack rather than constants; HDR's visible behaviour and words stay as they are.",
+        "Usage statistics: `merge.create`/`merge.rerun` of kind panorama are an explicit exemption until the owner approves an event; HDR's events are unchanged."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "The required changes and their shapes.",
+          "locator": "Generalizing the merge boundary"
+        },
+        {
+          "kind": "file",
+          "label": "HDR merge design",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Stored shapes this changes; update them in the same change.",
+          "locator": "Remove, undo and retention"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Merge catalog types",
+          "target": "crates/luxforge-core/src/catalog_types/merge.rs",
+          "relevance": "MergeKind, MergeProvenance, match_key, stack rows.",
+          "locator": "MergeKind; MergeProvenance; match_key"
+        },
+        {
+          "kind": "file",
+          "label": "Merge commands",
+          "target": "crates/luxforge-core/src/api/owner/merge.rs",
+          "relevance": "Input bounds, parameters, kind checks and job dispatch."
+        },
+        {
+          "kind": "file",
+          "label": "Merge job",
+          "target": "crates/luxforge-core/src/merge/job.rs",
+          "relevance": "Spool format, Window::read row reads, ceilings and stages."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog schema",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
+          "relevance": "merges.kind CHECK and merge_inputs.offset_ev; the format marker."
+        },
+        {
+          "kind": "file",
+          "label": "Stacks in views",
+          "target": "crates/luxforge-core/src/browse/stacks.rs",
+          "relevance": "Kind parsing and the reference ordinal."
+        },
+        {
+          "kind": "file",
+          "label": "Select merge state",
+          "target": "crates/luxforge-app/src/state/select_merge.rs",
+          "relevance": "Constants and words to derive from the kind."
+        }
+      ],
+      "acceptance_criteria": [
+        "HDR merge, lifecycle, browse, job and end-to-end tests pass unchanged in behaviour against the kind-tagged shapes and the current catalog format; an earlier catalog is refused explicitly.",
+        "Schemas describe `kind` and per-kind options; a cross-kind field, an out-of-range input count and an unregistered provider name their cause.",
+        "Spool reads are band reads with the same bytes; HDR fusion output stays bit-identical; both kinds share the lane bounds.",
+        "Documentation of HDR's stored shapes and commands matches the new shapes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the existing HDR suites and add kind/format tests over a real owner.",
+          "Compare fused HDR outputs before and after band reads bit for bit.",
+          "Check the schema listing and the usage registry's exemption."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core hdr_merge",
+          "tools/cargo-cached test -p luxforge-core merge_kind",
+          "tools/cargo-cached test -p luxforge-app hdr_merge"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Deliver the merge preview for HDR: commands, a reusable preview session and the preview sheet that opens first.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "`merge.preview`, `merge.preview-update` and `merge.preview-close` for any registered kind, and `merge.create` with `preview_id`: the preview job reads frames into the spool exactly as a merge does, adds a colour preview proxy (the analysis proxies hold luminance and levels only), registers, and writes a display-referred JPEG under the preview cache with diagnostics, overlay data and the output estimate; updates redraw or re-register from the retained proxies without reading frames; a merge given `preview_id` continues from that spool and registration.",
+        "Session bounds: one open preview a client, the merge lane occupied while reading and aligning, the spool counted against the kind's temporary ceiling, closed on merge, close, 30 minutes idle, disconnect or restart cleanup; a preview publishes nothing.",
+        "HDR's picture fuses the colour proxies with the resolved exposures, registration and motion; its overlay data are the motion regions with their source input and exposure.",
+        "Desktop: Merge HDR (header and menu, the item with an ellipsis) opens the HDR preview sheet, whose buttons are Cancel and Merge; ⌥ drops the ellipsis and ⌥-click on Merge HDR merges at once with the kind's last settings, remembered in the desktop's remembered state; the sheet replaces Merge options… and follows the boards (docs/design/merges/hdr-preview.png, components.png) except their earlier Pick merged and Import merged pair."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Sheet, overlays, commands and session bounds.",
+          "locator": "The merge preview"
+        },
+        {
+          "kind": "file",
+          "label": "HDR merge design",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "The surfaces the preview changes.",
+          "locator": "In the desktop"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Merge boards",
+          "target": "docs/design/merges/hdr-preview.png",
+          "relevance": "The HDR preview sheet's target."
+        },
+        {
+          "kind": "file",
+          "label": "Merge job",
+          "target": "crates/luxforge-core/src/merge/job.rs",
+          "relevance": "Spool and proxies a preview produces and a merge reuses."
+        },
+        {
+          "kind": "file",
+          "label": "Select merge",
+          "target": "crates/luxforge-app/src/state/select_merge.rs",
+          "relevance": "Merge options… sheet to replace."
+        }
+      ],
+      "acceptance_criteria": [
+        "Through the registry, a preview of a synthetic bracket answers a picture, diagnostics and motion overlays; updates read no frame; a merge with its `preview_id` reads no frame and aligns nothing, and its result equals a merge without a preview bit for bit.",
+        "Preview sessions respect the lane, ceiling, idle, disconnect, cancellation and restart rules; a stale `preview_id` is `conflict`.",
+        "Desktop tests compare the sheet's requests and states with a JSON client; ⌥-click merges with the remembered settings; the hdr-merge smoke journey passes through the preview."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Drive previews and merges through a real owner with several clients, counting frame reads.",
+          "Compare merged results with and without a preview.",
+          "Run the desktop and smoke checks for the HDR flow."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core merge_preview",
+          "tools/cargo-cached test -p luxforge-app merge_preview",
+          "tools/cargo-cached xtask smoke --scenario hdr-merge"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Store and prepare paged derived sources up to 65,000 pixels a side and 512 MP, without a whole-frame allocation.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Split `layout()`'s limits into camera source, resident derived source, paged derived source and rendered frame/stage limits; camera files and HDR results keep today's limits.",
+        "Manifest format 2 with `levels` (level 0 plus 2 × 2 area-average levels down to a long side of at most 4,096) for paged sources only; at most 4,096 level-0 and 5,462 total chunks, a 1 MiB manifest; a streaming writer that builds each level from the previous one's chunks within bounded memory; format 1 stays valid for resident sources.",
+        "A paged `PreparedSource` variant: manifest and smallest level on preparation, a bounded verified chunk cache charged to prepared-source accounting (at most 1.5 GiB), the plane gate counting bytes, and window reads of any level with halos plus the largest level within the camera limits prepared as a resident level.",
+        "Retention, collection, Empty Removed and corruption reporting cover every level's chunks as they do format 1's."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Classes, manifest format 2, preparation and bounds.",
+          "locator": "Large derived sources"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Derived source storage",
+          "target": "crates/luxforge-core/src/artifacts/derived_source.rs",
+          "relevance": "Chunk and manifest limits, writer and reader.",
+          "locator": "CHUNK_SIDE; MAX_CHUNKS; write_with; read_derived_source"
+        },
+        {
+          "kind": "file",
+          "label": "Source layout",
+          "target": "crates/luxforge-core/src/source/linear.rs",
+          "relevance": "layout() and LinearImage's single allocation.",
+          "locator": "layout; LinearImage"
+        },
+        {
+          "kind": "file",
+          "label": "Source limits",
+          "target": "crates/luxforge-raw/src/limits.rs",
+          "relevance": "Camera limits that stay as they are."
+        },
+        {
+          "kind": "file",
+          "label": "Prepared sources and the plane gate",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "PreparedSource variants and the gate that counts developments today."
+        }
+      ],
+      "acceptance_criteria": [
+        "A generated 512 MP signed/headroom source and one 65,000 pixels wide are written and reopened with exact f32 bits at level 0 and exact area averages at every level, with peak memory bounded by the declared cache and writer limits.",
+        "Preparation never allocates level 0 whole; windows of any level equal the corresponding region of the whole level exactly; a damaged chunk fails only what reads it, naming it.",
+        "Collection and Empty Removed keep or release every level's chunks with their source; resident format 1 sources behave exactly as before."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Write and reopen generated large sources, comparing windows and levels with independent computations.",
+          "Inject corruption and write failures at each level; check accounting and the byte-counting gate beside a resident editor source."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core derived_source",
+          "tools/cargo-cached test -p luxforge-core paged_source"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Give the reference renderer a banded mode for paged sources, and export and analyse them through it.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Evaluate the output stage in full-width bands from level-0 windows with the stack's halos and exact spatial semantics, streamed to the export encoder, analysis or a test; whole-frame statistics such as the Dehaze light in a bounded first pass; the 512 MiB evaluated-frame limit bounds a band, not the frame.",
+        "Reference export and full-resolution reference analysis of a paged source use the banded mode; the Dehaze light's reduction grid scales its factor so its grid stays within its bound on large stages."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Banded mode contract and its parity requirement.",
+          "locator": "The reference on paged sources"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Reference tiles",
+          "target": "crates/luxforge-core/src/tiles/reference.rs",
+          "relevance": "Whole-frame reference service to extend."
+        },
+        {
+          "kind": "file",
+          "label": "Spatial reductions",
+          "target": "crates/luxforge-core/src/modules/spatial.rs",
+          "relevance": "MAX_REDUCTION_PIXELS and MAX_SPATIAL_HALO."
+        },
+        {
+          "kind": "file",
+          "label": "Export",
+          "target": "crates/luxforge-core/src/api/owner/export.rs",
+          "relevance": "Reference fallback rendering a whole frame today."
+        }
+      ],
+      "acceptance_criteria": [
+        "On sources small enough for both, banded output is bit-identical to whole-frame output for every output family, including spatial, masked, geometry and repair stacks.",
+        "A paged source above 128 MP exports a valid JPEG through the reference with bounded memory, and its analysis completes; band limits and cancellation hold."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare banded with whole-frame reference output bit for bit across the corpus families on resident sources.",
+          "Export and analyse a generated paged source on the reference, recording peak memory."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core reference_bands"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Edit, preview and export paged sources on the GPU: overview level below its scale, level-0 windows above, capped export bands.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "The photo surface holds the resident level below its scale (picture in motion, picture at rest, histogram, labelled as counting the overview) and a level-0 window with halos at and above it, refreshed as the view moves, stale reads cancelled, charged to the preview budget.",
+        "Samples read level 0 through windows at every zoom; catalog previews render from the resident level; export streams level-0 windows with band bytes capped at 256 MiB; staged sweeps past the GPU's 2 × 2 × 8,192 stage textures draw through window chains or fall back to the reference naming `tiles-budget`.",
+        "Declare the tolerance of overview-level rendering against the banded reference reduced the same way per output family; add a generated paged derived entry (about 160 MP, wider than 16,384) to the GPU corpus and qualify it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Surface, samples, export and previews contract.",
+          "locator": "Rendering, samples and export"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "GPU source slot",
+          "target": "crates/luxforge-gpu/src/execution/source.rs",
+          "relevance": "The 2 × 2 tile limit and GpuSource::window.",
+          "locator": "SourceSlot; GpuSource::window"
+        },
+        {
+          "kind": "file",
+          "label": "Fit reduction",
+          "target": "crates/luxforge-core/src/render/gpu/fit.rs",
+          "relevance": "Derivation::Reduce and Cut to feed from levels and windows."
+        },
+        {
+          "kind": "file",
+          "label": "GPU qualification",
+          "target": "xtask/src/gpu_qualification.rs",
+          "relevance": "The gate the new corpus entry joins."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Tolerance contract against the reference."
+        }
+      ],
+      "acceptance_criteria": [
+        "A 512 MP paged result opens, pans and zooms from Fit to 100% in a far corner, edits with a mask and a spatial layer, samples full-resolution values and exports, with no whole-frame allocation on CPU or GPU.",
+        "The large corpus entry passes the GPU gate within its declared tolerances; existing corpus families are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Drive a paged source through the editor service at several zooms, recording allocations and budgets.",
+          "Run the GPU qualification gate including the new entry."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core paged_source_render",
+          "tools/cargo-cached xtask gpu-qualification --output NEW_DIR --sources derived-merge,derived-paged"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Develop merge frames: RAW with the detected lens profile baked, and JPEG into float linear sRGB/D65.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "A merge-only frame path beside HDR's shared development: RAW through the shared verified development at a given white balance with required embedded corrections, and, when the lens module's first-open detection would select a profile for the reference frame, that profile's distortion model applied to the developed frame; recorded with the profile key.",
+        "JPEG through the shared decode with its embedded ICC profile honoured (Display P3 included) into float32 linear sRGB/D65 with clipping evidence where an encoded channel is 255; no lens profile; bounded by the existing JPEG decode limits.",
+        "Streams by bands into a spool and an analysis proxy like HDR's development, outside the source worker's plane gate; HDR stays RAW-only."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Frame contract, profiles and clipping evidence.",
+          "locator": "Working pixels"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "HDR development",
+          "target": "crates/luxforge-core/src/merge/job.rs",
+          "relevance": "SharedDevelopment and the Developer trait to extend.",
+          "locator": "SharedDevelopment; Developer"
+        },
+        {
+          "kind": "file",
+          "label": "Lens first open",
+          "target": "crates/luxforge-core/src/modules/lens/mod.rs",
+          "relevance": "The detection a merge reuses.",
+          "locator": "first_open"
+        },
+        {
+          "kind": "file",
+          "label": "Source optics",
+          "target": "crates/luxforge-core/src/source/optics.rs",
+          "relevance": "The derived ledger a baked profile reports through."
+        },
+        {
+          "kind": "file",
+          "label": "JPEG decode",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "decode_source and its limits.",
+          "locator": "decode_source"
+        }
+      ],
+      "acceptance_criteria": [
+        "A JPEG frame's linear values match an independent ICC/sRGB transfer reference within a declared tolerance, for sRGB and Display P3 files; clipped samples are marked.",
+        "A RAW frame with a detected profile matches the reference renderer's lens warp of the same development within the reference tolerance; without one it is the shared development exactly.",
+        "No frame path reads more than one development at once or waits on the editor's plane gate; originals stay byte-identical."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare complete frame buffers with independent references for JPEG colour spaces and lens warps.",
+          "Check bounds, cancellation and plane-gate independence beside a held editor source."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core panorama_frames"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Register panorama frames under a rotating-camera model with an independent reference.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Pure numerics in `luxforge_core::merge::panorama`: bounded analysis proxies, a bounded feature detector and descriptor (pure Rust; a pinned crate allowed with notices), every-pair matching for N ≤ 32 with RANSAC-style verification, a shared focal length and optional radial term with per-frame rotations by robust bundle adjustment, connectivity, levelling and the reference frame.",
+        "Typed refusals `Disconnected`, `LowTexture`, `AmbiguousRegistration` and `SameView` name their frames; cancellation between passes and iterations; every bound (features, pairs, iterations, scratch) stated and tested.",
+        "An independent generator (`luxforge_reference::panorama`) renders scenes through known rotations, focal lengths, radial terms, gains, noise and a moving subject, in single and multiple rows and a 360° row."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Model, refusals and diagnostics.",
+          "locator": "Registration"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "HDR proxies",
+          "target": "crates/luxforge-core/src/merge/hdr/proxy.rs",
+          "relevance": "The streamed proxy pattern to follow."
+        },
+        {
+          "kind": "url",
+          "label": "Brown and Lowe",
+          "target": "https://link.springer.com/article/10.1007/s11263-006-0002-3",
+          "relevance": "Numerical reference for matching, verification, bundle adjustment and wave correction."
+        }
+      ],
+      "acceptance_criteria": [
+        "Fitted rotations and focal length put every frame corner within a declared pixel tolerance of the generated geometry, with and without noise, for 2–32 frames; the radial term is recovered within a declared tolerance.",
+        "Disconnected, low-texture, ambiguous and same-view inputs are refused by name; results are deterministic.",
+        "Stated bounds hold and cancellation ends every stage within a declared latency."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare fitted geometry with the generator's ground truth over seeds and layouts.",
+          "Probe each refusal, bound and cancellation point."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core panorama_registration"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Stitch registered frames: projection, photometric fit, seams, band-limited blending and Boundary Warp, chunk by chunk.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Perspective, Cylindrical, Spherical and Auto projections with `ExcessiveFieldOfView`; output scale at the reference's centre, never upscaled, scaled down uniformly past the large-source limits (`OutputTooLarge` only where even that cannot fit).",
+        "Per-frame gains (one a channel for JPEG, one a frame for RAW) from overlapping unclipped samples; seams by a minimum-cost cut on the proxies; a band-limited blend whose widest band is bounded so each output chunk reads bounded windows.",
+        "Boundary Warp 0–100: crop to the largest covered rectangle at 0, a content-preserving mesh warp onto the bounding rectangle at 100, scaled displacements between; the warp is part of the one output mapping, so frames are resampled once; `InsufficientCoverage` below a quarter of the rectangle a side.",
+        "Diagnostics as the design lists; output bit-identical for any split into chunks."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Projection, scale, photometrics, seams, blend and warp contract.",
+          "locator": "Projection and output size"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "HDR coverage",
+          "target": "crates/luxforge-core/src/merge/hdr/coverage.rs",
+          "relevance": "Largest covered rectangle to generalize."
+        },
+        {
+          "kind": "url",
+          "label": "Rectangling",
+          "target": "https://doi.org/10.1145/2461912.2462004",
+          "relevance": "Numerical reference for Boundary Warp."
+        }
+      ],
+      "acceptance_criteria": [
+        "Complete stitched buffers match `luxforge_reference::panorama` within a declared tolerance for every projection, with exact crop rectangles and mappings.",
+        "Gains are recovered within tolerance; a moving subject appears once; a warp at 0 equals the crop and at 100 covers at least a declared fraction of the rectangle.",
+        "Chunk-split invariance, finite output, bounds and cancellation hold."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare complete buffers and diagnostics to the reference across projections, gains and warp amounts.",
+          "Split outputs into different chunk grids and compare bit for bit."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core panorama_stitch"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Deliver the panorama job and commands through the shared merge lane, with atomic publication.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003",
+        "TASK-006",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Register the `luxforge.panorama` version 1 provider and its merge preview (the colour stitch at preview scale with crop and coverage and frame-quadrilateral overlay data, redrawn without reading frames for projection and Boundary Warp); `merge.plan` (headers only: suitability, size estimate and predicted scale, folder, claims), `merge.create`, `merge.inspect` and `merge.rerun` for kind panorama with projection, Boundary Warp and reference options.",
+        "The job reads one frame at a time into the spool and proxy, registers, refuses before stitching what cannot fit, stitches output chunks into a large derived source, rechecks signatures and publishes through HDR's one-transaction publication with stacks in left-to-right order, into the folder its folder choice names.",
+        "Ceilings (64 GiB temporary, 512 MiB scratch) preflighted and accounted; stages reading, matching, stitching and saving; cancellation at every stage; retries, interruption markers and cleanup as for HDR. Result named with \"Panorama\"; metadata from the reference with a merged flag, field of view and frame count."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Commands, lane, ceilings and stages.",
+          "locator": "Generalizing the merge boundary"
+        },
+        {
+          "kind": "file",
+          "label": "HDR merge design",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "The lifecycle and publication reused.",
+          "locator": "Jobs, commands and client state"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Merge commands",
+          "target": "crates/luxforge-core/src/api/owner/merge.rs",
+          "relevance": "Where the panorama kind is dispatched."
+        },
+        {
+          "kind": "file",
+          "label": "Merge publication",
+          "target": "crates/luxforge-core/src/library/merge.rs",
+          "relevance": "publish_merge and lifecycle reused unchanged."
+        }
+      ],
+      "acceptance_criteria": [
+        "Real-owner multi-client tests create, reuse, cancel at every stage, retry, rerun with another Boundary Warp and inspect panoramas through the registry, publishing one complete result or nothing.",
+        "A result above 128 MP is published and reopens with the frames moved away; mixed-kind stack claims are refused naming the stack.",
+        "Disk, scratch and size refusals precede wasted work; originals and unrelated recipes are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Drive the real owner with several clients over deterministic generated frames, holding and failing each stage.",
+          "Merge a generated panorama above 128 MP end to end through the production path."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core panorama_merge_job",
+          "tools/cargo-cached test -p luxforge-core panorama_merge_end_to_end"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Deliver Select's panorama menu, preview sheet, progress, result tiles and stack words.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "The selection menu's Merge panorama… and Panorama options… for 2–32 frames beside HDR's for 2–9, each planned at once and disabled with its refusal; no panorama header.",
+        "The panorama preview sheet as the boards draw it (docs/design/merges/panorama-preview.png, panorama-warp.png): projection, Boundary Warp, frame outlines and crop and coverage, frames with Reference and folder, redrawn on each change, with ⌥-click merging at once; the pending row \"Merging panorama · N photos\" with stage, bar and Cancel, and failures naming the frame or stage.",
+        "Result cell badge \"Panorama · N photos\" / \"Pano · N\" / icon; originals' \"Frame k of N\"; Info band with projection and field of view. Every action sends the documented request."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Menu, sheet, row, badge and words.",
+          "locator": "Grid workflow"
+        },
+        {
+          "kind": "file",
+          "label": "Merge boards",
+          "target": "docs/design/merges/panorama-result.png",
+          "relevance": "Targets for the result tile, stack and Info band; panorama-preview.png and panorama-warp.png for the sheet."
+        },
+        {
+          "kind": "file",
+          "label": "HDR merge design",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "The surfaces being extended.",
+          "locator": "In the desktop"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Select merge",
+          "target": "crates/luxforge-app/src/state/select_merge.rs",
+          "relevance": "Desktop merge state to extend by kind."
+        }
+      ],
+      "acceptance_criteria": [
+        "Real-owner desktop tests compare each gesture's request and resulting state with a second JSON client, for both kinds.",
+        "HDR's menu, header and words are unchanged; a large panorama result opens in Develop."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Drive the desktop state through both kinds' gestures beside a JSON client."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app panorama_merge",
+          "tools/cargo-cached test -p luxforge-app hdr_merge"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Hand off the working panorama workflow with a background journey and current documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Register a background `panorama-merge` smoke scenario from generated frames: Merge panorama through the preview sheet (Boundary Warp changed, overlays on) and once by ⌥-click, with progress, one collapsed tile, expanded originals, Develop at Fit, at 100% in a far corner and with a mask edit, export of a result above 128 MP, Remove merge, undo and redo with no second merge, the result in the plan's folder, and a relaunch with the frames moved away.",
+        "Update the design with delivered shapes and tolerances, the HDR design's shared shapes, feature status, the user guide, the catalog design and command documentation; remove the panorama line from the user guide's not-yet list."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Items 1–5 are this task's.",
+          "locator": "Evidence and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence",
+          "target": "docs/engineering/development.md",
+          "relevance": "Smoke scenarios, background launches and tiers."
+        }
+      ],
+      "acceptance_criteria": [
+        "The journey passes in the background with frames, owner state and logs correlated; the hdr-merge and existing journeys still pass.",
+        "Quick passes once and the rendered tier passes at integration; documentation describes current behaviour only."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Register and run the journey, then quick and rendered."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask smoke --scenario panorama-merge",
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
+          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Qualify natural panoramas and measure photo-sized merges, large-source editing and export, and HDR after band reads.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Natural panoramas: the owner's own where available (Z6, X100VI, Air 2S) and pinned open samples otherwise; inspect seams, levelling, colour, crop losses and warp quality; record scope honestly and fix measured failures. Missing private inputs leave quality unqualified, never block measurement.",
+        "Measure once behind the host lock: stages cold and warm, cancellation, temporary disk, peak process/source/scratch/GPU use, editor latency at Fit and 100% on a 512 MP result, export time and browse latency beside a merge, for 24 and 60 MP frames, 5 and 32 of them; and HDR 60 MP × 9 fusion with band reads out of the file cache."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Panorama design",
+          "target": "docs/design/panorama-merge.md",
+          "relevance": "Item 6.",
+          "locator": "Evidence and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Sacred originals, current shapes only, command parity, verification and performance rules."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where measured figures and their scope are recorded."
+        },
+        {
+          "kind": "file",
+          "label": "HDR measurement",
+          "target": "xtask/src/hdr_merge_measure/mod.rs",
+          "relevance": "The measurement harness to extend."
+        }
+      ],
+      "acceptance_criteria": [
+        "Figures and their scope are recorded in the performance spec, the design and feature status; unmeasured cases are named.",
+        "Natural-panorama findings are recorded with their sources; measured failures are fixed or recorded as limits."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Prepare photo-sized generated workloads and a natural-case manifest.",
+          "Measure on the completed feature behind the host lock and inspect natural results."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-003",
+        "TASK-006",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002",
+        "TASK-004",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005",
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-012"
+      ]
+    }
+  ]
+}

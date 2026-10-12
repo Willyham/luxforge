@@ -35,6 +35,9 @@ mod library;
 /// The host's compiled mask and the component kinds this build can evaluate.
 pub mod mask;
 mod mask_field;
+/// The merges' pure numerical library: suitability, exposure resolution and fusion of HDR
+/// brackets.
+pub mod merge;
 mod model;
 mod modules;
 /// Events, days, cameras and moments, computed from header metadata.
@@ -67,6 +70,8 @@ pub mod usage;
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
 // and this crate's integration tests name through the crate root, and every type a public item's
 pub use activity::ActivitySnapshot;
+#[cfg(any(test, feature = "test-holds"))]
+pub use api::SyntheticFrame;
 pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
     Envelope, EventWake, EventsResult, JobMonitorStats, LIVE_SESSIONS_DIR, LiveSessionEntry,
@@ -77,8 +82,9 @@ pub use api::{
     WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
 pub use artifacts::{
-    ArtifactId, ArtifactTable, CandidatePart, CandidateRead, CandidateState, PATCH_FORMAT,
-    PREVIEW_FORMAT, PreparedArtifact, PreviewSize, ReleaseReason,
+    ArtifactId, ArtifactTable, CandidatePart, CandidateRead, CandidateState, DerivedColour,
+    DerivedInterpretation, DerivedSourceId, PATCH_FORMAT, PREVIEW_FORMAT, PreparedArtifact,
+    PreviewSize, ReferenceCrop, ReleaseReason,
 };
 pub use cancel::{Cancel, ProgressCounts};
 pub use capabilities::context::ModuleContext;
@@ -94,6 +100,9 @@ pub use editor::{
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
+/// The RAW test cameras' process-wide switch, which the desktop turns on only for a launch with
+/// `LUXFORGE_TEST_CAMERAS=1`: see `luxforge_raw::admit_test_cameras`.
+pub use luxforge_raw::{admit_test_cameras, test_cameras_admitted};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
     AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, CorrectionId, DraftId,
@@ -119,11 +128,12 @@ pub use modules::{
     PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
     RangeControl, RawModule, RawPayload, Region, RegistryOptions, RepairInput, RepairTable,
     Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin,
-    SpatialOperation, Stage, StageContext, StageQuestions, StaleCorrection, StaleReason,
+    SourceFit, SpatialOperation, Stage, StageContext, StageQuestions, StaleCorrection, StaleReason,
     TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, ViewControl, WheelControl, WheelStyle,
     WhiteBalanceMode, check_parameters, check_value, controls_module, current_effect_format,
-    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
-    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
+    fit_correction_source, gains_from_temperature_tint, guide_angle, insertion_index_among,
+    largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
+    temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{DeveloperModels, HostView, TaskAdmission, TaskNeeds};
@@ -155,11 +165,11 @@ pub use render::gpu::{
     GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuReadAtlas, GpuRepair,
     GpuRepairOperation, GpuResident, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep,
     GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES, REPAIR_ATLAS_SIDE,
-    REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX, REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK,
-    RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES,
-    SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read,
-    plan_stream, plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at,
-    rest_light_bytes, rest_slot_bytes,
+    REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX, REST_BACKDROP_BOUNDS, REST_SHARE_MAX, REST_TILE_SIDES,
+    REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH,
+    SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights,
+    gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps, plan_stream_sweeps,
+    plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -247,6 +257,24 @@ pub mod qualification {
         tiles: &dyn crate::tiles::TileService,
     ) -> Result<(Vec<crate::Raster>, crate::catalog_types::RenderedBy), crate::Error> {
         crate::previews::rendered::qualification_tiers(service, asset_id, tiles)
+    }
+
+    /// A derived photograph of `planes` (`width × height` linear-sRGB red values row by row, then
+    /// green, then blue, signed and with headroom as an HDR merge's result is) in the catalog at
+    /// `catalog`, created if it is new: stored and published as a merge publishes its result, with
+    /// no original file. It joins the folder of `anchor`, a file developed into the catalog first,
+    /// since a derived photograph joins an existing photograph's folder. Answers the derived
+    /// photograph; the catalog is closed again before this returns, for an owner to open.
+    pub fn publish_derived(
+        catalog: &std::path::Path,
+        anchor: &std::path::Path,
+        width: u32,
+        height: u32,
+        planes: &[f32],
+    ) -> Result<crate::AssetId, crate::Error> {
+        let mut service = crate::EditorService::open(catalog)?;
+        service.import(anchor)?;
+        service.publish_planes("synthetic-merge.hdr", width, height, planes)
     }
 
     /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as

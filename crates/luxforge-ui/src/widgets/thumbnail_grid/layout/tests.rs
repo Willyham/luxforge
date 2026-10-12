@@ -19,7 +19,7 @@ fn header(kind: MomentKind) -> MomentHeader {
         detail: "frames".into(),
         evidence: None,
         picked: None,
-        action: None,
+        actions: Vec::new(),
     }
 }
 
@@ -168,6 +168,8 @@ fn reference(blocks: &[GridBlock], m: &GridMetrics, width: f32) -> Expected {
                 rows.push((None, m.camera_heading));
                 continue;
             }
+            // The model's views have no pending rows.
+            GridBlock::Pending(_) => unreachable!(),
             GridBlock::Singles(n) => {
                 for _ in 0..*n {
                     let used: f32 = current.iter().map(|&p| piece_width(p) + gap).sum();
@@ -812,4 +814,44 @@ fn the_presets_scale_the_image_box_by_its_ratio() {
         (6.0, 28.0, 36.0)
     );
     assert_eq!(catalog.camera_heading, 25.0);
+}
+
+/// A pending row consumes no items: a line of its own between lines of cells, a gap from each,
+/// hit as itself and skipped by moving up and down.
+#[test]
+fn a_pending_row_is_a_line_of_its_own() {
+    let metrics = GridMetrics::select(136.0);
+    let row = PendingRow {
+        title: "Merging HDR".into(),
+        detail: "".into(),
+        progress: None,
+        action: Some("Cancel".into()),
+        failed: false,
+    };
+    let layout = GridLayout::new(
+        vec![
+            GridBlock::Singles(2),
+            GridBlock::Pending(row.clone()),
+            GridBlock::Singles(2),
+            GridBlock::Pending(row),
+        ],
+        metrics,
+        594.0,
+    );
+    assert_eq!(layout.item_count(), 4);
+    let first = layout.cell(0).rect;
+    let after = layout.cell(2).rect;
+    let pending = first.y + first.height + 6.0;
+    assert_eq!(after.y, pending + 40.0 + 6.0);
+    assert_eq!(
+        layout.hit(Point::new(300.0, pending + 20.0)),
+        Some(GridHit::Pending { pending: 0 })
+    );
+    let last = after.y + after.height + 6.0 + 20.0;
+    assert_eq!(
+        layout.hit(Point::new(300.0, last)),
+        Some(GridHit::Pending { pending: 1 })
+    );
+    assert_eq!(layout.neighbour(0, GridDirection::Down), Some(2));
+    assert_eq!(layout.neighbour(2, GridDirection::Up), Some(0));
 }

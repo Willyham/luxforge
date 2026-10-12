@@ -1,0 +1,637 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "auto-update",
+  "title": "Automatic updates on macOS and Linux",
+  "objective": "Released Luxforge finds, verifies and installs its newer releases from day one: Sparkle on macOS with a drag-to-Applications disk image and a move into Applications, an in-house payload updater on Linux, one signed feed per target on the backend API under api.luxforge.app/v1/updates/, update.* commands and preferences, and a clean launch past a catalog the new version cannot open.",
+  "context_summary": "Owner decisions of 2026-10-12, recorded in the design and decisions: no launcher; Sparkle 2 on macOS; in-house Linux updater with notify-only fallback; Windows later on the same feed, key and commands; feeds served by the one backend API under https://api.luxforge.app/v1/updates/; check automatically by default and offer, with automatic installation off by default; the catalog format was reset to 1 and catalog migrations are required from 1.0.0 onwards, so until then a catalog-format-changing update is flagged and never installed automatically. Implementation is not authorized by this plan. Routine layout, wording, module and command naming, the update store and publication mechanism, and disk image appearance are delegated within the design. Owner inputs: generating and storing the update key, the production API with its update store and publication credential, release-candidate tags and an authorized foreground clean-install session; they affect only the final qualification task. Implementation never creates, reads or exports production keys, pushes tags or deploys the backend. Use the roadmap's high-tier model minimum and re-review current main before each task.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Define the update feed and per-release update records, and build their signing and feed generation in xtask.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Add release/update.json with the feed base URL https://api.luxforge.app/v1/updates/ (the backend API route, beside /v1/usage/batches) and the update public key (absent until the operator commits it); it is the single source for the macOS SUPublicEDKey and the Linux compiled constant.",
+        "Per release, write luxforge-<version>-updates.json: per archive target, file name, byte length, build number, Ed25519 signature in Sparkle's edSignature form, minimum OS, catalog format and channel (prerelease for SemVer pre-release tags). Sign only final archives; the private key comes from a file or environment variable named on the command line, never from source or logs.",
+        "Generate one Sparkle-format appcast per target (macos-arm64, linux-x86_64) from a directory of published releases' update records, with the luxforge:catalogFormat element in a Luxforge namespace and the GitHub release asset URLs. Refuse build numbers that do not rise with versions, macOS records not marked notarized, and records for unpublished assets; honour a checked-in withdrawal list.",
+        "Accept the private-key format the pinned Sparkle generate_keys exports. Command names and module layout are delegated."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Release assembly",
+          "target": "xtask/cli/src/release_artifacts.rs",
+          "relevance": "Archive names, release.json and SHA256SUMS this extends"
+        },
+        {
+          "kind": "file",
+          "label": "Release build",
+          "target": "xtask/src/release_build.rs",
+          "relevance": "build.json, build number and Info.plist identity"
+        },
+        {
+          "kind": "file",
+          "label": "Operator guide",
+          "target": "docs/engineering/releases.md",
+          "relevance": "Where key custody and feed steps are documented"
+        }
+      ],
+      "acceptance_criteria": [
+        "Records and feeds generate deterministically from test inputs; signatures verify with ring and, on macOS, with the pinned Sparkle's own verification of a test key.",
+        "Non-rising build numbers, unsigned macOS records, missing assets and malformed keys are refused with named errors; withdrawn releases are omitted.",
+        "No production key is created, read or exported."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Unit tests over generated test keys and fixture records; a macOS-only test cross-checks a signature with the pinned Sparkle tool when available and reports skipped otherwise."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask-cli update_feed"
+        ],
+        "expected_results": [
+          "All feed and record tests pass; the Sparkle cross-check passes on macOS."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add the core update model: the update port, update.* commands, update preferences and the pre-release channel flag.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The core owns state, commands and preferences; a host port in HostConfig performs the platform mechanism. luxforge-json and development builds have no port and report unavailable with a reason.",
+        "Methods: update.status (read), update.check (outcome reported without the owner or UI thread waiting on the network), update.install (ClientAuthority::Permissions; not-ready without an update; conflict naming running jobs), update.skip {version}, update.move-to-applications (macOS, Permissions). Register them in METHODS with host_params! schemas.",
+        "Preferences update_checks (default true) and update_install_automatically (default false) through preferences.set; a skipped version in the same configuration. Experiments flag updates.prerelease-channel, off by default.",
+        "State includes mechanism, reason, current version/build, preferences, last check time/outcome, available update (version, build, notes URL, catalog-format change, skipped), progress, readiness and last error. An update whose catalog format differs from CATALOG_FORMAT is marked and never installed automatically.",
+        "Install runs through the ordinary quit path: the port is told to install only after the owner has closed the catalog."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Command registry",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "METHODS and owner!/service! registration"
+        },
+        {
+          "kind": "file",
+          "label": "Preferences",
+          "target": "crates/luxforge-core/src/preferences.rs",
+          "relevance": "Adding a preference with defaults and changes"
+        },
+        {
+          "kind": "file",
+          "label": "Preferences command",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "host_params! PreferencesSet and preferences_set"
+        },
+        {
+          "kind": "file",
+          "label": "Feature flags",
+          "target": "crates/luxforge-core/src/flags.rs",
+          "relevance": "Adding the pre-release channel flag"
+        },
+        {
+          "kind": "file",
+          "label": "Transport port",
+          "target": "crates/luxforge-core/src/capabilities/transport.rs",
+          "relevance": "Pattern for a host-injected port"
+        }
+      ],
+      "acceptance_criteria": [
+        "schema.list publishes every update.* method with its schema; luxforge-ctl reaches them without change.",
+        "A fake port drives check, offer, skip, install, conflict-with-jobs and catalog-format-change paths in tests; authority is enforced.",
+        "A development build and luxforge-json report unavailable with their reasons and make no network request."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Owner and API tests against a fake port; preference and flag round trips."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core update"
+        ],
+        "expected_results": [
+          "All update model, command, preference and flag tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Let the desktop launch past an unsupported remembered catalog and offer a new one.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Today a refused remembered catalog fails the launch (crates/luxforge-app/src/app/lifecycle.rs). Instead open the window with a sheet naming the refused catalog's format and the current one, with Start a new catalog and Quit, and a releases-page link through the checked HTTPS opener.",
+        "Start a new catalog creates and remembers a new catalog beside the refused one (naming delegated). The refused catalog is never modified, renamed or deleted. An explicit --catalog keeps today's command-line refusal.",
+        "The operation has a schema-described equivalent per the engineering rules; reuse an existing catalog-selection path if one exists."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Launch and catalog open",
+          "target": "crates/luxforge-app/src/app/lifecycle.rs",
+          "relevance": "Where the refusal currently ends the launch"
+        },
+        {
+          "kind": "file",
+          "label": "Launch catalog resolution",
+          "target": "crates/luxforge-app/src/main.rs",
+          "relevance": "LaunchCatalog and the remembered catalog"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog format",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "Refusal rules and the application mark"
+        }
+      ],
+      "acceptance_criteria": [
+        "A remembered catalog with another format marker opens the sheet; Start a new catalog reaches a working workspace with a new remembered catalog; the refused file keeps every byte.",
+        "A rendered background check shows the sheet with correlated state and logs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Desktop state tests for both choices; one background rendered check with an isolated data root holding a refused catalog."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app unsupported_catalog"
+        ],
+        "expected_results": [
+          "Tests pass; the rendered evidence shows the sheet and the new catalog."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Ship the macOS download as a signed, notarized and stapled drag-to-Applications disk image beside the update ZIP.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Create luxforge-<version>-macos-arm64.dmg holding Luxforge.app and an Applications link (modest layout delegated, no branding gate). Sign it with the Developer ID identity, notarize and staple it after the app is stapled; the ZIP stays as the Sparkle update archive.",
+        "release-assemble, release.json and SHA256SUMS include the disk image; unsigned rehearsals label it unsigned. Update the release README text, operator guide and release notes draft to point people at the disk image."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Release build",
+          "target": "xtask/src/release_build.rs",
+          "relevance": "archive_payload and macOS layout"
+        },
+        {
+          "kind": "file",
+          "label": "Release signing",
+          "target": "xtask/src/release_sign.rs",
+          "relevance": "Sign, notarize, staple and verification sequence"
+        },
+        {
+          "kind": "file",
+          "label": "Release assembly",
+          "target": "xtask/cli/src/release_artifacts.rs",
+          "relevance": "Asset list and hashes"
+        },
+        {
+          "kind": "file",
+          "label": "Distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Deliverables this changes"
+        }
+      ],
+      "acceptance_criteria": [
+        "A local rehearsal produces a disk image that mounts, contains the app and an Applications link and verifies; signing-plan tests cover disk image signing, notarization and stapling without credentials.",
+        "Assembly lists and hashes the disk image; tampered or missing disk images are refused."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Plan and assembly tests without credentials; a local unsigned rehearsal mounted read-only and inspected."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask release_sign",
+          "tools/cargo-cached test -p xtask-cli release_artifacts"
+        ],
+        "expected_results": [
+          "Tests pass; the rehearsal disk image mounts and holds the expected payload."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Build the Linux payload updater and its desktop port.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "New crate (name delegated) used only by the desktop: read the feed through luxforge-net, choose the newest followed-channel item with a higher build number, stream to a staging directory beside the payload within the stated length, verify Ed25519 against the compiled public key without heap-holding the archive, extract into Luxforge.new/ refusing absolute paths, '..', escaping links, devices and oversize archives, preserving modes, and check build.json.",
+        "Install at the end of the quit path after the catalog closes: renameat2 RENAME_EXCHANGE where supported, else two renames; keep Luxforge.previous until the new version's first successful launch; exec the new executable with the launch arguments (none when installing automatically at quit). Refresh a user-level desktop entry that points at this payload.",
+        "Unwritable payload or parent, cross-filesystem staging or a package-manager marker gives linux-notify, whose offer opens the release page. Failures clean staging and leave the payload untouched. Cancel downloads on quit; bounded memory throughout."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "HTTPS transport",
+          "target": "crates/luxforge-net/src/transport.rs",
+          "relevance": "The checked transport the check and download use"
+        },
+        {
+          "kind": "file",
+          "label": "Linux layout",
+          "target": "xtask/src/release_build.rs",
+          "relevance": "The relocatable Luxforge/ payload and build.json"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Checklist for crates changes"
+        }
+      ],
+      "acceptance_criteria": [
+        "Tests cover selection, channels, bad signature, truncated and oversize downloads, traversal and link escapes, build.json mismatch, swap, previous-payload cleanup, notify fallback and cancellation, using test keys and an injected transport.",
+        "A Linux CI run of the crate's tests passes; the desktop reports linux-payload or linux-notify correctly."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Crate tests in temporary directories with a fake transport; desktop port tests with the fake model."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-update"
+        ],
+        "expected_results": [
+          "All payload updater tests pass on Linux; platform-independent tests pass on macOS."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Embed Sparkle in the macOS release bundle and bridge it to the update port with a custom user driver.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Pin the latest stable Sparkle 2 (2.9 or later): xtask fetches the official archive verified by SHA-256; add its licence to the notices. Embed Contents/Frameworks/Sparkle.framework with Autoupdate and Updater.app, removing the XPC services. Info.plist gains SUFeedURL, SUPublicEDKey, SUEnableAutomaticChecks true, SUScheduledCheckInterval 86400, SUVerifyUpdateBeforeExtraction, and SURequireSignedFeed if the feed can be signed in the workflow (record the outcome in the design).",
+        "Sign Autoupdate, Updater.app and the framework before the helpers and app, never recursively.",
+        "Load the framework at run time from the bundle; absent framework means unavailable. Implement SPUUserDriver in Rust with objc2, forwarding events into the port state and answering reply blocks from update.* commands; apply Luxforge's preferences to Sparkle every launch and change; filter channels; never install a catalog-format-changing item silently; postpone relaunch until the quit path closed the catalog.",
+        "Report outside-applications while the bundle runs from a translocated, disk-image or read-only location."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Release build",
+          "target": "xtask/src/release_build.rs",
+          "relevance": "Info.plist and bundle layout"
+        },
+        {
+          "kind": "file",
+          "label": "Release signing",
+          "target": "xtask/src/release_sign.rs",
+          "relevance": "Enumerated signing order"
+        },
+        {
+          "kind": "file",
+          "label": "Existing AppKit bridging",
+          "target": "crates/luxforge-input/src/macos/visibility.rs",
+          "relevance": "objc2 usage and NSApplication access"
+        },
+        {
+          "kind": "file",
+          "label": "Background launches",
+          "target": "docs/engineering/development.md",
+          "relevance": "Hidden background bundles for automated launches"
+        }
+      ],
+      "acceptance_criteria": [
+        "Packaging and signing-plan tests include the framework and its nested code in order; a development build reports unavailable.",
+        "A local end-to-end journey updates a background-only bundle at build N to one at N+1 from a loopback feed, signed with a temporary test identity in a temporary keychain, through Sparkle and the custom driver, and the relaunched process reports the new build without taking focus."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Plan tests without credentials; the background end-to-end journey on the Mac."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask release_build",
+          "tools/cargo-cached test -p luxforge-app sparkle"
+        ],
+        "expected_results": [
+          "Tests pass and the end-to-end journey records the new build with correlated logs."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Build the desktop's update offer, Settings Updates group and palette entry.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Non-modal workspace notice: version, Release notes (checked HTTPS opener), Install and relaunch, Later, Skip this version, download progress; never takes focus or covers the photograph's controls. A catalog-format-changing update says the new version needs a new catalog and the current one stays usable by the current version.",
+        "Settings › General Updates group: current version, Check for updates automatically, Install updates automatically (disabled while checks are off), Check now with last check time and outcome, and the line saying checks contact api.luxforge.app and send only the app version; a build without an updater shows the reason instead.",
+        "Palette entry Check for Updates. Every control calls the update.* commands or preferences.set; widgets hold no update logic. Layout and wording delegated within the develop workspace's visual language."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Settings tabs",
+          "target": "crates/luxforge-app/src/state/settings.rs",
+          "relevance": "SettingsTab and General rows"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop preferences",
+          "target": "crates/luxforge-app/src/state/preferences.rs",
+          "relevance": "GeneralPreference rows and toggles"
+        },
+        {
+          "kind": "file",
+          "label": "Palette",
+          "target": "crates/luxforge-app/src/state/palette.rs",
+          "relevance": "Palette entries"
+        },
+        {
+          "kind": "file",
+          "label": "Workspace language",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Visual language and notices"
+        }
+      ],
+      "acceptance_criteria": [
+        "Desktop state tests drive the notice through a fake port: offer, progress, skip, later, install conflict and format change; Settings toggles round-trip through preferences.set.",
+        "A rendered background check captures the notice and the Updates group with correlated state and logs; UI/API parity holds."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "State tests with the fake port; one background rendered capture set."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app update"
+        ],
+        "expected_results": [
+          "Tests pass; captures show the offer and Settings group."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Offer to move Luxforge into Applications on macOS.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "For person-launched release builds: detect translocation (SecTranslocateIsTranslocatedURL, as LetsMove does), a disk image or read-only volume, or a location outside /Applications and ~/Applications. Ask with Move and relaunch, Not now, and a Don't ask again preference; never ask in background or evidence launches.",
+        "Move: copy preserving the signature into /Applications, or ~/Applications when it is not writable; confirm before trashing an existing Luxforge in the way; clear the copy's quarantine as LetsMove does; relaunch from the new place; trash the original or eject its disk image. update.move-to-applications performs the same operation."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Updater design: moving into Applications",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour and reasons"
+        },
+        {
+          "kind": "file",
+          "label": "Checked opener",
+          "target": "crates/luxforge-app/src/browser.rs",
+          "relevance": "Existing safe process launching patterns"
+        }
+      ],
+      "acceptance_criteria": [
+        "Location classification is tested over path and volume fixtures; the move is tested into temporary destinations including an existing app and an unwritable /Applications substitute.",
+        "A background rendered check shows the question; the real translocated first launch is part of final qualification."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit tests over temporary directories; one background capture."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app move_to_applications"
+        ],
+        "expected_results": [
+          "Tests pass; the capture shows the question."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Publish update records and feeds from the release workflow, and document the operator steps.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-004",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "In the publish job, before the draft is published: sign the final archives in a step that alone receives LUXFORGE_UPDATE_SIGNING_KEY and upload luxforge-<version>-updates.json with the other assets. Skip macOS records for builds that are not notarized.",
+        "After publication succeeds, a feed job regenerates every target's appcast from all published releases' records and publishes them to the backend API's update store, with a scoped credential only that step receives (store and mechanism delegated to the backend deployment). A failed feed publication never alters the release.",
+        "The API serves GET /v1/updates/<target>/appcast.xml as static content: no query string, cookies or authentication, cache headers that let a release reach clients within an hour, and no record of client addresses, headers or bodies. Add the route to the backend's deployment checklist and its local reference so it can be exercised before production exists.",
+        "Operator guide: generating the update key with the pinned Sparkle generate_keys, committing the public key to release/update.json, storing the private key secret, keeping an offline backup and the consequence of losing it, provisioning the update store and publication credential on the production API, withdrawing a release. Use pinned actions and least permissions."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Release workflow",
+          "target": ".github/workflows/release.yml",
+          "relevance": "Jobs, permissions and secrets"
+        },
+        {
+          "kind": "file",
+          "label": "Tag-build design",
+          "target": "docs/design/tag-release-builds.md",
+          "relevance": "Publication ordering and immutability rules"
+        },
+        {
+          "kind": "file",
+          "label": "Operator guide",
+          "target": "docs/engineering/releases.md",
+          "relevance": "Where operator steps go"
+        },
+        {
+          "kind": "file",
+          "label": "Backend deployment",
+          "target": "services/usage-statistics/DEPLOYMENT.md",
+          "relevance": "The backend deployment checklist the update route joins"
+        }
+      ],
+      "acceptance_criteria": [
+        "Workflow lint passes; a local dry run over fixture releases produces the feeds and the deploy artifact; tests show the key reaches only the signing step and unsigned macOS builds produce no macOS record.",
+        "No real tag, key, secret, credential or production deployment is made by implementation."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Workflow lint and xtask tests over fixture releases."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask check-repository",
+          "tools/cargo-cached test -p xtask-cli update_feed"
+        ],
+        "expected_results": [
+          "Checks pass; the dry run's feeds validate."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Qualify updates on real signed candidates and bring the documentation current.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Needs owner inputs: the committed update public key and secret, the production api.luxforge.app with its update store and publication credential, two release-candidate tags on the pre-release channel, an owner-authorized foreground session on a clean account or second Mac, and native Ubuntu 24.04. Prepare everything else first and record what remains unrun.",
+        "Qualify: M4 update from one candidate to the next with the pre-release flag; DMG install, move into Applications and update on the clean account; native Linux payload update and notify fallback; the feed route answering over HTTPS; a catalog-format-changing offer and the unsupported-catalog launch.",
+        "Update feature status, the user guide (updates, moving into Applications, catalog format changes before 1.0.0), the release notes draft, the distribution contract and this design's status; run quick once and rendered at integration."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Automatic updates design",
+          "target": "docs/design/auto-update.md",
+          "relevance": "Behaviour, decisions, feed, key, commands and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Status row for automatic updates"
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Updates and installation sections"
+        },
+        {
+          "kind": "file",
+          "label": "Release notes draft",
+          "target": "docs/releases/v0.1.md",
+          "relevance": "Installation and update text"
+        },
+        {
+          "kind": "file",
+          "label": "Distribution contract",
+          "target": "docs/design/release-v0.1.md",
+          "relevance": "Release acceptance that now includes updates"
+        }
+      ],
+      "acceptance_criteria": [
+        "Each qualification names the build, OS, adapter and scope; unrun items are recorded as unrun, never passed.",
+        "Docs describe only shipped behaviour; quick and rendered pass at the integrated commit."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Native qualification sessions with retained logs; documentation review; verification tiers once."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output target/evidence/auto-update-quick",
+          "tools/cargo-cached xtask verify --tier rendered --output target/evidence/auto-update-rendered"
+        ],
+        "expected_results": [
+          "Qualification evidence is recorded with its scope; both tiers pass."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-010"
+      ]
+    }
+  ]
+}

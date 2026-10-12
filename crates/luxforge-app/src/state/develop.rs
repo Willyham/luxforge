@@ -1,14 +1,15 @@
-//! Developing picks and Develop's development set, as plain data ([catalog design](../../../../docs/design/catalog.md#developing-picks)):
-//! Develop N's confirmation in Select, made from what `pick.plan` answered and the person's
-//! choices, and the development set Develop moves through with its filmstrip. The app holds this
-//! state (`app/develop.rs`); the model derived from it is what the confirmation, the title bars,
-//! the filmstrip and the status bar draw. Nothing here calls the owner.
+//! Developing picks and Develop's filmstrip, as plain data ([develop from
+//! folders](../../../../docs/design/develop-from-folders.md#develops-folder)): Develop N's
+//! confirmation in Select, made from what `pick.plan` answered and the person's choices, and the
+//! filmstrip of the Develop folder Develop moves through. The app holds this state
+//! (`app/develop.rs`); the model derived from it is what the confirmation, the title bars, the
+//! filmstrip and the status bar draw. Nothing here calls the owner.
 use crate::state::select::thousands;
 use luxforge_core::{
     AssetId, EntryId, MutationRequest,
     catalog_types::{
         CatalogFolder, CatalogFolderId, CatalogFolders, DevelopInto, DevelopPlan, DevelopReport,
-        FolderChoice, MAX_LIBRARY_NAME, PlannedEvent, PreviewOrigin,
+        FolderChoice, LocalDay, MAX_LIBRARY_NAME, PlannedEvent, PreviewOrigin,
     },
 };
 use serde_json::{Value, json};
@@ -32,30 +33,38 @@ pub(crate) struct Confirmation {
     pub(crate) menu: Option<usize>,
 }
 
-/// Where one event's picks go: a new folder named `name`, or an existing one.
+/// Where one event's picks go: under the place named `name` — "2026 › Konstanz › 12 Sep" — or
+/// into an existing folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EventChoice {
-    /// The new folder's name as typed; the plan's proposal to begin with.
+    /// The place's name as typed; the plan's proposal to begin with.
     pub(crate) name: String,
     /// An existing folder chosen instead, or proposed by the plan.
     pub(crate) existing: Option<CatalogFolderId>,
+    /// The existing folder files each photograph in its capture day's folder inside it, as the
+    /// plan proposes for a folder an earlier Develop of the event made. Or add to an existing
+    /// folder chooses it without.
+    pub(crate) days: bool,
 }
 
 impl Confirmation {
-    /// The confirmation for `plan`: each event's proposal — a new folder named after the event,
-    /// selected for typing, or the folder an earlier Develop from it made — and the copies used.
+    /// The confirmation for `plan`: each event's proposal — its place, selected for typing, or the
+    /// folder an earlier Develop from it made — and the copies used. A new folder the plan names
+    /// is offered as a place of that name, as the plan proposes no other.
     pub(crate) fn new(plan: DevelopPlan, folders: CatalogFolders, from: String) -> Self {
         let events = plan
             .events
             .iter()
             .map(|event| match &event.folder {
-                FolderChoice::New { name, .. } => EventChoice {
+                FolderChoice::Place { name } | FolderChoice::New { name, .. } => EventChoice {
                     name: name.clone(),
                     existing: None,
+                    days: false,
                 },
-                FolderChoice::Existing { folder_id } => EventChoice {
+                FolderChoice::Existing { folder_id, days } => EventChoice {
                     name: event.name.clone(),
                     existing: Some(folder_id.clone()),
+                    days: *days,
                 },
             })
             .collect();
@@ -95,7 +104,7 @@ impl Confirmation {
         count > covered
     }
 
-    /// Why Develop cannot be pressed: a new folder's name is empty or too long.
+    /// Why Develop cannot be pressed: a place's name is empty or too long.
     pub(crate) fn refusal(&self) -> Option<String> {
         self.events.iter().find_map(|choice| {
             if choice.existing.is_some() {
@@ -103,7 +112,7 @@ impl Confirmation {
             }
             let name = choice.name.trim();
             if name.is_empty() {
-                Some("Name the new catalog folder".to_owned())
+                Some("Name the place".to_owned())
             } else if name.chars().count() > MAX_LIBRARY_NAME {
                 Some(format!(
                     "A folder name holds at most {MAX_LIBRARY_NAME} characters"
@@ -125,10 +134,10 @@ impl Confirmation {
                 folder: match &choice.existing {
                     Some(folder_id) => FolderChoice::Existing {
                         folder_id: folder_id.clone(),
+                        days: choice.days,
                     },
-                    None => FolderChoice::New {
+                    None => FolderChoice::Place {
                         name: choice.name.trim().to_owned(),
-                        parent_id: None,
                     },
                 },
             })
@@ -186,18 +195,23 @@ pub(crate) struct ConfirmModel {
     pub(crate) refusal: Option<String>,
 }
 
-/// One event of the confirmation: its folder field or chosen folder, and its menu of existing
-/// folders when open.
+/// One event of the confirmation: its place's field or chosen folder, the folders its picks go
+/// into, and its menu of existing folders when open.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct EventRow {
     /// The event's own name and how many picks it holds, shown when there are several events:
     /// "Konstanz · Sep 2026 · 12 picks".
     pub(crate) label: Option<String>,
-    /// The new folder's name as typed, while a new folder is chosen.
-    pub(crate) field: Option<String>,
+    /// The place's name as typed, or the existing folder's own name, which typing over turns into
+    /// a place of that name.
+    pub(crate) field: String,
     /// The existing folder chosen, by its label.
     pub(crate) existing: Option<String>,
-    /// The tag beside it: "new folder" or "existing folder".
+    /// The folders the picks go into, beneath: "2026 › Konstanz › 12 Sep, 13 Sep", one line per
+    /// year, and "Undated › Konstanz" for picks with no capture time; for an existing folder with
+    /// day folders, "Travel › Alps › 12 Sep, 13 Sep".
+    pub(crate) folders: Vec<String>,
+    /// The tag beside it: "place" or "existing folder".
     pub(crate) tag: &'static str,
     /// The open menu: every folder by its label.
     pub(crate) menu: Option<Vec<(CatalogFolderId, String)>>,
@@ -337,77 +351,202 @@ fn event_row(
             })
             .collect()
     });
+    let folders = match &existing {
+        Some(label) if choice.days && !event.days.is_empty() => {
+            vec![format!("{label} \u{203a} {}", day_names(&event.days))]
+        }
+        Some(label) => vec![label.clone()],
+        None => place_folders(choice.name.trim(), event),
+    };
+    let field = match &choice.existing {
+        Some(folder) => confirmation
+            .folders
+            .iter()
+            .find(|held| held.id == *folder)
+            .map(|held| held.name.clone())
+            .or_else(|| event.folder_name.clone())
+            .unwrap_or_default(),
+        None => choice.name.clone(),
+    };
     EventRow {
         label: several.then(|| format!("{} \u{b7} {}", event.name, picks(event.count))),
-        field: choice.existing.is_none().then(|| choice.name.clone()),
+        field,
         tag: if choice.existing.is_some() {
             "existing folder"
         } else {
-            "new folder"
+            "place"
         },
         existing,
+        folders,
         menu,
     }
 }
 
-// -- The development set ---------------------------------------------------------------------------
+/// English month names as day folders are named: "12 Sep".
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
-/// One photograph of the development set: its identity and the name its original has.
+/// Days as their folders are named, joined: "12 Sep, 13 Sep".
+fn day_names(days: &[LocalDay]) -> String {
+    days.iter()
+        .map(|day| {
+            let (_, month, day) = day.ymd();
+            format!("{day} {}", MONTHS[month as usize - 1])
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The folders a place choice files `event`'s picks in: under each capture year, the place and its
+/// days, and "Undated › place" for picks with no capture time.
+fn place_folders(place: &str, event: &PlannedEvent) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut at = 0;
+    while at < event.days.len() {
+        let year = event.days[at].ymd().0;
+        let end = event.days[at..]
+            .iter()
+            .position(|day| day.ymd().0 != year)
+            .map_or(event.days.len(), |offset| at + offset);
+        lines.push(format!(
+            "{year:04} \u{203a} {place} \u{203a} {}",
+            day_names(&event.days[at..end])
+        ));
+        at = end;
+    }
+    if event.undated > 0 {
+        lines.push(format!("Undated \u{203a} {place}"));
+    }
+    lines
+}
+
+// -- The filmstrip ---------------------------------------------------------------------------------
+
+/// The most photographs the filmstrip holds of a folder; a larger folder's first ones are held, and
+/// its header says so.
+pub(crate) const MAX_STRIP_PHOTOS: usize = 100_000;
+
+/// One photograph of the filmstrip: its identity and the name its original has.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SetPhoto {
+pub(crate) struct StripPhoto {
     pub(crate) asset_id: AssetId,
     pub(crate) kind: Option<luxforge_core::SourceTag>,
     pub(crate) name: String,
 }
 
-/// The photographs Develop was opened with, in order, and the one on screen. Held as ids: a view's
-/// photographs are read into it a window of rows at a time.
+/// The Develop folder as read for the filmstrip: its path from the top level, its photographs with
+/// its subfolders', captured oldest first, at most [`MAX_STRIP_PHOTOS`], how many it holds, and the
+/// library change it was read at.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DevelopSet {
-    /// Its number, raised for every new set: the strip's previews are read under it.
+pub(crate) struct FolderRead {
+    pub(crate) folder: CatalogFolderId,
+    pub(crate) path: Vec<String>,
+    pub(crate) photos: Vec<StripPhoto>,
+    pub(crate) count: u32,
+    pub(crate) library_sequence: u64,
+}
+
+/// The filmstrip's header for a folder's path: "2026 › Konstanz", a deep path shortened to its top
+/// level and its last two folders, "2026 › … › Konstanz › 12 Sep".
+pub(crate) fn path_title(path: &[String]) -> String {
+    match path {
+        [] => "Catalog folder".to_owned(),
+        [top, .., parent, last] if path.len() > 3 => {
+            format!("{top} \u{203a} \u{2026} \u{203a} {parent} \u{203a} {last}")
+        }
+        _ => path.join(" \u{203a} "),
+    }
+}
+
+/// What Develop's filmstrip holds: the Develop folder's photographs in order, or, until its folder
+/// is read, the photographs Develop opened on; the one on screen, outlined, unless it is not in the
+/// folder; and the others selected. Held as ids, read a window of rows at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Filmstrip {
+    /// Its number, raised for every new strip: the strip's previews are read under it.
     pub(crate) serial: u64,
-    pub(crate) photos: Vec<SetPhoto>,
-    /// The index of the photograph Develop shows or is switching to.
-    pub(crate) active: usize,
+    /// The catalog folder it holds, once known.
+    pub(crate) folder: Option<CatalogFolderId>,
+    /// The folder's path from the top level, as last read.
+    pub(crate) path: Vec<String>,
+    pub(crate) photos: Vec<StripPhoto>,
+    /// How many photographs the folder holds, when it holds more than the strip.
+    pub(crate) truncated: Option<u32>,
+    /// The index of the photograph Develop shows or is switching to; `None` while it is one that
+    /// is not in the folder.
+    pub(crate) active: Option<usize>,
     /// The first cell the filmstrip draws.
     pub(crate) first: usize,
-    /// The view's photographs are still being read into the set.
+    /// The folder's photographs are still being read into it.
     pub(crate) reading: bool,
     /// Other selected indices; the active photograph is always selected implicitly.
     pub(crate) selected: std::collections::BTreeSet<usize>,
 }
 
-impl DevelopSet {
-    pub(crate) fn new(serial: u64, photos: Vec<SetPhoto>, active: usize) -> Self {
-        let active = active.min(photos.len().saturating_sub(1));
+impl Filmstrip {
+    pub(crate) fn new(serial: u64, photos: Vec<StripPhoto>, active: usize) -> Self {
+        let active = (!photos.is_empty()).then(|| active.min(photos.len() - 1));
         Self {
             serial,
+            folder: None,
+            path: Vec::new(),
             photos,
+            truncated: None,
             active,
-            first: active,
+            first: active.unwrap_or(0),
             reading: false,
             selected: Default::default(),
         }
     }
 
+    /// Take in the folder as read again: its photographs replace the strip's, and the photograph
+    /// `active` names keeps its place when it is still in the folder, with no cell outlined when it
+    /// is not. The selection is cleared, as the photographs it named may have moved.
+    pub(crate) fn adopt(&mut self, read: FolderRead, active: Option<&AssetId>) {
+        let truncated = read.count as usize > read.photos.len();
+        self.folder = Some(read.folder);
+        self.path = read.path;
+        self.photos = read.photos;
+        self.truncated = truncated.then_some(read.count);
+        self.active = active.and_then(|asset| self.position(asset));
+        self.reading = false;
+        self.selected.clear();
+        if let Some(active) = self.active {
+            self.first = active;
+        }
+    }
+
+    /// Where the photograph `asset` is in the strip.
+    pub(crate) fn position(&self, asset: &AssetId) -> Option<usize> {
+        self.photos
+            .iter()
+            .position(|photo| &photo.asset_id == asset)
+    }
+
     pub(crate) fn selected(&self, index: usize) -> bool {
-        index < self.photos.len() && (index == self.active || self.selected.contains(&index))
+        index < self.photos.len() && (Some(index) == self.active || self.selected.contains(&index))
     }
 
     pub(crate) fn select(&mut self, index: usize, command: bool, shift: bool) {
         if index >= self.photos.len() {
             return;
         }
+        let anchor = self.active.unwrap_or(index);
         if shift {
-            self.selected = (self.active.min(index)..=self.active.max(index)).collect();
-        } else if command && index != self.active && !self.selected.remove(&index) {
+            self.selected = (anchor.min(index)..=anchor.max(index)).collect();
+        } else if command && Some(index) != self.active && !self.selected.remove(&index) {
             self.selected.insert(index);
         }
     }
 
     /// How many photographs are selected: the others plus the active one, which is always selected.
     pub(crate) fn selected_count(&self) -> usize {
-        self.selected.len() + usize::from(!self.selected.contains(&self.active))
+        self.selected.len()
+            + usize::from(
+                self.active
+                    .is_some_and(|active| !self.selected.contains(&active)),
+            )
     }
 
     pub(crate) fn selected_assets(&self) -> Vec<AssetId> {
@@ -419,14 +558,19 @@ impl DevelopSet {
             .collect()
     }
 
-    /// The photograph at `index` of the set.
-    pub(crate) fn photo(&self, index: usize) -> Option<&SetPhoto> {
+    /// The photograph at `index` of the strip.
+    pub(crate) fn photo(&self, index: usize) -> Option<&StripPhoto> {
         self.photos.get(index)
     }
 
-    /// The index `delta` photographs from the active one, when there is one: the set does not wrap.
+    /// The index `delta` photographs from the active one, when there is one: the strip does not
+    /// wrap. From a photograph not in the folder, `→` goes to the first and `←` to the last.
     pub(crate) fn step(&self, delta: isize) -> Option<usize> {
-        let index = self.active.checked_add_signed(delta)?;
+        let index = match self.active {
+            Some(active) => active.checked_add_signed(delta)?,
+            None if delta > 0 => 0,
+            None => self.photos.len().checked_sub(1)?,
+        };
         (index < self.photos.len()).then_some(index)
     }
 
@@ -434,20 +578,46 @@ impl DevelopSet {
     /// window as little as shows it.
     pub(crate) fn reveal(&mut self, capacity: usize) {
         let capacity = capacity.max(1);
-        if self.active < self.first {
-            self.first = self.active;
-        } else if self.active >= self.first + capacity {
-            self.first = self.active + 1 - capacity;
+        if let Some(active) = self.active {
+            if active < self.first {
+                self.first = active;
+            } else if active >= self.first + capacity {
+                self.first = active + 1 - capacity;
+            }
         }
         let last_first = self.photos.len().saturating_sub(capacity);
         self.first = self.first.min(last_first);
+    }
+
+    /// The header's caption: the folder being read, the selection's count, or, for a folder larger
+    /// than the strip, that only its first photographs are held. `None` lets the widget say the
+    /// active photograph's place ("3 of 18").
+    fn caption(&self) -> Option<String> {
+        if self.reading {
+            return Some("Reading the folder\u{2026}".into());
+        }
+        let count = self.selected_count();
+        if count > 1 {
+            return Some(format!(
+                "{} of {} selected",
+                thousands(count as u32),
+                thousands(self.photos.len() as u32)
+            ));
+        }
+        self.truncated.map(|total| {
+            format!(
+                "The first {} of {}",
+                thousands(self.photos.len() as u32),
+                thousands(total)
+            )
+        })
     }
 }
 
 /// The photographs a Develop answered, in order, each once: what it created, linked or relinked.
 /// Names come from the files they were developed from.
-pub(crate) fn developed_photos(report: &DevelopReport) -> Vec<SetPhoto> {
-    let mut photos: Vec<SetPhoto> = Vec::with_capacity(report.developed.len());
+pub(crate) fn developed_photos(report: &DevelopReport) -> Vec<StripPhoto> {
+    let mut photos: Vec<StripPhoto> = Vec::with_capacity(report.developed.len());
     for developed in &report.developed {
         if photos
             .iter()
@@ -456,7 +626,7 @@ pub(crate) fn developed_photos(report: &DevelopReport) -> Vec<SetPhoto> {
             continue;
         }
         let file = developed.used.as_ref().unwrap_or(&developed.path);
-        photos.push(SetPhoto {
+        photos.push(StripPhoto {
             asset_id: developed.asset_id.clone(),
             kind: None,
             name: file
@@ -541,7 +711,8 @@ impl ShownPreview {
     }
 }
 
-/// What the app holds for developing picks and the development set, as the model reads it.
+/// What the app holds for developing picks and the filmstrip, as the model reads it. The Develop
+/// folder itself is the catalog's view state (`CatalogState::develop_folder`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DevelopState {
     /// Develop N's confirmation, once `pick.plan` answered.
@@ -550,11 +721,10 @@ pub(crate) struct DevelopState {
     pub(crate) planning: bool,
     /// A Develop this desktop confirmed is running.
     pub(crate) developing: Option<Developing>,
-    /// The development set, while Develop has one.
-    pub(crate) set: Option<DevelopSet>,
-    /// Selected catalog folder; disk/event browsing leaves it available for Develop.
-    pub(crate) folder_query: Option<luxforge_core::catalog_types::ViewQuery>,
-    pub(crate) folder_loading: bool,
+    /// The filmstrip: the Develop folder's photographs, while Develop holds one.
+    pub(crate) strip: Option<Filmstrip>,
+    /// `D` or the Develop tab asked for Develop, and the Develop folder is being read for it.
+    pub(crate) entering: bool,
     /// The filmstrip is collapsed (`Cmd+Option+F`).
     pub(crate) collapsed: bool,
     /// The photograph being switched to, until its exact render is on screen: its name, for the
@@ -567,20 +737,22 @@ pub(crate) struct DevelopState {
 }
 
 impl DevelopState {
-    /// The filmstrip is drawn under the canvas: Develop has a set and it is not collapsed.
+    /// The filmstrip is drawn under the canvas: Develop holds a folder and it is not collapsed.
     pub(crate) fn strip_shown(&self) -> bool {
-        self.set.is_some() && !self.collapsed
+        self.strip.is_some() && !self.collapsed
     }
 }
 
-/// What the filmstrip draws: the set's window of photographs, the active one and the caption.
+/// What the filmstrip draws: the folder's window of photographs, the active one and the caption.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct StripModel {
+    /// The folder's path: "2026 › Konstanz".
     pub(crate) title: String,
-    /// "Reading the set…" while a view's photographs are read; otherwise the active photograph's
-    /// place, which the widget words itself.
+    /// "Reading the folder…" while it is read, the selection's count, or that a large folder's
+    /// first photographs are held; otherwise the active photograph's place, which the widget words
+    /// itself.
     pub(crate) caption: Option<String>,
-    /// The set's photographs of the window, from `first`.
+    /// The strip's photographs of the window, from `first`.
     pub(crate) cells: Vec<AssetId>,
     pub(crate) first: usize,
     pub(crate) total: usize,
@@ -593,6 +765,7 @@ pub(crate) struct StripModel {
 /// What the confirmation, Develop N, the filmstrip and the status bar draw.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DevelopModel {
+    /// The Develop tab and `D` open Develop: a folder is chosen or a photograph is open.
     pub(crate) can_enter: bool,
     pub(crate) confirm: Option<ConfirmModel>,
     /// Develop N reads busy with the Develop's progress, `(done, total)`.
@@ -608,33 +781,31 @@ pub(crate) struct DevelopModel {
 
 /// The model, from the state and the Develop's progress as long-running work last read it.
 pub(crate) fn derive(state: &DevelopState, progress: Option<f64>) -> DevelopModel {
-    let strip = state.set.as_ref().filter(|_| !state.collapsed).map(|set| {
-        let end = (set.first + state.capacity.max(1)).min(set.photos.len());
-        StripModel {
-            title: "Development set".to_owned(),
-            caption: if set.reading {
-                Some("Reading the set…".into())
-            } else {
-                let count = set.selected_count();
-                (count > 1).then(|| format!("{count} of {} selected", set.photos.len()))
-            },
-            cells: set.photos[set.first.min(end)..end]
-                .iter()
-                .map(|photo| photo.asset_id.clone())
-                .collect(),
-            first: set.first,
-            total: set.photos.len(),
-            active: Some(set.active),
-            selected: (set.first.min(end)..end)
-                .map(|index| set.selected(index))
-                .collect(),
-            can_previous: set.step(-1).is_some(),
-            can_next: set.step(1).is_some(),
-        }
-    });
+    let strip = state
+        .strip
+        .as_ref()
+        .filter(|_| !state.collapsed)
+        .map(|strip| {
+            let end = (strip.first + state.capacity.max(1)).min(strip.photos.len());
+            StripModel {
+                title: path_title(&strip.path),
+                caption: strip.caption(),
+                cells: strip.photos[strip.first.min(end)..end]
+                    .iter()
+                    .map(|photo| photo.asset_id.clone())
+                    .collect(),
+                first: strip.first,
+                total: strip.photos.len(),
+                active: strip.active,
+                selected: (strip.first.min(end)..end)
+                    .map(|index| strip.selected(index))
+                    .collect(),
+                can_previous: strip.step(-1).is_some(),
+                can_next: strip.step(1).is_some(),
+            }
+        });
     DevelopModel {
-        can_enter: state.folder_query.is_some()
-            || state.set.as_ref().is_some_and(|set| !set.photos.is_empty()),
+        can_enter: state.strip.is_some(),
         confirm: state.confirm.as_ref().map(confirm_model),
         busy: state.developing.as_ref().map(|developing| {
             let total = developing.total as usize;

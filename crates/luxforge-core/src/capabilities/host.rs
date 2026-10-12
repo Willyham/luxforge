@@ -783,7 +783,7 @@ impl CapabilityHost {
         });
         // The module's own fields, from the same rows: what it offers with what is installed now.
         if let Some(hooks) = registry.capabilities(&descriptor.id) {
-            let flag = |id: &str| crate::flags::toggle(&self.preferences, id).unwrap_or(false);
+            let flag = |id: &str| crate::flags::live_toggle(&self.preferences, self.launch_flags(), id);
             let fields = hooks.status(&crate::HostView {
                 resources: &resources,
                 runtime: self.runtime.configured().is_ok(),

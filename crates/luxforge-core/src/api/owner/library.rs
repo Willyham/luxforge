@@ -8,10 +8,10 @@
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
 //! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
 //! (`source.check`, `source.locate`), `missing.rs` (`source.missing`, `source.find`,
-//! `source.relink`), `remove.rs` (`asset.remove`, `asset.restore`, `catalog.empty-removed`) and
-//! `info.rs` (`catalog.info`). Every method that changes the
-//! library records it through [`change`], which runs the journal in one catalog transaction and
-//! announces the change it recorded as one event.
+//! `source.relink`), `remove.rs` (`asset.remove`, `asset.restore`, `catalog.empty-removed`)
+//! and `info.rs` (`catalog.info`). Every
+//! method that changes the library records it through [`change`], which runs the journal in one
+//! catalog transaction and announces the change it recorded as one event.
 
 mod info;
 mod journal;
@@ -97,6 +97,7 @@ pub(super) struct JobContext<'a> {
     job_id: &'a JobId,
     hold: Option<&'a Hold>,
     poster: &'a Poster,
+    lane: LaneKind,
 }
 
 impl JobContext<'_> {
@@ -120,12 +121,11 @@ impl JobContext<'_> {
     pub(super) fn commit(&self, commit: Commit) -> Result<Value, Error> {
         self.control.checkpoint()?;
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        self.poster
-            .post(CatalogMessage::Library(LibraryMessage::Partial {
-                job_id: self.job_id.clone(),
-                commit,
-                reply,
-            }));
+        self.poster.post(self.lane.message(LibraryMessage::Partial {
+            job_id: self.job_id.clone(),
+            commit,
+            reply,
+        }));
         answer
             .recv()
             .unwrap_or_else(|_| Err(self.control.cancelled_error()))
@@ -167,10 +167,69 @@ struct Dispatch {
     hold: Option<Hold>,
 }
 
+/// Which of the owner's lanes of this shape a [`LibraryLane`] is: the library lane; the merge lane
+/// (`super::merge`), which runs one merge or preparing merge preview at a time with at most one
+/// waiting; or the merge preview lane, which draws merge previews again from their retained proxies
+/// (`merge.preview-update`), so an update never waits behind a merge. Each has its own worker
+/// thread and its own [`CatalogMessage`] variant, and the same job machinery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LaneKind {
+    Library,
+    Merge,
+    Preview,
+}
+
+impl LaneKind {
+    fn thread(self) -> &'static str {
+        match self {
+            Self::Library => "luxforge-library",
+            Self::Merge => "luxforge-merge",
+            Self::Preview => "luxforge-merge-preview",
+        }
+    }
+
+    /// How many jobs may wait behind the running one.
+    fn waiting(self) -> usize {
+        match self {
+            Self::Library => LANE_QUEUE,
+            Self::Merge => super::merge::MERGE_QUEUE,
+            Self::Preview => super::merge::PREVIEW_QUEUE,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Library => "library",
+            Self::Merge => "merge",
+            Self::Preview => "merge preview",
+        }
+    }
+
+    /// `message` as this lane's worker posts it to the owner.
+    pub(super) fn message(self, message: LibraryMessage) -> CatalogMessage {
+        match self {
+            Self::Library => CatalogMessage::Library(message),
+            Self::Merge => CatalogMessage::Merge(message),
+            Self::Preview => CatalogMessage::MergePreview(message),
+        }
+    }
+
+    /// This lane's state on `owner`.
+    fn of(self, owner: &mut Owner) -> &mut LibraryLane {
+        match self {
+            Self::Library => &mut owner.catalog.library,
+            Self::Merge => &mut owner.catalog.merge.lane,
+            Self::Preview => &mut owner.catalog.merge.updates,
+        }
+    }
+}
+
 /// The library lane's state on the owner: one worker thread, started on the lane's first job, that
 /// runs one job at a time while at most [`LANE_QUEUE`] wait, and blocks on its channel while idle.
-/// What it finds comes back as [`LibraryMessage::Done`], which the owner commits.
+/// What it finds comes back as [`LibraryMessage::Done`], which the owner commits. The merge lane is
+/// one too ([`LaneKind::Merge`]).
 pub(super) struct LibraryLane {
+    kind: LaneKind,
     poster: Poster,
     board: Arc<ActivityBoard>,
     waiting: VecDeque<Queued>,
@@ -198,13 +257,18 @@ pub(super) enum LibraryMessage {
     #[cfg(test)]
     Hold(Option<Hold>),
     /// Run this on the owner, between messages, as a test arranges the catalog.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-holds"))]
     Run(Box<dyn FnOnce(&mut Owner) + Send>),
 }
 
 impl LibraryLane {
     pub(super) fn new(poster: Poster, board: Arc<ActivityBoard>) -> Self {
+        Self::of_kind(LaneKind::Library, poster, board)
+    }
+
+    pub(super) fn of_kind(kind: LaneKind, poster: Poster, board: Arc<ActivityBoard>) -> Self {
         Self {
+            kind,
             poster,
             board,
             waiting: VecDeque::new(),
@@ -217,13 +281,55 @@ impl LibraryLane {
 
     /// Open `task` as a `queued` catalog job and start it once the worker is idle, answering the
     /// start as the method does. Refused with `resource-limit`, opening nothing, when
-    /// [`LANE_QUEUE`] jobs already wait behind a running one.
+    /// [`LANE_QUEUE`] jobs (one, on the merge lane) already wait behind a running one.
     pub(super) fn queue(&mut self, jobs: &mut Jobs, task: Task) -> Result<JobStarted, Error> {
-        if self.running.is_some() && self.waiting.len() >= LANE_QUEUE {
+        if self.is_full() {
+            let waiting = self.kind.waiting();
+            let jobs = if waiting == 1 { "job" } else { "jobs" };
             return Err(Error::resource_limit(format!(
-                "{LANE_QUEUE} jobs already wait for the library lane"
+                "{waiting} {jobs} already wait for the {} lane",
+                self.kind.name()
             )));
         }
+        let job_id = task.job_id.clone();
+        let queued = self.open(jobs, task);
+        self.waiting.push_back(queued);
+        self.dispatch(jobs);
+        let status = jobs
+            .read(&job_id)
+            .map_or(JobStatus::Queued, |record| record.status);
+        Ok(JobStarted {
+            job_id,
+            status,
+            deduplicated: false,
+        })
+    }
+
+    /// Queue `task` straight behind `after`, a job of this lane's that it continues (a merge or an
+    /// update of a merge preview still preparing), outside the waiting bound: it is the same work
+    /// carried on, never a request of its own. Behind the running job when `after` is not waiting.
+    pub(super) fn queue_after(&mut self, jobs: &mut Jobs, task: Task, after: &JobId) -> JobStarted {
+        let job_id = task.job_id.clone();
+        let at = self
+            .waiting
+            .iter()
+            .position(|queued| queued.job_id == *after)
+            .map_or(0, |at| at + 1);
+        let queued = self.open(jobs, task);
+        self.waiting.insert(at, queued);
+        self.dispatch(jobs);
+        let status = jobs
+            .read(&job_id)
+            .map_or(JobStatus::Queued, |record| record.status);
+        JobStarted {
+            job_id,
+            status,
+            deduplicated: false,
+        }
+    }
+
+    /// Open `task` as a `queued` catalog job, for the waiting queue.
+    fn open(&self, jobs: &mut Jobs, task: Task) -> Queued {
         let Task {
             job_id,
             job,
@@ -240,7 +346,7 @@ impl LibraryLane {
             origin: Some(origin),
             control: control.clone(),
         });
-        self.waiting.push_back(Queued {
+        Queued {
             job_id: job_id.clone(),
             control,
             activity: ActivitySpec {
@@ -251,16 +357,12 @@ impl LibraryLane {
                 job_id: Some(job_id.to_string()),
             },
             work,
-        });
-        self.dispatch(jobs);
-        let status = jobs
-            .read(&job_id)
-            .map_or(JobStatus::Queued, |record| record.status);
-        Ok(JobStarted {
-            job_id,
-            status,
-            deduplicated: false,
-        })
+        }
+    }
+
+    /// Whether a job queued now would be refused: one runs and as many as may wait already do.
+    pub(super) fn is_full(&self) -> bool {
+        self.running.is_some() && self.waiting.len() >= self.kind.waiting()
     }
 
     /// Record a job whose answer is already known — a retry's, which its first attempt recorded —
@@ -286,6 +388,33 @@ impl LibraryLane {
         JobStarted {
             job_id,
             status: JobStatus::Ready,
+            deduplicated: true,
+        }
+    }
+
+    /// [`Self::answered`] for a request whose first attempt ended without a result: the retry is
+    /// answered as a finished job with that error, as `job.read` reads it.
+    pub(super) fn ended(
+        jobs: &mut Jobs,
+        job: &'static CatalogJob,
+        origin: Origin,
+        error: Error,
+    ) -> JobStarted {
+        let job_id = JobId::new();
+        jobs.open_catalog(CatalogOpened {
+            job_id: job_id.clone(),
+            kind: job.kind,
+            asset_id: None,
+            origin: Some(origin),
+            control: JobControl::new(),
+        });
+        jobs.finish(&job_id, Err(error));
+        let status = jobs
+            .read(&job_id)
+            .map_or(JobStatus::Failed, |record| record.status);
+        JobStarted {
+            job_id,
+            status,
             deduplicated: true,
         }
     }
@@ -318,7 +447,10 @@ impl LibraryLane {
                 self.worker = None;
                 jobs.finish(
                     &queued.job_id,
-                    Err(Error::internal("the library lane stopped")),
+                    Err(Error::internal(format!(
+                        "the {} lane stopped",
+                        self.kind.name()
+                    ))),
                 );
                 continue;
             }
@@ -332,7 +464,8 @@ impl LibraryLane {
             return Ok(sender.clone());
         }
         let poster = self.poster.clone();
-        let sender = worker::start("luxforge-library", move |dispatch| run(dispatch, &poster))?;
+        let kind = self.kind;
+        let sender = worker::start(kind.thread(), move |dispatch| run(dispatch, &poster, kind))?;
         self.worker = Some(sender.clone());
         Ok(sender)
     }
@@ -370,7 +503,7 @@ impl LibraryLane {
 
 /// One job on the worker ([`worker::start`]): run its work unless it was cancelled on the way, and
 /// post the owner's half back. A job whose work panics fails with `internal` and the worker goes on.
-fn run(dispatch: Dispatch, poster: &Poster) {
+fn run(dispatch: Dispatch, poster: &Poster, lane: LaneKind) {
     let Dispatch {
         job_id,
         control,
@@ -382,6 +515,7 @@ fn run(dispatch: Dispatch, poster: &Poster) {
         job_id: &job_id,
         hold: hold.as_ref(),
         poster,
+        lane,
     };
     let commit: Commit = if control.is_cancelled() {
         let error = control.cancelled_error();
@@ -390,18 +524,15 @@ fn run(dispatch: Dispatch, poster: &Poster) {
         panic::catch_unwind(AssertUnwindSafe(|| work(&context)))
             .unwrap_or_else(|_| Box::new(|_| Err(Error::internal("the job stopped unexpectedly"))))
     };
-    poster.post(CatalogMessage::Library(LibraryMessage::Done {
-        job_id,
-        commit,
-    }));
+    poster.post(lane.message(LibraryMessage::Done { job_id, commit }));
 }
 
 /// Handle what the worker posted: commit a finished job's result unless it was cancelled first,
 /// record it in the job table, announce what it changed, and start the next job.
-pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
+pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage) {
     match message {
         LibraryMessage::Done { job_id, commit } => {
-            let lane = &mut owner.catalog.library;
+            let lane = kind.of(owner);
             let control = match &lane.running {
                 Some((running, _)) if *running == job_id => {
                     lane.running.take().map(|(_, control)| control)
@@ -419,19 +550,27 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
             name_the_job(owner, first, &job_id);
             announce_end(owner, &job_id);
             owner.jobs.finish(&job_id, result.map(Output::Value));
+            if kind != LaneKind::Library {
+                super::merge::ended(owner, &job_id);
+            }
             owner.record_announced();
             // A client blocked until this job ended ([`OwnerHandle::wait_source`]) reads it now.
             //
             // [`OwnerHandle::wait_source`]: crate::api::OwnerHandle::wait_source
             owner.release_waiters(|waiter| waiter.job.as_ref() == Some(&job_id));
-            owner.catalog.library.dispatch(&mut owner.jobs);
+            let (catalog, jobs) = (&mut owner.catalog, &mut owner.jobs);
+            match kind {
+                LaneKind::Library => catalog.library.dispatch(jobs),
+                LaneKind::Merge => catalog.merge.lane.dispatch(jobs),
+                LaneKind::Preview => catalog.merge.updates.dispatch(jobs),
+            }
         }
         LibraryMessage::Partial {
             job_id,
             commit,
             reply,
         } => {
-            let running = match &owner.catalog.library.running {
+            let running = match &kind.of(owner).running {
                 Some((running, control)) if *running == job_id => Some(control.clone()),
                 _ => None,
             };
@@ -450,17 +589,20 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
             let _ = reply.send(result);
         }
         #[cfg(test)]
-        LibraryMessage::Hold(hold) => owner.catalog.library.hold = hold,
-        #[cfg(test)]
+        LibraryMessage::Hold(hold) => kind.of(owner).hold = hold,
+        #[cfg(any(test, feature = "test-holds"))]
         LibraryMessage::Run(run) => run(owner),
     }
 }
 
 /// `job.cancel` cancelled one of this lane's jobs. A waiting one ended with the cancel, so its end
 /// is announced now; a running one's is announced when its worker posts back.
-pub(super) fn cancelled(owner: &mut Owner, job_id: &JobId) {
-    if owner.catalog.library.unqueue(job_id) {
+pub(super) fn cancelled(owner: &mut Owner, kind: LaneKind, job_id: &JobId) {
+    if kind.of(owner).unqueue(job_id) {
         announce_end(owner, job_id);
+        if kind != LaneKind::Library {
+            super::merge::ended(owner, job_id);
+        }
     }
 }
 

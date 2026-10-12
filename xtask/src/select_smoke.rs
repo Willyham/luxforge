@@ -9,7 +9,7 @@
 //! desktop first shows it and grouped by Day, the rows of both, and the folder of real images read
 //! and viewed. The editor then opens that catalog with nothing
 //! open. Its frames, in [`plan`] order: Develop with nothing open; `G` showing Select, its events
-//! listed; `D` explaining that a folder or development set is needed before browsing; the event
+//! listed; `D` explaining that a catalog folder is needed before browsing; the event
 //! opened from the sources panel (the grouped grid, the Info panel, the status line); the first cell
 //! made active with `→`, then the next, then the selection extended with
 //! Shift+`→`; the Group chip set to Day; an agent's `pick.set` through a second client, which the
@@ -23,8 +23,10 @@
 //! scratch folder of six of those JPEGs copied into the run's output (`add-folder/`) added to the
 //! indexed folders as Add a folder… adds it, its listing followed to its end and the folder then
 //! listed under On disk beside the generated catalog's own indexed folders, each row checked against
-//! the owner's `index.folders`, and the add undone with `Cmd+Z`; and `D` still asking for a folder
-//! or development set. Between the agent's pick and that folder, long-running work:
+//! the owner's `index.folders`, and the add undone with `Cmd+Z`; and, after the catalog, the
+//! Develop tab opening Develop on the catalog folder viewed last, renamed and nested since, with its
+//! photographs in the filmstrip, Select's view kept. Between the agent's pick and that folder,
+//! long-running work:
 //! a first look at a folder of 16,000 one-byte `.jpg` files the run writes beside `generated/`
 //! (`first-look/`), captured while the index lane still reads it with the view's progress sheet;
 //! Continue in background, captured with the sheet gone and the job in the status bar and the
@@ -86,7 +88,7 @@ const IMAGES: u32 = 120;
 /// label it.
 const EVENT: &str = "Konstanz \u{b7} 12\u{2013}13 Sep";
 const EVENT_LABEL: &str = "Konstanz";
-const DEVELOP_GUIDANCE: &str = "Pick a catalog folder or choose images to develop from the grid";
+const DEVELOP_GUIDANCE: &str = "Choose a catalog folder to develop";
 /// The actor the evidence driver's second client picks as.
 const AGENT: &str = "evidence-agent";
 /// The folder whose first look is long-running work, written into the run's output directory.
@@ -208,7 +210,12 @@ pub fn plan(
         .into_iter()
         // The catalog: browsed and organized (`select_catalog_smoke`).
         .chain(catalog)
-        .chain([Step::new("develop", script::Step::key("d")).status(DEVELOP_GUIDANCE)])
+        // Develop on the Develop folder: the catalog folder viewed last, which browsing Removed
+        // after it kept.
+        .chain([select(
+            "develop",
+            SelectStep::Switch(SelectWorkspace::Develop),
+        )])
         .collect(),
     )
 }
@@ -866,11 +873,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         select(empty_select)["shown"] == "select"
             && select(empty_develop)["shown"] == "select"
             && empty_develop.state()["status"] == DEVELOP_GUIDANCE,
-        "D did not explain the missing folder or development set before browsing",
+        "D did not explain the missing catalog folder before browsing",
     )?;
     checks.note(
         empty_develop,
-        "G shows Select and D explains the missing folder or development set",
+        "G shows Select and D explains the missing catalog folder",
         json!({"select": select(empty_select), "develop": select(empty_develop)}),
     );
 
@@ -879,12 +886,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     ensure(
         select(active_develop)["shown"] == "select"
             && active_develop.state()["status"] == DEVELOP_GUIDANCE,
-        "D opened Develop from an event without a catalog folder or development set",
+        "D opened Develop from an event without a catalog folder",
     )?;
     for key in ["selection", "picked", "library"] {
         ensure(
             select(active_develop)[key] == selected[key],
-            format!("D changed Select's {key} while explaining the missing development set"),
+            format!("D changed Select's {key} while explaining the missing catalog folder"),
         )?;
     }
     ensure(
@@ -1381,24 +1388,42 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
     select_catalog_smoke::verify(&mut checks, launch, &expected, &generated)?;
 
-    // No catalog folder is selected and no set has been loaded: D preserves the current grid.
+    // The catalog folder viewed is the Develop folder, and viewing Removed after it kept it: the
+    // Develop tab opens Develop on it, renamed and nested since, its photographs in the filmstrip,
+    // and leaves Select's view as it was.
     let develop = launch.at("develop")?;
     let last = launch.at(select_catalog_smoke::LAST)?;
     let block = select(develop);
+    let viewed = &launch.at("catalog-folder")?.state()["develop"]["folder"];
+    let held = &develop.state()["develop"];
+    let path = json!([select_catalog_smoke::NEST_IN, select_catalog_smoke::RENAMED]);
     ensure(
-        block["shown"] == "select" && develop.state()["status"] == DEVELOP_GUIDANCE,
-        "D did not explain the missing development set after leaving the catalog folder",
+        viewed.is_string()
+            && last.state()["develop"]["folder"] == *viewed
+            && block["shown"] == "develop"
+            && held["folder"] == *viewed
+            && held["filmstrip"]["folder"] == *viewed
+            && held["filmstrip"]["path"] == path
+            && held["filmstrip"]["count"]
+                .as_u64()
+                .is_some_and(|count| count > 0)
+            && held["filmstrip"]["assets"]
+                [held["filmstrip"]["active"].as_u64().unwrap_or(0) as usize]
+                == held["document"]["asset_id"],
+        format!(
+            "The Develop tab did not open Develop on the catalog folder viewed {viewed}: {held}"
+        ),
     )?;
     for key in ["revision", "count", "picked", "selection", "grouping"] {
         ensure(
             block[key] == select(last)[key],
-            format!("D changed Select's {key} without a development set"),
+            format!("Opening Develop changed Select's {key}"),
         )?;
     }
     checks.note(
         develop,
-        "D requests a development set and keeps Select's view",
-        json!({"select": block}),
+        "the Develop tab opens Develop on the catalog folder viewed last and keeps Select's view",
+        json!({"select": block, "develop": held}),
     );
     checks.write(&launch.evidence, "select", json!({"expected": expected}))
 }

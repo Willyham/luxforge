@@ -321,6 +321,14 @@ fn a_set_source_is_measured_by_the_next_press_and_kept_by_those_after() {
         source.crosshair([0.3, 0.3]),
         Some([0.3 + offset[0], 0.3 + offset[1]])
     );
+    // By the top edge the kept offset, upward, turns downward, as the press will carry it; where it
+    // fits it is the crosshair itself, on the grid.
+    let content = (600, 400);
+    let turned = source.crosshair_within([0.6, 0.05], 0.03, content).unwrap();
+    assert!((turned[1] - (0.05 - offset[1])).abs() < 1e-3, "{turned:?}");
+    assert!((turned[0] - (0.6 + offset[0])).abs() < 1e-3, "{turned:?}");
+    let kept = source.crosshair_within([0.3, 0.6], 0.03, content).unwrap();
+    assert!((kept[1] - (0.6 + offset[1])).abs() < 1e-3, "{kept:?}");
     source.clear();
     assert_eq!(source, SourceChoice::Auto);
 }

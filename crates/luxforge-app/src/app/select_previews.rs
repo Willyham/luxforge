@@ -113,11 +113,13 @@ impl From<FileId> for Item {
 }
 
 impl Item {
-    /// The item a view row names.
-    pub(crate) fn of(row: &RowItem) -> Self {
+    /// The item whose preview a view row shows: an HDR stack's original outside the view shows
+    /// its file's when the index lists it, and none otherwise.
+    pub(crate) fn of(row: &RowItem) -> Option<Self> {
         match row {
-            RowItem::File { file_id } => Self::File(*file_id),
-            RowItem::Photo { asset_id } => Self::Photo(asset_id.clone()),
+            RowItem::File { file_id } => Some(Self::File(*file_id)),
+            RowItem::Photo { asset_id } => Some(Self::Photo(asset_id.clone())),
+            RowItem::Input { file_id, .. } => file_id.map(Self::File),
         }
     }
 
@@ -199,7 +201,7 @@ impl Wanted {
         let file = |cell: u32| {
             let cell = layout.cell(cell);
             let row = rows.row(rows.shown(cell.item, cell.span))?;
-            Some((Item::of(&row.item), row.preview))
+            Some((Item::of(&row.item)?, row.preview))
         };
         let on_screen = layout.visible_cells(scroll, height, 0.0);
         let near = layout.visible_cells(scroll, height, height);
@@ -1031,13 +1033,19 @@ pub(crate) struct GridImages<'a> {
 
 impl<'a> GridImages<'a> {
     fn item(&self, item: u32) -> Option<Item> {
-        Some(Item::of(&self.rows.row(item)?.item))
+        Item::of(&self.rows.row(item)?.item)
     }
 
     /// The handle to draw for the cell at view position `item`.
     pub(crate) fn image(&self, item: u32) -> Option<&'a Handle> {
         let previews: &'a SelectPreviews = self.previews;
         previews.held(&self.item(item)?)
+    }
+
+    /// The handle held for `file`, wherever its cell is: a merge preview's frame thumbnails.
+    pub(crate) fn file(&self, file: FileId) -> Option<&'a Handle> {
+        let previews: &'a SelectPreviews = self.previews;
+        previews.held(&Item::File(file))
     }
 
     /// The cell at `item` is Unreadable: the owner found no usable preview in its file.

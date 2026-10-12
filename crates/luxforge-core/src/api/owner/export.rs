@@ -70,7 +70,8 @@ host_params! {
 /// remembered export folder while it exists, or beside the original, which costs reading the small
 /// preferences file and at most 64 names in that folder. Nothing is rendered or prepared. A
 /// preferences file that cannot be read suggests beside the original; the desktop reports that
-/// failure when it reads the preferences itself.
+/// failure when it reads the preferences itself. A derived photograph has no original file to name
+/// a destination after, so nothing is suggested for it.
 pub(in crate::api) fn plan(
     owner: &mut Owner,
     _: &Call<'_>,
@@ -86,9 +87,14 @@ pub(in crate::api) fn plan(
         .ok()
         .and_then(|preferences| preferences.export_folder)
         .filter(|folder| folder.is_dir());
+    let original = target.original.as_deref();
     let suggested = match (
-        remembered.as_deref().or(target.original.parent()),
-        target.original.file_stem().and_then(|stem| stem.to_str()),
+        remembered
+            .as_deref()
+            .or(original.and_then(std::path::Path::parent)),
+        original
+            .and_then(std::path::Path::file_stem)
+            .and_then(|stem| stem.to_str()),
     ) {
         (Some(directory), Some(stem)) => publish::suggest(directory, stem),
         _ => None,

@@ -120,7 +120,10 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
             .height(Length::Fill)
             .style(theme::scrim_surface),
     )
-    .on_press(close);
+    .on_press(close)
+    // The sheet claims the pointer over everything it covers, so a canvas tool under it draws no
+    // cursor of its own and the system's arrow is shown.
+    .interaction(iced::mouse::Interaction::Idle);
     Some(
         iced::widget::stack(vec![
             backdrop.into(),

@@ -91,6 +91,9 @@ pub(crate) struct Refresh {
     /// its answer carried it (`analysis`): what an analysis action's tooltip shows, with no query
     /// of its own. Empty for every other change.
     pub(crate) analysis: BTreeMap<String, Value>,
+    /// The catalog folder a file opened was filed in, as its Develop's report named it
+    /// (`developed[].folder_id`): what becomes the Develop folder. `None` for every other refresh.
+    pub(crate) folder: Option<luxforge_core::catalog_types::CatalogFolderId>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -174,6 +177,10 @@ pub(crate) struct SyncResult {
     /// A `theme.*` method changed the theme library, which the desktop lists again whether or not
     /// the sheet is open.
     pub(crate) themes: bool,
+    /// The newest library change an event named, this desktop's own or another client's,
+    /// `u64::MAX` after a gap in the event log: Develop reads its folder again when it holds an
+    /// older one.
+    pub(crate) library: Option<u64>,
     /// A `usage.*` method changed the usage statistics consent, which an eligible desktop reads
     /// again.
     pub(crate) usage: bool,
@@ -195,6 +202,7 @@ impl SyncResult {
             flags: false,
             preferences: false,
             themes: false,
+            library: None,
             usage: false,
             own: Vec::new(),
         }
@@ -804,6 +812,7 @@ pub(crate) fn refresh(
         None
     };
     Ok(Refresh {
+        folder: None,
         state,
         capture,
         history,
@@ -885,17 +894,18 @@ fn import_now(
     };
     // The Develop brings the file in (or finds the photograph that has its bytes); then its
     // photograph's original is prepared.
-    let asset = developed_photograph(owner, client, &job_id)?;
+    let (asset, folder) = developed_photograph(owner, client, &job_id)?;
     let mut refreshed = open_photograph(owner, client, &asset, generation, open_guard, proxy)?;
     // An open is announced under the `pick.develop` request that brought the file in.
     refreshed.request = Some(request);
+    refreshed.folder = Some(folder);
     Ok(refreshed)
 }
 
 /// Open a photograph of the catalog as this client's one photograph: its original prepared
 /// (`source.prepare`), the preparation adopted (`job.adopt`) and everything an open reads, read
 /// back. A newer open supersedes it, as [`OpenGuard`] says. The open path every open shares: a
-/// file opened (after its Develop) and a photograph of Develop's development set moved to.
+/// file opened (after its Develop) and a photograph of Develop's filmstrip moved to.
 pub(crate) fn open_photograph(
     owner: &OwnerHandle,
     client: ClientId,
@@ -1003,12 +1013,13 @@ pub(crate) fn queue_import(
 }
 
 /// The photograph a Develop of one file brought in — created, linked to the photograph that
-/// already has its bytes, or relinked — once its job ends, or why it brought none.
+/// already has its bytes, or relinked — and the catalog folder its report says it is in, once its
+/// job ends, or why it brought none.
 pub(crate) fn developed_photograph(
     owner: &OwnerHandle,
     client: ClientId,
     job_id: &str,
-) -> Result<AssetId, String> {
+) -> Result<(AssetId, luxforge_core::catalog_types::CatalogFolderId), String> {
     let mut ended = wait_source_job(owner, client, job_id).map_err(|error| error.to_string())?;
     let report = ended["result"].take();
     if let Some(failed) = report["failed"]
@@ -1023,7 +1034,11 @@ pub(crate) fn developed_photograph(
             None => message.to_owned(),
         });
     }
-    parse(report["developed"][0]["asset_id"].clone())
+    let developed = &report["developed"][0];
+    Ok((
+        parse(developed["asset_id"].clone())?,
+        parse(developed["folder_id"].clone())?,
+    ))
 }
 
 /// Prepare a photograph's original to open it (`source.prepare`), answering the source job that
@@ -2133,6 +2148,18 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("theme."));
+    // A library change, this desktop's own among them, names the journal sequence it recorded.
+    let library_change = if events.gap {
+        Some(u64::MAX)
+    } else {
+        events
+            .events
+            .iter()
+            .chain(&read)
+            .filter_map(|event| event.library_sequence)
+            .map(|sequence| sequence.0)
+            .max()
+    };
     // A consent change touches no asset: it alone reads the consent again.
     let usage = events.gap
         || events
@@ -2169,6 +2196,7 @@ pub(crate) fn sync_now(
         flags,
         preferences,
         themes,
+        library: library_change,
         usage,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
@@ -2905,6 +2933,7 @@ mod tests {
             flags: false,
             preferences: false,
             themes: false,
+            library: None,
             usage: false,
             own: Vec::new(),
         };

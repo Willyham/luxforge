@@ -41,7 +41,8 @@ pub(crate) fn plan(
         };
         let source = library_rows::asset_source(catalog, asset)?
             .ok_or_else(|| Error::validation(format!("unknown asset {asset}")))?;
-        let name = file_name(&source.locator);
+        let name =
+            library_rows::file_name(catalog, asset)?.unwrap_or_else(|| file_name(&source.locator));
         if let Some(why) = library_rows::kept_by(catalog, asset)? {
             return Err(refused(
                 &item,

@@ -15,6 +15,7 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
+use super::{FolderChoice, HdrOptions, MergeId, MergeKind, MergePreviewId};
 use crate::{AssetId, PresetId, SettingsOrigin, api::params::host_params};
 use std::path::PathBuf;
 
@@ -103,7 +104,7 @@ host_params! {
 host_params! {
     /// `pick.develop`.
     pub(crate) struct PickDevelop {
-        into: Vec<DevelopInto> = json("[{event_id?, folder: {kind: existing, folder_id} or {kind: new, name, parent_id?}}]: one per event of the plan"),
+        into: Vec<DevelopInto> = json("[{event_id?, folder: {kind: place, name} or {kind: existing, folder_id, days?} or {kind: new, name, parent_id?}}]: one per event of the plan; [] takes the plan's proposals"),
         mutation: MutationRequest,
         targets: Option<Targets> = json("the picks to develop; default every pick in the caller's view"),
         use_copies: Option<bool> = boolean().default(false).notes("develop a card's pick from its fingerprint-verified copy in an indexed folder"),
@@ -298,6 +299,94 @@ host_params! {
     }
 }
 
+// Merges.
+
+/// What a merge's `targets` name, as its notes say.
+const MERGE_TARGETS: &str = "the frames to merge, as many as the kind takes (hdr: a bracket's 2 to 9 RAW frames): {kind: paths, paths: [...]}, {kind: files, file_ids: [...]}, {kind: assets, asset_ids: [...]} (photographs developed from them; never a merged result) or {kind: selection}, files and photographs alike";
+/// What a merge's `kind` names.
+const MERGE_KIND: &str = "what the merge makes: one of the kinds this build has a provider for; another kind is refused not-ready naming its provider";
+/// What a merge's `hdr` options are.
+const MERGE_HDR: &str = "an hdr merge's options, each defaulted when left out: {reference?: path, the input whose exposure and white balance the result keeps (default the metadata's median exposure, else the middle of the capture order); exposure_overrides?: [{path, offset_ev}], an input's EV offset from the reference, replacing what its metadata or the fit resolves; alignment?: auto | off (default auto, fitting each frame's rigid motion; off checks the framing only); deghost?: auto | off (default auto, showing each moving region from one exposure)}; validation on a request of another kind";
+
+/// The kinds a merge request may name: those this build has a provider for.
+fn merge_kinds() -> impl Iterator<Item = &'static str> {
+    crate::merge::providers::registered().map(MergeKind::as_str)
+}
+
+host_params! {
+    /// `merge.plan`.
+    pub(crate) struct MergePlanParams {
+        kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
+        targets: Targets = json(MERGE_TARGETS),
+        hdr: Option<HdrOptions> = json(MERGE_HDR),
+    }
+}
+
+host_params! {
+    /// `merge.create`: Merge HDR, the result made in its catalog folder.
+    pub(crate) struct MergeCreate {
+        kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
+        targets: Targets = json(MERGE_TARGETS),
+        mutation: MutationRequest,
+        plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
+        preview_id: Option<MergePreviewId> = string(64).notes("the caller's open merge.preview of these inputs, whose spool, proxies and alignment the merge takes over, reading and aligning nothing again (a preview still preparing is continued); the options must be its latest revision's: conflict otherwise, and for a preview that is not open"),
+        hdr: Option<HdrOptions> = json(MERGE_HDR),
+        folder: Option<FolderChoice> = json("{kind: place, name}, {kind: existing, folder_id, days?} or {kind: new, name, parent_id?}, as pick.develop's into names one, resolved for the reference frame's capture day; default the choice merge.plan proposes"),
+    }
+}
+
+host_params! {
+    /// `merge.preview`: open the caller's preview of a merge.
+    pub(crate) struct MergePreviewParams {
+        kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
+        targets: Targets = json(MERGE_TARGETS),
+        hdr: Option<HdrOptions> = json(MERGE_HDR),
+        plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
+    }
+}
+
+host_params! {
+    /// `merge.preview-update`: the full new options of the caller's open preview.
+    pub(crate) struct MergePreviewUpdate {
+        preview_id: MergePreviewId = string(64).notes("merge-preview-…: the caller's open preview"),
+        hdr: HdrOptions = json("the preview's full new hdr options, as merge.preview takes them: {reference?, exposure_overrides?, alignment?, deghost?}; a field left out is its default, not the previous revision's"),
+    }
+}
+
+host_params! {
+    /// `merge.preview-close`.
+    pub(crate) struct MergePreviewClose {
+        preview_id: MergePreviewId = string(64).notes("merge-preview-…: the caller's preview to discard"),
+    }
+}
+
+host_params! {
+    /// `merge.inspect`: exactly one of `merge_id` and `asset_id`.
+    pub(crate) struct MergeInspect {
+        merge_id: Option<MergeId> = string(64).notes("merge-…; exactly one of merge_id and asset_id"),
+        asset_id: Option<AssetId> = asset().notes("a merge's result photograph"),
+    }
+}
+
+host_params! {
+    /// `merge.remove` and `merge.restore`.
+    pub(crate) struct MergeTargets {
+        merge_ids: Vec<MergeId> = json("[merge-…]: the merges whose results to remove or put back"),
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    /// `merge.rerun`: the recorded options, each named one replaced.
+    pub(crate) struct MergeRerun {
+        merge_id: MergeId = string(64).notes("merge-…: the merge whose recorded inputs to merge again"),
+        mutation: MutationRequest,
+        kind: Option<MergeKind> = enumeration(merge_kinds()).notes("the recorded merge's kind; validation when it names another"),
+        hdr: Option<HdrOptions> = json("an hdr merge's options as merge.create takes them, each left out defaulting to the recorded one: {reference?, exposure_overrides? ([] clears the recorded ones), alignment?, deghost?}; validation for a merge of another kind"),
+        folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the replaced result's folder"),
+    }
+}
+
 host_params! {
     /// `batch.apply-settings`: exactly one of `settings` and `preset_id`; `origin` with `settings`
     /// only, because a library preset's comes from its record.
@@ -318,6 +407,26 @@ host_params! {
         mutation: MutationRequest,
         keep_metadata: Option<bool> = boolean().default(false),
         acknowledge_stale: Option<Vec<crate::BatchStaleAcknowledgement>> = json("[{asset_id, entry_id, operations: [correction-…]}], at most one a photograph: export these photographs' stale frozen patches as they render; a photograph with stale corrections and no exactly matching acknowledgement of its current entry is skipped stale-unacknowledged, with entry_id and stale in its skipped row"),
+    }
+}
+
+// Stacks.
+
+host_params! {
+    /// `stack.inspect`.
+    pub(crate) struct StackInspect {
+        merge_id: super::MergeId = name().notes("a merge, merge-…"),
+        from: Option<u32> = integer(0, MergeKind::MAX_STACK as i64).default(0).notes("the ordinal of the first original"),
+        limit: Option<usize> = integer(1, MergeKind::MAX_STACK as i64).default(MergeKind::MAX_STACK as i64),
+    }
+}
+
+host_params! {
+    /// `stack.set-expanded`.
+    pub(crate) struct StackSetExpanded {
+        merge_id: super::MergeId = name().notes("a merge, merge-…"),
+        expansion: super::StackExpansion = enumeration(super::StackExpansion::ALL.map(super::StackExpansion::as_str)),
+        revision: Option<u64> = sequence().notes("refused with conflict unless the view is still at this revision"),
     }
 }
 
@@ -516,6 +625,18 @@ mod contract_table {
             &[Validation, Conflict],
             "the caller's selection and active item in its view, replaced, added to, removed from or toggled by items, a range or all; session.state reports them as browse.selection",
         ),
+        method::<StackInspect>(
+            "stack.inspect",
+            "StackInspection",
+            &[Validation, Incompatible, CatalogError],
+            "a stack's kind, result and a page of its originals with, in an HDR stack, EV offsets, availability and reason, pick and catalog identity",
+        ),
+        method::<StackSetExpanded>(
+            "stack.set-expanded",
+            "ViewSummary",
+            &[Validation, ResourceLimit, Conflict, CatalogError],
+            "how the caller shows a stack of any kind, collapsed, expanded or all originals, evaluating its view again; session state",
+        ),
         method::<PickSet>(
             "pick.set",
             "LibraryAnswer",
@@ -532,20 +653,20 @@ mod contract_table {
             "pick.plan",
             "DevelopPlan",
             &[Validation, CatalogError],
-            "what developing these picks would do: the picks by event, each event's proposed catalog folder (the one an earlier Develop from its span made, or a new one named after it) and the picks on removable media with or without a copy of the same name and size",
+            "what developing these picks would do: the picks by event with their capture days and undated count, each event's proposed catalog folder (the one an earlier Develop of it made, with day folders, or its place, filed Year › Place › Day) and the picks on removable media with or without a copy of the same name and size",
         ),
         method::<PickDevelop>(
             "pick.develop",
             "DevelopReport",
             &[Validation, SourceUnavailable, ResourceLimit, Conflict, CatalogError, Cancelled],
-            "brings the picks into the catalog folders into names, in batches, each a library change: an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared, and a cancelled or failed job keeps what it committed and nothing partial",
+            "brings the picks into the catalog folders into names, in batches, each a library change: a place files each photograph under its capture year, the place and its day (\"2026 › Konstanz › 12 Sep\"), each folder found by name or made by the batch; an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared; each developed pick names folder_id, the catalog folder its photograph is in after the Develop (a linked or relinked photograph's own); a cancelled or failed job keeps what it committed and nothing partial",
         )
         .starts(&jobs::DEVELOP_PICKS),
         method::<NoParams>(
             "folder.list",
             "CatalogFolders",
             &[CatalogError],
-            "every catalog folder, parents first, with its count and year",
+            "every catalog folder, parents first, siblings years newest first, then days in calendar order, then by name, with its count and year",
         ),
         method::<FolderCreate>(
             "folder.create",

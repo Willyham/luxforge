@@ -78,6 +78,8 @@ pub(crate) struct MaskCanvas<'a> {
     draft: &'a MaskDraft,
     placement: Placement,
     handles_visible: bool,
+    /// Something is open over the canvas, so a painted gesture draws no cursor of its own.
+    covered: bool,
 }
 
 impl<'a> MaskCanvas<'a> {
@@ -86,11 +88,18 @@ impl<'a> MaskCanvas<'a> {
             draft,
             placement,
             handles_visible: true,
+            covered: false,
         }
     }
 
     pub(crate) fn with_handles(mut self, visible: bool) -> Self {
         self.handles_visible = visible;
+        self
+    }
+
+    /// Whether something is open over the canvas ([`super::brush_cursor::brush_cursor`]).
+    pub(crate) fn covered(mut self, covered: bool) -> Self {
+        self.covered = covered;
         self
     }
 
@@ -310,8 +319,8 @@ impl canvas::Program<Message, Theme> for MaskCanvas<'_> {
         // over only while it is actually over the canvas, and in the canvas's own coordinates: a
         // window position drawn as if it were a canvas one puts a cursor somewhere nobody is
         // pointing, and a capture with no pointer at all must show no cursor rather than a stale one.
-        let pointer = cursor
-            .position_in(bounds)
+        // Nor is it handed over while a menu, sheet or the palette is open over the canvas.
+        let pointer = super::brush_cursor::brush_cursor(cursor, bounds, self.covered)
             .and_then(|point| self.placement.content_point(point));
         let (approximate, segments) = {
             let mut pen = FramePen {
@@ -380,7 +389,8 @@ impl canvas::Program<Message, Theme> for MaskCanvas<'_> {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> mouse::Interaction {
-        let Some(point) = cursor.position_in(bounds) else {
+        // Off the canvas, or under a menu, sheet or the palette: the system's own pointer.
+        let Some(point) = super::brush_cursor::brush_cursor(cursor, bounds, self.covered) else {
             return mouse::Interaction::None;
         };
         // A painted gesture draws its own cursor, so the pointer gets out of its way.

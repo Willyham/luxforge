@@ -10,7 +10,12 @@
 //! app's. Overlays are white over a translucent dark under-stroke so they read on any photograph,
 //! and they are never themed: the accent marks only the selected pin, a set source and the gesture
 //! being drafted. Pins and handles keep their point size at every zoom.
-use super::{brush_overlay, mask_canvas::Placement, warped_path::Outline};
+use super::{
+    brush_cursor::brush_cursor,
+    brush_overlay::{self, Traces},
+    mask_canvas::Placement,
+    warped_path::Outline,
+};
 use crate::{
     app::message::{
         Message,
@@ -25,7 +30,9 @@ use crate::{
 use iced::{
     Color, Point, Rectangle, Renderer, Size, keyboard,
     mouse::{self, Cursor},
-    widget::canvas::{self, Action, Event, Frame, Geometry, LineDash, Path, Stroke},
+    widget::canvas::{
+        self, Action, Event, Fill, Frame, Geometry, LineDash, Path, Stroke, Style, fill,
+    },
 };
 use luxforge_ui::{Theme, theme};
 
@@ -136,6 +143,8 @@ pub(crate) struct Interaction {
     last: Option<(ViewPoint, [f64; 2])>,
     /// The pin under the pointer, as last published.
     hovered: Option<String>,
+    /// The figures last traced, so a redraw that leaves their paths alone does not retrace them.
+    traces: Traces,
 }
 
 /// The Corrections overlay. Borrowed from the app for one `view`.
@@ -146,6 +155,8 @@ pub(crate) struct CorrectionsCanvas<'a> {
     /// is drawn as `live` instead.
     live: Option<HeldOperation>,
     edited: Option<String>,
+    /// Something is open over the canvas, so the brush draws no cursor of its own.
+    covered: bool,
 }
 
 impl<'a> CorrectionsCanvas<'a> {
@@ -165,7 +176,14 @@ impl<'a> CorrectionsCanvas<'a> {
             placement,
             live,
             edited,
+            covered: false,
         }
+    }
+
+    /// Whether something is open over the canvas ([`brush_cursor`]).
+    pub(crate) fn covered(mut self, covered: bool) -> Self {
+        self.covered = covered;
+        self
     }
 }
 
@@ -216,29 +234,23 @@ fn joined(outline: &Outline) -> Path {
     })
 }
 
-/// The same outline closed and filled.
-fn filled(outline: &Outline) -> Path {
+/// An outline's loops, each closed, as one path to fill: the loops never cross, so the area they
+/// bound, holes left open, fills once.
+fn filled(loops: &[Outline]) -> Path {
     Path::new(|builder| {
-        let mut first = true;
-        for (a, b) in &outline.segments {
-            if first {
-                builder.move_to(*a);
-                first = false;
+        for outline in loops {
+            let mut first = true;
+            for (a, b) in &outline.segments {
+                if first {
+                    builder.move_to(*a);
+                    first = false;
+                }
+                builder.line_to(*b);
             }
-            builder.line_to(*b);
+            if !first {
+                builder.close();
+            }
         }
-        builder.close();
-    })
-}
-
-/// The operation moved to where its first point samples from, for its source outline.
-fn at_source(held: &HeldOperation) -> Option<HeldOperation> {
-    let (source, anchor) = (held.source?, *held.points.first()?);
-    let (dx, dy) = (source[0] - anchor[0], source[1] - anchor[1]);
-    Some(HeldOperation {
-        points: held.points.iter().map(|[x, y]| [x + dx, y + dy]).collect(),
-        source: None,
-        ..held.clone()
     })
 }
 
@@ -304,12 +316,12 @@ impl CorrectionsCanvas<'_> {
     }
 
     /// One correction's outline, dashed source outline and arrow.
-    fn figure(&self, frame: &mut Frame, held: &HeldOperation, accent: bool) {
+    fn figure(&self, frame: &mut Frame, held: &HeldOperation, traces: &Traces, accent: bool) {
         let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
-        let outline = brush_overlay::outline(&self.placement, held);
+        let figure = brush_overlay::figure(&self.placement, held, traces);
+        let outline = brush_overlay::merged(figure.loops);
         stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
-        if let Some(source) = at_source(held) {
-            let dashed = brush_overlay::outline(&self.placement, &source);
+        if let Some(dashed) = figure.source {
             stroke_outline(frame, &joined(&dashed), OUTLINE, WHITE, true);
             let arrow = brush_overlay::arrow(&self.placement, held);
             stroke_outline(frame, &arrow.path(), ARROW, WHITE, false);
@@ -436,7 +448,11 @@ impl CorrectionsCanvas<'_> {
             );
             stroke_outline(frame, &slash, 1.5, WHITE, false);
         }
-        if let Some(source) = self.data.source.crosshair(at)
+        let crosshair =
+            self.data
+                .source
+                .crosshair_within(at, self.data.radius, self.placement.map.content());
+        if let Some(source) = crosshair
             && let Some(centre) = self.placement.canvas_point(source[0], source[1])
         {
             Self::crosshair(frame, centre, CROSSHAIR_ARM, theme::PHOTO_ANCHOR);
@@ -475,9 +491,16 @@ impl CorrectionsCanvas<'_> {
             radius,
             source: None,
         };
-        let outline = brush_overlay::outline(&self.placement, &held);
-        frame.fill(&filled(&outline), SELECTION_TINT);
+        let loops = brush_overlay::outline_loops(&self.placement, &held);
+        frame.fill(
+            &filled(&loops),
+            Fill {
+                style: Style::Solid(SELECTION_TINT),
+                rule: fill::Rule::EvenOdd,
+            },
+        );
         let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
+        let outline = brush_overlay::merged(loops);
         stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
     }
 
@@ -667,10 +690,17 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         // The gesture in progress: a faint footprint while its source waits for the release, or
         // its live outline and source.
         if let (true, Some(live)) = (self.data.painting, &self.live) {
-            let outline = brush_overlay::outline(&self.placement, live);
+            let figure = brush_overlay::figure(&self.placement, live, &state.traces);
             if self.data.automatic {
-                frame.fill(&filled(&outline), FOOTPRINT);
+                frame.fill(
+                    &filled(&figure.loops),
+                    Fill {
+                        style: Style::Solid(FOOTPRINT),
+                        rule: fill::Rule::EvenOdd,
+                    },
+                );
             }
+            let outline = brush_overlay::merged(figure.loops);
             stroke_outline(
                 &mut frame,
                 &joined(&outline),
@@ -678,8 +708,7 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 theme::PHOTO_ANCHOR,
                 false,
             );
-            if let Some(source) = at_source(live) {
-                let dashed = brush_overlay::outline(&self.placement, &source);
+            if let Some(dashed) = figure.source {
                 stroke_outline(
                     &mut frame,
                     &joined(&dashed),
@@ -699,7 +728,7 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 let selected = self.data.selected == Some(listed.operation.as_str());
                 let hovered = self.data.hovered == Some(listed.operation.as_str());
                 if selected || hovered {
-                    self.figure(&mut frame, &held, false);
+                    self.figure(&mut frame, &held, &state.traces, false);
                 }
             }
             for (listed, held) in self.drawn() {
@@ -731,8 +760,8 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             }
         }
         // The brush cursor, over the photograph and away from a pin or handle, while nothing is
-        // held down on one.
-        if let Some(point) = cursor.position_in(bounds)
+        // held down on one and nothing is open over the canvas.
+        if let Some(point) = brush_cursor(cursor, bounds, self.covered)
             && let Some((x, y)) = self.placement.content_point(point)
             && (!shown
                 || state.pressed
@@ -750,7 +779,8 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> mouse::Interaction {
-        let Some(point) = cursor.position_in(bounds) else {
+        // Off the canvas, or under a menu, sheet or the palette: the system's own pointer.
+        let Some(point) = brush_cursor(cursor, bounds, self.covered) else {
             return mouse::Interaction::None;
         };
         if self.data.waiting {

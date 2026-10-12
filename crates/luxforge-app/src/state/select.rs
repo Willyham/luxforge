@@ -160,6 +160,8 @@ pub(crate) struct SelectState {
     /// The catalog's folders and collections, its filter bar and Metadata browser, and the Info
     /// panel over photographs ([`super::select_catalog`]).
     pub(crate) catalog: super::select_catalog::CatalogState,
+    /// HDR merges: the menu, the merge preview sheet and the merge this desktop runs.
+    pub(crate) merge: super::select_merge::SelectMerge,
     /// The size slider's cell widths, one per preset.
     pub(crate) files_cell_width: f32,
     pub(crate) catalog_cell_width: f32,
@@ -230,6 +232,7 @@ impl Default for SelectState {
             forget: None,
             seen_cards: None,
             card_notice: None,
+            merge: super::select_merge::SelectMerge::default(),
         }
     }
 }
@@ -499,6 +502,10 @@ pub(crate) enum LibraryGesture {
     RemoveFolder,
     /// Organizing the catalog: a folder, a collection or the selected photographs.
     Catalog(super::select_catalog::CatalogGesture),
+    /// Remove merge: a result and its stack to Removed.
+    RemoveMerge,
+    /// Put back merge.
+    RestoreMerge,
 }
 
 impl LibraryGesture {
@@ -511,6 +518,8 @@ impl LibraryGesture {
             Self::AddFolder => "index.add-folder",
             Self::RemoveFolder => "index.remove-folder",
             Self::Catalog(gesture) => gesture.method(),
+            Self::RemoveMerge => "merge.remove",
+            Self::RestoreMerge => "merge.restore",
         }
     }
 
@@ -524,6 +533,8 @@ impl LibraryGesture {
             Self::Redo => "Nothing to redo",
             Self::AddFolder => "Already an indexed folder",
             Self::RemoveFolder => "Not an indexed folder",
+            Self::RemoveMerge => "That merge is in Removed already",
+            Self::RestoreMerge => "That merge is not in Removed",
         }
     }
 
@@ -538,6 +549,8 @@ impl LibraryGesture {
             Self::Redo => "Redid the last library change \u{b7} Undo \u{2318}Z",
             Self::AddFolder => "Added the folder to indexed folders \u{b7} Undo \u{2318}Z",
             Self::RemoveFolder => "Removed the folder from indexed folders \u{b7} Undo \u{2318}Z",
+            Self::RemoveMerge => "Removed the merge \u{b7} Undo \u{2318}Z",
+            Self::RestoreMerge => "Put the merge back \u{b7} Undo \u{2318}Z",
         }
     }
 
@@ -551,6 +564,8 @@ impl LibraryGesture {
             Self::Redo => "Could not redo",
             Self::AddFolder => "Could not add the folder",
             Self::RemoveFolder => "Could not remove the folder",
+            Self::RemoveMerge => "Could not remove the merge",
+            Self::RestoreMerge => "Could not put the merge back",
         }
     }
 }
@@ -612,8 +627,15 @@ pub(crate) fn change_text(change: &LibraryChange) -> String {
 
 /// What a refused undo or redo says: the first item that changed since, by its file's name where
 /// it has one, and how many others did, from the refusal's `data` (`{items, count}`). `None` when
-/// the refusal carries no items.
-pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Option<String> {
+/// the refusal carries no items. A merge stack is named by its kind, which `stack_kind` reads from
+/// a row of the view that shows it.
+pub(crate) fn refusal_text(
+    gesture: LibraryGesture,
+    data: Option<&Value>,
+    stack_kind: impl Fn(
+        &luxforge_core::catalog_types::MergeId,
+    ) -> Option<luxforge_core::catalog_types::MergeKind>,
+) -> Option<String> {
     let data = data?;
     let first: LibraryItem = serde_json::from_value(data.get("items")?.get(0)?.clone()).ok()?;
     // A photograph sent back, or one that cannot be, is refused with the core's own reason, which
@@ -631,6 +653,9 @@ pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Opt
         }
         LibraryItem::CatalogFolder { .. } => "a catalog folder".to_owned(),
         LibraryItem::Collection { .. } => "a collection".to_owned(),
+        LibraryItem::MergeStack { merge_id } => {
+            super::select_merge::stack_name(stack_kind(merge_id)).to_owned()
+        }
         _ => "a photograph".to_owned(),
     };
     let others = match count.saturating_sub(1) {
@@ -650,7 +675,7 @@ pub(crate) fn frame_files(rows: &RowCache, start: u32, len: u32) -> Option<Vec<F
     (start..start.saturating_add(len))
         .map(|position| match rows.row(position)?.item {
             RowItem::File { file_id } => Some(file_id),
-            RowItem::Photo { .. } => None,
+            RowItem::Photo { .. } | RowItem::Input { .. } => None,
         })
         .collect()
 }
@@ -718,8 +743,8 @@ pub(crate) enum Block {
         detail: String,
     },
     /// A burst or a bracket of `frames` consecutive items, with its header: its pick count in the
-    /// accent ("1 picked") and, for a bracket over files not all picked, its action ("Pick all
-    /// 3"). `index` is the moment's in the summary's `groups.moments`.
+    /// accent ("1 picked") and, for a bracket over files, its actions: Pick all while its frames
+    /// are not all picked, then the primary Merge HDR when a merge can take that many frames. `index` is the moment's in the summary's `groups.moments`.
     Moment {
         index: u32,
         bracket: bool,
@@ -727,11 +752,45 @@ pub(crate) enum Block {
         detail: String,
         evidence: Option<String>,
         picked: Option<String>,
-        action: Option<String>,
+        actions: Vec<MomentAction>,
         frames: u32,
         collapsed: bool,
     },
     Singles(u32),
+    /// The merge this desktop is running, or one that ended without its result, as a row of its
+    /// own before the frames it merges.
+    Pending {
+        title: String,
+        detail: String,
+        progress: Option<f32>,
+        action: String,
+        failed: bool,
+    },
+}
+
+/// One of a moment header's buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MomentAction {
+    /// Pick all N: `pick.set` of the frames' files.
+    PickAll(u32),
+    /// Merge HDR of the frames.
+    Merge,
+}
+
+impl MomentAction {
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::PickAll(frames) => format!("Pick all {frames}"),
+            // A bracket's merge is HDR's.
+            Self::Merge => super::select_merge::words(luxforge_core::catalog_types::MergeKind::Hdr)
+                .action
+                .to_owned(),
+        }
+    }
+
+    pub(crate) fn primary(self) -> bool {
+        self == Self::Merge
+    }
 }
 
 /// The grid's blocks and each bracket frame's footer label, by view position.
@@ -743,6 +802,48 @@ pub(crate) struct GridContent {
 }
 
 impl GridContent {
+    /// The action `action` of the grid's moment `number`, with the moment's summary index.
+    pub(crate) fn action(&self, number: u32, action: u32) -> Option<(u32, MomentAction)> {
+        self.blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Moment { index, actions, .. } => Some((*index, actions)),
+                _ => None,
+            })
+            .nth(number as usize)
+            .and_then(|(index, actions)| Some((index, *actions.get(action as usize)?)))
+    }
+
+    /// Put `pending` (a [`Block::Pending`]) where the item at `position` is drawn: before the
+    /// moment or the run of singles holding it, splitting the run, after any heading that starts
+    /// there; past the last item, at the end.
+    pub(crate) fn insert_pending(&mut self, position: u32, pending: Block) {
+        let mut at = 0;
+        let mut index = self.blocks.len();
+        for (block_index, block) in self.blocks.iter().enumerate() {
+            let len = match block {
+                Block::Moment { frames, .. } => *frames,
+                Block::Singles(count) => *count,
+                _ => continue,
+            };
+            if position < at + len {
+                index = block_index;
+                break;
+            }
+            at += len;
+        }
+        if let Some(Block::Singles(count)) = self.blocks.get(index).cloned()
+            && position > at
+        {
+            let before = position - at;
+            self.blocks[index] = Block::Singles(before);
+            self.blocks
+                .insert(index + 1, Block::Singles(count - before));
+            index += 1;
+        }
+        self.blocks.insert(index, pending);
+    }
+
     /// The summary's index of the grid's moment `number`: the moments counted in order, collapsed
     /// ones included, as the grid names a header's action.
     pub(crate) fn moment(&self, number: u32) -> Option<u32> {
@@ -853,8 +954,7 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
                     evidence: group.evidence.map(evidence_label).map(str::to_owned),
                     picked: (group.picked > 0)
                         .then(|| format!("{} picked", thousands(group.picked))),
-                    action: (bracket && over_files && group.picked < frames)
-                        .then(|| format!("Pick all {frames}")),
+                    actions: moment_actions(bracket && over_files, group.picked, frames),
                     frames,
                     collapsed: !bracket && collapsed.contains(&(moment as u32)),
                 });
@@ -891,6 +991,24 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
         position = next;
     }
     content
+}
+
+/// A moment's header buttons: for a bracket over files, Pick all while its frames are not all
+/// picked, then the primary Merge HDR while an HDR merge, a bracket's kind, takes that many
+/// frames.
+fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<MomentAction> {
+    use luxforge_core::catalog_types::MergeKind;
+    let mut actions = Vec::new();
+    if !bracket_of_files {
+        return actions;
+    }
+    if picked < frames {
+        actions.push(MomentAction::PickAll(frames));
+    }
+    if MergeKind::Hdr.inputs().contains(&(frames as usize)) {
+        actions.push(MomentAction::Merge);
+    }
+    actions
 }
 
 /// A moment's header detail: a burst's frames and span, a bracket's exposures and steps.
@@ -1053,6 +1171,21 @@ impl RowCache {
         self.blocks
             .get(&(position / ROW_BLOCK))?
             .get((position % ROW_BLOCK) as usize)
+    }
+
+    /// The kind of the merge stack `merge_id`, from any row held of it: its result's or an
+    /// original's.
+    pub(crate) fn stack_kind(
+        &self,
+        merge_id: &luxforge_core::catalog_types::MergeId,
+    ) -> Option<luxforge_core::catalog_types::MergeKind> {
+        self.blocks
+            .values()
+            .flatten()
+            .chain(self.carried.values())
+            .filter_map(|row| row.stack.as_ref())
+            .find(|stack| stack.merge_id == *merge_id)
+            .map(|stack| stack.kind)
     }
 
     /// The row to draw at `position`: this revision's, or else one carried from the last.
@@ -1468,6 +1601,8 @@ pub(crate) struct ItemInfo {
     /// The Moment band's rows, empty for a single or a photograph.
     pub(crate) moment: Vec<(String, String)>,
     pub(crate) metadata: Vec<(String, String)>,
+    /// The HDR stack band: what the result or original is in its stack, and its actions.
+    pub(crate) stack: Option<super::select_merge::StackBand>,
 }
 
 /// The Info panel's Pick band for a file: "Picked for Develop" or "Pick", which `P` does too, and
@@ -1539,6 +1674,8 @@ pub(crate) struct SelectModel {
     /// The catalog's folders and collections, and over the catalog its filter bar, Metadata
     /// browser and Info panel.
     pub(crate) catalog: super::select_catalog::CatalogModel,
+    /// HDR merges: the menu over the grid, the merge preview sheet and Put back merge's notice.
+    pub(crate) merge: super::select_merge::MergeModel,
     /// Remove from indexed folders…'s confirmation, over the centre.
     pub(crate) forget: Option<ForgetSheet>,
     /// The notice of a card connected while Luxforge ran, over the centre's top.
@@ -1609,6 +1746,7 @@ pub(crate) fn model(
         missing: super::select_missing::derive(state),
         catalog,
         forget: forget_sheet(state),
+        merge: super::select_merge::derive(&state.merge),
         card_notice: card_notice(state),
     };
     // The loupe says what it shows and whether its next frames are ready.
@@ -2310,6 +2448,7 @@ fn kind_value(tag: SourceTag) -> &'static str {
     match tag {
         SourceTag::Jpeg => "jpeg",
         SourceTag::Raw => "raw",
+        SourceTag::Derived => "derived",
     }
 }
 
@@ -2450,7 +2589,7 @@ pub(crate) fn item_info(
                 Some(if row.edited { "Yes" } else { "No" }.to_owned()),
             );
         }
-        RowItem::File { .. } => {}
+        RowItem::File { .. } | RowItem::Input { .. } => {}
     }
     ItemInfo {
         name: row.file_name.clone(),
@@ -2458,6 +2597,10 @@ pub(crate) fn item_info(
         pick: None,
         moment,
         metadata,
+        stack: row
+            .stack
+            .as_ref()
+            .map(|stack| super::select_merge::stack_band(stack, row.reason.as_deref())),
     }
 }
 

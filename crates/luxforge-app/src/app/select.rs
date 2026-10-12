@@ -72,7 +72,7 @@ use luxforge_core::{
 };
 use luxforge_ui::{
     GridBlock, GridContext, GridDirection, GridHeading, GridLayout, GridMetrics, GridPress,
-    MomentHeader, MomentKind,
+    HeaderAction, MomentHeader, MomentKind, PendingRow,
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, ops::Range, path::PathBuf};
@@ -151,6 +151,27 @@ pub(crate) struct Select {
     pub(crate) loupe: crate::app::loupe::Loupe,
     /// The catalog's reads in flight: its folders and collections, a total and a selection's rows.
     pub(crate) catalog: SelectCatalog,
+    /// The newest `merge.plan` the menu asked for; an answer for any other is dropped.
+    pub(crate) merge_plans: u64,
+    /// The newest owner task the preview sheet asked for, numbered.
+    pub(crate) merge_serial: u64,
+    /// The preview sheet's picture, decoded, and the revision's picture being decoded.
+    pub(crate) merge_picture: Option<crate::app::select_merge::SheetPicture>,
+    pub(crate) merge_picture_wanted: Option<PathBuf>,
+    /// The newest record of the preview's job, and the newest `merge.preview-close` sent, for
+    /// evidence.
+    pub(crate) preview_record: Option<Value>,
+    pub(crate) preview_closed: Option<Value>,
+    /// The requests the newest merge's start sent, in order, for evidence.
+    pub(crate) merge_sent: Option<Value>,
+    /// The newest record of the running merge's job, for evidence.
+    pub(crate) merge_record: Option<Value>,
+    /// The held click is a merge's result: once it is selected, the grid scrolls to show it.
+    pub(crate) reveal_held: bool,
+    /// The newest `stack.set-expanded` parameters sent, for evidence.
+    pub(crate) stack_sent: Option<Value>,
+    /// The newest `merge.plan` parameters the menu sent, for evidence.
+    pub(crate) plan_sent: Option<Value>,
 }
 
 /// A card or a folder on disk whose listing and headers the index lane is reading.
@@ -226,6 +247,17 @@ impl Default for Select {
             previews: SelectPreviews::default(),
             loupe: crate::app::loupe::Loupe::default(),
             catalog: SelectCatalog::default(),
+            merge_plans: 0,
+            merge_serial: 0,
+            merge_picture: None,
+            merge_picture_wanted: None,
+            preview_record: None,
+            preview_closed: None,
+            merge_sent: None,
+            merge_record: None,
+            reveal_held: false,
+            stack_sent: None,
+            plan_sent: None,
         }
     }
 }
@@ -259,7 +291,7 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                 detail,
                 evidence,
                 picked,
-                action,
+                actions,
                 frames,
                 collapsed,
                 ..
@@ -274,12 +306,31 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                     detail: detail.clone(),
                     evidence: evidence.clone(),
                     picked: picked.clone(),
-                    action: action.clone(),
+                    actions: actions
+                        .iter()
+                        .map(|action| HeaderAction {
+                            label: action.label(),
+                            primary: action.primary(),
+                        })
+                        .collect(),
                 },
                 frames: *frames,
                 collapsed: *collapsed,
             },
             Block::Singles(count) => GridBlock::Singles(*count),
+            Block::Pending {
+                title,
+                detail,
+                progress,
+                action,
+                failed,
+            } => GridBlock::Pending(PendingRow {
+                title: title.clone(),
+                detail: detail.clone(),
+                progress: *progress,
+                action: Some(action.clone()),
+                failed: *failed,
+            }),
         })
         .collect()
 }
@@ -632,9 +683,10 @@ impl Editor {
                 return self.library_now(LibraryGesture::RemoveFolder, params);
             }
             SelectMessage::DismissCard => self.select.state.card_notice = None,
-            SelectMessage::Context(context) => self.context_menu(context),
+            SelectMessage::Context(context) => return self.context_menu(context),
             SelectMessage::Pick => return self.pick_selection(),
             SelectMessage::PickAll(number) => return self.pick_all(number),
+            SelectMessage::Merge(message) => return self.merge_update(message),
             SelectMessage::Undo | SelectMessage::Redo => {
                 // The folder being added is the change an undo would name once it is recorded.
                 if self
@@ -720,7 +772,7 @@ impl Editor {
             }
             SelectMessage::Press(press) => {
                 // A double-click on a photograph of a catalog view opens it in Develop, with the
-                // view's photographs as the development set.
+                // photograph's own catalog folder as the Develop folder.
                 let open = (press.double && self.select.state.over_catalog()).then_some(press.item);
                 self.press(press);
                 if let Some(position) = open {
@@ -736,7 +788,7 @@ impl Editor {
             SelectMessage::SelectNone => {
                 self.select_now(SelectGesture::Nothing);
             }
-            SelectMessage::Collapse => self.collapse(),
+            SelectMessage::Collapse => return self.collapse(),
             SelectMessage::CellWidth(width) => {
                 self.select.state.set_cell_width(width);
                 let width = self.select.layout.width();
@@ -839,7 +891,7 @@ impl Editor {
             return Task::none();
         }
         if shown == Shown::Develop {
-            return self.enter_develop_set();
+            return self.enter_develop();
         }
         if let Some(reason) = self.gesture_refusal(Starting::Workspace) {
             self.status.text = reason;
@@ -1068,7 +1120,7 @@ impl Editor {
     }
 
     /// Ask `event.list` again for the search text.
-    fn read_events(&mut self) -> Task<Message> {
+    pub(crate) fn read_events(&mut self) -> Task<Message> {
         self.select.events.offer(self.select.state.search.clone());
         self.start_events()
     }
@@ -1261,12 +1313,17 @@ impl Editor {
     }
 
     /// Make the grid's blocks from the summary and lay them out at the width the widget reported.
-    fn rebuild_grid(&mut self) {
+    pub(crate) fn rebuild_grid(&mut self) {
         let state = &mut self.select.state;
         state.content = match &state.summary {
             Some(summary) => model::grid_content(summary, &state.collapsed),
             None => GridContent::default(),
         };
+        // The merge this desktop is running shows its row before the frames it merges.
+        if let Some((position, pending)) = self.pending_block() {
+            self.select.state.content.insert_pending(position, pending);
+        }
+        let state = &mut self.select.state;
         self.select.layout = GridLayout::new(
             grid_blocks(&state.content),
             metrics(state),
@@ -1275,7 +1332,7 @@ impl Editor {
     }
 
     /// The session's selection in the view on screen.
-    fn selection(&self) -> SelectionModel {
+    pub(crate) fn selection(&self) -> SelectionModel {
         SelectionModel::of(&self.session.browse, self.select.state.revision())
     }
 
@@ -1333,7 +1390,7 @@ impl Editor {
 
     /// Send one selection gesture to the owner in this update and adopt the session it answers.
     /// Answers whether it was accepted.
-    fn select_now(&mut self, gesture: SelectGesture) -> bool {
+    pub(crate) fn select_now(&mut self, gesture: SelectGesture) -> bool {
         let Some(revision) = self.select.state.revision() else {
             return false;
         };
@@ -1432,11 +1489,14 @@ impl Editor {
                     .state
                     .rows
                     .row(position)
-                    .map(|row| match &row.item {
-                        RowItem::File { file_id } => ItemRef::File { file_id: *file_id },
-                        RowItem::Photo { asset_id } => ItemRef::Photo {
+                    .and_then(|row| match &row.item {
+                        RowItem::File { file_id } => Some(ItemRef::File { file_id: *file_id }),
+                        RowItem::Photo { asset_id } => Some(ItemRef::Photo {
                             asset_id: asset_id.clone(),
-                        },
+                        }),
+                        // An HDR stack's original outside the view has no identity a selection
+                        // names: the cell is selected by position once the view lands.
+                        RowItem::Input { .. } => None,
                     })
             })
             .collect()
@@ -1483,6 +1543,13 @@ impl Editor {
             Ok(session) => {
                 self.adopt(session);
                 self.select.anchor = Some(first);
+                if std::mem::take(&mut self.select.reveal_held) {
+                    self.select.scroll = self.select.layout.reveal(
+                        first,
+                        self.select.scroll,
+                        self.select.viewport.height,
+                    );
+                }
             }
             Err(error) => self.status.text = format!("Selection failed: {error}"),
         }
@@ -1506,13 +1573,17 @@ impl Editor {
         }
     }
 
-    /// `S` collapses the burst the active item is in to one cell, or expands it again.
-    fn collapse(&mut self) {
+    /// `S` collapses the burst the active item is in to one cell, or expands it again; on a merge's
+    /// result or one of its originals, it collapses or expands the HDR stack through the owner.
+    fn collapse(&mut self) -> Task<Message> {
         let Some(active) = self.selection().active else {
-            return;
+            return Task::none();
         };
+        if self.in_shown_stack(active) {
+            return self.toggle_stack_at(active);
+        }
         let Some(burst) = self.select.state.burst_of(active) else {
-            return;
+            return Task::none();
         };
         let collapsed = &mut self.select.state.collapsed;
         if !collapsed.remove(&burst) {
@@ -1523,6 +1594,7 @@ impl Editor {
             self.select
                 .layout
                 .reveal(active, self.select.scroll, self.select.viewport.height);
+        Task::none()
     }
 
     /// The session read after a wake: adopt it, and evaluate a stale view again with the query it
@@ -1739,24 +1811,26 @@ impl Editor {
         self.read_disks()
     }
 
-    /// A right-click on a grid cell. Over the catalog the cell is selected alone unless it is
-    /// selected already, and the photographs' menu opens at the pointer; over files it does
-    /// nothing.
-    fn context_menu(&mut self, context: GridContext) {
-        if !self.select.state.over_catalog() {
-            return;
-        }
+    /// A right-click on a grid cell. The cell is selected alone unless it is selected already; over
+    /// the catalog the photographs' menu opens at the pointer, and over files the merge menu does
+    /// for a selection of frames or a merge's result.
+    fn context_menu(&mut self, context: GridContext) -> Task<Message> {
         self.select.state.menu = None;
+        self.select.state.merge.menu = None;
         if !self.selection().selected(context.item, context.span) {
             self.select.anchor = Some(context.item);
             if !self.select_now(SelectGesture::Only {
                 item: context.item,
                 span: context.span,
             }) {
-                return;
+                return Task::none();
             }
         }
-        self.open_photo_menu(context.at.x, context.at.y);
+        if self.select.state.over_catalog() {
+            self.open_photo_menu(context.at.x, context.at.y);
+            return Task::none();
+        }
+        self.merge_menu(context.at.x, context.at.y)
     }
 
     // -- Picking and library undo ------------------------------------------------------------------
@@ -1783,7 +1857,7 @@ impl Editor {
     }
 
     /// A bracket header's Pick all: `pick.set` of its frames' files, as an agent names them.
-    fn pick_all(&mut self, number: u32) -> Task<Message> {
+    pub(crate) fn pick_all(&mut self, number: u32) -> Task<Message> {
         let state = &self.select.state;
         let Some(moment) = state.summary.as_ref().and_then(|summary| {
             let index = state.content.moment(number)?;
@@ -1854,7 +1928,7 @@ impl Editor {
 
     /// Send one library change synchronously, in this update, as this desktop's actor, and follow
     /// what it recorded. The request and the owner's answer are kept for evidence.
-    fn library_now(&mut self, gesture: LibraryGesture, params: Value) -> Task<Message> {
+    pub(crate) fn library_now(&mut self, gesture: LibraryGesture, params: Value) -> Task<Message> {
         let method = gesture.method();
         let result = library_call(&self.owner, self.client, method, params.clone());
         self.select.library = Some(json!({
@@ -1900,6 +1974,8 @@ impl Editor {
             ),
             self.read_events(),
             self.read_counts(),
+            // The Develop folder's strip, which the change may have changed.
+            self.develop_library_changed(sequence),
         ];
         // The indexed folders, which adding or removing one, or undoing or redoing that, changes.
         if matches!(
@@ -1930,7 +2006,11 @@ impl Editor {
     pub(crate) fn library_refused(&mut self, gesture: LibraryGesture, error: &CallError) {
         let conflict = error.code == "conflict";
         self.status.text = conflict
-            .then(|| model::refusal_text(gesture, error.data.as_ref()))
+            .then(|| {
+                model::refusal_text(gesture, error.data.as_ref(), |merge_id| {
+                    self.select.state.rows.stack_kind(merge_id)
+                })
+            })
             .flatten()
             .unwrap_or_else(|| format!("{}: {}", gesture.refused(), error.message));
         if conflict
@@ -2048,6 +2128,13 @@ impl Editor {
                 })),
                 "moment": item.moment,
                 "metadata": item.metadata.iter().map(|(label, _)| label).collect::<Vec<_>>(),
+                "stack": item.stack.as_ref().map(|band| json!({
+                    "merge_id": band.merge_id,
+                    "title": band.title,
+                    "note": band.note,
+                    "leader": band.leader,
+                    "expanded": band.expanded,
+                })),
             }),
             model::InfoModel::Several { count, active } => {
                 json!({"kind": "several", "count": count, "active": active})
@@ -2116,7 +2203,23 @@ impl Editor {
                 _ => None,
             }).collect::<Vec<_>>(),
             "pick_all": state.content.blocks.iter().filter_map(|block| match block {
-                Block::Moment { index, action: Some(action), .. } => Some(json!([index, action])),
+                Block::Moment { index, actions, .. } => actions.iter().find_map(|action| match action {
+                    model::MomentAction::PickAll(_) => Some(json!([index, action.label()])),
+                    model::MomentAction::Merge => None,
+                }),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            "actions": state.content.blocks.iter().filter_map(|block| match block {
+                Block::Moment { index, actions, .. } if !actions.is_empty() => Some(json!([
+                    index,
+                    actions.iter().map(|action| action.label()).collect::<Vec<_>>(),
+                ])),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            "pending": state.content.blocks.iter().filter_map(|block| match block {
+                Block::Pending { title, detail, action, failed, .. } => Some(json!({
+                    "title": title, "detail": detail, "action": action, "failed": failed,
+                })),
                 _ => None,
             }).collect::<Vec<_>>(),
         });
@@ -2193,9 +2296,49 @@ impl Editor {
                 "body": notice.body,
             })),
             "catalog": self.catalog_summary(),
+            "merge": self.merge_summary(),
+            "stacks": self.stacks_summary(),
         })
     }
+
+    /// The rows the desktop holds that are in an HDR stack, as their cells draw them: the item,
+    /// its role and place in the stack, the leader's badge words, an original's EV offset and
+    /// note. At most the first [`STACK_ROWS`]
+    /// positions are looked at.
+    fn stacks_summary(&self) -> Value {
+        let state = &self.select.state;
+        let count = state.summary.as_ref().map_or(0, |summary| summary.count);
+        let rows: Vec<Value> = (0..count.min(STACK_ROWS))
+            .filter_map(|position| state.rows.row(position))
+            .filter_map(|row| {
+                let stack = row.stack.as_ref()?;
+                let cell =
+                    crate::state::select_merge::stack_cell(Some(stack), row.reason.as_deref());
+                Some(json!({
+                    "position": row.position,
+                    "item": row.item,
+                    "file_name": row.file_name,
+                    "picked": row.picked,
+                    "merge_id": stack.merge_id,
+                    "role": stack.role,
+                    "kind": stack.kind,
+                    "size": stack.size,
+                    "collapsed": stack.collapsed,
+                    "expansion": stack.expansion,
+                    "ordinal": stack.ordinal,
+                    "offset_ev": stack.offset_ev,
+                    "badge": cell.badge.map(|(long, short, open)| json!([long, short, open])),
+                    "exposure": cell.exposure,
+                    "note": cell.note,
+                }))
+            })
+            .collect();
+        json!(rows)
+    }
 }
+
+/// How many of a view's first positions a frame's stack record looks at.
+const STACK_ROWS: u32 = 512;
 
 /// After every message: read the rows near the screen — with the loupe open, the grid under it
 /// following its active frame first — and start a staleness check a wake asked for. An evidence
@@ -2209,8 +2352,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();
-    if editor.evidence.is_some() && editor.select_shown() && editor.select_quiet() {
-        editor.outcome(Outcome::SelectSettled);
+    if editor.evidence.is_some() && editor.select_shown() {
+        if editor.select_quiet() {
+            editor.outcome(Outcome::SelectSettled);
+        }
+        editor.outcome(Outcome::MergeShown);
     }
     Task::batch([rows, previews, check])
 }

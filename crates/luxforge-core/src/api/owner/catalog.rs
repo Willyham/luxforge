@@ -10,7 +10,7 @@
 //! handlers do. The domain code stays in the lane's core module (`crate::index`, `crate::previews`,
 //! `crate::library`, `crate::browse`); these files are the glue.
 
-use super::{ClientId, Owner, OwnerMessage, files, library, previews, views};
+use super::{ClientId, Owner, OwnerMessage, files, library, merge, previews, views};
 use crate::{
     JobId,
     activity::ActivityBoard,
@@ -23,12 +23,14 @@ use std::{
     sync::{Arc, mpsc::SyncSender},
 };
 
-/// What the index, preview or library lane's worker posts to the owner, which the owner hands to
-/// that lane.
+/// What the index, preview, library or merge lane's worker posts to the owner, which the owner
+/// hands to that lane. The merge lane is a library lane of its own ([`library::LaneKind::Merge`]).
 pub(super) enum CatalogMessage {
     Files(files::FilesMessage),
     Previews(previews::PreviewsMessage),
     Library(library::LibraryMessage),
+    Merge(library::LibraryMessage),
+    MergePreview(library::LibraryMessage),
 }
 
 /// How a lane's worker posts into the owner's own channel: nothing polls, and the owner sleeps
@@ -49,11 +51,12 @@ impl Poster {
     }
 }
 
-/// The owner-side state of the index, preview and library lanes and of browse views.
+/// The owner-side state of the index, preview, library and merge lanes and of browse views.
 pub(super) struct CatalogLanes {
     pub(super) files: files::FilesLane,
     pub(super) previews: previews::PreviewsLane,
     pub(super) library: library::LibraryLane,
+    pub(super) merge: merge::MergeLane,
     pub(super) views: views::ViewsLane,
 }
 
@@ -65,7 +68,8 @@ impl CatalogLanes {
         Self {
             files: files::FilesLane::new(poster.clone(), activity.clone()),
             previews: previews::PreviewsLane::new(poster.clone(), activity.clone()),
-            library: library::LibraryLane::new(poster, activity),
+            library: library::LibraryLane::new(poster.clone(), activity.clone()),
+            merge: merge::MergeLane::new(poster, activity),
             views: views::ViewsLane::default(),
         }
     }
@@ -76,6 +80,8 @@ impl CatalogLanes {
         self.files.disconnect(client);
         self.previews.disconnect(client, jobs);
         self.library.disconnect(client);
+        self.merge.lane.disconnect(client);
+        self.merge.updates.disconnect(client);
         self.views.disconnect(client);
     }
 
@@ -84,6 +90,8 @@ impl CatalogLanes {
         self.files.shutdown();
         self.previews.shutdown();
         self.library.shutdown();
+        self.merge.lane.shutdown();
+        self.merge.updates.shutdown();
     }
 }
 
@@ -98,7 +106,17 @@ impl Owner {
             JobKind::PreviewExtract | JobKind::PreviewRegion | JobKind::PreviewRender => {
                 self.catalog.previews.cancelled(job_id, &mut self.jobs)
             }
-            _ => super::library::cancelled(self, job_id),
+            JobKind::HdrMerge => library::cancelled(self, library::LaneKind::Merge, job_id),
+            // A preview reads and aligns on the merge lane and draws again on its own.
+            JobKind::MergePreview => {
+                let lane = if self.catalog.merge.lane.holds(job_id) {
+                    library::LaneKind::Merge
+                } else {
+                    library::LaneKind::Preview
+                };
+                library::cancelled(self, lane, job_id);
+            }
+            _ => library::cancelled(self, library::LaneKind::Library, job_id),
         }
     }
 
@@ -141,7 +159,15 @@ impl Owner {
         match message {
             CatalogMessage::Files(message) => files::handle(self, message),
             CatalogMessage::Previews(message) => previews::handle(self, message),
-            CatalogMessage::Library(message) => library::handle(self, message),
+            CatalogMessage::Library(message) => {
+                library::handle(self, library::LaneKind::Library, message)
+            }
+            CatalogMessage::Merge(message) => {
+                library::handle(self, library::LaneKind::Merge, message)
+            }
+            CatalogMessage::MergePreview(message) => {
+                library::handle(self, library::LaneKind::Preview, message)
+            }
         }
     }
 }

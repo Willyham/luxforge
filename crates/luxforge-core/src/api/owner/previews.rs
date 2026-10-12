@@ -467,14 +467,14 @@ impl PreviewsLane {
             .iter()
             .filter_map(|item| match item {
                 ViewItem::File(file) => Some(*file),
-                ViewItem::Photo(_) => None,
+                ViewItem::Photo(_) | ViewItem::Input(_) => None,
             })
             .collect();
         let rows: Vec<AssetRowId> = items
             .iter()
             .filter_map(|item| match item {
                 ViewItem::Photo(row) => Some(*row),
-                ViewItem::File(_) => None,
+                ViewItem::File(_) | ViewItem::Input(_) => None,
             })
             .collect();
         let photos = renders::photos_at(service, &rows)?;
@@ -491,6 +491,8 @@ impl PreviewsLane {
             .iter()
             .map(|item| match item {
                 ViewItem::File(_) => files.next().unwrap_or(PreviewState::Pending),
+                // A provenance row's preview is its file's, which `browse.rows` asks for.
+                ViewItem::Input(_) => PreviewState::Unavailable,
                 ViewItem::Photo(_) => match photos.next().flatten() {
                     Some(_) => grids
                         .next()
@@ -752,6 +754,7 @@ pub(super) fn want_view_items(
         match item {
             ViewItem::File(file) => files.push(*file),
             ViewItem::Photo(row) => rows.push(*row),
+            ViewItem::Input(_) => {}
         }
     }
     let wanted = {
@@ -1391,7 +1394,7 @@ impl OwnerHandle {
             .into_iter()
             .filter_map(|(item, tier)| match item {
                 ViewItem::File(file) => Some((file, tier)),
-                ViewItem::Photo(_) => None,
+                ViewItem::Photo(_) | ViewItem::Input(_) => None,
             })
             .collect()
     }
@@ -1402,7 +1405,7 @@ impl OwnerHandle {
             .into_iter()
             .filter_map(|(item, tier)| match item {
                 ViewItem::Photo(row) => Some((row, tier)),
-                ViewItem::File(_) => None,
+                ViewItem::File(_) | ViewItem::Input(_) => None,
             })
             .collect()
     }

@@ -13,7 +13,9 @@
 //! [`fixtures`] in from their one source through `#[path]` modules, naming the test binary itself
 //! `luxforge_testkit` so these helpers and the conformance suite xtask shares read the same there.
 pub mod client;
+pub mod derived;
 pub mod fixtures;
+pub mod hdr_bracket;
 mod process;
 mod proof;
 

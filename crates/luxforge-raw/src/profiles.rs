@@ -488,30 +488,74 @@ mod tests {
         Catalog::parse(&value.to_string())
     }
 
-    /// The static catalog the library holds is exactly the validated JSON, and the JSON is the
-    /// pinned file the build script generated it from.
+    /// The static catalogs the library holds, the shipped one and the test cameras, are exactly
+    /// the validated JSON, and the JSON is the pinned files the build script generated them from.
     #[test]
     fn static_catalog_is_the_validated_json() {
-        let parsed = Catalog::parse(include_str!("../data/cameras.json")).unwrap();
-        assert_eq!(crate::camera_catalog().cameras.len(), parsed.cameras.len());
-        for (static_camera, json_camera) in crate::camera_catalog()
-            .cameras
-            .iter()
-            .zip(parsed.cameras.iter())
-        {
-            assert_eq!(
-                static_camera, json_camera,
-                "{} {}",
-                json_camera.make, json_camera.model
+        for (held, json) in [
+            (
+                crate::camera_catalog(),
+                include_str!("../data/cameras.json"),
+            ),
+            (
+                &crate::catalog::TEST_CATALOG,
+                include_str!("../data/test-cameras.json"),
+            ),
+        ] {
+            let parsed = Catalog::parse(json).unwrap();
+            assert_eq!(held.cameras.len(), parsed.cameras.len());
+            for (static_camera, json_camera) in held.cameras.iter().zip(parsed.cameras.iter()) {
+                assert_eq!(
+                    static_camera, json_camera,
+                    "{} {}",
+                    json_camera.make, json_camera.model
+                );
+            }
+            assert!(matches!(held.cameras, Cow::Borrowed(_)));
+            assert!(
+                held.cameras
+                    .iter()
+                    .all(|camera| matches!(camera.modes, Cow::Borrowed(_)))
             );
         }
-        assert!(matches!(crate::camera_catalog().cameras, Cow::Borrowed(_)));
+    }
+
+    /// The shipped catalog holds real bodies only: the synthetic test body is in the test table
+    /// alone, and no test camera shares an identity or a mode with a shipped one.
+    #[test]
+    fn shipped_catalog_holds_no_test_camera() {
+        let shipped = crate::camera_catalog();
         assert!(
-            crate::camera_catalog()
+            shipped
                 .cameras
                 .iter()
-                .all(|camera| matches!(camera.modes, Cow::Borrowed(_)))
+                .all(|camera| camera.make != "Luxforge")
         );
+        let test = &crate::catalog::TEST_CATALOG;
+        assert!(
+            test.cameras
+                .iter()
+                .any(|camera| camera.make == "Luxforge" && camera.model == "Synthetic Bracket")
+        );
+        for camera in test.cameras.iter() {
+            assert!(
+                !shipped
+                    .cameras
+                    .iter()
+                    .any(|other| (&other.make, &other.model) == (&camera.make, &camera.model))
+            );
+            for mode in camera.modes.iter() {
+                assert!(
+                    shipped
+                        .cameras
+                        .iter()
+                        .flat_map(|other| other.modes.iter())
+                        .all(|other| other.id != mode.id),
+                    "{}",
+                    mode.id
+                );
+            }
+        }
     }
 
     #[test]

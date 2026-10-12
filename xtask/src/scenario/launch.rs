@@ -34,11 +34,23 @@ impl Drop for Guard {
 
 /// Start `bin` with `args` from a background bundle, its output to `log`.
 pub fn spawn(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<Guard> {
+    spawn_with(root, bin, args, &[], log)
+}
+
+/// [`spawn`] with `env` added to the inherited environment.
+pub fn spawn_with(
+    root: &Path,
+    bin: &Path,
+    args: &[OsString],
+    env: &[(String, String)],
+    log: &Path,
+) -> Result<Guard> {
     let launch = Background::new(bin)?;
     let f = fs::File::create(log)?;
     Ok(Guard {
         child: Command::new(&launch.executable)
             .args(args)
+            .envs(env.iter().map(|(key, value)| (key, value)))
             .current_dir(root)
             .stdin(Stdio::null())
             .stdout(f.try_clone()?)
@@ -154,6 +166,9 @@ pub const ORDER: [Flag; 11] = [
     Flag::Window,
 ];
 
+/// The editor's environment variable that admits the RAW test cameras for its launch.
+pub const TEST_CAMERAS: &str = "LUXFORGE_TEST_CAMERAS";
+
 /// Where a launch's evidence goes.
 enum Evidence {
     /// `<out>/<name>`.
@@ -193,6 +208,9 @@ pub struct Launch {
     exit: Option<i32>,
     watch: Option<Watcher>,
     keep: Option<String>,
+    /// Environment variables the editor is started with beside the harness's own, such as
+    /// `LUXFORGE_TEST_CAMERAS=1`; recorded with the launch's command.
+    env: Vec<(String, String)>,
 }
 
 impl Launch {
@@ -217,7 +235,20 @@ impl Launch {
             exit: None,
             watch: None,
             keep: None,
+            env: Vec::new(),
         }
+    }
+
+    /// Start the editor with `key` set to `value` in its environment.
+    pub fn env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Admit the RAW test cameras in the editor (`LUXFORGE_TEST_CAMERAS=1`), for a launch over
+    /// files of a synthetic test body such as `luxforge_testkit::hdr_bracket`'s.
+    pub fn test_cameras(self) -> Self {
+        self.env(TEST_CAMERAS, "1")
     }
 
     /// A scenario's one ordinary launch: its evidence in `app/`, its console in `subprocess.log`.
@@ -786,10 +817,24 @@ impl Run {
             .map(|s| s.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         let started = Instant::now();
-        let mut child = spawn(&self.root, &bin, &args, &self.out.join(&launch.log))?;
+        let mut child = spawn_with(
+            &self.root,
+            &bin,
+            &args,
+            &launch.env,
+            &self.out.join(&launch.log),
+        )?;
         let index = self.launches.len();
         self.launches
             .push(json!({"evidence":listed,"log":launch.log,"command":command,"exit_code":null}));
+        if !launch.env.is_empty() {
+            self.launches[index]["env"] = launch
+                .env
+                .iter()
+                .map(|(key, value)| (key.clone(), json!(value)))
+                .collect::<serde_json::Map<_, _>>()
+                .into();
+        }
         let (status, watched) = match launch.watch {
             Some(watcher) => watcher(&mut child, started, deadline)?,
             None => (Some(wait(&mut child, deadline)?), Value::Null),
@@ -908,6 +953,13 @@ impl Run {
                     .unwrap_or_default(),
                 serde_json::to_string_pretty(&launch["command"])?
             ));
+            if let Some(env) = launch["env"].as_object() {
+                let set: Vec<String> = env
+                    .iter()
+                    .map(|(key, value)| format!("`{key}={}`", value.as_str().unwrap_or_default()))
+                    .collect();
+                text.push_str(&format!("With {} in its environment.\n\n", set.join(", ")));
+            }
         }
         if !self.tool {
             text.push_str("Actual renderer readback.\n");
@@ -1389,7 +1441,7 @@ mod tests {
         )
         .unwrap();
         let error = run
-            .launch(Launch::named("launch1"))
+            .launch(Launch::named("launch1").test_cameras())
             .unwrap_err()
             .to_string();
         assert!(error.starts_with("Launch 1 exit"), "{error}");
@@ -1398,7 +1450,43 @@ mod tests {
         assert_eq!(listed["evidence"], "launch1");
         assert!(listed["exit_code"].as_i64().is_some_and(|code| code != 0));
         assert_eq!(listed["command"][1], "--hidden-window");
+        assert_eq!(listed["env"], json!({ TEST_CAMERAS: "1" }));
         assert!(out.join("launch1.log").is_file());
+    }
+
+    /// Run only as [`a_launch_environment_reaches_the_process`]'s child: passes only when the
+    /// test cameras variable reached it.
+    #[test]
+    #[ignore]
+    fn test_cameras_child() {
+        assert_eq!(std::env::var(TEST_CAMERAS).as_deref(), Ok("1"));
+    }
+
+    /// A launch's environment reaches the process the background bundle starts, and only that
+    /// launch's.
+    #[test]
+    fn a_launch_environment_reaches_the_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let child = |env: &[(String, String)]| {
+            let mut child = spawn_with(
+                &root().unwrap(),
+                &std::env::current_exe().unwrap(),
+                &[
+                    "--ignored".into(),
+                    "--exact".into(),
+                    "scenario::launch::tests::test_cameras_child".into(),
+                ],
+                env,
+                &tmp.path().join("child.log"),
+            )
+            .unwrap();
+            wait(&mut child, luxforge_testbase::HANG).unwrap().success()
+        };
+        assert!(child(&[(TEST_CAMERAS.into(), "1".into())]));
+        // The harness's own environment does not set it, so a launch without it fails the child.
+        if std::env::var_os(TEST_CAMERAS).is_none() {
+            assert!(!child(&[]));
+        }
     }
 
     #[test]

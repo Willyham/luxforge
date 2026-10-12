@@ -97,11 +97,18 @@ pub(crate) fn plan(
             path.display()
         )));
     }
-    let (byte_len, fingerprint): (i64, String) = connection
-        .prepare_cached("SELECT byte_len, fingerprint FROM assets WHERE id = ?1")?
-        .query_row([asset_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
+    let (byte_len, fingerprint, kind, file_name): (i64, String, String, String) = connection
+        .prepare_cached(
+            "SELECT byte_len, fingerprint, source_kind, file_name FROM assets WHERE id = ?1",
+        )?
+        .query_row([asset_id.as_str()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .optional()?
         .ok_or_else(|| Error::validation(format!("unknown asset {asset_id}")))?;
+    if kind == "derived" {
+        return Err(super::merge::no_original(asset_id, &file_name, "locate"));
+    }
     let metadata = path
         .metadata()
         .map_err(|error| file_error(format!("cannot read {}", path.display()), error.kind()))?;

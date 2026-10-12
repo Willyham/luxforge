@@ -2,20 +2,23 @@
 //! no query, and their rows are read in a fixed number of statements whatever the window's size —
 //! for files the index's rows and preview records, the offline roots, and the catalog's picks and
 //! developed originals among the window's paths; for photographs the catalog's rows, their
-//! collections and the index's rendered previews.
+//! collections and the index's rendered previews. An expanded HDR
+//! stack's provenance rows are read an original at a time, at most nine a stack, and every stacked
+//! row carries the badge the view was arranged with.
 
 use super::{
     View,
     candidates::{exposure, position},
     json_list, places,
     previews::GridStates,
-    within,
+    stacks, within,
 };
 use crate::{
     AssetId, EditorService, Error, SourceTag,
     catalog_types::{
-        CameraBody, CatalogFolderId, CollectionId, Dimensions, ExifOrientation, Exposure,
-        FileAvailability, FileId, Moment, MomentRef, PreviewState, RowItem, ViewItem, ViewRow,
+        AssetRowId, CameraBody, CatalogFolderId, CollectionId, Dimensions, ExifOrientation,
+        Exposure, FileAvailability, FileId, Moment, MomentRef, PreviewState, RowItem,
+        StackInputKey, ViewItem, ViewRow,
     },
 };
 use rusqlite::Row;
@@ -40,11 +43,36 @@ pub(crate) fn rows(
     }
     let end = start.saturating_add(count as usize).min(view.items.len());
     let window = &view.items[start..end];
-    if view.over_files {
-        file_rows(service, window, from, &view.layout.moments, grid)
-    } else {
-        photo_rows(service, window, from, &view.layout.moments, grid)
+    // A view of files holds HDR results among its files, and an expanded stack provenance rows:
+    // each kind is read in its own fixed statements, then put back in the window's order.
+    let (mut files, mut photos, mut inputs) = (Vec::new(), Vec::new(), Vec::new());
+    for (offset, item) in window.iter().enumerate() {
+        let position = from + offset as u32;
+        match *item {
+            ViewItem::File(file) => files.push((position, file)),
+            ViewItem::Photo(row) => photos.push((position, row)),
+            ViewItem::Input(key) => inputs.push((position, key)),
+        }
     }
+    let moments = &view.layout.moments;
+    let mut answer = Vec::with_capacity(window.len());
+    if !files.is_empty() {
+        answer.extend(file_rows(service, &files, moments, grid)?);
+    }
+    if !photos.is_empty() {
+        answer.extend(photo_rows(service, &photos, moments, grid)?);
+    }
+    if !inputs.is_empty() {
+        answer.extend(input_rows(service, &inputs, moments, grid)?);
+    }
+    answer.sort_unstable_by_key(|row| row.position);
+    for row in &mut answer {
+        row.stack = view
+            .badges
+            .get(&window[(row.position - from) as usize])
+            .cloned();
+    }
+    Ok(answer)
 }
 
 /// Where `position` sits in its moment, if one covers it. Moments are disjoint and in view order.
@@ -101,18 +129,12 @@ fn dimensions(row: &Row<'_>, first: usize) -> Result<Option<Dimensions>, Error> 
 
 fn file_rows(
     service: &EditorService,
-    window: &[ViewItem],
-    from: u32,
+    window: &[(u32, FileId)],
     moments: &[Moment],
     grid: GridStates<'_>,
 ) -> Result<Vec<ViewRow>, Error> {
-    let ids: Vec<FileId> = window
-        .iter()
-        .map(|item| match item {
-            ViewItem::File(file) => *file,
-            ViewItem::Photo(_) => unreachable!("a view over files holds files"),
-        })
-        .collect();
+    let ids: Vec<FileId> = window.iter().map(|(_, file)| *file).collect();
+    let items: Vec<ViewItem> = ids.iter().map(|file| ViewItem::File(*file)).collect();
     let index = service.index()?;
     let connection = index.connection();
     let mut statement = connection.prepare_cached(
@@ -151,7 +173,7 @@ fn file_rows(
         .query_map([], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
     drop(index);
-    let previews = grid(window)?;
+    let previews = grid(&items)?;
     let paths: Vec<&str> = found.values().map(|facts| facts.path.as_str()).collect();
     let paths = json_list(&paths)?;
     let picked: std::collections::HashSet<String> = service
@@ -168,8 +190,7 @@ fn file_rows(
         .query_map([&paths], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
     let mut answer = Vec::with_capacity(ids.len());
-    for (offset, (file, preview)) in ids.iter().zip(previews).enumerate() {
-        let position = from + offset as u32;
+    for (&(position, file), preview) in window.iter().zip(previews) {
         let facts = found.remove(&file.0).ok_or_else(|| gone(position))?;
         let availability = if offline.iter().any(|root| within(&facts.folder, root)) {
             FileAvailability::Offline
@@ -178,7 +199,7 @@ fn file_rows(
         };
         answer.push(ViewRow {
             position,
-            item: RowItem::File { file_id: *file },
+            item: RowItem::File { file_id: file },
             picked: picked.contains(&facts.path),
             developed_as: developed
                 .get(&facts.path)
@@ -200,6 +221,8 @@ fn file_rows(
             collections: Vec::new(),
             availability,
             preview,
+            stack: None,
+            reason: None,
         });
     }
     Ok(answer)
@@ -212,18 +235,11 @@ struct PhotoFacts {
 
 fn photo_rows(
     service: &EditorService,
-    window: &[ViewItem],
-    from: u32,
+    window: &[(u32, AssetRowId)],
     moments: &[Moment],
     grid: GridStates<'_>,
 ) -> Result<Vec<ViewRow>, Error> {
-    let rows_ids: Vec<i64> = window
-        .iter()
-        .map(|item| match item {
-            ViewItem::Photo(row) => row.0,
-            ViewItem::File(_) => unreachable!("a view over photographs holds photographs"),
-        })
-        .collect();
+    let rows_ids: Vec<i64> = window.iter().map(|(_, row)| row.0).collect();
     let mut statement = service.connection.prepare_cached(
         "SELECT a.row_id, a.id, a.locator, a.file_name, a.source_kind, a.width, a.height,
              a.availability, NULL, c.local_text, c.place, c.make, c.model, c.lens,
@@ -268,6 +284,8 @@ fn photo_rows(
                 Error::incompatible(format!("photograph: unknown availability {availability}"))
             })?,
             preview: PreviewState::Pending,
+            stack: None,
+            reason: None,
         };
         found.insert(row.get(0)?, PhotoFacts { row: row_facts });
     }
@@ -291,17 +309,85 @@ fn photo_rows(
     drop(memberships);
     drop(members);
     let mut answer = Vec::with_capacity(rows_ids.len());
-    for (offset, row_id) in rows_ids.iter().enumerate() {
-        let position = from + offset as u32;
-        let facts = found.remove(row_id).ok_or_else(|| gone(position))?;
+    for &(position, row_id) in window {
+        let facts = found.remove(&row_id.0).ok_or_else(|| gone(position))?;
         answer.push(ViewRow {
             position,
             moment: moment_of(moments, position),
             ..facts.row
         });
     }
-    for (row, preview) in answer.iter_mut().zip(grid(window)?) {
+    let items: Vec<ViewItem> = window
+        .iter()
+        .map(|(_, row)| ViewItem::Photo(*row))
+        .collect();
+    for (row, preview) in answer.iter_mut().zip(grid(&items)?) {
         row.preview = preview;
+    }
+    Ok(answer)
+}
+
+/// Provenance rows: an expanded stack's originals that no item of the view's source is, each named
+/// by its merge and ordinal, with its path, whether it is where the merge read it and why not, its
+/// pick and developed photograph, and the grid preview of its file when the index lists it. A few
+/// indexed reads per original, the window bounding them.
+fn input_rows(
+    service: &EditorService,
+    window: &[(u32, StackInputKey)],
+    moments: &[Moment],
+    grid: GridStates<'_>,
+) -> Result<Vec<ViewRow>, Error> {
+    let mut answer = Vec::with_capacity(window.len());
+    let mut listed = Vec::new();
+    for &(position, key) in window {
+        let (merge_id, path, asset) =
+            stacks::input_of(&service.connection, key)?.ok_or_else(|| gone(position))?;
+        let found = stacks::original(service, &path, asset.as_ref())?;
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let kind = path
+            .file_name()
+            .and_then(crate::index::exclude::kind_of)
+            .unwrap_or(SourceTag::Raw);
+        if let Some(file) = found.file_id {
+            listed.push((answer.len(), ViewItem::File(file)));
+        }
+        answer.push(ViewRow {
+            position,
+            item: RowItem::Input {
+                merge_id,
+                ordinal: key.ordinal(),
+                file_id: found.file_id,
+            },
+            path,
+            file_name,
+            kind,
+            dimensions: None,
+            orientation: None,
+            capture: None,
+            place: None,
+            camera: None,
+            lens: None,
+            exposure: Exposure::default(),
+            moment: moment_of(moments, position),
+            picked: found.picked,
+            developed_as: found.asset_id,
+            edited: false,
+            folder_id: None,
+            collections: Vec::new(),
+            availability: found.availability,
+            preview: PreviewState::Unavailable,
+            stack: None,
+            reason: found.reason,
+        });
+    }
+    if !listed.is_empty() {
+        let items: Vec<ViewItem> = listed.iter().map(|(_, item)| *item).collect();
+        for ((at, _), preview) in listed.iter().zip(grid(&items)?) {
+            answer[*at].preview = preview;
+        }
     }
     Ok(answer)
 }

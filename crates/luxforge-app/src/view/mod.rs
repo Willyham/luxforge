@@ -7,6 +7,7 @@
 //! The two side panels collapse independently through the session's own workspace state; the canvas
 //! takes whatever remains. Every region is styled from [`luxforge_ui::theme`], never an ad hoc
 //! colour, and the window carries no outer padding: the canvas pads its photo itself.
+mod brush_cursor;
 mod brush_overlay;
 pub(crate) mod canvas;
 pub(crate) mod canvas_view;
@@ -27,6 +28,7 @@ pub(crate) mod palette;
 pub(crate) mod query_choice;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
+pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod state_panel;
@@ -107,9 +109,11 @@ pub(crate) struct Surfaces<'a> {
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
     pub(crate) gpu_rest: Option<&'a luxforge_gpu::GpuRest>,
-    /// The same tiles drawn for their histogram and clipping counts alone, which put nothing on
-    /// screen: handed to whichever surface draws the photograph, a percentage view's included,
-    /// while the counts of the content the GPU presents are to come and the picture is not handed.
+    /// The same tiles where the picture is not handed, handed to whichever surface draws the
+    /// photograph, a percentage view's included: at 100% and above reduced to the backdrop the
+    /// view's region is drawn over where it does not cover the view; otherwise drawn for their
+    /// histogram and clipping counts alone, which put nothing on screen, while the counts of the
+    /// content the GPU presents are to come.
     pub(crate) gpu_counts: Option<&'a luxforge_gpu::GpuRest>,
     /// Compare's After side on the GPU: the GPU picture of the stack on screen when Compare
     /// began, retained while it is shown — its view plan, with its serial, and its picture at rest
