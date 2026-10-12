@@ -128,10 +128,10 @@ The reference ingress also answers Luxforge's update feeds,
 release workflow's **Update feeds** run regenerates them after every release and sends them over SSH to
 an account whose only command installs them into the update store. The route is independent of the
 statistics switch: it can go live before or after [activation](#activation-checklist). A person
-fetching a feed crosses the same hosting and proxy as a batch, so the same promise holds, and steps 2
-to 6 and 10 must have passed for this host first. **None of this has been done.** The commands below
-that need no host ran against a local ingress serving a store filled by `install-feeds.py`; the rest
-name what to look at and what result is required.
+fetching a feed from a deployment of this reference crosses its hosting and proxy too, so apply the
+[reference privacy requirements](README.md#reference-deployment-privacy-requirements) to that traffic.
+Hosted feed deployment remains unqualified. The commands below that need no host ran against a local
+ingress serving a store filled by `install-feeds.py`; host-dependent provisioning remains external work.
 
 The update feed URL is compiled into every release, so once a release that uses it is published the
 route must stay for as long as that release is in use. What serves it behind the API can change.
