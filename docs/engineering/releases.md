@@ -26,7 +26,8 @@ Dry-run creates/pushes no tag and skips quick checks. If a real push fails, the 
 
 Open GitHub **Actions → Release builds** for logs and the public pre-release under **Releases**. It contains:
 
-- `luxforge-VERSION-macos-arm64.zip`, containing `Luxforge.app` with the editor, both CLIs under `Contents/Helpers`, Lensfun resources, notices and help.
+- `luxforge-VERSION-macos-arm64.dmg`, the macOS download: a disk image holding `Luxforge.app` and an `Applications` link. Open it and drag Luxforge to Applications. The app holds the editor, both CLIs under `Contents/Helpers`, Lensfun resources, notices and help.
+- `luxforge-VERSION-macos-arm64.zip`, the same `Luxforge.app`, kept as the update archive.
 - `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices and help.
 - `release.json`, per-platform build records and `SHA256SUMS` for the final files.
 
@@ -49,7 +50,7 @@ In Xcode's **Manage Certificates**, export the **Developer ID Application** iden
 
 Then add the **repository variable** `LUXFORGE_SIGN_MACOS` with value `true`. Unset or `false` creates explicitly unsigned candidates; any other value is rejected. If `true`, missing credentials or a signing/notarization failure fail the macOS build and prevent publication. No unsigned fallback is uploaded as a successful signed build.
 
-Apple credentials reach only the macOS signing step, after compilation/checks. The runner imports them into a temporary Keychain, signs CLI helpers then the app with hardened runtime and timestamp, requires an **Accepted** notary submission, staples/validates the app and recreates its ZIP before final checksums. The temporary Keychain and P12 are removed on success or failure. Build/cache/upload steps do not receive those secret values; credential files are outside artifact/cache directories. Only the final publication job has repository write permission, and it receives no Apple credentials. Workflows do not run on pull requests.
+Apple credentials reach only the macOS signing step, after compilation/checks. The runner imports them into a temporary Keychain, signs CLI helpers then the app with hardened runtime and timestamp, requires an **Accepted** notary submission, staples/validates the app and recreates its ZIP. It then creates the disk image from the stapled app, signs it with the same identity and a timestamp, requires an **Accepted** submission for it too, staples/validates it and assesses it with `spctl --type open`, all before final checksums. `target.json` records both submissions and the final ZIP and disk image hashes. The temporary Keychain and P12 are removed on success or failure. Build/cache/upload steps do not receive those secret values; credential files are outside artifact/cache directories. Only the final publication job has repository write permission, and it receives no Apple credentials. Workflows do not run on pull requests.
 
 
 ## Retry and local rehearsal
@@ -62,7 +63,7 @@ Local build rehearsal, using the shared compiler cache on macOS/Linux:
 tools/cargo-cached xtask release-build --tag v0.1 --build-number 1 --output artifacts/release-rehearsal --allow-dirty
 ```
 
-The output must be new. `--allow-dirty` labels the output as a local rehearsal; assembly refuses it for hosted publication. Without this flag, the checkout must be clean and the tag must name HEAD. `release-sign --output CANDIDATE --identity ID --keychain-profile luxforge-notarization` explicitly signs an existing unsigned macOS candidate when the operator runs it; ordinary development packaging never signs or submits anything.
+The output must be new. On macOS it holds the ZIP and the disk image, both labelled unsigned in `target.json`; inspect the image with `hdiutil attach -readonly -nobrowse -mountpoint DIR IMAGE` and `hdiutil detach DIR`. `--allow-dirty` labels the output as a local rehearsal; assembly refuses it for hosted publication. Without this flag, the checkout must be clean and the tag must name HEAD. `release-sign --output CANDIDATE --identity ID --keychain-profile luxforge-notarization` explicitly signs an existing unsigned macOS candidate when the operator runs it; ordinary development packaging never signs or submits anything.
 
 ## Qualification status
 
