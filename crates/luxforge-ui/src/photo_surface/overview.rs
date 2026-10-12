@@ -8,15 +8,16 @@
 //!   ([`super::PhotoSurface::gpu_overview`]). A frame with no want lets them go, and so does the
 //!   surface's release when a frame no longer draws it.
 //! - **Drawn by its own widget.** [`overview_image`] draws a version the surface holds, placed
-//!   `Contain` in its own bounds, through the photograph's pipeline: it reads the surface's
+//!   `Contain` in its own bounds or turned as the crop stage is ([`OverviewSurface::turned`]), through the photograph's pipeline: it reads the surface's
 //!   textures and writes only the overview's placement, never the photograph's slots, plans or
 //!   pictures. A version the surface does not hold draws nothing; nothing is uploaded or reduced.
 //! - **Reported.** The surface's diagnostics carry what it holds, a refusal, its counters and the
 //!   pipeline's overview bytes ([`super::SurfaceDiagnostics::gpu_overview`]); a change of what it
 //!   holds wakes the desktop once.
 use super::{
-    PhotoPipeline, PhotoPrimitive, Picture, Placement, SurfaceId, SurfaceSlots, draw_picture,
-    physical_bright, physical_rects, turn_uniform, visible_placement, write_uniforms,
+    Base, PhotoPipeline, PhotoPrimitive, Picture, Placement, SurfaceId, SurfaceSlots, Turn,
+    Visible, draw_picture, physical_bright, physical_rects, turn_uniform, visible_placement,
+    write_uniforms,
 };
 use iced::{
     Element, Length, Rectangle, Size,
@@ -72,9 +73,10 @@ impl SurfaceSlots {
 }
 
 impl PhotoPrimitive {
-    /// The primitive that draws surface `surface`'s overview of `version`, placed at `offset` with
-    /// `size` from the visible part of its widget.
-    pub(super) fn overview(surface: SurfaceId, version: u64, offset: iced::Vector, size: Size) -> Self {
+    /// The primitive that draws surface `surface`'s overview of `version`, placed as `visible`
+    /// says relative to the visible part of its widget, turned by `angle` radians about its centre
+    /// — snapped to the pixel grid only when upright, as the crop stage is.
+    pub(super) fn overview(surface: SurfaceId, version: u64, visible: Visible, angle: f32) -> Self {
         Self {
             surface,
             layers: Vec::new(),
@@ -87,11 +89,11 @@ impl PhotoPrimitive {
             rest: None,
             overview: None,
             overview_draw: Some(version),
-            offset,
-            size,
-            bright: None,
-            angle: 0.0,
-            snap: true,
+            offset: visible.offset,
+            size: visible.size,
+            bright: visible.bright,
+            angle,
+            snap: angle == 0.0,
         }
     }
 
@@ -113,8 +115,8 @@ impl PhotoPrimitive {
             return;
         };
         let (viewport, destination) = physical_rects(*bounds, self.offset, self.size, scale);
-        let [x0, y0, x1, y1, dim] = physical_bright(*bounds, None, scale);
-        let turn = turn_uniform(0.0, dim, true);
+        let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
+        let turn = turn_uniform(self.angle, dim, self.snap);
         write_uniforms(queue, picture, viewport, destination, [x0, y0, x1, y1], turn);
     }
 
@@ -150,6 +152,7 @@ pub struct OverviewImage {
 pub fn overview_image(image: OverviewImage, width: Length, height: Length) -> OverviewSurface {
     OverviewSurface {
         image,
+        turn: None,
         width,
         height,
     }
@@ -158,8 +161,20 @@ pub fn overview_image(image: OverviewImage, width: Length, height: Length) -> Ov
 /// The widget [`overview_image`] makes.
 pub struct OverviewSurface {
     image: OverviewImage,
+    turn: Option<Turn>,
     width: Length,
     height: Length,
+}
+
+impl OverviewSurface {
+    /// Place the image as a crop draft's input stage is placed ([`super::stage_surface`]): into
+    /// `turn.rect`, relative to the widget's bounds, turned by `turn.angle` about its centre, and
+    /// drawn at `turn.dim` outside `turn.bright` (also relative to the bounds) — the rotated
+    /// input-stage box, with its empty corners. `None` places it `Contain`.
+    pub fn turned(mut self, turn: Option<Turn>) -> Self {
+        self.turn = turn;
+        self
+    }
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for OverviewSurface
@@ -189,22 +204,18 @@ where
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let Some(visible) = visible_placement(
-            super::Base::Photo(Placement::Contain),
-            self.image.size,
-            layout.bounds(),
-            *viewport,
-        ) else {
+        let base = match self.turn {
+            Some(turn) => Base::Stage(turn),
+            None => Base::Photo(Placement::Contain),
+        };
+        let Some(visible) = visible_placement(base, self.image.size, layout.bounds(), *viewport)
+        else {
             return;
         };
+        let angle = self.turn.map_or(0.0, |turn| turn.angle);
         renderer.draw_primitive(
             visible.clip,
-            PhotoPrimitive::overview(
-                self.image.surface,
-                self.image.version,
-                visible.offset,
-                visible.size,
-            ),
+            PhotoPrimitive::overview(self.image.surface, self.image.version, visible, angle),
         );
     }
 }
