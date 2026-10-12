@@ -85,6 +85,10 @@ fn workspace_state_reaches_the_models_only_through_the_adopted_session() {
         session.clone()
     ))));
     assert!(editor.workspace.canvas.thirds);
+    assert!(
+        editor.workspace.title.thirds_on,
+        "the title bar's Thirds toggle reads the adopted session"
+    );
     assert_eq!(editor.snapshot()["workspace"]["thirds"], json!(true));
 
     // A session that hides the state panel hides it and narrows the captured photo surface.

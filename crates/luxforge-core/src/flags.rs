@@ -14,6 +14,11 @@ use std::{collections::BTreeMap, path::PathBuf};
 /// Developer mode: the desktop serves the test modules and shows the components gallery.
 pub const DEVELOPER: &str = "developer";
 
+/// The luminance and colour range mask kinds can be created: offered in the desktop's New mask and
+/// Add component menus and accepted by `mask.create-<kind>` and `mask.add-<kind>`. Off, existing
+/// range components still render, list and edit; only a new one is refused, naming this flag.
+pub const RANGE_MASKS: &str = "masks.range-selections";
+
 /// When a flag's consumer reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -103,15 +108,24 @@ impl FlagSpec {
 }
 
 /// Every product flag, in the order Settings lists them.
-const FLAGS: &[FlagSpec] = &[FlagSpec {
-    id: DEVELOPER,
-    title: "Developer mode",
-    description: "Serves the test modules and shows the Developer button and its components gallery.",
-    kind: FlagKind::Toggle {
-        default: cfg!(debug_assertions),
+const FLAGS: &[FlagSpec] = &[
+    FlagSpec {
+        id: DEVELOPER,
+        title: "Developer mode",
+        description: "Serves the test modules and shows the Developer button and its components gallery.",
+        kind: FlagKind::Toggle {
+            default: cfg!(debug_assertions),
+        },
+        applies: Applies::Launch,
     },
-    applies: Applies::Launch,
-}];
+    FlagSpec {
+        id: RANGE_MASKS,
+        title: "Luminance and colour range masks",
+        description: "Offers the luminance and colour range kinds for a new mask or component; existing ones work either way.",
+        kind: FlagKind::Toggle { default: false },
+        applies: Applies::Live,
+    },
+];
 
 /// Test fixtures, listed only by a host that serves the test modules, as the proof modules are.
 /// They change nothing, so the choice and number controls have a real flag to render.
@@ -196,7 +210,8 @@ pub struct ListedFlag {
     pub value: Value,
     /// The person chose a value, which `flags.set` with `null` removes.
     pub stored: bool,
-    /// The value this launch resolved, for a launch flag on a host the desktop started.
+    /// The value this launch resolved, for a launch flag on a host the desktop started, or the
+    /// value a host forced for a live flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<Value>,
     /// What forced the active value for this launch, such as `--developer`.
@@ -236,8 +251,9 @@ fn effective(flag: &FlagSpec, stored: Option<&Value>) -> (Value, Option<String>)
     }
 }
 
-/// What a launch resolved for each launch flag: its value and what forced it, if anything. A host
-/// the desktop started reports these as `active`; any other host has none.
+/// What a launch resolved for each launch flag, and each live flag it forced: its value and what
+/// forced it, if anything. A host the desktop started reports these as `active`; any other host has
+/// none, unless it forces a flag itself, as a test host forces an experiment on.
 #[derive(Clone, Debug, Default)]
 pub struct LaunchFlags {
     resolved: BTreeMap<&'static str, (Value, Option<&'static str>)>,
@@ -247,8 +263,9 @@ pub struct LaunchFlags {
 
 impl LaunchFlags {
     /// Read the stored launch flags once from the preferences under `preferences_dir`, then apply
-    /// `overrides`, each `(flag, value, what forced it)`. A file that cannot be read leaves every
-    /// flag at its default and is kept as [`Self::problem`]; nothing is written.
+    /// `overrides`, each `(flag, value, what forced it)`. An override of a live flag fixes it for
+    /// the host's life, whatever is stored. A file that cannot be read leaves every flag at its
+    /// default and is kept as [`Self::problem`]; nothing is written.
     pub fn resolve(
         preferences_dir: Option<PathBuf>,
         overrides: &[(&'static str, Value, &'static str)],
@@ -263,11 +280,18 @@ impl LaunchFlags {
             .map(|flag| (flag.id, (effective(flag, stored.get(flag.id)).0, None)))
             .collect();
         for (id, value, by) in overrides {
-            if let Some(entry) = resolved.get_mut(id) {
-                *entry = (value.clone(), Some(*by));
+            if let Some(flag) = FLAGS.iter().find(|flag| flag.id == *id) {
+                resolved.insert(flag.id, (value.clone(), Some(*by)));
             }
         }
         Self { resolved, problem }
+    }
+
+    /// The value this host forced for a live flag, if it forced one.
+    fn forced(&self, id: &str) -> Option<&Value> {
+        self.resolved
+            .get(id)
+            .and_then(|(value, by)| by.is_some().then_some(value))
     }
 
     /// A launch toggle's resolved value; `false` for anything else.
@@ -282,6 +306,22 @@ impl LaunchFlags {
     pub fn problem(&self) -> Option<&Error> {
         self.problem.as_ref()
     }
+}
+
+/// A live toggle's value now: what the host forced, or else its stored value when that fits, or
+/// else its default, which is also what a store that cannot be read gives.
+pub(crate) fn live_toggle(store: &PreferenceStore, launch: &LaunchFlags, id: &str) -> bool {
+    let Some(flag) = FLAGS.iter().find(|flag| flag.id == id) else {
+        return false;
+    };
+    let value = match launch.forced(id) {
+        Some(value) => value.clone(),
+        None => {
+            let stored = store.read().ok().map(|preferences| preferences.flags);
+            effective(flag, stored.as_ref().and_then(|flags| flags.get(id))).0
+        }
+    };
+    value.as_bool().unwrap_or(false)
 }
 
 /// The flags a host lists, read from its store now, with what its launch resolved.
@@ -516,8 +556,11 @@ mod tests {
                 .map(|flag| flag.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(false), ["developer"]);
-        assert_eq!(ids(true), ["developer", "proof.choice", "proof.number"]);
+        assert_eq!(ids(false), ["developer", RANGE_MASKS]);
+        assert_eq!(
+            ids(true),
+            ["developer", RANGE_MASKS, "proof.choice", "proof.number"]
+        );
     }
 
     #[test]
@@ -526,7 +569,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][1]["options"][1],
+            text["flags"][2]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -565,7 +608,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][1]["id"], "proof.choice",
+            listed["flags"][2]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -573,7 +616,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][1]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][2]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",

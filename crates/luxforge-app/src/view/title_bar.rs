@@ -1,5 +1,5 @@
 //! The title bar: the workspace switch, the file's identity and Open at the leading edge, the view
-//! control, Compare and Clipping centred on the window, and Undo, Redo, the two panel-visibility
+//! control, Compare, Clipping, Thirds and Information centred on the window, and Undo, Redo, the two panel-visibility
 //! toggles and Settings at the trailing edge.
 //!
 //! Open sits beside the file's identity, as the default board draws it: the editor has no library
@@ -42,6 +42,12 @@ const ZOOM_FIELD_WIDTH: f32 = 56.0;
 
 /// How wide the Export menu is: its longer item and the menu's padding.
 const EXPORT_MENU_WIDTH: f32 = 220.0;
+
+/// The Thirds toggle's tooltip, naming its letter as Clipping's does.
+const THIRDS_TOOLTIP: &str = "Thirds (O)";
+
+/// The Information toggle's tooltip, naming its letter.
+const INFORMATION_TOOLTIP: &str = "Information (I)";
 
 /// The whole bar: the identity and the actions at its two edges, with the view controls centred
 /// on the window over them rather than between them, so they stay put whatever the file's name.
@@ -149,7 +155,8 @@ fn export(model: &TitleBarModel) -> Element<'_, Message> {
     popover(button, menu, Message::View(ViewMessage::CloseMenu))
 }
 
-/// Fit, 100% and the effective percentage on one track, then Compare and Clipping. The
+/// Fit, 100% and the effective percentage on one track, then Compare, Clipping and the Thirds and
+/// Information overlays, each toggle reading as selected while it is on. The
 /// percentage segment opens as the typed zoom field when pressed, and the zoom stops drop under it
 /// while the pointer rests on it or the field, or for a moment after a keyboard zoom step. While
 /// they show, the arrow keys step them.
@@ -214,6 +221,24 @@ fn view_controls(model: &Workspace) -> Element<'_, Message> {
                 selected: title.clipping_on,
             },
             can_view.then_some(Message::Overlay(OverlayMessage::ToggleClipping(None))),
+        ),
+        title_bar_icon_button(
+            &IconButtonModel {
+                icon: Icon::Thirds,
+                tooltip: THIRDS_TOOLTIP.into(),
+                enabled: can_view,
+                selected: title.thirds_on,
+            },
+            can_view.then_some(Message::View(ViewMessage::ToggleThirds)),
+        ),
+        title_bar_icon_button(
+            &IconButtonModel {
+                icon: Icon::Information,
+                tooltip: INFORMATION_TOOLTIP.into(),
+                enabled: can_view,
+                selected: title.information_on,
+            },
+            can_view.then_some(Message::View(ViewMessage::ToggleInformation)),
         ),
     ]
     .spacing(theme::TITLE_GROUP_SPACING)

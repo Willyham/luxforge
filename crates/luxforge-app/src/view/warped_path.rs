@@ -2,7 +2,7 @@
 use super::mask_canvas::Placement;
 use iced::{Point, widget::canvas::Path};
 const MAX_DEPTH: u8 = 10;
-const MAX_SEGMENTS: usize = 1024;
+pub(crate) const MAX_SEGMENTS: usize = 1024;
 #[derive(Default)]
 pub(crate) struct Outline {
     pub segments: Vec<(Point, Point)>,
@@ -70,15 +70,28 @@ pub(crate) fn curve(
     seeds: usize,
     dashed: bool,
 ) -> Outline {
+    curve_within(placement, point, seeds, dashed, MAX_SEGMENTS)
+}
+
+/// [`curve`] within `budget` drawn segments rather than the whole [`MAX_SEGMENTS`], for a figure of
+/// several curves that share one budget.
+pub(crate) fn curve_within(
+    placement: &Placement,
+    point: impl Fn(f64) -> (f64, f64),
+    seeds: usize,
+    dashed: bool,
+    budget: usize,
+) -> Outline {
     struct Build<'a, F> {
         placement: &'a Placement,
         point: F,
         outline: Outline,
         leaves: usize,
+        budget: usize,
     }
     impl<F: Fn(f64) -> (f64, f64)> Build<'_, F> {
         fn segment(&mut self, t0: f64, t1: f64, depth: u8) {
-            if self.leaves >= MAX_SEGMENTS {
+            if self.leaves >= self.budget {
                 self.outline.approximate = true;
                 return;
             }
@@ -130,6 +143,7 @@ pub(crate) fn curve(
         point,
         outline: Outline::default(),
         leaves: 0,
+        budget: budget.min(MAX_SEGMENTS),
     };
     for i in 0..seeds {
         if !dashed || i % 2 == 0 {

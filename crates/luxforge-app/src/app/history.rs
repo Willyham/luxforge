@@ -93,6 +93,8 @@ impl Editor {
                     Err(error) => self.status.text = error,
                 }
             }
+            // Nothing to do: the derive after every message shows the bar.
+            HistoryMessage::CompareLoadingDue => {}
             HistoryMessage::CompareBegin => return self.compare_begin(true),
             HistoryMessage::CompareUncropped => return self.compare_begin(false),
             HistoryMessage::CompareToggle => return self.compare_toggle(),
@@ -103,6 +105,9 @@ impl Editor {
             }
             HistoryMessage::CompareExit => {
                 self.compare_key.cancel();
+                // A slider still waiting for its After frame is abandoned, not begun when the
+                // frame lands.
+                self.gpu.compare_waits = false;
                 if self.presentation.compare_after.is_some() {
                     return self.compare_exit();
                 }
@@ -421,6 +426,17 @@ impl Editor {
         self.gpu_compare_begin();
         self.status.text = "Drag to compare Before and After · tap \\ or Escape to exit".into();
         self.comparison_preview()
+    }
+
+    /// The comparison is waiting for a picture it needs ([`crate::state::canvas::comparison_pending`]):
+    /// the After frame a slider begins over, or the Original it shows as Before.
+    pub(crate) fn comparison_pending(&self) -> bool {
+        crate::state::canvas::comparison_pending(
+            self.gpu.compare_waits,
+            self.document.compare_return.is_some(),
+            self.document.original_entry.as_ref(),
+            self.presentation.presented_entry.as_ref(),
+        )
     }
 
     fn compare_exit(&mut self) -> Task<Message> {

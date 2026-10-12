@@ -236,6 +236,8 @@ impl SurfaceFigures {
         overall.drawn_full_version_frame = drawn.drawn_full_version_frame;
         overall.drawn_clipping_version = drawn.drawn_clipping_version;
         overall.drawn_photo_blank = drawn.drawn_photo_blank;
+        overall.drawn_photo_uncovered = drawn.drawn_photo_uncovered;
+        overall.drawn_gpu_lapse = drawn.drawn_gpu_lapse;
         overall.drawn_stale_photo = drawn.drawn_stale_photo;
         overall.drawn_fallback_content = drawn.drawn_fallback_content;
         overall.drawn_path = drawn.drawn_path;
@@ -248,6 +250,7 @@ impl SurfaceFigures {
         overall.gpu_evaluation = drawn.gpu_evaluation;
         overall.drawn_dissolve = drawn.drawn_dissolve;
         overall.drawn_rest = drawn.drawn_rest;
+        overall.drawn_backdrop = drawn.drawn_backdrop;
         overall.drawn_rest_dissolve = drawn.drawn_rest_dissolve;
         overall.gpu_rest = drawn.gpu_rest;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
@@ -414,8 +417,19 @@ pub struct SurfaceDiagnostics {
     pub blank_photo_draws: u64,
     /// A previous coherent photograph was encoded while the requested one awaits admission.
     pub stale_photo_draws: u64,
+    /// A percentage view's photograph was drawn short of the part of it the view shows, the canvas
+    /// showing through the rest: a region's frame placed where an earlier view put it.
+    pub uncovered_photo_draws: u64,
+    /// A surface whose last draw drew the GPU's picture, still handed a plan it draws unheld or a
+    /// picture at rest, drew the CPU frame or nothing instead, with no dissolve: the GPU's picture
+    /// lapsed for that frame.
+    pub gpu_lapsed_draws: u64,
+    /// A percentage view drew its backdrop ([`Self::drawn_backdrop`]).
+    pub backdrop_draws: u64,
     pub drawn_frames: u64,
     pub drawn_photo_blank: bool,
+    pub drawn_photo_uncovered: bool,
+    pub drawn_gpu_lapse: bool,
     pub drawn_stale_photo: bool,
     /// Actual previous content when `drawn_stale_photo` is true. `drawn_content` then stays None,
     /// so a consumer cannot mistake a fallback picture for the requested version.
@@ -515,6 +529,10 @@ pub struct SurfaceDiagnostics {
     pub gpu_rest: Option<RestFigures>,
     /// The version of the picture at rest the last draw drew in place of the photograph's frame.
     pub drawn_rest: Option<u64>,
+    /// The version of the picture at rest a percentage view's last draw drew as its backdrop: under
+    /// the region's GPU frame where that frame does not cover the view, or in place of any frame
+    /// while the view has no picture of its current content to draw.
+    pub drawn_backdrop: Option<u64>,
     /// The picture at rest's dissolve the last draw drew, from the plan's output under it to the
     /// rest output its last tile completed: `from` the plan's boundary, `to` the rest's version.
     pub drawn_rest_dissolve: Option<DrawnDissolve>,
@@ -989,22 +1007,25 @@ impl PhotoSurface {
     /// Draw the picture at rest on the GPU, process-first ([`GpuRest`]): its tiles a frame at a
     /// time through a slot of the surface's own, reduced into the view's size, and, once the last
     /// is in, the photograph drawn from the rest output in place of its frame, through the same
-    /// placement, whenever no gesture's plan is drawn. A whole-frame photograph's only; another
-    /// version starts over, and none lets it go. While tiles remain the widget asks for the next
-    /// frame.
+    /// placement, whenever no gesture's plan is drawn. A percentage view of 100% or more draws it,
+    /// stretched over the whole photograph, as the backdrop of its region's GPU frame: under that
+    /// frame wherever it does not cover the view — a pan's newly revealed edge before the region's
+    /// plan lands — and in place of any frame while the view has no picture of its current content.
+    /// Another version starts over, and none lets it go. While tiles remain the widget asks for
+    /// the next frame.
     pub fn gpu_rest(mut self, rest: Option<&GpuRest>) -> Self {
         self.rest = rest.cloned();
         self
     }
 
-    /// The picture at rest this surface draws: a whole-frame photograph's, and a percentage view's
-    /// when it is drawn for its counts alone, which puts nothing on screen; and a crop stage's,
-    /// the layer prefix reduced to the stage's display bounds, drawn in place of the stage's frame,
-    /// turned and dimmed as it is.
+    /// The picture at rest this surface draws: a whole-frame photograph's; a percentage view's,
+    /// drawn for its counts alone, which puts nothing on screen, or reduced to the backdrop its
+    /// region is drawn over ([`PhotoSurface::gpu_rest`]); and a crop stage's, the layer prefix
+    /// reduced to the stage's display bounds, drawn in place of the stage's frame, turned and
+    /// dimmed as it is.
     fn rest_drawn(&self) -> Option<&GpuRest> {
         match (&self.base, &self.viewport) {
-            (Base::Photo(_), None) => self.rest.as_ref(),
-            (Base::Photo(_), Some(_)) => self.rest.as_ref().filter(|rest| rest.reduction.is_none()),
+            (Base::Photo(_), _) => self.rest.as_ref(),
             (Base::Stage(_), _) => self.rest.as_ref().filter(|rest| rest.reduction.is_some()),
         }
     }
@@ -1403,6 +1424,31 @@ fn physical_rects(
     )
 }
 
+/// The part of a picture of `size`, placed at `offset` from the visible part `bounds` of its
+/// widget, that `bounds` shows, as fractions of the picture `[x0, y0, x1, y1]`; `None` when it shows
+/// none of it.
+fn visible_part(bounds: Rectangle, offset: Vector, size: Size) -> Option<[f32; 4]> {
+    if size.width <= 0.0 || size.height <= 0.0 {
+        return None;
+    }
+    let x0 = (-offset.x).max(0.0) / size.width;
+    let y0 = (-offset.y).max(0.0) / size.height;
+    let x1 = (bounds.width - offset.x).min(size.width) / size.width;
+    let y1 = (bounds.height - offset.y).min(size.height) / size.height;
+    (x0 < x1 && y0 < y1).then_some([x0, y0, x1, y1])
+}
+
+/// Whether a region's frame placed at `key`'s rectangle covers `visible`, the part of the
+/// photograph the view shows ([`visible_part`]), to within a pixel of the region's stage.
+fn region_covers(key: RegionKey, visible: [f32; 4]) -> bool {
+    let (width, height) = (key.stage.0 as f32, key.stage.1 as f32);
+    let [x0, y0, x1, y1] = key.rect.map(|edge| edge as f32);
+    x0 - 1.0 <= visible[0] * width
+        && y0 - 1.0 <= visible[1] * height
+        && x1 + 1.0 >= visible[2] * width
+        && y1 + 1.0 >= visible[3] * height
+}
+
 /// The bright rectangle as `[x0, y0, x1, y1]` physical pixels of the whole frame, each corner
 /// rounded as the toolkit rounds a clip rectangle to its scissor (`Rectangle::snap`), and the
 /// opacity outside it. With no bright part it covers every pixel, at full opacity.
@@ -1707,7 +1753,10 @@ impl shader::Primitive for PhotoPrimitive {
         pipeline.prepare_rest(&mut surface, device, queue, self.rest.as_ref());
         let done = surface.rest_output().map(|output| output.version);
         let now = Instant::now();
-        surface.rest_dissolve = match (done, surface.gpu_output()) {
+        // A percentage view's picture at rest is the backdrop under its region, never drawn in
+        // place of it, so it dissolves in over nothing.
+        let replaces_output = self.viewport.is_none();
+        surface.rest_dissolve = match (done, surface.gpu_output().filter(|_| replaces_output)) {
             (Some(version), Some(output)) if was_done != Some(version) => {
                 Some(gpu_preview::Dissolve::start(output.version, version))
             }
@@ -1720,7 +1769,10 @@ impl shader::Primitive for PhotoPrimitive {
         // The warm list after the frame's own plan and the picture at rest have asked for theirs,
         // so the compile thread takes the picture on screen's sequences first.
         pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
-        surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
+        // A held GPU frame is the one an earlier plan drew, and keeps that plan's tag.
+        if !surface.gpu_held_frame {
+            surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
+        }
         // The frame a gesture's tick drew is counted, the counts in motion; the picture at rest's
         // tiles were counted as they were drawn. Both are read live by the desktop.
         pipeline.count_tick(&mut surface, device, queue, self.gpu.as_ref());
@@ -1741,6 +1793,10 @@ impl shader::Primitive for PhotoPrimitive {
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
         // is the visible part of the widget, translated to where it is drawn.
+        surface.visible = self
+            .viewport
+            .as_ref()
+            .and_then(|_| visible_part(*bounds, self.offset, self.size));
         let (viewport, destination) = physical_rects(*bounds, self.offset, self.size, scale);
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
@@ -1834,7 +1890,28 @@ impl shader::Primitive for PhotoPrimitive {
                     .is_some_and(|key| key.full_stage == view.full_stage)
             })
         });
+        // Whether what a percentage view drew covers the part of the photograph it shows.
+        let covers = |picture: &Picture| {
+            picture
+                .region_key
+                .zip(surface.visible)
+                .is_none_or(|(key, visible)| region_covers(key, visible))
+        };
+        let mut covered = true;
+        // A percentage view's backdrop: its picture at rest, the whole photograph reduced, once its
+        // last tile is in ([`PhotoSurface::gpu_rest`]).
+        let backdrop = self.viewport.as_ref().and(surface.rest_output());
+        let mut drawn_backdrop = None;
         if let Some(output) = gpu_region {
+            covered = covers(output);
+            // Where the region's frame does not cover the view, as when a pan has revealed an edge
+            // its plan has not reached yet, the backdrop is drawn under it rather than the canvas
+            // showing through.
+            if !covered && let Some(rest) = backdrop {
+                draw_picture(render_pass, rest);
+                drawn_backdrop = Some(rest.version);
+                covered = true;
+            }
             draw_picture(render_pass, output);
             drew_photo = true;
             drawn_gpu_boundary = Some(output.version);
@@ -1871,9 +1948,14 @@ impl shader::Primitive for PhotoPrimitive {
         } else if let Some(view) = &self.viewport {
             // A dissolve draws the GPU region frame it starts from first; the view's own pictures
             // below are laid over it at the dissolve's share.
-            if let Some(output) = surface.dissolved_output()
-                && let Some(frame) = surface.dissolving
-            {
+            let dissolved = surface.dissolved_output().zip(surface.dissolving);
+            if let Some((output, frame)) = dissolved {
+                covered = covers(output);
+                if !covered && let Some(rest) = backdrop {
+                    draw_picture(render_pass, rest);
+                    drawn_backdrop = Some(rest.version);
+                    covered = true;
+                }
                 draw_picture(render_pass, output);
                 drawn_gpu_boundary = Some(output.version);
                 gpu_frame_us = surface.gpu_frame_us();
@@ -1888,15 +1970,26 @@ impl shader::Primitive for PhotoPrimitive {
                         && (picture.width, picture.height) == view.full_stage
                 });
             // A deferred upload must leave a coherent previous photograph on screen: the whole
-            // picture the slot still holds, never composited with other content.
+            // picture the slot still holds, never composited with other content; or, with no
+            // dissolve running, the backdrop, the committed stack's picture at rest, in its place.
+            let stand_in = backdrop.filter(|_| dissolved.is_none());
             let full = matching_full.or_else(|| {
                 surface.slots[Layer::Photo.index()]
                     .as_ref()
-                    .filter(|picture| picture.region_key.is_none())
+                    .filter(|picture| picture.region_key.is_none() && stand_in.is_none())
             });
+            if full.is_none()
+                && let Some(rest) = stand_in
+            {
+                draw_picture(render_pass, rest);
+                drew_photo = true;
+                covered = true;
+                drawn_backdrop = Some(rest.version);
+            }
             if let Some(picture) = full {
                 draw_picture(render_pass, picture);
                 drew_photo = true;
+                covered = true;
                 drawn_full_version = Some(picture.version);
                 stale_photo = matching_full.is_none();
                 if stale_photo {
@@ -2019,21 +2112,42 @@ impl shader::Primitive for PhotoPrimitive {
         let blank_photo = expects_photo && !drew_photo;
         // Under a dissolve the photograph is the CPU frame, laid over the GPU frame it replaces.
         let drawn_path = drew_photo.then_some(
-            if (drawn_gpu_boundary.is_some() && drawn_dissolve.is_none()) || drawn_rest.is_some() {
+            if (drawn_gpu_boundary.is_some() && drawn_dissolve.is_none())
+                || drawn_rest.is_some()
+                || (drawn_backdrop.is_some() && drawn_full_version.is_none())
+            {
                 DrawingPath::Gpu
             } else {
                 DrawingPath::Cpu
             },
         );
+        let uncovered = self.viewport.is_some() && drew_photo && !covered;
+        // The GPU's picture was on screen and is still asked for — a plan drawn unheld, or the
+        // picture at rest — but this frame drew the CPU frame, or nothing, in its place.
+        let gpu_asked = (self.gpu.is_some() && !self.gpu_options.hold)
+            || (self.viewport.is_none()
+                && self
+                    .rest
+                    .as_ref()
+                    .is_some_and(|rest| rest.reduction.is_some()));
+        let gpu_lapse = gpu_asked
+            && drawn_path != Some(DrawingPath::Gpu)
+            && drawn_dissolve.is_none()
+            && (previous.drawn_path == Some(DrawingPath::Gpu) || previous.drawn_gpu_lapse);
         let gpu_fallback = surface.gpu_outcome.and_then(Result::err);
         let drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
         // A plan's output drawn as the photograph: what its frame's evaluation did.
-        let gpu_evaluation = (drawn_path == Some(DrawingPath::Gpu) && drawn_rest.is_none())
-            .then_some(surface.evaluation);
+        let gpu_evaluation = (drawn_path == Some(DrawingPath::Gpu)
+            && drawn_rest.is_none()
+            && drawn_gpu_boundary.is_some())
+        .then_some(surface.evaluation);
+        // The picture a GPU draw is told by: the picture at rest's version, or the backdrop's when
+        // it is all a percentage view drew.
+        let drawn_picture = drawn_rest.or(drawn_backdrop.filter(|_| drawn_gpu_boundary.is_none()));
         let first_drawn = drawn_path.map(|path| {
             let (picture, boundary, tag) = match path {
                 // A picture at rest is told by its version, a plan's output by its boundary.
-                DrawingPath::Gpu => (drawn_rest, drawn_gpu_boundary, drawn_gpu_tag),
+                DrawingPath::Gpu => (drawn_picture, drawn_gpu_boundary, drawn_gpu_tag),
                 DrawingPath::Cpu => (drawn_full_version, None, None),
             };
             let previous = pipeline
@@ -2088,6 +2202,7 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_clipping_marks = drawn_clipping_marks;
         diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_rest = drawn_rest;
+        diagnostic.drawn_backdrop = drawn_backdrop;
         diagnostic.drawn_rest_dissolve = drawn_rest_dissolve;
         diagnostic.gpu_rest = surface.rest_figures();
         diagnostic.drawn_content = drawn_content;
@@ -2096,6 +2211,17 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_clipping_version = drawn_clipping_version;
         diagnostic.drawn_photo_blank = blank_photo;
+        diagnostic.drawn_photo_uncovered = uncovered;
+        diagnostic.drawn_gpu_lapse = gpu_lapse;
+        if uncovered {
+            diagnostic.uncovered_photo_draws += 1;
+        }
+        if gpu_lapse {
+            diagnostic.gpu_lapsed_draws += 1;
+        }
+        if drawn_backdrop.is_some() {
+            diagnostic.backdrop_draws += 1;
+        }
         diagnostic.drawn_stale_photo = stale_photo;
         diagnostic.drawn_fallback_content = drawn_fallback_content;
         if drew_photo {
@@ -2261,8 +2387,9 @@ struct SurfaceSlots {
     /// The frame holds the GPU stage's slot but draws its CPU frame ([`PhotoSurface::gpu_hold`]).
     gpu_hold: bool,
     /// The plan waits for a light the picture at rest's sweeps compute
-    /// ([`GpuFallback::LightPending`]) and the slot's output, the GPU frame the last draw showed,
-    /// stays on screen until it is drawn.
+    /// ([`GpuFallback::LightPending`]), or for its sequence to compile over the boundary the
+    /// slot's output was drawn from ([`GpuFallback::Compiling`]), and that output, the GPU frame
+    /// the last draw showed, stays on screen until the plan is drawn.
     gpu_held_frame: bool,
     /// The tag of the plan this frame was handed ([`PhotoSurface::gpu_tag`]).
     gpu_tag: Option<u64>,
@@ -2275,6 +2402,9 @@ struct SurfaceSlots {
     rest_dissolve: Option<gpu_preview::Dissolve>,
     /// That dissolve as this frame draws it, while its share is short of one.
     rest_frame: Option<gpu_preview::DissolveFrame>,
+    /// The part of the photograph a percentage view shows, as fractions of it `[x0, y0, x1, y1]`:
+    /// what a region's frame must cover for none of the canvas to show through.
+    visible: Option<[f32; 4]>,
 }
 
 impl std::ops::Deref for SurfaceSlots {
@@ -2475,6 +2605,7 @@ impl PhotoPipeline {
             gpu_marks: None,
             rest_dissolve: None,
             rest_frame: None,
+            visible: None,
         }
     }
 

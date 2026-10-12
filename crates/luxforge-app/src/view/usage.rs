@@ -10,7 +10,10 @@ use crate::{
     layout::{DIVIDER_WIDTH, FILMSTRIP_HEIGHT, STATUS_BAR_HEIGHT},
     state::usage::UsageNotice,
 };
-use iced::{Alignment, Length, Padding, widget::container};
+use iced::{
+    Alignment, Length, Padding,
+    widget::{container, mouse_area},
+};
 use luxforge_ui::{Element, Icon, NoticeCardModel, Tone, notice_card, theme};
 
 /// How far above the window's bottom edge the card sits: the status bar and its rule, the
@@ -39,8 +42,9 @@ pub(crate) fn notice(model: &UsageNotice, filmstrip: bool) -> Element<'_, Messag
         ],
     );
     // The layer fills the window but only the card takes the pointer, so everything around it
-    // stays usable.
-    container(card)
+    // stays usable. The card claims it over all of itself, so a brush under it draws no cursor of
+    // its own there.
+    container(mouse_area(card).interaction(iced::mouse::Interaction::Idle))
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Center)

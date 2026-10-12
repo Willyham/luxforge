@@ -7,7 +7,9 @@
 //! same code runs as a test (which panics with the message) and inside `cargo xtask
 //! editor-acceptance` (which records it as evidence).
 use luxforge_core::{
-    ApiRequest, ApiResponse, ClientId, ModuleRegistry, OwnerHandle, Recipe, RegistryOptions,
+    ApiRequest, ApiResponse, ClientId, HostConfig, ModuleRegistry, OwnerHandle, Recipe,
+    RegistryOptions,
+    flags::{LaunchFlags, RANGE_MASKS},
 };
 use luxforge_testbase::try_wait_for;
 use serde_json::{Value, json};
@@ -207,6 +209,15 @@ pub fn recipe(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Checked<R
         .map_err(|error| format!("asset.state answered an unreadable recipe: {error}"))
 }
 
+/// A host with no settings directory that forces the luminance and colour range mask experiment
+/// on, as a check that creates range masks starts its owner with.
+pub fn range_masks_host() -> HostConfig {
+    HostConfig {
+        launch_flags: LaunchFlags::resolve(None, &[(RANGE_MASKS, json!(true), "test")]),
+        ..HostConfig::unconfigured()
+    }
+}
+
 /// A catalog owner that is stopped and joined however the check using it ends. It dereferences to
 /// its [`OwnerHandle`], so every free function above takes it too.
 pub struct Owner {
@@ -218,7 +229,17 @@ pub struct Owner {
 impl Owner {
     /// Start an owner on `catalog`; `actor` is who its Develops name.
     pub fn start(catalog: &Path, registry: ModuleRegistry, actor: &str) -> Checked<Self> {
-        let (handle, join) = OwnerHandle::start_with(catalog, Arc::new(registry))
+        Self::start_with_host(catalog, registry, HostConfig::unconfigured(), actor)
+    }
+
+    /// [`Self::start`] on a capability host, such as [`range_masks_host`].
+    pub fn start_with_host(
+        catalog: &Path,
+        registry: ModuleRegistry,
+        host: HostConfig,
+        actor: &str,
+    ) -> Checked<Self> {
+        let (handle, join) = OwnerHandle::start_with_host(catalog, Arc::new(registry), host)
             .map_err(|error| format!("the catalog owner did not start: {error}"))?;
         Ok(Self {
             handle,
