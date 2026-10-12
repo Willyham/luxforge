@@ -24,6 +24,9 @@ pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
+// Read only by its tests until the canvas draws the minimap over it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod minimap_geometry;
 pub(crate) mod move_to_applications;
 pub(crate) mod palette;
 pub(crate) mod query_choice;

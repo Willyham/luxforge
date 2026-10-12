@@ -819,7 +819,10 @@ pub(super) fn viewport_rect(
         return None;
     }
     let edge = |start: f32, length: f32, limit: u32| {
-        let start = start.clamp(0.0, (limit as f32 * scale - length).max(0.0));
+        let start = start.clamp(
+            0.0,
+            view::canvas_view::overhang(limit as f32 * scale, length),
+        );
         let first = ((start / scale).floor() as i64 - 1).clamp(0, i64::from(limit)) as u32;
         let last = (((start + length) / scale).ceil() as i64 + 1)
             .clamp(i64::from(first), i64::from(limit)) as u32;
