@@ -40,8 +40,8 @@ impl Toggle {
     }
 }
 
-/// Where the result goes: the plan's proposal (or, when it proposes none, the new folder it
-/// suggests, made with `folder.create` first), or a folder the person chose.
+/// Where the result goes: the plan's proposal (its existing folder, or the folders it suggests,
+/// which `merge.create` makes), or a folder the person chose.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) enum FolderPick {
     #[default]
@@ -123,41 +123,44 @@ fn add_options(params: &mut Value, options: &MergeOptions) {
     }
 }
 
+/// The folder choice `merge.create` is sent: the folder the person chose, otherwise the plan's
+/// proposal — its folder when every folder of it exists, else the choice it suggests, whose
+/// folders the merge makes. A plan proposing neither sends none, and the core decides.
+pub(crate) fn folder_choice(options: &MergeOptions, plan: &MergePlan) -> Option<FolderChoice> {
+    match &options.folder {
+        FolderPick::Existing { folder_id, .. } => Some(FolderChoice::Existing {
+            folder_id: folder_id.clone(),
+            days: false,
+        }),
+        FolderPick::Proposed => match (&plan.folder, &plan.suggested_folder) {
+            (Some(proposal), _) => Some(FolderChoice::Existing {
+                folder_id: proposal.folder_id.clone(),
+                days: false,
+            }),
+            (None, suggested) => suggested.clone(),
+        },
+    }
+}
+
 /// `merge.create`'s parameters: an HDR merge of `request`'s frames as planned (`plan_id`), into
-/// `folder`.
+/// `folder`, or the plan's proposal without one.
 pub(crate) fn create_params(
     request: &MergeRequest,
     plan_id: &str,
-    folder: &CatalogFolderId,
+    folder: Option<&FolderChoice>,
     mutation: &MutationRequest,
 ) -> Value {
     let mut params = json!({
         "kind": "hdr",
         "targets": request.targets,
         "plan_id": plan_id,
-        "folder_id": folder,
         "mutation": mutation,
     });
+    if let Some(folder) = folder {
+        params["folder"] = json!(folder);
+    }
     add_options(&mut params, &request.options);
     params
-}
-
-/// `folder.create`'s parameters for the new folder a plan suggests.
-pub(crate) fn suggested_folder_params(
-    plan: &MergePlan,
-    mutation: &MutationRequest,
-) -> Option<Value> {
-    match plan.suggested_folder.as_ref()? {
-        FolderChoice::New { name, parent_id } => Some(
-            crate::state::select_catalog::folder_create_params(name, parent_id.as_ref(), mutation),
-        ),
-        // Until `merge.create` files a place itself, a place is made as the top-level folder a
-        // plan's new folder was.
-        FolderChoice::Place { name } => Some(crate::state::select_catalog::folder_create_params(
-            name, None, mutation,
-        )),
-        FolderChoice::Existing { .. } => None,
-    }
 }
 
 /// `merge.remove`'s or `merge.restore`'s parameters for one merge.
@@ -561,7 +564,7 @@ pub(crate) fn derive(merge: &SelectMerge) -> MergeModel {
     }
 }
 
-fn form_model(form: &MergeForm, busy: bool) -> FormModel {
+pub(crate) fn form_model(form: &MergeForm, busy: bool) -> FormModel {
     let options = &form.request.options;
     let plan = form.plan.as_ref();
     let frames = plan.map_or_else(Vec::new, |plan| {
@@ -597,15 +600,25 @@ fn form_model(form: &MergeForm, busy: bool) -> FormModel {
             })
             .collect()
     });
+    // A folder by its path from the top level, as the form lists it ("2026 › Konstanz › 12 Sep").
+    let label = |folder_id: &CatalogFolderId| {
+        form.folders
+            .iter()
+            .find(|(id, _)| id == folder_id)
+            .map(|(_, label)| label.clone())
+    };
     let proposed = plan.map(|plan| match (&plan.folder, &plan.suggested_folder) {
-        (Some(folder), _) => folder.name.clone(),
-        (None, Some(FolderChoice::New { name, .. } | FolderChoice::Place { name })) => {
+        (Some(folder), _) => label(&folder.folder_id).unwrap_or_else(|| folder.name.clone()),
+        (None, Some(FolderChoice::Place { name })) => {
+            format!("New place \u{201c}{name}\u{201d}")
+        }
+        (None, Some(FolderChoice::New { name, .. })) => {
             format!("New folder \u{201c}{name}\u{201d}")
         }
-        _ => plan
-            .folder_reason
-            .clone()
-            .unwrap_or_else(|| "Choose a folder".to_owned()),
+        (None, Some(FolderChoice::Existing { folder_id, .. })) => {
+            label(folder_id).unwrap_or_else(|| "Choose a folder".to_owned())
+        }
+        (None, None) => "Choose a folder".to_owned(),
     });
     let folder = match &options.folder {
         FolderPick::Existing { name, .. } => name.clone(),
@@ -814,21 +827,29 @@ mod tests {
             request_id: "r".into(),
             actor: "desktop".into(),
         };
-        let folder = CatalogFolderId::new();
+        let folder = FolderChoice::Place {
+            name: "Konstanz".into(),
+        };
         let defaults = request();
         assert_eq!(
             plan_params(&defaults.targets, &defaults.options),
             json!({"targets": {"kind": "files", "file_ids": [1, 2, 3]}})
         );
         assert_eq!(
-            create_params(&defaults, "plan", &folder, &mutation),
+            create_params(&defaults, "plan", Some(&folder), &mutation),
             json!({
                 "kind": "hdr",
                 "targets": {"kind": "files", "file_ids": [1, 2, 3]},
                 "plan_id": "plan",
-                "folder_id": folder,
+                "folder": {"kind": "place", "name": "Konstanz"},
                 "mutation": {"request_id": "r", "actor": "desktop"},
             })
+        );
+        // With no folder to send, the core's default stands.
+        assert!(
+            create_params(&defaults, "plan", None, &mutation)
+                .get("folder")
+                .is_none()
         );
         let mut chosen = request();
         chosen.options = MergeOptions {
@@ -838,7 +859,7 @@ mod tests {
             overrides: vec![("/a/1.NEF".into(), -2.0)],
             folder: FolderPick::Proposed,
         };
-        let params = create_params(&chosen, "plan", &folder, &mutation);
+        let params = create_params(&chosen, "plan", Some(&folder), &mutation);
         assert_eq!(params["alignment"], "off");
         assert_eq!(params["deghost"], "off");
         assert_eq!(params["reference"], "/a/2.NEF");
