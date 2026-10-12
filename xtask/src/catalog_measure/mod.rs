@@ -28,7 +28,7 @@
 //!    `catalog_probes`: the grid's scrolling, the loupe's keys and the focus check, each figure
 //!    `not_measured` or `skipped` only with its reason, such as no RAW corpus), and the Develop
 //!    switch ([`develop_switch`]): the frames from `→` until the next photograph's cached preview
-//!    is drawn, over a development set of generated JPEGs, at most [`develop_switch::MAX_SAMPLES`]
+//!    is drawn, over a catalog folder of generated JPEGs, at most [`develop_switch::MAX_SAMPLES`]
 //!    samples in its one launch.
 //!
 //! Every step is one release editor or one in-process core; editor launches are background-only

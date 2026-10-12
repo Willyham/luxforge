@@ -15,8 +15,9 @@
 //! picking the bracket's frame where it stands; `Esc` back to the grid; the burst's second
 //! frame clicked, `E` and `P`, which picks it and moves on to the next moment's first frame (P7);
 //! and `Esc`, All photographs, the first imported photograph clicked (where the core's view of
-//! them puts it, beside the generated catalog's own) and `E`, the loupe over it; `D` explaining the
-//! missing set while preserving the loupe, then explicit grid development and `G` returning to that
+//! them puts it, beside the generated catalog's own) and `E`, the loupe over it; `D` asking for a
+//! catalog folder while preserving the loupe, then the photograph opened in Develop as a
+//! double-click opens it, with its own catalog folder in the filmstrip, and `G` returning to that
 //! loupe; the folder browsed again showing its grid; its burst opened in the
 //! loupe, then All photographs showing its grid without an intervening Escape.
 //!
@@ -138,8 +139,7 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         select("photographs", SelectStep::Source("All photographs".into())),
         click("photo", photo),
         key("photo-loupe", "e"),
-        key("develop-switch", "d")
-            .status("Choose a catalog folder to develop"),
+        key("develop-switch", "d").status("Choose a catalog folder to develop"),
         Step::new("develop-active", script::Step::Develop(DevelopStep::Active)),
         key("select-return", "g"),
         select("folder-return", SelectStep::Folder(folder.into())),
@@ -869,15 +869,24 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         burst + burst_len,
     )?;
     photo_loupe(&mut checks, &expected, launch.at("photo-loupe")?)?;
-    let without_set = launch.at("develop-switch")?;
+    let without_folder = launch.at("develop-switch")?;
     ensure(
-        select(without_set)["shown"] == "select",
-        "D opened Develop without a selected catalog folder or loaded set",
+        select(without_folder)["shown"] == "select"
+            && without_folder.state()["develop"]["folder"].is_null(),
+        "D opened Develop without a catalog folder chosen",
     )?;
-    photo_loupe(&mut checks, &expected, without_set)?;
+    photo_loupe(&mut checks, &expected, without_folder)?;
+    // As a double-click opens it: on the photograph, its own catalog folder in the filmstrip.
+    let opened = launch.at("develop-active")?;
+    let held = &opened.state()["develop"];
+    let strip = &held["filmstrip"];
     ensure(
-        select(launch.at("develop-active")?)["shown"] == "develop",
-        "Explicit grid development did not open Develop",
+        select(opened)["shown"] == "develop"
+            && held["folder"].is_string()
+            && strip["folder"] == held["folder"]
+            && strip["assets"][strip["active"].as_u64().unwrap_or(u64::MAX) as usize]
+                == held["document"]["asset_id"],
+        format!("The photograph did not open in Develop with its folder: {held}"),
     )?;
     photo_loupe(&mut checks, &expected, launch.at("select-return")?)?;
     loupe_frame(

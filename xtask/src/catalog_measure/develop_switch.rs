@@ -3,10 +3,11 @@
 //! ([`super::desktop`]).
 //!
 //! It generates real JPEGs (`generate-catalog --images 120`), develops `samples + 1` of them into a
-//! catalog of its own with `pick.develop`, and launches the editor in the background over it through
-//! the scenario library ([`Run::tool`], [`Launch`]): `G`, All photographs, the first photograph
-//! double-clicked, which opens Develop on it with the view's photographs as the development set;
-//! then, `samples` times, the neighbours' large previews decoded ahead and `→`. Each `→` frame is
+//! catalog of its own with `pick.develop`, moves them into one catalog folder with `asset.move`, and
+//! launches the editor in the background over it through the scenario library ([`Run::tool`],
+//! [`Launch`]): `G`, that folder pressed, which makes it the Develop folder, and `D`, which opens
+//! Develop on its first photograph with the folder's photographs in the filmstrip; then, `samples`
+//! times, the neighbours' large previews decoded ahead and `→`. Each `→` frame is
 //! captured in the frame after the key and records how many frames the photo surface drew from the
 //! key until the photograph's cached preview was drawn (`develop.timing.presented_after`): one
 //! sample each. A `→` frame that drew no preview of the photograph moved to fails the probe rather
@@ -19,40 +20,39 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, EditorService, OwnerHandle};
-use luxforge_evidence::{self as script, DevelopStep, SelectStep, StripStep};
+use luxforge_evidence::{
+    self as script, CatalogStep, DevelopStep, SelectStep, SelectWorkspace, StripStep,
+};
 use std::time::Duration;
 
 pub const METRIC: &str = "desktop.develop_switch.key_to_presented";
 pub const TARGET: &str = "Switching photographs in Develop with a cached large preview: presented in the frame after the key";
 
-/// The most samples one launch takes: four scripted steps reach Develop, and each sample is two
+/// The most samples one launch takes: at most four scripted steps reach Develop, and each sample is two
 /// more, within the evidence script's 64 — the 30 a p95 needs.
 pub const MAX_SAMPLES: usize = (script::MAX_SCRIPT_STEPS - 4) / 2;
 const SEED: u64 = 1;
+/// The catalog folder the photographs are moved into, which Develop holds.
+const FOLDER: &str = "Develop switch";
 const IMAGES: u32 = 120;
 /// The probe's own deadline for its one launch.
 const DEADLINE: Duration = Duration::from_secs(600);
 
-/// The script: Select, All photographs, the first photograph double-clicked; then `samples` times the
-/// look-ahead decoded and `→`.
+/// The script: Select, the photographs' folder pressed, `D`; then `samples` times the look-ahead
+/// decoded and `→`.
 pub fn plan(samples: usize) -> Plan {
     let develop = |name: String, step: DevelopStep| Step::new(name, script::Step::Develop(step));
     let mut steps = vec![
         Step::opened("opened"),
         Step::new("select", script::Step::key("g")),
         Step::new(
-            "all",
-            script::Step::Select(SelectStep::Source("All photographs".into())),
+            "folder",
+            script::Step::Catalog(CatalogStep::Source(FOLDER.into())),
         ),
         Step::new(
-            "first",
-            script::Step::Select(SelectStep::Click {
-                position: 0,
-                shift: false,
-                command: false,
-            }),
+            "open",
+            script::Step::Select(SelectStep::Switch(SelectWorkspace::Develop)),
         ),
-        develop("open".into(), DevelopStep::Active),
     ];
     for at in 1..=samples {
         steps.push(develop(format!("ready-{at}"), DevelopStep::Ready));
@@ -79,8 +79,8 @@ pub fn key_to_presented<'a>(
         let develop = &state["develop"];
         let preview = &develop["preview"];
         let timing = &develop["timing"];
-        let active = develop["set"]["active"].as_u64().unwrap_or(u64::MAX) as usize;
-        let moved_to = develop["set"]["assets"].get(active);
+        let active = develop["filmstrip"]["active"].as_u64().unwrap_or(u64::MAX) as usize;
+        let moved_to = develop["filmstrip"]["assets"].get(active);
         ensure(
             !timing["preview_version"].is_null()
                 && moved_to == Some(&timing["asset_id"])
@@ -172,10 +172,27 @@ fn make(generated: &Path, count: usize) -> Result<PathBuf> {
                     )?;
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Some("ready") if read["result"]["failed"] == json!([]) => return Ok(()),
+                Some("ready") if read["result"]["failed"] == json!([]) => break,
                 _ => return Err(format!("The setup could not develop: {read}").into()),
             }
         }
+        // One folder holds them all, whatever days and places Develop filed them under.
+        let folder = ask(
+            &owner,
+            client,
+            "folder.create",
+            json!({"name": FOLDER,
+                "mutation": {"request_id": "develop-switch-folder", "actor": "setup"}}),
+        )?["folder"]["id"]
+            .clone();
+        ask(
+            &owner,
+            client,
+            "asset.move",
+            json!({"targets": {"kind": "paths", "paths": paths}, "folder_id": folder,
+                "mutation": {"request_id": "develop-switch-move", "actor": "setup"}}),
+        )?;
+        Ok(())
     })();
     owner.stop();
     let _ = join.join();
@@ -226,7 +243,8 @@ pub fn develop_switch(context: &DesktopContext) -> Result<Vec<Row>> {
             .target(TARGET)
             .scope(format!(
                 "the release editor in the background at 1440 × 900 over {} developed 640 × 427 \
-                 JPEGs, Develop opened on All photographs' first with the view as the set; each \
+                 JPEGs in one catalog folder, Develop opened on its first with the folder in \
+                 the filmstrip; each \
                  sample one → after the look-ahead's large previews were decoded",
                 samples + 1
             ))
@@ -246,7 +264,7 @@ mod tests {
         for samples in [1, 10, MAX_SAMPLES] {
             let plan = plan(samples);
             plan.validate().unwrap();
-            assert_eq!(plan.len(), 5 + 2 * samples);
+            assert_eq!(plan.len(), 4 + 2 * samples);
             assert!(plan.scripted());
         }
         assert_eq!(MAX_SAMPLES, 30);
@@ -265,7 +283,7 @@ mod tests {
         let moved = |at: u64, frames: u64, shown: bool| {
             let asset = ["asset-a", "asset-b", "asset-c"][at as usize];
             json!({"develop": {
-                "set": {"assets": ["asset-a", "asset-b", "asset-c"], "active": at},
+                "filmstrip": {"assets": ["asset-a", "asset-b", "asset-c"], "active": at},
                 "preview": shown.then(|| json!({"asset_id": asset, "drawn": true})),
                 "timing": {"asset_id": asset, "preview_version": 7, "presented_after": frames},
             }})
@@ -285,25 +303,25 @@ mod tests {
         // A move that handed over no preview, one of another photograph, or one not drawn, is no
         // sample.
         let none = json!({"develop": {
-            "set": {"assets": ["asset-a", "asset-b"], "active": 1},
+            "filmstrip": {"assets": ["asset-a", "asset-b"], "active": 1},
             "preview": null,
             "timing": {"asset_id": "asset-b"},
         }});
         assert!(key_to_presented([("next-1", &none)]).is_err());
         let other = json!({"develop": {
-            "set": {"assets": ["asset-a", "asset-b"], "active": 1},
+            "filmstrip": {"assets": ["asset-a", "asset-b"], "active": 1},
             "preview": {"asset_id": "asset-a", "drawn": true},
             "timing": {"asset_id": "asset-b", "preview_version": 3, "presented_after": 1},
         }});
         assert!(key_to_presented([("next-1", &other)]).is_err());
         let elsewhere = json!({"develop": {
-            "set": {"assets": ["asset-a", "asset-b"], "active": 1},
+            "filmstrip": {"assets": ["asset-a", "asset-b"], "active": 1},
             "preview": null,
             "timing": {"asset_id": "asset-a", "preview_version": 3, "presented_after": 1},
         }});
         assert!(key_to_presented([("next-1", &elsewhere)]).is_err());
         let undrawn = json!({"develop": {
-            "set": {"assets": ["asset-a", "asset-b"], "active": 1},
+            "filmstrip": {"assets": ["asset-a", "asset-b"], "active": 1},
             "preview": {"asset_id": "asset-b", "drawn": false},
             "timing": {"asset_id": "asset-b", "preview_version": 3, "presented_after": 1},
         }});

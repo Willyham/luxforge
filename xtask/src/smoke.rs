@@ -1106,7 +1106,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: select::SCENARIO,
-        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a first look's progress sheet, Continue in background and Cancel, a folder of real images, and back to Develop",
+        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a first look's progress sheet, Continue in background and Cancel, a folder of real images, the catalog, and Develop on the catalog folder viewed last",
         launches: &[],
         verify: select::verify,
         source: Source::Fixtures(&[]),
@@ -1126,7 +1126,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: develop_picks::SCENARIO,
-        about: "Picks on a camera card developed through Develop N's confirmation: an existing folder chosen, a name typed, Escape changing nothing, two picks' copies in an indexed folder used, Develop opened on what it developed and the next photograph's cached preview drawn in the frame after the key",
+        about: "Picks on a camera card developed through Develop N's confirmation: an existing folder chosen, a place typed with the year, place and day folders it makes shown, Escape changing nothing, two picks' copies in an indexed folder used, Develop opened on what it developed with the place's folders in the filmstrip and the next photograph's cached preview drawn in the frame after the key",
         launches: &[],
         verify: develop_picks::verify,
         source: Source::Fixtures(&[]),
@@ -1146,7 +1146,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: filmstrip::SCENARIO,
-        about: "Develop's filmstrip over a catalog view of JPEG photographs and, with --source, a RAW one: each move draws the photograph's own cached preview in the frame after the key, then its render",
+        about: "Develop's filmstrip over a catalog folder of JPEG photographs and, with --source, a RAW one, pressed in Select and opened with D: each move draws the photograph's own cached preview in the frame after the key, then its render",
         launches: &[],
         verify: filmstrip::verify,
         source: Source::Default(&[]),
@@ -1156,7 +1156,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: loupe::SCENARIO,
-        about: "The Select loupe over a folder of generated images: a burst stepped, jumped and left for the moments either side, a bracket, the 100% focus check, compare, P on the bracket and P on the burst moving on to the next moment, each picture its own frame's",
+        about: "The Select loupe over a folder of generated images: a burst stepped, jumped and left for the moments either side, a bracket, the 100% focus check, compare, P on the bracket and P on the burst moving on to the next moment, each picture its own frame's; D asking for a catalog folder, and a photograph opened in Develop with its own folder",
         launches: &[],
         verify: loupe::verify,
         source: Source::Fixtures(&[]),
