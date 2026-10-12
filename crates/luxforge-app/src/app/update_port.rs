@@ -306,6 +306,7 @@ impl Fetch for HttpFetch {
                     },
                     control: &control,
                     progress: &mut |_, _| {},
+                    head: None,
                 },
                 sink,
             )

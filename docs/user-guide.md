@@ -246,6 +246,16 @@ What the notice promises about the receiving end (no IP address recorded anywher
 
 Agents and scripts read the choice and delivery counts with `usage.read`, and can turn sharing off with `usage.set {"enabled": false}`, for example `luxforge-ctl call usage.set --params '{"enabled": false}'` against the running desktop. Turning it on needs permission authority, which the desktop's notice and Privacy switch have and `luxforge-ctl` does not.
 
+### Updates
+
+Luxforge will check for and install its own updates once each platform's updater arrives: Sparkle on macOS and Luxforge's own updater on Linux ([design](design/auto-update.md)). Neither exists in any build yet, so today every build says it does not update itself and you update by downloading the new version by hand. What follows is the interface those updaters will drive.
+
+**Settings › General** starts with an **Updates** group: the version you are running, **Check now** with when the last check ended and what it found, **Check for updates automatically** (on by default) and **Install updates automatically** (off by default, and unavailable while checks are off). Checks contact `api.luxforge.app` and send only the app version. A build that cannot update itself shows why instead of these controls, for example that it is a development build or that it must be moved into Applications first. The palette's **Check for Updates** checks at once and says what it found in the status bar.
+
+When a newer version is found, a small card at the bottom of the workspace says **Luxforge 0.2.0 is available**, with **Release notes**, **Install and relaunch**, **Later** and **Skip this version**. It never takes focus, so you can keep editing around it. It shows the download's progress and says when the update is ready. **Later** hides it until the next check, and **Skip this version** stops offering that version; a later one is offered again. If an export or another long job is running, Install and relaunch says which and waits for you to try again. A version that needs a new catalog says so: your current catalog stays as it is, and the version you have now keeps opening it. On a Linux installation that cannot replace itself, the card offers **Download**, which opens the release page, instead of installing.
+
+Agents and scripts read the same state with `update.status` and act with `update.check`, `update.install` and `update.skip`; the two switches are the `update_checks` and `update_install_automatically` preferences of `preferences.set`.
+
 ### Developer components gallery
 
 Developer mode shows a **Developer** button in the title bar. For the optimized development build,

@@ -36,6 +36,7 @@ pub(crate) mod status_bar;
 pub(crate) mod title_bar;
 pub(crate) mod tools_panel;
 pub(crate) mod unsupported_catalog;
+pub(crate) mod update;
 pub(crate) mod usage;
 mod warped_path;
 
@@ -217,10 +218,10 @@ pub(crate) fn workspace<'a>(
     if let Some(sheet) = copy_settings::confirmation(&model.copy_settings) {
         layers = layers.push(sheet);
     }
-    // The usage statistics notice sits under the palette and the sheets, which a claimed notice
-    // waits for anyway.
-    if let Some(notice) = &model.usage_notice {
-        layers = layers.push(usage::notice(notice, model.develop.strip.is_some()));
+    // The update offer and the usage statistics notice sit under the palette and the sheets,
+    // which a claimed usage notice waits for anyway.
+    if let Some(notices) = notices(model, model.develop.strip.is_some()) {
+        layers = layers.push(notices);
     }
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
@@ -229,6 +230,18 @@ pub(crate) fn workspace<'a>(
         layers = layers.push(sheet);
     }
     layers.into()
+}
+
+/// The workspace's notices over the bottom of the workspace: the update offer above the usage
+/// statistics notice. `None` while neither is up.
+fn notices(model: &Workspace, filmstrip: bool) -> Option<Element<'_, Message>> {
+    let cards: Vec<Element<'_, Message>> = model
+        .update_notice
+        .iter()
+        .map(update::card)
+        .chain(model.usage_notice.iter().map(usage::card))
+        .collect();
+    (!cards.is_empty()).then(|| usage::layer(cards, filmstrip))
 }
 
 /// A 1 px vertical rule between the middle row's regions.

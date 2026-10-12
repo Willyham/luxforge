@@ -1137,6 +1137,8 @@ Two launch flags serve usage statistics evidence, in evidence mode only (they re
 
 Two more serve the [unsupported-catalog sheet](../design/auto-update.md#launching-past-an-unsupported-catalog), also in evidence mode only. `--evidence-catalog CATALOG` opens CATALOG as the run's remembered catalog in place of one inside its evidence directory, and cannot be combined with `--catalog`. When this version refuses it as another version's, the run captures the sheet as `unsupported-catalog.png`, with its state in `unsupported-catalog.json`. It then takes the choice `--evidence-unsupported-catalog start|quit` names, and fails without one. After Start a new catalog, the run continues as an ordinary evidence run over the new catalog.
 
+`--update-fixture FILE`, also evidence mode only (it requires `--evidence-dir`), replaces the launch's update port with a scripted one, so the update offer, its variants and Settings › General's Updates group can be captured without a feed, a download or a platform updater. The file is one JSON object, every field optional, unknown fields refused: `mechanism` (`sparkle`, the default, `linux-payload`, `linux-notify` or `unavailable` with a `reason` such as `outside-applications`), `build`, `release` (`version`, `build`, `notes_url`, `catalog_format`, which defaults to this build's so another value is a catalog format change, and `prerelease`), `progress` (`received`, `total`) and `ready` once a check has found the release, `launch_check` (default true: one check as the launch first applies its policy with checks on) and `refuse_install` (`code` `conflict` or `not-ready`, `message`, `data`) for the next `update.install`. A check ends as soon as it starts. An install the port accepts is recorded and does nothing else, and Release notes and Download record the page without opening a browser. The `update` script step drives it. For example: `cargo xtask develop --background --hidden-window --evidence-dir NEW --update-fixture FIXTURE --evidence-script SCRIPT`.
+
 The steps are one set of serde types, the `luxforge-evidence` crate: the desktop parses a script
 with them and xtask builds every scenario's script from them, so a step has one spelling on both
 ends. Parsing is strict. An unknown step kind or field, a missing field, or a value of the wrong type
@@ -1451,6 +1453,13 @@ Each step is an object with exactly one key.
   receiver. Every frame's `state.json` carries a `usage` summary: the notice and the Privacy tab as
   drawn, the stored and effective consent, the destination and `usage.read`'s `diagnostics`, never
   an identifier.
+- `update` is one automatic-updates gesture, against whatever the launch's update port reports
+  (an evidence launch scripts it with `--update-fixture`). `"offer"` captures the update offer once
+  it is on screen; `"check"` presses Check now and waits for `update.check`'s answer;
+  `{"notice": "release_notes"|"install"|"download"|"later"|"skip"}` presses one of the offer's
+  buttons and waits for its answer, and fails if the offer does not show that button or is waiting
+  on an install or skip. Every frame's `state.json` carries an `update` summary: the status as last
+  read, the calls in flight, the offer as drawn and, with Settings open, the Updates group as drawn.
 - `theme` chooses a theme as its Appearance row does, by id or, for an import whose id is new on
   every run, by name: `{"id": "omarchy.nord"}` or `{"name": "Linen"}`. It is captured once the
   theme is drawn, or Luxforge Dark in its place with the reason in the status bar, and the

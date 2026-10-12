@@ -369,6 +369,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
         themes: false,
         library: None,
         usage: false,
+        updates: false,
         own: Vec::new(),
     };
     let _ = editor.update(Message::Sync(super::message::sync::SyncMessage::Synced(

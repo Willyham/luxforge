@@ -5416,6 +5416,7 @@ name = "xtask-cli"
 version = "0.0.0"
 dependencies = [
  "luxforge-test-macros",
+ "luxforge-update",
  "percent-encoding",
  "regex",
  "semver",
@@ -5423,6 +5424,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "time",
+ "zeroize",
 ]
 
 [[package]]

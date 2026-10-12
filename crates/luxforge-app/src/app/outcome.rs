@@ -112,6 +112,11 @@ pub(crate) enum Outcome<'a> {
     UsageNotice,
     /// A `usage.read` answered, or the last outstanding `usage.set` did, or either was refused.
     UsageAnswered,
+    /// The update offer appeared, changed or went.
+    UpdateOffer,
+    /// An `update.*` call answered or was refused, a release page was opened, or Later was
+    /// pressed.
+    UpdateAnswered,
 }
 
 /// What reached the photo surface.
@@ -176,6 +181,8 @@ impl Outcome<'_> {
             Self::MergeShown => "merge_shown",
             Self::UsageNotice => "usage_notice",
             Self::UsageAnswered => "usage_answered",
+            Self::UpdateOffer => "update_offer",
+            Self::UpdateAnswered => "update_answered",
         }
     }
 }

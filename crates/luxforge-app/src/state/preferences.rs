@@ -105,12 +105,18 @@ preferences! {
     /// The active theme's id, Luxforge Dark's when none is stored. The Appearance tab and the
     /// palette's theme entries set it; the desktop draws the theme it names.
     theme: String,
+    /// A release build checks for updates at launch and then daily: Settings › General's Updates
+    /// group.
+    update_checks: bool,
+    /// An update downloads in the background and installs at the next ordinary quit, while checks
+    /// are on.
+    update_install_automatically: bool,
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
-/// shows, and the theme the Appearance tab chooses. The rest are the desktop's own bookkeeping and
-/// announce nothing.
-pub(crate) const ANNOUNCED: [&str; 8] = [
+/// shows, the theme the Appearance tab chooses and the Updates group's two switches. The rest are
+/// the desktop's own bookkeeping and announce nothing.
+pub(crate) const ANNOUNCED: [&str; 10] = [
     "auto_collapse_history",
     "auto_lens_profile",
     "raw_look",
@@ -119,6 +125,8 @@ pub(crate) const ANNOUNCED: [&str; 8] = [
     "interface_size",
     "catalog",
     "theme",
+    "update_checks",
+    "update_install_automatically",
 ];
 
 impl PreferenceChange {
@@ -702,7 +710,9 @@ mod tests {
             "window": null,
             "export_folder": null,
             "hdr_merge": null,
-            "theme": "luxforge.dark"
+            "theme": "luxforge.dark",
+            "update_checks": true,
+            "update_install_automatically": false
         }))
         .unwrap()
     }

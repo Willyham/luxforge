@@ -197,7 +197,7 @@ pub struct IconButtonModel {
 }
 
 /// Draw a named path at a requested point size, without a glyph font dependency.
-pub(crate) fn icon<'a, M: 'a>(icon: Icon, size: f32, ink: impl Into<Ink>) -> Element<'a, M> {
+pub fn icon<'a, M: 'a>(icon: Icon, size: f32, ink: impl Into<Ink>) -> Element<'a, M> {
     canvas(IconDrawing {
         icon,
         ink: ink.into(),
