@@ -8,9 +8,9 @@ of the design: one row per event, one profile per session, 90-day expiry, no con
 provisioned dashboards.
 
 It is a reference for running and testing the pipeline on one machine. **It is not a hosted service.**
-Nothing here provisions, deploys or publishes anything, no `api.luxforge.app` endpoint is claimed to
-exist, and nothing in this directory contacts an external account. [DEPLOYMENT.md](DEPLOYMENT.md) is the
-checklist for a real deployment and the activation that follows it; it has not been carried out.
+Nothing here provisions, deploys or publishes anything. The hosted Cloudflare backend now lives in
+[Willyham/luxforge-backend](https://github.com/Willyham/luxforge-backend); [DEPLOYMENT.md](DEPLOYMENT.md)
+describes its current contract, test-tenant relay and separate production activation checklist.
 
 ```mermaid
 flowchart LR
@@ -32,8 +32,8 @@ flowchart LR
 | `clickhouse/` | `initdb/001-schema.sql` (tables and views), `config.d/privacy.xml`, `users.d/users.xml` |
 | `grafana/` | `Dockerfile` (plugin baked in), `provisioning/`, and the five dashboards in `dashboards/` |
 | `test.sh`, `tests/` | The stack test and the client test (below), with the stack test's synthetic scenario |
-| `probe.sh`, `probe.py` | The synthetic live-endpoint probe: sends only generated data to a base URL and checks the statuses, limits and replies ([checks](DEPLOYMENT.md#12-run-the-synthetic-live-probe)) |
-| `scan-logs.py` | Searches captured logs or table dumps for given values and for any IP address literal ([use](DEPLOYMENT.md#10-check-every-hop-for-addresses-and-request-data)) |
+| `probe.sh`, `probe.py` | The synthetic reference-contract probe: generated data and local statuses/limits/replies; do not run against the hosted endpoint ([live test alternative](DEPLOYMENT.md#the-desktop-against-the-live-test-tenant)) |
+| `scan-logs.py` | Searches captured logs or table dumps for given values and for any IP address literal ([hosted privacy checks](DEPLOYMENT.md#activation-checklist)) |
 | `DEPLOYMENT.md` | The activation checklist for `api.luxforge.app` |
 | `NOTICE.md` | Licences of every component, without any audit claim |
 
@@ -229,6 +229,16 @@ a missing `413` and a missing limiter, which it must fail; TLS against a throwaw
 `openssl` is present, reported as skipped when it is not; the refusal of the production domain) and
 `python3 -I tests/scan_logs_test.py` tests `scan-logs.py`.
 
+### The desktop against the hosted backend
+
+For the live test tenant, start `npm run relay` in the separate backend checkout, then run the
+app's `usage-backend` scenario with `LUXFORGE_USAGE_INGRESS=http://127.0.0.1:8788` (origin only) and
+`LUXFORGE_USAGE_BACKEND_PROFILE=live`. The relay adds exactly `?tenant=test`, keeping synthetic
+batches out of production dashboards. The live profile expects acceptance within 10 batches/minute,
+without forcing the reference stack's one-per-five-seconds 429. It checks the client/HTTP journey;
+it does not run `tests/client_test.py` against the hosted stores. See the full
+[commands and evidence scope](DEPLOYMENT.md#the-desktop-against-the-live-test-tenant).
+
 ## Privacy configuration, hop by hop
 
 | Hop | Configuration |
@@ -239,9 +249,11 @@ a missing `413` and a missing limiter, which it must fail; TLS against a throwaw
 | Grafana | Analytics, update and plugin checks, news and feedback links off; no anonymous access, sign-up, snapshots to external services, public dashboards or Gravatar; access (router) logging off and the request logger silenced; `/metrics` off; plugin downloads off |
 | Docker | Container logs are `json-file`, capped at 3 files of 5 MB each |
 
-## Deployment privacy requirements
+## Reference deployment privacy requirements
 
-Anything deployed from this reference must keep every one of these:
+These constraints describe this reference. The hosted Cloudflare contract is in
+[DEPLOYMENT.md](DEPLOYMENT.md), including its transient IP-based WAF and different analytics retention.
+A deployment of this reference must keep every one of these:
 
 - Put TLS in front of the ingress with a reverse proxy or load balancer that records **no client
   addresses, headers, User-Agent, bodies or request IDs** (no access logs, or access logs with the
@@ -278,4 +290,4 @@ Anything deployed from this reference must keep every one of these:
 - The dashboards are for the owner. Sparse cohorts, timelines and device profiles do not make
   records anonymous, and installation IDs are shown to administrators who sign in.
 - Docker-based tests on a Mac check function and privacy settings. They are not evidence of
-  production throughput or of any hosted deployment, which does not exist.
+  production throughput or of the separately deployed hosted backend.
