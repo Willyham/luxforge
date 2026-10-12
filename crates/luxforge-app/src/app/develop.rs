@@ -275,18 +275,14 @@ pub(crate) fn strip_query(folder: &CatalogFolderId) -> ViewQuery {
     }
 }
 
-/// A photograph of a view, with the catalog folder it is in.
-type FiledPhoto = (StripPhoto, Option<CatalogFolderId>);
-
 /// Evaluate `query` into `client`'s view and read its photographs a window of [`STRIP_WINDOW`] rows
-/// at a time, at most `limit`, until `enough` says the photographs read so far are enough.
+/// at a time, at most `limit`.
 fn read_photos(
     owner: &OwnerHandle,
     client: ClientId,
     query: &ViewQuery,
     limit: usize,
-    mut enough: impl FnMut(&[FiledPhoto]) -> bool,
-) -> Result<(ViewSummary, Vec<FiledPhoto>), String> {
+) -> Result<(ViewSummary, Vec<StripPhoto>), String> {
     let (summary, _) = call(
         owner,
         client,
@@ -297,7 +293,7 @@ fn read_photos(
     let total = (summary.count as usize).min(limit);
     let mut photos = Vec::with_capacity(total);
     let mut from = 0;
-    while from < total && !enough(&photos) {
+    while from < total {
         let count = STRIP_WINDOW.min(total - from);
         let (rows, _) = call(
             owner,
@@ -311,14 +307,11 @@ fn read_photos(
         }
         from += rows.rows.len();
         photos.extend(rows.rows.into_iter().filter_map(|row| match row.item {
-            RowItem::Photo { asset_id } => Some((
-                StripPhoto {
-                    asset_id,
-                    kind: Some(row.kind),
-                    name: row.file_name,
-                },
-                row.folder_id,
-            )),
+            RowItem::Photo { asset_id } => Some(StripPhoto {
+                asset_id,
+                kind: Some(row.kind),
+                name: row.file_name,
+            }),
             RowItem::File { .. } | RowItem::Input { .. } => None,
         }));
     }
@@ -326,7 +319,7 @@ fn read_photos(
 }
 
 /// The folder's path from the top level, by its names.
-fn folder_path(folders: &CatalogFolders, folder: &CatalogFolderId) -> Vec<String> {
+pub(crate) fn folder_path(folders: &CatalogFolders, folder: &CatalogFolderId) -> Vec<String> {
     let by_id: HashMap<&CatalogFolderId, _> = folders
         .folders
         .iter()
@@ -357,17 +350,11 @@ fn strip_on(
 ) -> Result<FolderRead, String> {
     let (folders, _) = call(owner, client, "folder.list", json!({}))?;
     let folders: CatalogFolders = parse(folders)?;
-    let (summary, photos) = read_photos(
-        owner,
-        client,
-        &strip_query(folder),
-        MAX_STRIP_PHOTOS,
-        |_| false,
-    )?;
+    let (summary, photos) = read_photos(owner, client, &strip_query(folder), MAX_STRIP_PHOTOS)?;
     Ok(FolderRead {
         folder: folder.clone(),
         path: folder_path(&folders, folder),
-        photos: photos.into_iter().map(|(photo, _)| photo).collect(),
+        photos,
         count: summary.count,
         library_sequence: summary.library_sequence.0,
     })
@@ -422,41 +409,22 @@ pub(crate) fn common_folder(
     common.pop().or_else(|| Some(first.clone()))
 }
 
-/// The folder Develop holds for `assets`, photographs just developed or opened, read with its
-/// filmstrip through a client of its own: the deepest catalog folder holding every one of them, or
-/// the first one's own folder when they share none. Each photograph's folder is its row's in All
-/// photographs, newest developed first, so a photograph just developed is in the first window.
-/// `None` when none of them is found among the first [`MAX_STRIP_PHOTOS`].
+/// The folder Develop holds for photographs just developed or opened, by the catalog folders their
+/// Develop's report named (`developed[].folder_id`), read with its filmstrip through a client of
+/// its own: the deepest catalog folder holding every one of them, or the first one's own folder
+/// when they share none. `None` for no folders.
 pub(crate) fn developed_folder_now(
     owner: &OwnerHandle,
-    assets: &[AssetId],
+    filed: &[CatalogFolderId],
 ) -> Result<Option<FolderRead>, String> {
+    if filed.is_empty() {
+        return Ok(None);
+    }
     let client = owner.register();
     let result = (|| {
-        let query = ViewQuery {
-            sort: ViewSort {
-                key: SortKey::DateDeveloped,
-                descending: true,
-            },
-            ..ViewQuery::of(ViewSource::AllPhotographs)
-        };
-        let wanted = |photos: &[FiledPhoto]| {
-            assets
-                .iter()
-                .all(|asset| photos.iter().any(|(photo, _)| &photo.asset_id == asset))
-        };
-        let (_, rows) = read_photos(owner, client, &query, MAX_STRIP_PHOTOS, wanted)?;
-        let found: Vec<CatalogFolderId> = assets
-            .iter()
-            .filter_map(|asset| {
-                rows.iter()
-                    .find(|(photo, _)| &photo.asset_id == asset)
-                    .and_then(|(_, folder)| folder.clone())
-            })
-            .collect();
         let (folders, _) = call(owner, client, "folder.list", json!({}))?;
         let folders: CatalogFolders = parse(folders)?;
-        match common_folder(&folders, &found) {
+        match common_folder(&folders, filed) {
             Some(folder) => strip_on(owner, client, &folder).map(Some),
             None => Ok(None),
         }
@@ -798,7 +766,13 @@ impl Editor {
         if photos.is_empty() {
             return Task::none();
         }
-        let assets: Vec<AssetId> = photos.iter().map(|photo| photo.asset_id.clone()).collect();
+        // The folders the report filed each photograph in, in its order, each once.
+        let mut filed: Vec<CatalogFolderId> = Vec::with_capacity(report.developed.len());
+        for developed in &report.developed {
+            if !filed.contains(&developed.folder_id) {
+                filed.push(developed.folder_id.clone());
+            }
+        }
         self.develop.strip_serial += 1;
         self.develop.state.entering = false;
         let mut strip = Filmstrip::new(self.develop.strip_serial, photos, 0);
@@ -807,7 +781,7 @@ impl Editor {
         self.develop.state.collapsed = false;
         let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
-        let found = self.find_folder_task(assets);
+        let found = self.find_folder_task(filed);
         Task::batch([shown, opened, found])
     }
 
@@ -946,13 +920,14 @@ impl Editor {
         )
     }
 
-    /// Find the folder holding `assets` and read it, numbered as the strip it will fill.
-    fn find_folder_task(&mut self, assets: Vec<AssetId>) -> Task<Message> {
+    /// Find the folder holding the folders a Develop filed photographs in and read it, numbered as
+    /// the strip it will fill.
+    fn find_folder_task(&mut self, filed: Vec<CatalogFolderId>) -> Task<Message> {
         let serial = self.develop.strip_serial;
         self.develop.reading = Some(serial);
         let owner = self.owner.clone();
         owner_task(
-            move || developed_folder_now(&owner, &assets),
+            move || developed_folder_now(&owner, &filed),
             move |result| Message::Develop(DevelopMessage::FolderFound { serial, result }),
         )
     }
@@ -1372,14 +1347,21 @@ impl Editor {
         self.develop.file_open = Some(generation);
     }
 
-    /// The open of a file numbered `generation` answered with the photograph `asset`: its folder is
-    /// found and read, to become the Develop folder.
-    pub(crate) fn develop_file_opened(&mut self, generation: u64, asset: AssetId) -> Task<Message> {
+    /// The open of a file numbered `generation` answered, its Develop having filed the photograph in
+    /// `folder`: that folder is read, to become the Develop folder.
+    pub(crate) fn develop_file_opened(
+        &mut self,
+        generation: u64,
+        folder: Option<CatalogFolderId>,
+    ) -> Task<Message> {
         if self.develop.file_open != Some(generation) {
             return Task::none();
         }
         self.develop.file_open = None;
-        self.find_folder_task(vec![asset])
+        match folder {
+            Some(folder) => self.find_folder_task(vec![folder]),
+            None => Task::none(),
+        }
     }
 
     /// Develop's layout has the filmstrip under its canvas: Develop holds a folder and the strip is not
