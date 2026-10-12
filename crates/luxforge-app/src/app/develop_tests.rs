@@ -297,16 +297,28 @@ fn read_strip(editor: &mut Editor) {
     send(editor, DevelopMessage::StripRead { serial, result });
 }
 
-/// Find and read the folder of `assets`, as the task would.
-fn find_folder(editor: &mut Editor, assets: &[AssetId]) {
+/// Find and read the folder holding the folders `filed`, as the task would.
+fn find_folder(editor: &mut Editor, filed: &[CatalogFolderId]) {
     let serial = editor.develop.strip_serial;
     assert_eq!(
         editor.develop.reading,
         Some(serial),
         "the photographs' folder being found"
     );
-    let result = developed_folder_now(&editor.owner, assets);
+    let result = developed_folder_now(&editor.owner, filed);
     send(editor, DevelopMessage::FolderFound { serial, result });
+}
+
+/// The catalog folders a Develop's job record files its photographs in, as its report names them.
+fn filed_in(record: &Value) -> Vec<CatalogFolderId> {
+    record["result"]["developed"]
+        .as_array()
+        .expect("a Develop's report")
+        .iter()
+        .map(|developed| {
+            serde_json::from_value(developed["folder_id"].clone()).expect("each one's folder")
+        })
+        .collect()
 }
 
 /// Four files picked and developed through Develop N into its proposed folder, which becomes the
@@ -323,8 +335,7 @@ fn developed(name: &str) -> (Scene, Vec<AssetId>) {
     send(editor, DevelopMessage::Confirm);
     let record = run_develop(editor);
     assert_eq!(record["status"], "ready", "{record}");
-    let assets = strip_assets(editor);
-    find_folder(editor, &assets);
+    find_folder(editor, &filed_in(&record));
     run_open(editor);
     if editor.develop.state.strip.as_ref().unwrap().active != Some(0) {
         drop(editor.switch_to(0));
@@ -482,8 +493,12 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
         editor.workspace.title.file_name.as_deref(),
         Some(strip.photos[0].name.as_str())
     );
-    let assets = strip_assets(editor);
-    find_folder(editor, &assets);
+    let filed: Vec<CatalogFolderId> = report
+        .developed
+        .iter()
+        .map(|developed| developed.folder_id.clone())
+        .collect();
+    find_folder(editor, &filed);
     let strip = editor
         .develop
         .state
@@ -916,14 +931,22 @@ fn filmstrip_a_file_opened_has_its_folder() {
     assert!(editor.filmstrip_shown());
     editor.select.state.catalog.develop_folder = None;
     let path = scene.files[0].clone();
-    let _ = editor.update(Message::Sync(SyncMessage::Picked(Some(path))));
+    let _ = editor.update(Message::Sync(SyncMessage::Picked(Some(path.clone()))));
     assert!(editor.develop.state.strip.is_none());
     assert!(!editor.filmstrip_shown());
     assert!(editor.workspace.develop.strip.is_none());
     let generation = editor.develop.file_open.expect("the file's open in flight");
-    // Its open answered with the photograph developed from it, as `ImportRefreshed` hands it on.
-    drop(editor.develop_file_opened(generation, set[2].clone()));
-    find_folder(editor, &set[2..3]);
+    // The open's Develop, as its task runs it: the photograph already developed from the file,
+    // and the catalog folder its report says it is in.
+    let queued = crate::app::tasks::queue_import(&editor.owner, editor.client, &path)
+        .expect("the file's Develop");
+    let (asset, filed) =
+        crate::app::tasks::developed_photograph(&editor.owner, editor.client, queued.job_id())
+            .expect("the photograph developed from it");
+    assert!(set.contains(&asset));
+    // Its open answered, as `ImportRefreshed` hands on the report's folder.
+    drop(editor.develop_file_opened(generation, Some(filed.clone())));
+    find_folder(editor, &[filed]);
     assert_eq!(editor.develop_folder(), Some(&folder));
     let strip = editor
         .develop

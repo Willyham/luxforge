@@ -45,7 +45,7 @@ impl Editor {
         let pressed_source = matches!(step, CatalogStep::Source(_));
         let result = match step {
             CatalogStep::Source(name) => self
-                .catalog_row(&name)
+                .disclosed_row(&name)
                 .and_then(|row| row.press.ok_or_else(|| format!("{name:?} does nothing")))
                 .map(|press| vec![act(press)]),
             CatalogStep::Search(text) => Ok(vec![act(CatalogAction::Search(text))]),
@@ -324,6 +324,42 @@ impl Editor {
             .find(|row| row.name == name)
             .cloned()
             .ok_or_else(|| format!("no catalog row shows {name:?}"))
+    }
+
+    /// The catalog row `name` names: a row's own name, or a folder's path from the top level
+    /// (`2026 › Konstanz › 12 Sep`), each closed folder on the way opened by its disclosure as a
+    /// person opens it, and each name looked for below the one before.
+    fn disclosed_row(&mut self, name: &str) -> Result<CatalogRow, String> {
+        let parts: Vec<&str> = name.split(" \u{203a} ").collect();
+        if parts.len() == 1 {
+            return self.catalog_row(name);
+        }
+        let mut from = 0;
+        for (at, part) in parts.iter().enumerate() {
+            let (index, row) = self
+                .workspace
+                .select
+                .catalog
+                .sources
+                .folders
+                .iter()
+                .enumerate()
+                .skip(from)
+                .find(|(_, row)| row.name == *part)
+                .map(|(index, row)| (index, row.clone()))
+                .ok_or_else(|| format!("no catalog row shows {part:?} of {name:?}"))?;
+            if at + 1 == parts.len() {
+                return Ok(row);
+            }
+            if row.open == Some(false) {
+                let toggle = row
+                    .toggle
+                    .ok_or_else(|| format!("{part:?} of {name:?} does not open"))?;
+                let _ = self.update(act(toggle));
+            }
+            from = index + 1;
+        }
+        Err(format!("no catalog row shows {name:?}"))
     }
 
     /// Open `folder`'s menu and choose `label`, or, through `picker`, the folder listed as `label`.
