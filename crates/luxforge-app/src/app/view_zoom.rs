@@ -132,6 +132,11 @@ impl Editor {
     /// applied as any other, through [`Editor::reveal_pan`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn minimap_viewport(&self) -> Option<Viewport> {
+        self.minimap_viewport_in(&self.surfaces())
+    }
+
+    /// [`Self::minimap_viewport`] over the stage `surfaces` draws.
+    pub(crate) fn minimap_viewport_in(&self, surfaces: &crate::view::Surfaces<'_>) -> Option<Viewport> {
         if self.document.state.is_none() || self.gallery_page().is_some() || self.select_shown() {
             return None;
         }
@@ -139,7 +144,7 @@ impl Editor {
             return None;
         };
         let percent = minimap_geometry::eligible(ZoomView::Percent(value))?;
-        let stage = NavStage::drawn(&self.workspace.canvas, &self.surfaces())?;
+        let stage = NavStage::drawn(&self.workspace.canvas, surfaces)?;
         let [left, top, right, bottom] = layout::canvas_logical(
             self.view_state.window,
             self.session.workspace.state_panel,
@@ -157,6 +162,33 @@ impl Editor {
 
     /// Scroll the photograph to `pan` through `view.set`, as a pinch does: the session is told in
     /// this update and the scrollable follows.
+    /// A `view.set` this client's session answered outside the desktop's own input — a script's
+    /// request on the same session — is this client's view all the same: the answer is adopted and
+    /// the scrollable follows its pan, as [`Self::reveal_pan`] does. An answer older than the
+    /// session held is not adopted and moves nothing.
+    pub(crate) fn follow_view(&mut self, session: ClientSession) -> Task<Message> {
+        let revision = session.revision;
+        let pan = (session.preview.view.pan_x, session.preview.view.pan_y);
+        self.adopt(session);
+        if self.session.revision != revision {
+            return Task::none();
+        }
+        self.view_state.local_pan = pan;
+        self.view_state.pan.drop_pending();
+        if self.view_state.pan.in_flight() {
+            self.view_state.pan.offer(pan);
+        }
+        self.note_view_motion();
+        self.event("view_followed", || json!({"pan": [pan.0, pan.1]}));
+        operation::scroll_to(
+            super::crop::SURFACE_ID,
+            AbsoluteOffset {
+                x: Some(pan.0),
+                y: Some(pan.1),
+            },
+        )
+    }
+
     pub(super) fn reveal_pan(&mut self, pan: (f32, f32)) -> Task<Message> {
         let params = json!({"pan_x": pan.0, "pan_y": pan.1});
         match tasks::call(&self.owner, self.client, "view.set", params.clone()).and_then(
@@ -194,6 +226,11 @@ impl Editor {
             || self.view_state.picker_open
             || matches!(self.workspace.canvas.photo, PhotoView::Empty(_))
         {
+            return Task::none();
+        }
+        // A pinch over the minimap is the minimap's: it never zooms the photograph under it.
+        if self.minimap_holds(Point::new(input.x as f32, input.y as f32)) {
+            self.event("view_pinch_held", || json!({"by":"minimap","pointer":[input.x,input.y]}));
             return Task::none();
         }
         let stage = self

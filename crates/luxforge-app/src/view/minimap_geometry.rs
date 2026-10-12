@@ -742,6 +742,8 @@ mod tests {
             compare_source: None,
             compare_change: None,
             compare_rest: None,
+            overview: None,
+            minimap: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Draft,

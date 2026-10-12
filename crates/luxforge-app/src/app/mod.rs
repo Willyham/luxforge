@@ -73,6 +73,7 @@ mod gpu_notice_tests;
 #[cfg(test)]
 mod gpu_presence_tests;
 pub(crate) mod gpu_preview;
+pub(crate) mod minimap;
 #[cfg(test)]
 mod gpu_preview_tests;
 #[cfg(test)]
@@ -520,6 +521,8 @@ pub(crate) struct Editor {
     pub(crate) gpu: gpu_preview::GpuPreviews,
     /// The high-zoom minimap's overview of the stage the canvas navigates ([`overview`]).
     pub(crate) overviews: overview::Overviews,
+    /// The minimap's navigation: its drag in progress and what its input did ([`minimap`]).
+    pub(crate) minimap_nav: minimap::Navigation,
     /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
     /// The open draft's ticks the GPU does not draw: held, or waiting for their reference frame.
@@ -591,7 +594,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 32] = [
+const AFTER_MESSAGE: [AfterMessage; 33] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -605,6 +608,7 @@ const AFTER_MESSAGE: [AfterMessage; 32] = [
     gpu_settle::after_message,
     gpu_counts::after_message,
     overview::after_message,
+    minimap::after_message,
     motion::after_message,
     renderer::after_message,
     mask_panel::after_message,
@@ -772,6 +776,7 @@ impl Editor {
             develop: Default::default(),
             gpu: Default::default(),
             overviews: Default::default(),
+            minimap_nav: Default::default(),
             gpu_settle: Default::default(),
             motion: Default::default(),
             drawn_frames: Default::default(),
@@ -1229,6 +1234,10 @@ impl Editor {
         }
         match message {
             Message::Key(event, status) => {
+                // A minimap drag takes Escape before anything under it, and ends on focus loss.
+                if let Some(task) = self.minimap_key(&event) {
+                    return task;
+                }
                 // The whole keyboard table is one pure function; only its result reaches the state.
                 match keymap::keymap(&event, status, &self.key_context()) {
                     Some(message) => self.dispatch(message),
@@ -1398,6 +1407,7 @@ impl Editor {
                 surfaces.gpu_tag = None;
             }
         }
+        surfaces.minimap = self.minimap_model(&surfaces);
         surfaces
     }
 
