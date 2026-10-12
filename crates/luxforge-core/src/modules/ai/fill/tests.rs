@@ -936,7 +936,10 @@ fn a_selection_is_full_over_what_was_painted_and_feathers_past_it() {
     assert_eq!((bounds.y0, bounds.y1()), (462, 738));
     // What the owner admits by holds every covered pixel.
     let support = selection.support(s);
-    assert!(support.y0 <= bounds.y0 && support.y1() >= bounds.y1(), "{support:?}");
+    assert!(
+        support.y0 <= bounds.y0 && support.y1() >= bounds.y1(),
+        "{support:?}"
+    );
 }
 
 #[test]
@@ -952,7 +955,13 @@ fn an_object_the_brush_paints_over_never_shows_through_the_candidate() {
     let block = rect(672, 492, 256, 188);
     let image: Vec<[f32; 3]> = (0..s.height)
         .flat_map(|y| (0..s.width).map(move |x| (x, y)))
-        .map(|(x, y)| if block.contains(x, y) { red } else { background })
+        .map(|(x, y)| {
+            if block.contains(x, y) {
+                red
+            } else {
+                background
+            }
+        })
         .collect();
     let parameters = serde_json::json!({
         "selection-points": [[0.4, 0.5], [0.6, 0.5]],
