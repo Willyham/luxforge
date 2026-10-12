@@ -34,6 +34,60 @@ use luxforge_ui::{GridBlock, GridPress, PressModifiers};
 use serde_json::json;
 use std::collections::BTreeSet;
 
+#[test]
+fn startup_empty_catalog_shows_select_on_creation_and_reopen() {
+    use crate::app::testing::{boot_with, start_owner};
+    let (mut editor, startup, catalog) = boot_with(crate::Config::default());
+    assert_eq!(editor.select.state.shown, Shown::Select);
+    assert_eq!(editor.select.state.counts.as_ref().unwrap().photographs, 0);
+    assert!(
+        editor.select.events_read,
+        "Select must load its sources at launch"
+    );
+    assert!(startup.units() > 0);
+    editor.owner.stop();
+    editor.owner_join.take().unwrap().join().unwrap();
+    drop(editor);
+
+    let config = crate::Config::default();
+    let (owner, join) = start_owner(&catalog, &config);
+    let (editor, _) = Editor::new(crate::app::Boot {
+        owner,
+        join,
+        live_server: None,
+        config,
+        client: None,
+        initial_import: None,
+        window: (1440.0, 900.0),
+    });
+    assert_eq!(editor.select.state.shown, Shown::Select);
+    finish(editor, catalog);
+}
+
+#[test]
+fn startup_nonempty_catalog_keeps_develop() {
+    let (editor, catalog) = boot();
+    finish(editor, catalog.clone());
+    // `real_photo` develops a fixture through another client before constructing the editor.
+    let (editor, _, _) = crate::app::testing::real_photo(&catalog);
+    assert_eq!(editor.select.state.shown, Shown::Develop);
+    finish(editor, catalog);
+}
+
+#[test]
+fn startup_explicit_file_keeps_develop_in_an_empty_catalog() {
+    let config = crate::Config {
+        files: [std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/s0/orientation-1.jpg")]
+        .into(),
+        ..crate::Config::default()
+    };
+    let (editor, _, catalog) = crate::app::testing::boot_with(config);
+    assert_eq!(editor.select.state.shown, Shown::Develop);
+    assert!(editor.busy, "the requested file must still begin opening");
+    finish(editor, catalog);
+}
+
 fn event_source() -> ViewSource {
     ViewSource::Event {
         event_id: EventId::parse(format!("event-{}", "b".repeat(32))).unwrap(),

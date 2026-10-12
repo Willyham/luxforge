@@ -58,7 +58,11 @@ pub(crate) fn rebuild(job: &mut PreviewJob, change: impl FnOnce(&mut Parts)) {
 }
 
 pub(crate) fn boot() -> (Editor, PathBuf) {
-    let (editor, _, catalog) = boot_with(Config::default());
+    let (mut editor, _, catalog) = boot_with(Config::default());
+    // These fixtures supply synthetic Develop state without running startup tasks. Launch tests
+    // use `boot_with` to exercise the catalog-dependent starting workspace instead.
+    editor.select = Default::default();
+    editor.rederive();
     (editor, catalog)
 }
 
