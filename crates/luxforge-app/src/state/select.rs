@@ -160,7 +160,7 @@ pub(crate) struct SelectState {
     /// The catalog's folders and collections, its filter bar and Metadata browser, and the Info
     /// panel over photographs ([`super::select_catalog`]).
     pub(crate) catalog: super::select_catalog::CatalogState,
-    /// HDR merges: the menu, the Merge options… form and the merge this desktop runs.
+    /// HDR merges: the menu, the merge preview sheet and the merge this desktop runs.
     pub(crate) merge: super::select_merge::SelectMerge,
     /// The size slider's cell widths, one per preset.
     pub(crate) files_cell_width: f32,
@@ -1676,7 +1676,7 @@ pub(crate) struct SelectModel {
     /// The catalog's folders and collections, and over the catalog its filter bar, Metadata
     /// browser and Info panel.
     pub(crate) catalog: super::select_catalog::CatalogModel,
-    /// HDR merges: the menu over the grid, the Merge options… form and Put back merge's notice.
+    /// HDR merges: the menu over the grid, the merge preview sheet and Put back merge's notice.
     pub(crate) merge: super::select_merge::MergeModel,
     /// Remove from indexed folders…'s confirmation, over the centre.
     pub(crate) forget: Option<ForgetSheet>,
