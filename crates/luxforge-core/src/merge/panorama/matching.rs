@@ -24,6 +24,9 @@ use super::features::{Descriptor, FrameFeatures};
 use super::linalg::{self, Draws};
 use crate::{Cancel, Error};
 
+/// One match: the first frame's pixel and the second's.
+pub(crate) type Correspondence = ((f64, f64), (f64, f64));
+
 /// The largest descriptor distance of a putative match, of 256 bits.
 pub const MAX_HAMMING: u32 = 64;
 /// Lowe's ratio: the nearest distance must be under this fraction of the second-nearest.
@@ -209,7 +212,7 @@ fn mul(a: &Homography, b: &Homography) -> Homography {
 
 /// The least-squares homography with `h₃₃ = 1` through normalized correspondences; `None` when
 /// they do not fix one.
-fn solve_homography(points: impl Iterator<Item = ((f64, f64), (f64, f64))>) -> Option<Homography> {
+fn solve_homography(points: impl Iterator<Item = Correspondence>) -> Option<Homography> {
     let mut ata = [[0.0f64; 8]; 8];
     let mut atb = [0.0f64; 8];
     let mut count = 0;
@@ -249,7 +252,7 @@ pub(crate) struct HomographyFit {
 /// normalization `norm`, with inliers within `threshold` pixels both ways. `None` when fewer than
 /// four matches or no draw fits.
 pub(crate) fn fit_homography(
-    points: &[((f64, f64), (f64, f64))],
+    points: &[Correspondence],
     norm: Normalization,
     threshold: f64,
     seed: u64,

@@ -52,7 +52,7 @@ use super::bundle::{self, PairObservations};
 use super::camera::{Lens, MAX_RADIAL, Rotation, rotation_from};
 use super::features::FrameFeatures;
 use super::linalg::{self, M3, V3};
-use super::matching::{self, HomographyFit, Normalization};
+use super::matching::{self, Correspondence, HomographyFit, Normalization};
 use super::refusal::Refusal;
 use crate::{Cancel, Error};
 use rayon::prelude::*;
@@ -328,7 +328,7 @@ impl PanoramaRegistration {
 struct PairState {
     a: usize,
     b: usize,
-    points: Vec<((f64, f64), (f64, f64))>,
+    points: Vec<Correspondence>,
     /// The coarser pyramid level of each match's two features.
     levels: Vec<u8>,
     homography: Option<HomographyFit>,
@@ -419,7 +419,7 @@ pub fn register_with_progress(
     let pair_list: Vec<(usize, usize)> = (0..n)
         .flat_map(|a| (a + 1..n).map(move |b| (a, b)))
         .collect();
-    type Matched = (Vec<((f64, f64), (f64, f64))>, Vec<u8>);
+    type Matched = (Vec<Correspondence>, Vec<u8>);
     let matched: Vec<Matched> = pair_list
         .par_iter()
         .map(|&(a, b)| {
@@ -548,7 +548,7 @@ pub fn register_with_progress(
         .map(|i| (i, centre * FOCAL_STEP.powi(i as i32)))
         .collect();
     diagnostics.focal_candidates = candidates.len();
-    let samples: Vec<Vec<((f64, f64), (f64, f64))>> = pairs
+    let samples: Vec<Vec<Correspondence>> = pairs
         .iter()
         .map(|p| match (&p.homography, p.verified) {
             (Some(fit), true) => spread(&fit.inliers, FOCAL_SAMPLES)
@@ -611,11 +611,11 @@ pub fn register_with_progress(
         })
         .collect::<Result<_, Error>>()?;
     for (pair, fit) in pairs.iter_mut().zip(fitted) {
-        if let Some((relative, inliers, overlap)) = fit {
-            if matching::verified(inliers.len(), overlap) {
-                pair.overlap = overlap;
-                pair.rotation = Some((relative, inliers));
-            }
+        if let Some((relative, inliers, overlap)) = fit
+            && matching::verified(inliers.len(), overlap)
+        {
+            pair.overlap = overlap;
+            pair.rotation = Some((relative, inliers));
         }
     }
     let (mut rotations, mut solved, anchor) = spanning_tree(n, &pairs);
@@ -673,9 +673,8 @@ pub fn register_with_progress(
         // Classify every verified pair again under the adjusted model, placing frames not yet
         // placed from a verified pair to a placed frame.
         let placed_before = solved.clone();
-        for index in 0..pairs.len() {
+        for p in pairs.iter_mut() {
             cancel.check()?;
-            let p = &pairs[index];
             if !p.verified {
                 continue;
             }
@@ -689,12 +688,12 @@ pub fn register_with_progress(
                 (false, false) => None,
             };
             let Some(relative) = relative else {
-                pairs[index].rotation = None;
+                p.rotation = None;
                 continue;
             };
             let (inliers, overlap) =
                 inliers_under(&lens, &relative, &p.points, INLIER_THRESHOLD_PX * px);
-            let pair = &mut pairs[index];
+            let pair = p;
             pair.overlap = overlap;
             if matching::verified(inliers.len(), overlap) {
                 match (solved[a], solved[b]) {
@@ -914,11 +913,7 @@ fn rays(lens: &Lens, p: (f64, f64)) -> V3 {
 }
 
 /// The rotation from the first frame's camera to the second's fitted to `inliers` of `points`.
-fn fit_relative(
-    lens: &Lens,
-    points: &[((f64, f64), (f64, f64))],
-    inliers: &[u32],
-) -> Option<Rotation> {
+fn fit_relative(lens: &Lens, points: &[Correspondence], inliers: &[u32]) -> Option<Rotation> {
     linalg::fit_rotation(inliers.iter().map(|&i| {
         let (p, q) = points[i as usize];
         (rays(lens, p), rays(lens, q), 1.0)
@@ -947,7 +942,7 @@ fn symmetric_error(lens: &Lens, relative: &Rotation, p: (f64, f64), q: (f64, f64
 fn inliers_under(
     lens: &Lens,
     relative: &Rotation,
-    points: &[((f64, f64), (f64, f64))],
+    points: &[Correspondence],
     threshold: f64,
 ) -> (Vec<u32>, usize) {
     let inverse = relative.inverse();

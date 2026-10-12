@@ -164,6 +164,8 @@ pub(crate) fn orthonormalize(m: &M3) -> M3 {
 /// The eigenvalues of a symmetric `N × N` matrix, ascending, with their unit eigenvectors as the
 /// columns of the second matrix, by cyclic Jacobi sweeps (at most 64, stopping once the
 /// off-diagonal is negligible).
+// Row and column updates of a matrix read clearest by index.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn symmetric_eigen<const N: usize>(a: [[f64; N]; N]) -> ([f64; N], [[f64; N]; N]) {
     let mut a = a;
     let mut v = [[0.0; N]; N];
@@ -261,7 +263,7 @@ pub(crate) fn fit_rotation(pairs: impl Iterator<Item = (V3, V3, f64)>) -> Option
     let (values, vectors) = symmetric_eigen(n);
     // The two largest eigenvalues tie when the directions are all parallel.
     let spread = values[3] - values[2];
-    if !(spread > 1e-12 * values[3].abs().max(1e-300)) {
+    if spread.is_nan() || spread <= 1e-12 * values[3].abs().max(1e-300) {
         return None;
     }
     let (w, x, y, z) = (vectors[0][3], vectors[1][3], vectors[2][3], vectors[3][3]);
@@ -281,7 +283,7 @@ pub(crate) fn cholesky_solve(a: &mut [f64], b: &[f64], n: usize) -> Option<Vec<f
         for k in 0..j {
             d -= a[j * n + k] * a[j * n + k];
         }
-        if !(d > 0.0) {
+        if d.is_nan() || d <= 0.0 {
             return None;
         }
         let d = d.sqrt();
@@ -312,6 +314,8 @@ pub(crate) fn cholesky_solve(a: &mut [f64], b: &[f64], n: usize) -> Option<Vec<f
 
 /// Solve the `N × N` system `a·x = b` by Gaussian elimination with partial pivoting; `None` when a
 /// pivot is negligible.
+// Row and column updates of a matrix read clearest by index.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn solve<const N: usize>(mut a: [[f64; N]; N], mut b: [f64; N]) -> Option<[f64; N]> {
     let scale = a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
     for col in 0..N {

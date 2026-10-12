@@ -480,7 +480,7 @@ fn corners(
         }
         for x in BORDER..w - BORDER {
             let v = response[y * w + x];
-            if !(v >= MIN_RESPONSE) {
+            if v.is_nan() || v < MIN_RESPONSE {
                 continue;
             }
             let mut peak = true;

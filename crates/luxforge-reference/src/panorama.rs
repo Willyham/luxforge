@@ -330,10 +330,11 @@ impl Scene {
                         continue;
                     }
                     let local = apply(&patch.axes, offset);
-                    let mut inside = 1.0;
-                    for a in 0..3 {
-                        inside *= smoothstep((patch.half[a] - local[a].abs()) / self.edge + 0.5);
-                    }
+                    let inside: f64 = local
+                        .iter()
+                        .zip(patch.half)
+                        .map(|(l, half)| smoothstep((half - l.abs()) / self.edge + 0.5))
+                        .product();
                     if inside > 0.0 {
                         stops += patch.stops * inside;
                         for (t, p) in tint.iter_mut().zip(patch.tint) {
