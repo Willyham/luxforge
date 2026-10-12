@@ -35,6 +35,7 @@ pub(crate) mod state_panel;
 pub(crate) mod status_bar;
 pub(crate) mod title_bar;
 pub(crate) mod tools_panel;
+pub(crate) mod unsupported_catalog;
 pub(crate) mod usage;
 mod warped_path;
 

@@ -206,6 +206,9 @@ pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;
 pub(crate) mod thumbnails;
+pub(crate) mod unsupported_catalog;
+#[cfg(test)]
+mod unsupported_catalog_tests;
 pub(crate) mod usage;
 pub(crate) mod usage_device;
 #[cfg(test)]
@@ -1219,6 +1222,9 @@ impl Editor {
             Message::Select(message) => self.select_update(message),
             Message::LongWork(message) => self.long_work_update(message),
             Message::Develop(message) => self.develop_update(message),
+            // An answer the sheet asked for before this catalog opened, such as the releases
+            // page's opener, arriving after it did.
+            Message::UnsupportedCatalog(_) => Task::none(),
             Message::Close => self.close(),
         }
     }

@@ -2122,6 +2122,7 @@ dependencies = [
  "luxforge-testkit",
  "luxforge-ui",
  "rfd",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

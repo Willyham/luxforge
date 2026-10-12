@@ -20,9 +20,9 @@ use crate::{
     raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_smoke as select, settings_smoke as settings, theme_smoke as theme,
-    usage_backend_smoke as usage_backend, usage_smoke as usage, viewport_smoke as viewport,
-    vignette_smoke as vignette, visibility_smoke as visibility, workspace_smoke as workspace,
-    zoom_smoke as zoom, *,
+    unsupported_catalog_smoke as unsupported_catalog, usage_backend_smoke as usage_backend,
+    usage_smoke as usage, viewport_smoke as viewport, vignette_smoke as vignette,
+    visibility_smoke as visibility, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -1098,6 +1098,17 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: None,
         own: None,
+    },
+    Scenario {
+        name: unsupported_catalog::SCENARIO,
+        about: "A remembered catalog another version made: the window opens on the unsupported-catalog sheet naming format 16 and format 1, the catalog unchanged and the releases page, then Start a new catalog creates and remembers catalog (format 1).sqlite beside it and the fixture opens in the editor over it; the refused catalog, its artifacts and its index keep every byte",
+        // Its one launch names a catalog the run seeds before it.
+        launches: &[],
+        verify: unsupported_catalog::verify,
+        source: Source::Fixtures(&[unsupported_catalog::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(unsupported_catalog::NOTE),
+        own: Some(unsupported_catalog::run),
     },
     Scenario {
         name: "gallery",

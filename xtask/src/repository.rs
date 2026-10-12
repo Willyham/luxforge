@@ -1170,6 +1170,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--gpu-adapters\"",
             "\"--usage-test-receiver\"",
             "\"--evidence-config\"",
+            "\"--evidence-catalog\"",
+            "\"--evidence-unsupported-catalog\"",
             "spawn_editor",
             "editor_args",
         ],

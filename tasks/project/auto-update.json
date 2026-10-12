@@ -131,7 +131,7 @@
     {
       "id": "TASK-003",
       "description": "Let the desktop launch past an unsupported remembered catalog and offer a new one.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Today a refused remembered catalog fails the launch (crates/luxforge-app/src/app/lifecycle.rs). Instead open the window with a sheet naming the refused catalog's format and the current one, with Start a new catalog and Quit, and a releases-page link through the checked HTTPS opener.",

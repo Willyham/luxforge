@@ -178,6 +178,49 @@ impl Error {
                 .and_then(serde_json::Value::as_str)
                 == Some(RETRY_AFTER_SOURCE_JOB)
     }
+    /// `incompatible`: a catalog whose format marker this version does not open, left as it is.
+    /// `data.catalog_format` is the marker read and `data.expected_format` the one this version
+    /// opens, so a client names both without reading the message.
+    pub fn unsupported_catalog(format: i64, expected: i64) -> Self {
+        Self::incompatible(format!(
+            "catalog format {format} is not supported; expected {expected}; choose a new catalog path"
+        ))
+        .with_data(serde_json::json!({ "catalog_format": format, "expected_format": expected }))
+    }
+    /// `incompatible`: a database with the current format marker but without the catalog's
+    /// application mark, left as it is. `data.marked` is `false` beside the formats.
+    pub fn unmarked_catalog(format: i64, expected: i64) -> Self {
+        Self::incompatible(
+            "database is not marked as a Luxforge catalog; choose a new catalog path",
+        )
+        .with_data(serde_json::json!({
+            "catalog_format": format,
+            "expected_format": expected,
+            "marked": false,
+        }))
+    }
+    /// The format marker a refused catalog carries, read from an [`Self::unsupported_catalog`] or
+    /// [`Self::unmarked_catalog`] refusal's kind and data.
+    pub fn refused_catalog_format(&self) -> Option<i64> {
+        self.catalog_data("catalog_format")?.as_i64()
+    }
+    /// The catalog format this version opens, as a catalog refusal names it.
+    pub fn expected_catalog_format(&self) -> Option<i64> {
+        self.catalog_data("expected_format")?.as_i64()
+    }
+    /// Whether a refused catalog carries the catalog's application mark: `false` only for an
+    /// [`Self::unmarked_catalog`] refusal.
+    pub fn refused_catalog_marked(&self) -> bool {
+        self.catalog_data("marked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+    }
+    fn catalog_data(&self, key: &str) -> Option<&serde_json::Value> {
+        if self.kind != ErrorKind::Incompatible {
+            return None;
+        }
+        self.data.as_deref()?.get(key)
+    }
     /// The same error carrying structured data for the client.
     pub fn with_data(mut self, data: serde_json::Value) -> Self {
         self.data = Some(Box::new(data));
