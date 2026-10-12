@@ -819,6 +819,15 @@ Start with `schema.list`. Request shapes and live-session behavior are in the [u
 
 On macOS, `develop --background` builds the selected profile and runs a temporary copy in an `LSBackgroundOnly` app bundle, preventing desktop activation. Use an isolated catalog or `--evidence-dir NEW_DIR` for automated checks. The live API and native GPU renderer remain available; this mode is for API and capture work, not keyboard, mouse or native-dialog checks. The bundle is removed after exit, and the original executable and packaged app are untouched. Restricted tool environments must permit macOS LaunchServices/window-server IPC: a background process can otherwise stall before image work, with only startup/open-request events and idle source/catalog workers. Retry with the required host access rather than activating the window. Ordinary `develop` remains an interactive launch. `--background` fails explicitly on other platforms.
 
+### A local update feed
+
+A development build reports updates as `unavailable` with `development-build` and never contacts the feed. To try the [Linux payload updater](../design/auto-update.md#linux-the-payload-updater) by hand, a debug build on Linux reads two environment variables, and only when both are set and valid:
+
+- `LUXFORGE_UPDATE_DEV_FEED`: a feed base URL ending in `/`, such as `http://127.0.0.1:8123/updates/`. It may be `http` on this machine or `https` anywhere. The updater reads `<base>linux-x86_64/appcast.xml`.
+- `LUXFORGE_UPDATE_DEV_KEY`: the base64 public key the feed's archives are signed with.
+
+The payload must look like a release one. Copy the debug `luxforge` into a directory with a `build.json` naming a `version`, a `build_number` and the target `x86_64-unknown-linux-gnu`, and run it from there; a binary without one stays unavailable. Hidden, evidence and test-receiver launches ignore the variables, and release builds and other platforms never read them, so a release build only ever uses the feed and key it was compiled with.
+
 ### Browsing the component gallery
 
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in

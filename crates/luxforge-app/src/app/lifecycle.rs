@@ -12,7 +12,10 @@ use iced::Task;
 use luxforge_cli::Paths;
 use luxforge_core::{
     ClientAuthority, ClientId, ErrorKind, HostConfig, LocalServer, ModuleRegistry, OwnerHandle,
-    capabilities::secrets::{MemorySecretStore, SecretStore},
+    capabilities::{
+        secrets::{MemorySecretStore, SecretStore},
+        transport::Transport,
+    },
 };
 use luxforge_net::{HttpTransport, platform_secret_store};
 use serde_json::json;
@@ -47,7 +50,8 @@ const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis
 /// resolved paths, and the secret store and network transport it uses. An evidence run keeps all
 /// of it inside its evidence directory with an in-memory store, so it never touches the person's
 /// configuration or login keychain. Nothing is created here: the host creates a directory on its
-/// first write, and the transport builds its TLS configuration on its first request. `tiles` is
+/// first write, and the transport builds its TLS configuration on its first request. The update
+/// port is chosen for the launch ([`super::update_port::select`]). `tiles` is
 /// the launch's GPU tile worker, which the owner's export lane streams every export through and
 /// which starts nothing until the first export asks it.
 pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
@@ -56,17 +60,18 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         None => platform_secret_store(),
     };
     let paths = config.paths.as_ref();
+    let transport: Arc<dyn Transport> = Arc::new(HttpTransport::system());
     HostConfig {
         usage_consent: Arc::new(luxforge_core::usage::Usage::new(usage_eligibility(config))),
         preferences_dir: paths.map(|paths| paths.config.clone()),
         config_dir: paths.map(Paths::module_config),
         resource_dir: paths.map(Paths::module_resources),
         secrets,
+        // A Linux release build's payload updater reads its feed and archives over the system
+        // transport; every other launch gets an unavailable port naming why.
+        updates: Some(super::update_port::select(config, transport.clone())),
         // A developer run installs the developer models from memory.
-        transport: luxforge_core::DeveloperModels::for_run(
-            config.developer,
-            Arc::new(HttpTransport::system()),
-        ),
+        transport: luxforge_core::DeveloperModels::for_run(config.developer, transport),
         // What a model's machine minimum is held against in the Models tab and at install.
         machine_memory_bytes: luxforge_core::capabilities::host::installed_memory_bytes(),
         launch_flags: config.launch_flags.clone(),
@@ -344,7 +349,7 @@ fn start_live_session(
 
 impl Editor {
     /// The window closed: stop the live server and the owner, finish the log and exit once the
-    /// owner thread has joined.
+    /// owner thread has joined, installing a staged update first.
     pub(super) fn close(&mut self) -> Task<Message> {
         // The window's frame is asked for once and stored through the writer, which the close
         // then waits for like any other write.
@@ -387,6 +392,9 @@ impl Editor {
                 if let Some(join) = join {
                     let _ = join.join();
                 }
+                // The catalog is closed: a staged update may now replace the app, and one the
+                // person asked for starts the new version in place of this process.
+                super::update_port::at_quit();
             },
             |_| (),
         )

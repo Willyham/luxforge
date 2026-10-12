@@ -9,7 +9,9 @@ publish.workspace = true
 # The update feed's one home: the per-release update record, the Sparkle-format appcast (written
 # and read), Ed25519 signing and verification in Sparkle's form, the choice of an update from a
 # feed, and `release/update.json`. xtask writes records and feeds with it; the Linux updater reads
-# feeds with it. It depends on no workspace crate, no GUI and no network crate *(enforced)*.
+# feeds with it, and the Linux payload updater (`payload`) checks, downloads, verifies, extracts and
+# installs with it through a fetch it is handed. It depends on no workspace crate, no GUI and no
+# network crate *(enforced)*.
 [dependencies]
 ring.workspace = true
 base64.workspace = true
@@ -19,6 +21,20 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
+# The Linux payload archive: gzip through `miniz_oxide` and tar, the versions xtask already builds the
+# archive with. `tar` without its default `xattr` feature: an update restores no extended attributes.
+flate2 = "=1.1.10"
+tar = { version = "=0.4.46", default-features = false }
+
+# The payload's writability check, and on Linux the atomic directory exchange (`renameat2` with
+# `RENAME_EXCHANGE`) and `syncfs`, as safe calls; the version and features the folder watcher pins.
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[features]
+# Test builds only: `payload::testing`, fake payloads, signed archives and feeds and an in-memory
+# fetch for other crates' tests of the payload updater. Only `[dev-dependencies]` tables turn it on.
+testing = []
 
 [dev-dependencies]
 tempfile = "=3.27.0"

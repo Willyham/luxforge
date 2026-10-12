@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; and [launching past an unsupported catalog](#launching-past-an-unsupported-catalog). No platform mechanism or update interface is built yet, so every build reports `unavailable` and updates remain manual.
+Status: **in implementation** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built so far: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; and the [Linux payload updater](#linux-the-payload-updater) with its desktop port. A Linux release build updates itself once the update key is committed; until then it reports `no-update-key`. The macOS mechanism and the update interface are not built yet, and the feed route and production key are not in place, so no build updates itself today.
 
 ## Outcome and scope
 
@@ -308,29 +308,62 @@ Until the app moves, `update.status` reports `unavailable` with the reason `outs
 
 ## Linux: the payload updater
 
-The Linux download is a relocatable `Luxforge/` directory. The updater serves the payload the running executable lives in, identified by its `build.json`.
+The Linux download is a relocatable `Luxforge/` directory. The updater serves the payload the running executable lives in, identified by the `build.json` beside it: its `version`, its `build_number` and its `target`.
 
-**When it can update in place:**
+The engine is `luxforge_update::payload`, in the leaf crate. It reaches the network only through a `Fetch` its host hands it. The desktop's port, `LinuxPayloadPort` in `crates/luxforge-app/src/app/update_port.rs`, adapts the checked `luxforge-net` transport to that fetch and runs the engine on its own threads.
 
-- the payload and its parent are writable by the person;
-- staging can be on the same filesystem;
-- the payload carries no package-manager marker, which future distribution packages use to stand the updater down.
+**When it can update in place.** All of these must hold:
 
-Otherwise it reports `linux-notify`, and the offer opens the release page.
+- the payload carries no package-manager marker, `Luxforge/.package-managed`, which a future distribution package writes to stand the updater down;
+- the person can write the payload and its parent;
+- a staging directory can be created beside the payload on the same filesystem. A launch probes this by creating and removing `.luxforge-update-probe-<pid>` in the parent.
+
+Otherwise it reports `linux-notify`. It still checks and offers the update, `update.install` is refused as `not-ready` with `notify-only`, and the offer opens the release page (the update's `notes_url`).
 
 **An update, step by step:**
 
-1. Read the feed over the existing `luxforge-net` HTTPS transport and choose the newest item on a followed channel with a higher build number.
-2. Stream the archive into a staging directory beside the payload, refusing anything longer than the item's stated length.
-3. Verify its Ed25519 signature against the compiled public key without holding the archive in heap memory, for example through a memory map.
-4. Extract into `Luxforge.new/`:
-   - refuse absolute paths, `..`, links that leave the payload, device files and archives past a size cap;
-   - preserve executable modes;
-   - check that the extracted `build.json` names the item's version, build and target.
-5. Install at the end of the quit path, after the catalog is closed. Swap the directories atomically with `renameat2(RENAME_EXCHANGE)` where the filesystem supports it, and with two renames otherwise. Keep the old payload as `Luxforge.previous`. Then exec the new executable with the original launch arguments (no relaunch when installing automatically at quit).
-6. Remove `Luxforge.previous` after the new version's first successful launch. Until then it is a manual way back.
+1. **Check.** Read `<feed base>linux-x86_64/appcast.xml`, at most 4 MiB, and choose the newest item on a followed channel with a higher build number. An item without `luxforge:catalogFormat` is never offered, because the updater could not tell whether it changes the catalog format.
+2. **Download.** Stream the archive into `<parent>/.luxforge-update-<build>/` through a 64 KiB file buffer.
+   - Bytes past the item's stated length are refused (`oversize`), as is an item stating more than 2 GiB.
+   - A download that ends short is refused (`length-mismatch`).
+   - The archive's request may follow up to three redirects, to GitHub's release download hosts only.
+3. **Verify** its Ed25519 signature against the compiled public key through a read-only memory map, so the archive is never held in heap memory.
+4. **Extract** into `Luxforge.new/` in the staging directory:
+   - Every entry must lie under the archive's one `Luxforge/` directory. No path may be absolute or contain `..`.
+   - A symbolic link's target must be relative and descend only, so nothing reached through any chain of the archive's links leaves the payload.
+   - A hard link must name an earlier regular file of the archive.
+   - Devices, FIFOs, sparse files and other special entries are refused, as is a path written twice.
+   - The archive may hold at most 100,000 entries and 4 GiB of file bytes.
+   - Files keep their permission bits, executable bits included, with set-id and sticky bits, group and other write removed. Directories gain owner access.
+   - The extracted `build.json` must name the item's version and build and this payload's target, and the payload's executable must be present and executable (`build-mismatch` otherwise).
 
-If the user-level desktop entry from the install helper points at this payload, the new payload's integration step refreshes the entry and icon. An interrupted download, a failed verification or a failed extraction removes its staging directory and leaves the installed payload untouched.
+   On Linux the filesystem is then synced, so a crash after the swap cannot leave files that never reached the disk. The archive is deleted.
+5. **Install** at the end of the quit path, after the catalog is closed. The staged `build.json` is checked again first.
+   - On Linux, `renameat2(RENAME_EXCHANGE)` swaps `Luxforge` and the staging's `Luxforge.new` atomically. It is called through `rustix`, so the crate needs no `unsafe`. The old payload then moves from the staging directory to `Luxforge.previous` beside the new one.
+   - Where the filesystem cannot exchange, and on other unix systems, two renames are used instead. The payload moves to `Luxforge.previous` and the new one into its place. If the second rename fails, the first is undone.
+   - An earlier `Luxforge.previous` is replaced. The staging directory is removed.
+   - The new executable is then exec'd with the launch's original arguments. There is no relaunch when installing automatically at quit.
+6. **Clean up.** Once the new version's catalog owner has started, its first successful launch removes `Luxforge.previous` and every `.luxforge-update-*` entry beside the payload. Until then, `Luxforge.previous` is a manual way back. Two instances running from one payload share these directories, and a launch's cleanup can end the other instance's download, which then reports its failure.
+
+Any failure before the swap, a cancelled download included, removes its staging directory and leaves the installed payload untouched. Every refusal names its code in `update.status`'s `error`.
+
+**The desktop entry.** After a swap, a user-level desktop entry is refreshed when its `Exec` program lies inside this payload. The entry is `$XDG_DATA_HOME/applications/luxforge.desktop`, or `~/.local/share/applications/luxforge.desktop`. The refresh rewrites `Exec` and `TryExec` for the installed executable, and `X-Luxforge-Version` and `X-Luxforge-Build` for the new build, then replaces the file with a rename. That prompts the desktop environment to read the entry and its icon again. The install helper that would write the entry does not exist yet.
+
+**The port** (`LinuxPayloadPort`):
+
+- **Calls return at once.** Every `UpdatePort` call returns without waiting. One worker thread runs checks and the cleanup after launch, and sleeps on a condition variable until the next check is due. A download runs on its own thread, one at a time.
+- **Schedule.** While `update_checks` is on, the worker checks 10 seconds after the owner attaches, once the workspace is up, and then 24 hours after the last check that finished. `update.check` checks at once, or joins the check already running.
+- **Progress** is reported at most once per percent of the archive, and at least every 256 KiB.
+- **Automatic updates.** An update the policy installs automatically downloads in the background and is swapped at an ordinary quit, without relaunching. A background download the policy stops wanting is cancelled. `update.skip` of the offered version cancels its download and removes what was staged.
+- **Install on request.** `update.install` downloads what is still missing, then posts the desktop's ordinary close (`Message::Close`) through a wake signal only this port's launches subscribe to. The close stops the live server and the catalog owner. Once the owner thread has joined, it calls the port's quit hook, which swaps and execs.
+- **Quitting** cancels any running check or download and waits for the cancelled download to end.
+
+**Which launches get it.** The port is chosen in the desktop's `host_config`:
+
+- **A Linux release build** gets the port when a person launches it and the build has a public key. A release build is one compiled with `LUXFORGE_RELEASE_VERSION`, and the feed base URL and key come from the `release/update.json` it was compiled with. A release build without the key reports `no-update-key`. A binary outside a payload, with no `build.json` beside it, is treated as a development build.
+- **Every other launch** reports `unavailable` with `development-build`. That covers development and test builds, and hidden, evidence and test-receiver launches, which is how smoke, verify and background runs start. None of them contacts the real feed.
+- **macOS** stays `unavailable` until its Sparkle port is selected in the same place.
+- **A debug Linux build** can be pointed at a local feed and key for a manual test ([development](../engineering/development.md#a-local-update-feed)). A release build never reads those variables.
 
 ## Windows later
 

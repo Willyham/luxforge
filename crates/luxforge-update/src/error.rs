@@ -58,6 +58,26 @@ pub enum Error {
     RecordKeyMismatch {
         tag: String,
     },
+    /// A directory that is not a Linux payload: no readable `build.json` naming this build, or no
+    /// executable where the payload should hold one.
+    NotPayload(String),
+    /// A request the payload updater's fetch could not complete: the network, TLS, an HTTP status
+    /// other than 200 or a refused URL.
+    Fetch(String),
+    /// A download longer than its feed item states, or than the updater's absolute cap.
+    Oversize {
+        limit: u64,
+    },
+    /// An archive entry the payload updater refuses to extract: an absolute path, `..`, a link
+    /// that could leave the payload, a device or other special file, or past the size caps.
+    UnsafeArchive(String),
+    /// An extracted payload whose `build.json` does not name the feed item's version, build and
+    /// target.
+    BuildMismatch(String),
+    /// The payload could not be swapped for the new one; the installed payload is unchanged.
+    InstallFailed(String),
+    /// The work was cancelled, as quitting cancels a download.
+    Cancelled,
     Io(std::io::Error),
 }
 
@@ -81,6 +101,13 @@ impl Error {
             Error::UnpublishedAsset { .. } => "unpublished-asset",
             Error::AssetLengthMismatch { .. } => "asset-length-mismatch",
             Error::RecordKeyMismatch { .. } => "record-key-mismatch",
+            Error::NotPayload(_) => "not-a-payload",
+            Error::Fetch(_) => "fetch-failed",
+            Error::Oversize { .. } => "oversize",
+            Error::UnsafeArchive(_) => "unsafe-archive",
+            Error::BuildMismatch(_) => "build-mismatch",
+            Error::InstallFailed(_) => "install-failed",
+            Error::Cancelled => "cancelled",
             Error::Io(_) => "io",
         }
     }
@@ -111,7 +138,14 @@ impl fmt::Display for Error {
             | Error::MalformedAppcast(why)
             | Error::MalformedConfig(why)
             | Error::MalformedInput(why)
-            | Error::DuplicateRelease(why) => f.write_str(why),
+            | Error::DuplicateRelease(why)
+            | Error::NotPayload(why)
+            | Error::Fetch(why)
+            | Error::UnsafeArchive(why)
+            | Error::BuildMismatch(why)
+            | Error::InstallFailed(why) => f.write_str(why),
+            Error::Oversize { limit } => write!(f, "the download is longer than {limit} bytes"),
+            Error::Cancelled => f.write_str("cancelled"),
             Error::BuildNotRising {
                 target,
                 earlier,
