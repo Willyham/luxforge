@@ -8,7 +8,7 @@
 use super::*;
 use crate::export::{CaptureMetadata, encode::srgb_profile, presets};
 use image::ImageDecoder;
-use std::{io::Cursor, sync::Condvar};
+use std::io::Cursor;
 
 /// The camera JPEG ([`camera_jpeg`]) imported: Make, Model and Artist in its EXIF.
 fn camera(harness: &Harness) -> Value {
@@ -332,13 +332,13 @@ fn every_preset_format_size_level_optimise_and_limit_writes_what_its_plan_says()
 /// Each `job.read` of a running export, taken on the export lane each time its progress changes
 /// ([`Hold`]'s `"progress"`), for the export `export.write` accepts next.
 struct Reads {
-    job: Arc<(Mutex<Option<Value>>, Condvar)>,
+    job: Arc<Mutex<Option<Value>>>,
     reads: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Reads {
     fn start(harness: &Harness) -> Self {
-        let job: Arc<(Mutex<Option<Value>>, Condvar)> = Arc::default();
+        let job: Arc<Mutex<Option<Value>>> = Arc::default();
         let reads: Arc<Mutex<Vec<Value>>> = Arc::default();
         let (owner, client) = (harness.owner.clone(), harness.client);
         let (named, taken) = (Arc::clone(&job), Arc::clone(&reads));
@@ -346,15 +346,9 @@ impl Reads {
             if at != "progress" {
                 return;
             }
-            let (slot, set) = &*named;
-            let id = set
-                .wait_timeout_while(slot.lock().unwrap(), luxforge_testbase::HANG, |id| {
-                    id.is_none()
-                })
-                .unwrap()
-                .0
-                .clone()
-                .expect("the export's job");
+            // The export's first progress can come before `export.write` has answered its id.
+            let id =
+                luxforge_testbase::wait_for("the export's job", || named.lock().unwrap().clone());
             let read = owner
                 .call(
                     client,
@@ -377,10 +371,9 @@ impl Reads {
     /// read's.
     fn export(&self, harness: &Harness, params: Value) -> Vec<(f64, String)> {
         self.reads.lock().unwrap().clear();
-        *self.job.0.lock().unwrap() = None;
+        *self.job.lock().unwrap() = None;
         let accepted = harness.export(params);
-        *self.job.0.lock().unwrap() = Some(accepted["job_id"].clone());
-        self.job.1.notify_all();
+        *self.job.lock().unwrap() = Some(accepted["job_id"].clone());
         let read = harness.settle(&accepted["job_id"]);
         assert_eq!(read["status"], "ready", "{read}");
         let mut reads = self.reads.lock().unwrap().clone();
