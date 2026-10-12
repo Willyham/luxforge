@@ -18,7 +18,7 @@ use crate::atomic_file::{file_error, flush, sync_dir};
 use serde_json::json;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -182,6 +182,13 @@ impl Write for Staged {
 
     fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
+    }
+}
+
+/// A format written by strips with offsets patched afterwards, such as TIFF, seeks its own file.
+impl Seek for Staged {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.file.seek(position)
     }
 }
 
