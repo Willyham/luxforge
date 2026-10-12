@@ -103,11 +103,11 @@ impl Fixture {
         )
     }
 
-    /// The owner of a release build: the built-in modules, no `luxforge.ai` and no runtime.
+    /// The owner of a host with no `luxforge.ai` and no runtime: the built-in modules without it.
     fn start_without_ai(&self) -> Owner {
         Owner::start(
             &self.root.join("catalog.sqlite"),
-            Arc::new(ModuleRegistry::builtin()),
+            Arc::new(without_ai()),
             self.host(false),
         )
     }
@@ -128,8 +128,20 @@ impl Drop for Fixture {
     }
 }
 
+/// The product modules without `luxforge.ai`.
+fn without_ai() -> ModuleRegistry {
+    let mut registry = ModuleRegistry::new();
+    for module in crate::modules::registry::linked_modules(false) {
+        if module.descriptor().id != AI_MODULE {
+            registry.register(module).unwrap();
+        }
+    }
+    registry
+}
+
+/// The product modules with the developer `luxforge.ai`, whose jobs pass `gate`.
 fn registry(gate: &Arc<Gate>) -> Arc<ModuleRegistry> {
-    let mut registry = ModuleRegistry::builtin();
+    let mut registry = without_ai();
     registry
         .register(Arc::new(AiModule::gated(gate.clone())))
         .unwrap();
@@ -308,15 +320,24 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     );
     let revision = owner.asset_revision(&asset);
 
-    // Generate: three candidates from consecutive seeds in one job.
-    let first = owner.generate(with(selection(&asset), json!({"seed": 7})));
+    // Generate makes one candidate unless asked for more (owner, 2026-10-11).
+    let single = owner.generate(with(selection(&asset), json!({"seed": 7})));
+    let result = &single["result"]["result"];
+    assert_eq!(result["candidates"], json!([0]), "{single}");
+    assert_eq!(result["seeds"], json!([7]));
+    assert_eq!(result["next_seed"], 8);
+    assert_eq!(single["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(fixture.controls().generations(), 1);
+
+    // Three candidates from consecutive seeds in one job.
+    let first = owner.generate(with(selection(&asset), json!({"seed": 7, "candidates": 3})));
     let result = &first["result"]["result"];
     assert_eq!(result["candidates"], json!([0, 1, 2]), "{first}");
     assert_eq!(result["seeds"], json!([7, 8, 9]));
     assert_eq!(result["next_seed"], 10);
     assert_eq!(result["tier"], "generative");
     assert_eq!(result["prompt"], false);
-    assert_eq!(fixture.controls().generations(), 3);
+    assert_eq!(fixture.controls().generations(), 4);
     let rows = first["candidates"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
     for (index, row) in rows.iter().enumerate() {
@@ -394,6 +415,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
             .clone()
     };
     assert_eq!(read(&again["job_id"]), read(&first["job_id"]));
+    assert_eq!(read(&single["job_id"]), read(&first["job_id"]));
 
     // Accept the second job's second candidate from the other client.
     let accepted = owner
@@ -435,7 +457,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     let reopened = fixture.start_without_ai();
     assert_eq!(reopened.sample(&asset, centre.0, centre.1), after.1);
     assert_eq!(reopened.sample(&asset, outside.0, outside.1), before.0);
-    assert_eq!(fixture.controls().generations(), 6);
+    assert_eq!(fixture.controls().generations(), 7);
 }
 
 #[test]
@@ -616,6 +638,19 @@ fn every_refusal_is_named_and_generates_nothing() {
     let row = &job["candidates"][0];
     assert_eq!(row["label"], "Replace \"a red bicycle\"");
     assert!(row["provenance"]["prompt_hash"].is_string(), "{row}");
+    // Replace is the generator's, held by its own slot with the encoder, and is not blended.
+    assert_eq!(row["provenance"]["model"], FAKE_GENERATOR.resource);
+    assert_eq!(row["provenance"]["blend"], "none");
+    let held: Vec<Value> = owner.status(AI_MODULE)["runtime"]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["resource_id"].clone())
+        .collect();
+    assert!(
+        held.contains(&json!(FAKE_TEXT_ENCODER.resource)),
+        "{held:?}"
+    );
     owner
         .accept_as(owner.edit, &asset, &job["job_id"], 0)
         .unwrap();
@@ -706,6 +741,115 @@ fn the_developer_transport_serves_only_the_pinned_models_and_install_checks_thei
         assert!(file.url().starts_with(DEVELOPER_ORIGIN));
     }
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
+    use super::models::{
+        CONDITIONING_ASSET, CONDITIONING_RELEASE_TAG, CONDITIONING_URL, KLEIN_GENERATOR,
+        KLEIN_TEXT_ENCODER,
+    };
+    use crate::capabilities::descriptor::{CapabilityKind, machine_floor};
+    let registry = ModuleRegistry::builtin();
+    let module = registry
+        .module(AI_MODULE)
+        .expect("every run serves luxforge.ai");
+    let descriptor = module.descriptor();
+    assert!(!descriptor.developer);
+    descriptor.validate().unwrap();
+    let resources: Vec<_> = descriptor.resources.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(
+        resources,
+        [KLEIN_GENERATOR.resource, KLEIN_TEXT_ENCODER.resource]
+    );
+    for resource in &descriptor.resources {
+        assert!(
+            resource.url.starts_with("https://huggingface.co/"),
+            "{}",
+            resource.url
+        );
+        assert!(
+            resource.url.contains("/resolve/"),
+            "pinned by revision: {}",
+            resource.url
+        );
+        assert_eq!(resource.license, "Apache-2.0");
+        assert!(resource.use_restriction.is_none());
+        assert!(resource.tradeoff.is_some());
+        assert_eq!(resource.sha256.len(), 64);
+        for file in &resource.files {
+            assert_eq!(file.sha256.len(), 64, "{}", file.name);
+            assert!(file.bytes > 0);
+        }
+    }
+    // The removal conditioning is the project's own release asset, named by its hash.
+    assert_eq!(
+        CONDITIONING_URL,
+        format!(
+            "https://github.com/Willyham/luxforge/releases/download/{CONDITIONING_RELEASE_TAG}/{CONDITIONING_ASSET}"
+        )
+    );
+    let conditioning = KLEIN_GENERATOR
+        .files
+        .iter()
+        .find(|file| file.url == CONDITIONING_URL)
+        .unwrap();
+    assert!(CONDITIONING_ASSET.contains(&conditioning.sha256[..8]));
+    // Removal holds the generator, Replace the encoder with the generator, each refused below
+    // the memory its resource asks for.
+    let runtimes: Vec<_> = descriptor
+        .capabilities
+        .iter()
+        .filter_map(|capability| match &capability.kind {
+            CapabilityKind::LocalRuntime {
+                resource,
+                resident_bytes,
+                backends,
+                with,
+                ..
+            } => Some((
+                capability.id.as_str(),
+                resource.as_str(),
+                *resident_bytes,
+                backends.clone(),
+                with.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    const GIB: u64 = 1 << 30;
+    assert_eq!(
+        runtimes,
+        [
+            (
+                "run-klein",
+                KLEIN_GENERATOR.resource,
+                5 * GIB,
+                vec!["metal".to_owned(), "diffusion-cpu".to_owned()],
+                vec![]
+            ),
+            (
+                "run-klein-replace",
+                KLEIN_TEXT_ENCODER.resource,
+                9 * GIB,
+                vec!["metal".to_owned(), "diffusion-cpu".to_owned()],
+                vec![KLEIN_GENERATOR.resource.to_owned()]
+            ),
+        ]
+    );
+    for (file, resident) in [(KLEIN_GENERATOR, 5 * GIB), (KLEIN_TEXT_ENCODER, 9 * GIB)] {
+        let min = file.min_memory_bytes.unwrap();
+        assert!(min >= machine_floor(resident), "{}", file.resource);
+    }
+    assert_eq!(KLEIN_GENERATOR.min_memory_bytes, Some(16 * GIB));
+    assert_eq!(KLEIN_TEXT_ENCODER.min_memory_bytes, Some(24 * GIB));
+    // No developer fixture reaches an ordinary run.
+    assert!(
+        descriptor
+            .resources
+            .iter()
+            .all(|resource| !resource.url.starts_with(DEVELOPER_ORIGIN))
+    );
 }
 
 fn hex(bytes: &[u8]) -> String {

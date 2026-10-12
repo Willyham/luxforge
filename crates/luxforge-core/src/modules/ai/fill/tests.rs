@@ -406,9 +406,6 @@ fn the_model_hole_holds_every_covered_pixel_and_no_more_than_its_reach() {
             let my = ((i64::from(y) - plan.origin.1) as f64 / scale) as usize;
             touched[my * n + mx] = true;
             assert_eq!(context.model_mask[my * n + mx], 1.0, "({x}, {y})");
-            for c in 0..3 {
-                assert_eq!(context.model_image[(my * n + mx) * 3 + c], 0.0);
-            }
         }
     }
     let near = dilate(&touched, n, n, 1);
@@ -419,6 +416,15 @@ fn the_model_hole_holds_every_covered_pixel_and_no_more_than_its_reach() {
         );
     }
     assert!(context.model_image.iter().all(|v| (0.0..=1.0).contains(v)));
+    // The input keeps what the region covers: the generator is told the hole by the mask.
+    assert!(
+        context
+            .model_mask
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| **m > 0.0)
+            .any(|(i, _)| context.model_image[i * 3..i * 3 + 3] != [0.0; 3])
+    );
 }
 
 /// The reference enlargement: each window pixel directly from the model plane.
@@ -850,6 +856,31 @@ fn the_seam_correction_takes_out_a_colour_offset() {
         "mean error {} codes",
         sum / f64::from(count)
     );
+
+    // Without the blend (a Replace) the answer's own colour stands where the coverage is full.
+    let replaced = context.finish_with(&answer, 1, false).unwrap();
+    assert_eq!(replaced.seam_band, 0);
+    let (mut sum, mut count) = (0_f64, 0);
+    for (i, &c) in replaced.coverage.iter().enumerate() {
+        if c >= 1.0 {
+            for (k, &expected) in codes.iter().enumerate() {
+                let code = context.encoding.code(replaced.linear[i * 3 + k]);
+                sum += f64::from(code - expected);
+                count += 1;
+            }
+        }
+    }
+    let offset = sum / f64::from(count);
+    assert!((offset - 30.0).abs() < 1.0, "mean offset {offset} codes");
+    // And every pixel the coverage leaves is still the input's own.
+    for (i, &c) in replaced.coverage.iter().enumerate() {
+        if c == 0.0 {
+            assert_eq!(
+                replaced.linear[i * 3..i * 3 + 3],
+                candidate.linear[i * 3..i * 3 + 3]
+            );
+        }
+    }
 }
 
 #[test]

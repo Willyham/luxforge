@@ -57,7 +57,7 @@ cargo test --manifest-path probes/object-removal/Cargo.toml
 cargo test --manifest-path probes/object-removal/Cargo.toml -- --ignored   # needs the models and corpus
 ```
 
-The probe is its own Cargo workspace with its own lockfile, outside the editor's: the editor's build and quick tier do not build it. Its `diffusion/` sub-crate builds stable-diffusion.cpp and ggml from vendored, pinned sources with the `cc` crate (no CMake, no Python); [`diffusion/THIRD_PARTY.md`](diffusion/THIRD_PARTY.md) records the pins, the source selection, the licences and the one local change. Metal compiles its kernels at the first generation on a machine (about 16 s) and caches them. `cargo xtask check-repository` reads its sources and manifest with the repository's other rules. The tests that need the pinned models and the private corpus are `#[ignore]`d; the ignored suite last passed in full on the M4 (release profile, ONNX Runtime CPU and Core ML) on 2026-10-11, including the two scoring tests below.
+The probe is its own Cargo workspace with its own lockfile, outside the editor's: the editor's build and quick tier do not build it. Its `diffusion/` sub-crate builds stable-diffusion.cpp and ggml from the editor's vendored, pinned sources in [`crates/luxforge-diffusion`](../../crates/luxforge-diffusion) with the `cc` crate (no CMake, no Python), through that crate's `native/build.rs` and `src/native.rs`; [`THIRD_PARTY.md`](../../crates/luxforge-diffusion/THIRD_PARTY.md) records the pins, the source selection, the licences and the one local change. Metal compiles its kernels at the first generation on a machine (about 16 s) and caches them. `cargo xtask check-repository` reads its sources and manifest with the repository's other rules. The tests that need the pinned models and the private corpus are `#[ignore]`d; the ignored suite last passed in full on the M4 (release profile, ONNX Runtime CPU and Core ML) on 2026-10-11, including the two scoring tests below.
 
 Backends: `ort-cpu`, `ort-coreml-all`, `ort-coreml-gpu`, `ort-coreml-ane`, `ort-coreml-cpu`, `tract-cpu`, `tract-metal`, and the fixed-shape Core ML backends `ort-coreml-all-fixed`, `ort-coreml-gpu-fixed`, `ort-coreml-ane-fixed` (and `ort-coreml-cpu-fixed`). Core ML compiles each model on first load and caches it under the system temporary directory (`luxforge-removal-probe-coreml`); macOS keeps its own device-specialized copy in `~/Library/Caches/<process name>/com.apple.e5rt.e5bundlecache`, and the measured cold loads clear both. A cache compiled before a macOS update fails at load with `Unable to load model … Compile the model with Xcode`; delete the model's directory under `luxforge-removal-probe-coreml` and it compiles again. tract has no such cache: four of the five pinned models have a dynamic input dimension (`batch_size`, `num_points` or `batch`), so `runtime::Session` concretizes shapes lazily — the first `run` for a given combination of input shapes builds and optimizes a `TypedModel` plan and caches it; later runs with the same shapes reuse it. That first build is folded into "first run", not "load", in every table below.
 
@@ -398,7 +398,7 @@ $P generate --candidate klein-q4 --encoder q8 --reference outlined --no-blend --
 
 ### The build route
 
-stable-diffusion.cpp (MIT) and its ggml (MIT) are vendored as pinned source subsets in [`diffusion/`](diffusion/) and compiled by its `build.rs` with the `cc` crate, as `crates/luxforge-raw` compiles LibRaw: Metal with its kernels embedded, the CPU backend and Accelerate, `-mcpu=apple-m1` so the library runs on every M-series Mac. No CMake, no Python, no second build system and no network access; the 139 MB of generated tokenizer tables are left out (a text encoder takes its `tokenizer.json`). **The rule holds.** One local change, staged by exact-anchor replacement, lets a recorded conditioning stand in for the text encoder ([THIRD_PARTY.md](diffusion/THIRD_PARTY.md)). Its six static libraries total 19.5 MB. Metal compiles the kernels at the first generation on a machine (16.4 s) and caches them (15 ms after).
+stable-diffusion.cpp (MIT) and its ggml (MIT) are vendored as pinned source subsets in [`crates/luxforge-diffusion`](../../crates/luxforge-diffusion), where the editor's generative runtime builds them, and compiled by its `native/build.rs`, which the probe's `diffusion/build.rs` includes, with the `cc` crate, as `crates/luxforge-raw` compiles LibRaw: Metal with its kernels embedded, the CPU backend and Accelerate, `-mcpu=apple-m1` so the library runs on every M-series Mac. No CMake, no Python, no second build system and no network access; the 139 MB of generated tokenizer tables are left out (a text encoder takes its `tokenizer.json`). **The rule holds.** One local change, staged by exact-anchor replacement, lets a recorded conditioning stand in for the text encoder ([THIRD_PARTY.md](../../crates/luxforge-diffusion/THIRD_PARTY.md)). Its six static libraries total 19.5 MB. Metal compiles the kernels at the first generation on a machine (16.4 s) and caches them (15 ms after).
 
 Moebius is a UNet with a learned 20-token embedding in place of a text encoder, which stable-diffusion.cpp does not load, so it runs over the probe's existing ONNX Runtime from simonw's fp32, static 512² export, with the reference pipeline's DDIM schedule (20 steps at strength 0.99, so 19 run, each twice for guidance 2.0) reimplemented in `generative.rs`. MLX was not tried: stable-diffusion.cpp met the rule, and an MLX route would be macOS-only.
 
@@ -498,6 +498,49 @@ klein Q4 with the crop outlined as the reference and Qwen3-4B Q8_0 encoding "Rep
 | Moebius (`ft_places2`) | ONNX Runtime, Core ML | No-go: below LaMa on 15 of 16 cases, no structure, 25 to 35 s a candidate | — |
 
 The resource drafts for the model that passed, its files and its optional text encoder, are in [`resources/generative.json`](resources/generative.json).
+
+### The editor's generative fill
+
+The editor runs klein through `crates/luxforge-diffusion` ([AI editing](../../docs/design/ai-editing.md#the-delivered-workflow)). `generate --dump-input` writes the 1024 px crop and hole the harness gave the model (`-input.png`, `-input-hole.png`), which that crate's ignored native test feeds to the editor's generator and holds to the harness's candidate byte for byte. [`scripts/generative_kit.py`](scripts/generative_kit.py) drives the editor's own `luxforge-json`, never the GUI, over the cases in [`resources/generative-kit.json`](resources/generative-kit.json): the boy on the bridge, a real object, and two pasted corpus cases, each a brush stroke as the editor takes it. It needs Python 3 with Pillow and NumPy, and it never downloads.
+
+```sh
+K=probes/object-removal/scripts/generative_kit.py
+P=probes/object-removal/target/release/removal-probe
+J=target/release/luxforge-json
+E=private/object-removal/evidence/task-013/editor   # in the main checkout, ignored
+python3 $K prepare --cases probes/object-removal/resources/generative-kit.json --probe $P \
+  --corpus private/object-removal/corpus --public private/object-removal/public --out $E
+python3 $K stage --json $J --models private/models/generative --root $E/root
+python3 $K editor --json $J --root $E/root --cases probes/object-removal/resources/generative-kit.json --out $E
+python3 $K lama --probe $P --out $E
+python3 $K sheets --out $E [--lightroom DIR]
+```
+
+`prepare` writes each case's upright input JPEG (quality 95), its stroke and the stroke's footprint as a mask. `stage` puts klein's pinned files from the local models directory into the data root's install staging, under the pins `module.list` declares, so the ordinary `module.resource.install` job hashes each file at its pinned length and fetches nothing; this is how the generator resource installs before the owner publishes its conditioning release asset. `editor` runs one `luxforge-json` process per case under `/usr/bin/time -l`: it installs under the download grant, turns `ai.generative` on, opens the photograph, sends Generate (seed 0) and Regenerate (the answer's `next_seed`), then accepts and exports each candidate in turn, undoing between them, and writes `editor.json` with each request's time and step progress, the runtime's resident set, the process's wall time, maximum resident set and peak footprint, and `uptime` before and after. `lama` fills the same footprint with the Fast fill (`fill --mask`), and `sheets` builds the blinded sheets.
+
+Measured 2026-10-12 on the M4 Pro (`Mac16,8`, 48 GB, macOS 26.5.2), release build of `gen/task-013`, **on a shared host** (one-minute load average 20 to 56, recorded per run in `editor.json`), at 1024 px, seed 0 then Regenerate's seed 1, each case one process; the evidence is in the main checkout's ignored `private/object-removal/evidence/task-013/editor/` (`klein/` the exports, `lama/`, `sheets/`, `editor.json`):
+
+| Case | Region | Generate s | Regenerate s | Steps 1 to 4 reported at s (Generate) | Peak footprint GB | Load before / after |
+| --- | --- | ---: | ---: | --- | ---: | --- |
+| bridge-boy (the process's first generation, after the install) | 661 × 1821 | 153.2 | 140.7 | 43.4, 73.5, 104.7, 137.6 | 4.32 | 46.7 / 20.0 |
+| water-minnewanka | 745 × 359 | 142.4 | 139.6 | 44.6, 72.3, 100.9, 129.6 | 4.10 | 22.0 / 35.7 |
+| people-utrecht-pub | 778 × 372 | 143.6 | 138.6 | 46.1, 74.2, 102.0, 129.4 | 4.00 | 35.7 / 51.9 |
+
+Each step takes 28 to 31 s; before the first, the job reads the photograph and encodes the crop and the reference (about 15 s), and after the last it decodes and finishes the candidate (13 to 16 s). The runtime held `run-klein` at its declared 5 GiB, and the process's peak footprint stayed under it. Installing the generator from staged files took 18.1 s (hashing 2.72 GB, the format checks and the Metal warm-up) and the encoder 2.0 s. The same Generate and Regenerate sent to the background desktop through `luxforge-ctl` on the Minnewanka case (seeds 10 and 11, `private/object-removal/evidence/task-013/desktop/`) took 169 and 146 s at a load of 28 to 36, with the desktop's resident set peaking at 4.0 GB; the accepted candidate exported as the JSON runs' did.
+
+What the images show: klein rebuilds what the region hid where the Fast fill smears it (the bridge's deck and rails, the moored boat's roof and mast, a walker in the pub window, whose lettering it garbles). **Two failures**: on the bridge, Regenerate's seed 1 redrew the boy, softer, instead of removing him, so Regenerate is the remedy rather than a variation; and on both pasted cases (all four candidates, and the desktop's) a faint red line runs along the region's top edge, about 18 px inside it, where the pasted object's own top edge was. The model's output is clean there (the harness's raw 1024 px output on the same input and mask, `private/object-removal/evidence/task-013/harness-pub/`, has none); the harness's composite of that output shows the same trace, so the composite carries the removed object's hard edge back into the fill when that edge lies within about 20 px of the brush's edge. The Fast fill's `fill --mask` over the same mask shows none, and neither does the bridge, painted with a wider margin; why the generative composite differs is not yet diagnosed.
+
+### Blinded comparison
+
+The owner's preference test of the local generative fill against the Fast fill and Lightroom's Generative Remove, on the same photographs and the same painted area.
+
+1. **Inputs.** Run `prepare`, `editor` and `lama` as above. Each case's `inputs/ID.jpg` is the photograph every method starts from, and `inputs/ID-mask.png` the area to fill.
+2. **Lightroom.** Import each `inputs/ID.jpg` into Lightroom Classic, open Remove with **Use Generative AI** on, paint over the area `ID-mask.png` shows (overlaying it as a guide is fine), take the first variation Lightroom offers, and export it full size as `ID.jpg` into a directory of its own, with no other edit. Record the Lightroom version and the date.
+3. **Sheets.** `sheets --out $E --lightroom DIR` writes `sheets/ID.png`: the input cropped around the area with its outline in red, then each result's same crop under a letter, in a random order drawn for each case from `--seed` (default 2026), and `sheets/ballot.csv`. The key, which letter is which method, is `key.json` beside `sheets/`; do not open it until the ballot is filled.
+4. **Judging.** For each sheet, at 100% on the same display, record in `ballot.csv` the best and the worst letter and a short note on what decided it (a seam, a smear, invented structure, a texture or colour mismatch). Judge whether the area looks like the rest of the photograph, not whether it matches what was there.
+5. **Unblinding.** Read `key.json` and tally, per method, the count of bests and worsts.
+
+Limits: the editor's results are its JPEG exports (quality 90) and the Fast fill's PNG, so compression could tell them apart at very high zoom; three cases decide nothing on their own, and more are added by listing them in the cases file. Each method fills its own way around the area: the editor feathers the stroke's edge, LaMa fills the mask exactly, and Lightroom chooses its own region from the brush.
 
 ## Backend parity
 

@@ -280,7 +280,11 @@ impl Proof {
 fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
     let mut proof = Proof::start();
     // Discovery and a collapsed developer section read nothing.
-    assert!(proof.editor.capability_started.is_empty());
+    assert!(
+        proof.editor.capability_started.is_empty(),
+        "{:?}",
+        proof.editor.capability_started
+    );
     assert!(proof.block().loading);
     let _ = proof
         .editor

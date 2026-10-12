@@ -72,11 +72,12 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         // session reports until the photo surface has checked its GPU stage.
         renderer: super::renderer::launched(config.launch_renderer().refused()),
         tiles: Some(tiles),
-        // ONNX Runtime, compiling under the data root; a developer run also serves the
-        // deterministic fake, as the `fake` backend. Nothing starts until a model opens. An
-        // evidence run paces the fake's steps, so a generation is still running when its frame is
-        // captured.
-        inference: Some(luxforge_onnx::host_runtime_paced(
+        // ONNX Runtime, compiling under the data root, and stable-diffusion.cpp for the
+        // generative model (`metal` on macOS, `diffusion-cpu` on Linux); a developer run also
+        // serves the deterministic fake, as the `fake` backend. Nothing starts until a model
+        // opens. An evidence run paces the fake's steps, so a generation is still running when
+        // its frame is captured.
+        inference: Some(luxforge_onnx::host_runtime_with(
             paths.map(Paths::inference_cache),
             config.developer,
             if config.evidence.is_some() {
@@ -84,6 +85,7 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
             } else {
                 std::time::Duration::ZERO
             },
+            vec![luxforge_diffusion::DiffusionRuntime::shared()],
         )),
         ..HostConfig::unconfigured()
     }

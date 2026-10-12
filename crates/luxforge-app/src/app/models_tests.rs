@@ -136,7 +136,7 @@ impl Models {
             .expect("the Models tab is open")
     }
 
-    /// The proof's row: the developer `luxforge.ai` models are listed beside it.
+    /// The proof's row: `luxforge.ai`'s models are listed beside it.
     fn proof_row(&self) -> &ModelRow {
         self.tab()
             .rows
@@ -224,7 +224,9 @@ fn the_models_tab_is_listed_only_with_a_model_and_shows_it_against_this_machine(
     assert!(!row.removable);
     assert_eq!(
         tab.machine.as_deref(),
-        Some("This machine has 16 GB of memory. Proof segmenter needs 2 GB.")
+        Some(
+            "This machine has 16 GB of memory. FLUX.2 klein 4B with the object removal LoRA needs 16 GB; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB."
+        )
     );
     assert!(tab.resident.is_empty());
     // What a frame records is the tab as drawn beside the status it was drawn from.
@@ -250,7 +252,9 @@ fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
     assert_eq!(row.fits, Some(false));
     assert_eq!(
         models.tab().machine.as_deref(),
-        Some("This machine has 1 GB of memory. Proof segmenter needs 2 GB, more than it has.")
+        Some(
+            "This machine has 1 GB of memory. FLUX.2 klein 4B with the object removal LoRA needs 16 GB, more than it has; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB, more than it has."
+        )
     );
     models.grant();
     let refused = models

@@ -229,22 +229,45 @@ pub fn host_runtime_paced(
     developer: bool,
     fake_step: std::time::Duration,
 ) -> Arc<dyn InferenceRuntime> {
+    host_runtime_with(cache_dir, developer, fake_step, Vec::new())
+}
+
+/// [`host_runtime_paced`] with `others` beside ONNX Runtime, each serving its own backend names,
+/// as the desktop and `luxforge-json` add `luxforge-diffusion`'s generative runtime. Two runtimes
+/// offering one backend name is a build mistake, so it panics at launch rather than routing a
+/// model to the wrong runtime.
+pub fn host_runtime_with(
+    cache_dir: Option<PathBuf>,
+    developer: bool,
+    fake_step: std::time::Duration,
+    others: Vec<Arc<dyn InferenceRuntime>>,
+) -> Arc<dyn InferenceRuntime> {
     use luxforge_core::inference::{
         CompositeInference,
         fake::{FAKE_BACKEND, FAKE_HOST_BACKEND, FakeInference},
     };
     let onnx = OnnxRuntime::shared(cache_dir);
-    if !developer {
+    if !developer && others.is_empty() {
         return onnx;
     }
-    let fake = FakeInference::new();
-    fake.controls().set_step_delay(fake_step);
-    let fake: Arc<dyn InferenceRuntime> = Arc::new(fake);
-    CompositeInference::new()
+    let mut composite = CompositeInference::new()
         .with(onnx)
-        .and_then(|composite| composite.with_alias(FAKE_HOST_BACKEND, fake, FAKE_BACKEND))
-        .expect("ONNX Runtime offers no backend named fake")
-        .shared()
+        .expect("ONNX Runtime's backends are distinct");
+    for other in others {
+        let name = other.identity().name;
+        composite = composite
+            .with(other)
+            .unwrap_or_else(|error| panic!("runtime {name} collides with another: {error:?}"));
+    }
+    if developer {
+        let fake = FakeInference::new();
+        fake.controls().set_step_delay(fake_step);
+        let fake: Arc<dyn InferenceRuntime> = Arc::new(fake);
+        composite = composite
+            .with_alias(FAKE_HOST_BACKEND, fake, FAKE_BACKEND)
+            .expect("no other runtime offers a backend named fake");
+    }
+    composite.shared()
 }
 
 /// The model file is there and its identity can key a cache.

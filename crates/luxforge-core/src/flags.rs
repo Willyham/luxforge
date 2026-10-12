@@ -107,27 +107,26 @@ impl FlagSpec {
     }
 }
 
-/// Every product flag, in the order Settings lists them.
-const FLAGS: &[FlagSpec] = &[FlagSpec {
-    id: DEVELOPER,
-    title: "Developer mode",
-    description: "Serves the test modules and shows the Developer button and its components gallery.",
-    kind: FlagKind::Toggle {
-        default: cfg!(debug_assertions),
+/// Every product flag, in the order Settings lists them. The Generative tier's experiment stays
+/// until the owner accepts the tier (`docs/design/ai-editing.md`).
+const FLAGS: &[FlagSpec] = &[
+    FlagSpec {
+        id: DEVELOPER,
+        title: "Developer mode",
+        description: "Serves the test modules and shows the Developer button and its components gallery.",
+        kind: FlagKind::Toggle {
+            default: cfg!(debug_assertions),
+        },
+        applies: Applies::Launch,
     },
-    applies: Applies::Launch,
-}];
-
-/// Product flags whose feature only a developer run has yet, listed after the proof flags and only
-/// by a host that serves the test modules. The Generative tier's one model is the developer fake,
-/// so its flag is offered only where the tier is (`docs/design/ai-editing.md`).
-const DEVELOPER_FLAGS: &[FlagSpec] = &[FlagSpec {
-    id: AI_GENERATIVE,
-    title: "Generative fill",
-    description: "Offers the Generative fill tier in Remove when a generative model is installed; an accepted fill renders the same either way.",
-    kind: FlagKind::Toggle { default: false },
-    applies: Applies::Live,
-}];
+    FlagSpec {
+        id: AI_GENERATIVE,
+        title: "Generative fill",
+        description: "Offers the Generative fill tier in Remove when a generative model is installed; an accepted fill renders the same either way.",
+        kind: FlagKind::Toggle { default: false },
+        applies: Applies::Live,
+    },
+];
 
 /// Test fixtures, listed only by a host that serves the test modules, as the proof modules are.
 /// They change nothing, so the choice and number controls have a real flag to render.
@@ -169,15 +168,12 @@ const PROOF_FLAGS: &[FlagSpec] = &[
     },
 ];
 
-/// The flags a host lists: every product flag, and the developer and proof flags when it serves
-/// the test modules.
+/// The flags a host lists: every product flag, and the proof flags when it serves the test
+/// modules.
 pub(crate) fn listed(developer: bool) -> impl Iterator<Item = &'static FlagSpec> {
-    FLAGS.iter().chain(
-        PROOF_FLAGS
-            .iter()
-            .chain(DEVELOPER_FLAGS)
-            .filter(move |_| developer),
-    )
+    FLAGS
+        .iter()
+        .chain(PROOF_FLAGS.iter().filter(move |_| developer))
 }
 
 /// The listed flag named `id`.
@@ -304,12 +300,11 @@ impl LaunchFlags {
     }
 }
 
-/// A live product toggle's value now, developer-listed or not: its stored value when that fits,
-/// otherwise its default; `false` for an identity no product toggle has. Reads the preferences file.
+/// A live product toggle's value now: its stored value when that fits, otherwise its default;
+/// `false` for an identity no product toggle has. Reads the preferences file.
 pub(crate) fn toggle(store: &PreferenceStore, id: &str) -> Result<bool, Error> {
     let Some(flag) = FLAGS
         .iter()
-        .chain(DEVELOPER_FLAGS)
         .find(|flag| flag.id == id && matches!(flag.kind, FlagKind::Toggle { .. }))
     else {
         return Ok(false);
@@ -550,10 +545,10 @@ mod tests {
                 .map(|flag| flag.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(false), ["developer"]);
+        assert_eq!(ids(false), ["developer", "ai.generative"]);
         assert_eq!(
             ids(true),
-            ["developer", "proof.choice", "proof.number", "ai.generative"]
+            ["developer", "ai.generative", "proof.choice", "proof.number"]
         );
     }
 
@@ -563,7 +558,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][1]["options"][1],
+            text["flags"][2]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -602,7 +597,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][1]["id"], "proof.choice",
+            listed["flags"][2]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -610,7 +605,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][1]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][2]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",

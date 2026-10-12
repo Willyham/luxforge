@@ -188,6 +188,7 @@ fn descriptor() -> crate::ModuleDescriptor {
             resident_bytes: 512 << 20,
             backends: vec!["coreml".into(), "cpu".into()],
             precision: Precision::Fp32,
+            with: Vec::new(),
         },
         purpose: "Find objects.".into(),
     });
@@ -392,6 +393,42 @@ fn a_resource_of_several_files_installs_together_with_its_labels_and_is_removed_
     assert!(!version.exists());
     assert!(!fixture.resources().join(MODULE).join(MODEL).exists());
     assert_eq!(row(&owner, MODEL)["state"], json!("not-installed"));
+    owner.stop();
+}
+
+/// A further file may come from another remote origin, as a model's weights from their publisher
+/// and a file the project computed from its own releases: the consent names that origin, and the
+/// grant for the resource's own origin and pinned version installs both.
+#[test]
+fn a_further_file_from_another_origin_is_disclosed_and_installed_with_the_resource() {
+    const RELEASES: &str = "https://releases.example";
+    let mut fixture = Fixture::new("model-origins");
+    let model = fixture
+        .descriptor
+        .resources
+        .iter_mut()
+        .find(|resource| resource.id == MODEL)
+        .unwrap();
+    model.files[0].url = format!("{RELEASES}/segmenter/decoder.onnx");
+    let owner = fixture.start();
+    let refused = owner.fail(INSTALL, json!({"module_id": MODULE, "resource_id": MODEL}));
+    assert_eq!(refused.code, "consent-required");
+    let disclosure = &refused.data.as_ref().unwrap()["consent"]["disclosure"];
+    assert_eq!(
+        disclosure["further_origins"],
+        json!([RELEASES]),
+        "{disclosure}"
+    );
+    grant(&owner, "segmenter-download", MODEL);
+    assert_eq!(install(&owner, MODEL)["status"], json!("ready"));
+    assert_eq!(
+        fs::read(fixture.version_dir(MODEL).join("decoder.onnx")).unwrap(),
+        DECODER
+    );
+    // One origin's files disclose none.
+    let refused = owner.fail(INSTALL, json!({"module_id": MODULE, "resource_id": LARGE}));
+    let disclosure = &refused.data.as_ref().unwrap()["consent"]["disclosure"];
+    assert!(disclosure.get("further_origins").is_none(), "{disclosure}");
     owner.stop();
 }
 

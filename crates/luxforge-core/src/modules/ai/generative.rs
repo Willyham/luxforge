@@ -57,10 +57,13 @@ pub(crate) fn run(
         .collect();
     if let Some(encoder) = model.text_encoder
         && request.prompt.is_some()
+        && model.prompt_runtime.is_none()
     {
-        // The host granted the request only with the text encoder installed.
+        // The host granted the request only with the text encoder installed. A model with a
+        // Replace runtime holds the encoder in that runtime's slot instead.
         context.resource_path(encoder.resource)?;
     }
+    let prompt = request.prompt.is_some();
 
     context.progress(Some(0.0), "reading the photograph");
     let mut reader = context.stage_reader()?;
@@ -82,7 +85,7 @@ pub(crate) fn run(
     let (preview_width, preview_height) = fill::preview_size(bounds.width, bounds.height);
 
     context.progress(Some(0.0), "loading the model");
-    let generator = context.generator(model.runtime)?;
+    let generator = context.generator(model.runtime_for(prompt))?;
     let conditioning = match &request.prompt {
         Some(prompt) => Conditioning::Prompt(prompt),
         None => Conditioning::None,
@@ -125,12 +128,17 @@ pub(crate) fn run(
             context.cancel(),
         )?;
         context.checkpoint()?;
-        let finished = prepared.finish(&generated.image, seed)?;
+        // A Replace composites over the region's own edge, without the seam correction.
+        let finished = prepared.finish_with(&generated.image, seed, !prompt)?;
         let mut provenance = generated.provenance.fields();
         provenance.insert("tier".into(), json!(GENERATIVE_TIER));
         provenance.insert("encoding".into(), json!(fill::encode::ENCODING));
         provenance.insert("encoding_scale".into(), json!(prepared.encoding.scale));
         provenance.insert("model_side".into(), json!(model.side));
+        provenance.insert(
+            "blend".into(),
+            json!(if prompt { "none" } else { "seam-and-detail" }),
+        );
         let number = reservation.publish(CandidatePatch {
             rect: finished.rect,
             colour: PatchColour::LinearSrgb(&finished.linear),

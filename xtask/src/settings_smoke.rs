@@ -511,9 +511,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && ids
                 == [
                     json!("developer"),
+                    json!("ai.generative"),
                     json!("proof.choice"),
                     json!("proof.number"),
-                    json!("ai.generative"),
                 ],
         format!("The palette opened another sheet: {}", settings(sheet)),
     )?;
@@ -619,7 +619,7 @@ fn models_tab(frame: &Frame) -> &Value {
 }
 
 /// The proof model's one row and the `module.status` resource row it was drawn from. A developer
-/// run also lists `luxforge.ai`'s developer models, which the scenario leaves alone.
+/// run also lists `luxforge.ai`'s models, which the scenario leaves alone.
 fn model_rows(frame: &Frame) -> Result<(&Value, &Value)> {
     let tab = models_tab(frame);
     let row = tab["rows"]
@@ -688,7 +688,9 @@ fn correlated(step: &str, frame: &Frame) -> Result<Value> {
             // The machine's own memory, which the desktop read from the operating system.
             && memory.is_some_and(|memory| memory >= 1 << 30)
             && machine.starts_with("This machine has ")
-            && machine.ends_with("of memory. Proof segmenter needs 2 GB.")
+            // luxforge.ai's models are named first, then the proof's.
+            && machine.contains("FLUX.2 klein 4B with the object removal LoRA needs 16 GB")
+            && machine.ends_with("; Proof segmenter needs 2 GB.")
             && tab["tiers"] == json!([])
             && tab["errors"] == json!([]),
         format!("Step {step:?}'s Models tab does not match the module.status it holds: {tab}"),

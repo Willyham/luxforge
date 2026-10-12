@@ -1,7 +1,12 @@
-// The harness's C ABI over stable-diffusion.cpp: open a context, generate one image at a time
-// from an image, a mask and an optional reference, cancel, close; record a text conditioning to
-// a file and supply one from a file so a run needs no text encoder. Every entry catches C++
-// exceptions and reports failures through a caller-owned message buffer.
+// luxforge-diffusion's C ABI over stable-diffusion.cpp: open a context, generate one image at a
+// time from an image, a mask and an optional reference, cancel, close; record a text conditioning
+// to a file and supply one from a file to a context so it needs no text encoder. Every entry
+// catches C++ exceptions and reports failures through a caller-owned message buffer.
+//
+// A context's own state (whether it has a text encoder, the conditionings supplied to it) is the
+// shim's `Context`, not process-wide: the hook in the staged engine reaches it through the context
+// the calling thread is inside (`t_current`), which the shim sets around every call into the
+// runtime that may consult it (opening the context and generating with it).
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -9,6 +14,7 @@
 #include <exception>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -16,6 +22,10 @@
 #include "conditioning/conditioner.hpp"
 #include "luxforge_condition_hook.h"
 #include "stable-diffusion.h"
+#ifdef GGML_USE_METAL
+#include "ggml-backend.h"
+#include "ggml-metal.h"
+#endif
 
 extern "C" {
 
@@ -53,14 +63,28 @@ typedef void (*lf_sd_progress_cb)(int32_t step, int32_t steps, float seconds, vo
 
 namespace {
 
+// One opened context and what is supplied to it.
+struct Context {
+    sd_ctx_t* sd             = nullptr;
+    bool text_encoder_absent = false;
+    std::map<std::string, SDCondition> supplied;
+};
+
 std::mutex g_mutex;
 std::string g_last_error;
 int g_log_level = SD_LOG_WARN;
 std::map<std::string, SDCondition> g_observed;
-std::map<std::string, SDCondition> g_supplied;
-lf_sd_progress_cb g_progress    = nullptr;
-bool g_text_encoder_absent      = false;
-void* g_progress_user           = nullptr;
+lf_sd_progress_cb g_progress = nullptr;
+void* g_progress_user        = nullptr;
+// The context the calling thread is opening or generating with.
+thread_local Context* t_current = nullptr;
+
+// Sets `t_current` for the scope of one call into the runtime.
+struct Inside {
+    explicit Inside(Context* context) : previous(t_current) { t_current = context; }
+    ~Inside() { t_current = previous; }
+    Context* previous;
+};
 
 void log_callback(enum sd_log_level_t level, const char* text, void*) {
     if (level >= SD_LOG_ERROR) {
@@ -217,10 +241,13 @@ std::string load_condition(const char* path, SDCondition& c) {
 }  // namespace
 
 bool luxforge_condition_supplied(const std::string& text, SDCondition& out) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    auto found = g_supplied.find(text);
-    if (found == g_supplied.end()) {
-        if (g_text_encoder_absent) {
+    Context* context = t_current;
+    if (context == nullptr) {
+        return false;
+    }
+    auto found = context->supplied.find(text);
+    if (found == context->supplied.end()) {
+        if (context->text_encoder_absent) {
             throw std::runtime_error("no text encoder is loaded and no conditioning was supplied for the prompt \"" + text + "\"");
         }
         return false;
@@ -230,7 +257,7 @@ bool luxforge_condition_supplied(const std::string& text, SDCondition& out) {
 }
 
 bool luxforge_text_encoder_absent() {
-    return g_text_encoder_absent;
+    return t_current != nullptr && t_current->text_encoder_absent;
 }
 
 void luxforge_condition_observed(const std::string& text, const SDCondition& condition) {
@@ -256,11 +283,45 @@ const char* lf_sd_system_info(void) {
     return sd_get_system_info();
 }
 
-sd_ctx_t* lf_sd_open(const lf_sd_open_options* options, char* error, size_t error_len) {
+// Compile the Metal kernels on this machine (the first time; the system caches them) by opening
+// and closing the Metal backend, so a context's first generation does not. Nothing to do on a CPU
+// build. Answers 0, or 1 with a message when the backend cannot be opened.
+int32_t lf_sd_warm(char* error, size_t error_len) {
+    install_callbacks();
+#ifdef GGML_USE_METAL
+    try {
+        ggml_backend_t backend = ggml_backend_metal_init();
+        if (backend == nullptr) {
+            set_error(error, error_len, take_last_error("the Metal backend did not open"));
+            return 1;
+        }
+        ggml_backend_free(backend);
+    } catch (const std::exception& e) {
+        set_error(error, error_len, e.what());
+        return 1;
+    }
+#else
+    (void)error;
+    (void)error_len;
+#endif
+    return 0;
+}
+
+// The sampler and scheduler a context denoises with by default, as upstream names them.
+const char* lf_sd_default_sampler(const Context* ctx) {
+    return sd_sample_method_name(sd_get_default_sample_method(ctx->sd));
+}
+
+const char* lf_sd_default_scheduler(const Context* ctx) {
+    return sd_scheduler_name(sd_get_default_scheduler(ctx->sd, sd_get_default_sample_method(ctx->sd)));
+}
+
+Context* lf_sd_open(const lf_sd_open_options* options, char* error, size_t error_len) {
     install_callbacks();
     try {
-        // One context at a time in this harness: the flag describes the context being opened.
-        g_text_encoder_absent = options->llm == nullptr || options->llm[0] == '\0';
+        auto context                 = std::make_unique<Context>();
+        context->text_encoder_absent = options->llm == nullptr || options->llm[0] == '\0';
+        Inside inside(context.get());
         sd_ctx_params_t params;
         sd_ctx_params_init(&params);
         params.diffusion_model_path = options->diffusion_model;
@@ -273,11 +334,12 @@ sd_ctx_t* lf_sd_open(const lf_sd_open_options* options, char* error, size_t erro
         if (options->params_backend != nullptr) {
             params.params_backend = options->params_backend;
         }
-        sd_ctx_t* ctx = new_sd_ctx(&params);
-        if (ctx == nullptr) {
+        context->sd = new_sd_ctx(&params);
+        if (context->sd == nullptr) {
             set_error(error, error_len, take_last_error("new_sd_ctx failed"));
+            return nullptr;
         }
-        return ctx;
+        return context.release();
     } catch (const std::exception& e) {
         set_error(error, error_len, e.what());
     } catch (...) {
@@ -286,24 +348,29 @@ sd_ctx_t* lf_sd_open(const lf_sd_open_options* options, char* error, size_t erro
     return nullptr;
 }
 
-void lf_sd_close(sd_ctx_t* ctx) {
+void lf_sd_close(Context* ctx) {
     if (ctx != nullptr) {
-        free_sd_ctx(ctx);
+        free_sd_ctx(ctx->sd);
+        delete ctx;
     }
 }
 
-void lf_sd_cancel(sd_ctx_t* ctx) {
+// Callable from any thread while a generation runs: upstream sets an atomic flag it checks at
+// every sampling step and between its encode and decode stages.
+void lf_sd_cancel(Context* ctx) {
     if (ctx != nullptr) {
-        sd_cancel_generation(ctx, SD_CANCEL_ALL);
+        sd_cancel_generation(ctx->sd, SD_CANCEL_ALL);
     }
 }
 
-const char* lf_sd_model_version(const sd_ctx_t* ctx) {
-    return sd_get_model_version_name(ctx);
+const char* lf_sd_model_version(const Context* ctx) {
+    return sd_get_model_version_name(ctx->sd);
 }
 
-int32_t lf_sd_generate(sd_ctx_t* ctx, const lf_sd_request* request, uint8_t* out_rgb, char* error, size_t error_len) {
+int32_t lf_sd_generate(Context* context, const lf_sd_request* request, uint8_t* out_rgb, char* error, size_t error_len) {
     try {
+        Inside inside(context);
+        sd_ctx_t* ctx = context->sd;
         sd_cancel_generation(ctx, SD_CANCEL_RESET);
         std::vector<uint8_t> init(request->init_rgb, request->init_rgb + size_t(request->width) * request->height * 3);
         std::vector<uint8_t> mask;
@@ -409,12 +476,12 @@ int32_t lf_sd_condition_save(const char* text, const char* path, char* error, si
     return 1;
 }
 
-// Supply the conditioning in `path` for `text`, or with a NULL path stop supplying one.
-int32_t lf_sd_condition_supply(const char* text, const char* path, char* error, size_t error_len) {
+// Supply the conditioning in `path` to `ctx` for `text`, or with a NULL path stop supplying one.
+// Not called while `ctx` generates.
+int32_t lf_sd_condition_supply(Context* ctx, const char* text, const char* path, char* error, size_t error_len) {
     try {
         if (path == nullptr) {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            g_supplied.erase(text);
+            ctx->supplied.erase(text);
             return 0;
         }
         SDCondition condition;
@@ -423,8 +490,7 @@ int32_t lf_sd_condition_supply(const char* text, const char* path, char* error, 
             set_error(error, error_len, message);
             return 1;
         }
-        std::lock_guard<std::mutex> lock(g_mutex);
-        g_supplied[text] = std::move(condition);
+        ctx->supplied[text] = std::move(condition);
         return 0;
     } catch (const std::exception& e) {
         set_error(error, error_len, e.what());

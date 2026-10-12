@@ -310,6 +310,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-core/src",
     "crates/luxforge-net/src",
     "crates/luxforge-onnx/src",
+    "crates/luxforge-diffusion/src",
     "crates/luxforge-app/src",
     "crates/luxforge-cli/src",
     "crates/luxforge-ui/src",
@@ -328,6 +329,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-core",
     "crates/luxforge-net",
     "crates/luxforge-onnx",
+    "crates/luxforge-diffusion",
     "crates/luxforge-app",
     "crates/luxforge-cli",
     "crates/luxforge-ui",
@@ -1100,6 +1102,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The local model runtime's load watcher: one scoped thread, alive only while a model
             // loads, that cancels the load through ONNX Runtime when its job is cancelled.
             "crates/luxforge-onnx/src/cancel.rs",
+            // The generative runtime's cancel watcher: one scoped thread, alive only while a
+            // generation runs, that cancels stable-diffusion.cpp at its next step when the job is.
+            "crates/luxforge-diffusion/src/native.rs",
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
@@ -1319,6 +1324,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "luxforge-cli",
             "luxforge-net",
             "luxforge-onnx",
+            "luxforge-diffusion",
             "luxforge-raw",
             "luxforge-watch",
             "luxforge-jpeg",
@@ -1454,8 +1460,9 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
                  HostConfig",
     },
     // The core declares the inference port and links no model runtime: ONNX Runtime lives in
-    // `luxforge-onnx`, which the desktop and `luxforge-json` give the host through `HostConfig`, so
-    // neither the core nor its test binaries build or link a runtime's native code.
+    // `luxforge-onnx` and stable-diffusion.cpp in `luxforge-diffusion`, which the desktop and
+    // `luxforge-json` give the host through `HostConfig`, so neither the core nor its test binaries
+    // build or link a runtime's native code.
     DependencyRule {
         name: "core-links-no-runtime",
         refuses: Depends::Any(&[
@@ -1474,13 +1481,14 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "burn",
             "wonnx",
             "luxforge-onnx",
+            "luxforge-diffusion",
         ]),
         manifests: &["crates/luxforge-core"],
         tables: EVERY_TABLE,
         allowed: &[],
-        reason: "luxforge-core links no model runtime (ort, ort-sys, tract, candle, burn or \
-                 luxforge-onnx); the runtime belongs to luxforge-onnx, injected through \
-                 HostConfig::inference",
+        reason: "luxforge-core links no model runtime (ort, ort-sys, tract, candle, burn, \
+                 luxforge-onnx or luxforge-diffusion); the runtimes belong to luxforge-onnx and \
+                 luxforge-diffusion, injected through HostConfig::inference",
     },
     // One home for ONNX Runtime: only `luxforge-onnx` names the binding.
     DependencyRule {
@@ -1523,6 +1531,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "luxforge-testkit",
             "luxforge-net",
             "luxforge-onnx",
+            "luxforge-diffusion",
             "luxforge-cli",
             "luxforge-app",
             "xtask",
@@ -1531,7 +1540,8 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-core may not name a crate that depends on it (luxforge-testkit, \
-                 luxforge-net, luxforge-onnx, luxforge-cli, luxforge-app or xtask), so its tests build it once",
+                 luxforge-net, luxforge-onnx, luxforge-diffusion, luxforge-cli, luxforge-app or \
+                 xtask), so its tests build it once",
     },
     // The headless binary builds without the GUI stack: no window, renderer, shader compiler or
     // dialog crate, and not the widget crate or the desktop that bring them.
