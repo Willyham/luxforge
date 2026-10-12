@@ -68,6 +68,21 @@ pub(crate) fn refused(asset: &AssetId, error: &Error) -> BatchSkip {
     skip(asset, error.kind.code(), error.detail.clone())
 }
 
+/// A photograph a batch export leaves out because the single export would refuse it: with the code
+/// of the notice or encoder that refused it, such as `webp-too-large`, `folder-missing` or
+/// `limit-unreachable`, where the refusal names one, and otherwise its kind's.
+pub(crate) fn export_refused(asset: &AssetId, error: &Error) -> BatchSkip {
+    let named = error
+        .data
+        .as_deref()
+        .and_then(|data| data.get("notice").or_else(|| data.get("code")))
+        .and_then(Value::as_str);
+    match named {
+        Some(code) => skip(asset, code, error.detail.clone()),
+        None => refused(asset, error),
+    }
+}
+
 pub(crate) fn skip(asset: &AssetId, code: &str, reason: impl Into<String>) -> BatchSkip {
     BatchSkip {
         asset_id: asset.clone(),

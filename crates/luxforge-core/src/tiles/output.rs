@@ -194,6 +194,18 @@ pub fn reference_output(
     snapshot_id: crate::SnapshotId,
     cancel: &crate::Cancel,
 ) -> Result<OutputFrame, crate::Error> {
+    reference_output_phased(evaluation, output, snapshot_id, cancel, &mut || Ok(()))
+}
+
+/// [`reference_output`], calling `resampling` once the exact render is done and before a smaller
+/// output is resampled from it, so an export reports the phase; its error stops the export there.
+pub(crate) fn reference_output_phased(
+    evaluation: &crate::Evaluation,
+    output: OutputSpec,
+    snapshot_id: crate::SnapshotId,
+    cancel: &crate::Cancel,
+    resampling: &mut dyn FnMut() -> Result<(), crate::Error>,
+) -> Result<OutputFrame, crate::Error> {
     let render = evaluation.exact(cancel)?;
     let (width, height) = render.stage();
     output.check(width, height)?;
@@ -211,6 +223,7 @@ pub fn reference_output(
     let pixels = if full {
         Pixels::Sixteen(terminal.into_rgba16(cancel)?)
     } else {
+        resampling()?;
         crate::render::export_output::resample(&terminal, output, cancel)?
     };
     Ok(OutputFrame {

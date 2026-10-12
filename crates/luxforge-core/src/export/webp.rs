@@ -21,9 +21,6 @@
 //! - libwebp's failures are errors, never an abort: a frame that is not `width × height` pixels is
 //!   `internal`, and a failure of the encoder or the mux is `render` with libwebp's reason.
 
-// Until the export job writes WebP, only the tests reach the encoder.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::Error;
 use serde_json::json;
 

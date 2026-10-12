@@ -356,40 +356,89 @@ fn output_sizes_match_an_independent_calculation_and_never_enlarge() {
     }
 }
 
+/// The plan's held-memory estimate is the encoders' own figures, at 24 MP and 60 MP outputs (a
+/// Z6's and a 60 MP sensor's): an optimised JPEG's coefficient arrays as libjpeg pads them (the
+/// figure `luxforge-jpeg` measures against libjpeg's own pools), 12 bytes a pixel at 4:4:4 and 6 at
+/// 4:2:0 where nothing pads; a size limit's frame at 4 bytes a pixel beside one attempt's arrays and
+/// two files at most the limit; a WebP's frame and libwebp's state (the figure `luxforge-webp`'s
+/// footprint tests bound), with the best file so far under a limit; nothing for a streamed JPEG or a
+/// TIFF.
 #[test]
-fn the_held_memory_estimate_follows_the_designs_figures() {
-    let output = (6000, 4000);
-    let pixels = 24_000_000_u64;
-    let jpeg = |optimise, chroma, limit_bytes| ExportSettings {
-        format: FormatSettings::Jpeg {
+fn the_held_memory_estimate_is_the_encoders_own_at_24_and_60_megapixels() {
+    use crate::export::{
+        encode::{JpegOptions, encoder_bytes},
+        webp::webp_held_bytes,
+    };
+    for (width, height) in [(6000, 4000), (9504, 6336)] {
+        let output = (width, height);
+        let pixels = u64::from(width) * u64::from(height);
+        let frame = pixels * 4;
+        let jpeg = |optimise, chroma, limit_bytes| ExportSettings {
+            format: FormatSettings::Jpeg {
+                quality: 80,
+                chroma,
+                limit_bytes,
+            },
+            optimise,
+            ..ExportSettings::baseline(MetadataLevel::None)
+        };
+        let arrays = |chroma| {
+            encoder_bytes(
+                width,
+                height,
+                &JpegOptions {
+                    quality: 80,
+                    chroma,
+                    optimise: true,
+                },
+            )
+        };
+        assert_eq!(
+            arrays(Chroma::Full),
+            pixels * 12,
+            "{output:?}: no edge pads"
+        );
+        assert_eq!(arrays(Chroma::Half), pixels * 6, "{output:?}: no edge pads");
+        assert_eq!(jpeg(false, Chroma::Full, None).held_bytes(output), 0);
+        assert_eq!(
+            jpeg(true, Chroma::Full, None).held_bytes(output),
+            arrays(Chroma::Full)
+        );
+        assert_eq!(
+            jpeg(true, Chroma::Half, None).held_bytes(output),
+            arrays(Chroma::Half)
+        );
+        assert_eq!(
+            jpeg(false, Chroma::Half, Some(500_000)).held_bytes(output),
+            frame + 2 * 500_000
+        );
+        assert_eq!(
+            jpeg(true, Chroma::Half, Some(500_000)).held_bytes(output),
+            frame + arrays(Chroma::Half) + 2 * 500_000
+        );
+        let mut webp = ExportSettings::from_json(&webp()).unwrap();
+        assert_eq!(
+            webp.held_bytes(output),
+            frame + webp_held_bytes(width, height, true) + 512_000
+        );
+        webp.format = FormatSettings::Webp {
             quality: 80,
-            chroma,
-            limit_bytes,
-        },
-        optimise,
+            limit_bytes: None,
+        };
+        webp.optimise = false;
+        assert_eq!(
+            webp.held_bytes(output),
+            frame + webp_held_bytes(width, height, false)
+        );
+        let tiff = ExportSettings::from_json(&tiff()).unwrap();
+        assert_eq!(tiff.held_bytes(output), 0);
+    }
+    // The design's figure for an optimised 60 MP JPEG at 4:4:4: about 720 MB.
+    let sixty = ExportSettings {
+        optimise: true,
         ..ExportSettings::baseline(MetadataLevel::None)
     };
-    assert_eq!(jpeg(false, Chroma::Full, None).held_bytes(output), 0);
-    assert_eq!(
-        jpeg(true, Chroma::Full, None).held_bytes(output),
-        pixels * 12
-    );
-    assert_eq!(
-        jpeg(true, Chroma::Half, None).held_bytes(output),
-        pixels * 6
-    );
-    assert_eq!(
-        jpeg(false, Chroma::Half, Some(500_000)).held_bytes(output),
-        pixels * 4
-    );
-    assert_eq!(
-        jpeg(true, Chroma::Half, Some(500_000)).held_bytes(output),
-        pixels * (6 + 4)
-    );
-    let webp = ExportSettings::from_json(&webp()).unwrap();
-    assert_eq!(webp.held_bytes(output), pixels * 4);
-    let tiff = ExportSettings::from_json(&tiff()).unwrap();
-    assert_eq!(tiff.held_bytes(output), 0);
+    assert_eq!(sixty.held_bytes((9504, 6336)).div_ceil(1_000_000), 723);
 }
 
 #[test]
@@ -472,4 +521,45 @@ fn a_folder_resolves_to_the_originals_or_the_chosen_one() {
         chosen.resolve(None),
         Some(PathBuf::from("/Users/someone/Exports"))
     );
+}
+
+/// A WebP whose frame and libwebp's state would pass the evaluated-frame limit is refused as
+/// `webp-too-large` before anything renders, as a side past 16,383 px is; a TIFF that could pass
+/// the format's 4 GiB is refused as `tiff-too-large`, by the writer's own bound.
+#[test]
+fn a_webp_past_the_frame_limit_and_a_tiff_past_4_gib_refuse_the_export() {
+    let folder = luxforge_testbase::paths::temp_dir("export-settings-too-large");
+    let codes = |settings: &ExportSettings, output| -> Vec<(&'static str, bool)> {
+        settings
+            .notices(output, Some(&folder))
+            .into_iter()
+            .map(|notice| (notice.code, notice.refuses))
+            .collect()
+    };
+    let mut webp = ExportSettings::from_json(&webp()).unwrap();
+    webp.format = FormatSettings::Webp {
+        quality: 80,
+        limit_bytes: None,
+    };
+    // 48 MP: 8 bytes a pixel plain fits 512 MiB, 15 optimised does not.
+    let large = (8000, 6000);
+    webp.optimise = false;
+    assert!(codes(&webp, large).is_empty());
+    webp.optimise = true;
+    assert_eq!(codes(&webp, large), [(WEBP_TOO_LARGE, true)]);
+
+    let mut tiff = ExportSettings::from_json(&tiff()).unwrap();
+    // 750 MP: a 16-bit TIFF could pass 4 GiB, an 8-bit one cannot.
+    let huge = (30_000, 25_000);
+    assert_eq!(codes(&tiff, huge), [(TIFF_TOO_LARGE, true)]);
+    assert!(!crate::export::tiff::tiff_fits(
+        30_000,
+        25_000,
+        Depth::Sixteen
+    ));
+    tiff.format = FormatSettings::Tiff {
+        bit_depth: Depth::Eight,
+    };
+    assert!(codes(&tiff, huge).is_empty());
+    assert!(crate::export::tiff::tiff_fits(30_000, 25_000, Depth::Eight));
 }

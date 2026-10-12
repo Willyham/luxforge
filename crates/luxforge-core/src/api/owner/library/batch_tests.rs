@@ -639,7 +639,7 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
     let files: Vec<Value> = photographs
         .iter()
         .zip(&written)
-        .map(|(asset, path)| json!({"asset_id": asset, "path": path, "renderer": headless()}))
+        .map(|(asset, path)| json!({"asset_id": asset, "path": path, "renderer": headless(), "quality": 90}))
         .collect();
     assert_eq!(
         settled["result"],
@@ -752,7 +752,7 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     assert_eq!(report["done"], json!([exported]));
     assert_eq!(
         report["written"],
-        json!([{"asset_id": exported, "path": out.join("Keep-edited.jpg"), "renderer": headless()}])
+        json!([{"asset_id": exported, "path": out.join("Keep-edited.jpg"), "renderer": headless(), "quality": 90}])
     );
     let skipped = report["skipped"].as_array().unwrap();
     assert_eq!(skipped.len(), 4, "{report}");
@@ -795,17 +795,17 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     );
     assert_eq!(absent.code, "validation");
     assert_eq!(absent.data.unwrap()["notice"], "folder-missing");
-    // A setting today's pipeline cannot write is refused by name before any job, as export.write
+    // Output sharpening, not yet delivered, is refused by name before any job, as export.write
     // refuses it.
-    let mut resized = into(&out);
-    resized["size"] = json!({"fit": "long_edge", "pixels": 100});
+    let mut sharpened = into(&out);
+    sharpened["sharpen"] = json!({"medium": "screen", "amount": "standard"});
     let refused = harness.refused(
         "batch.export",
-        json!({"targets": assets(&targets), "settings": resized, "mutation": envelope("resized")}),
+        json!({"targets": assets(&targets), "settings": sharpened, "mutation": envelope("sharpened")}),
     );
     assert_eq!(refused.code, "validation");
     assert!(
-        refused.message.starts_with("settings.size"),
+        refused.message.starts_with("settings.sharpen"),
         "{}",
         refused.message
     );
@@ -848,7 +848,7 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
         running["result"],
         json!({
             "done": [photographs[0]],
-            "written": [{"asset_id": photographs[0], "path": out.join("One-edited.jpg"), "renderer": headless()}],
+            "written": [{"asset_id": photographs[0], "path": out.join("One-edited.jpg"), "renderer": headless(), "quality": 90}],
             "skipped": [],
         })
     );
@@ -873,6 +873,86 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
         "the first file stays and the temporary file is gone"
     );
     harness.owner.hold_exports(None);
+}
+
+/// A WebP batch under a size limit writes each photograph WebP can hold under the export rule's
+/// name, reporting the quality its search chose, and reports the one too wide for WebP as left out
+/// with the plan's code, `webp-too-large`, never silently. The same batch cancelled between its
+/// photographs keeps the first file and writes nothing more.
+#[test]
+#[slow]
+fn a_mixed_webp_batch_reports_the_photograph_webp_cannot_hold_and_cancels_between_photographs() {
+    let harness = Harness::new("export-webp");
+    let fits = harness.photograph("srgb.jpg", "photos/Fits.jpg");
+    // As wide as a source may be, one pixel wider than WebP can be.
+    let wide_path = harness.dir.join("photos/Wide.jpg");
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(&wide_path).unwrap(), 90)
+        .encode_image(&image::RgbImage::from_pixel(
+            16_384,
+            8,
+            image::Rgb([90, 120, 150]),
+        ))
+        .unwrap();
+    let wide: AssetId = serde_json::from_value(super::opening::import(
+        &harness.owner,
+        harness.client,
+        &wide_path,
+    ))
+    .unwrap();
+    let also = harness.photograph("portrait.jpg", "photos/Also.jpg");
+    let out = harness.dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let mut settings = into(&out);
+    for (field, value) in [
+        ("format", json!("webp")),
+        ("quality", json!(100)),
+        ("limit_bytes", json!(10_240)),
+    ] {
+        settings[field] = value;
+    }
+    settings.as_object_mut().unwrap().remove("chroma");
+    let targets = [fits.clone(), wide.clone(), also.clone()];
+
+    let started = harness.ok(
+        "batch.export",
+        json!({"targets": assets(&targets), "settings": settings, "mutation": envelope("webp")}),
+    );
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    let report = &settled["result"];
+    assert_eq!(report["done"], json!([fits, also]), "{report}");
+    let written = report["written"].as_array().unwrap();
+    for (file, (asset, name)) in written
+        .iter()
+        .zip([(&fits, "Fits-edited.webp"), (&also, "Also-edited.webp")])
+    {
+        assert_eq!(file["asset_id"], json!(asset));
+        assert_eq!(file["path"], json!(out.join(name)));
+        let quality = file["quality"].as_u64().unwrap();
+        assert!((10..100).contains(&quality), "{file}");
+        assert!(fs::metadata(out.join(name)).unwrap().len() <= 10_240);
+    }
+    let skipped = report["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 1, "{report}");
+    assert_eq!(skipped[0]["asset_id"], json!(wide));
+    assert_eq!(skipped[0]["code"], "webp-too-large", "{report}");
+    assert_eq!(names(&out), ["Also-edited.webp", "Fits-edited.webp"]);
+
+    // Cancelled between the first photograph and the second.
+    let again = harness.dir.join("again");
+    fs::create_dir_all(&again).unwrap();
+    settings["folder"] = json!({"path": again});
+    let gate = harness.hold_before_photograph(2);
+    let started = harness.ok(
+        "batch.export",
+        json!({"targets": assets(&targets), "settings": settings, "mutation": envelope("webp-cancel")}),
+    );
+    gate.wait_reached(1, "the batch's second photograph");
+    harness.ok("job.cancel", json!({"job_id": started["job_id"]}));
+    gate.open();
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "cancelled", "{settled}");
+    assert_eq!(names(&again), ["Fits-edited.webp"]);
 }
 
 #[test]

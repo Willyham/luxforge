@@ -1282,6 +1282,7 @@ fn catalog_browse_the_develop_band_applies_presets_exports_and_reports() {
             asset_id: asset(n),
             path: format!("/x/L100000{n}-edited.jpg").into(),
             renderer: luxforge_core::catalog_types::RenderedBy::gpu(),
+            quality: Some(90),
         })
         .into();
     state.catalog.batch = Some(batch(

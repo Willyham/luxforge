@@ -1806,7 +1806,9 @@ fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
     let out = destinations(&harness);
 
     // Held before its sixth band, the export has encoded the rows it has: 35 of them, two whole
-    // strips, the second's start reported as the rows encoded before it over the stage's height.
+    // strips, the second's start reported as the rows encoded before it over the stage's height,
+    // which is the encoding phase's share of the whole export (all but the 5% of writing for a GPU
+    // export that streams), in whole percent.
     stub.hold_before(5);
     let held = harness.export(json!({"asset_id": asset, "destination": out.join("gpu.jpg")}));
     stub.gate.wait_reached(1, "the stub's sixth band");
@@ -1817,8 +1819,9 @@ fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
     assert_eq!(encoding["status"], "running", "{encoding}");
     assert_eq!(encoding["progress"]["message"], "encoding", "{encoding}");
     let fraction = encoding["progress"]["fraction"].as_f64().unwrap();
+    let expected = (16.0 / 320.0 * 0.95 * 100.0_f64).floor() / 100.0;
     assert!(
-        (fraction - 16.0 / 320.0).abs() < 1e-6,
+        (fraction - expected).abs() < 1e-9,
         "16 of 320 rows encoded: {fraction}"
     );
     assert_eq!(staged_files(&out).len(), 1, "one temporary file");
@@ -1908,7 +1911,9 @@ fn a_stream_the_gpu_stops_drawing_is_rendered_again_by_the_reference_naming_why(
     let phases = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&phases);
     harness.owner.hold_exports(Some(Arc::new(move |phase| {
-        recorded.lock().unwrap().push(phase)
+        if !matches!(phase, "progress" | "written") {
+            recorded.lock().unwrap().push(phase)
+        }
     })));
 
     let export = |name: &str| {
@@ -2036,7 +2041,7 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
     };
     let h = Harness::start("job-wait");
     let asset = h.import("input.jpg")["asset"]["id"].clone();
-    let (reached, release) = h.hold_at("writing");
+    let (reached, release) = h.hold_at("written");
     let accepted = h.export(json!({"asset_id":asset,"destination":h.dir.join("output.jpg")}));
     reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     let job = accepted["job_id"].clone();
@@ -2156,12 +2161,11 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
     );
 }
 
-/// `export.write` writes only what today's pipeline can until the new encoders land: every other
-/// value is refused by name as not yet available, never ignored, and writes nothing; a
-/// destination whose extension is not the format's, and a chosen folder that is missing, are
-/// refused too. `export.jpeg` no longer exists.
+/// `export.write` refuses by name the one value it cannot write yet, output sharpening, never
+/// ignoring it; a destination whose extension is not the format's and a chosen folder that is
+/// missing are refused too, and none of these writes anything. `export.jpeg` no longer exists.
 #[test]
-fn export_write_refuses_by_name_what_it_cannot_write_yet() {
+fn export_write_refuses_sharpening_a_wrong_extension_and_a_missing_folder() {
     let harness = Harness::start("not-yet");
     let state = harness.import("not-yet.jpg");
     let asset = state["asset"]["id"].clone();
@@ -2174,46 +2178,17 @@ fn export_write_refuses_by_name_what_it_cannot_write_yet() {
             ),
         )
     };
-    let web = crate::export::presets::builtin()[0].settings.to_json();
-    for (settings, field) in [
-        (settings_with(json!({"quality": 80})), "settings.quality"),
-        (settings_with(json!({"chroma": "420"})), "settings.chroma"),
-        (
-            settings_with(json!({"limit_bytes": 500_000})),
-            "settings.limit_bytes",
-        ),
-        (
-            settings_with(json!({"optimise": true})),
-            "settings.optimise",
-        ),
-        (
-            settings_with(json!({"size": {"fit": "long_edge", "pixels": 100}})),
-            "settings.size",
-        ),
-        (web, "settings.quality"),
-        (
-            crate::export::presets::builtin()[2].settings.to_json(),
-            "settings.format",
-        ),
-    ] {
-        let refused = write(settings.clone(), "never.jpg");
-        assert_eq!(refused.code, "validation", "{settings}");
-        assert!(
-            refused.message.starts_with(field),
-            "{field}: {}",
-            refused.message
-        );
-        assert!(
-            refused.message.contains("not yet available"),
-            "{}",
-            refused.message
-        );
-        let data = refused.data.unwrap();
-        assert_eq!(
-            (data["field"].as_str(), data["reason"].as_str()),
-            (Some(field), Some("not-yet-available"))
-        );
-    }
+    let sharpened = write(
+        settings_with(json!({"sharpen": {"medium": "screen", "amount": "standard"}})),
+        "never.jpg",
+    );
+    assert_eq!(sharpened.code, "validation");
+    assert!(
+        sharpened.message.starts_with("settings.sharpen")
+            && sharpened.message.contains("not yet available"),
+        "{}",
+        sharpened.message
+    );
     let wrong_extension = write(baseline_json(), "never.tif");
     assert_eq!(wrong_extension.code, "validation");
     let missing = write(
@@ -2365,3 +2340,6 @@ fn export_presets_round_trip_through_the_api_and_a_restart() {
     assert_eq!(refused.code, "incompatible");
     assert_eq!(fs::read(&file).unwrap(), unsupported, "kept unchanged");
 }
+
+#[path = "export_settings_tests.rs"]
+mod settings_tests;

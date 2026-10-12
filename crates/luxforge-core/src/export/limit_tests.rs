@@ -229,7 +229,8 @@ fn a_jpeg_under_a_limit_is_the_highest_fitting_file() {
         assert!(at_61.len() > at_60.len());
         let mut reports = Vec::new();
         let found = encode_jpeg_limited(
-            &frame,
+            (frame.width, frame.height),
+            &frame.rgba,
             &options,
             at_60.len() as u64,
             None,
@@ -243,13 +244,23 @@ fn a_jpeg_under_a_limit_is_the_highest_fitting_file() {
         assert!(found.attempts <= MAX_ATTEMPTS);
         assert_eq!(reports.last().unwrap().fraction, 1.0);
 
-        let error = encode_jpeg_limited(&frame, &options, 600, None, None, &mut |_| {}, &|| Ok(()))
-            .unwrap_err();
+        let error = encode_jpeg_limited(
+            (frame.width, frame.height),
+            &frame.rgba,
+            &options,
+            600,
+            None,
+            None,
+            &mut |_| {},
+            &|| Ok(()),
+        )
+        .unwrap_err();
         assert_eq!(error.data.as_deref().unwrap()["code"], LIMIT_UNREACHABLE);
 
         let checks = Cell::new(0);
         let error = encode_jpeg_limited(
-            &frame,
+            (frame.width, frame.height),
+            &frame.rgba,
             &options,
             at_60.len() as u64,
             None,

@@ -12,7 +12,7 @@
 //!
 //! Nothing here touches the file system: whether a chosen folder exists is the caller's to check,
 //! once, where it plans or writes.
-use crate::{Error, tiles::output::Depth};
+use crate::{Error, render::limits::MAX_FRAME_BYTES, tiles::output::Depth};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -32,12 +32,6 @@ pub const MAX_FOLDER_BYTES: usize = 4096;
 
 /// The output above which an optimised or size-limited export warns (`large-image`): 24 MP.
 pub const LARGE_IMAGE_PIXELS: u64 = 24_000_000;
-/// The longest side libwebp encodes.
-pub const WEBP_MAX_SIDE: u32 = 16_383;
-/// The coefficient arrays an optimised JPEG holds per output pixel at 4:4:4 and at 4:2:0
-/// (`docs/design/export-settings.md`, encoding): two arrays of the whole image's coefficients.
-pub const JPEG_COEFFICIENT_BYTES_444: u64 = 12;
-pub const JPEG_COEFFICIENT_BYTES_420: u64 = 6;
 /// The output frame a size limit and a WebP hold, per pixel: 8-bit RGBA.
 pub const FRAME_BYTES: u64 = 4;
 
@@ -602,32 +596,38 @@ impl ExportSettings {
         Value::Object(object)
     }
 
-    /// The bytes the encoder holds beyond the streamed bands, for an output of `width` × `height`:
-    /// an optimised JPEG's coefficient arrays, about 12 bytes a pixel at 4:4:4 and 6 at 4:2:0; for
-    /// a size limit, the output frame at 4 bytes a pixel, plus those arrays when optimised; for a
-    /// WebP, the frame. A streamed JPEG or TIFF holds nothing more. The one place the figure is
-    /// computed, so the plan, its notice and the sheet agree.
+    /// The bytes the encoder holds beyond the streamed bands, for an output of `width` × `height`,
+    /// from the encoders' own figures: an optimised JPEG's coefficient arrays
+    /// ([`encoder_bytes`](super::encode::encoder_bytes), about 12 bytes a pixel at 4:4:4 and 6 at
+    /// 4:2:0); for a size-limited JPEG, the output frame at 4 bytes a pixel, one attempt's arrays
+    /// and two files at most the limit, the attempt's and the best so far; for a WebP, the frame
+    /// and libwebp's state with its file ([`webp_held_bytes`](super::webp::webp_held_bytes)), and,
+    /// with a limit, the best file so far. A streamed JPEG or TIFF holds nothing more. The one
+    /// place the figure is computed, so the plan, its notice and the sheet agree.
     pub fn held_bytes(&self, (width, height): (u32, u32)) -> u64 {
-        let pixels = u64::from(width) * u64::from(height);
-        let frame = pixels * FRAME_BYTES;
+        let frame = u64::from(width) * u64::from(height) * FRAME_BYTES;
         match self.format {
             FormatSettings::Jpeg {
+                quality,
                 chroma,
                 limit_bytes,
-                ..
             } => {
-                let coefficients = if self.optimise {
-                    pixels
-                        * match chroma {
-                            Chroma::Full => JPEG_COEFFICIENT_BYTES_444,
-                            Chroma::Half => JPEG_COEFFICIENT_BYTES_420,
-                        }
-                } else {
-                    0
+                let options = super::encode::JpegOptions {
+                    quality,
+                    chroma,
+                    optimise: self.optimise,
                 };
-                coefficients + if limit_bytes.is_some() { frame } else { 0 }
+                let coefficients = super::encode::encoder_bytes(width, height, &options);
+                match limit_bytes {
+                    None => coefficients,
+                    Some(limit) => frame + coefficients + 2 * limit,
+                }
             }
-            FormatSettings::Webp { .. } => frame,
+            FormatSettings::Webp { limit_bytes, .. } => {
+                frame
+                    + super::webp::webp_held_bytes(width, height, self.optimise)
+                    + limit_bytes.unwrap_or(0)
+            }
             FormatSettings::Tiff { .. } => 0,
         }
     }
@@ -640,8 +640,10 @@ impl ExportSettings {
 
     /// The notices a plan of an output of `width` × `height` carries, in order: `large-image` when
     /// an optimised or size-limited output passes [`LARGE_IMAGE_PIXELS`], with the estimate;
-    /// `webp-too-large` when a WebP side passes [`WEBP_MAX_SIDE`]; `folder-missing` when `folder`
-    /// is not an existing directory, or is `None` because the photograph has no original folder.
+    /// `webp-too-large` when a WebP side passes [`WEBP_MAX_SIDE`], or when its frame and
+    /// libwebp's state would pass the evaluated-frame limit; `tiff-too-large` when a TIFF could
+    /// pass the format's 4 GiB; `folder-missing` when `folder` is not an existing directory, or is
+    /// `None` because the photograph has no original folder.
     pub fn notices(&self, output: (u32, u32), folder: Option<&Path>) -> Vec<Notice> {
         let (width, height) = output;
         let pixels = u64::from(width) * u64::from(height);
@@ -665,12 +667,41 @@ impl ExportSettings {
                 bytes: Some(bytes),
             });
         }
-        if self.format() == ExportFormat::Webp && width.max(height) > WEBP_MAX_SIDE {
-            notices.push(Notice {
-                code: WEBP_TOO_LARGE,
-                message: format!(
+        if self.format() == ExportFormat::Webp {
+            let encoding =
+                pixels * FRAME_BYTES + super::webp::webp_held_bytes(width, height, self.optimise);
+            let message = if !super::webp::webp_fits(width, height) {
+                Some(format!(
                     "WebP is limited to {WEBP_MAX_SIDE} px a side; this output is {width} \u{d7} \
                      {height}"
+                ))
+            } else if encoding > MAX_FRAME_BYTES {
+                Some(format!(
+                    "WebP holds the whole {width} \u{d7} {height} output while it encodes, about \
+                     {} MB, past the {} MiB limit on a frame; choose a smaller size or another \
+                     format",
+                    encoding.div_ceil(1_000_000),
+                    MAX_FRAME_BYTES >> 20
+                ))
+            } else {
+                None
+            };
+            notices.extend(message.map(|message| Notice {
+                code: WEBP_TOO_LARGE,
+                message,
+                refuses: true,
+                bytes: None,
+            }));
+        }
+        if let FormatSettings::Tiff { bit_depth } = self.format
+            && !super::tiff::tiff_fits(width, height, bit_depth)
+        {
+            notices.push(Notice {
+                code: TIFF_TOO_LARGE,
+                message: format!(
+                    "a {width} \u{d7} {height} {}-bit TIFF could pass the format's 4 GiB limit; \
+                     choose a smaller size or 8 bits",
+                    bit_depth.bytes() * 8
                 ),
                 refuses: true,
                 bytes: None,
@@ -697,8 +728,11 @@ impl ExportSettings {
 
 /// `large-image`: an optimised or size-limited output above 24 MP.
 pub const LARGE_IMAGE: &str = "large-image";
-/// `webp-too-large`: a WebP output side above 16,383 px. It refuses the export.
-pub const WEBP_TOO_LARGE: &str = "webp-too-large";
+/// `tiff-too-large`: a TIFF that could pass the format's 4 GiB. It refuses the export.
+pub(crate) use super::tiff::TIFF_TOO_LARGE;
+/// `webp-too-large`: a WebP output side above 16,383 px, or one whose frame and encoder would
+/// pass the evaluated-frame limit. It refuses the export.
+pub(crate) use super::webp::{WEBP_MAX_SIDE, WEBP_TOO_LARGE};
 /// `folder-missing`: the export's folder is not an existing directory. It refuses the export.
 pub const FOLDER_MISSING: &str = "folder-missing";
 
