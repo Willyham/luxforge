@@ -214,6 +214,7 @@ impl RestVariants {
                 stages: picture.stages.clone(),
                 light_sweeps: Arc::clone(&picture.light_sweeps),
                 reduction: None,
+                overview: picture.overview.clone(),
             },
             None => picture.clone(),
         };
@@ -228,6 +229,11 @@ struct HeldRest {
     conversion: Conversion<RestVariants>,
     /// This content's counts are wanted, independently from whether its picture is handed.
     wanted: bool,
+    /// The minimap overview version its tiles are swept with as well, if they carry one
+    /// ([`super::overview`]).
+    overview: Option<u64>,
+    /// The content serial whose job handed the tiles, which the overview keys them by.
+    content: Option<u64>,
 }
 
 /// One settled resource's handoff. Crop, retained Compare content and warming remain independent.
@@ -251,6 +257,7 @@ fn same_tiles(held: &luxforge_core::RestTiles, new: &luxforge_core::RestTiles) -
         light_sweeps,
         output,
         reduction: _,
+        overview: _,
         source,
         format,
     } = new;
@@ -274,6 +281,7 @@ fn rest_of(
     grids: &mut Grids,
     tiles: &luxforge_core::RestTiles,
     version: u64,
+    overview: Option<u64>,
 ) -> Result<Option<luxforge_gpu::GpuRest>, &'static str> {
     let source = source
         .filter(|source| source.identity == tiles.source)
@@ -289,20 +297,21 @@ fn rest_of(
             Ok(Some(grid)) => Some(grid),
         },
     };
-    rest_over(&source.gpu, stage.as_deref(), tiles, versions, version).map(Some)
+    rest_over(&source.gpu, stage.as_deref(), tiles, versions, version, overview).map(Some)
 }
 
 /// `tiles` over the source `gpu` as the surfaces draw them under `version`, through `stage`, the
 /// whole output stage's grid of their lens warp when they draw through one: each tile's plan over
 /// its window cut from the source under a version of its own from `versions`, with no clipping
-/// marks. The reason when a tile's plan is one the surface cannot run. `O(tiles × steps)`, no
-/// pixel.
+/// marks; and the minimap overview the tiles carry as `overview`'s version. The reason when a
+/// tile's plan is one the surface cannot run. `O(tiles × steps)`, no pixel.
 fn rest_over(
     gpu: &GpuSource,
     stage: Option<&CoordinateGrid>,
     tiles: &luxforge_core::RestTiles,
     versions: &mut u64,
     version: u64,
+    overview: Option<u64>,
 ) -> Result<luxforge_gpu::GpuRest, &'static str> {
     let mut plans = Vec::with_capacity(tiles.tiles.len());
     for tile in &tiles.tiles {
@@ -447,6 +456,18 @@ fn rest_over(
                 across: axis(reduction.across.clone()),
                 down: axis(reduction.down.clone()),
             }),
+        overview: tiles
+            .overview
+            .as_ref()
+            .zip(overview)
+            .map(|(reduction, version)| luxforge_gpu::RestOverview {
+                version,
+                reduction: luxforge_gpu::RestReduction {
+                    view: reduction.view,
+                    across: axis(reduction.across.clone()),
+                    down: axis(reduction.down.clone()),
+                },
+            }),
     })
 }
 
@@ -463,7 +484,10 @@ pub(crate) fn rest_now(
         .map(|warp| grid_of(&GridKey::stage(warp)))
         .transpose()?;
     let mut versions = version;
-    rest_over(gpu, stage.as_deref(), tiles, &mut versions, version).map_err(str::to_owned)
+    // An overview the tiles carry is swept under the rest's own version.
+    let overview = tiles.overview.as_ref().map(|_| version);
+    rest_over(gpu, stage.as_deref(), tiles, &mut versions, version, overview)
+        .map_err(str::to_owned)
 }
 
 /// A boundary derived for the release gate's harness, where its texels lie in the plan's boundary
@@ -1099,6 +1123,9 @@ pub(crate) struct GpuPreviews {
     /// The budget a test holds a region's boundary to, in place of the surface's.
     #[cfg(test)]
     pub(crate) budget: Option<u64>,
+    /// What a test reports of the surface's minimap overviews, which no test draws.
+    #[cfg(test)]
+    pub(crate) overview_report: Option<luxforge_ui::OverviewFigures>,
     /// The figure a test asks the owner to plan a region's reduced stage beside it past, in place
     /// of the core's ([`luxforge_core::REDUCED_AFTER_BYTES`]).
     #[cfg(test)]
@@ -2298,12 +2325,21 @@ impl Editor {
             }
             return;
         };
+        // Tiles handed without a minimap overview keep held ones swept with one: the overview
+        // is not swept again ([`super::overview`]).
         if self.gpu.rest.as_ref().is_some_and(|held| {
             held.tiles == tiles
-                || (region && held.tiles.reduction.is_some() && same_tiles(&held.tiles, &tiles))
+                || (region
+                    && held.tiles.reduction.is_some()
+                    && same_tiles(&held.tiles, &tiles)
+                    && (tiles.overview.is_none() || held.tiles.overview == tiles.overview))
         }) {
             return;
         }
+        let overview = tiles
+            .overview
+            .as_ref()
+            .and(self.overviews.sweep_version());
         self.gpu.rests += 2;
         self.gpu.rest = Some(HeldRest {
             tiles,
@@ -2313,6 +2349,8 @@ impl Editor {
             },
             conversion: Conversion::Pending,
             wanted: false,
+            overview,
+            content: None,
         });
         self.gpu_convert_rest();
     }
@@ -2363,6 +2401,7 @@ impl Editor {
             &mut gpu.grids,
             &held.tiles,
             held.version,
+            None,
         ) {
             Ok(None) | Err("source-missing") => return,
             Ok(Some(converted)) => {
@@ -2428,6 +2467,7 @@ impl Editor {
             &mut gpu.grids,
             &held.tiles,
             held.versions.picture,
+            held.overview,
         ) {
             Ok(None) => return,
             Ok(Some(converted)) => {
@@ -2527,10 +2567,95 @@ impl Editor {
             && super::gpu_settle::clip_flags(&self.session.workspace).is_none()
         {
             Some(RestPresentation::Picture(&ready.picture))
-        } else if held.wanted {
+        } else if held.wanted
+            || held
+                .overview
+                .is_some_and(|version| self.overviews.awaits(version))
+        {
+            // For their counts, or for the minimap overview swept beside them where no backdrop
+            // is drawn.
             Some(RestPresentation::Counts(&ready.counts))
         } else {
             None
+        }
+    }
+
+    /// The content serial whose committed job just handed the picture at rest held: what the
+    /// minimap overview keys its sweep by.
+    pub(crate) fn gpu_rest_content(&mut self, content: u64) {
+        if let Some(held) = self.gpu.rest.as_mut() {
+            held.content = Some(content);
+        }
+    }
+
+    /// The key of the minimap overview the held picture at rest can be swept with: its content's,
+    /// over its output stage, while its conversion is not refused.
+    pub(crate) fn gpu_rest_overview_key(
+        &self,
+        asset: &luxforge_core::AssetId,
+    ) -> Option<super::overview::OverviewKey> {
+        let held = self.gpu.rest.as_ref()?;
+        if held.conversion.refusal().is_some() {
+            return None;
+        }
+        let content = self.overviews.content(held.content?)?.clone();
+        let output = held.tiles.output;
+        super::overview::key_of(
+            asset,
+            content,
+            super::overview::OverviewStage {
+                kind: super::overview::StageKind::Output,
+                width: output.width,
+                height: output.height,
+            },
+        )
+    }
+
+    /// Whether the picture at rest swept with overview `version` stopped with a fallback, or its
+    /// conversion was refused.
+    pub(crate) fn gpu_rest_overview_failed(&self, version: u64) -> bool {
+        let Some(held) = self
+            .gpu
+            .rest
+            .as_ref()
+            .filter(|held| held.overview == Some(version))
+        else {
+            return false;
+        };
+        if held.conversion.refusal().is_some() {
+            return true;
+        }
+        #[cfg(test)]
+        let figures: Option<luxforge_gpu::RestFigures> = None;
+        #[cfg(not(test))]
+        let figures = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_rest;
+        figures.is_some_and(|figures| {
+            (figures.version == held.versions.picture || figures.version == held.versions.counts)
+                && figures.fallback.is_some()
+        })
+    }
+
+    /// Sweep the held picture at rest again with the minimap overview `version` reduced beside it:
+    /// one bounded sweep of the same tiles, the content's counts and backdrop drawn again with it.
+    pub(crate) fn overview_sweep(&mut self, version: u64) {
+        let Some(held) = self.gpu.rest.as_ref() else {
+            self.overviews.sweep_lost(version);
+            return;
+        };
+        let content = held.content;
+        let tiles = held.tiles.clone().with_overview(luxforge_core::OVERVIEW_BOUNDS);
+        self.overviews.swept();
+        self.gpu_rest_from(Some(tiles), true);
+        match self.gpu.rest.as_mut() {
+            Some(held) if held.overview == Some(version) => {
+                held.content = content;
+                let picture = held.versions.picture;
+                self.event(
+                    "overview_sweep",
+                    || json!({"version": version, "rest": picture}),
+                );
+            }
+            _ => self.overviews.sweep_lost(version),
         }
     }
 

@@ -73,6 +73,7 @@ mod gpu_notice_tests;
 #[cfg(test)]
 mod gpu_presence_tests;
 pub(crate) mod gpu_preview;
+pub(crate) mod overview;
 #[cfg(test)]
 mod gpu_preview_tests;
 #[cfg(test)]
@@ -515,6 +516,8 @@ pub(crate) struct Editor {
     /// GPU display/analysis resources for committed and drafted content, and the warm
     /// list of the committed stack.
     pub(crate) gpu: gpu_preview::GpuPreviews,
+    /// The high-zoom minimap's overview of the stage the canvas navigates ([`overview`]).
+    pub(crate) overviews: overview::Overviews,
     /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
     /// The open draft's ticks the GPU does not draw: held, or waiting for their reference frame.
@@ -599,6 +602,7 @@ const AFTER_MESSAGE: [AfterMessage; 32] = [
     gpu_preview::after_message,
     gpu_settle::after_message,
     gpu_counts::after_message,
+    overview::after_message,
     motion::after_message,
     renderer::after_message,
     mask_panel::after_message,
@@ -765,6 +769,7 @@ impl Editor {
             long_work: long_work::LongWork::watching(&owner, presentation_visible),
             develop: Default::default(),
             gpu: Default::default(),
+            overviews: Default::default(),
             gpu_settle: Default::default(),
             motion: Default::default(),
             drawn_frames: Default::default(),
@@ -1358,6 +1363,7 @@ impl Editor {
         surfaces.compare_change = after.map(|(_, change)| change);
         surfaces.compare_rest = after_rest;
         surfaces.dissolve = self.gpu_settle.dissolve();
+        surfaces.overview = Some(self.overviews.handed());
         if self
             .presentation
             .compare_after

@@ -56,6 +56,12 @@
 //!   the slot's tail intermediate is reduced into the light's block plane
 //!   ([`super::light::LightReducer`]); after the sweep's last tile the light is selected and kept,
 //!   and the chained tiles read it kept. A light the pipeline keeps already skips its sweep.
+//! - **The overview.** A picture at rest handed with an overview ([`GpuRest::overview`]) reduces
+//!   each of its final tiles a second time, by the same pass, into an accumulator of the minimap
+//!   overview's size, and quantizes it after the last tile into a texture of its own, which then
+//!   leaves the picture at rest for the surface's [`super::overview::OverviewStore`]. Its parts are
+//!   charged to the overview's ledger ([`super::overview::OVERVIEW_GPU_BUDGET`]) after the rest's
+//!   own; one it cannot reserve is refused by version, and the picture at rest is drawn without it.
 //! - **Figures.** What its tiles did, for attributing a slow picture at rest
 //!   ([`RestFigures`]): their evaluations summed — refits, rebinds, links run, lights encoded or
 //!   restored, window texels — the frames a tile waited for a retirement, and each tile's GPU span
@@ -107,6 +113,9 @@ pub struct GpuRest {
     /// Drawn chained, the light sweeps that compute each light behind a spatial step its tiles read
     /// first, with no stage texture; empty for none.
     pub light_sweeps: Arc<[RestLightSweep]>,
+    /// The minimap overview its final tiles are reduced to as well, beside the view's reduction:
+    /// `None` for none. The tiles, the view and the counts are the same either way.
+    pub overview: Option<super::overview::RestOverview>,
 }
 
 /// A light sweep of a picture at rest (the core's `GpuLightSweep`): plain data, as the tiles are.
@@ -230,6 +239,10 @@ impl GpuRest {
         !self.tiles.is_empty()
             && self.tiles.iter().all(|tile| tile.region.is_some())
             && self.reduction.as_ref().is_none_or(RestReduction::valid)
+            && self
+                .overview
+                .as_ref()
+                .is_none_or(|overview| overview.reduction.valid())
             && self.light_sweeps.iter().all(RestLightSweep::valid)
     }
 }
@@ -723,6 +736,9 @@ pub struct RestSlot {
     reduce: Option<Reduce>,
     /// The bytes of the reduction's parts, charged.
     bytes: u64,
+    /// The minimap overview's reduction in progress, until its last tile is in and the finished
+    /// overview leaves for the surface's store.
+    overview: Option<OverviewReduce>,
     /// The rest output holds every tile's reduction, quantized, and the counts are read back.
     done: bool,
     /// The last frame found the next tile waiting for its sequence, its source or a retirement.
@@ -736,6 +752,16 @@ pub struct RestSlot {
     retirement_waits: u32,
     /// Each tile's GPU span, as the queue reports it.
     clock: Arc<TileClock>,
+}
+
+/// A picture at rest's minimap overview in progress: its version, its reduction and what its parts
+/// are charged to the overview's ledger.
+struct OverviewReduce {
+    version: u64,
+    reduce: Reduce,
+    bytes: u64,
+    /// Every tile is reduced and quantized: the overview is finished.
+    done: bool,
 }
 
 /// A staged tile's place: the stage texture its boundary is copied out of, and the one its
@@ -781,6 +807,11 @@ impl RestSlot {
     /// Its version, and its counts as they stand.
     pub fn counts(&self) -> (u64, RestCounts) {
         (self.version, self.counts.clone())
+    }
+
+    /// The overview version it reduces its tiles to now, if any.
+    pub fn overview_version(&self) -> Option<u64> {
+        self.overview.as_ref().map(|overview| overview.version)
     }
 
     /// Whether tiles remain to draw, which the widget asks the next frame for.
@@ -958,6 +989,24 @@ impl Executor {
                     if let Err(error) = reduction(self, device, &mut surface.histogram) {
                         slot.counts = RestCounts::Failed(error);
                     }
+                    // The overview after the rest's own parts: one that cannot be reserved is
+                    // refused by version, and the rest is drawn without it.
+                    if let Some(overview) = &rest.overview {
+                        let charge = |bytes| self.charge_overview(bytes);
+                        match self.allocate_reduction(device, queue, &overview.reduction, charge) {
+                            Ok((reduce, bytes)) => {
+                                slot.overview = Some(OverviewReduce {
+                                    version: overview.version,
+                                    reduce,
+                                    bytes,
+                                    done: false,
+                                });
+                            }
+                            Err(fallback) => {
+                                surface.overview_refused(overview.version, fallback);
+                            }
+                        }
+                    }
                     surface.rest = Some(Box::new(slot));
                 }
                 Err(fallback) => {
@@ -972,9 +1021,9 @@ impl Executor {
         if !slot.pending() {
             return;
         }
-        let passes = match &slot.reduce {
-            None => None,
-            Some(_) => match self.gpu.rest_passes(device) {
+        let passes = match slot.reduce.is_some() || slot.overview.is_some() {
+            false => None,
+            true => match self.gpu.rest_passes(device) {
                 Some(Ok(passes)) => Some(Arc::clone(passes)),
                 _ => {
                     slot.fallback = Some(GpuFallback::PipelineFailed);
@@ -991,6 +1040,35 @@ impl Executor {
             passes.as_deref(),
         );
         slot.prepare_us += started.elapsed().as_micros() as u64;
+        // A finished overview leaves the picture at rest for the surface's store, its accumulator,
+        // tables and parameters retired; the texture stays charged to the overview's ledger.
+        if let Some(overview) = slot.overview.take_if(|overview| overview.done) {
+            let OverviewReduce {
+                version,
+                reduce,
+                bytes,
+                ..
+            } = overview;
+            let RestParts {
+                sums,
+                tables,
+                params,
+                output,
+            } = reduce.parts;
+            let kept = super::overview::texture_bytes((output.width, output.height));
+            self.retire_overview(
+                super::overview::OverviewHeld::Buffers(vec![sums, tables, params]),
+                bytes - kept,
+            );
+            self.adopt_overview(
+                surface,
+                super::overview::Finished {
+                    version,
+                    output,
+                    bytes: kept,
+                },
+            );
+        }
     }
 
     /// The tiles `slot` draws this frame, each reduced to the view and counted, and after its last
@@ -1148,7 +1226,13 @@ impl Executor {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_rest.tile_encoder"),
             });
-            if let (Some(reduce), Some(passes)) = (&slot.reduce, passes) {
+            // The view's reduction and the overview's, each its own accumulator and parameters,
+            // from the same codes.
+            let overview = slot.overview.as_ref().map(|overview| &overview.reduce);
+            for reduce in slot.reduce.iter().chain(overview) {
+                let Some(passes) = passes else {
+                    break;
+                };
                 queue.write_buffer(
                     &reduce.parts.params.buffer,
                     0,
@@ -1194,6 +1278,11 @@ impl Executor {
         if let (Some(reduce), Some(passes)) = (&mut slot.reduce, passes) {
             reduce.quantize(device, queue, passes);
             reduce.parts.output.version = slot.version;
+        }
+        if let (Some(overview), Some(passes)) = (&mut slot.overview, passes) {
+            overview.reduce.quantize(device, queue, passes);
+            overview.reduce.parts.output.version = overview.version;
+            overview.done = true;
         }
         if let (RestCounts::Counting, Some(histogram)) = (&slot.counts, histogram) {
             let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1361,9 +1450,21 @@ impl Executor {
         if let Some(reducer) = slot.reducer.take() {
             self.retire_reducer(reducer);
         }
-        let RestSlot { reduce, bytes, .. } = *slot;
+        let RestSlot {
+            reduce,
+            bytes,
+            overview,
+            ..
+        } = *slot;
         if let Some(reduce) = reduce {
             self.retire_preview(Held::Rest(Box::new(reduce.parts)), bytes);
+        }
+        // An overview in progress goes with it, never half reduced.
+        if let Some(overview) = overview {
+            self.retire_overview(
+                super::overview::OverviewHeld::Parts(Box::new(overview.reduce.parts)),
+                overview.bytes,
+            );
         }
     }
 
@@ -1379,7 +1480,8 @@ impl Executor {
         let (reduce, bytes) = match &rest.reduction {
             None => (None, 0),
             Some(reduction) => {
-                let (reduce, bytes) = self.allocate_reduction(device, queue, reduction)?;
+                let charge = |bytes| self.figures.preview.charge(bytes);
+                let (reduce, bytes) = self.allocate_reduction(device, queue, reduction, charge)?;
                 (Some(reduce), bytes)
             }
         };
@@ -1478,6 +1580,7 @@ impl Executor {
             tile: Box::new(self.new_surface()),
             reduce,
             bytes,
+            overview: None,
             done: false,
             waiting: false,
             prepare_us: 0,
@@ -1488,13 +1591,14 @@ impl Executor {
         })
     }
 
-    /// A reduction's parts for `reduction`, and what they are charged, charged before anything is
-    /// created.
+    /// A reduction's parts for `reduction`, and what they are charged, charged by `charge` — the
+    /// GPU-preview budget, or the overview's ledger within it — before anything is created.
     fn allocate_reduction(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         reduction: &RestReduction,
+        charge: impl FnOnce(u64) -> Result<(), GpuFallback>,
     ) -> Result<(Reduce, u64), GpuFallback> {
         let (width, height) = reduction.view;
         let (words, starts) = reduction.tables();
@@ -1503,7 +1607,7 @@ impl Executor {
         let params_bytes = (PARAMS * 4) as u64;
         let output_bytes = u64::from(width) * u64::from(height) * 4;
         let bytes = sums_bytes + table_bytes + params_bytes + output_bytes + UNIFORM_SIZE as u64;
-        self.figures.preview.charge(bytes)?;
+        charge(bytes)?;
         let sums = Charged {
             buffer: storage_buffer(device, "luxforge.gpu_rest.sums", sums_bytes),
             bytes: sums_bytes,

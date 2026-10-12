@@ -416,6 +416,9 @@ impl Editor {
                 // The open gesture's GPU preview: its held boundary, the plan's revision, why the
                 // latest tick took the CPU path, and its tick counts; and the warm list's version.
                 "gpu_preview":self.gpu.summary(),
+                // The high-zoom minimap's overview: what the minimap shows, the lifecycle's
+                // settled and pending overviews and counters, and what the surface holds.
+                "minimap_overview":self.minimap_overview_summary(&gpu),
                 // At a percentage zoom of 100% or more: the region of the output stage the view
                 // shows now, and the region the plan handed to the surface draws, which holds it;
                 // both `[x0, y0, x1, y1]`.

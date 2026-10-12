@@ -77,6 +77,8 @@ pub struct State {
     pub tick_counted: Option<(u64, u64)>,
     pub tick_counts: Option<TickCounted>,
     pub evaluation: EvaluationFigures,
+    /// The minimap overviews this surface holds beside its picture ([`execution::overview`]).
+    pub overview: OverviewStore,
 }
 impl State {
     pub fn rest_figures(&self) -> Option<RestFigures> {
