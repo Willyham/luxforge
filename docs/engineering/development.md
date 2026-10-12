@@ -583,7 +583,8 @@ test editors (`testing::boot`) and its Select owner and loupe tests open theirs 
 the one that checks the volumes the host has mounted.
 
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
-itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
+itself, and the `OUT_DIR` it sets because `xtask-cli` has a build script. `ring`'s build script
+reruns when `CARGO_MANIFEST_DIR`, `CARGO_PKG_NAME` or `OUT_DIR` changes, so a
 build inheriting them would rebuild `ring`, `rustls`, `luxforge-core` and everything above them
 after any build started from a shell, and the next shell build would rebuild them back. Without
 them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
