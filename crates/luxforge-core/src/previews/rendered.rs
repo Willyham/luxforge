@@ -116,7 +116,7 @@ use crate::{
     editor::{AssetRecord, FilePreparation, Prepared, SourceWork, original_signature},
     proxy::RowReduction,
     source::{PreparedSource, RawPrepared},
-    tiles::{BandStream, TileService, TileStatus},
+    tiles::{BandStream, OutputSpec, TileService, TileStatus},
 };
 use luxforge_jpeg::Settings;
 use rusqlite::{Connection, params};
@@ -583,7 +583,8 @@ fn draw(
     let reason = if tiles.status() == TileStatus::Reference(None) {
         None
     } else {
-        match tiles.stream(&evaluation, cancel) {
+        let output = OutputSpec::full(stage.width, stage.height);
+        match tiles.stream(&evaluation, output, cancel) {
             Ok(stream) => match reduced(stream, size, keys, &evaluation, cancel)? {
                 Streamed::Drawn(rasters, renderer) => return Ok((rasters, renderer)),
                 // Drawn again from nothing by the reference.
@@ -642,7 +643,7 @@ fn reduced(
         };
         cancel.check()?;
         for tier in &mut tiers {
-            tier.push(&band.rgba, cancel)?;
+            tier.push(band.rgba8()?, cancel)?;
         }
     }
     let renderer = Renderer::from(stream.answered());
