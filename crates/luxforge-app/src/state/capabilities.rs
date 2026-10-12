@@ -556,14 +556,24 @@ fn resource_row(declared: &ResourceDescriptor, state: &ModuleCapabilities) -> Re
         id: declared.id.clone(),
         title: declared.title.clone(),
         detail: format!(
-            "v{} · {}",
-            declared.version,
+            "{} · {}",
+            version_label(&declared.version),
             human_bytes(declared.total_bytes())
         ),
         state: text,
         progress,
         action,
         job: job_id,
+    }
+}
+
+/// A resource's version as a row shows it: `v1` for a number, and a version that names its files
+/// (`klein-4b-q4_0-…`) as it is.
+pub(crate) fn version_label(version: &str) -> String {
+    if version.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("v{version}")
+    } else {
+        version.to_owned()
     }
 }
 
