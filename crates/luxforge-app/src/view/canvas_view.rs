@@ -79,6 +79,21 @@ impl CanvasView {
     }
 }
 
+/// How far content `content` logical pixels long overhangs a viewport `available` long on one
+/// axis: the range the canvas's scrollable holds its offset in, zero where the content fits.
+pub(crate) fn overhang(content: f32, available: f32) -> f32 {
+    (content - available).max(0.0)
+}
+
+/// One axis of a percentage view inside the canvas's scrollable: where content `content` logical
+/// pixels long starts relative to a viewport `available` long when the scrollable's offset is
+/// `offset`. Content that fits is centred and never moves; content that overhangs moves by the
+/// offset, held between zero and the [`overhang`]. The arithmetic the canvas's `scrolled` lays
+/// out, a pinch anchors through and evidence records.
+pub(crate) fn scrolled_origin(content: f32, available: f32, offset: f32) -> f32 {
+    (available - content).max(0.0) / 2.0 - offset.clamp(0.0, overhang(content, available))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -661,6 +661,8 @@ impl Presentation {
             compare_source: None,
             compare_change: None,
             compare_rest: None,
+            overview: None,
+            minimap: None,
         }
     }
 
@@ -819,7 +821,10 @@ pub(super) fn viewport_rect(
         return None;
     }
     let edge = |start: f32, length: f32, limit: u32| {
-        let start = start.clamp(0.0, (limit as f32 * scale - length).max(0.0));
+        let start = start.clamp(
+            0.0,
+            view::canvas_view::overhang(limit as f32 * scale, length),
+        );
         let first = ((start / scale).floor() as i64 - 1).clamp(0, i64::from(limit)) as u32;
         let last = (((start + length) / scale).ceil() as i64 + 1)
             .clamp(i64::from(first), i64::from(limit)) as u32;
@@ -1042,6 +1047,7 @@ impl Editor {
                 }
             }
             PreviewMessage::GridReady(answer) => self.gpu_grid_ready(*answer),
+            PreviewMessage::OverviewReduced(reduced) => self.overview_reduced(*reduced),
             PreviewMessage::ThumbnailSource(planned) => self.thumbnail_source_planned(planned),
             PreviewMessage::Loaded(result) => {
                 if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
@@ -1826,6 +1832,13 @@ impl Editor {
             self.proxy_bounds()
         };
         let content = self.presentation.admit(&job);
+        // What the content's pixels are, which the minimap overview keys it by.
+        self.overviews.admitted(
+            content,
+            job.evaluation.pixel_content_key().ok().map(|pixels| {
+                super::overview::OverviewContent::Pixels(pixels, job.evaluation.source().identity())
+            }),
+        );
         self.request_mask_coverage(&job, content);
         self.gpu_warm_from(job.gpu_warm.as_deref());
         // Every boundary is derived from the job's own source on the GPU: the surface is handed it
@@ -1841,7 +1854,11 @@ impl Editor {
         // where its view draws the stack at its own size or larger or the GPU cannot draw them.
         if committed && let Some(rest) = job.gpu_rest.as_mut() {
             let tiles = rest.tiles.take().and_then(Result::ok);
+            let handed = tiles.is_some();
             self.gpu_rest_from(tiles, region_view);
+            if handed {
+                self.gpu_rest_content(content);
+            }
             self.gpu.rest_planned_at = planned_at.filter(|_| !region_view);
         }
         self.gpu_resident_from(job.gpu_rest.take(), region_view, committed);

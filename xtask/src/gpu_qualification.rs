@@ -27,6 +27,12 @@
 //! the display limit of the stack's class, and a second GPU export, on a second device of the same
 //! adapter, the same bytes. A stack the GPU cannot export is a gap naming why.
 //!
+//! The minimap's overview is judged over the whole output stage too: each stack's picture at rest
+//! planned at 200%, the minimap's threshold, its tiles carrying the overview's reduction, drawn as
+//! the editor draws it, the overview read back and held to the reference frame reduced to its size
+//! (at most 256 × 256) by the display limit of the stack's class. A stack whose overview the GPU
+//! cannot draw is a gap naming why.
+//!
 //! A kind the GPU does not render yet is reported as such, never as a pass and never as a failure;
 //! nor is the picture in motion unless it is gated.
 //! The gate fails (an ordinary failure) when any cell it judges passes a limit, when the harness did
@@ -116,7 +122,8 @@ fn selection(a: &mut Args, key: &str) -> Result<Option<Vec<String>>> {
 
 impl Options {
     /// `--output NEW_DIR [--manifest FILE] [--fixtures DIR] [--zoom fit|33|50|100|all]
-    /// [--kind picture-at-rest|picture-in-motion|histogram|sample|export|all] [--families F,...]
+    /// [--kind picture-at-rest|picture-in-motion|histogram|sample|export|overview|all]
+    /// [--families F,...]
     /// [--recipes ID,...] [--sources ID,...] [--frames missed|all]
     /// [--gate-motion against-rest|against-reference]`;
     /// `--zoom` and `--kind` take a comma-separated list too.
@@ -156,7 +163,7 @@ impl Options {
                         Kind::parse(name).ok_or_else(|| {
                             format!(
                                 "--kind is picture-at-rest, picture-in-motion, histogram, sample, \
-                                 export or all, not {name}"
+                                 export, overview or all, not {name}"
                             )
                         })
                     })
@@ -1524,7 +1531,7 @@ pub fn markdown(report: &Value) -> String {
         })
         .collect();
     if !others.is_empty() {
-        text.push_str("\n## The other output kinds\n\nOver the whole output stage, each stack's statistics as the picture's are; for export, the GPU's export against the reference export by the display limit of the stack's class, and two GPU exports the same bytes.\n\n| Kind | Measured | Within | Past a limit | Gaps | Not rendered by the GPU | Max | Mean | Verdict |\n| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |\n");
+        text.push_str("\n## The other output kinds\n\nOver the whole output stage, each stack's statistics as the picture's are; for export, the GPU's export against the reference export by the display limit of the stack's class, and two GPU exports the same bytes; for the overview, the minimap's overview the picture at rest draws at 200% against the reference frame reduced to its size.\n\n| Kind | Measured | Within | Past a limit | Gaps | Not rendered by the GPU | Max | Mean | Verdict |\n| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |\n");
         for result in &others {
             text.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
@@ -1688,6 +1695,7 @@ mod tests {
             "histogram": {"status": "not-rendered", "reason": "stage 2's"},
             "sample": {"status": "not-rendered", "reason": "stage 4's"},
             "export": {"status": "not-rendered", "reason": "stage 4's"},
+            "overview": {"status": "not-rendered", "reason": "stage 4's"},
         })
     }
 
@@ -1754,13 +1762,13 @@ mod tests {
             rest[0]["renderers"],
             json!(["the picture at rest in tiles"])
         );
-        for kind in [Kind::Histogram, Kind::Sample, Kind::Export] {
+        for kind in [Kind::Histogram, Kind::Sample, Kind::Export, Kind::Overview] {
             assert_eq!(
                 rows(&report, kind)[0]["verdict"],
                 "not rendered by the GPU yet"
             );
         }
-        assert_eq!(report["not_rendered"].as_array().unwrap().len(), 3);
+        assert_eq!(report["not_rendered"].as_array().unwrap().len(), 4);
         let summary = markdown(&report);
         assert!(summary.contains("**PASSED**") && summary.contains("No: stage 2's"));
         assert!(summary.contains("## The picture at rest, against the reference"));
@@ -2053,6 +2061,47 @@ mod tests {
         assert!(markdown(&report).contains("## Cells that could not run here (1)"));
     }
 
+    /// The minimap's overview is judged by its figures against the reference frame reduced to its
+    /// size, by the display limit of the stack's class; an overview the GPU could not draw is a gap
+    /// with its reason, which makes the run incomplete, never a pass.
+    #[test]
+    fn an_overview_is_judged_by_its_figures_and_a_gap_is_never_a_pass() {
+        let overview = |statistics: Value, passed: bool| {
+            let mut stack = pair("a--b", "pointwise", within(), within());
+            stack["kinds"]["overview"] = json!({"status": "measured", "statistics": statistics,
+                "size": [256, 171], "passed": passed});
+            stack
+        };
+        let report = judge(Some(&cells(vec![overview(within(), true)])), 1, &options());
+        assert_eq!(report["status"], "passed", "{report:#}");
+        let row = rows(&report, Kind::Overview)[0].clone();
+        assert_eq!(
+            (row["within"].clone(), row["verdict"].clone()),
+            (json!(1), json!("passed"))
+        );
+        assert!(markdown(&report).contains("| overview | 1 | 1 | 0 | 0 | 0 |"));
+
+        let report = judge(
+            Some(&cells(vec![overview(stats(0.6, 0.5, 1.0, 0.0), false)])),
+            1,
+            &options(),
+        );
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["missed"][0]["kind"], "overview");
+        assert_eq!(report["missed"][0]["exceeded"], json!(["mean"]));
+
+        let mut gap = pair("c--d", "spatial", within(), within());
+        gap["kinds"]["overview"] = json!({"status": "gap",
+            "reason": "the overview was refused: BudgetExceeded"});
+        let report = judge(Some(&cells(vec![gap])), 1, &options());
+        assert_eq!(report["status"], "incomplete", "{report:#}");
+        assert_eq!(rows(&report, Kind::Overview)[0]["verdict"], "incomplete");
+        assert_eq!(
+            report["gaps"][0]["reason"],
+            "overview: the overview was refused: BudgetExceeded"
+        );
+    }
+
     #[test]
     fn the_command_reads_its_selection_and_reading_and_refuses_what_it_does_not_know() {
         let root = root().unwrap();
@@ -2087,6 +2136,8 @@ mod tests {
         assert!(parse(&["--output", "/tmp/x", "--gate-motion", "always"]).is_err());
         assert!(parse(&["--output", "/tmp/x", "--zoom", "25"]).is_err());
         assert!(parse(&["--output", "/tmp/x", "--kind", "picture"]).is_err());
+        let (overview, _) = parse(&["--output", "/tmp/x", "--kind", "overview"]).unwrap();
+        assert_eq!(overview.kinds, Some(vec![Kind::Overview]));
         assert!(parse(&["--output", "/tmp/x", "--frames", "some"]).is_err());
         let corpus = Corpus::load(&root).unwrap();
         let unknown = Options {

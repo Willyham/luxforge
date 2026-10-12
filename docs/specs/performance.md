@@ -5764,6 +5764,23 @@ The drag fell within that merge's reading stage, the decoding and development of
 
 **Outstanding.** GPU allocations while the editor shows a merged result are not measured, because the worker has no GPU client and `resources.read` reports GPU memory unavailable. Also outstanding are 24 MP × 9 times on a quiet host, a drag during fusion, the fusion spool reads above, and Windows and Linux.
 
+## High-zoom minimap
+
+Not measured. The [minimap](../design/minimap.md) adds bounded storage and no timed claim: no latency, throughput or memory figure was taken for it, on the M4 or elsewhere, and none of the figures in this document cover it.
+
+**Declared bounds** ([architecture](../design/architecture.md#limits)), each held by tests rather than measured:
+
+| What | Bound |
+| --- | --- |
+| The overview raster | Aspect-fitted within 256 × 256 physical pixels (`OVERVIEW_BOUNDS`) |
+| Its GPU storage per pipeline: accumulator, coverage tables and parameters, finished textures and their uniforms, current, replacement and retiring | 4 MiB together (`OVERVIEW_GPU_BUDGET`, `OVERVIEW_GPU_BYTES`), charged inside the 2 GiB GPU-preview budget before creation; a picture at rest planned at 100% and above leaves it free in its share |
+| Overviews a photo surface keeps | 2, the settled one and one replacement |
+| The reference's reduction: output, coverage tables and one band of rows | 1 MiB (`OVERVIEW_CPU_BYTES`), one at a time on the blocking pool, the retained frame borrowed |
+
+**Counted, not timed.** The background `zoom` journey on generated 24 MP and 60 MP JPEGs on the M4 Pro's Metal adapter (`artifacts/minimap-integration` in the integration worktree) records the overview's lifecycle counters in every frame's state: from the first ready overview through the 1600% pans, the 199.9% control and back to 200%, and every minimap click, drag, API pan, wheel and letterbox press, the GPU and reference builds, sweeps and uploads stay unchanged while the reuse count rises (24 MP: 1 GPU build and 1 sweep, reuses 1 to 11; 60 MP: 1 and 1, reuses 1 to 10); the crop draft's stage and Compare's After each add one reference build and one upload. The 6000 × 4000 stage's overview is 256 × 171. The journey's checks assert placement, rectangle, pan and pixels, not these counters, which are read from its record and are not a cost measurement.
+
+**Outstanding.** The plan's measurement step: first-overview latency warm and cold, pan input to presented frame p50 / p95 at 200% and 800% beside a 199.9% control (different zoom windows, so not an isolated rendering comparison), added retained and peak CPU and GPU bytes, reuse, rebuild and upload counts and idle behaviour, release-built on the M4 with the 24 MP and 60 MP JPEGs. The `editor-latency` tooling has no minimap drag yet.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

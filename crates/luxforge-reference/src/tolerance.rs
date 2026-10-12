@@ -5,8 +5,9 @@
 //! declared limit against what the whole-frame CPU reference renders. The picture in motion is held
 //! to the frame it settles to, by the design's recorded default of 2026-10-05, and on request to
 //! the reference. This module names each [`Kind`], what it is compared with and its limit, and holds
-//! the comparisons: the picture through [`reduce_srgb8`] and the [`preview_error`] measure, the
-//! counts through [`histogram`], samples through [`samples`] and an export through [`export`].
+//! the comparisons: the picture and the minimap's overview through [`reduce_srgb8`] and the
+//! [`preview_error`] measure, the counts through [`histogram`], samples through [`samples`] and an
+//! export through [`export`].
 //!
 //! Like the rest of this crate it is written from the design, never from production code, and
 //! depends on nothing. `cargo xtask gpu-qualification`, the release gate that renders the corpus
@@ -30,16 +31,20 @@ pub enum Kind {
     Sample,
     /// An export.
     Export,
+    /// The high-zoom minimap's settled overview: the whole output stage reduced to at most
+    /// 256 × 256 pixels.
+    Overview,
 }
 
 impl Kind {
     /// Every kind, in the order a report lists them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::PictureAtRest,
         Self::PictureInMotion,
         Self::Histogram,
         Self::Sample,
         Self::Export,
+        Self::Overview,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -49,6 +54,7 @@ impl Kind {
             Self::Histogram => "histogram",
             Self::Sample => "sample",
             Self::Export => "export",
+            Self::Overview => "overview",
         }
     }
 
@@ -81,13 +87,18 @@ impl Kind {
                  the reference frame's byte there"
             }
             Self::Export => "The reference export: the stack's exact whole frame",
+            Self::Overview => {
+                "The reference frame reduced to the overview's size, at most 256 × 256: the \
+                 stack's exact whole frame reduced by an area-weighted box average of its linear \
+                 light"
+            }
         }
     }
 
     /// The limit, as a report states it.
     pub const fn limit(self) -> &'static str {
         match self {
-            Self::PictureAtRest | Self::PictureInMotion => {
+            Self::PictureAtRest | Self::PictureInMotion | Self::Overview => {
                 "The preview error limit of the recipe's class: mean ΔE00, worst 16 × 16 block \
                  mean ΔE00, p99 ΔE00 and signed mean ΔL*"
             }

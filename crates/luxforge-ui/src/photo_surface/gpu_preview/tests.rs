@@ -134,6 +134,8 @@ pub(super) fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimi
         dissolve: None,
         source: None,
         rest: None,
+        overview: None,
+        overview_draw: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
         bright: None,

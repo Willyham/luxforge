@@ -1,12 +1,13 @@
-//! The index keeping up by itself through the platform's change notifications, over real scratch
-//! folders (canonical paths) and a fixed mount table: changes in an indexed folder applied by
+//! The index keeping up through fixture-owned injected notifications over real scratch folders,
+//! with explicit `native_watch_` journeys sharing the same invariants through real platform delivery.
+//! Changes in an indexed folder applied by
 //! signature without a refresh, what indexing skips kept out, a rescan listing again what was not
 //! reported, a rescan as a job a client cancels and the stale folder it leaves, a folder no longer
-//! indexed no longer watched, changes made while Luxforge was closed caught up as it opens (macOS),
+//! indexed no longer watched, changes made while Luxforge was closed caught up as it opens,
 //! volumes mounted and taken out, a card mounted as the lane starts, the one event every listing
 //! records as it ends, and stopping with the watcher running. A test that waits for the platform to
-//! deliver a real change is marked `#[slow]`, so the quick tier leaves it out; the others drive the
-//! lane through injected events alone.
+//! deliver a real change is marked `#[slow]`; injected journeys retain that mark when they take
+//! 100 ms or more, such as those exercising the deletion grace period. Quick keeps the cheap checks.
 use super::*;
 use crate::index::lane::{VolumeEvent, WatchEvent};
 use luxforge_test_macros::slow;
@@ -37,9 +38,11 @@ fn folder(owner: &OwnerHandle, client: ClientId, path: &Path) -> Value {
 /// Where the platform keeps no history to resume from (Linux, Windows), the watch begins with a
 /// rescan the lane lists as a job of its own; wait for its end too, so no change the test makes
 /// next races a second listing of the folder.
-fn add_watched(owner: &OwnerHandle, client: ClientId, path: &Path, request: &str) {
+fn add_watched(fixture: &Fixture, client: ClientId, path: &Path, request: &str) {
+    let owner = fixture.owner();
     let before = sequence(owner, client);
-    let replays = luxforge_watch::current_cursor(path).is_some();
+    let replays =
+        fixture.injected_watcher.is_some() || luxforge_watch::current_cursor(path).is_some();
     let added = ok(
         owner,
         client,
@@ -106,7 +109,17 @@ fn sequence(owner: &OwnerHandle, client: ClientId) -> u64 {
 #[test]
 #[slow]
 fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
-    let fixture = Fixture::new("watch-changes");
+    indexed_changes(Fixture::injected("watch-changes"));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[test]
+#[slow]
+fn native_watch_an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
+    indexed_changes(Fixture::new("native-watch-changes"));
+}
+
+fn indexed_changes(fixture: Fixture) {
     let owner = fixture.owner();
     let client = owner.register();
     let photos = fixture.dir.join("photos");
@@ -115,7 +128,7 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     for name in ["a.jpg", "b.jpg", "kept.jpg", "gone/c.jpg", "gone/d.jpg"] {
         put(&photos.join(name), &camera);
     }
-    add_watched(owner, client, &photos, "add");
+    add_watched(&fixture, client, &photos, "add");
     let ids = read_rows(&fixture, &photos);
     assert_eq!(ids.len(), 5);
     let start = sequence(owner, client);
@@ -131,6 +144,20 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     put(&staging.join("moved in/e.jpg"), &camera);
     std::fs::rename(staging.join("moved in"), photos.join("moved in")).unwrap();
     std::fs::remove_dir_all(photos.join("gone")).unwrap();
+    fixture.changed(
+        1,
+        [
+            "new.jpg",
+            "a.jpg",
+            "b.jpg",
+            "renamed.jpg",
+            "moved in",
+            "gone",
+        ]
+        .iter()
+        .map(|name| photos.join(name))
+        .collect(),
+    );
 
     let expected = paths(
         &photos,
@@ -191,7 +218,7 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
 #[test]
 #[slow]
 fn a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
-    let fixture = Fixture::new("watch-late-rename");
+    let fixture = Fixture::injected("watch-late-rename");
     let owner = fixture.owner();
     let client = owner.register();
     let share = fixture.dir.join("share");
@@ -269,7 +296,7 @@ fn a_rename_reported_after_its_old_paths_wait_keeps_its_row() {
 #[slow]
 fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     const LINKS: usize = 300;
-    let fixture = Fixture::new("watch-links");
+    let fixture = Fixture::injected("watch-links");
     let owner = fixture.owner();
     let client = owner.register();
     let photos = fixture.dir.join("photos");
@@ -284,7 +311,7 @@ fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     for number in 0..LINKS {
         std::fs::hard_link(&sources[number % 3], link(number)).unwrap();
     }
-    add_watched(owner, client, &photos, "add");
+    add_watched(&fixture, client, &photos, "add");
     let ids = read_rows(&fixture, &photos);
     assert_eq!(ids.len(), LINKS);
     let before = reads(owner, &photos);
@@ -339,14 +366,14 @@ fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
 #[test]
 #[slow]
 fn what_indexing_skips_stays_out_as_it_changes() {
-    let fixture = Fixture::new("watch-skips");
+    let fixture = Fixture::injected("watch-skips");
     let owner = fixture.owner();
     let client = owner.register();
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
     let camera = camera_jpeg();
     put(&photos.join("a.jpg"), &camera);
-    add_watched(owner, client, &photos, "add");
+    add_watched(&fixture, client, &photos, "add");
 
     for name in [
         ".hidden/x.jpg",
@@ -362,6 +389,22 @@ fn what_indexing_skips_stays_out_as_it_changes() {
     std::os::unix::fs::symlink(photos.join("a.jpg"), photos.join("link.jpg")).unwrap();
     // The last change: once it is in, every earlier one was applied.
     arrive(&staging, &photos.join("last.jpg"), &camera);
+    fixture.changed(
+        1,
+        [
+            ".hidden",
+            ".dot.jpg",
+            "Library.photoslibrary",
+            "Catalog Previews.lrdata",
+            "sub",
+            "notes.txt",
+            "link.jpg",
+            "last.jpg",
+        ]
+        .iter()
+        .map(|name| photos.join(name))
+        .collect(),
+    );
     wait_for("the last change", || {
         read_rows(&fixture, &photos)
             .contains_key(&photos.join("last.jpg"))
@@ -376,12 +419,17 @@ fn what_indexing_skips_stays_out_as_it_changes() {
     );
 
     std::fs::rename(photos.join(".hidden"), photos.join("shown")).unwrap();
+    fixture.changed(1, vec![photos.join(".hidden"), photos.join("shown")]);
     wait_for("the folder shown to be listed", || {
         read_rows(&fixture, &photos)
             .contains_key(&photos.join("shown/x.jpg"))
             .then_some(())
     });
     std::fs::rename(photos.join("shown"), photos.join("Also.photoslibrary")).unwrap();
+    fixture.changed(
+        1,
+        vec![photos.join("shown"), photos.join("Also.photoslibrary")],
+    );
     wait_for("the folder made a package to be dropped", || {
         (read_rows(&fixture, &photos)
             .keys()
@@ -394,22 +442,22 @@ fn what_indexing_skips_stays_out_as_it_changes() {
 
 /// A rescan lists again what the watcher could not report: a subtree alone, then the whole root.
 #[test]
-#[slow]
 fn a_rescan_lists_again_what_was_not_reported() {
-    let fixture = Fixture::new("watch-rescan");
+    let fixture = Fixture::injected("watch-rescan");
     let owner = fixture.owner();
     let client = owner.register();
     let photos = fixture.dir.join("photos");
     for name in ["a.jpg", "sub/b.jpg"] {
         put(&photos.join(name), &camera_jpeg());
     }
-    add_watched(owner, client, &photos, "add");
+    add_watched(&fixture, client, &photos, "add");
     // A last change, so every earlier one the watcher delivers late has been applied first.
     arrive(
         &fixture.dir.join("staging"),
         &photos.join("sentinel.jpg"),
         &camera_jpeg(),
     );
+    fixture.changed(1, vec![photos.join("sentinel.jpg")]);
     wait_for("the last change", || {
         read_rows(&fixture, &photos)
             .contains_key(&photos.join("sentinel.jpg"))
@@ -503,7 +551,7 @@ fn held_rescan(owner: &OwnerHandle, client: ClientId, gate: &Gate, photos: &Path
 #[test]
 #[slow]
 fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_listed() {
-    let mut fixture = Fixture::new("watch-rescan-job");
+    let mut fixture = Fixture::injected("watch-rescan-job");
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
     for name in ["a/1.jpg", "b/2.jpg", "c/3.jpg"] {
@@ -515,9 +563,10 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
         let client = owner.register();
         // Every listing is held at each folder while the gate is shut, from the lane's start.
         tell(owner, FilesMessage::Hold(gate.clone(), photos.clone()));
-        add_watched(owner, client, &photos, "add");
+        add_watched(&fixture, client, &photos, "add");
         // A last change, so every earlier one the watcher delivers late has been applied first.
         arrive(&staging, &photos.join("sentinel.jpg"), &camera_jpeg());
+        fixture.changed(1, vec![photos.join("sentinel.jpg")]);
         wait_for("the last change", || {
             read_rows(&fixture, &photos)
                 .contains_key(&photos.join("sentinel.jpg"))
@@ -572,6 +621,7 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
         let before = listed_ms(&fixture, &photos);
         gate.open();
         arrive(&staging, &photos.join("new.jpg"), &camera_jpeg());
+        fixture.changed(1, vec![photos.join("new.jpg")]);
         wait_for("the stale folder to be listed on its next change", || {
             let current = folder(owner, client, &photos).get("stale").is_none();
             (current && read_rows(&fixture, &photos).contains_key(&photos.join("new.jpg")))
@@ -615,14 +665,13 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
 /// the lane started has found it, with no client asking about the disk; opened again with more on
 /// the card, it is reconciled again.
 #[test]
-#[slow]
 fn a_card_mounted_as_the_catalog_opens_is_listed() {
-    let mut fixture = Fixture::new("watch-card-at-open");
+    let mut fixture = Fixture::injected("watch-card-at-open");
     let (table, card, drive) = mounts(&fixture);
     {
         let owner = fixture.owner();
         let client = owner.register();
-        add_watched(owner, client, &drive.join("2026/trip"), "add");
+        add_watched(&fixture, client, &drive.join("2026/trip"), "add");
     }
     fixture.stop();
     // The mount table from the catalog's opening: the lane starts as it opens, with the watch.
@@ -673,9 +722,8 @@ fn a_card_mounted_as_the_catalog_opens_is_listed() {
 /// Removing an indexed folder stops its watch: what changes in it later is not indexed, while
 /// another indexed folder is still followed.
 #[test]
-#[slow]
 fn a_folder_no_longer_indexed_is_no_longer_watched() {
-    let fixture = Fixture::new("watch-removed");
+    let fixture = Fixture::injected("watch-removed");
     let owner = fixture.owner();
     let client = owner.register();
     let photos = fixture.dir.join("photos");
@@ -683,8 +731,8 @@ fn a_folder_no_longer_indexed_is_no_longer_watched() {
     let staging = fixture.dir.join("staging");
     put(&photos.join("a.jpg"), &camera_jpeg());
     put(&other.join("b.jpg"), &camera_jpeg());
-    add_watched(owner, client, &photos, "add-photos");
-    add_watched(owner, client, &other, "add-other");
+    add_watched(&fixture, client, &photos, "add-photos");
+    add_watched(&fixture, client, &other, "add-other");
     let start = sequence(owner, client);
     ok(
         owner,
@@ -706,6 +754,8 @@ fn a_folder_no_longer_indexed_is_no_longer_watched() {
     });
     arrive(&staging, &photos.join("late.jpg"), &camera_jpeg());
     arrive(&staging, &other.join("sentinel.jpg"), &camera_jpeg());
+    fixture.changed(1, vec![photos.join("late.jpg")]);
+    fixture.changed(2, vec![other.join("sentinel.jpg")]);
     wait_for("the other folder to be followed", || {
         read_rows(&fixture, &other)
             .contains_key(&other.join("sentinel.jpg"))
@@ -720,11 +770,20 @@ fn a_folder_no_longer_indexed_is_no_longer_watched() {
 /// What changed while Luxforge was closed is replayed from each root's kept cursor as it opens,
 /// with no listing and no client asking; a cursor of another history cannot replay, and the folder
 /// is listed again instead.
-#[cfg(target_os = "macos")]
 #[test]
 #[slow]
 fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
-    let mut fixture = Fixture::new("watch-replay");
+    closed_changes(Fixture::injected("watch-replay"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[slow]
+fn native_watch_changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
+    closed_changes(Fixture::new("native-watch-replay"));
+}
+
+fn closed_changes(mut fixture: Fixture) {
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
     let camera = camera_jpeg();
@@ -734,7 +793,7 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
     {
         let owner = fixture.owner();
         let client = owner.register();
-        add_watched(owner, client, &photos, "add");
+        add_watched(&fixture, client, &photos, "add");
     }
     let root = |fixture: &Fixture| {
         let connection = database::connect_at(&fixture.index_dir()).unwrap();
@@ -743,7 +802,7 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
             database::root_cursor(&connection, &photos).unwrap(),
         )
     };
-    wait_for("the root's cursor to be kept", || root(&fixture).1);
+    let kept = wait_for("the root's cursor to be kept", || root(&fixture).1);
     let listed = root(&fixture).0.listed_ms;
     fixture.stop();
 
@@ -755,6 +814,20 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
     );
     std::fs::remove_file(photos.join("c.jpg")).unwrap();
     fixture.start();
+    fixture.resumed_from(&photos, Some(kept));
+    fixture.changed(
+        1,
+        vec![
+            photos.join("new.jpg"),
+            photos.join("b.jpg"),
+            photos.join("c.jpg"),
+        ],
+    );
+    let resumed = luxforge_watch::Resume {
+        event_id: kept.event_id + 1,
+        ..kept
+    };
+    fixture.caught_up(1, resumed);
     let owner = fixture.owner();
     let client = owner.register();
     wait_for("what changed while closed to be caught up", || {
@@ -768,6 +841,11 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
     });
     assert_eq!(root(&fixture).0.listed_ms, listed, "replayed, not listed");
     assert_eq!(folder(owner, client, &photos)["watching"], true);
+    if fixture.injected_watcher.is_some() {
+        wait_for("the replay cursor after its writes", || {
+            (root(&fixture).1 == Some(resumed)).then_some(())
+        });
+    }
 
     // A cursor of another history: listed again as the catalog opens.
     fixture.stop();
@@ -791,11 +869,20 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
 /// A change whose header read the catalog's close interrupts records no cursor past it: the read is
 /// dropped unwritten, so the cursor the change came with is not kept, and the change is caught up
 /// from the cursor kept before it as the catalog next opens.
+#[test]
+fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
+    interrupted_change(Fixture::injected("watch-stop-mid-unit"));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 #[slow]
-fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
-    let mut fixture = Fixture::new("watch-stop-mid-unit");
+fn native_watch_a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens()
+{
+    interrupted_change(Fixture::new("native-watch-stop-mid-unit"));
+}
+
+fn interrupted_change(mut fixture: Fixture) {
     let photos = fixture.dir.join("photos");
     let staging = fixture.dir.join("staging");
     let camera = camera_jpeg();
@@ -820,7 +907,7 @@ fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_
             owner,
             FilesMessage::HoldReads(headers.clone(), photos.clone()),
         );
-        add_watched(owner, client, &photos, "add");
+        add_watched(&fixture, client, &photos, "add");
         let kept = wait_for("the root's cursor to be kept", || cursor(&fixture));
         // A cursor past every event there is, so a cursor recorded from the unit is told apart.
         let beyond = luxforge_watch::Resume {
@@ -867,6 +954,8 @@ fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_
         "its header was never written"
     );
     fixture.start();
+    fixture.resumed_from(&photos, Some(kept));
+    fixture.changed(1, vec![photos.join("new.jpg")]);
     wait_for(
         "the interrupted change to be caught up as the catalog opens",
         || {
@@ -881,14 +970,13 @@ fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_
 /// is gone from `card.list` at once, its roots offline, and an indexed folder on it no longer
 /// watched.
 #[test]
-#[slow]
 fn a_card_mounted_is_listed_and_a_volume_taken_out_goes_offline() {
-    let fixture = Fixture::new("watch-volumes");
+    let fixture = Fixture::injected("watch-volumes");
     let owner = fixture.owner();
     let client = owner.register();
     let (table, _, drive) = mounts(&fixture);
     let trip = drive.join("2026/trip");
-    add_watched(owner, client, &trip, "add");
+    add_watched(&fixture, client, &trip, "add");
 
     let lumix = fixture.dir.join("LUMIX");
     put(&lumix.join("DCIM/100_PANA/P1000001.JPG"), &camera_jpeg());
@@ -950,7 +1038,7 @@ fn a_card_mounted_is_listed_and_a_volume_taken_out_goes_offline() {
 /// revision it left: one that changed nothing, and one that failed.
 #[test]
 fn every_listing_records_one_event_as_it_ends() {
-    let fixture = Fixture::new("watch-ended");
+    let fixture = Fixture::injected("watch-ended");
     let owner = fixture.owner();
     let client = owner.register();
     // A mount table of nothing, so a card the host mounts meanwhile (another process's disk image)
@@ -1017,16 +1105,15 @@ fn every_listing_records_one_event_as_it_ends() {
 /// Stopping the owner with the watcher following a folder stops the watcher and joins every lane
 /// thread.
 #[test]
-#[slow]
 fn stopping_with_the_watcher_running_joins_cleanly() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let mut fixture = Fixture::new("watch-stop");
+    let mut fixture = Fixture::injected("watch-stop");
     let photos = fixture.dir.join("photos");
     put(&photos.join("a.jpg"), &camera_jpeg());
     {
         let owner = fixture.owner();
         let client = owner.register();
-        add_watched(owner, client, &photos, "add");
+        add_watched(&fixture, client, &photos, "add");
     }
     let (owner, join) = fixture.owner.take().unwrap();
     let stopped = Arc::new(AtomicBool::new(false));

@@ -19,7 +19,7 @@ use crate::{
     },
     view::{
         Surfaces,
-        canvas_view::CanvasView,
+        canvas_view::{CanvasView, scrolled_origin},
         corrections_canvas::CorrectionsCanvas,
         crop_canvas::{CropCanvas, Mode},
         mask_canvas::{MaskCanvas, Placement},
@@ -112,6 +112,10 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
         layers.push(information);
     }
     layers.push(strip(model));
+    // The minimap is the topmost layer: a press on it is its own before anything under it sees it.
+    if let Some(minimap) = surfaces.minimap {
+        layers.push(super::minimap::layer(minimap));
+    }
     stack(layers)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -741,6 +745,7 @@ fn plain<'a>(
     // region the counts' or the backdrop under its region frame.
     let gpu_rest = surfaces.gpu_rest.or(surfaces.gpu_counts);
     let gpu_counts = surfaces.gpu_counts;
+    let overview = surfaces.overview;
     let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
@@ -768,6 +773,7 @@ fn plain<'a>(
                 .gpu_warm(gpu_warm)
                 .gpu_source(gpu_source)
                 .gpu_rest(gpu_rest)
+                .gpu_overview(overview)
                 .dissolve(dissolve)
                 .into();
                 // The open gesture's handles sit above the photograph and its overlays, mapped
@@ -899,6 +905,7 @@ fn plain<'a>(
                         .gpu_warm(gpu_warm)
                         .gpu_source(gpu_source)
                         .gpu_rest(gpu_rest)
+                        .gpu_overview(surfaces.overview)
                         .dissolve(dissolve)
                         .into(),
                         None => empty("Rendering photograph…"),
@@ -925,6 +932,7 @@ fn plain<'a>(
                     .gpu_warm(gpu_warm)
                     .gpu_source(gpu_source)
                     .gpu_rest(gpu_counts)
+                    .gpu_overview(surfaces.overview)
                     .dissolve(dissolve)
                     .into()
                 };
@@ -1027,6 +1035,7 @@ fn comparison<'a>(
             .gpu_change(surfaces.gpu_change)
             .gpu_source(surfaces.gpu_source)
             .gpu_rest(surfaces.gpu_rest.or(surfaces.gpu_counts))
+            .gpu_overview(surfaces.overview)
             .into()
         } else {
             match before {
@@ -1044,6 +1053,7 @@ fn comparison<'a>(
                 .gpu_change(surfaces.gpu_change)
                 .gpu_source(surfaces.gpu_source)
                 .gpu_rest(surfaces.gpu_rest.or(surfaces.gpu_counts))
+                .gpu_overview(surfaces.overview)
                 .into(),
                 None => empty("Rendering Before…"),
             }
@@ -1123,7 +1133,7 @@ fn crop_surface<'a>(
 ) -> Element<'a, Message> {
     // The GPU's picture of the layer prefix, drawn in place of the stand-in frame, from the
     // source the surfaces hold.
-    let (source, rest) = (surfaces.gpu_source, surfaces.stage_rest);
+    let (source, rest, overview) = (surfaces.gpu_source, surfaces.stage_rest, surfaces.overview);
     let box_size = draft.box_size();
     let mode = match model.surface_mode {
         SurfaceMode::Pan => Mode::Pan,
@@ -1142,6 +1152,7 @@ fn crop_surface<'a>(
             )
             .gpu_source(source)
             .gpu_rest(rest)
+            .gpu_overview(overview)
             .into(),
             canvas(CropCanvas::new(draft, view, mode, option))
                 .width(width)
@@ -1257,8 +1268,7 @@ pub(crate) fn drawn_photo(
                 return None;
             }
             let axis = |start: f32, available: f32, content: f32, offset: f32| {
-                start + ((available - content).max(0.0) / 2.0)
-                    - offset.clamp(0.0, (content - available).max(0.0))
+                start + scrolled_origin(content, available, offset)
             };
             Some(Rectangle::new(
                 Point::new(
@@ -1697,6 +1707,8 @@ mod tests {
             compare_source: None,
             compare_change: None,
             compare_rest: None,
+            overview: None,
+            minimap: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Plain,
