@@ -2,7 +2,7 @@
 
 Status: implemented on the recorded defaults of its [proposals](#proposals), which await the owner's answers. This design covers how photographs get from a camera card or a folder into development, and how the photographs you develop are kept and found. Each choice the owner has not made is a numbered proposal with a recommended default; the feature follows those defaults, but none is a decision until the owner accepts it and it is recorded in [product decisions](../decisions.md), and [P13](#proposals) carries a measured choice still open.
 
-Every method of the [API](#api) is registered, over catalog format 16 ([storage](versions-and-lineage.md#storage-catalog-format-16)) and the index database beside it. The desktop's Select workspace browses cards, folders, events and the catalog with them, picks, develops picks into catalog folders, chooses the catalog folder Develop holds, organizes the catalog, applies presets to and exports many photographs, removes them and resolves missing originals; the loupe and long-running work are its own seams. `cargo xtask generate-catalog` writes deterministic catalogs, indexes and image folders at the design scale for tests and measurement. What is verified and how is in [feature status](../features.md); what is not built is said in each section and gathered under [outstanding](#outstanding).
+Every method of the [API](#api) is registered, over catalog format 1 ([storage](versions-and-lineage.md#storage-the-catalog-format)) and the index database beside it. The desktop's Select workspace browses cards, folders, events and the catalog with them, picks, develops picks into catalog folders, chooses the catalog folder Develop holds, organizes the catalog, applies presets to and exports many photographs, removes them and resolves missing originals; the loupe and long-running work are its own seams. `cargo xtask generate-catalog` writes deterministic catalogs, indexes and image folders at the design scale for tests and measurement. What is verified and how is in [feature status](../features.md); what is not built is said in each section and gathered under [outstanding](#outstanding).
 
 ## Product
 
@@ -449,7 +449,7 @@ Visual rules beyond the [Develop visual language](develop-workspace.md#visual-la
 
 ### Storage
 
-The catalog, format 16, which also holds the [collapsed-entry table](versions-and-lineage.md#auto-collapse), adds:
+The catalog, format 1, which also holds the [collapsed-entry table](versions-and-lineage.md#auto-collapse), adds:
 
 | Table | Holds |
 | --- | --- |
