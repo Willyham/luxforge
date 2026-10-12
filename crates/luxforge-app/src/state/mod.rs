@@ -9,6 +9,7 @@ pub(crate) mod corrections;
 pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
+pub(crate) mod fill_setup;
 pub(crate) mod histogram;
 pub(crate) mod host_commands;
 pub(crate) mod information;

@@ -55,8 +55,9 @@ pub(crate) enum RemoveMessage {
     Candidate { job_id: String, candidate: u8 },
     /// Commit the chosen candidate.
     Accept,
-    /// Install a model file through the capability block's install and its consent notice.
-    Download { module_id: String, resource: String },
+    /// A setup button: install a model through the capability block's install and its consent
+    /// notice, or cancel its install.
+    Setup(crate::state::fill_setup::SetupAction),
     /// The group's menu opened or closed.
     Menu(bool),
     /// Copy one request the group's controls send.

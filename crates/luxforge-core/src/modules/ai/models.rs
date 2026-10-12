@@ -36,6 +36,13 @@ pub(crate) const DEVELOPER_ORIGIN: &str = "https://developer.luxforge.invalid";
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
+/// A generator's install purpose: the model that removes and fills.
+const GENERATOR_PURPOSE: &str =
+    "Set up AI editing: download the model that removes and fills, which runs on this computer";
+/// A text encoder's install purpose: Replace, the add-on that reads a prompt.
+const TEXT_ENCODER_PURPOSE: &str =
+    "Add Replace: download the model that reads what you describe, which runs on this computer";
+
 /// A published file's download: its pinned URL and length.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Published {
@@ -59,6 +66,9 @@ pub(crate) struct FurtherFile {
 pub(crate) struct ModelFile {
     pub(crate) resource: &'static str,
     pub(crate) title: &'static str,
+    /// What installing it is for, in the feature's words, as the consent notice's first line says
+    /// it: the model's name is in the rest of the disclosure and in Settings › Models.
+    pub(crate) purpose: &'static str,
     pub(crate) version: &'static str,
     /// A developer fixture's whole content, which [`DeveloperModels`] serves; empty for a
     /// published file.
@@ -133,7 +143,7 @@ impl ModelFile {
             kind: CapabilityKind::DownloadArtifact {
                 resource: self.resource.into(),
             },
-            purpose: format!("Install {}", self.title),
+            purpose: self.purpose.into(),
         }
     }
 
@@ -254,6 +264,7 @@ impl GenerativeModel {
 pub(crate) const FAKE_GENERATOR: ModelFile = ModelFile {
     resource: "fake-generator",
     title: "Developer fake generator",
+    purpose: GENERATOR_PURPOSE,
     version: "1",
     bytes: b"Luxforge developer fake generator, version 1.\n",
     published: None,
@@ -272,6 +283,7 @@ pub(crate) const FAKE_GENERATOR: ModelFile = ModelFile {
 pub(crate) const FAKE_TEXT_ENCODER: ModelFile = ModelFile {
     resource: "fake-text-encoder",
     title: "Developer fake text encoder",
+    purpose: TEXT_ENCODER_PURPOSE,
     version: "1",
     bytes: b"Luxforge developer fake text encoder, version 1.\n",
     published: None,
@@ -333,6 +345,7 @@ pub(crate) const CONDITIONING_URL: &str = "https://github.com/Willyham/luxforge/
 pub(crate) const KLEIN_GENERATOR: ModelFile = ModelFile {
     resource: "generative-klein-4b",
     title: "FLUX.2 klein 4B with the object removal LoRA",
+    purpose: GENERATOR_PURPOSE,
     version: "klein-4b-q4_0-3b1f5a9d-lora-0e3f5879-cond-ba26d15a",
     bytes: &[],
     published: Some(Published {
@@ -376,6 +389,7 @@ pub(crate) const KLEIN_GENERATOR: ModelFile = ModelFile {
 pub(crate) const KLEIN_TEXT_ENCODER: ModelFile = ModelFile {
     resource: "generative-klein-text-encoder",
     title: "Text encoder for Replace (Qwen3-4B)",
+    purpose: TEXT_ENCODER_PURPOSE,
     version: "qwen3-4b-q4_k_m-22c9fc8a-tokenizer-e7b7dc27",
     bytes: &[],
     published: Some(Published {

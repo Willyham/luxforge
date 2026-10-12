@@ -12,7 +12,7 @@ use crate::{
 };
 use iced::{
     Alignment, Length,
-    widget::{Column, Space, button, container, mouse_area, row},
+    widget::{Column, button, container, mouse_area, row},
 };
 use luxforge_ui::Element;
 use luxforge_ui::{
@@ -38,37 +38,28 @@ fn text_button<'a>(text: &str, accent: bool, press: Option<Message>) -> Element<
         .into()
 }
 
-fn fill<'a>() -> Element<'a, Message> {
-    Space::new().width(Length::Fill).into()
-}
-
-/// The block above a capability module's controls: a row per resource, the settings form, the
-/// permission counts with Revoke all, and the one status line.
+/// The block above a capability module's controls: a fill module's setup card, a row per other
+/// resource, the settings form, and the one status line. Grants are managed through
+/// `module.permission.*`.
 pub(crate) fn block(model: &CapabilityModel) -> Element<'_, Message> {
     if model.loading {
         return caption("Reading the module's settings and status…");
     }
     let module_id = &model.module_id;
     let mut body = Column::new().spacing(theme::SPACING / 2.0);
+    if let Some(setup) = &model.setup {
+        body = body.push(super::fill_setup::card(
+            setup,
+            &|action| capability(action.into()),
+            &|text, accent, press| text_button(text, accent, press),
+        ));
+    }
     for resource in &model.resources {
         body = body.push(resource_view(module_id, resource, model.enabled));
     }
     for field in &model.fields {
         body = body.push(field_view(module_id, field, model.enabled));
     }
-    body = body.push(
-        row![
-            caption(model.permissions.clone()),
-            fill(),
-            text_button(
-                "Revoke all",
-                false,
-                (model.enabled && model.revoke_all)
-                    .then(|| capability(CapabilityMessage::RevokeAll(module_id.clone()))),
-            ),
-        ]
-        .align_y(Alignment::Center),
-    );
     if let Some(line) = &model.status_line {
         body = body.push(error_caption(line.clone()));
     }
@@ -111,15 +102,20 @@ fn resource_view<'a>(
     let press = message
         .filter(|_| enabled || resource.action == ResourceAction::Cancel)
         .map(capability);
-    row![
-        label(resource.title.clone()),
-        caption(format!("{} · {}", resource.detail, resource.state)),
-        fill(),
-        text_button(text, false, press),
-    ]
-    .spacing(theme::SPACING / 2.0)
-    .align_y(Alignment::Center)
-    .into()
+    // The title has the panel's width to wrap in; the detail shares its line with the action.
+    Column::new()
+        .spacing(2.0)
+        .push(label(resource.title.clone()))
+        .push(
+            row![
+                container(caption(format!("{} · {}", resource.detail, resource.state)))
+                    .width(Length::Fill),
+                text_button(text, false, press),
+            ]
+            .spacing(theme::SPACING / 2.0)
+            .align_y(Alignment::Center),
+        )
+        .into()
 }
 
 /// One setting, drawn as the tools panel draws a control of its kind. A typed field commits on
