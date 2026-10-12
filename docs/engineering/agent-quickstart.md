@@ -40,6 +40,8 @@ build, whole-suite run or rerun slows everyone else's down.
    otherwise find several minutes in.
 4. `tools/cargo-cached xtask verify --tier quick --output artifacts/NAME-quick`
 
+Watcher changes also run `tools/cargo-cached xtask test --native-watchers` on each changed platform. This required gate runs real OS delivery separately from ordinary tests; a quick pass does not qualify native delivery.
+
 For a UI or image change, also look at the scenario's captures as images. Launch the editor only
 through the background harness or `xtask develop --background`, and drive and inspect it through
 the live API and renderer readbacks. Foreground interaction checks need the owner's explicit
@@ -76,7 +78,7 @@ and `fmt --all -- --check`.
   `luxforge-reference`.
 - A test whose timing belongs to a host service (FSEvents, inotify, disk images, an editor
   launch) needs a seam it can drive without that service in the unit tier. Mark the test that
-  uses the real service `#[slow]`, or make it a smoke scenario.
+  uses the real service `#[slow]`, or make it a smoke scenario. Real watcher delivery tests also use the own-name prefix `native_watch_` and run through the separate native gate, required in CI, non-quick tiers and release checks.
 - A test sets up any process-wide state it reads, such as an installed output encoding, itself.
   `quick` and a filtered run leave tests out, so the test that would have installed it may never
   run first.

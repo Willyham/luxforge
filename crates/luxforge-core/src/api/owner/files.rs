@@ -107,6 +107,8 @@ pub(super) struct FilesLane {
     hold: Option<crate::index::lane::Hold>,
     #[cfg(test)]
     hold_reads: Option<crate::index::lane::Hold>,
+    #[cfg(test)]
+    injected_watcher: Option<crate::index::lane::InjectedWatcher>,
     /// The path of every header read the lane has taken in.
     #[cfg(test)]
     reads: Arc<std::sync::Mutex<Vec<PathBuf>>>,
@@ -163,8 +165,8 @@ pub(super) enum FilesMessage {
     #[cfg(any(test, feature = "test-holds"))]
     Hold(Arc<luxforge_testbase::Gate>, PathBuf),
     /// Hold every header read of a file under the folder while the gate is shut, until its work is
-    /// cancelled, from the lane's next start. Only the macOS cursor-replay test uses this message.
-    #[cfg(all(test, target_os = "macos"))]
+    /// cancelled, from the lane's next start.
+    #[cfg(test)]
     HoldReads(Arc<luxforge_testbase::Gate>, PathBuf),
     /// Bound listings by these limits, from the lane's next start.
     #[cfg(test)]
@@ -196,6 +198,8 @@ impl FilesLane {
             hold: None,
             #[cfg(test)]
             hold_reads: None,
+            #[cfg(test)]
+            injected_watcher: None,
             #[cfg(test)]
             reads: Arc::default(),
         }
@@ -394,6 +398,11 @@ pub(super) fn opened(owner: &mut Owner) {
 pub(super) static OPENING_MOUNTS: std::sync::Mutex<Vec<(PathBuf, MountSource)>> =
     std::sync::Mutex::new(Vec::new());
 
+#[cfg(test)]
+pub(super) static OPENING_WATCHERS: std::sync::Mutex<
+    Vec<(PathBuf, crate::index::lane::InjectedWatcher)>,
+> = std::sync::Mutex::new(Vec::new());
+
 /// Stand in with the mount table a test gave for this catalog's opening, if it gave one.
 #[cfg(any(test, feature = "test-holds"))]
 fn opening_mounts(owner: &mut Owner) {
@@ -409,6 +418,15 @@ fn opening_mounts(owner: &mut Owner) {
     if let Some(mounts) = mounts {
         owner.catalog.files.mounts = mounts;
         owner.catalog.files.new_mount_source();
+    }
+    #[cfg(test)]
+    {
+        owner.catalog.files.injected_watcher = OPENING_WATCHERS
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| *path == catalog)
+            .map(|(_, watcher)| watcher.clone());
     }
 }
 
@@ -502,6 +520,8 @@ fn ensure_lane(owner: &mut Owner) -> Result<(), Error> {
         hold_reads: files.hold_reads.clone(),
         #[cfg(test)]
         reads: files.reads.clone(),
+        #[cfg(test)]
+        injected_watcher: files.injected_watcher.clone(),
     })?;
     files.lane = Some(lane);
     Ok(())
@@ -632,7 +652,7 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
         }
         #[cfg(any(test, feature = "test-holds"))]
         FilesMessage::Hold(gate, under) => owner.catalog.files.hold = Some((gate, under)),
-        #[cfg(all(test, target_os = "macos"))]
+        #[cfg(test)]
         FilesMessage::HoldReads(gate, under) => {
             owner.catalog.files.hold_reads = Some((gate, under))
         }

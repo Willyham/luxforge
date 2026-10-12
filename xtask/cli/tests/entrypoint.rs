@@ -16,6 +16,16 @@ fn malformed_commands_fail_before_delegation() {
     }
 }
 
+#[test]
+fn quick_and_native_are_distinct_gates() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_xtask-cli"))
+        .args(["test", "--quick", "--native-watchers"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("separate gates"));
+}
+
 #[cfg(unix)]
 #[test]
 #[slow]

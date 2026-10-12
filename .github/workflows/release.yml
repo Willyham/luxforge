@@ -74,6 +74,8 @@ jobs:
           key: release-${{ matrix.os }}-${{ steps.compiler.outputs.key }}
       - name: Quick checks
         run: cargo xtask check --quick
+      - name: Native watcher delivery and recovery gate
+        run: cargo xtask test --native-watchers
       - name: Build versioned package
         env:
           RELEASE_TAG: ${{ needs.identity.outputs.tag }}
