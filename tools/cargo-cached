@@ -1,15 +1,167 @@
 #!/usr/bin/env bash
-# Pinned, local-only compiler caching for agent Cargo commands (macOS and Linux).
+# Agent Cargo commands (macOS and Linux): build output on the build volume, a host-wide
+# limit on concurrent builds, and pinned, local-only compiler caching.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
-if [[ "${LUXFORGE_CACHE_OFF:-0}" == 1 ]]; then
-  exec cargo "$@"
-fi
 case "$(uname -s)" in
   Darwin|Linux) ;;
   *) echo 'cargo-cached supports macOS and Linux; use cargo directly on this platform.' >&2; exit 1 ;;
 esac
+
+# Build output lives on a dedicated volume when one is present: `target` becomes a link to this
+# worktree's own directory there, so every Cargo, wrapped or not, builds into the same place.
+# Unset selects the macOS default; empty turns it off. An existing `target` is never moved.
+if [[ -n "${LUXFORGE_BUILD_ROOT+set}" ]]; then
+  build_root="$LUXFORGE_BUILD_ROOT"
+elif [[ "$(uname -s)" == Darwin ]]; then
+  build_root=/Volumes/LuxforgeBuild
+else
+  build_root=
+fi
+targets="$build_root/targets"
+
+if [[ "${1:-}" == --prune-targets ]]; then
+  # A build-volume directory whose worktree's `target` no longer links to it is orphaned.
+  [[ -n "$build_root" && -d "$targets" ]] || { echo "No build volume targets at '$targets'."; exit 0; }
+  delete=0
+  [[ "${2:-}" == --delete ]] && delete=1
+  for dir in "$targets"/*/; do
+    [[ -d "$dir" ]] || continue
+    dir="${dir%/}"
+    worktree="$(cat "$dir/.worktree" 2>/dev/null || true)"
+    if [[ -n "$worktree" && -L "$worktree/target" && "$(readlink "$worktree/target")" == "$dir" ]]; then
+      continue
+    fi
+    if [[ "$delete" == 1 ]]; then
+      echo "removing $dir (worktree ${worktree:-unknown} no longer uses it)"
+      rm -rf "$dir"
+    else
+      echo "orphaned $dir (worktree ${worktree:-unknown} no longer uses it)"
+    fi
+  done
+  [[ "$delete" == 1 ]] || echo 'Pass --prune-targets --delete to remove the orphaned directories.'
+  exit 0
+fi
+
+if [[ -n "$build_root" && -d "$build_root" && -w "$build_root" && -z "${CARGO_TARGET_DIR:-}" \
+  && ! -e "$repo_root/target" && ! -L "$repo_root/target" ]]; then
+  slot="$targets/$(basename "$repo_root")-$(printf '%s' "$repo_root" | git hash-object --stdin | cut -c1-12)"
+  mkdir -p "$slot"
+  printf '%s\n' "$repo_root" > "$slot/.worktree"
+  # A concurrent command in the same worktree may have linked it first; either link is this one.
+  ln -s "$slot" "$repo_root/target" 2>/dev/null || true
+fi
+
+# At most LUXFORGE_BUILD_SLOTS (default 3) building commands run at once across the host; the
+# rest wait in turn. Oversubscribing the cores slows every build and test run alike and pushes
+# hang bounds past their limits. Commands that build nothing take no slot, and neither does
+# `xtask develop`, whose editor stays open. Cargo started under a slot (by xtask, a script)
+# inherits it. A slot is a directory holding its owner's pid and start time; one whose owner
+# has gone is reclaimed.
+slots="${LUXFORGE_BUILD_SLOTS:-3}"
+slot_root="${LUXFORGE_BUILD_SLOT_DIR:-$HOME/.cache/luxforge/build-slots}"
+held_slot=
+
+started() { ps -o lstart= -p "$1" 2>/dev/null || true; }
+
+slot_owner_gone() {
+  local dir="$1" pid start age
+  pid="$(sed -n 1p "$dir/owner" 2>/dev/null || true)"
+  start="$(sed -n 2p "$dir/owner" 2>/dev/null || true)"
+  if [[ -z "$pid" ]]; then
+    # Taken but not yet written: gone only if it stays unwritten.
+    if [[ "$(uname -s)" == Darwin ]]; then
+      age="$(stat -f %m "$dir" 2>/dev/null || date +%s)"
+    else
+      age="$(stat -c %Y "$dir" 2>/dev/null || date +%s)"
+    fi
+    age="$(( $(date +%s) - age ))"
+    (( age > 60 ))
+    return
+  fi
+  [[ "$(started "$pid")" != "$start" ]]
+}
+
+describe_slots() {
+  local dir
+  for dir in "$slot_root"/*; do
+    [[ -f "$dir/owner" ]] || continue
+    printf '  slot %s: pid %s in %s: cargo %s\n' "$(basename "$dir")" \
+      "$(sed -n 1p "$dir/owner")" "$(sed -n 3p "$dir/owner")" "$(sed -n 4p "$dir/owner")"
+  done
+}
+
+take_slot() {
+  local i dir waited_since=
+  mkdir -p "$slot_root"
+  while :; do
+    for ((i = 1; i <= slots; i++)); do
+      dir="$slot_root/$i"
+      if mkdir "$dir" 2>/dev/null; then
+        held_slot="$dir"
+        printf '%s\n%s\n%s\n%s\n' "$$" "$(started $$)" "$repo_root" "$*" > "$dir/owner"
+        if [[ -n "$waited_since" ]]; then
+          echo "cargo-cached: build slot $i taken after $(( $(date +%s) - waited_since )) s." >&2
+        fi
+        return
+      fi
+      if slot_owner_gone "$dir"; then
+        # Renaming first means only one waiter reclaims it.
+        mv "$dir" "$dir.gone.$$" 2>/dev/null && rm -rf "$dir.gone.$$"
+      fi
+    done
+    if [[ -z "$waited_since" ]]; then
+      waited_since="$(date +%s)"
+      echo "cargo-cached: all $slots build slots are busy; waiting for one (tools/cargo-cached --slots lists them):" >&2
+      describe_slots >&2
+    fi
+    sleep 2
+  done
+}
+
+release_slot() {
+  if [[ -n "$held_slot" ]]; then
+    rm -rf "$held_slot"
+    held_slot=
+  fi
+}
+
+if [[ "${1:-}" == --slots ]]; then
+  echo "$slots build slots at $slot_root:"
+  describe_slots
+  exit 0
+fi
+
+case "${1:-}" in
+  ''|fmt|metadata|tree|locate-project|pkgid|clean|help|version|search|-V|--version|-h|--help|--list|--cache-stats)
+    builds=0 ;;
+  xtask)
+    [[ "${2:-}" == develop ]] && builds=0 || builds=1 ;;
+  *)
+    builds=1 ;;
+esac
+if [[ "$builds" == 1 && "$slots" -gt 0 && -z "${LUXFORGE_BUILD_SLOT:-}" ]]; then
+  trap release_slot EXIT
+  trap 'release_slot; exit 130' INT
+  trap 'release_slot; exit 143' TERM
+  take_slot "$@"
+  export LUXFORGE_BUILD_SLOT="$held_slot"
+fi
+
+# Run Cargo as a child while a slot is held, so the slot is released when it ends.
+run_cargo() {
+  if [[ -n "$held_slot" ]]; then
+    local status=0
+    cargo "$@" || status=$?
+    exit "$status"
+  fi
+  exec cargo "$@"
+}
+
+if [[ "${LUXFORGE_CACHE_OFF:-0}" == 1 ]]; then
+  run_cargo "$@"
+fi
 
 tool_root="${LUXFORGE_SCCACHE_ROOT:-$HOME/.local/share/luxforge/sccache/0.18.0}"
 cache_root="${LUXFORGE_SCCACHE_CACHE:-$HOME/.cache/luxforge/sccache-0.18.0-safe-v1}"
@@ -62,7 +214,7 @@ if [[ "$cxx_compiler" != *[[:space:]]* ]]; then
   export CXX="sccache $cxx_compiler"
 fi
 
-# Do not change optimization, incremental compilation, flags, or target directories.
+# Do not change optimization, incremental compilation or flags. Each worktree keeps its own target.
 if [[ "${1:-}" == --cache-stats ]]; then
   shift
   exec "$tool" --show-stats "$@"
@@ -77,4 +229,4 @@ if [[ "$actual_location" != "Local disk: \"$SCCACHE_DIR\"" || "$actual_basedirs"
   echo 'The shared cache server has a different policy; refusing compilation. Inspect --cache-stats or use LUXFORGE_CACHE_OFF=1.' >&2
   exit 1
 fi
-exec cargo "$@"
+run_cargo "$@"

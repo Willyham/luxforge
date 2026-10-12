@@ -27,6 +27,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Offline sample corpus tooling
         run: python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
+      - name: Build volume and build slot wrapper
+        run: python3 -m unittest discover -s tools -p 'test_build_slots.py' -v
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev

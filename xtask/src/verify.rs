@@ -301,10 +301,13 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         });
     }
     if tier.rendered() {
-        for scenario in smoke::SCENARIOS
-            .iter()
-            .filter(|scenario| scenario.rendered())
-        {
+        for scenario in smoke::SCENARIOS.iter().filter(|scenario| {
+            if tier == Tier::Full {
+                scenario.full()
+            } else {
+                scenario.rendered()
+            }
+        }) {
             specs.push(Spec {
                 result: Some("result.json"),
                 binary: true,
@@ -315,18 +318,18 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 )
             });
         }
+    }
+    if tier == Tier::Full {
         // The release gate: every stack of the corpus on the reference renderer and on the GPU,
         // each output kind the GPU renders held to its recorded limit. It runs alone, after the
         // pool, since it fills the host's cores and the device; given the RAW manifest when the run
-        // has one, and incomplete without it.
+        // has one, and incomplete without it. It can take hours, so only `full` runs it.
         specs.push(Spec {
             result: Some("report.json"),
             manifest: true,
             deadline: GATE_DEADLINE,
             ..spec("gpu-qualification", "gate", &["gpu-qualification"])
         });
-    }
-    if tier == Tier::Full {
         let sources = manifest.unwrap_or(&[]);
         // The RAW editor journey once per manifest source, each run given the manifest that lists
         // it. Without a manifest there is nothing to run it over, and the skip says so.
@@ -1624,36 +1627,21 @@ mod tests {
         assert_eq!(&rendered[..2], ["check", "editor-acceptance"]);
         assert_eq!(
             rendered.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 1
+            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
         );
         assert_eq!(
             &rendered[2..6],
-            if cfg!(target_os = "macos") {
-                [
-                    "smoke-visibility-monitoring",
-                    "smoke-detail",
-                    "smoke-detail-fit",
-                    "smoke-detail-zoom",
-                ]
-            } else {
-                [
-                    "smoke-detail",
-                    "smoke-detail-fit",
-                    "smoke-detail-zoom",
-                    "smoke-empty",
-                ]
-            }
+            [
+                "smoke-detail",
+                "smoke-detail-fit",
+                "smoke-detail-zoom",
+                "smoke-empty",
+            ]
         );
-        // The release gate last, alone after the pool, given the manifest when there is one and
-        // the longest bound.
-        assert_eq!(rendered[rendered.len() - 2], "smoke-unavailable");
-        assert_eq!(rendered.last().unwrap(), "gpu-qualification");
-        let gate = plan(Tier::Rendered, None, true).pop().unwrap();
-        assert_eq!(gate.args, ["gpu-qualification"]);
-        assert_eq!(gate.tier, "gate");
-        assert!(gate.output && gate.manifest && !gate.binary);
-        assert_eq!(gate.deadline, GATE_DEADLINE);
-        assert_eq!(gate.result, Some("report.json"));
+        // The slow scenarios and the release gate are `full`'s alone; rendered ends with the pool.
+        assert_eq!(rendered.last().unwrap(), "smoke-unavailable");
+        assert!(!rendered.iter().any(|n| n == "smoke-visibility-monitoring"));
+        assert!(!rendered.iter().any(|n| n == "gpu-qualification"));
         assert_eq!(
             names(Tier::Timing, None, true),
             [
@@ -1671,8 +1659,22 @@ mod tests {
         // source to build a `raw-panel` or RAW `performance` component from.
         let full = names(Tier::Full, None, true);
         assert_eq!(&full[..2], ["check", "editor-acceptance"]);
-        // Every rendered scenario, then the RAW components and hardening, then the timing
-        // components last.
+        assert_eq!(
+            full[2] == "smoke-visibility-monitoring",
+            cfg!(target_os = "macos")
+        );
+        // The release gate alone after the pool, given the manifest when there is one and the
+        // longest bound.
+        let gate = full.iter().position(|n| n == "gpu-qualification").unwrap();
+        assert_eq!(full[gate - 1], "smoke-unavailable");
+        let gate = &plan(Tier::Full, None, true)[gate];
+        assert_eq!(gate.args, ["gpu-qualification"]);
+        assert_eq!(gate.tier, "gate");
+        assert!(gate.output && gate.manifest && !gate.binary);
+        assert_eq!(gate.deadline, GATE_DEADLINE);
+        assert_eq!(gate.result, Some("report.json"));
+        // Every scenario a checkout can open, the gate, then the RAW components and hardening,
+        // then the timing components last.
         assert_eq!(
             &full[full.len() - 9..],
             [
@@ -1689,7 +1691,7 @@ mod tests {
         );
         assert_eq!(
             full.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 1 + 9
+            2 + smoke::SCENARIOS.iter().filter(|s| s.full()).count() + 1 + 9
         );
         // Missing generated fixtures are produced first, and only where a tier needs them.
         assert_eq!(names(Tier::Quick, None, false)[0], "check");
@@ -2456,7 +2458,7 @@ mod tests {
                 .iter()
                 .filter(|o| o.to_string_lossy().contains("/smoke-"))
                 .count(),
-            smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
+            smoke::SCENARIOS.iter().filter(|s| s.full()).count()
         );
     }
 

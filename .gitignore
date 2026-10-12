@@ -1,5 +1,7 @@
 # Build, package and per-run evidence (at any workspace/probe depth).
 **/target/
+# The worktree's `target` link to its build-volume directory (tools/cargo-cached).
+/target
 /artifacts/
 /dist/
 # Local originals and diagnostic inputs never belong in source control.
