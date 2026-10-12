@@ -131,6 +131,9 @@ pub(crate) struct Surfaces<'a> {
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
     /// ([`crate::app::gpu_settle`]).
     pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,
+    /// The minimap overviews the photograph's surface may keep, handed with every frame that
+    /// draws it ([`crate::app::overview`]).
+    pub(crate) overview: Option<&'a luxforge_ui::OverviewWant>,
 }
 
 impl Surfaces<'_> {

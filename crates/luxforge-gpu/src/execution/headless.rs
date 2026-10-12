@@ -62,6 +62,9 @@ pub struct RestDrawn {
     /// What its tiles did, as the surface's diagnostics report it once the last is in: the sweeps
     /// a staged picture was drawn in among them.
     pub figures: super::RestFigures,
+    /// The minimap overview its tiles were reduced to as well ([`GpuRest::overview`]), read back
+    /// from the surface's store; or why it was refused; none for a picture at rest without one.
+    pub overview: Option<Result<Drawn, GpuFallback>>,
 }
 
 /// A drag's ticks drawn headless ([`HeadlessSurface::ticks`]): each timed tick's duration, and the
@@ -165,8 +168,24 @@ impl HeadlessSurface {
                 None => Err(GpuFallback::PipelineFailed),
             });
         let counts = self.surface.rest.as_ref().map(|slot| slot.counts().1);
-        // Whatever stopped it, the rest's slot goes with its charge.
+        let overview = rest.overview.as_ref().map(|overview| {
+            match (
+                self.surface.overview.output(overview.version),
+                self.surface.overview_figures(0).refused,
+            ) {
+                (Some(output), _) => self
+                    .read(&output.tiles[0].texture, (output.width, output.height))
+                    .map(|codes| Drawn {
+                        codes,
+                        size: (output.width, output.height),
+                    }),
+                (None, Some((version, fallback))) if version == overview.version => Err(fallback),
+                (None, _) => Err(GpuFallback::PipelineFailed),
+            }
+        });
+        // Whatever stopped it, the rest's slot goes with its charge, and its overview with it.
         self.pipeline.release_rest(&mut self.surface);
+        self.pipeline.release_overview(&mut self.surface);
         let codes = codes?;
         // The counts' readback, its mapping taken up by the polls that complete it.
         let counts = match counts {
@@ -187,7 +206,28 @@ impl HeadlessSurface {
             frames,
             counts,
             figures: done,
+            overview,
         })
+    }
+
+    /// The pipeline's overview storage charged now, resident, in progress and retiring: zero once
+    /// a picture at rest's overview is read and retired.
+    pub fn overview_bytes(&self) -> u64 {
+        self.pipeline.figures.preview.overview()
+    }
+
+    /// The pipeline's GPU-preview storage charged now, everything together.
+    pub fn preview_bytes(&self) -> u64 {
+        self.pipeline.figures.preview.in_use()
+    }
+
+    /// Exhaust all but `free` bytes of the pipeline's GPU-preview budget, as a busy desktop's
+    /// other surfaces would; `None` restores it.
+    pub fn leave_budget(&self, free: Option<u64>) {
+        self.pipeline
+            .set_gpu_budget(free.map_or(super::GPU_PREVIEW_BUDGET, |free| {
+                self.pipeline.figures.preview.in_use() + free
+            }));
     }
 
     /// Wait, through the test base's one hang-bounded wait, until every resource this surface's

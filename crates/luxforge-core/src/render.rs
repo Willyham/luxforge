@@ -30,6 +30,7 @@ pub(crate) mod limits;
 pub(crate) mod linear;
 mod locate;
 pub(crate) mod map;
+pub mod overview;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;

@@ -943,6 +943,11 @@ pub struct RestTiles {
     /// view's region is drawn over ([`REST_BACKDROP_BOUNDS`]); `None` where neither reduces the
     /// stage, whose tiles are the counts' alone.
     pub reduction: Option<RestReduction>,
+    /// The minimap's overview of the output stage, a second reduction of the same final tiles to
+    /// at most 256 × 256 pixels ([`crate::render::overview`]), added at an eligible zoom
+    /// ([`Self::with_overview`]): drawn beside the view's reduction and the counts, changing
+    /// neither. `None` for none.
+    pub overview: Option<RestReduction>,
     /// The source every tile's boundary is cut from, and how its texels are held.
     pub source: ProxyIdentity,
     pub format: crate::BoundaryFormat,
@@ -1490,6 +1495,7 @@ fn plan_tiles(
             across: crate::area_coverage(output.width, view.0),
             down: crate::area_coverage(output.height, view.1),
         }),
+        overview: None,
         source: evaluation.source().identity(),
         format,
     })))
@@ -1530,8 +1536,14 @@ pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRes
     let planned = planned_preview(evaluation, &fit, recipe, request, None, None)?;
     // Reduced to the view where it draws the stage smaller than it is; at 100% and above to the
     // backdrop the view's region is drawn over; the counts' alone where neither reduces the stage.
-    // Within the rest's share beside the view plan, whose slot stays held while the tiles are drawn.
-    let sizing = RestSizing::Beside(view_bytes(&planned));
+    // Within the rest's share beside the view plan, whose slot stays held while the tiles are drawn,
+    // and at 100% and above beside the minimap overview's own bounded storage
+    // ([`crate::render::overview::OVERVIEW_GPU_BYTES`]), which the tiles leave room for.
+    let overview = match view {
+        GpuView::Fit(_) => 0,
+        GpuView::Region { .. } => crate::render::overview::OVERVIEW_GPU_BYTES,
+    };
+    let sizing = RestSizing::Beside(view_bytes(&planned) + overview);
     let reduced = match view {
         GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, sizing)?,
         GpuView::Region { .. } => plan_rest_tiles(evaluation, REST_BACKDROP_BOUNDS, sizing)?,
