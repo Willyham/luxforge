@@ -474,7 +474,7 @@ pub static SCENARIOS: &[Scenario] = &[
         about: "Percentage and pinch zooms, pans and idle frames, and the high-zoom minimap's threshold, navigation and interception over a crop draft, the neutral picker, a brush and Compare, over the 24 MP and 60 MP JPEGs, one run each",
         launches: &[LaunchSpec {
             plan: zoom::plan,
-            // Forty-four frames, the minimap's gestures among them, each of which may wait for
+            // Forty-seven frames, the minimap's gestures among them, each of which may wait for
             // its overview.
             deadline: Some(Duration::from_secs(150)),
             ..APP

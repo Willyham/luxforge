@@ -60,9 +60,13 @@ pub(crate) struct Card {
 /// small to hold one.
 pub(crate) fn card(canvas: Size, stage: (f64, f64), modes: usize) -> Option<Card> {
     let (width, height) = (stage.0 as f32, stage.1 as f32);
-    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
-        || !(canvas.width.is_finite() && canvas.height.is_finite())
-    {
+    let usable = width.is_finite()
+        && height.is_finite()
+        && width > 0.0
+        && height > 0.0
+        && canvas.width.is_finite()
+        && canvas.height.is_finite();
+    if !usable {
         return None;
     }
     let bound = Size::new(

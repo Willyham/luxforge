@@ -947,7 +947,11 @@ impl Editor {
             luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_overview;
         let sweep = self.overviews.sweep_version();
         Facts {
-            moving: self.core_gesture().is_some(),
+            // A crop draft's input stage is one retained frame for the whole draft, whatever its
+            // ticks change: its overview is reduced once from that frame, never per tick, so the
+            // draft does not hold it back as a gesture over the stack does.
+            moving: self.core_gesture().is_some()
+                && desired.is_none_or(|desired| desired.stage.kind != StageKind::CropInput),
             gpu_allowed,
             work_allowed: self.visibility.sampling_allowed(),
             surface,

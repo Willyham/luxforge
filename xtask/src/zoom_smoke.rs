@@ -69,6 +69,9 @@ const MINIMAP_AREA: (f64, f64) = (180.0, 120.0);
 const MINIMAP_SHARE: f64 = 0.35;
 const MINIMAP_PADDING: f64 = 4.0;
 const MINIMAP_INSET: f64 = 12.0;
+/// How far, in points, the card's chrome shadow (`luxforge_ui::theme::CHROME_SHADOW`: a 16-point
+/// blur offset 4 points down) darkens the photograph beyond its bounds, with a little to spare.
+const CARD_SHADOW: f64 = 22.0;
 /// The minimap appears from this percentage up.
 const MINIMAP_FROM: f64 = 200.0;
 /// How far, in logical points, the minimap's recorded geometry may lie from the geometry worked
@@ -108,6 +111,8 @@ enum Tool {
     CropCancel,
     /// Escape through the key table, which a held minimap drag takes first.
     Escape,
+    /// Escape through the key table with no drag held: the armed brush is put down.
+    Disarm,
     Mode(&'static str),
     ArmBrush,
     CompareTap,
@@ -138,7 +143,7 @@ const AT_200: Zoom = Zoom::Percent(200.0);
 /// Every frame in capture order: the open frame, then one per script step, each named, with the
 /// zoom it must be drawn at. The plan, and so the script and the frame count, is made from this
 /// table, and the checks below walk the same table beside the frames the plan held.
-const PLAN: [(&str, Kind, Zoom, Over); 44] = [
+const PLAN: [(&str, Kind, Zoom, Over); 47] = [
     ("opened", Kind::Open, Zoom::Fit, Over::Nothing),
     ("settle", Kind::Settle, Zoom::Fit, Over::Nothing),
     ("idle-fit", Kind::Wait, Zoom::Fit, Over::Nothing),
@@ -306,6 +311,7 @@ const PLAN: [(&str, Kind, Zoom, Over); 44] = [
         AT_200,
         Over::Brush,
     ),
+    ("brush-down", Kind::Tool(Tool::Disarm), AT_200, Over::Brush),
     (
         "brush-left",
         Kind::Tool(Tool::Mode(POINTER_MODE)),
@@ -318,9 +324,24 @@ const PLAN: [(&str, Kind, Zoom, Over); 44] = [
         AT_200,
         Over::Compare,
     ),
+    // No pan is taken under Compare: a pan there, from the minimap or the scrollable alike, leaves
+    // the capture waiting for its photograph (seen at 150% with no card shown), so the card's
+    // gestures here are the ones that move nothing — the letterbox, and a grab let go in place.
     (
-        "compare-click",
-        minimap(MinimapStep::Click(image(0.4, 0.5))),
+        "compare-letterbox",
+        minimap(MinimapStep::Click(MinimapPoint::Card([0.01, 0.5]))),
+        AT_200,
+        Over::Compare,
+    ),
+    (
+        "compare-grab",
+        minimap(MinimapStep::Press(MinimapPoint::Rectangle([0.5, 0.5]))),
+        AT_200,
+        Over::Compare,
+    ),
+    (
+        "compare-let-go",
+        minimap(MinimapStep::Release(MinimapPoint::Rectangle([0.5, 0.5]))),
         AT_200,
         Over::Compare,
     ),
@@ -357,7 +378,7 @@ fn request(kind: Kind, zoom: Zoom) -> Option<script::Step> {
         Kind::Tool(tool) => Some(match tool {
             Tool::CropStart => script::Step::Draft(DraftStep::Start),
             Tool::CropCancel => script::Step::Draft(DraftStep::Cancel),
-            Tool::Escape => script::Step::Key {
+            Tool::Escape | Tool::Disarm => script::Step::Key {
                 key: script::KEY_ESCAPE.into(),
             },
             Tool::Mode(mode) => script::Step::Workspace(WorkspaceStep::default().mode(mode)),
@@ -846,7 +867,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             );
             // The texture is written once per new raster the surface draws and never on a redraw:
             // an unchanged version means an unchanged count, whatever else happened between.
-            if version == previous_version {
+            // Compare's After is drawn by a surface of its own whose writes are counted beside the
+            // photograph's, and leaving it hands the photograph back: a frame entering or in
+            // Compare, leaving it, or the first after is not held to it.
+            let comparing = *over == Over::Compare
+                || PLAN[index - 1].3 == Over::Compare
+                || PLAN[index - 1].1 == Kind::Tool(Tool::CompareTap);
+            if comparing {
+                // Its counts are recorded below as they stand.
+            } else if version == previous_version {
                 ensure(
                     writes == previous_writes,
                     format!(
@@ -978,8 +1007,14 @@ fn check_texture(
             ),
         )?;
     }
+    // The open's picture the GPU presents at rest is exempt as well: the reference then draws
+    // nothing to reduce, and the frame is checked sample by sample all the same.
+    let gpu_opened =
+        gpu_picture && kind == Kind::Open && state["surface"]["gpu"]["drawing_path"] == "gpu";
     ensure(
-        (gpu_picture && kind != Kind::Open) || state["reference"]["reduced"] == json!(reduced),
+        (gpu_picture && kind != Kind::Open)
+            || gpu_opened
+            || state["reference"]["reduced"] == json!(reduced),
         format!("reduction presented is {}", state["reference"]["reduced"]),
     )?;
     // A reduction is the stage scaled into the bounds the view asks for now — never one left
@@ -987,7 +1022,7 @@ fn check_texture(
     // the exception: the open request is sent before the display scale is known, so its
     // reduction is made for the bounds at scale 1 and the refit that follows is what the
     // settling wait lets land.
-    let cpu_picture = !(gpu_picture && kind != Kind::Open);
+    let cpu_picture = !(gpu_opened || (gpu_picture && kind != Kind::Open));
     let expected_raster = if !cpu_picture || (reduced && kind == Kind::Open) {
         raster
     } else if reduced {
@@ -1063,8 +1098,8 @@ fn near(a: f64, b: f64, slack: f64) -> bool {
     (a - b).abs() <= slack
 }
 
-/// The minimap's card in physical pixels, `[left, top, right, bottom]` with a margin for its
-/// border's antialiasing, where it is shown.
+/// The minimap's card in physical pixels, `[left, top, right, bottom]` with a margin for the
+/// chrome shadow it casts on the photograph, where it is shown.
 fn card_pixels(frame: &Frame) -> Result<Option<[f64; 4]>> {
     let minimap = &frame["state"]["minimap"];
     if minimap["shown"] != json!(true) {
@@ -1072,13 +1107,22 @@ fn card_pixels(frame: &Frame) -> Result<Option<[f64; 4]>> {
     }
     let [x, y, w, h] = rect(&minimap["card"], "minimap card")?;
     let scale = minimap["scale_factor"].as_f64().ok_or("no scale factor")?;
-    let margin = 3.0;
+    let margin = CARD_SHADOW * scale;
     Ok(Some([
         x * scale - margin,
         y * scale - margin,
         (x + w) * scale + margin,
         (y + h) * scale + margin,
     ]))
+}
+
+/// The pan the session holds at a frame: logical pixels from the zoomed stage's corner.
+fn session_pan(frame: &Frame) -> Result<(f64, f64)> {
+    let view = &frame["state"]["surface"]["view"];
+    Ok((
+        view["pan_x"].as_f64().ok_or("no session pan")?,
+        view["pan_y"].as_f64().ok_or("no session pan")?,
+    ))
 }
 
 /// The view a frame shows, worked from its own zoom, pan and canvas rather than from anything the
@@ -1198,11 +1242,11 @@ fn check_minimap(
             && snapped == (over != Over::Crop),
         format!("the stage is {size:?} snapped {snapped} over {over:?}, the source {source:?}"),
     )?;
-    let surface_view = &state["surface"]["view"];
-    let pan = (
-        surface_view["pan_x"].as_f64().ok_or("no session pan")?,
-        surface_view["pan_y"].as_f64().ok_or("no session pan")?,
-    );
+    // The pan on screen is the scrollable's, which the card follows at once; the session's can
+    // trail it by the one coalesced `view.set` in flight, as after a zoom whose scrollable kept its
+    // relative offset. A gesture's frame waits for the session, and is held to both below.
+    let session = session_pan(frame)?;
+    let pan = pair(&minimap["pan"], "card pan")?;
     let view = View {
         stage: source,
         scale: percent / 100.0 / scale_factor,
@@ -1217,11 +1261,7 @@ fn check_minimap(
             view.scale
         ),
     )?;
-    let card_pan = pair(&minimap["pan"], "card pan")?;
-    ensure(
-        near(card_pan.0, pan.0, PAN_SLACK) && near(card_pan.1, pan.1, PAN_SLACK),
-        format!("the card's pan {card_pan:?} is not the session's {pan:?}"),
-    )?;
+    let session_lag = [pan.0 - session.0, pan.1 - session.1];
 
     // Placement: the stage fitted into the image area, the card hugging it, inset from the
     // canvas's right edge and at least as far from its bottom (further where it rises above the
@@ -1300,11 +1340,11 @@ fn check_minimap(
     let mut gesture = Value::Null;
     if let Kind::Minimap(step) = kind {
         let step_record = &frame["step"];
-        let previous = &frames[index - 1]["state"]["surface"]["view"];
-        let from = (
-            previous["pan_x"].as_f64().ok_or("no pan before")?,
-            previous["pan_y"].as_f64().ok_or("no pan before")?,
-        );
+        let previous = &frames[index - 1];
+        let from = match &previous["state"]["minimap"]["pan"] {
+            Value::Null => session_pan(previous)?,
+            card => pair(card, "card pan before")?,
+        };
         let was = View { pan: from, ..view };
         let from = was.clamp(from);
         let card_before = &step_record["minimap_before"];
@@ -1400,6 +1440,11 @@ fn check_minimap(
             near(pan.0, expected.0, slack) && near(pan.1, expected.1, slack),
             format!("the gesture left the pan at {pan:?}, worked here {expected:?} from {from:?}"),
         )?;
+        // The session holds the view the screen shows: the gesture went through `view.set`.
+        ensure(
+            near(session.0, expected.0, slack) && near(session.1, expected.1, slack),
+            format!("the session's pan is {session:?}, the gesture's {expected:?}"),
+        )?;
         ensure(
             minimap["dragging"] == json!(grab.is_some()),
             format!(
@@ -1468,6 +1513,7 @@ fn check_minimap(
         "after": minimap["after"],
         "card": card,
         "raised_above_strip": raised,
+        "session_lag": session_lag,
         "image": image,
         "expected_thumbnail": [thumbnail.0, thumbnail.1],
         "rectangle": rectangle,
