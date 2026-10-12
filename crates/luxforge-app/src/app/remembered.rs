@@ -153,9 +153,9 @@ impl Editor {
             preset_id: None,
         };
         match self.preferences.applied() {
-            Some(preferences) if preferences.export_last.as_ref() != Some(&last) => self
+            Some(preferences) if preferences.export_last.as_deref() != Some(&last) => self
                 .store_preferences(PreferenceChange {
-                    export_last: Some(Some(last)),
+                    export_last: Some(Some(Box::new(last))),
                     ..PreferenceChange::default()
                 }),
             _ => Task::none(),
