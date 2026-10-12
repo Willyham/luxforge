@@ -523,8 +523,8 @@ fn linear(runner: &mut TileRunner, case: &Case, tile: &Tile) -> Vec<[u32; 3]> {
 /// descriptor: the same codes, bit for bit, the runner's every scratch plane starting from NaN or
 /// not. Each case's result is printed with the adapter both devices are on.
 #[test]
-fn a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit() {
-    let test = "a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit";
+fn slow_a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit() {
+    let test = "slow_a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -600,8 +600,8 @@ fn a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit() {
 /// codes the codes' own run read, which is reported, not judged: the two ends are two shader
 /// modules.
 #[test]
-fn two_runs_are_byte_identical() {
-    let test = "two_runs_are_byte_identical";
+fn slow_two_runs_are_byte_identical() {
+    let test = "slow_two_runs_are_byte_identical";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -761,10 +761,10 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_
 /// around the reads; the repair step holds its read set in an atlas cut from the source, and the
 /// stitched frame meets the spatial class's limits against the reference's frame of the stack.
 #[test]
-fn a_far_source_repair_wider_than_a_texture_meets_the_spatial_limits_in_tiles() {
+fn slow_a_far_source_repair_wider_than_a_texture_meets_the_spatial_limits_in_tiles() {
     use super::gpu_repair_plan_tests::{op, repair};
     use luxforge_reference::preview_error::{self, Class, Rgb8};
-    let test = "a_far_source_repair_wider_than_a_texture_meets_the_spatial_limits_in_tiles";
+    let test = "slow_a_far_source_repair_wider_than_a_texture_meets_the_spatial_limits_in_tiles";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };

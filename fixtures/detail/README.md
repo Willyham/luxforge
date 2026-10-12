@@ -4,7 +4,7 @@
 
 `measurements.json` holds every per-configuration synthetic metric and its proposed minimum or maximum. Failing rows are preserved. Numerical dispositions and frozen equations live in `docs/design/detail-study.md`; these fixtures do not establish photographic quality or native performance.
 
-Generate with `cargo test -p luxforge-reference --test studies -- --ignored generate_detail_fixtures`. `detail_fixtures_match_reference` and `detail_measurements_match_reference` reload and recompute independently. The generator writes only the cases and measurements; it preserves the photographic corpus manifest.
+Generate with `cargo test -p luxforge-reference --test studies -- --ignored generate_detail_fixtures`. `detail_fixtures_match_reference` and `slow_detail_measurements_match_reference` reload and recompute independently. The generator writes only the cases and measurements; it preserves the photographic corpus manifest.
 
 `production-measurements.json` records the same synthetic probe constructors/metrics through the actual byte/linear render and preview queue, including all failed rows. `production_probes.rs` first verifies that extracting callback evaluators has left the independent measurement fixture unchanged. It then measures denoise alone and the combined moderate Detail settings, terminal chroma, the moving proxy versus the actual settled reduction, and the complete Detail → Basic dark ramp. Terminal Original-relative chroma figures are supplementary diagnostics; they do not replace the prescribed gate.
 

@@ -1,6 +1,6 @@
 {
   "generated_by": "crates/luxforge-reference/tests/studies/presence.rs generate_presence_fixtures",
-  "note": "Every figure quoted in docs/design/presence-study.md, recomputed from the same reference by measurements_match_reference on each test run.",
+  "note": "Every figure quoted in docs/design/presence-study.md, recomputed from the same reference by slow_measurements_match_reference on each test run.",
   "measurements": [
     {
       "name": "texture_step_high_plus100_overshoot",

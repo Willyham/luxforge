@@ -1070,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn competing_catalog_owners_are_rejected() {
+    fn slow_competing_catalog_owners_are_rejected() {
         let catalog = temp("owner.sqlite");
         let owner = EditorService::open(&catalog).unwrap();
         assert_eq!(
@@ -1228,7 +1228,7 @@ mod tests {
     /// alike — is refused by name and left exactly as it is, with no artifact or index directory
     /// made for it.
     #[test]
-    fn catalog_format_any_other_marker_is_refused_by_name_unchanged() {
+    fn slow_catalog_format_any_other_marker_is_refused_by_name_unchanged() {
         for marker in [0, 2, 15, 16, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
@@ -1582,7 +1582,7 @@ mod tests {
     /// journal — an unsupported catalog, or a database that is not one — is refused before the
     /// journal is set, so it is not moved to the log.
     #[test]
-    fn a_refused_file_keeps_its_rollback_journal_and_every_byte() {
+    fn slow_a_refused_file_keeps_its_rollback_journal_and_every_byte() {
         for marker in [0, CATALOG_FORMAT + 1] {
             let catalog = temp("refused-rollback.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
@@ -1728,7 +1728,7 @@ mod tests {
     /// A stroke is stored once under its address however many entries reference it, and an entry
     /// holds addresses and no positions at all.
     #[test]
-    fn one_stroke_is_stored_once_and_referenced_from_every_entry_that_holds_it() {
+    fn slow_one_stroke_is_stored_once_and_referenced_from_every_entry_that_holds_it() {
         let catalog = temp("stroke-store.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
@@ -1801,7 +1801,7 @@ mod tests {
     /// A referenced stroke that is gone, or whose stored bytes are not the bytes its address names,
     /// refuses every path that would draw the recipe and keeps everything it has.
     #[test]
-    fn a_missing_or_corrupt_stroke_refuses_every_path_that_would_draw_it() {
+    fn slow_a_missing_or_corrupt_stroke_refuses_every_path_that_would_draw_it() {
         for what in [false, true] {
             let catalog = temp("broken-stroke.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
@@ -1996,7 +1996,7 @@ mod tests {
     /// after it is written. The brush stroke's stored row is its canonical bytes under its pinned
     /// address, exactly as before the store was shared.
     #[test]
-    fn a_second_consumers_strokes_commit_through_the_same_store_fresh_only() {
+    fn slow_a_second_consumers_strokes_commit_through_the_same_store_fresh_only() {
         use crate::path::{StrokeKind, StrokeTable, tests::RepairStroke};
         let catalog = temp("second-consumer-strokes.sqlite");
         drop(EditorService::open(&catalog).unwrap());
@@ -2481,7 +2481,7 @@ mod tests {
     /// applies to it. The strokes are spread over four masks because the declared points-per-mask
     /// limit admits at most 81 strokes of 100 positions in one mask.
     #[test]
-    fn two_hundred_strokes_cost_about_a_megabyte_rather_than_about_forty() {
+    fn slow_two_hundred_strokes_cost_about_a_megabyte_rather_than_about_forty() {
         let catalog = temp("stroke-growth.sqlite");
         let (addressed, embedded, distinct) = session_bytes(&catalog, 200);
         std::fs::remove_file(&catalog).unwrap();
@@ -2766,7 +2766,7 @@ mod tests {
     /// `docs/design/masking.md` are recorded measurements, so the suite does not carry a
     /// twenty-second session to learn what four hundred strokes already say.
     #[test]
-    fn a_painting_session_grows_with_the_square_of_its_stroke_count() {
+    fn slow_a_painting_session_grows_with_the_square_of_its_stroke_count() {
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated/24mp.jpg");
         let source = if source.exists() { source } else { fixture() };
@@ -2812,7 +2812,7 @@ mod tests {
     /// 2400 strokes describes a session no recipe of strokes this length can hold, because the
     /// per-mask point bound admits about 113 of them and a recipe holds sixteen masks.
     #[test]
-    fn a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling() {
+    fn slow_a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling() {
         let lengths: Vec<usize> = (0..CEILING * 2)
             .map(|index| stroke(index).point_count())
             .collect();
@@ -2865,7 +2865,7 @@ mod tests {
     /// the per-mask point bound stops a session of long strokes long before its references fill
     /// 256 KiB.
     #[test]
-    fn a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was() {
+    fn slow_a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was() {
         let catalog = temp("serialized-mask-bound.sqlite");
         let (_, asset) = painting_session(&catalog, &fixture(), 4, 4);
 

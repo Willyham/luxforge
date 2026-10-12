@@ -288,6 +288,11 @@ seconds. Building dependencies at opt-level 3 saved no test time and cost anothe
 first build. To step through code in a debugger, build that once with `--config profile.dev.opt-level=0`.
 A dev build is not a timing build; timing uses release.
 
+Every build compiles the bundled SQLite with `SQLITE_DEFAULT_MEMSTATUS=0`, set through
+`LIBSQLITE3_FLAGS` in `.cargo/config.toml`. With SQLite's allocation statistics on, every allocation
+in every connection takes one process-wide mutex. Nothing reads those statistics, and with many
+threads opening catalogs at once, as the tests do, most of their time went to contending for it.
+
 The RAW build enables `cc`'s `parallel` feature: LibRaw, librtprocess, RawSpeed and pugixml
 translation units compile concurrently within Cargo's jobserver budget. It changes compilation
 scheduling, not optimization flags or runtime parallelism. Set `CARGO_BUILD_JOBS` or Cargo's `-j`
@@ -474,22 +479,30 @@ not just a build-time comparison.
 
 ### How `check` runs the tests
 
-`check` runs the repository and dependency-policy checks and formatting first, together: they take
-seconds and build nothing, so a failure among them ends the check before Clippy and the tests
-compile anything. `check` and `test` build every test binary through one
-`cargo test --no-run`, then run all of them at once, each as its own process in its package's
-directory as Cargo runs it, and print one line per binary with its elapsed time and a failing
-binary's whole output after the rest. `cargo test` runs its binaries one after another, so a
-workspace run took the sum of every binary's time; the slowest binary now bounds it. The doctests
-run last, through Cargo.
+`check` runs the repository and dependency-policy checks and formatting beside Clippy and the test
+build. They build nothing and take a second or two; formatting runs each package's
+`cargo fmt --check` at once, since one `cargo fmt --all` formats every target in one
+single-threaded `rustfmt`. A failure among them that has already come when the tests are built
+ends the check before the tests run; otherwise they are waited for after the tests. `check` and
+`test` build every test binary through one `cargo test --no-run`, then run all of them at once,
+each as its own process in its package's directory as Cargo runs it, and print one line per binary
+with its elapsed time and a failing binary's whole output after the rest. `cargo test` runs its
+binaries one after another, so a workspace run took the sum of every binary's time; the slowest
+binary now bounds it. Each binary runs half as many tests at once as the host has cores, unless
+`RUST_TEST_THREADS` says otherwise: with libtest's one per core, the two largest binaries alone
+had more threads than the host has cores, and spent as long in the kernel as in their own code.
+The doctests run last, through Cargo.
 
-A test whose own name starts with `slow_` is a slow test: one that takes about a second or more on
-its own in the dev profile, such as an exhaustive sweep, or a spatial layer's whole tile evaluated
-again for each sampled point. `check --quick` and `test --quick` list each binary's tests, skip the
+A test whose own name starts with `slow_` is a slow test: one that takes 100 ms or more in the dev
+profile, measured in its binary's ordinary run on the owner's M4, such as an exhaustive sweep, a
+GPU stack held against the reference, or a whole job run end to end. The quick tier keeps the
+rest: about nine tests in ten, most of them a few milliseconds each. `check --quick` and `test --quick` list each binary's tests, skip the
 slow ones by exact name, leave out the doctests and say how many tests they left out; without
 `--quick` nothing is left out. The quick tier runs `check --quick`, and every other tier and CI the
-whole `check`. Name a new test `slow_` only when it alone would lengthen the quick run, after making
-it as cheap as what it proves allows. A slow test runs by hand like any other, for example
+whole `check`. Name a new test `slow_` when it reaches that bound, after making it as cheap as what it proves
+allows. To read every test's time in a binary, run it with libtest's unstable timing report, as a
+diagnostic: `RUSTC_BOOTSTRAP=1 BINARY -Z unstable-options --format json --report-time` in the
+package directory. A slow test runs by hand like any other, for example
 `cargo test -p luxforge-core --lib spatial::tests::slow_`. The field-patch conformance test is one:
 `editor-acceptance` runs the same suite in release in a quarter of the time.
 
@@ -683,7 +696,7 @@ The command never opens a frame. Read a capture as an image only for a failed sc
 review.
 
 Every run's `summary.json` records each component's elapsed time; read a tier's cost there. With
-nothing to rebuild, `quick` takes about 50 s on the owner's M4. The core's and the desktop's
+nothing to rebuild, `quick` takes about 6 s on the owner's M4. The core's and the desktop's
 library test binaries bound it.
 
 ### Rendered scenario cost: why every scenario stays in `rendered`

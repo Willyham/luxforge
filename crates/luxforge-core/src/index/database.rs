@@ -1083,7 +1083,7 @@ mod tests {
     /// discarded with the preview cache and recreated empty, and a catalog file beside them keeps
     /// every byte.
     #[test]
-    fn index_format_an_unusable_index_is_discarded_without_touching_the_catalog() {
+    fn slow_index_format_an_unusable_index_is_discarded_without_touching_the_catalog() {
         let root = temp_dir("index-discard");
         let catalog = root.join("catalog.sqlite");
         std::fs::write(&catalog, b"the catalog's own bytes").unwrap();

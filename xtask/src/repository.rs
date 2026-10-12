@@ -1,6 +1,7 @@
 use crate::*;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
+use std::thread;
 fn schema(value: &Value, s: &Value, root: &Value) -> Result {
     if let Some(r) = s["$ref"].as_str() {
         return schema(
@@ -2027,6 +2028,8 @@ struct Tree<'a> {
     root: &'a Path,
     listings: BTreeMap<String, Vec<String>>,
     texts: BTreeMap<String, String>,
+    /// Each file's out-of-line `#[cfg(test)]` modules, read once for every rule that asks.
+    test_modules: BTreeMap<String, Vec<String>>,
 }
 
 impl<'a> Tree<'a> {
@@ -2035,6 +2038,7 @@ impl<'a> Tree<'a> {
             root,
             listings: BTreeMap::new(),
             texts: BTreeMap::new(),
+            test_modules: BTreeMap::new(),
         }
     }
 
@@ -2064,6 +2068,19 @@ impl<'a> Tree<'a> {
             self.texts.insert(path.to_owned(), text);
         }
         Ok(&self.texts[path])
+    }
+
+    /// The out-of-line modules `path` declares under `#[cfg(test)]` ([`production_lines`]).
+    fn test_modules(&mut self, path: &str) -> Result<&[String]> {
+        if !self.test_modules.contains_key(path) {
+            let names = production_lines(self.text(path)?)
+                .1
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            self.test_modules.insert(path.to_owned(), names);
+        }
+        Ok(&self.test_modules[path])
     }
 }
 
@@ -2096,7 +2113,7 @@ fn scoped(tree: &mut Tree, scope: &[&str], types: &[&str]) -> Result<Vec<String>
 fn test_paths(tree: &mut Tree, paths: &[String]) -> Result<BTreeSet<String>> {
     let mut test_modules = Vec::new();
     for path in paths {
-        for name in production_lines(tree.text(path)?).1 {
+        for name in tree.test_modules(path)? {
             test_modules.push(module_files(path, name));
         }
     }
@@ -2280,12 +2297,14 @@ impl DependencyRule {
 /// `root`, failing with every refusal.
 fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
     let selected = |name: &str| only.is_empty() || only.contains(&name);
+    let (mut applied, mut refusals) = source_rules(
+        root,
+        &SOURCE_RULES
+            .iter()
+            .filter(|rule| selected(rule.name))
+            .collect::<Vec<_>>(),
+    )?;
     let mut tree = Tree::new(root);
-    let mut applied = Applied::default();
-    let mut refusals = Vec::new();
-    for rule in SOURCE_RULES.iter().filter(|rule| selected(rule.name)) {
-        rule.apply(&mut tree, &mut applied, &mut refusals)?;
-    }
     for rule in DEPENDENCY_RULES.iter().filter(|rule| selected(rule.name)) {
         rule.apply(&mut tree, &mut applied, &mut refusals)?;
     }
@@ -2294,6 +2313,58 @@ fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
     }
     ensure(refusals.is_empty(), refusals.join("\n"))?;
     Ok(applied)
+}
+
+/// Apply the source `rules` across threads, each reading the files through its own [`Tree`]: their
+/// token searches are most of the repository check's time. Refusals keep the rules' order.
+fn source_rules(root: &Path, rules: &[&SourceRule]) -> Result<(Applied, Vec<String>)> {
+    let threads = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .clamp(1, 8)
+        .min(rules.len().max(1));
+    let parts = thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|first| {
+                scope.spawn(move || {
+                    let mut tree = Tree::new(root);
+                    let mut applied = Applied::default();
+                    let mut refused = Vec::new();
+                    for (index, rule) in rules.iter().enumerate().skip(first).step_by(threads) {
+                        let mut refusals = Vec::new();
+                        rule.apply(&mut tree, &mut applied, &mut refusals)
+                            .map_err(|error| error.to_string())?;
+                        refused.push((index, refusals));
+                    }
+                    Ok::<_, String>((applied, refused))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("a repository rule panicked".into()))
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut applied = Applied::default();
+    let mut refused = Vec::new();
+    for part in parts {
+        let (part, refusals) = part?;
+        applied.sources.extend(part.sources);
+        applied.manifests.extend(part.manifests);
+        applied.reads.extend(part.reads);
+        refused.extend(refusals);
+    }
+    refused.sort_by_key(|(index, _)| *index);
+    Ok((
+        applied,
+        refused
+            .into_iter()
+            .flat_map(|(_, refusals)| refusals)
+            .collect(),
+    ))
 }
 
 /// Apply every rule to the repository, and refuse a stale row: one that reads nothing, whose
@@ -2897,7 +2968,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_codec_crate_names_the_jpeg_codec() {
+    fn slow_only_the_codec_crate_names_the_jpeg_codec() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         for dir in [
@@ -5176,7 +5247,7 @@ mod tests {
     }
 
     #[test]
-    fn every_percentile_is_read_from_the_one_distribution() {
+    fn slow_every_percentile_is_read_from_the_one_distribution() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let rule = &["one-distribution"];

@@ -141,7 +141,7 @@ fn picked_paths(owner: &OwnerHandle, client: ClientId) -> Vec<String> {
 }
 
 #[test]
-fn pick_set_over_paths_and_index_rows_is_journaled_and_survives_a_restart() {
+fn slow_pick_set_over_paths_and_index_rows_is_journaled_and_survives_a_restart() {
     let fixture = Fixture::new("paths", 3, 2, true);
     let (owner, join) = fixture.start();
     let client = owner.register();
@@ -315,7 +315,7 @@ fn pick_set_over_paths_and_index_rows_is_journaled_and_survives_a_restart() {
 }
 
 #[test]
-fn a_journal_change_of_5000_picks_records_one_event_and_undoes_as_one() {
+fn slow_a_journal_change_of_5000_picks_records_one_event_and_undoes_as_one() {
     let fixture = Fixture::new("five-thousand", 5000, 5000, false);
     let (owner, join) = fixture.start();
     let client = owner.register();
@@ -463,7 +463,7 @@ fn two_clients_journal_undo_their_own_changes_and_are_refused_naming_the_other_s
 }
 
 #[test]
-fn a_journal_request_over_the_batch_limit_or_naming_nothing_is_refused() {
+fn slow_a_journal_request_over_the_batch_limit_or_naming_nothing_is_refused() {
     let fixture = Fixture::new("limit", 1, 1, false);
     let (owner, join) = fixture.start();
     let client = owner.register();

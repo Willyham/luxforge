@@ -60,7 +60,7 @@ fn on_device(test: &str, texture_limit: Option<u32>) -> Option<(LightBench, Stri
 }
 
 /// The light's tolerance: what the existing test holds the GPU's selection to against the CPU's
-/// preparation of the same reduction (`gpu_presence_atmospheric_light_matches_the_cpu`), largest
+/// preparation of the same reduction (`slow_gpu_presence_atmospheric_light_matches_the_cpu`), largest
 /// over the three channels.
 const LIGHT_TOLERANCE: f64 = 2.0e-5;
 
@@ -470,8 +470,8 @@ fn stacks() -> Vec<(&'static str, Recipe)> {
 /// boundary of a JPEG is held, and the reference hands its operation a 16-bit frame: its distance
 /// from both is reported beside it.
 #[test]
-fn gpu_light_the_gpu_light_is_the_cpus_preparation_of_the_same_stage() {
-    let test = "gpu_light_the_gpu_light_is_the_cpus_preparation_of_the_same_stage";
+fn slow_gpu_light_the_gpu_light_is_the_cpus_preparation_of_the_same_stage() {
+    let test = "slow_gpu_light_the_gpu_light_is_the_cpus_preparation_of_the_same_stage";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -552,8 +552,8 @@ fn gpu_light_the_gpu_light_is_the_cpus_preparation_of_the_same_stage() {
 /// texture reduces in one tile, bit for bit, and a second link reducing it again draws the same
 /// bits. The tiled link holds a cut's words for each of its four tiles.
 #[test]
-fn gpu_light_a_stage_wider_than_the_texture_limit_reduces_into_one_block_plane() {
-    let test = "gpu_light_a_stage_wider_than_the_texture_limit_reduces_into_one_block_plane";
+fn slow_gpu_light_a_stage_wider_than_the_texture_limit_reduces_into_one_block_plane() {
+    let test = "slow_gpu_light_a_stage_wider_than_the_texture_limit_reduces_into_one_block_plane";
     let Some((mut whole, adapter)) = on_device(test, None) else {
         return;
     };
@@ -612,8 +612,9 @@ fn gpu_light_a_stage_wider_than_the_texture_limit_reduces_into_one_block_plane()
 /// tolerance on the linear path, and the CPU's preparation over the stage the link reads on both.
 /// How far Detail moves the light — the reference's, with Detail — is reported beside it.
 #[test]
-fn gpu_light_a_light_with_detail_left_out_is_the_cpus_for_the_prefix_without_detail() {
-    let test = "gpu_light_a_light_with_detail_left_out_is_the_cpus_for_the_prefix_without_detail";
+fn slow_gpu_light_a_light_with_detail_left_out_is_the_cpus_for_the_prefix_without_detail() {
+    let test =
+        "slow_gpu_light_a_light_with_detail_left_out_is_the_cpus_for_the_prefix_without_detail";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -702,8 +703,8 @@ fn gpu_light_a_light_with_detail_left_out_is_the_cpus_for_the_prefix_without_det
 /// alone, on both paths. So a frame the harness measures with a light it is given is the frame the
 /// slot draws with the light its link computes.
 #[test]
-fn gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_harness_draws() {
-    let test = "gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_harness_draws";
+fn slow_gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_harness_draws() {
+    let test = "slow_gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_harness_draws";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -762,8 +763,8 @@ fn gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_harness_draws(
 /// scratch plane of both slots starting from NaN; and the new light changed the frame far outside
 /// that rectangle.
 #[test]
-fn gpu_light_a_light_change_redraws_the_link_whole() {
-    let test = "gpu_light_a_light_change_redraws_the_link_whole";
+fn slow_gpu_light_a_light_change_redraws_the_link_whole() {
+    let test = "slow_gpu_light_a_light_change_redraws_the_link_whole";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -841,8 +842,8 @@ fn gpu_light_a_light_change_redraws_the_link_whole() {
 /// ([`light_charge`]): the tile texture and the block plane as scratch, beside the light plane's
 /// one texel; and everything leaves the budget when released, the source with it.
 #[test]
-fn gpu_light_the_light_planes_are_charged_and_released() {
-    let test = "gpu_light_the_light_planes_are_charged_and_released";
+fn slow_gpu_light_the_light_planes_are_charged_and_released() {
+    let test = "slow_gpu_light_the_light_planes_are_charged_and_released";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -899,8 +900,8 @@ fn gpu_light_the_light_planes_are_charged_and_released() {
 /// fresh slot draws whole; and the slot's light link is charged with it and released with it. On
 /// both paths.
 #[test]
-fn gpu_light_the_slot_runs_its_plans_light_links_before_its_chain() {
-    let test = "gpu_light_the_slot_runs_its_plans_light_links_before_its_chain";
+fn slow_gpu_light_the_slot_runs_its_plans_light_links_before_its_chain() {
+    let test = "slow_gpu_light_the_slot_runs_its_plans_light_links_before_its_chain";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -1018,8 +1019,8 @@ fn gpu_light_the_slot_runs_its_plans_light_links_before_its_chain() {
 /// bit. A changed light is encoded. The pipeline keeps at most [`LIGHT_CACHE`] lights, each
 /// charged, and lets them go with the source. On both paths.
 #[test]
-fn gpu_light_a_refit_slot_restores_its_unchanged_light() {
-    let test = "gpu_light_a_refit_slot_restores_its_unchanged_light";
+fn slow_gpu_light_a_refit_slot_restores_its_unchanged_light() {
+    let test = "slow_gpu_light_a_refit_slot_restores_its_unchanged_light";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -1119,8 +1120,8 @@ fn gpu_light_a_refit_slot_restores_its_unchanged_light() {
 /// own, bit for bit, and the surface holds the two links and one tile texture, what
 /// `lights_charge` charges for them. On both paths.
 #[test]
-fn gpu_light_two_light_links_share_one_tile_texture() {
-    let test = "gpu_light_two_light_links_share_one_tile_texture";
+fn slow_gpu_light_two_light_links_share_one_tile_texture() {
+    let test = "slow_gpu_light_two_light_links_share_one_tile_texture";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -1200,8 +1201,8 @@ fn gpu_light_two_light_links_share_one_tile_texture() {
 /// whole source, bit for bit, though each is on a device of its own. A second run of the same light
 /// over the same source is the one the runner kept, computed once.
 #[test]
-fn gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time() {
-    let test = "gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time";
+fn slow_gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time() {
+    let test = "slow_gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time";
     let Some((mut bench, adapter)) = on_device(test, None) else {
         return;
     };
@@ -1338,8 +1339,8 @@ fn over_staged_prefix(
 /// texture holds half floats: its distance is reported beside it. The view plan at rest reads the
 /// kept light, waiting for it (`light-pending`) before the sweeps have computed it.
 #[test]
-fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() {
-    let test = "gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix";
+fn slow_gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() {
+    let test = "slow_gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix";
     let Some(qualifier) = qualifier(test) else {
         return;
     };
@@ -1480,8 +1481,8 @@ fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() 
 /// tiles reading it draw the staged picture's codes, byte for byte: over both photographs on the
 /// byte and linear paths, for every stack behind a spatial layer and one before a lens warp.
 #[test]
-fn gpu_light_the_stage_free_light_is_the_stage_textures_bit_for_bit() {
-    let test = "gpu_light_the_stage_free_light_is_the_stage_textures_bit_for_bit";
+fn slow_gpu_light_the_stage_free_light_is_the_stage_textures_bit_for_bit() {
+    let test = "slow_gpu_light_the_stage_free_light_is_the_stage_textures_bit_for_bit";
     let Some(qualifier) = qualifier(test) else {
         return;
     };

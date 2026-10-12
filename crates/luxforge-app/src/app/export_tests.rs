@@ -388,7 +388,7 @@ fn an_export_reader_of_a_job_already_over_sends_its_end_and_stops() {
 /// A read that ends or fails is a change the full update applies: the status line says why, the
 /// export is forgotten and the Export button is enabled again, whatever the record held was.
 #[test]
-fn a_read_that_ends_or_fails_ends_the_export_and_says_so() {
+fn slow_a_read_that_ends_or_fails_ends_the_export_and_says_so() {
     for (record, status) in [
         (
             json!({"status":"failed","error":{"code":"export","message":"no space left"}}),

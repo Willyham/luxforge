@@ -411,7 +411,7 @@ impl Fixture {
 /// reached from a client at all, so a listing that named one would have proved nothing about the
 /// picture.
 #[test]
-fn a_radial_is_created_added_patched_and_rendered_end_to_end() {
+fn slow_a_radial_is_created_added_patched_and_rendered_end_to_end() {
     let mut f = Fixture::open("radial");
     let unmasked = f.service.render_current(&f.asset).unwrap();
     let (width, height) = (unmasked.width, unmasked.height);
@@ -560,7 +560,7 @@ fn a_radial_is_created_added_patched_and_rendered_end_to_end() {
 /// complaint about Lightroom answered in pixels: there, the mode of a component is decided by which
 /// button created it and cannot be revisited.
 #[test]
-fn a_components_mode_and_inversion_are_editable_after_it_exists() {
+fn slow_a_components_mode_and_inversion_are_editable_after_it_exists() {
     let mut f = Fixture::open("modes");
     let unmasked = f.service.render_current(&f.asset).unwrap();
     let width = unmasked.width;

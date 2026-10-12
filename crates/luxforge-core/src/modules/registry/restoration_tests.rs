@@ -311,7 +311,7 @@ fn restoration_placement_keeps_a_repair_stage_layer_after_colour() {
     assert_eq!(registry.insertion_index_for(&layers, EFFECT), 0);
 }
 #[test]
-fn restoration_placement_all_creation_permutations_and_targets() {
+fn slow_restoration_placement_all_creation_permutations_and_targets() {
     let (mut registry, _) = registry();
     let mut colour5 = super::tests::TestModule::new(
         "luxforge.colourprobe",

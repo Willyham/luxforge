@@ -3,3 +3,6 @@ xtask = "run --package xtask-cli --"
 
 [env]
 MACOSX_DEPLOYMENT_TARGET = { value = "14.0", force = false }
+# The bundled SQLite keeps no allocation statistics: with them on, every allocation in every
+# connection takes one process-wide mutex. Nothing reads them (sqlite3_status, heap limits).
+LIBSQLITE3_FLAGS = { value = "-DSQLITE_DEFAULT_MEMSTATUS=0", force = false }

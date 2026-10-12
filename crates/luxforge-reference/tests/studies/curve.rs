@@ -197,7 +197,7 @@ fn interpolates_every_knot() {
 }
 
 #[test]
-fn dense_forward_differences_are_nondecreasing_for_named_and_10000_random_lists() {
+fn slow_dense_forward_differences_are_nondecreasing_for_named_and_10000_random_lists() {
     let grid = dense_grid();
     for (name, points) in all_lists() {
         let reference = CurvePoints::new(&points);
@@ -216,7 +216,7 @@ fn dense_forward_differences_are_nondecreasing_for_named_and_10000_random_lists(
 }
 
 #[test]
-fn no_segment_leaves_its_knot_values() {
+fn slow_no_segment_leaves_its_knot_values() {
     let grid = dense_grid();
     for (name, points) in all_lists() {
         let reference = CurvePoints::new(&points);

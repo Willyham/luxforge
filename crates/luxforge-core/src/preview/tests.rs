@@ -2118,7 +2118,7 @@ fn the_cost_of_a_coverage_grid() {
 /// the frame the same stack renders with the target free, and every batch releases what it
 /// reserved.
 #[test]
-fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
+fn slow_a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
     use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT};
     // More than one 512 px tile each way, so the spatial pass runs in batches.
     let (width, height) = (1100_u32, 700_u32);

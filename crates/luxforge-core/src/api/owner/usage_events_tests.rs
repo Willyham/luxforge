@@ -784,7 +784,7 @@ fn assert_unchanged_by_collection(name: &str, source: &Path) {
 /// byte for byte (the reference renderer's), the recipe and the history are the same with
 /// collection on and off, for the fixtures' JPEGs.
 #[test]
-fn usage_collection_leaves_originals_recipes_and_exports_unchanged() {
+fn slow_usage_collection_leaves_originals_recipes_and_exports_unchanged() {
     for fixture in ["orientation-6.jpg", "portrait.jpg"] {
         assert_unchanged_by_collection(
             &format!("preserve-{}", fixture.trim_end_matches(".jpg")),
@@ -793,7 +793,7 @@ fn usage_collection_leaves_originals_recipes_and_exports_unchanged() {
     }
 }
 
-/// [`usage_collection_leaves_originals_recipes_and_exports_unchanged`] over photo-sized inputs:
+/// [`slow_usage_collection_leaves_originals_recipes_and_exports_unchanged`] over photo-sized inputs:
 /// the generated 24 MP and 60 MP JPEGs (`cargo xtask generate-fixtures`), and every file in
 /// `LUXFORGE_USAGE_PRESERVATION_RAW_DIR` when it is set.
 #[test]

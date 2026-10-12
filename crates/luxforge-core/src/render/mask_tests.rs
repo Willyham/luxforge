@@ -855,7 +855,7 @@ fn boundary_texels(
 /// layer before a spatial one hands it the byte path's 16-bit frame. A sample equals the rendered
 /// byte at every pixel of the exact phase and on a grid of the proxy phase.
 #[test]
-fn a_render_that_skips_uncovered_pixels_is_identical_and_samples_equal_it() {
+fn slow_a_render_that_skips_uncovered_pixels_is_identical_and_samples_equal_it() {
     let registry = colour_registry();
     let (width, height) = (47, 31);
     let byte = gradient(width, height);

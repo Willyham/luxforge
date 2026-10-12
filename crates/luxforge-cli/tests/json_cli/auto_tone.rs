@@ -15,7 +15,7 @@ fn mutation(revision: u64, tag: &str) -> Value {
 }
 
 #[test]
-fn the_actions_auto_tone_analysis_equals_the_querys_report_for_the_same_entry() {
+fn slow_the_actions_auto_tone_analysis_equals_the_querys_report_for_the_same_entry() {
     let catalog = paths::temp_catalog("auto-tone-json-cli");
     let mut client = JsonProcess::start(
         env!("CARGO_BIN_EXE_luxforge-json"),

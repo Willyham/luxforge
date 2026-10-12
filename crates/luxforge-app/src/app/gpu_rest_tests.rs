@@ -28,9 +28,9 @@ use std::sync::Arc;
 const SIDE: u32 = 96;
 
 #[test]
-fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
+fn slow_gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
     let Some(qualifier) =
-        headless("gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit")
+        headless("slow_gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit")
     else {
         return;
     };
@@ -427,7 +427,7 @@ fn surface_charge(tiles: &luxforge_core::RestTiles, tile: &luxforge_core::RestTi
 /// byte for byte — on every measured stack, over the tiles the editor plans and over tiles of every
 /// side; and its light links' textures, the surface's light charge but for the links' buffers.
 #[test]
-fn gpu_rest_a_tiles_charge_is_what_its_slot_allocates() {
+fn slow_gpu_rest_a_tiles_charge_is_what_its_slot_allocates() {
     assert_eq!(
         luxforge_core::GPU_PREVIEW_BYTES,
         luxforge_gpu::GPU_PREVIEW_BUDGET,
@@ -483,8 +483,9 @@ fn gpu_rest_a_tiles_charge_is_what_its_slot_allocates() {
 /// core's figure, its light links' textures and the buffers the device sizes: every link's words
 /// and blocks, and each light link's own, under a megabyte.
 #[test]
-fn gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device() {
-    let Some(qualifier) = headless("gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device") else {
+fn slow_gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device() {
+    let Some(qualifier) = headless("slow_gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device")
+    else {
         return;
     };
     for (name, source, recipe) in charged_stacks() {
@@ -545,7 +546,7 @@ fn holds_centre(tile: &luxforge_core::RestTile, output: Stage) -> bool {
 /// side, count, slot shapes, share and a middle tile's charge and work, and those of the tile
 /// holding the stage's centre at every side.
 #[test]
-fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
+fn slow_gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
     for (name, source, recipe) in measured_stacks() {
         let evaluation = committed(source, recipe);
         let tiles = planned_tiles(&evaluation);
@@ -729,8 +730,8 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
 /// quantizes to the same codes. On both paths, over every family whose texels depend on more than
 /// their own pixel, a lens warp on a grid whose spacing is not a power of two among them.
 #[test]
-fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
-    let test = "gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order";
+fn slow_gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
+    let test = "slow_gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order";
     let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
         return;
     };
@@ -1254,7 +1255,7 @@ fn gpu_rest_the_measured_stacks_are_planned_in_staged_sweeps() {
 /// tiles are row by row, so the last sweep's bands are its rows; and within a budget the stage
 /// textures and a tile pass, the same stack is drawn chained, the figures naming what it needs.
 #[test]
-fn gpu_rest_a_stream_is_planned_in_staged_sweeps_within_its_budget() {
+fn slow_gpu_rest_a_stream_is_planned_in_staged_sweeps_within_its_budget() {
     let (name, source, recipe) = measured_stacks().swap_remove(1);
     let evaluation = committed(source, recipe);
     let budget = (2 << 30) - (256 << 20);
@@ -1388,8 +1389,8 @@ fn staged_families() -> Vec<(&'static str, Recipe)> {
 /// codes. On both paths, over content operations in the first sweep, masked Presence, Dehaze's
 /// light and a lens warp's tail in the last, at two tile sides.
 #[test]
-fn gpu_rest_staged_sweeps_draw_the_chained_tiles_codes() {
-    let test = "gpu_rest_staged_sweeps_draw_the_chained_tiles_codes";
+fn slow_gpu_rest_staged_sweeps_draw_the_chained_tiles_codes() {
+    let test = "slow_gpu_rest_staged_sweeps_draw_the_chained_tiles_codes";
     let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
         return;
     };

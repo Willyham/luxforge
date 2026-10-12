@@ -256,7 +256,7 @@ fn auto_tone_dark_neutral_ramp_equals_the_designs_steps_and_its_analytical_expos
 /// The design's other synthetic cases: bright, low-contrast, high-key, a clipped source and a
 /// saturated one each solve to exactly the values its steps give.
 #[test]
-fn auto_tone_synthetic_cases_equal_the_designs_steps() {
+fn slow_auto_tone_synthetic_cases_equal_the_designs_steps() {
     let bright = sample((0..1024).map(|i| [0.3 + i as f32 * 1.2 / 1023.; 3]));
     let low_contrast = sample((0..1024).map(|i| [0.08 + i as f32 * 0.04 / 1023.; 3]));
     let high_key = sample((0..1024).map(|i| [0.5 + i as f32 * 0.5 / 1023.; 3]));
@@ -402,7 +402,8 @@ fn auto_tone_bounded_grid_refuses_malformed_input_before_compiling() {
 }
 
 #[test]
-fn auto_tone_first_exposure_matches_exhaustive_picture_oracles_with_bright_and_coloured_inputs() {
+fn slow_auto_tone_first_exposure_matches_exhaustive_picture_oracles_with_bright_and_coloured_inputs()
+ {
     let targets = AutoToneTargets::default();
     for input in [
         sample((0..1024).map(|i| [0.1 + i as f32 * 1.9 / 1023.; 3])),
@@ -456,7 +457,7 @@ fn auto_tone_first_exposure_matches_exhaustive_picture_oracles_with_bright_and_c
 }
 
 #[test]
-fn auto_tone_look_uses_the_actual_compiled_forward_model() {
+fn slow_auto_tone_look_uses_the_actual_compiled_forward_model() {
     let registry = crate::ModuleRegistry::builtin();
     let look = registry.module("luxforge.look").unwrap();
     let mut payload = look
@@ -714,7 +715,7 @@ fn reduced_cases() -> Vec<(&'static str, SampleGrid)> {
 /// over every value of every field's grid ([`by_the_design`]). The design permits a reduction for
 /// repeated evaluation only when it gives the whole sample's fractions and percentiles.
 #[test]
-fn the_reduction_locates_and_the_whole_sample_decides_every_value_and_statistic() {
+fn slow_the_reduction_locates_and_the_whole_sample_decides_every_value_and_statistic() {
     for (name, input) in reduced_cases() {
         let search = ExposureSearch::Monotone;
         let whole = |stride| {
@@ -757,7 +758,7 @@ fn the_reduction_locates_and_the_whole_sample_decides_every_value_and_statistic(
 /// depends on how many threads evaluate them, through Basic alone and through a Look that needs
 /// the coarse-to-fine Exposure search.
 #[test]
-fn the_solve_is_the_same_on_every_pool_size() {
+fn slow_the_solve_is_the_same_on_every_pool_size() {
     let input = scene(5 * CHUNK + 123, 0x0123_4567_89ab_cdef);
     let registry = crate::ModuleRegistry::builtin();
     let layers = [
@@ -810,7 +811,7 @@ fn the_solve_is_the_same_on_every_pool_size() {
 /// within the bright guard. The coarse steps choose the basins; the whole sample finds its
 /// crossing of the target, so the reduction's bias moves no value.
 #[test]
-fn the_coarse_to_fine_exposure_equals_the_exhaustive_design_through_a_look() {
+fn slow_the_coarse_to_fine_exposure_equals_the_exhaustive_design_through_a_look() {
     let registry = crate::ModuleRegistry::builtin();
     let look = look_payload(&registry, 200.);
     let Processing::Color(unit) = registry

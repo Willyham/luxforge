@@ -373,7 +373,7 @@ fn codes(answer: &ReadAnswer) -> Vec<[u8; 4]> {
 /// code apart only at a code's threshold; and the output stage's codes are the stack's own frame.
 /// The stacks hold a Presence and a Detail layer, so spatial segments are materialized as frames.
 #[test]
-fn reference_reads_of_every_prefix_equal_the_prefix_frame() {
+fn slow_reference_reads_of_every_prefix_equal_the_prefix_frame() {
     let registry = Arc::new(ModuleRegistry::developer());
     for (domain, source) in sources(157, 101) {
         for (stack, recipe) in stacks() {
@@ -618,7 +618,7 @@ fn a_call_evaluates_one_prefix_for_its_25_points() {
 /// edge, both through the render's own read and through the reference service, which answers the
 /// part of a rectangle the stage holds. A rectangle past the stage is not a render's to read.
 #[test]
-fn a_rect_read_equals_the_samples_it_covers() {
+fn slow_a_rect_read_equals_the_samples_it_covers() {
     let registry = Arc::new(ModuleRegistry::developer());
     for (domain, source) in sources(61, 43) {
         for (stack, recipe) in stacks() {

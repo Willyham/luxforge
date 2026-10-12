@@ -517,7 +517,7 @@ fn grading_payloads() -> Vec<(&'static str, Value)> {
 /// 8-bit path and the RAW linear path: every rendered code equals the reference's code except
 /// within the shared code band of a threshold.
 #[test]
-fn grading_matches_the_reference_through_the_real_render_path() {
+fn slow_grading_matches_the_reference_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
     let (width, height, pixels) = colourful_image();
     let source = source_of(width, height, &pixels);

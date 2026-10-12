@@ -37,7 +37,7 @@ fn sample(client: &mut JsonProcess, asset: &Value, x: u32, y: u32) -> Value {
 }
 
 #[test]
-fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_model() {
+fn slow_an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_model() {
     let data_root = paths::temp_path("json-cli-generative");
     std::fs::create_dir_all(&data_root).unwrap();
     let data_root = data_root.canonicalize().unwrap();

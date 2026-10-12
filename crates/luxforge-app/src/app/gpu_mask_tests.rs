@@ -565,10 +565,10 @@ fn one(kind: &str, payload: Value) -> Mask {
 }
 
 #[test]
-fn gpu_mask_linear_coverage_meets_the_contour_rule() {
+fn slow_gpu_mask_linear_coverage_meets_the_contour_rule() {
     let none = StrokeTable::default;
     qualify(
-        "gpu_mask_linear_coverage_meets_the_contour_rule",
+        "slow_gpu_mask_linear_coverage_meets_the_contour_rule",
         vec![
             (
                 "the corpus's vertical gradient",
@@ -621,11 +621,11 @@ fn gpu_mask_linear_coverage_meets_the_contour_rule() {
 }
 
 #[test]
-fn gpu_mask_radial_coverage_meets_the_contour_rule() {
+fn slow_gpu_mask_radial_coverage_meets_the_contour_rule() {
     let none = StrokeTable::default;
     let radial = |x: f64, y: f64, rx: f64, ry: f64, angle: f64, feather: f64| json!({"x": x, "y": y, "radius_x": rx, "radius_y": ry, "angle": angle, "feather": feather});
     qualify(
-        "gpu_mask_radial_coverage_meets_the_contour_rule",
+        "slow_gpu_mask_radial_coverage_meets_the_contour_rule",
         vec![
             (
                 "the corpus's rotated, feathered ellipse",
@@ -676,7 +676,7 @@ fn brush(strokes: Vec<Stroke>) -> (Mask, StrokeTable) {
 }
 
 #[test]
-fn gpu_mask_brush_coverage_meets_the_contour_rule() {
+fn slow_gpu_mask_brush_coverage_meets_the_contour_rule() {
     let corpus = brush(vec![
         Stroke::capture(
             &[[0.2, 0.4], [0.5, 0.6], [0.8, 0.4]],
@@ -722,7 +722,7 @@ fn gpu_mask_brush_coverage_meets_the_contour_rule() {
         Stroke::capture(&[[0.2, 0.8], [0.8, 0.2]], 0.002, 0.0, 100.0, false).unwrap(),
     ]);
     qualify(
-        "gpu_mask_brush_coverage_meets_the_contour_rule",
+        "slow_gpu_mask_brush_coverage_meets_the_contour_rule",
         vec![
             ("the corpus's feathered stroke", corpus.0, corpus.1),
             (
@@ -737,11 +737,11 @@ fn gpu_mask_brush_coverage_meets_the_contour_rule() {
 }
 
 #[test]
-fn gpu_mask_luminance_range_coverage_meets_the_contour_rule() {
+fn slow_gpu_mask_luminance_range_coverage_meets_the_contour_rule() {
     let none = StrokeTable::default;
     let band = |low: f64, low_feather: f64, high: f64, high_feather: f64| json!({"low": low, "low_feather": low_feather, "high": high, "high_feather": high_feather});
     qualify(
-        "gpu_mask_luminance_range_coverage_meets_the_contour_rule",
+        "slow_gpu_mask_luminance_range_coverage_meets_the_contour_rule",
         vec![
             (
                 "the corpus's middle band",
@@ -768,7 +768,7 @@ fn gpu_mask_luminance_range_coverage_meets_the_contour_rule() {
 }
 
 #[test]
-fn gpu_mask_colour_range_coverage_meets_the_contour_rule() {
+fn slow_gpu_mask_colour_range_coverage_meets_the_contour_rule() {
     let none = StrokeTable::default;
     // Colours the photograph holds, each read where a pick on the canvas would read it.
     let (width, height) = (1716, 1144);
@@ -781,7 +781,7 @@ fn gpu_mask_colour_range_coverage_meets_the_contour_rule() {
         pixels[(y * width + x) as usize].map(f64::from)
     };
     qualify(
-        "gpu_mask_colour_range_coverage_meets_the_contour_rule",
+        "slow_gpu_mask_colour_range_coverage_meets_the_contour_rule",
         vec![
             (
                 "the corpus's grey and warm samples",
@@ -816,7 +816,7 @@ fn gpu_mask_colour_range_coverage_meets_the_contour_rule() {
 /// The component algebra: an add, a subtract and an intersect, inverted components, a whole-mask
 /// inversion and an amount, across geometric and value-based kinds.
 #[test]
-fn gpu_mask_composition_meets_the_contour_rule() {
+fn slow_gpu_mask_composition_meets_the_contour_rule() {
     let none = StrokeTable::default;
     let linear = json!({"x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8});
     let radial = json!({"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0,
@@ -840,7 +840,7 @@ fn gpu_mask_composition_meets_the_contour_rule() {
     stroke.mode = ComponentMode::Subtract;
     with_brush.components.push(stroke);
     qualify(
-        "gpu_mask_composition_meets_the_contour_rule",
+        "slow_gpu_mask_composition_meets_the_contour_rule",
         vec![
             (
                 "the corpus's linear less a radial",
@@ -950,8 +950,8 @@ fn gpu_mask_value_based_coverage_is_finite_over_extreme_inputs() {
 /// new segments and the index after them in the surface's 1 KiB chunks; at every tenth tick the GPU
 /// frame meets the pointwise limits against the CPU frame of the same tick.
 #[test]
-fn gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits() {
-    let test = "gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits";
+fn slow_gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits() {
+    let test = "slow_gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -1105,8 +1105,8 @@ fn gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits() {
 /// poison on, every link's passes starting from NaN in every texture of the pool the links share
 /// ([`held_to_whole`]).
 #[test]
-fn gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
-    let test = "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it";
+fn slow_gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
+    let test = "slow_gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -1271,8 +1271,8 @@ fn gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
 /// too ([`held_to_whole`]), and a moved radial's change is the part of the stage the two positions
 /// cover.
 #[test]
-fn gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are() {
-    let test = "gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are";
+fn slow_gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are() {
+    let test = "slow_gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -1363,8 +1363,8 @@ fn gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are() {
 /// draws, bit for bit, with the poison on too ([`held_to_whole`]): where the mask grew, its apply
 /// reads the Presence values of the input the Basic stroke left, not of the one before it.
 #[test]
-fn gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values() {
-    let test = "gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values";
+fn slow_gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values() {
+    let test = "slow_gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };

@@ -884,7 +884,7 @@ pub(super) fn check_against_reference(frames: Frames, what: &str) -> Frames {
 
 /// Events, days, cameras and moments of 4,000 random frame sets equal the reference's.
 #[test]
-fn organize_equals_an_independent_grouping_of_random_frames() {
+fn slow_organize_equals_an_independent_grouping_of_random_frames() {
     let mut tallies = [0usize; 6];
     for seed in 0..4_000 {
         let mut case = random_case(seed);

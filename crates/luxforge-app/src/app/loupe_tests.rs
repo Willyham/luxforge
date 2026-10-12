@@ -1096,7 +1096,7 @@ fn press_away(editor: &mut Editor, position: u32) {
 /// grid under the loupe follows the active frame, so its rows window holds the rows the loupe
 /// names, and the grid shows the active frame when the loupe closes.
 #[test]
-fn the_loupe_opened_on_a_frame_outside_the_rows_window_reads_its_row_and_settles() {
+fn slow_the_loupe_opened_on_a_frame_outside_the_rows_window_reads_its_row_and_settles() {
     use crate::state::select::ROW_BLOCK;
     use std::sync::{
         Arc,
@@ -1174,7 +1174,7 @@ fn the_loupe_opened_on_a_frame_outside_the_rows_window_reads_its_row_and_settles
 /// A block of rows the owner refuses is not asked for again until the view is evaluated again: a
 /// loupe open on a frame of it says the frame is unavailable and has nothing more to wait for.
 #[test]
-fn the_loupe_settles_on_a_frame_whose_row_the_owner_refused() {
+fn slow_the_loupe_settles_on_a_frame_whose_row_the_owner_refused() {
     use crate::state::select::ROW_BLOCK;
     let (mut editor, catalog) = viewing_singles(ROW_BLOCK + 50);
     let position = ROW_BLOCK + 10;

@@ -70,12 +70,15 @@ and `fmt --all -- --check`.
 ## Tests
 
 - Write one test per behavior, at the cheapest level that proves it.
-- A test that takes about a second or more on its own, such as an exhaustive sweep, is named
+- A test that takes 100 ms or more, such as an exhaustive sweep, is named
   `slow_`: `quick` skips it and the whole `check` runs it. A numerical study belongs in
   `luxforge-reference`.
 - A test whose timing belongs to a host service (FSEvents, inotify, disk images, an editor
   launch) needs a seam it can drive without that service in the unit tier. Name the test that
   uses the real service `slow_`, or make it a smoke scenario.
+- A test sets up any process-wide state it reads, such as an installed output encoding, itself.
+  `quick` and a filtered run leave tests out, so the test that would have installed it may never
+  run first.
 - Order comes from gates and waits, never from sleeping
   ([host-load-independent tests](development.md#tests-that-do-not-depend-on-host-load)).
 

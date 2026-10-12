@@ -404,8 +404,8 @@ fn linear_case(
 /// Every case, alone and before Basic and Detail, on both paths at two sizes, against the CPU
 /// reference within the spatial class.
 #[test]
-fn gpu_repair_plan_meets_the_spatial_limits() {
-    let test = "gpu_repair_plan_meets_the_spatial_limits";
+fn slow_gpu_repair_plan_meets_the_spatial_limits() {
+    let test = "slow_gpu_repair_plan_meets_the_spatial_limits";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -475,8 +475,8 @@ fn gpu_repair_plan_meets_the_spatial_limits() {
 /// frame is the frame a whole evaluation of the same plan draws, bit for bit, with the poison on
 /// too: Detail runs only over the change the repair hands on.
 #[test]
-fn gpu_repair_ticks_draw_what_whole_evaluations_draw() {
-    let test = "gpu_repair_ticks_draw_what_whole_evaluations_draw";
+fn slow_gpu_repair_ticks_draw_what_whole_evaluations_draw() {
+    let test = "slow_gpu_repair_ticks_draw_what_whole_evaluations_draw";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -620,8 +620,8 @@ pub(crate) fn hundred(size: (u32, u32), seed: u64) -> Vec<Value> {
 /// The limit: a hundred corrections drawn by the GPU in one bounded step, on both paths, within
 /// the spatial class of the reference's frame.
 #[test]
-fn gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
-    let test = "gpu_repair_a_hundred_corrections_meet_the_spatial_limits";
+fn slow_gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
+    let test = "slow_gpu_repair_a_hundred_corrections_meet_the_spatial_limits";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -664,9 +664,9 @@ fn gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
 /// patches among Clone and Heal, alone and before Basic and Detail, on both paths. Coverage steps
 /// through 0 to 1 and values pass both ends of the linear range.
 #[test]
-fn gpu_frozen_patches_meet_the_spatial_limits() {
+fn slow_gpu_frozen_patches_meet_the_spatial_limits() {
     use luxforge_core::qualification::corrections::{QualBrush, QualPatch, QualStep, repair_stack};
-    let test = "gpu_frozen_patches_meet_the_spatial_limits";
+    let test = "slow_gpu_frozen_patches_meet_the_spatial_limits";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -807,11 +807,11 @@ fn gpu_frozen_patches_meet_the_spatial_limits() {
 /// on the codes, with its largest linear difference reported. A patch alone, one a later Clone
 /// reads, and overlapping patches, at a half, a third and two fifths of the content.
 #[test]
-fn gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage() {
+fn slow_gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage() {
     use luxforge_core::qualification::corrections::{
         QualBrush, QualPatch, QualStep, reduced, repair_stack,
     };
-    let test = "gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage";
+    let test = "slow_gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };

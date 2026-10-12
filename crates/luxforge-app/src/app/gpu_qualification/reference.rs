@@ -1918,8 +1918,8 @@ fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
 /// The GPU's export of a stack streamed through two workers on this host's adapter, as the export
 /// lane streams it: the second the same bytes as the first, and each band's codes in order.
 #[test]
-fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
-    let test = "an_exported_stack_is_streamed_twice_and_compared_band_by_band";
+fn slow_an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
+    let test = "slow_an_exported_stack_is_streamed_twice_and_compared_band_by_band";
     let Some(exporters) = Exporters::new(test) else {
         return;
     };

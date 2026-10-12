@@ -173,7 +173,7 @@ fn compare(
 /// DN in 15,871), the colour matrix's six-digit rationals and `f32` arithmetic: the 0.3% is room
 /// for RCD's interpolation inside blocks that are flat to 2% but not perfectly.
 #[test]
-fn hdr_merge_end_to_end_bracket_develops_as_a_users_dng() {
+fn slow_hdr_merge_end_to_end_bracket_develops_as_a_users_dng() {
     let directory = luxforge_testbase::paths::temp_dir("hdr-merge-end-to-end-develops")
         .canonicalize()
         .unwrap();
@@ -534,7 +534,7 @@ fn compare_result(merging: &Merging, result: &Value, provenance: &MergeProvenanc
 /// the scene's radiance wherever some frame recorded it, above one where the metered frame
 /// clipped; it exports as a JPEG; the originals' bytes are unchanged.
 #[test]
-fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
+fn slow_hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
     let merging = Merging::new("still", &BracketSpec::default());
     let (plan, result, provenance) = merging.merge();
 
@@ -646,7 +646,7 @@ fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
 /// recovers each frame's motion, the coverage loses the edges no frame shares, deghosting finds
 /// the ball and shows the reference's, and the covered result holds the scene's radiance.
 #[test]
-fn hdr_merge_end_to_end_aligns_and_deghosts_a_handheld_bracket() {
+fn slow_hdr_merge_end_to_end_aligns_and_deghosts_a_handheld_bracket() {
     let spec = BracketSpec {
         handheld: true,
         moving_subject: Some(2),
@@ -757,7 +757,7 @@ fn merges_a_bracket(name: &str, spec: &BracketSpec) {
 /// Five frames two stops apart, 0, −2, +2, −4 and +4 EV, as a camera's common automatic
 /// bracketing takes them: the +4 EV frame records only the shadows, a few percent of the frame.
 #[test]
-fn hdr_merge_end_to_end_merges_a_five_frame_two_stop_still_bracket() {
+fn slow_hdr_merge_end_to_end_merges_a_five_frame_two_stop_still_bracket() {
     merges_a_bracket(
         "five-by-two-still",
         &BracketSpec {
@@ -770,7 +770,7 @@ fn hdr_merge_end_to_end_merges_a_five_frame_two_stop_still_bracket() {
 
 /// The same five-frame bracket handheld: each frame turned and shifted, the extremes too.
 #[test]
-fn hdr_merge_end_to_end_merges_a_five_frame_two_stop_handheld_bracket() {
+fn slow_hdr_merge_end_to_end_merges_a_five_frame_two_stop_handheld_bracket() {
     merges_a_bracket(
         "five-by-two-handheld",
         &BracketSpec {
@@ -785,7 +785,7 @@ fn hdr_merge_end_to_end_merges_a_five_frame_two_stop_handheld_bracket() {
 
 /// Seven frames a stop apart, ±3 EV.
 #[test]
-fn hdr_merge_end_to_end_merges_a_seven_frame_one_stop_bracket() {
+fn slow_hdr_merge_end_to_end_merges_a_seven_frame_one_stop_bracket() {
     merges_a_bracket(
         "seven-by-one",
         &BracketSpec {
@@ -798,7 +798,7 @@ fn hdr_merge_end_to_end_merges_a_seven_frame_one_stop_bracket() {
 
 /// Three frames three stops apart, ±3 EV.
 #[test]
-fn hdr_merge_end_to_end_merges_a_three_frame_three_stop_bracket() {
+fn slow_hdr_merge_end_to_end_merges_a_three_frame_three_stop_bracket() {
     merges_a_bracket(
         "three-by-three",
         &BracketSpec {

@@ -486,7 +486,7 @@ mod tests {
         assert_eq!(p["excluded"][0]["reason"], "centre-offset");
     }
     #[test]
-    fn lensfun_import_fails_only_on_whole_import_caps() {
+    fn slow_lensfun_import_fails_only_on_whole_import_caps() {
         assert!(convert(&tree(&lens("<type>fisheye</type>", CAL))).is_ok());
         let too_many = "<mount><name>Example</name></mount>".repeat(MAX_RECORDS + 1);
         assert!(

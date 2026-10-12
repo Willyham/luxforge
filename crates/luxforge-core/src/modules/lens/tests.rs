@@ -793,7 +793,7 @@ fn missing_original_after_lens_and_perspective_preserves_saved_edits() {
     fs::remove_file(source).unwrap();
 }
 #[test]
-fn integrated_recipe_with_masks_lens_perspective_crop_and_finish_in_both_domains() {
+fn slow_integrated_recipe_with_masks_lens_perspective_crop_and_finish_in_both_domains() {
     use crate::render::testing::{frame_in, linear, sample_in};
     use crate::{
         Component, ComponentMode, LinearImage, LinearSettings, Mask, Orientation, Recipe,

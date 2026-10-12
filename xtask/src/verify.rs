@@ -2340,7 +2340,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pool_overlaps_scenarios_but_keeps_every_result_at_its_own_index() {
+    fn slow_the_pool_overlaps_scenarios_but_keeps_every_result_at_its_own_index() {
         let specs = sleeps(&[
             "nap_long",
             "nap_short",
@@ -2394,7 +2394,7 @@ mod tests {
     }
 
     #[test]
-    fn one_job_is_the_serial_run_through_the_same_path() {
+    fn slow_one_job_is_the_serial_run_through_the_same_path() {
         let specs = sleeps(&["nap_medium", "nap_medium", "nap_medium"]);
         let tmp = tempfile::tempdir().unwrap();
         let entries = pooled(&specs, 1, tmp.path());

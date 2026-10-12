@@ -137,6 +137,7 @@ pub(super) fn test_spatial() -> GpuSpatial {
 
 /// A colour step that halves, then the test's spatial step.
 fn spatial_plan(boundary: &GpuBoundary) -> GpuPlan {
+    luxforge_gpu::qualification::install_reference_encoding();
     GpuPlan {
         boundary: boundary.clone(),
         texels: TexelMap::IDENTITY,
@@ -1129,8 +1130,9 @@ fn fresh(
 /// from NaN in every pool texture, every frame is still the fresh slot's, bit for bit: no pass reads
 /// scratch it did not write in its tick.
 #[test]
-fn chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws() {
-    let test = "chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws";
+fn slow_chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws() {
+    let test =
+        "slow_chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -1338,8 +1340,8 @@ fn chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_dra
 /// runs every pass its applies need. The texture coming back adds one, which moves no binding and
 /// bumps nothing: the same change runs none. Every frame is a fresh slot's, bit for bit.
 #[test]
-fn the_pools_generation_rebinds_a_link_once_a_texture_goes() {
-    let test = "the_pools_generation_rebinds_a_link_once_a_texture_goes";
+fn slow_the_pools_generation_rebinds_a_link_once_a_texture_goes() {
+    let test = "slow_the_pools_generation_rebinds_a_link_once_a_texture_goes";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -1499,8 +1501,8 @@ fn long_chain(boundary: &GpuBoundary, ends: &[GpuProgram], radius: u32) -> GpuPl
 /// every link's sequence, draws on the GPU what a fresh slot draws, bit for bit, and nothing
 /// compiles again. The cache holds every link's sequence at once, within its bound.
 #[test]
-fn a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick() {
-    let test = "a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick";
+fn slow_a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick() {
+    let test = "slow_a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick";
     let Some((device, queue)) = headless(test) else {
         return;
     };

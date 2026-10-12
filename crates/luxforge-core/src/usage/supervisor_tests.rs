@@ -693,7 +693,7 @@ fn usage_the_minute_between_attempts_counts_from_the_handoff_not_from_the_steps_
 }
 
 #[test]
-fn usage_floods_send_once_a_minute_with_no_hourly_or_daily_cap() {
+fn slow_usage_floods_send_once_a_minute_with_no_hourly_or_daily_cap() {
     let mut harness = Harness::new("flood");
     harness.jitter.permille.store(500, Ordering::SeqCst);
     harness.simulate(25 * HOUR, 20);
@@ -724,7 +724,7 @@ fn usage_floods_send_once_a_minute_with_no_hourly_or_daily_cap() {
 }
 
 #[test]
-fn usage_a_week_of_mixed_use_keeps_every_bound_with_no_daily_cap_and_no_backlog() {
+fn slow_usage_a_week_of_mixed_use_keeps_every_bound_with_no_daily_cap_and_no_backlog() {
     // Each day: two hours of a flood, three of typical editing, an hour offline under a flood, two
     // hours hidden with background outcomes, a rate limit, then the rest of the day untouched.
     let mut harness = Harness::new("week");
@@ -1034,7 +1034,7 @@ fn usage_redirects_other_4xx_and_refused_requests_suspend_sending_until_the_next
 }
 
 #[test]
-fn usage_storage_stays_bounded_while_offline_and_there_is_no_catch_up_burst_when_back() {
+fn slow_usage_storage_stays_bounded_while_offline_and_there_is_no_catch_up_burst_when_back() {
     let mut harness = Harness::new("offline");
     harness.jitter.permille.store(500, Ordering::SeqCst);
     harness.transport.offline.store(true, Ordering::SeqCst);

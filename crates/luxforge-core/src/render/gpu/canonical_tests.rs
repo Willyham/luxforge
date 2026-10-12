@@ -144,7 +144,7 @@ fn subsets(items: &[Panel]) -> impl Iterator<Item = Vec<Panel>> + '_ {
 /// CPU runs in Detail's own segment before the tail's resample. Every stack with at most two of the
 /// optional content layers, 696 of them, draws the CPU frame within the plan's tolerance.
 #[test]
-fn every_stack_the_panels_build_plans_from_the_source_and_draws_the_cpu_frame() {
+fn slow_every_stack_the_panels_build_plans_from_the_source_and_draws_the_cpu_frame() {
     let registry = ModuleRegistry::builtin();
     let source = smooth(WIDTH, HEIGHT);
     let mask = mask();

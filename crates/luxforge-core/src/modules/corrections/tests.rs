@@ -648,7 +648,7 @@ fn history_versions_and_reopen_keep_every_operation_and_its_stroke() {
 }
 
 #[test]
-fn a_missing_or_corrupt_stroke_is_refused_naming_its_operation_and_history_stays_readable() {
+fn slow_a_missing_or_corrupt_stroke_is_refused_naming_its_operation_and_history_stays_readable() {
     for corrupt in [false, true] {
         let mut session = Session::new(&format!("corrections-broken-{corrupt}.sqlite"));
         session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
@@ -795,7 +795,7 @@ fn a_corrected_photograph_renders_its_table_and_an_emptied_layer_renders_nothing
 }
 
 #[test]
-fn the_hundred_and_first_add_is_refused_before_and_at_commit() {
+fn slow_the_hundred_and_first_add_is_refused_before_and_at_commit() {
     let mut session = Session::new("corrections-limit.sqlite");
     for index in 0..100 {
         let x = 0.05 + 0.009 * index as f64;

@@ -334,7 +334,7 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
 }
 
 #[test]
-fn a_settings_conflict_reads_the_settings_again_and_says_so_on_one_status_line() {
+fn slow_a_settings_conflict_reads_the_settings_again_and_says_so_on_one_status_line() {
     let mut proof = Proof::start();
     proof.expand();
     proof.type_and_commit("strength", "0.8");
@@ -687,7 +687,7 @@ fn a_task_result_belongs_to_its_asset_and_a_wrong_key_fails_the_job() {
 /// module again — and that read tracks the job as ended, which ends the reader. So the run takes
 /// its result from that read, and Apply offers it.
 #[test]
-fn a_task_run_takes_its_result_from_a_status_read_that_sees_its_job_end() {
+fn slow_a_task_run_takes_its_result_from_a_status_read_that_sees_its_job_end() {
     let mut proof = Proof::start();
     proof.ready();
     proof.send(CapabilityMessage::RunTask {
@@ -720,7 +720,7 @@ fn a_task_run_takes_its_result_from_a_status_read_that_sees_its_job_end() {
 }
 
 #[test]
-fn a_cancel_goes_through_the_job_method() {
+fn slow_a_cancel_goes_through_the_job_method() {
     let mut proof = Proof::start();
     proof.ready();
     proof.endpoint.generation().shut();
@@ -1111,7 +1111,7 @@ fn a_capability_reader_yields_a_message_only_for_a_pass_in_which_a_job_changed()
 /// A reader is identified by its job and presentation visibility; unchanged records and repeated
 /// subscription derivations keep that job's reader.
 #[test]
-fn a_capability_reader_keeps_its_job_identity_through_progress() {
+fn slow_a_capability_reader_keeps_its_job_identity_through_progress() {
     use iced::advanced::subscription::{Hasher, into_recipes};
     use std::hash::Hasher as _;
     let mut proof = Proof::start();

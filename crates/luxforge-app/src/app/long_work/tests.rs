@@ -88,7 +88,7 @@ fn nothing_wakes_while_nothing_runs() {
 /// shows it. The section's own tick reads the board through the same watch.
 /// Idle, nothing new wakes: no long-work timer or read, and none at all once the section is closed.
 #[test]
-fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
+fn slow_the_section_and_the_status_bar_never_disagree_after_a_wake() {
     let (mut editor, catalog) = boot();
     assert!(editor.performance_sampling(), "the section is open");
     // The first message starts the section's sampling, whose first read goes out and stays out:
@@ -234,7 +234,7 @@ fn a_wake_inside_the_throttle_is_read_when_its_interval_passes() {
 /// id, and the board then lists it cancelled and nothing keeps a timer. The listing is held at its
 /// first folder until the cancel ends it.
 #[test]
-fn cancel_sends_job_cancel_for_the_job_and_the_board_says_it_was_cancelled() {
+fn slow_cancel_sends_job_cancel_for_the_job_and_the_board_says_it_was_cancelled() {
     let (mut editor, catalog) = boot();
     let folder = files(&catalog, "cancel", 20);
     let gate = hold_listings(&editor, &folder);

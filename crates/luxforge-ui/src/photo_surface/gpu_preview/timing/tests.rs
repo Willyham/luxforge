@@ -47,8 +47,8 @@ fn clock(pipeline: &PhotoPipeline) -> Arc<PassClock> {
 /// been done, and the next submit — Iced's own, every frame it draws — reports it. The figure then
 /// runs to that submit, which is why it is at most a frame late while frames keep coming.
 #[test]
-fn a_pass_is_reported_complete_by_a_later_submit_without_a_poll() {
-    let test = "a_pass_is_reported_complete_by_a_later_submit_without_a_poll";
+fn slow_a_pass_is_reported_complete_by_a_later_submit_without_a_poll() {
+    let test = "slow_a_pass_is_reported_complete_by_a_later_submit_without_a_poll";
     let Some((device, queue)) = headless(test) else {
         return;
     };

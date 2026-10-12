@@ -379,8 +379,8 @@ fn gpu_detail_oklab_matches_the_cpu() {
 /// CPU's: the B3 a-trous kernel at every level's spacing, and sampled Gaussians from below a
 /// tenth of a pixel to the widest a proxy level reaches, alike and different on the two axes.
 #[test]
-fn gpu_detail_smoothing_matches_the_cpu_kernels() {
-    let test = "gpu_detail_smoothing_matches_the_cpu_kernels";
+fn slow_gpu_detail_smoothing_matches_the_cpu_kernels() {
+    let test = "slow_gpu_detail_smoothing_matches_the_cpu_kernels";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -508,8 +508,8 @@ fn gpu_detail_blur_and_guide_match_the_cpu_kernels() {
 /// The level's input is the boundary and its smoothing the boundary moved by a pixel, so bands
 /// fall on both sides of every threshold.
 #[test]
-fn gpu_detail_shrinkage_matches_the_cpu() {
-    let test = "gpu_detail_shrinkage_matches_the_cpu";
+fn slow_gpu_detail_shrinkage_matches_the_cpu() {
+    let test = "slow_gpu_detail_shrinkage_matches_the_cpu";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -981,8 +981,8 @@ fn measure_unit(
 /// `f32` output through the reference quantizer is held to the spatial limits and the finiteness
 /// rule; the drawn codes are reported beside it.
 #[test]
-fn gpu_detail_units_meet_the_spatial_limits() {
-    let test = "gpu_detail_units_meet_the_spatial_limits";
+fn slow_gpu_detail_units_meet_the_spatial_limits() {
+    let test = "slow_gpu_detail_units_meet_the_spatial_limits";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -1051,8 +1051,8 @@ fn gpu_detail_units_meet_the_spatial_limits() {
 /// The study's settings on the byte path, over an 8-bit source at full resolution: the
 /// operation's input and output are clamped where the CPU quantizes its frames.
 #[test]
-fn gpu_detail_on_the_byte_path_meets_the_spatial_limits() {
-    let test = "gpu_detail_on_the_byte_path_meets_the_spatial_limits";
+fn slow_gpu_detail_on_the_byte_path_meets_the_spatial_limits() {
+    let test = "slow_gpu_detail_on_the_byte_path_meets_the_spatial_limits";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -1187,8 +1187,8 @@ fn gpu_detail_pass_pipelines_are_shared() {
 /// CPU's frame, naming the budget
 /// (`spatial_planes_are_charged_released_and_refused_past_the_budget`).
 #[test]
-fn gpu_detail_planes_are_charged_to_the_budget() {
-    let test = "gpu_detail_planes_are_charged_to_the_budget";
+fn slow_gpu_detail_planes_are_charged_to_the_budget() {
+    let test = "slow_gpu_detail_planes_are_charged_to_the_budget";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
@@ -1244,8 +1244,8 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
 /// one code, measured and held far inside the spatial limits. At full resolution and at a Fit
 /// proxy's scale, on the linear path.
 #[test]
-fn gpu_detail_the_drafted_shape_draws_what_the_cpus_does() {
-    let test = "gpu_detail_the_drafted_shape_draws_what_the_cpus_does";
+fn slow_gpu_detail_the_drafted_shape_draws_what_the_cpus_does() {
+    let test = "slow_gpu_detail_the_drafted_shape_draws_what_the_cpus_does";
     let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };

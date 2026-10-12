@@ -380,7 +380,7 @@ fn is_burst(moment: &Option<Moment>) -> bool {
 /// whatever the pattern, and organizing calls a run a bracket from previews from ⅔ EV up, with
 /// the measured steps; ⅓ EV stays a burst, as P5 asks of previews.
 #[test]
-fn bracket_preview_steps_without_a_tone_curve_are_measured_exactly() {
+fn slow_bracket_preview_steps_without_a_tone_curve_are_measured_exactly() {
     for seed in 1..=3 {
         let scene = Scene::new(seed);
         for step in [1.0 / 3.0, 2.0 / 3.0, 1.0, 2.0] {
@@ -424,7 +424,7 @@ fn bracket_preview_steps_without_a_tone_curve_are_measured_exactly() {
 /// 0.5 to 1.6 times its step (the calibration's 0.52 to 1.53); ⅓ EV under a shoulder stays a
 /// burst.
 #[test]
-fn bracket_preview_steps_through_a_tone_curve_stay_brackets() {
+fn slow_bracket_preview_steps_through_a_tone_curve_stay_brackets() {
     for curve in Curve::TONED {
         for seed in 1..=3 {
             let scene = Scene::new(seed);
@@ -466,7 +466,7 @@ fn bracket_preview_steps_through_a_tone_curve_stay_brackets() {
 /// A burst whose light changes between frames — a cloud's shadow over 30 to 70% of the frame, or
 /// the sun going in — is not a bracket: its cells do not move alike.
 #[test]
-fn bracket_preview_bursts_under_changing_light_are_not_brackets() {
+fn slow_bracket_preview_bursts_under_changing_light_are_not_brackets() {
     for curve in [Curve::Clip, Curve::Aces] {
         for seed in 1..=4 {
             let scene = Scene::new(seed);
@@ -512,7 +512,7 @@ fn bracket_preview_bursts_under_changing_light_are_not_brackets() {
 /// brightness steps too; noise changes nothing: a burst at one exposure measures steps under
 /// 0.05 EV, and a noisy bracket its steps.
 #[test]
-fn bracket_preview_a_pan_a_zoom_and_noise_are_not_brackets() {
+fn slow_bracket_preview_a_pan_a_zoom_and_noise_are_not_brackets() {
     for seed in 1..=4 {
         let scene = Scene::new(seed);
         for curve in [Curve::Clip, Curve::Aces] {

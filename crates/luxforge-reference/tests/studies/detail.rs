@@ -756,7 +756,7 @@ fn detail_fixtures_match_reference() {
 }
 
 #[test]
-fn detail_measurements_match_reference() {
+fn slow_detail_measurements_match_reference() {
     let stored: Vec<Measurement> =
         serde_json::from_str(&fs::read_to_string(fixture_dir().join("measurements.json")).unwrap())
             .unwrap();
@@ -769,7 +769,7 @@ fn detail_measurements_match_reference() {
 }
 
 #[test]
-fn detail_flat_patch_gate() {
+fn slow_detail_flat_patch_gate() {
     for m in flat_measurements() {
         assert!(m.passed(), "{}: {}", m.name, m.value);
     }
@@ -783,7 +783,7 @@ fn detail_slanted_edge_gate() {
 }
 
 #[test]
-fn detail_correlated_chroma_sigma8_gate() {
+fn slow_detail_correlated_chroma_sigma8_gate() {
     let m = correlated_measurements()
         .into_iter()
         .find(|m| m.name == "correlated-sigma8-levels4-reduction")
@@ -802,7 +802,7 @@ fn detail_correlated_chroma_sigma16_gate() {
 }
 
 #[test]
-fn detail_proxy_rms_gate() {
+fn slow_detail_proxy_rms_gate() {
     for m in proxy_measurements()
         .into_iter()
         .filter(|m| m.name.contains("gaussian") && m.name.ends_with("rms"))

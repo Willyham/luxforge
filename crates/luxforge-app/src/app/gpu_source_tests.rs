@@ -97,8 +97,8 @@ fn windows((width, height): (u32, u32)) -> [[u32; 4]; 2] {
 /// over the whole stage and a window of it, and a RAW's from a crop window of its planes under each
 /// of the eight orientations, over the whole viewed stage and a window of it.
 #[test]
-fn a_cut_boundary_is_the_cpus_boundary_bit_for_bit() {
-    let test = "a_cut_boundary_is_the_cpus_boundary_bit_for_bit";
+fn slow_a_cut_boundary_is_the_cpus_boundary_bit_for_bit() {
+    let test = "slow_a_cut_boundary_is_the_cpus_boundary_bit_for_bit";
     let Some(qualifier) = headless(test) else {
         return;
     };

@@ -701,7 +701,7 @@ fn before_the_flags_are_read_remove_is_not_offered() {
 /// ring shows while it runs and its one candidate (owner, 2026-10-11) fills the strip, chosen and
 /// previewed on the canvas. An independent client sending the same request gets the same pixels.
 #[test]
-fn generate_sends_the_copied_request_and_fills_the_strip_with_one_candidate() {
+fn slow_generate_sends_the_copied_request_and_fills_the_strip_with_one_candidate() {
     let mut filling = Filling::opened();
     filling.ready();
     filling.paint();
@@ -938,7 +938,7 @@ fn a_prompt_replaces_and_without_the_encoder_generates_nothing() {
 /// through the same `job.cancel` Copy as JSON copies, which releases the lock at once; the next
 /// Escape clears the selection.
 #[test]
-fn a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears() {
+fn slow_a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears() {
     let mut filling = Filling::opened();
     filling.ready();
     filling

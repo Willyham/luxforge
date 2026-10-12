@@ -415,7 +415,7 @@ mod coreml {
     use super::*;
 
     #[test]
-    fn coreml_runs_the_fixed_copy_written_once_and_other_shapes_on_the_cpu() {
+    fn slow_coreml_runs_the_fixed_copy_written_once_and_other_shapes_on_the_cpu() {
         let dir = Dir::new("coreml");
         let model = dir.model(&affine(Side::Named("batch"), SCALE, BIAS));
         let cache = Dir::new("coreml-cache");
@@ -539,7 +539,7 @@ mod coreml {
     }
 
     #[test]
-    fn a_static_model_needs_no_copy_and_an_unnamed_free_dimension_stays_on_the_cpu() {
+    fn slow_a_static_model_needs_no_copy_and_an_unnamed_free_dimension_stays_on_the_cpu() {
         let dir = Dir::new("coreml-static");
         let model = dir.model(&affine(Side::Fixed(2), SCALE, BIAS));
         let runtime = OnnxRuntime::new(None);

@@ -847,7 +847,7 @@ mod tests {
     /// it, and a stop wakes it while planes are still held. Waits are bounded by a watchdog so a
     /// lost wake-up fails the test rather than hanging it.
     #[test]
-    fn plane_gate_opens_on_the_last_release_and_on_a_stop() {
+    fn slow_plane_gate_opens_on_the_last_release_and_on_a_stop() {
         let gate = Arc::new(PlaneGate::default());
         let never = AtomicBool::new(false);
         assert!(!gate.wait_released(&never), "an idle gate is open");
@@ -916,7 +916,7 @@ mod tests {
     /// alone, and puts it back when it drops, for as long as a view of the planes lives; planes
     /// released while retained are never counted twice.
     #[test]
-    fn a_retained_development_is_out_of_the_gate_count_until_its_retention_drops() {
+    fn slow_a_retained_development_is_out_of_the_gate_count_until_its_retention_drops() {
         let gate = Arc::new(PlaneGate::default());
         let never = AtomicBool::new(false);
         let mut image = LinearImage::new(1, 1, vec![0.0; 3]).unwrap();
@@ -1993,7 +1993,7 @@ mod jpeg_tests {
     /// mirrored ones, renders byte-identically whether the actions are separate single-action
     /// orientation layers or one layer holding their composition. The source is untouched.
     #[test]
-    fn composed_and_separate_orientations_agree_on_every_exif_orientation() {
+    fn slow_composed_and_separate_orientations_agree_on_every_exif_orientation() {
         let registry = ModuleRegistry::builtin();
         let transforms = [
             Transform::RotateLeft,

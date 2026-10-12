@@ -367,7 +367,7 @@ fn clone_is_the_reference_bit_for_bit() {
 /// half and full opacity, a stroke that crosses itself, sources far away, beyond the frame and
 /// overlapping the destination, and a footprint on the frame's edge.
 #[test]
-fn heal_is_the_reference_bit_for_bit() {
+fn slow_heal_is_the_reference_bit_for_bit() {
     let s = STAGE;
     let inputs = [
         ("flat", flat()),
@@ -607,7 +607,7 @@ fn corner_paths() -> Vec<(Vec<[f64; 2]>, f64)> {
 /// every stage size, for a destination in any corner: no covered destination pixel's source leaves
 /// the stage, and the source's whole footprint, the outline the overlay draws, is inside the frame.
 #[test]
-fn automatic_sources_in_the_corners_stay_inside_the_frame() {
+fn slow_automatic_sources_in_the_corners_stay_inside_the_frame() {
     for (width, height) in [
         (480, 320),
         (1001, 667),
@@ -697,7 +697,7 @@ fn best(search: Search) -> search::Candidate {
 /// core's ranking the reference's on each, and on photographic-scale stages where the reduction is
 /// above one.
 #[test]
-fn search_is_the_reference_and_finds_the_known_answers() {
+fn slow_search_is_the_reference_and_finds_the_known_answers() {
     let stage = Stage {
         width: 400,
         height: 300,

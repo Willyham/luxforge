@@ -61,8 +61,8 @@ fn compiled(pipeline: &mut PhotoPipeline, steps: &[GpuStep]) {
 /// it is compiling, `prepare` compiles nothing itself, and once the thread is done the next frame
 /// draws the GPU output with no second compile.
 #[test]
-fn a_first_seen_sequence_compiles_off_the_ui_thread() {
-    let test = "a_first_seen_sequence_compiles_off_the_ui_thread";
+fn slow_a_first_seen_sequence_compiles_off_the_ui_thread() {
+    let test = "slow_a_first_seen_sequence_compiles_off_the_ui_thread";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -100,8 +100,8 @@ fn a_first_seen_sequence_compiles_off_the_ui_thread() {
 /// Warming hands a sequence to the compile thread before any frame needs it, once per version,
 /// so the first frame of the gesture draws on the GPU.
 #[test]
-fn a_warmed_sequence_draws_on_its_first_frame() {
-    let test = "a_warmed_sequence_draws_on_its_first_frame";
+fn slow_a_warmed_sequence_draws_on_its_first_frame() {
+    let test = "slow_a_warmed_sequence_draws_on_its_first_frame";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -150,8 +150,8 @@ fn a_warmed_sequence_draws_on_its_first_frame() {
 /// the queue drains, its open part done before its end. A second list with nothing new to compile
 /// is a warm-up that ends at once.
 #[test]
-fn the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest() {
-    let test = "the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest";
+fn slow_the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest() {
+    let test = "slow_the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -228,8 +228,8 @@ fn the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest() {
 /// Holding draws the CPU frame while the slot, and its boundary, stay: the next frame without
 /// the hold draws the GPU output again with no upload and no new allocation.
 #[test]
-fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
-    let test = "a_held_plan_draws_the_cpu_frame_and_keeps_its_slot";
+fn slow_a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
+    let test = "slow_a_held_plan_draws_the_cpu_frame_and_keeps_its_slot";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -287,8 +287,8 @@ fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
 /// for a stack presented on the GPU is an earlier stack's or an empty one. A plan over another
 /// boundary, another photograph or another part of it, waits behind the CPU frame as before.
 #[test]
-fn a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary() {
-    let test = "a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary";
+fn slow_a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary() {
+    let test = "slow_a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -350,8 +350,8 @@ fn a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary() {
 /// The cache holds at most [`PIPELINE_CACHE`] sequences: warming more evicts the least recently
 /// used ones that are not compiling.
 #[test]
-fn the_pipeline_cache_stays_bounded() {
-    let test = "the_pipeline_cache_stays_bounded";
+fn slow_the_pipeline_cache_stays_bounded() {
+    let test = "slow_the_pipeline_cache_stays_bounded";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -384,8 +384,8 @@ fn the_pipeline_cache_stays_bounded() {
 /// [`PIPELINE_CACHE`] sequences all compile and are counted with no frame drawn, and a second list
 /// handed after it, again with no frame between, compiles too, the cache keeping the newest.
 #[test]
-fn the_compile_queue_drains_with_no_frame_drawn() {
-    let test = "the_compile_queue_drains_with_no_frame_drawn";
+fn slow_the_compile_queue_drains_with_no_frame_drawn() {
+    let test = "slow_the_compile_queue_drains_with_no_frame_drawn";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -447,8 +447,8 @@ fn the_compile_queue_drains_with_no_frame_drawn() {
 /// a compile thread, not for a sequence it has never seen, and after its compile; asking queues
 /// nothing.
 #[test]
-fn a_plans_programs_are_ready_once_they_have_compiled() {
-    let test = "a_plans_programs_are_ready_once_they_have_compiled";
+fn slow_a_plans_programs_are_ready_once_they_have_compiled() {
+    let test = "slow_a_plans_programs_are_ready_once_they_have_compiled";
     let Some((device, queue)) = headless(test) else {
         return;
     };

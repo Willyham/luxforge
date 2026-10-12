@@ -42,7 +42,7 @@ fn basic(entry: &Value) -> Value {
 }
 
 #[test]
-fn auto_tone_query_action_repeat_undo_and_source_preservation_through_the_owner() {
+fn slow_auto_tone_query_action_repeat_undo_and_source_preservation_through_the_owner() {
     let image = photo("owner", false);
     let before = fs::read(&image).unwrap();
     let catalog = paths::temp_catalog("auto-tone-owner");

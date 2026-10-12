@@ -1179,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signed_headroom_source_round_trips_exactly_across_chunks() {
+    fn slow_a_signed_headroom_source_round_trips_exactly_across_chunks() {
         let directory = temp("round-trip");
         let root = directory.join("catalog.artifacts");
         let live = LiveSources::default();
@@ -1329,7 +1329,7 @@ mod tests {
     /// A failure at each write boundary is an error that leaves nothing staged; a retry publishes
     /// the same source, which reads back whole.
     #[test]
-    fn a_failure_at_each_write_boundary_fails_the_publication_and_a_retry_completes_it() {
+    fn slow_a_failure_at_each_write_boundary_fails_the_publication_and_a_retry_completes_it() {
         let (width, height) = (1500, 1100);
         let values = planes(width, height);
         let reference = {
@@ -1618,7 +1618,7 @@ mod tests {
     /// most 12 MiB. Generated chunk by chunk, so only the frame read back is ever whole. Not a
     /// performance measurement.
     #[test]
-    fn a_source_larger_than_one_artifact_round_trips_through_bounded_chunks() {
+    fn slow_a_source_larger_than_one_artifact_round_trips_through_bounded_chunks() {
         let directory = temp("large");
         let root = directory.join("catalog.artifacts");
         let (width, height) = (6144_u32, 4096_u32);

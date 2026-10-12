@@ -314,7 +314,7 @@ fn failed(job: &Value, code: &str) -> String {
 /// untouched, undone and redone with `library.undo` and `library.redo`, and nothing is written to
 /// the original.
 #[test]
-fn a_moved_original_is_located_and_exports_the_same_edits() {
+fn slow_a_moved_original_is_located_and_exports_the_same_edits() {
     let harness = Harness::new("moved");
     let original = harness.copy(
         "orientation-1.jpg",
@@ -514,7 +514,7 @@ fn a_byte_identical_copy_is_located_without_touching_either_file() {
 /// different photograph of the same length, and the original rewritten in place, once its
 /// fingerprint is streamed.
 #[test]
-fn what_is_not_the_original_is_refused_and_changes_nothing() {
+fn slow_what_is_not_the_original_is_refused_and_changes_nothing() {
     let harness = Harness::new("refused");
     let original = harness.copy(
         "orientation-1.jpg",
@@ -598,7 +598,7 @@ fn a_file_another_photograph_names_is_refused_without_a_merge() {
 /// photograph, after it was verified and before the owner commits; an edit committed meanwhile is
 /// unaffected, since a Locate moves no history.
 #[test]
-fn a_file_changed_around_its_verification_is_refused() {
+fn slow_a_file_changed_around_its_verification_is_refused() {
     let harness = Harness::new("changing");
     let original = harness.copy("orientation-1.jpg", &harness.dir.join("a").join("one.jpg"));
     let asset = harness.import(&original);
@@ -761,7 +761,7 @@ fn a_cancel_and_a_failed_commit_leave_the_last_state() {
 /// one stays missing and another file in a photograph's place is changed. Everything is recorded
 /// with the time it was checked and announced once.
 #[test]
-fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
+fn slow_a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
     let dir = temp_dir("locate-identity").canonicalize().unwrap();
     let catalog = dir.join("catalog.sqlite");
     let card = dir.join("card");
@@ -875,7 +875,7 @@ fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
 /// locator, confirms it by its fingerprint and records its identity now, as one change by the
 /// system, so the photograph is available again without a Locate.
 #[test]
-fn a_check_locates_an_original_whose_file_identity_was_renumbered() {
+fn slow_a_check_locates_an_original_whose_file_identity_was_renumbered() {
     let harness = Harness::new("renumbered");
     let path = harness.copy(
         "orientation-1.jpg",
@@ -929,7 +929,7 @@ fn a_check_locates_an_original_whose_file_identity_was_renumbered() {
 /// and a photograph is located onto the image, another volume, keeping its identity and history.
 #[cfg(target_os = "macos")]
 #[test]
-fn a_detached_disk_image_makes_its_photographs_offline() {
+fn slow_a_detached_disk_image_makes_its_photographs_offline() {
     use crate::library::test_disk::DiskImage;
 
     let harness = Harness::new("disk-image");
@@ -1039,7 +1039,7 @@ fn a_detached_disk_image_makes_its_photographs_offline() {
 /// A corrected photograph located at a byte-identical copy keeps its identity, its entries and
 /// every correction with its strokes, and neither file is touched.
 #[test]
-fn a_located_original_keeps_its_corrections() {
+fn slow_a_located_original_keeps_its_corrections() {
     let harness = Harness::new("corrections");
     let original = harness.copy("orientation-1.jpg", &harness.dir.join("a").join("one.jpg"));
     let copy = harness.copy("orientation-1.jpg", &harness.dir.join("b").join("copy.jpg"));

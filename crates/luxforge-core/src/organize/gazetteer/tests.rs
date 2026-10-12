@@ -304,7 +304,7 @@ fn a_table_that_breaks_the_layout_is_refused_with_its_line() {
 }
 
 #[test]
-fn the_lookup_equals_a_brute_force_scan_over_every_place() {
+fn slow_the_lookup_equals_a_brute_force_scan_over_every_place() {
     let places = places();
     for at in probes(places) {
         assert_matches_scan(places, at, nearest(at.0, at.1), &|_| true);
@@ -312,7 +312,7 @@ fn the_lookup_equals_a_brute_force_scan_over_every_place() {
 }
 
 #[test]
-fn a_rule_gives_the_nearest_place_it_accepts_exactly_as_a_scan_does() {
+fn slow_a_rule_gives_the_nearest_place_it_accepts_exactly_as_a_scan_does() {
     let places = places();
     let rules: [(&str, Rule); 5] = [
         ("towns, not sections", &|place| !place.is_section()),
@@ -571,7 +571,7 @@ fn feature_codes_say_what_kind_of_place_a_row_is() {
 }
 
 #[test]
-fn the_most_populous_place_within_a_radius_equals_a_scan() {
+fn slow_the_most_populous_place_within_a_radius_equals_a_scan() {
     let places = places();
     let rules: [(&str, Rule); 2] = [
         ("any place", &|_| true),

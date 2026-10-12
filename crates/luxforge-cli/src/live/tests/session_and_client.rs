@@ -174,7 +174,7 @@ fn live_session_client_reports_a_session_nothing_answers_as_stale() {
 }
 
 #[test]
-fn live_session_client_handshake_proves_the_address_is_the_session() {
+fn slow_live_session_client_handshake_proves_the_address_is_the_session() {
     // An address that accepts and never answers, as another program now holding it might: the
     // handshake's deadline makes it stale rather than a hang.
     let endpoint = Endpoint::serve_all(|_, _| Reply::Silence);

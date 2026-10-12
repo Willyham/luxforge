@@ -110,7 +110,7 @@ fn a_one_point_stroke_and_a_doubled_back_path_match_the_reference() {
 /// catalog that painted only the kept strokes. So the two sides are built from different stroke
 /// lists and differ unless the compiled mask folds exactly the strokes its component still lists.
 #[test]
-fn deleting_a_stroke_is_indistinguishable_from_one_never_made() {
+fn slow_deleting_a_stroke_is_indistinguishable_from_one_never_made() {
     use luxforge_core::mask::commands::{DELETE_STROKE, MaskTarget};
     let mut rng = SplitMix64(0x0018_DE1E);
     let paths: Vec<Vec<[f64; 2]>> = (0..5)
@@ -262,7 +262,7 @@ fn one_pass_is_one_density_and_a_second_pass_builds_up() {
 /// is painted. The index is exact at any occupancy, so even a component far over the cap is
 /// bit-identical to the reference, which has no index.
 #[test]
-fn a_compiled_mask_reports_its_densest_cell_and_never_refuses_for_it() {
+fn slow_a_compiled_mask_reports_its_densest_cell_and_never_refuses_for_it() {
     // Many long zig-zag strokes through one small area: every segment's grown box reaches the same
     // cells, so the occupancy climbs with the stroke count.
     let strokes: Vec<Stroke> = (0..STROKES_PER_COMPONENT as u32)
@@ -928,7 +928,7 @@ fn strokes_nowhere_near_a_pixel_change_nothing() {
 /// which has none, including where a stroke's segments straddle several cells and where a pixel sits
 /// on a cell boundary. This is the whole-field version of the claim the index rests on.
 #[test]
-fn the_index_changes_no_answer_anywhere() {
+fn slow_the_index_changes_no_answer_anywhere() {
     let mut rng = SplitMix64(0x0018_10DE);
     for (width, height) in [(53u32, 31u32), (31, 53)] {
         let reference_stage = RefStage::new(width, height);

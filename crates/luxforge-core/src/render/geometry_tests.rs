@@ -122,7 +122,7 @@ fn a_resample_reads_every_tap_of_its_window_inside_one_rectangle() {
 /// must still agree with the point sampler at every output pixel, and the band must be a
 /// strict subset of the stage for a crop that discards rows.
 #[test]
-fn colour_before_a_crop_is_applied_only_where_the_crop_reads_and_stays_exact() {
+fn slow_colour_before_a_crop_is_applied_only_where_the_crop_reads_and_stays_exact() {
     let registry = registry();
     let source = source(240, 320);
     let stage = CropStage {

@@ -325,7 +325,7 @@ fn photo_sources(fx: &Fixture) -> Vec<ViewSource> {
 /// picks, Moments without a pick, subfolders, a folder whose name extends another's, offline and
 /// undated files and every sort's tie-breaks.
 #[test]
-fn browse_views_of_files_agree_with_the_model() {
+fn slow_browse_views_of_files_agree_with_the_model() {
     let fx = testing::fixture("files-agree");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -368,7 +368,7 @@ fn browse_views_of_files_agree_with_the_model() {
 /// subfolders, a plain collection with a removed member, smart collections, missing originals and
 /// removed, under every filter and sort.
 #[test]
-fn browse_views_of_photographs_agree_with_the_model() {
+fn slow_browse_views_of_photographs_agree_with_the_model() {
     let fx = testing::fixture("photos-agree");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -436,7 +436,7 @@ fn browse_views_of_photographs_agree_with_the_model() {
 /// Picks come from the catalog by path; a file whose path is a developed photograph's original is
 /// in the catalog unless that photograph is removed; an offline root's files are offline.
 #[test]
-fn browse_a_file_carries_its_pick_catalog_state_and_availability() {
+fn slow_browse_a_file_carries_its_pick_catalog_state_and_availability() {
     let fx = testing::fixture("file-state");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -478,7 +478,7 @@ fn browse_a_file_carries_its_pick_catalog_state_and_availability() {
 /// roots, volumes, months and cameras; `month` narrows them; `query` matches dates and cameras;
 /// and an event's view holds exactly its files.
 #[test]
-fn browse_events_agree_with_the_model() {
+fn slow_browse_events_agree_with_the_model() {
     let fx = testing::fixture("events");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut cache = EventCache::default();
@@ -650,7 +650,7 @@ fn browse_events_agree_with_the_model() {
 
 /// A query matches an event's place, which only a gazetteer names, as it matches its name.
 #[test]
-fn browse_an_event_query_matches_its_place() {
+fn slow_browse_an_event_query_matches_its_place() {
     let fx = testing::fixture("event-place");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut cache = EventCache::default();
@@ -688,7 +688,7 @@ fn predicted(source: &ViewSource, filter: &ViewFilter, facet: Facet, value: &str
 /// Every facet count equals the size of the view it predicts, and the count of items recording no
 /// value equals the model's.
 #[test]
-fn browse_facets_equal_the_views_they_predict() {
+fn slow_browse_facets_equal_the_views_they_predict() {
     let fx = testing::fixture("facets");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -944,7 +944,7 @@ fn seed_previews(fx: &Fixture) {
 /// `browse.rows` reads windows by position: every field of every row agrees with the model item at
 /// that position, windows end at the view's end, and a window past it is refused.
 #[test]
-fn browse_rows_read_windows_by_position() {
+fn slow_browse_rows_read_windows_by_position() {
     let fx = testing::fixture("rows");
     seed_previews(&fx);
     let service = EditorService::open(&fx.catalog).unwrap();
@@ -1121,7 +1121,7 @@ fn browse_rows_read_windows_by_position() {
 
 /// A stale view still answers for its items, and refuses a window whose item has gone.
 #[test]
-fn browse_a_stale_views_gone_item_is_a_conflict() {
+fn slow_browse_a_stale_views_gone_item_is_a_conflict() {
     let fx = testing::fixture("gone");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -1163,7 +1163,7 @@ fn browse_a_stale_views_gone_item_is_a_conflict() {
 /// Replace, add, remove and toggle over items, ranges and all; the active item; and every refusal
 /// leaving the selection as it was.
 #[test]
-fn browse_selection_modes_ranges_items_all_and_active() {
+fn slow_browse_selection_modes_ranges_items_all_and_active() {
     let fx = testing::fixture("select");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -1364,7 +1364,7 @@ fn view_item(evaluation: &Evaluation, position: usize) -> ViewItem {
 /// A view is stale once a library change or an index revision follows its evaluation, and stays
 /// stale.
 #[test]
-fn browse_a_view_goes_stale_after_a_library_change_or_an_index_revision() {
+fn slow_browse_a_view_goes_stale_after_a_library_change_or_an_index_revision() {
     let fx = testing::fixture("stale");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -1397,7 +1397,7 @@ fn browse_a_view_goes_stale_after_a_library_change_or_an_index_revision() {
 
 /// The event cache follows the index revision: a file added under a new revision joins its event.
 #[test]
-fn browse_events_follow_the_index_revision() {
+fn slow_browse_events_follow_the_index_revision() {
     let fx = testing::fixture("event-cache");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut cache = EventCache::default();
@@ -1432,7 +1432,7 @@ fn browse_events_follow_the_index_revision() {
 /// Refusals: a query no view can answer, a source that does not exist, a smart collection that
 /// names another or is over files, a group, and a source past the limit.
 #[test]
-fn browse_queries_are_validated_and_bounded() {
+fn slow_browse_queries_are_validated_and_bounded() {
     let fx = testing::fixture("limits");
     let service = EditorService::open(&fx.catalog).unwrap();
     let mut events = EventCache::default();
@@ -1548,7 +1548,7 @@ fn browse_queries_are_validated_and_bounded() {
 /// deleted since finds nothing from it: an empty view, not the error the same source named directly
 /// is refused with, so the smart collection still opens.
 #[test]
-fn browse_a_smart_collection_naming_a_deleted_source_is_empty() {
+fn slow_browse_a_smart_collection_naming_a_deleted_source_is_empty() {
     let fx = testing::fixture("smart-gone");
     let gone_folder = testing::folder_id("merged-away");
     let gone_collection =
@@ -1609,7 +1609,7 @@ fn browse_a_smart_collection_naming_a_deleted_source_is_empty() {
 
 /// The files a source over files covers, whatever a filter would say.
 #[test]
-fn browse_source_files_lists_what_a_source_covers() {
+fn slow_browse_source_files_lists_what_a_source_covers() {
     let fx = testing::fixture("source-files");
     let service = EditorService::open(&fx.catalog).unwrap();
     let ids = |source: &ViewSource| {
@@ -1647,7 +1647,7 @@ fn browse_source_files_lists_what_a_source_covers() {
 /// At the design's scale — 10,000 files in view and 100,000 photographs — views, windows, facets
 /// and selection work. Functional only: the timing is measured on the integrated build.
 #[test]
-fn browse_works_at_the_design_scale() {
+fn slow_browse_works_at_the_design_scale() {
     use crate::catalog_types::{
         CameraBody, CaptureTime, CatalogFolder, CatalogFolderId, FileRecord, FileSignature,
         HeaderMetadata, HeaderState, IndexRoot, RootKind, Volume,

@@ -424,8 +424,8 @@ fn tiles_in_flight_read_back_what_each_draws_alone() {
 /// loss reached the runner's lost callback before the run began or the run itself met it: no run
 /// waits for a recovery, and the window it held is let go with the device.
 #[test]
-fn a_lost_device_answers_device_lost() {
-    let test = "a_lost_device_answers_device_lost";
+fn slow_a_lost_device_answers_device_lost() {
+    let test = "slow_a_lost_device_answers_device_lost";
     let lost = TileFailure::Unavailable(TileUnavailable::DeviceLost);
     let rgba = codes(128, 96);
     let source = GpuSource::codes(1, Arc::new(rgba), 128, 96).expect("a source");

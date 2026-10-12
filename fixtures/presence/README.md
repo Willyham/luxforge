@@ -14,7 +14,7 @@ cargo test --package luxforge-reference --test studies \
     -- --ignored generate_presence_fixtures
 ```
 
-`presence_fixtures_match_reference` and `measurements_match_reference` (not ignored, and so
+`presence_fixtures_match_reference` and `slow_measurements_match_reference` (not ignored, and so
 part of `cargo xtask check`) reload the committed files and recompute every value from the
 same reference, so a silent drift between these files and the frozen formulas fails the
 build instead of going unnoticed.

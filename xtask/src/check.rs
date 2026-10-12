@@ -13,7 +13,7 @@ use crate::*;
 use std::{
     io::{Read, Seek, SeekFrom},
     process::Stdio,
-    sync::mpsc,
+    sync::{OnceLock, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -101,6 +101,16 @@ fn command(binary: &Binary) -> Command {
     command
 }
 
+/// How many tests each binary runs at once, unless `RUST_TEST_THREADS` says: half the host's
+/// cores. Every binary runs at the same time, and libtest's default of one thread per core gives
+/// the largest two alone more threads than the host has cores; contended, they spent as long in
+/// the kernel as in their own code. With half, the whole run took about a quarter less time.
+fn test_threads() -> Option<usize> {
+    std::env::var_os("RUST_TEST_THREADS")
+        .is_none()
+        .then(|| thread::available_parallelism().map_or(1, |cores| (cores.get() / 2).max(1)))
+}
+
 /// Runs `command` to its end with its stdout and stderr in one anonymous file, and reads it back.
 /// A file rather than a pipe: macOS has no `pipe2`, so a pipe made for one child is inheritable
 /// until it is marked close-on-exec, and a child another thread spawns in that moment holds its
@@ -155,6 +165,9 @@ fn run_one(binary: &Binary, quick: bool) -> Outcome {
             outcome.left_out += 1;
         }
     }
+    if let Some(threads) = test_threads() {
+        args.push(format!("--test-threads={threads}"));
+    }
     let mut run = command(binary);
     run.args(&args);
     match captured(run) {
@@ -186,11 +199,15 @@ fn run_one(binary: &Binary, quick: bool) -> Outcome {
 
 /// Builds and runs every test binary at once, then, outside a quick run, the doctests.
 pub fn tests(root: &Path, quick: bool) -> Result {
-    let binaries = build(root)?;
+    run(root, &build(root)?, quick)
+}
+
+/// Runs every one of `binaries` at once, then, outside a quick run, the doctests.
+fn run(root: &Path, binaries: &[Binary], quick: bool) -> Result {
     let started = Instant::now();
     let (sender, receiver) = mpsc::channel();
     let outcomes = thread::scope(|scope| {
-        for binary in &binaries {
+        for binary in binaries {
             let sender = sender.clone();
             scope.spawn(move || sender.send(run_one(binary, quick)));
         }
@@ -249,46 +266,95 @@ pub fn tests(root: &Path, quick: bool) -> Result {
     Ok(())
 }
 
-/// The repository and dependency-policy checks and formatting, then Clippy and the tests. The
-/// first three take seconds and build nothing, so they run first, together, and a failure among
-/// them ends the check before anything is compiled. `quick` leaves the slow tests and the
+/// Whether every workspace package is formatted, each package's `cargo fmt --check` at once:
+/// one `cargo fmt --all` formats every target in one single-threaded `rustfmt`, several times
+/// slower than its largest package alone. The packages and files are the same.
+fn formatted(root: &Path) -> Result {
+    let metadata: Value = serde_json::from_slice(
+        &cargo_command()
+            .current_dir(root)
+            .args(["metadata", "--locked", "--no-deps", "--format-version", "1"])
+            .stderr(Stdio::inherit())
+            .output()?
+            .stdout,
+    )?;
+    let packages: Vec<String> = metadata["packages"]
+        .as_array()
+        .ok_or("Cargo metadata lists no packages")?
+        .iter()
+        .filter_map(|package| package["name"].as_str().map(str::to_owned))
+        .collect();
+    let outputs = thread::scope(|scope| {
+        let handles: Vec<_> = packages
+            .iter()
+            .map(|package| {
+                scope.spawn(move || {
+                    cargo_command()
+                        .current_dir(root)
+                        .args(["fmt", "--package", package, "--", "--check"])
+                        .stdin(Stdio::null())
+                        .output()
+                        .map_err(|error| format!("cargo fmt for {package}: {error}"))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| Err("panicked".into())))
+            .collect::<Vec<_>>()
+    });
+    let mut differs = String::new();
+    for output in outputs {
+        let output = output?;
+        if !output.status.success() {
+            differs.push_str(&String::from_utf8_lossy(&output.stdout));
+            differs.push_str(&String::from_utf8_lossy(&output.stderr));
+        }
+    }
+    ensure(
+        differs.is_empty(),
+        format!("Formatting differs:\n{differs}"),
+    )
+}
+
+/// The repository and dependency-policy checks, formatting, Clippy and the tests. The first two
+/// build nothing and take a second or two, so they run beside Clippy and the test build. A
+/// failure among them that has already come when the tests are built ends the check before they
+/// run; otherwise they are waited for after the tests. `quick` leaves the slow tests and the
 /// doctests out ([`tests`]).
 pub fn check(root: &Path, quick: bool) -> Result {
     let text = |result: Result| result.map_err(|e| e.to_string());
-    let (repository, formatted) = thread::scope(|scope| {
-        let repository = scope
-            .spawn(|| text(repository::check(root).and_then(|()| policy::checked(root).map(drop))));
-        let formatted = scope.spawn(|| {
-            let out = cargo_command()
-                .args(["fmt", "--all", "--", "--check"])
-                .current_dir(root)
-                .output()
-                .map_err(|e| e.to_string())?;
-            if out.status.success() {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Formatting differs:\n{}{}",
-                    String::from_utf8_lossy(&out.stdout),
-                    String::from_utf8_lossy(&out.stderr)
-                ))
-            }
+    let repository = OnceLock::new();
+    let formatting = OnceLock::new();
+    let failures = thread::scope(|scope| {
+        scope.spawn(|| {
+            repository.set(text(
+                repository::check(root).and_then(|()| policy::checked(root).map(drop)),
+            ))
         });
-        let joined = |handle: thread::ScopedJoinHandle<'_, std::result::Result<(), String>>| {
-            handle.join().unwrap_or_else(|_| Err("panicked".into()))
-        };
-        (joined(repository), joined(formatted))
+        scope.spawn(|| formatting.set(text(formatted(root))));
+        let mut failures = Vec::new();
+        match cargo(root, "lint", false)
+            .and_then(|()| build(root))
+            .map_err(|e| e.to_string())
+        {
+            Err(error) => failures.push(error),
+            Ok(_)
+                if [&repository, &formatting]
+                    .iter()
+                    .any(|gate| gate.get().is_some_and(std::result::Result::is_err)) =>
+            {
+                failures.push("The tests did not run.".into());
+            }
+            Ok(binaries) => failures.extend(text(run(root, &binaries, quick)).err()),
+        }
+        failures
     });
-    let failures: Vec<String> = [repository, formatted]
+    let gates = [repository, formatting]
         .into_iter()
-        .filter_map(std::result::Result::err)
-        .collect();
-    ensure(
-        failures.is_empty(),
-        format!("{}\nClippy and the tests did not run.", failures.join("\n")),
-    )?;
-    cargo(root, "lint", false)?;
-    tests(root, quick)
+        .filter_map(|gate| gate.into_inner().unwrap_or(Err("panicked".into())).err());
+    let failures: Vec<String> = gates.chain(failures).collect();
+    ensure(failures.is_empty(), failures.join("\n"))
 }
 #[cfg(test)]
 mod tests {

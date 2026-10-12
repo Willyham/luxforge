@@ -14,7 +14,7 @@ mod hdr_bracket;
 const MODE: &str = "LuxforgeSyntheticBracketDng16";
 
 #[test]
-fn synthetic_body_is_refused_until_test_cameras_are_admitted() {
+fn slow_synthetic_body_is_refused_until_test_cameras_are_admitted() {
     let bracket = hdr_bracket::Bracket::new(&hdr_bracket::BracketSpec::default());
     let dng = bracket.dng(0);
     let cancel = AtomicBool::new(false);

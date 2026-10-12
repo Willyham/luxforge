@@ -297,7 +297,7 @@ fn the_mode_follows_mask_and_its_band_reads_the_declared_limit() {
 /// correction is selected; `⇧`-click draws a straight stroke from the last end; and the stored
 /// result matches what an agent's request with the same fields stores.
 #[test]
-fn presses_add_one_entry_each_with_their_labels_and_parity() {
+fn slow_presses_add_one_entry_each_with_their_labels_and_parity() {
     let mut c = Correcting::opened();
     let before = c.history().len();
     c.press([0.3, 0.4], Modifiers::default(), CanvasHit::Add);
@@ -592,7 +592,7 @@ fn a_source_stays_on_the_photograph_in_every_corner() {
 /// Pin, source and size-handle drags each commit one entry with their label; a press that moved
 /// nothing writes nothing; row sliders, kind, reorder and delete each commit one entry.
 #[test]
-fn handles_rows_and_keys_edit_one_entry_each() {
+fn slow_handles_rows_and_keys_edit_one_entry_each() {
     let mut c = Correcting::opened();
     c.press([0.3, 0.15], alt(), CanvasHit::Add);
     c.release([0.3, 0.15]);
@@ -759,7 +759,7 @@ fn escape_cancels_a_held_stroke_first() {
 
 /// At the declared limit a press is refused before any draft opens, with the limit's notice.
 #[test]
-fn the_limit_refuses_a_press_before_any_draft() {
+fn slow_the_limit_refuses_a_press_before_any_draft() {
     let mut c = Correcting::opened();
     let limit = c.corrections()["limit"].as_u64().unwrap();
     for index in 0..limit {
