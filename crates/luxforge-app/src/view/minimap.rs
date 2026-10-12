@@ -80,8 +80,9 @@ pub(crate) fn card(canvas: Size, stage: (f64, f64), modes: usize) -> Option<Card
     // The mode strip, centred along the bottom: tools of a fixed width, their spacing and padding.
     let tools = modes.max(1) as f32;
     let strip_padding = theme::STRIP_PADDING + theme::BORDER_WIDTH;
-    let strip_width =
-        tools * theme::STRIP_TOOL_WIDTH + (tools - 1.0) * theme::STRIP_SPACING + 2.0 * strip_padding;
+    let strip_width = tools * theme::STRIP_TOOL_WIDTH
+        + (tools - 1.0) * theme::STRIP_SPACING
+        + 2.0 * strip_padding;
     let strip_right = (canvas.width + strip_width) / 2.0;
     let strip_top = canvas.height - theme::CHROME_INSET - theme::STRIP_HEIGHT;
     if x < strip_right + theme::CHROME_STACK_SPACING {
@@ -149,8 +150,7 @@ pub(crate) fn layer<'a>(model: MinimapModel) -> Element<'a, Message> {
             .width(Length::Fixed(image.width))
             .height(Length::Fixed(image.height))
             .style(|active: &Theme| {
-                container::Style::default()
-                    .background(active.palette().get(Token::Surround))
+                container::Style::default().background(active.palette().get(Token::Surround))
             })
             .padding(0)
             .into(),
@@ -183,11 +183,15 @@ pub(crate) fn layer<'a>(model: MinimapModel) -> Element<'a, Message> {
     .height(Length::Fixed(area.height));
     let mut content: Vec<Element<'a, Message>> = vec![placed.into(), outline.into()];
     let caption = |words: &'static str, ink: Token| {
-        container(text(words).size(theme::SIZE_SMALL_CAPTION).style(theme::ink(ink)))
-            .padding([1.0, 4.0])
-            .style(|active: &Theme| {
-                theme::chrome_surface(active, Token::ChromeBorder, theme::BORDER_WIDTH * 3.0)
-            })
+        container(
+            text(words)
+                .size(theme::SIZE_SMALL_CAPTION)
+                .style(theme::ink(ink)),
+        )
+        .padding([1.0, 4.0])
+        .style(|active: &Theme| {
+            theme::chrome_surface(active, Token::ChromeBorder, theme::BORDER_WIDTH * 3.0)
+        })
     };
     if model.after {
         content.push(
@@ -269,8 +273,12 @@ impl canvas::Program<Message, Theme> for Outline {
         };
         let mut frame = Frame::new(renderer, bounds.size());
         let keep = 1.5;
-        let left = rectangle.x.clamp(self.image.x + keep, self.image.x + self.image.width - keep);
-        let top = rectangle.y.clamp(self.image.y + keep, self.image.y + self.image.height - keep);
+        let left = rectangle
+            .x
+            .clamp(self.image.x + keep, self.image.x + self.image.width - keep);
+        let top = rectangle
+            .y
+            .clamp(self.image.y + keep, self.image.y + self.image.height - keep);
         let right = (rectangle.x + rectangle.width)
             .clamp(self.image.x + keep, self.image.x + self.image.width - keep);
         let bottom = (rectangle.y + rectangle.height)
@@ -441,9 +449,7 @@ impl Widget<Message, Theme, Renderer> for MinimapInput<'_> {
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if over.is_some() => {
                 let offset = wheel_offset(*delta, capture.modifiers.shift());
-                shell.publish(Message::View(ViewMessage::MinimapWheel(
-                    offset.x, offset.y,
-                )));
+                shell.publish(Message::View(ViewMessage::MinimapWheel(offset.x, offset.y)));
                 shell.capture_event();
                 return;
             }

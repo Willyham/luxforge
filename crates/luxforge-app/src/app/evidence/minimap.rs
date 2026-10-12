@@ -170,12 +170,7 @@ impl Editor {
                 let params = json!({"pan_x": pan.0, "pan_y": pan.1});
                 self.note_step(json!({"api_params": params}));
                 self.await_step(Settle::Host);
-                return host_task(
-                    self.owner.clone(),
-                    self.client,
-                    "view.set".into(),
-                    params,
-                );
+                return host_task(self.owner.clone(), self.client, "view.set".into(), params);
             }
         };
         if let Some(evidence) = &self.evidence {

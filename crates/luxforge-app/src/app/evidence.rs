@@ -5032,8 +5032,9 @@ impl Editor {
                 // A `view.set` on this client's own session is this client's view: the desktop
                 // follows it as it follows its own input.
                 if answer.method == "view.set"
-                    && let Ok(session) =
-                        serde_json::from_value::<luxforge_core::ClientSession>(answer.result.clone())
+                    && let Ok(session) = serde_json::from_value::<luxforge_core::ClientSession>(
+                        answer.result.clone(),
+                    )
                 {
                     follow = self.follow_view(session);
                 }

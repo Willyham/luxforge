@@ -777,6 +777,7 @@ fn a_percentage_views_backdrop_fills_what_its_region_frame_does_not_cover() {
 /// overview handed in a want is uploaded once and drawn as its codes; a want that names neither
 /// retires both; and no want lets every overview go, its bytes with it.
 #[test]
+#[slow]
 fn a_picture_at_rest_reduces_its_tiles_to_the_overview_its_surface_keeps() {
     use crate::photo_surface::{OVERVIEW_GPU_BUDGET, OverviewShown, OverviewUpload, OverviewWant};
     let test = "a_picture_at_rest_reduces_its_tiles_to_the_overview_its_surface_keeps";

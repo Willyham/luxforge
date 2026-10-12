@@ -22,6 +22,7 @@ use luxforge_reference::{
     preview_error::{self, Class, Rgb8},
     tolerance,
 };
+use luxforge_test_macros::slow;
 use serde_json::json;
 
 /// The Fit bounds the picture at rest is planned at, and the tiles' side: several tiles over the
@@ -151,6 +152,7 @@ fn tiles_of(
 /// overview. On both paths, for colour, geometry and spatial stacks, staged, chained and after
 /// light sweeps.
 #[test]
+#[slow]
 fn gpu_rest_an_overview_is_the_whole_stage_reduced_within_the_display_tolerance() {
     let test = "gpu_rest_an_overview_is_the_whole_stage_reduced_within_the_display_tolerance";
     let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
@@ -332,6 +334,7 @@ fn gpu_rest_an_overview_is_the_whole_stage_reduced_within_the_display_tolerance(
 /// stack may instead let an overview in progress go for a tile the budget refuses. A budget both
 /// fit draws both. No overview byte outlives the picture either way.
 #[test]
+#[slow]
 fn gpu_rest_an_exhausted_budget_refuses_the_overview_and_not_the_picture() {
     let test = "gpu_rest_an_exhausted_budget_refuses_the_overview_and_not_the_picture";
     let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {

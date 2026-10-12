@@ -326,7 +326,9 @@ impl Overviews {
     }
 
     /// Let everything go: another photograph, none, or Select. In-flight work is cancelled, and
-    /// its answer dropped when it comes.
+    /// its answer dropped when it comes. What admitted contents are is kept: a serial names one
+    /// photograph's pixels only, so none can key another's overview, and the content presented
+    /// when the view first wants an overview — admitted before it — is keyed by it.
     pub(crate) fn release(&mut self) {
         if let Some((_, cancel)) = &self.reducing {
             cancel.cancel();
@@ -336,7 +338,6 @@ impl Overviews {
         self.pending = None;
         self.unavailable = None;
         self.upload = None;
-        self.contents.clear();
         self.sync();
     }
 
@@ -893,8 +894,25 @@ impl Editor {
                 "reducing": figures.reducing, "builds": figures.builds, "uploads": figures.uploads,
                 "upload_bytes": figures.upload_bytes})
         });
+        // What the lifecycle is reconciled against now: whether the view's overview is keyed and
+        // a retained frame lent for it, and whether the GPU's picture at rest can be swept for it.
+        let desired = self.overview_desired(true);
+        let facts = self.overview_facts(desired.as_ref());
+        let sweepable = facts.sweepable.as_ref();
         json!({
             "state": state,
+            "desired": desired.as_ref().map(|desired| json!({
+                "keyed": desired.key.is_some(),
+                "lent": desired.lent.is_some(),
+                "sweepable": sweepable.is_some(),
+                "sweepable_is_desired": sweepable.is_some() && sweepable == desired.key.as_ref(),
+                "gpu_allowed": facts.gpu_allowed,
+                "work_allowed": facts.work_allowed,
+                "moving": facts.moving,
+            })),
+            "rest_content": self.gpu_rest_held_content(),
+            "rest_overview": self.gpu_rest_held_overview(),
+            "presented_content": self.presentation.presented_content,
             "version": shown.map(|shown| shown.image.version),
             "size": shown.map(|shown| [shown.image.size.0, shown.image.size.1]),
             "navigable": minimap.navigable().map(|stage| json!({"width": stage.width,

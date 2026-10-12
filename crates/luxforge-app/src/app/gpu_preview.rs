@@ -2340,18 +2340,20 @@ impl Editor {
             }
             return;
         };
+        let overview = tiles.overview.as_ref().and(self.overviews.sweep_version());
         // Tiles handed without a minimap overview keep held ones swept with one: the overview
-        // is not swept again ([`super::overview`]).
+        // is not swept again ([`super::overview`]). Tiles handed for a sweep the held ones were
+        // not swept as are drawn again: the lifecycle let the earlier sweep's overview go.
         if self.gpu.rest.as_ref().is_some_and(|held| {
-            held.tiles == tiles
-                || (region
-                    && held.tiles.reduction.is_some()
-                    && same_tiles(&held.tiles, &tiles)
-                    && (tiles.overview.is_none() || held.tiles.overview == tiles.overview))
+            (overview.is_none() || held.overview == overview)
+                && (held.tiles == tiles
+                    || (region
+                        && held.tiles.reduction.is_some()
+                        && same_tiles(&held.tiles, &tiles)
+                        && (tiles.overview.is_none() || held.tiles.overview == tiles.overview)))
         }) {
             return;
         }
-        let overview = tiles.overview.as_ref().and(self.overviews.sweep_version());
         self.gpu.rests += 2;
         self.gpu.rest = Some(HeldRest {
             tiles,
@@ -2590,6 +2592,16 @@ impl Editor {
         } else {
             None
         }
+    }
+
+    /// Evidence: whether a picture at rest is held, and the content serial it was handed for.
+    pub(crate) fn gpu_rest_held_content(&self) -> Option<Option<u64>> {
+        self.gpu.rest.as_ref().map(|held| held.content)
+    }
+
+    /// Evidence: whether a picture at rest is held, and the overview version it is swept as.
+    pub(crate) fn gpu_rest_held_overview(&self) -> Option<Option<u64>> {
+        self.gpu.rest.as_ref().map(|held| held.overview)
     }
 
     /// The content serial whose committed job just handed the picture at rest held: what the
