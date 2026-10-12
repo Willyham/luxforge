@@ -320,7 +320,7 @@
     {
       "id": "TASK-005",
       "description": "Integrate settings, encoders and render paths into export.write and batch.export, with phases, results and refusals as designed.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -396,7 +396,7 @@
     {
       "id": "TASK-006",
       "description": "Build the desktop Export sheet, Export menu, Export again and Export with preset, and Select's batch sheet, with a rendered journey and current documentation.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-005"
       ],
