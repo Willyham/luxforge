@@ -217,7 +217,12 @@ impl Editor {
         {
             return Reached::Failed(format!("the merge failed: {failed}"));
         }
-        let ended = merge.starting.is_none() && merge.pending.is_none();
+        // A merge pressed on the sheet while its preview prepares waits for the preview first.
+        let queued = merge
+            .sheet
+            .as_ref()
+            .is_some_and(|sheet| sheet.merging.is_some());
+        let ended = merge.starting.is_none() && merge.pending.is_none() && !queued;
         let status = self
             .select
             .merge_record

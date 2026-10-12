@@ -662,7 +662,7 @@ impl Editor {
             Some(Err(error)) => sheet.failed(error),
             None => {}
         }
-        self.send_stale()
+        self.sheet_next()
     }
 
     /// The sheet's settings changed: draw them.
@@ -679,10 +679,11 @@ impl Editor {
     /// once the preview is known; nothing yet while it is being opened, which sends them when it
     /// answers; and the whole opening again when there is no preview to update.
     fn send_stale(&mut self) -> Task<Message> {
+        let starting = self.select.state.merge.starting.is_some();
         let Some(sheet) = &mut self.select.state.merge.sheet else {
             return Task::none();
         };
-        if !sheet.stale || sheet.merging.is_some() {
+        if !sheet.stale || starting {
             return Task::none();
         }
         if let Some(preview_id) = sheet.preview_id.clone() {
@@ -730,7 +731,7 @@ impl Editor {
             Ok(job) => sheet.following(job.job_id, job.preview_id),
             Err(error) => sheet.failed(error),
         }
-        self.send_stale()
+        self.sheet_next()
     }
 
     /// The open preview's job record: its progress, or its revision.
@@ -793,7 +794,7 @@ impl Editor {
                 Task::none()
             }
         };
-        Task::batch([task, self.send_stale()])
+        Task::batch([task, self.sheet_next()])
     }
 
     /// Decode a revision's picture off the update loop.
@@ -864,10 +865,44 @@ impl Editor {
             return Task::none();
         }
         sheet.merging = Some(mode);
-        let mut request = sheet.request.clone();
-        request.mode = mode;
-        let preview = sheet.preview_id.clone();
-        self.start_merge(request, preview)
+        self.queued_merge()
+    }
+
+    /// Start the merge pressed on the sheet once its preview can take it: the preview's identity
+    /// is known (the owner names it with its first revision) and its settings have been sent. A
+    /// merge pressed while the preview still reads and aligns waits for that revision and then
+    /// continues its work; one the preview refuses is dropped, the sheet saying why.
+    fn queued_merge(&mut self) -> Task<Message> {
+        let merge = &mut self.select.state.merge;
+        if merge.starting.is_some() {
+            return Task::none();
+        }
+        let Some(sheet) = &mut merge.sheet else {
+            return Task::none();
+        };
+        let Some(mode) = sheet.merging else {
+            return Task::none();
+        };
+        if sheet.refusal.is_some() {
+            sheet.merging = None;
+            return Task::none();
+        }
+        match sheet.preview_id.clone() {
+            Some(preview) if !sheet.stale => {
+                let mut request = sheet.request.clone();
+                request.mode = mode;
+                self.start_merge(request, Some(preview))
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// After an answer for the sheet: its settings sent if they are newer than its preview's, and
+    /// a merge pressed meanwhile started once it can be.
+    fn sheet_next(&mut self) -> Task<Message> {
+        let send = self.send_stale();
+        let merge = self.queued_merge();
+        Task::batch([send, merge])
     }
 
     // -- Merging --
@@ -974,14 +1009,17 @@ impl Editor {
     /// A merge of `options` started: they are the last settings from now on.
     fn remember_merge(&mut self, options: &MergeOptions) -> Task<Message> {
         let now = options.remembered();
-        match self.preferences.applied() {
-            Some(preferences) if preferences.hdr_merge.unwrap_or_default() != now => self
-                .store_preferences(PreferenceChange {
-                    hdr_merge: Some(Some(now)),
-                    ..PreferenceChange::default()
-                }),
-            _ => Task::none(),
+        let remembered = self
+            .preferences
+            .applied()
+            .map(|preferences| preferences.hdr_merge.unwrap_or_default());
+        if remembered == Some(now) {
+            return Task::none();
         }
+        self.store_preferences(PreferenceChange {
+            hdr_merge: Some(Some(now)),
+            ..PreferenceChange::default()
+        })
     }
 
     /// The running merge's job record: its progress, or its end.
