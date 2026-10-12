@@ -511,6 +511,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && ids
                 == [
                     json!("developer"),
+                    json!("masks.range-selections"),
                     json!("ai.generative"),
                     json!("proof.choice"),
                     json!("proof.number"),

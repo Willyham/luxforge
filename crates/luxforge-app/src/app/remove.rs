@@ -1015,6 +1015,23 @@ impl Editor {
         None
     }
 
+    /// Escape in Remove has something to put down, which [`Self::remove_escape`] takes first, so
+    /// it does not leave the mode.
+    pub(crate) fn remove_escape_holds(&self) -> bool {
+        if !self.remove_active() {
+            return false;
+        }
+        if self.remove_reads.painting.is_some() || self.generation_lock().is_some() {
+            return true;
+        }
+        self.document.state.as_ref().is_some_and(|state| {
+            let asset = &state.asset.id;
+            self.remove.selection_on(asset).is_some()
+                || self.remove.notice.is_some()
+                || self.remove.strip_jobs(asset).next().is_some()
+        })
+    }
+
     /// The status bar's sentence while Remove is chosen.
     pub(crate) fn remove_status(&self) -> Option<String> {
         if !self.remove_active() {
