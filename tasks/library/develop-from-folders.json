@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Remove the development set from luxforge-core, its API and the catalog schema (catalog format 15), and decide brackets by their active merge result.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Delete library/development_set.rs, catalog_types/development_set.rs, api/owner/library/development_set_methods.rs and their tests; the set-member library item; the development_sets and development_set_members tables; ApiEvent/Origin development_set_revision; in_development_set in ViewSummary, ViewRow and StackInspection; the view stamp's set revision; merge.create's add_to_development_set and set_id and the publication's set capture and membership; Remove/Put back/Empty Removed set ties.",
@@ -25,9 +25,9 @@
         },
         {
           "kind": "file",
-          "label": "Development set module",
-          "target": "crates/luxforge-core/src/library/development_set.rs",
-          "relevance": "What is removed"
+          "label": "HDR stacks in views",
+          "target": "crates/luxforge-core/src/browse/stacks.rs",
+          "relevance": "Brackets decided by an active result"
         }
       ],
       "acceptance_criteria": [
@@ -52,7 +52,7 @@
     {
       "id": "TASK-002",
       "description": "File developed picks under Year › Place › Day: the place and day folder choices, the plan's proposals with days, per-photograph resolution at commit, folder.list's sibling order and merge.create's folder choice.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "FolderChoice gains {kind: place, name} and existing's days flag; pick.plan answers days and undated per event; batches make the year, place and day folders they need in their own change; place folders record their events' span and key.",
@@ -97,7 +97,7 @@
     {
       "id": "TASK-003",
       "description": "Make the desktop's Develop folder what the filmstrip holds, list the real folder tree in Select's Catalog sources, show the place tree in Develop N's confirmation, and make Merge HDR the one merge action; update evidence and the rendered scenarios.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"

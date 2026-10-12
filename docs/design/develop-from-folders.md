@@ -1,6 +1,6 @@
 # Develop from catalog folders
 
-Status: decided by the owner on 2026-10-11 and being implemented ([task plan](../../tasks/library/develop-from-folders.json)). It changes the [catalog](catalog.md)'s development set, the folders Develop N makes, the Catalog sources list and the [HDR merge](hdr-merge.md) actions. The catalog design describes the behaviour these replace until the change lands.
+Status: decided by the owner on 2026-10-11 and implemented. It replaced the [catalog](catalog.md)'s development set with the catalog folder, and changed the folders Develop N makes, the Catalog sources list and the [HDR merge](hdr-merge.md) actions; the catalog and HDR designs describe the result in place.
 
 ## Decisions
 
@@ -65,7 +65,7 @@ The desktop holds one **Develop folder**, its own view state like the shown work
 ### Merging
 
 - **Actions.** A bracket header offers Pick all N and **Merge HDR**. The selection menu offers Merge HDR ("Merge the frames into one HDR photograph in the catalog") and Merge options…. The result is made in its folder, and the person stays in Select.
-- **Choosing the folder.** `merge.plan` proposes the folder as Develop would for the reference frame. `merge.create` takes `folder?`, a folder choice as above: the plan's proposal by default, resolved for the reference frame's capture day, with any folder it makes written in the publication's library change. The desktop no longer sends `folder.create` first.
+- **Choosing the folder.** `merge.plan` proposes the folder as Develop would for the reference frame. `merge.create` takes `folder?`, a folder choice as above: the plan's proposal by default, resolved for the reference frame's capture day. The folders it makes are recorded as their own library change (`folder.create`, the request's actor and identity) just before the publication's, in the same transaction, so undoing the merge leaves them: the result it keeps in Removed is still in them. The desktop no longer sends `folder.create` first.
 - **What goes.** `add_to_development_set` and `set_id` are gone.
 - **Picks.** Over files, a bracket whose stack has an active result is decided for Moments without a pick. The Picked segment and Develop N count file picks only, and a result is never shown picked.
 
