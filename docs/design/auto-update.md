@@ -74,6 +74,65 @@ The macOS enclosure is the notarized ZIP. The Linux enclosure is the tarball.
 - An item is never listed for an asset that is not yet published.
 - A macOS archive that is not Developer ID signed and notarized is never listed.
 
+The `luxforge-update` crate is the format's one home: the record, the appcast written and read, signing and verification, the choice of an update and `release/update.json`. It depends on no other workspace crate, which `cargo xtask check-repository` enforces; xtask builds it and the Linux updater will link it.
+
+**The update record** is pretty-printed JSON, schema 1:
+
+```json
+{
+  "schema_version": 1,
+  "tag": "v0.2.0-rc.1",
+  "version": "0.2.0-rc.1",
+  "channel": "prerelease",
+  "public_key": "<base64 public key of the signing key>",
+  "archives": {
+    "macos-arm64": {"file": "luxforge-0.2.0-rc.1-macos-arm64.zip", "length": 5242893, "build": 9, "ed_signature": "<base64>", "minimum_system_version": "14.0", "catalog_format": 1, "signing": "notarized"},
+    "linux-x86_64": {"file": "luxforge-0.2.0-rc.1-linux-x86_64.tar.gz", "length": 5242893, "build": 9, "ed_signature": "<base64>", "catalog_format": 1, "signing": "not-applicable"}
+  }
+}
+```
+
+- `channel` is `prerelease` for a SemVer pre-release and `default` otherwise.
+- `signing` is the release build's `target.json` status: `notarized`, `unsigned`, `pending`, `failed` or `not-applicable`.
+- `windows-x86_64` is accepted as a target.
+- Unknown fields, another schema, a tag that does not name the version, a channel that does not match it and a file not named `luxforge-<version>-<target>.<extension>` are refused (`malformed-record`).
+
+`cargo xtask update-record --tag TAG --input BUILDS --output NEW_FILE --key-file FILE` writes the record. `BUILDS` is the directory `release-assemble` reads: each platform's `target.json` beside its final archive, notarized on macOS. The command:
+
+- checks each `target.json` as `release-assemble` does, and refuses a dirty or rehearsal build;
+- reads the build number, `catalog_format` and, on macOS, `minimum_system_version` from `target.json`, and requires one build number across targets. The release build records `luxforge_core::CATALOG_FORMAT` and the bundle's `LSMinimumSystemVersion` there;
+- signs each archive through a read-only memory map and verifies the signature it made;
+- records a macOS archive that is not notarized with its status, so feed generation leaves it out;
+- writes only a new file named `luxforge-<version>-updates.json`.
+
+`cargo xtask update-feed --records DIR --published FILE --output NEW_DIR [--withdrawn FILE] [--repository OWNER/NAME]` writes `<target>/appcast.xml` for `macos-arm64`, `linux-x86_64` and any other target a record names.
+
+- `--records` holds only `luxforge-<version>-updates.json` files, each with its own version's record.
+- `--published` is GitHub's release list as `gh api --paginate --slurp repos/Willyham/luxforge/releases` writes it; one page is also read. The command reads each release's `tag_name`, `draft` and `published_at` and each asset's `name`, `size` and `state`. Drafts, releases without a publication time and assets that are not `uploaded` are not published. An item's `pubDate` is its release's `published_at`.
+- `--withdrawn` defaults to the checked-in `release/withdrawn-updates.json`: a JSON array of `{"tag": "v0.2.0", "reason": "…"}`, each tag once.
+- `--repository` defaults to `Willyham/luxforge`. Enclosure URLs are `https://github.com/<repository>/releases/download/<tag>/<file>` and the item link is `…/releases/tag/<tag>`, with every character outside URL-unreserved ones, such as `+`, percent-encoded.
+
+It refuses, by name:
+
+- a malformed record or input;
+- two records for one tag or one SemVer version (`duplicate-release`);
+- build numbers that do not strictly rise with SemVer precedence within a target (`build-not-rising`). Every record counts, withdrawn or left out, because a person may have installed it;
+- a listed archive whose release or asset is not published (`unpublished-asset`), or is published at another length (`asset-length-mismatch`);
+- once `release/update.json` commits a public key, a record signed by another key (`record-key-mismatch`). Releases signed by a retired key are withdrawn.
+
+It leaves out, with a note, withdrawn releases and macOS archives that are not notarized. Items are newest first, and the same inputs write the same bytes.
+
+**The appcast as written.** The channel's title is `Luxforge`, its link the releases page and its description names the target. Each item's title is `Luxforge <version>`. The enclosure `type` is `application/octet-stream`, as Sparkle's own `generate_appcast` writes. `luxforge:catalogFormat` is in the namespace `https://luxforge.app/xmlns/update`.
+
+**Reading a feed** (`Appcast::parse`, for the Linux updater) refuses a feed over 4 MiB, one with a DTD and a document without `<rss><channel>`. It ignores elements and attributes it does not use, and reads Sparkle's older form with the versions on the enclosure. It skips an item, recording why, when it has:
+
+- no numeric `sparkle:version`;
+- no enclosure with a URL, a length and a 64-byte `sparkle:edSignature`;
+- a malformed `luxforge:catalogFormat`;
+- `sparkle:informationalUpdate`.
+
+`newest_eligible` chooses the highest build above the current one on a followed channel. A channel it does not know is never followed.
+
 **Serving.** The release workflow generates the feeds and publishes them to the API's update store. The API answers `GET /v1/updates/<target>/appcast.xml` with them as static content. The route:
 
 - takes no query string, cookies or authentication;
@@ -102,6 +161,13 @@ One Ed25519 key signs every platform's archives, in the format Sparkle's `sign_u
   - Linux installations cannot, and need one manual update.
 
   The [operator guide](../engineering/releases.md) says so.
+
+**Formats.**
+
+- `release/update.json` is `{"feed_base_url": "https://api.luxforge.app/v1/updates/", "public_key": null}`. The operator replaces `null` with the key's base64 `SUPublicEDKey`. `luxforge_update::UpdateConfig` reads it for xtask and build scripts, and refuses unknown fields, a malformed key and a base URL that is not `https`, does not end in `/` or has a query.
+- The private key file holds what Sparkle 2's `generate_keys -x` exports: base64 of the 32-byte seed, surrounding whitespace ignored. Sparkle's older 96-byte form, an expanded key and its public key, is refused (`legacy-key`) because its seed cannot be recovered for `ring`; Sparkle has no 64-byte form. Anything else is `malformed-key`. The file is read with a bound and zeroed after use, and no message shows it.
+- A signature is byte for byte what `sign_update` prints for the same key and file, because Ed25519 is deterministic. Tests hold this with fixtures from a throwaway Sparkle 2.10.0 test key.
+- `update-record` refuses a key whose public key is not the committed one (`key-mismatch`), and notes when none is committed yet. Each record names the public key that signed it.
 
 A release build without the public key has no working updater. Its status reports `unavailable` with the reason `no-update-key`. A rehearsal may lack the key; the release-ready verifier refuses to pass one.
 
