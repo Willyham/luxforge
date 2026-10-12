@@ -7,10 +7,14 @@
 //! - `job` is the merge lane's worker job, which composes those functions with the shared verified
 //!   source development, bounded spooling and durable derived storage; the command service
 //!   (`crate::api` `merge.*`) starts it and the owner publishes what it answers.
+//! - `preview` is the merge preview's job: the merge job's reading and aligning stages with a
+//!   colour proxy beside each analysis proxy, and the picture drawn from them; its updates draw
+//!   again from the retained proxies.
 //! - `providers` is the registry of the kinds this build can merge
 //!   ([`MergeKind`](crate::catalog_types::MergeKind)): `hdr` alone. The catalog records and
 //!   browses panoramas too, but a panorama request is `not-ready` until its provider is registered.
 
 pub mod hdr;
 pub(crate) mod job;
+pub(crate) mod preview;
 pub(crate) mod providers;

@@ -41,6 +41,15 @@
 //! Progress names the phases `reading`, `aligning`, `merging` and `saving` on the job's activity,
 //! and its partial result reports the stage, the scratch it holds and its peak, the temporary
 //! bytes spooled and the development's bytes.
+//!
+//! **Stages.** Reading and spooling ([`JobSpec::read`]), aligning ([`analyse`]) and merging and
+//! saving ([`JobSpec::merge`]) are separate stages a merge preview shares
+//! (`crate::merge::preview`): a merge without a preview runs all three ([`JobSpec::run`]); a
+//! preview reads, with a [`ColourProxy`] built beside each input's analysis proxy, aligns and draws
+//! its picture, and keeps the [`Prepared`] bracket; a merge given that preview runs only the last
+//! stage on it ([`JobSpec::run_prepared`]), reading and aligning nothing again unless its options
+//! are not the ones the preview last aligned. For the same options and the same development the
+//! stages compute the same values in the same order, so the result is the same, bit for bit.
 use crate::{
     AssetId, Error, ErrorKind, LinearImage,
     artifacts::derived_source::{ChunkRect, DerivedSourceWriter, PublishedSource, ReferenceCrop},
@@ -52,12 +61,12 @@ use crate::{
     },
     jobs::JobControl,
     merge::hdr::{
-        AlignedProxies, AlignedRect, AnalysisProxy, ExposureResolution, ExposureSettings,
-        FitSamples, FrameMetadata, FrameRect, FusedRect, FusionDiagnostics, MotionDiagnostics,
-        MotionMap, MotionRect, PixelRect, ProxyBuilder, Recording, Refusal, Registration,
-        ResolvedExposures, SensorClipModel, SensorLayout, SensorLevel, SourceWindow,
-        common_coverage, detect_motion, fuse_rect, register, resample_rect, resolve_exposures,
-        source_window, validate_bracket,
+        AlignedProxies, AlignedRect, AnalysisProxy, ColourProxy, ColourProxyBuilder, Coverage,
+        ExposureResolution, ExposureSettings, FitSamples, FrameMetadata, FrameRect, FusedRect,
+        FusionDiagnostics, MotionDiagnostics, MotionMap, MotionRect, PixelRect, ProxyBuilder,
+        Recording, Refusal, Registration, ResolvedExposures, SensorClipModel, SensorLayout,
+        SensorLevel, SourceWindow, common_coverage, detect_motion, fuse_rect, register,
+        resample_rect, resolve_exposures, source_window, validate_bracket,
     },
 };
 use serde::Serialize;
@@ -66,7 +75,10 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -92,6 +104,8 @@ pub(crate) enum Stage {
     /// That input is spooled and its development released.
     Spooled(usize),
     Aligning,
+    /// A preview is about to draw its picture.
+    Drawing,
     /// About to fuse and write this output chunk.
     Merging(usize),
     /// The result's source is durable, before the owner publishes it.
@@ -111,7 +125,7 @@ pub(crate) struct Hooks {
 }
 
 impl Hooks {
-    fn at(&self, _stage: Stage) {
+    pub(crate) fn at(&self, _stage: Stage) {
         #[cfg(test)]
         if let Some(hold) = &self.stage {
             hold(_stage);
@@ -146,16 +160,25 @@ impl Limits {
         }
     }
 
-    /// Refuse `bytes` of temporary storage under `directory` beyond the ceiling or the volume's
-    /// free space.
-    pub(crate) fn preflight(&self, directory: &Path, bytes: u64) -> Result<(), Error> {
-        if bytes > self.temp_ceiling {
+    /// Refuse `bytes` of temporary storage under `directory` beyond the ceiling, beside the `held`
+    /// bytes open merge previews keep spooled on the same lane, or beyond the volume's free space.
+    pub(crate) fn preflight(&self, directory: &Path, bytes: u64, held: u64) -> Result<(), Error> {
+        if bytes.saturating_add(held) > self.temp_ceiling {
+            let beside = if held > 0 {
+                format!(" beside the {} open merge previews keep", gib(held))
+            } else {
+                String::new()
+            };
             return Err(Error::resource_limit(format!(
-                "the merge needs {} of temporary storage, above the {} a merge may use",
+                "the merge needs {} of temporary storage{beside}, above the {} a merge may use",
                 gib(bytes),
                 gib(self.temp_ceiling)
             ))
-            .with_data(json!({"temp_bytes": bytes, "ceiling_bytes": self.temp_ceiling})));
+            .with_data(json!({
+                "temp_bytes": bytes,
+                "held_bytes": held,
+                "ceiling_bytes": self.temp_ceiling,
+            })));
         }
         let available = match self.available {
             Some(available) => available,
@@ -358,6 +381,9 @@ pub(crate) struct JobSpec {
     pub developer: Arc<dyn Developer>,
     pub limits: Limits,
     pub hooks: Hooks,
+    /// The temporary bytes open merge previews keep spooled on the lane, which count against the
+    /// same ceiling.
+    pub held: Arc<AtomicU64>,
 }
 
 /// What a job answers for the owner to publish: the provenance, the durable source, and the
@@ -385,9 +411,17 @@ pub(crate) struct Accounting {
 }
 
 impl Accounting {
+    /// An empty account held to `limits`' scratch limit.
+    pub(crate) fn of(limits: &Limits) -> Self {
+        Self {
+            scratch_limit_bytes: limits.scratch,
+            ..Self::default()
+        }
+    }
+
     /// Take `bytes` of scratch for `what`, refused with `resource-limit` past the limit before
     /// anything is allocated.
-    fn take(&mut self, bytes: u64, what: &str) -> Result<(), Error> {
+    pub(crate) fn take(&mut self, bytes: u64, what: &str) -> Result<(), Error> {
         let total = self.scratch_bytes.saturating_add(bytes);
         if total > self.scratch_limit_bytes {
             return Err(Error::resource_limit(format!(
@@ -406,15 +440,18 @@ impl Accounting {
         Ok(())
     }
 
-    fn give(&mut self, bytes: u64) {
+    pub(crate) fn give(&mut self, bytes: u64) {
         self.scratch_bytes = self.scratch_bytes.saturating_sub(bytes);
     }
 }
 
-/// The job's spool files, removed as it ends however it ends. The directory and anything else in
-/// it (the owner's request marker) are not this job's to remove.
+/// The job's spool files, removed as they are dropped, however the job or the preview holding them
+/// ends. The directory and anything else in it (the owner's request marker) are not the spool's to
+/// remove, unless it is a preview's own folder ([`Spool::owned`]).
 struct Spool {
     files: Vec<PathBuf>,
+    /// The folder to remove with the files: a preview's, which holds nothing else.
+    folder: Option<PathBuf>,
 }
 
 impl Spool {
@@ -426,7 +463,15 @@ impl Spool {
             files: (0..inputs)
                 .map(|input| directory.join(spool_name(input)))
                 .collect(),
+            folder: None,
         })
+    }
+
+    /// A spool whose folder is its own, removed with it.
+    fn owned(directory: &Path, inputs: usize) -> Result<Self, Error> {
+        let mut spool = Self::new(directory, inputs)?;
+        spool.folder = Some(directory.to_path_buf());
+        Ok(spool)
     }
 }
 
@@ -434,6 +479,9 @@ impl Drop for Spool {
     fn drop(&mut self) {
         for file in &self.files {
             let _ = fs::remove_file(file);
+        }
+        if let Some(folder) = &self.folder {
+            let _ = fs::remove_dir(folder);
         }
     }
 }
@@ -448,41 +496,257 @@ pub(crate) fn is_spool(name: &str) -> bool {
     name.starts_with("input-") && name.ends_with(".spool")
 }
 
-/// One input's analysis results, kept after its development is dropped.
-struct Analysed {
-    developed: Developed,
-    cam_xyz: [[f32; 3]; 4],
-    proxy: AnalysisProxy,
+/// One input read and spooled, its development dropped: what it is and its colour interpretation.
+pub(crate) struct SpooledInput {
+    pub developed: Developed,
+    pub cam_xyz: [[f32; 3]; 4],
+}
+
+/// What reading leaves ([`JobSpec::read`]): the bracket spooled in the stack's order, each input's
+/// analysis proxy (and, for a preview, its [`ColourProxy`]), and the white balance every input was
+/// developed at. A preview's session, its updates and the merge that takes it over share it; its
+/// spool files are removed with its last holder.
+pub(crate) struct Prepared {
+    spool: Spool,
+    pub inputs: Vec<SpooledInput>,
+    pub proxies: Vec<AnalysisProxy>,
+    /// Empty unless a preview read the bracket.
+    pub colour: Vec<ColourProxy>,
+    pub gains: [f32; 3],
+    pub width: u32,
+    pub height: u32,
+    /// The bytes spooled.
+    pub temp_bytes: u64,
+}
+
+impl Prepared {
+    /// The decoded inputs' frames, in the stack's order.
+    pub(crate) fn frames(&self) -> Vec<FrameMetadata> {
+        self.inputs
+            .iter()
+            .map(|input| input.developed.frame.clone())
+            .collect()
+    }
+
+    /// One analysis proxy's bytes.
+    pub(crate) fn proxy_bytes(&self) -> u64 {
+        AnalysisProxy::bytes_for(self.width, self.height) as u64
+    }
+
+    /// The scratch the proxies it still holds take.
+    pub(crate) fn proxies_bytes(&self) -> u64 {
+        let colour = ColourProxy::bytes_for(self.width, self.height) as u64;
+        self.proxies.len() as u64 * self.proxy_bytes() + self.colour.len() as u64 * colour
+    }
+
+    /// Drop the proxies, which a merge no longer needs once it is aligned.
+    fn release_proxies(&mut self) {
+        self.proxies = Vec::new();
+        self.colour = Vec::new();
+    }
+}
+
+/// What aligning leaves ([`analyse`]): the options it ran with, the resolved exposures, the
+/// registration, the common coverage and, with deghosting, the motion map.
+#[derive(Clone, Debug)]
+pub(crate) struct Analysis {
+    pub parameters: HdrParameters,
+    pub exposures: ResolvedExposures,
+    pub registration: Registration,
+    pub coverage: Coverage,
+    pub motion: Option<MotionMap>,
+}
+
+/// Validate the decoded bracket, resolve its exposures (fitting them from aligned proxy samples
+/// when the metadata cannot), register it, compute its coverage and find what moved: the aligning
+/// stage, on the proxies alone. Takes the scratch its aligned copies and samples need and gives it
+/// back, keeping the motion map's (one analysis proxy's bytes) taken.
+pub(crate) fn analyse(
+    frames: &[FrameMetadata],
+    proxies: &[AnalysisProxy],
+    parameters: &HdrParameters,
+    control: &JobControl,
+    accounting: &mut Accounting,
+) -> Result<Analysis, Error> {
+    let cancel = control.render_cancel();
+    validate_bracket(frames)?;
+    let n = frames.len();
+    let (width, height) = (frames[0].width, frames[0].height);
+    let proxy_bytes = AnalysisProxy::bytes_for(width, height) as u64;
+    let mode = parameters.alignment.alignment;
+    let (exposures, registration) = match resolve_exposures(frames, &parameters.exposure)? {
+        ExposureResolution::Resolved(exposures) => {
+            let registration = register(frames, proxies, exposures.reference, mode, cancel)?;
+            (exposures, registration)
+        }
+        ExposureResolution::NeedsFit(plan) => {
+            let registration = register(frames, proxies, plan.reference(), mode, cancel)?;
+            accounting.take(n as u64 * proxy_bytes, "the aligned proxies")?;
+            let aligned = AlignedProxies::new(&registration, proxies, cancel)?;
+            let samples_bytes = (crate::merge::hdr::exposure::MAX_FIT_SAMPLES
+                * n
+                * (3 * size_of::<f32>() + size_of::<SensorLevel>()))
+                as u64;
+            accounting.take(samples_bytes, "the exposure fit")?;
+            let mut samples = FitSamples::new(n);
+            aligned.gather_fit_samples(&mut samples)?;
+            drop(aligned);
+            let exposures = plan.complete(&samples)?;
+            drop(samples);
+            accounting.give(samples_bytes + n as u64 * proxy_bytes);
+            let registration = if exposures.reference == registration.reference {
+                registration
+            } else {
+                // The fit moved a provisional reference: align on the final one.
+                control.checkpoint()?;
+                register(frames, proxies, exposures.reference, mode, cancel)?
+            };
+            (exposures, registration)
+        }
+    };
+    let transforms = registration.transforms();
+    let coverage = common_coverage(width, height, &transforms, cancel)?;
+    let motion = motion(
+        proxies,
+        &exposures,
+        &registration,
+        parameters,
+        control,
+        accounting,
+    )?;
+    Ok(Analysis {
+        parameters: parameters.clone(),
+        exposures,
+        registration,
+        coverage,
+        motion,
+    })
+}
+
+/// Find what moved, on the proxies aligned by `registration`: the motion map of `parameters`'
+/// deghosting. The map's scratch (one analysis proxy's bytes) stays taken.
+pub(crate) fn motion(
+    proxies: &[AnalysisProxy],
+    exposures: &ResolvedExposures,
+    registration: &Registration,
+    parameters: &HdrParameters,
+    control: &JobControl,
+    accounting: &mut Accounting,
+) -> Result<Option<MotionMap>, Error> {
+    let cancel = control.render_cancel();
+    let n = proxies.len() as u64;
+    let proxy_bytes = proxies.first().map_or(0, |proxy| {
+        let (width, height) = proxy.frame_dimensions();
+        AnalysisProxy::bytes_for(width, height) as u64
+    });
+    accounting.take(n * proxy_bytes, "the aligned proxies")?;
+    let aligned = AlignedProxies::new(registration, proxies, cancel)
+        .inspect_err(|_| accounting.give(n * proxy_bytes))?;
+    let found = accounting
+        .take(proxy_bytes, "the motion map")
+        .and_then(|()| {
+            detect_motion(&aligned, exposures, parameters.alignment.deghost, cancel)
+                .inspect_err(|_| accounting.give(proxy_bytes))
+        });
+    drop(aligned);
+    accounting.give(n * proxy_bytes);
+    found
 }
 
 impl JobSpec {
-    /// Run the job: see the module documentation.
+    /// Run the job without a preview: read, align and merge. See the module documentation.
     pub(crate) fn run(self, control: &JobControl) -> Result<Merged, Error> {
-        let n = self.inputs.len();
-        let spool = Spool::new(&self.spool, n)?;
-        let mut accounting = Accounting {
-            scratch_limit_bytes: self.limits.scratch,
-            ..Accounting::default()
-        };
-        let cancel = control.render_cancel();
+        let mut accounting = Accounting::of(&self.limits);
+        let mut prepared = self.read(control, &mut accounting, false)?;
+        let analysis = self.align(&prepared, control, &mut accounting)?;
+        // The proxies are not needed once aligned on the final reference.
+        let held = prepared.proxies_bytes();
+        prepared.release_proxies();
+        accounting.give(held);
+        self.merge(Arc::new(prepared), &analysis, control, accounting)
+    }
 
-        // Reading: the planned reference first, so its as-shot white balance develops the rest.
+    /// Run the job on a preview's bracket: merge what the preview read, with the preview's
+    /// alignment when it was aligned with these options and on its proxies otherwise, reading no
+    /// frame again. The white balance is the preview's.
+    pub(crate) fn run_prepared(
+        self,
+        mut prepared: Arc<Prepared>,
+        analysis: Option<Arc<Analysis>>,
+        control: &JobControl,
+    ) -> Result<Merged, Error> {
+        let mut accounting = Accounting::of(&self.limits);
+        accounting.temp_bytes = prepared.temp_bytes;
+        if prepared.inputs.len() != self.inputs.len()
+            || prepared
+                .inputs
+                .iter()
+                .zip(&self.inputs)
+                .any(|(spooled, input)| spooled.developed.path != input.path)
+        {
+            return Err(Error::internal(
+                "a merge preview's inputs are not its merge's",
+            ));
+        }
+        accounting.take(prepared.proxies_bytes(), "the preview's proxies")?;
+        let analysis = match analysis.filter(|analysis| analysis.parameters == self.parameters) {
+            Some(analysis) => {
+                accounting.take(prepared.proxy_bytes(), "the motion map")?;
+                analysis
+            }
+            None => Arc::new(self.align(&prepared, control, &mut accounting)?),
+        };
+        // The proxies are released when this merge holds the preview's bracket alone.
+        let held = prepared.proxies_bytes();
+        if let Some(owned) = Arc::get_mut(&mut prepared) {
+            owned.release_proxies();
+            accounting.give(held);
+        }
+        // The result's objects, beside what previews keep, before anything is written.
+        let pixels = u64::from(prepared.width) * u64::from(prepared.height);
+        self.limits.preflight(
+            &self.spool,
+            prepared.temp_bytes + pixels * RESULT_PIXEL,
+            self.held.load(Ordering::SeqCst),
+        )?;
+        self.merge(prepared, &analysis, control, accounting)
+    }
+
+    /// Read and spool: each input, the planned reference first, so its as-shot white balance
+    /// develops the rest, checked against its signature, developed, reduced to its proxies (with
+    /// `colour`, its [`ColourProxy`] too) and spooled, one development at a time. See the module
+    /// documentation.
+    pub(crate) fn read(
+        &self,
+        control: &JobControl,
+        accounting: &mut Accounting,
+        colour: bool,
+    ) -> Result<Prepared, Error> {
+        let n = self.inputs.len();
+        let spool = if colour {
+            Spool::owned(&self.spool, n)?
+        } else {
+            Spool::new(&self.spool, n)?
+        };
         control.set_phase("reading");
         let first = self.planned_reference();
         let mut order: Vec<usize> = (0..n).collect();
         order.retain(|&input| input != first);
         order.insert(0, first);
-        let mut analysed: Vec<Option<Analysed>> = (0..n).map(|_| None).collect();
+        type Read = (SpooledInput, AnalysisProxy, Option<ColourProxy>);
+        let mut read: Vec<Option<Read>> = (0..n).map(|_| None).collect();
         let mut gains = None;
-        let mut proxy_bytes = 0;
+        let mut size = (0, 0);
+        // How far through the job's progress reading takes it.
+        let share = if colour { 0.8 } else { 0.5 };
         for (done, &input) in order.iter().enumerate() {
             control.checkpoint()?;
-            report(control, Stage::Reading(input), &accounting);
-            self.hooks.at(Stage::Reading(input));
+            report(control, Stage::Reading(input), accounting);
             control.set_progress(
-                Some(0.5 * done as f64 / n as f64),
+                Some(share * done as f64 / n as f64),
                 &format!("Reading {} of {n}", done + 1),
             );
+            self.hooks.at(Stage::Reading(input));
             let item = &self.inputs[input];
             self.check_signature(item)?;
             let mut developed = self.developer.develop(&item.path, gains, control)?;
@@ -503,125 +767,115 @@ impl JobSpec {
             if done == 0 {
                 // The bracket's size is known now: preflight its temporary storage and its
                 // scratch before the first byte is spooled.
-                self.limits
-                    .preflight(&self.spool, temp_bytes(n, width, height))?;
-                proxy_bytes = AnalysisProxy::bytes_for(width, height) as u64;
+                size = (width, height);
+                self.limits.preflight(
+                    &self.spool,
+                    temp_bytes(n, width, height),
+                    self.held.load(Ordering::SeqCst),
+                )?;
+                let proxy_bytes = AnalysisProxy::bytes_for(width, height) as u64;
                 accounting.take(n as u64 * proxy_bytes, "the analysis proxies")?;
-                analysis_fits(&accounting, n, proxy_bytes)?;
-                fusion_fits(&accounting, n, width, height)?;
+                if colour {
+                    let colour_bytes = ColourProxy::bytes_for(width, height) as u64;
+                    accounting.take(n as u64 * colour_bytes, "the preview proxies")?;
+                    crate::merge::preview::fits(accounting, n, width, height)?;
+                }
+                analysis_fits(accounting, n, proxy_bytes)?;
+                fusion_fits(accounting, n, width, height)?;
             }
             accounting.development_bytes = accounting
                 .development_bytes
                 .max(development.image.plane_bytes());
             let band = band_bytes(width);
             accounting.take(band, "a development band")?;
-            report(control, Stage::Reading(input), &accounting);
-            let proxy = self
+            report(control, Stage::Reading(input), accounting);
+            let (proxy, colour_proxy) = self
                 .spool_input(
                     &spool.files[input],
                     input,
                     &development,
+                    colour,
                     control,
-                    &mut accounting,
+                    accounting,
                 )
                 .inspect_err(|_| accounting.give(band))?;
             accounting.give(band);
             let cam_xyz = development.cam_xyz;
             drop(development);
-            report(control, Stage::Spooled(input), &accounting);
+            report(control, Stage::Spooled(input), accounting);
             self.hooks.at(Stage::Spooled(input));
-            analysed[input] = Some(Analysed {
-                developed,
-                cam_xyz,
-                proxy,
-            });
+            read[input] = Some((SpooledInput { developed, cam_xyz }, proxy, colour_proxy));
         }
-        let analysed: Vec<Analysed> = analysed.into_iter().flatten().collect();
         let gains = gains.ok_or_else(|| Error::internal("a merge developed no input"))?;
+        let mut prepared = Prepared {
+            spool,
+            inputs: Vec::with_capacity(n),
+            proxies: Vec::with_capacity(n),
+            colour: Vec::with_capacity(if colour { n } else { 0 }),
+            gains,
+            width: size.0,
+            height: size.1,
+            temp_bytes: accounting.temp_bytes,
+        };
+        for (input, proxy, colour) in read.into_iter().flatten() {
+            prepared.inputs.push(input);
+            prepared.proxies.push(proxy);
+            prepared.colour.extend(colour);
+        }
+        Ok(prepared)
+    }
 
-        // Aligning: validate the decoded bracket, resolve its exposures, register, cover, and
-        // find what moved.
+    /// The aligning stage of a merge or a preview: [`analyse`] with its progress, stage and hold.
+    pub(crate) fn align(
+        &self,
+        prepared: &Prepared,
+        control: &JobControl,
+        accounting: &mut Accounting,
+    ) -> Result<Analysis, Error> {
         control.checkpoint()?;
         control.set_phase("aligning");
-        report(control, Stage::Aligning, &accounting);
+        report(control, Stage::Aligning, accounting);
         self.hooks.at(Stage::Aligning);
-        control.set_progress(Some(0.5), "Aligning");
-        let frames: Vec<FrameMetadata> = analysed
-            .iter()
-            .map(|input| input.developed.frame.clone())
-            .collect();
-        validate_bracket(&frames)?;
-        let (width, height) = (frames[0].width, frames[0].height);
-        let proxies: Vec<AnalysisProxy> =
-            analysed.iter().map(|input| input.proxy.clone()).collect();
-        let mode = self.parameters.alignment.alignment;
-        let (exposures, registration) = match resolve_exposures(&frames, &self.parameters.exposure)?
-        {
-            ExposureResolution::Resolved(exposures) => {
-                let registration = register(&frames, &proxies, exposures.reference, mode, cancel)?;
-                (exposures, registration)
-            }
-            ExposureResolution::NeedsFit(plan) => {
-                let registration = register(&frames, &proxies, plan.reference(), mode, cancel)?;
-                accounting.take(n as u64 * proxy_bytes, "the aligned proxies")?;
-                let aligned = AlignedProxies::new(&registration, &proxies, cancel)?;
-                let samples_bytes = (crate::merge::hdr::exposure::MAX_FIT_SAMPLES
-                    * n
-                    * (3 * size_of::<f32>() + size_of::<SensorLevel>()))
-                    as u64;
-                accounting.take(samples_bytes, "the exposure fit")?;
-                let mut samples = FitSamples::new(n);
-                aligned.gather_fit_samples(&mut samples)?;
-                drop(aligned);
-                let exposures = plan.complete(&samples)?;
-                drop(samples);
-                accounting.give(samples_bytes + n as u64 * proxy_bytes);
-                let registration = if exposures.reference == registration.reference {
-                    registration
-                } else {
-                    // The fit moved a provisional reference: align on the final one.
-                    control.checkpoint()?;
-                    register(&frames, &proxies, exposures.reference, mode, cancel)?
-                };
-                (exposures, registration)
-            }
-        };
-        let transforms = registration.transforms();
-        let coverage = common_coverage(width, height, &transforms, cancel)?;
-        accounting.take(n as u64 * proxy_bytes, "the aligned proxies")?;
-        let aligned = AlignedProxies::new(&registration, &proxies, cancel)?;
-        // The proxies are not needed once aligned on the final reference.
-        drop(proxies);
-        let cam_xyz = analysed[exposures.reference].cam_xyz;
-        let analysed: Vec<Developed> = analysed.into_iter().map(|input| input.developed).collect();
-        accounting.give(n as u64 * proxy_bytes);
-        let motion_bytes = proxy_bytes;
-        accounting.take(motion_bytes, "the motion map")?;
-        let motion = detect_motion(
-            &aligned,
-            &exposures,
-            self.parameters.alignment.deghost,
-            cancel,
+        let share = if prepared.colour.is_empty() { 0.5 } else { 0.8 };
+        control.set_progress(Some(share), "Aligning");
+        let analysis = analyse(
+            &prepared.frames(),
+            &prepared.proxies,
+            &self.parameters,
+            control,
+            accounting,
         )?;
-        drop(aligned);
-        accounting.give(n as u64 * proxy_bytes);
-        report(control, Stage::Aligning, &accounting);
+        report(control, Stage::Aligning, accounting);
+        Ok(analysis)
+    }
 
+    /// The merging and saving stage: fuse the aligned bracket chunk by chunk from its spool into a
+    /// durable source, check the inputs' signatures again, and answer what to publish. The motion
+    /// map's scratch, which aligning left taken, is given back here.
+    pub(crate) fn merge(
+        self,
+        prepared: Arc<Prepared>,
+        analysis: &Analysis,
+        control: &JobControl,
+        mut accounting: Accounting,
+    ) -> Result<Merged, Error> {
+        let n = self.inputs.len();
+        let (width, height) = (prepared.width, prepared.height);
+        let motion_bytes = prepared.proxy_bytes();
         // Merging: one chunk of the coverage at a time, every input's window read back from its
         // spool.
         control.checkpoint()?;
         control.set_phase("merging");
-        let result = self.fuse(
-            &spool,
-            &exposures,
-            &registration,
-            coverage.rect,
+        let (source, fusion) = self.fuse(
+            &prepared.spool,
+            &analysis.exposures,
+            &analysis.registration,
+            analysis.coverage.rect,
             (width, height),
-            motion.as_ref(),
+            analysis.motion.as_ref(),
             control,
             &mut accounting,
         )?;
-        let (source, fusion) = result;
         accounting.give(motion_bytes);
 
         // Saving: the source is durable; the inputs must still be the files that were read.
@@ -632,10 +886,15 @@ impl JobSpec {
         report(control, Stage::Saved, &accounting);
         self.hooks.at(Stage::Saved);
         control.set_progress(Some(1.0), "Saving");
-        drop(spool);
         accounting.temp_bytes = 0;
+        let exposures = analysis.exposures.clone();
         let reference = exposures.reference;
-        let reference_read = &analysed[reference];
+        let developed: Vec<&Developed> = prepared
+            .inputs
+            .iter()
+            .map(|input| &input.developed)
+            .collect();
+        let cam_xyz = prepared.inputs[reference].cam_xyz;
         let provenance = MergeProvenance {
             format: MERGE_PROVENANCE_FORMAT,
             kind: MergeKind::Hdr,
@@ -643,7 +902,7 @@ impl JobSpec {
             inputs: self
                 .inputs
                 .iter()
-                .zip(&analysed)
+                .zip(&developed)
                 .map(|(input, developed)| MergeInput {
                     path: input.path.clone(),
                     volume_id: developed.volume.id.clone(),
@@ -655,13 +914,14 @@ impl JobSpec {
             parameters: MergeParameters::Hdr(self.parameters.clone()),
             resolved: MergeResolution::Hdr(HdrResolution {
                 development: HdrDevelopment {
-                    white_balance: gains,
+                    white_balance: prepared.gains,
                     cam_xyz,
                 },
                 exposures,
-                registration,
-                coverage,
-                motion: motion
+                registration: analysis.registration.clone(),
+                coverage: analysis.coverage,
+                motion: analysis
+                    .motion
                     .as_ref()
                     .map_or_else(MotionDiagnostics::default, MotionMap::diagnostics),
                 fusion,
@@ -669,7 +929,7 @@ impl JobSpec {
         };
         provenance.validate()?;
         let mut volumes: Vec<Volume> = Vec::with_capacity(n);
-        for developed in &analysed {
+        for developed in &developed {
             if !volumes
                 .iter()
                 .any(|volume| volume.id == developed.volume.id)
@@ -677,7 +937,8 @@ impl JobSpec {
                 volumes.push(developed.volume.clone());
             }
         }
-        Ok(Merged {
+        let reference_read = developed[reference];
+        let merged = Merged {
             file_name: result_name(&reference_read.path),
             header: result_header(&reference_read.header, source.width, source.height),
             place: reference_read.place.clone(),
@@ -685,7 +946,11 @@ impl JobSpec {
             provenance,
             source,
             accounting,
-        })
+        };
+        // The spool goes now, unless a preview's cancelled update still holds it.
+        drop(developed);
+        drop(prepared);
+        Ok(merged)
     }
 
     /// The reference the request's own metadata picks: the requested one, else the one the
@@ -740,11 +1005,15 @@ impl JobSpec {
         path: &Path,
         input: usize,
         development: &Development,
+        colour: bool,
         control: &JobControl,
         accounting: &mut Accounting,
-    ) -> Result<AnalysisProxy, Error> {
+    ) -> Result<(AnalysisProxy, Option<ColourProxy>), Error> {
         let (width, height) = (development.image.width(), development.image.height());
         let mut builder = ProxyBuilder::new(width, height)?;
+        let mut colour = colour
+            .then(|| ColourProxyBuilder::new(width, height))
+            .transpose()?;
         let reader = development.image.reader();
         let w = width as usize;
         let rows = BAND_ROWS as usize;
@@ -776,13 +1045,17 @@ impl JobSpec {
                 }
                 bytes.extend_from_slice(&levels[i].0.to_le_bytes());
             }
-            builder.push_rows(&FrameRect {
+            let spooled = FrameRect {
                 width: w,
                 height: band,
                 stride: w,
                 rgb: [&planes[0], &planes[1], &planes[2]],
                 levels: &levels,
-            })?;
+            };
+            builder.push_rows(&spooled)?;
+            if let Some(colour) = &mut colour {
+                colour.push_rows(&spooled)?;
+            }
             if self.hooks.spool_full(input) {
                 return Err(spool_error(std::io::ErrorKind::StorageFull));
             }
@@ -791,7 +1064,10 @@ impl JobSpec {
             accounting.temp_bytes += bytes.len() as u64;
         }
         file.flush().map_err(|error| spool_error(error.kind()))?;
-        builder.finish()
+        Ok((
+            builder.finish()?,
+            colour.map(ColourProxyBuilder::finish).transpose()?,
+        ))
     }
 
     /// Fuse the coverage chunk by chunk into a durable source. Answers its record and the fusion's
@@ -1085,7 +1361,7 @@ fn spool_error(kind: std::io::ErrorKind) -> Error {
 
 /// Publish the job's progress: its stage and what it holds, as `job.read` reports a running job's
 /// result.
-fn report(control: &JobControl, stage: Stage, accounting: &Accounting) {
+pub(crate) fn report(control: &JobControl, stage: Stage, accounting: &Accounting) {
     control.update_partial(|partial| {
         *partial = json!({
             "stage": stage,
