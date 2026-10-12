@@ -11,43 +11,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 16 is the union of two changes made side by side as format 15. One generalizes merges to
-/// kinds ([`MERGE_SCHEMA`]): `merges.kind` is `hdr` or `panorama`, its provenance document is
-/// format 2 with kind-tagged parameters and resolution, and a stack member's EV offset
-/// (`merge_inputs.offset_ev`) is null for a kind whose inputs have none. The other removes the
-/// development set: format 14's `development_sets` and `development_set_members` tables and its
-/// journal's `set-member` item are gone. Neither format 15 holds the other's change, so both, and
-/// format 14, are refused like every other marker.
-///
-/// Format 14 added derived sources ([`DERIVED_SOURCE_SCHEMA`]): the rows recording each source an
-/// HDR merge stores under the artifact root, their manifest-chunk references and the asset-source
-/// reference that retains one for its photograph, and a `derived` source kind; and merges
-/// ([`MERGE_SCHEMA`]): each merge's immutable provenance and exact inputs, its result-led stack's
-/// state and the inputs an active stack claims, with the journal's `merge-stack` item. Format 13
-/// holds none of them.
-///
-/// Format 13 is the union of two changes made side by side as format 12. The catalog of developed
-/// picks (`docs/design/catalog.md`): the volumes picks and photographs live on, picks, indexed
-/// folders, catalog folders, each asset's catalog folder, source folder, volume, file name, develop
-/// time, removal and availability with its capture row, collections and their members, and the
-/// append-only journal of library changes. An asset's `row_id` is an `INTEGER PRIMARY KEY`, the
-/// stable 8-byte key views hold ([`crate::AssetRowId`]). And the entries auto-collapse hid, in a
-/// table of their own beside the entries that stay as they were written, so a history page leaves
-/// them out without changing any entry. Neither format 12 holds the other's tables, so both are
-/// refused. Format 11 stored each asset's source kind tag in a column of its own beside the
-/// interpretation, so a list of photographs reads columns only and decodes no interpretation.
-/// Format 10 stored each asset request's whole answer in the request table — for a `mask.*`
-/// command the label it committed and the mask and component it addressed or minted beside the mutation
-/// result — so a retry answers with the identities the first attempt created. Format 9 kept each
-/// entry's history row — its label, actor, timestamp and restore target, beside the sequence, action
-/// and undo parent format 7 already held — in the entry's own columns, so a page of history rows
-/// decodes no entry. Format 7 was the merged shape: the mask table a recipe
-/// carries and the layer's mask reference, the content-addressed stroke store a painted path is
-/// kept in — so no catalog ever holds embedded stroke points — the preset library, and the
-/// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
-/// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
-/// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 16;
+/// Format 1 holds the design's storage: assets with their source kind and catalog columns, entries
+/// with their history rows, the requests with their whole answers, the mask table and the
+/// content-addressed stroke store, the preset library, the catalog's identity with the
+/// derived-artifact tables, the catalog of developed picks with its journal, the entries
+/// auto-collapse hid, the derived sources ([`DERIVED_SOURCE_SCHEMA`]) and kind-tagged merges
+/// ([`MERGE_SCHEMA`]). A catalog is marked by [`CATALOG_APPLICATION_ID`] as well as its format, so
+/// a database without the mark is not taken for one. Every other marker, earlier or later, is
+/// refused by name and left as it is; choose a new catalog path.
+pub(crate) const CATALOG_FORMAT: i64 = 1;
+/// SQLite's `application_id` for a Luxforge catalog, `LXFC`.
+pub(crate) const CATALOG_APPLICATION_ID: i64 = 0x4C58_4643;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -121,6 +95,17 @@ pub(super) fn lock(connection: &Connection) -> Result<i64, Error> {
          COMMIT;",
     )?;
     Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+/// Refuse a database of the current format that does not carry [`CATALOG_APPLICATION_ID`].
+pub(super) fn require_application_id(connection: &Connection) -> Result<(), Error> {
+    let id: i64 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if id != CATALOG_APPLICATION_ID {
+        return Err(Error::incompatible(
+            "database is not marked as a Luxforge catalog; choose a new catalog path",
+        ));
+    }
+    Ok(())
 }
 
 /// Refuse an unmarked database that holds anything: only an empty one becomes a catalog.
@@ -261,6 +246,7 @@ impl EditorService {
                  END;
                  {DERIVED_SOURCE_SCHEMA}
                  {MERGE_SCHEMA}
+                 PRAGMA application_id={CATALOG_APPLICATION_ID};
                  PRAGMA user_version={CATALOG_FORMAT};"
             ))?;
             tx.execute(
@@ -384,7 +370,7 @@ const MERGE_SCHEMA: &str = "
 
 /// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
 /// catalog columns and capture rows, collections, picks, indexed folders and the library journal
-/// (`docs/design/versions-and-lineage.md#storage-catalog-format-16`).
+/// (`docs/design/versions-and-lineage.md#storage-the-catalog-format`).
 ///
 /// - An asset's `row_id` is its `INTEGER PRIMARY KEY`: stable for the catalog's life, the 8-byte key
 ///   a view holds, and what `capture` and `collection_members` key on, so a view over a million
@@ -1110,19 +1096,23 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 16 with every table, index and trigger of the
+    /// An empty database initializes as format 1, marked as a Luxforge catalog, with every table, index and trigger of the
     /// design's storage, the catalog's, auto-collapse's, the derived sources' and the merges'
     /// alike, and makes no index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-16.sqlite");
+        let catalog = temp("format-1.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 16);
-        assert_eq!(CATALOG_FORMAT, 16);
+        assert_eq!(format, 1);
+        assert_eq!(CATALOG_FORMAT, 1);
+        let application_id: i64 = connection
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .unwrap();
+        assert_eq!(application_id, CATALOG_APPLICATION_ID);
         assert_eq!(
             schema_names(connection, "table"),
             [
@@ -1234,26 +1224,12 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Format 15 — kind-tagged merges with the development set, or HDR-only merges without it —
-    /// format 14 — HDR-only merges with the development set — format 13 — without the derived
-    /// sources — format 12 — the catalog of developed picks without the collapsed-entry table, or
-    /// the collapsed-entry table without the catalog's tables — format 11, every earlier marker
-    /// and a future one are refused by name and left exactly as they are, with no artifact or
-    /// index directory made for them.
+    /// Every marker but the current one — the earlier development formats up to 16 and a future one
+    /// alike — is refused by name and left exactly as it is, with no artifact or index directory
+    /// made for it.
     #[test]
-    fn catalog_format_fifteen_fourteen_thirteen_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged()
-     {
-        for marker in [
-            0,
-            11,
-            12,
-            13,
-            14,
-            15,
-            CATALOG_FORMAT - 1,
-            1,
-            CATALOG_FORMAT + 1,
-        ] {
+    fn catalog_format_any_other_marker_is_refused_by_name_unchanged() {
+        for marker in [0, 2, 15, 16, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();
@@ -1293,6 +1269,28 @@ mod tests {
             );
             std::fs::remove_file(catalog).unwrap();
         }
+    }
+
+    /// A current-format database without the catalog's application mark — a development catalog
+    /// from before the format was reset to 1 — is refused and keeps every byte.
+    #[test]
+    fn catalog_format_one_without_the_application_mark_is_refused_unchanged() {
+        let catalog = temp("unmarked-format-1.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        service.import(&fixture()).unwrap();
+        drop(service);
+        let connection = Connection::open(&catalog).unwrap();
+        connection.pragma_update(None, "application_id", 0).unwrap();
+        drop(connection);
+        let before = std::fs::read(&catalog).unwrap();
+        let error = EditorService::open(&catalog).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            "database is not marked as a Luxforge catalog; choose a new catalog path"
+        );
+        assert_eq!(std::fs::read(&catalog).unwrap(), before);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     /// The single-file import puts its photograph into the top-level catalog folder named after
