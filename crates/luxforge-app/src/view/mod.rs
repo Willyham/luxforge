@@ -19,6 +19,7 @@ pub(crate) mod corrections_panel;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 pub(crate) mod develop;
+pub(crate) mod fill_setup;
 mod gallery;
 pub(crate) mod long_work;
 pub(crate) mod loupe;

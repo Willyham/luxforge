@@ -81,8 +81,8 @@ pub enum RemoveUntil {
 /// Regenerate and wait for the strip; `"progress"` captures the generation while it runs.
 /// `"cancel"` presses Cancel. `{"candidate": 1}` chooses the strip's second candidate. `{"prompt":
 /// "a red bicycle"}` types into the prompt field, replacing what it held. `{"tier": "generative"}`
-/// chooses a Fill tier. `"download"` presses the text encoder's Download when the field offers it,
-/// or else the action of the tier that is not offered. `"accept"` presses Accept.
+/// chooses a Fill tier. `"setup"` presses the setup's button: the Replace add-on's when a prompt
+/// shows it, or else the main line's when AI editing is not set up. `"accept"` presses Accept.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoveStep {
@@ -92,7 +92,7 @@ pub enum RemoveStep {
     Candidate(usize),
     Prompt(String),
     Tier(String),
-    Download,
+    Setup,
     Accept,
 }
 
@@ -236,7 +236,7 @@ mod tests {
             {"correction":{"remove":{"candidate":1}}},
             {"correction":{"remove":{"regenerate":"done"}}},
             {"correction":{"remove":{"prompt":"a red bicycle"}}},
-            {"correction":{"remove":"download"}},
+            {"correction":{"remove":"setup"}},
             {"correction":{"remove":"accept"}},
         ]);
         let steps = parse(&value.to_string()).unwrap();

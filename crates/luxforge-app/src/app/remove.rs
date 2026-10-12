@@ -17,7 +17,6 @@ use super::{
     job_reads::{self, Pass, Reader, Watch},
     message::{
         Message,
-        capability::CapabilityMessage,
         remove::{RemoveMessage, RemoveRequest},
     },
     tasks::{self, CallError, owner_task},
@@ -559,14 +558,10 @@ impl Editor {
                 self.remove_reads.failed.remove(&key);
             }
             RemoveMessage::Accept => return self.remove_accept(),
-            RemoveMessage::Download {
-                module_id,
-                resource,
-            } => {
-                return self.dispatch(Message::Capability(CapabilityMessage::Install {
-                    module_id,
-                    resource,
-                }));
+            RemoveMessage::Setup(action) => {
+                return self.dispatch(Message::Capability(
+                    super::message::capability::CapabilityMessage::from(action),
+                ));
             }
             RemoveMessage::Menu(open) => {
                 self.view_state.menu = open.then_some(MenuTarget::Remove);
@@ -663,14 +658,14 @@ impl Editor {
                 return Task::none();
             }
         };
-        if self
+        if let Some(addon) = self
             .workspace
             .corrections
             .remove
             .as_ref()
-            .is_some_and(|model| model.encoder.is_some())
+            .and_then(|model| model.addon.as_ref())
         {
-            self.status.text = "Replace needs the text encoder installed".into();
+            self.status.text = addon.reason.clone();
             return Task::none();
         }
         self.event(
@@ -1243,7 +1238,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
 }
 
 /// After the screen is derived: while Remove is chosen, the status bar says a running
-/// generation's progress as the job reports it, and why no tier is offered with its action, each
+/// generation's progress as the job reports it, and why no tier is offered, each
 /// once when it changes, so a sentence the person's own gesture set is not repeated over.
 pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
     let line = editor
