@@ -2385,9 +2385,18 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// read the board again.
 ///
 /// HDR merges: `{"merge": {"position": 0, "mode": "pick"}}` presses the Pick merged (`"import"`:
-/// Import merged) action of the bracket holding that view position, as its header does, and is
-/// captured once the merge's pending row shows the job's first progress, or fails with the reason
-/// when the merge is refused or has already ended. `"merged"` is captured once the merge this
+/// Import merged) action of the bracket holding that view position, as its header does. It opens
+/// the merge preview sheet with that action primary and is captured once the sheet draws the
+/// preview's revision, its picture decoded, or fails with the sheet's refusal. With
+/// `"last_settings": true` it is ⌥-clicked: the merge starts at once with the last HDR merge's
+/// settings, and it is captured once the merge's pending row shows the job's first progress, or
+/// fails with the reason when the merge is refused or has already ended. `{"merge_preview":
+/// {"alignment": "off"}}` (`"deghost"`, each `"auto"` or `"off"`) changes the open sheet's setting
+/// and is captured once the revision of the new settings is drawn; `{"merge_preview": {"overlay":
+/// true}}` turns Show deghost overlay on or off, captured at once; `{"merge_preview": {"merge":
+/// "pick"}}` presses the sheet's Pick merged (`"import"`) and is captured as a header's ⌥-click
+/// is; `{"merge_preview": "cancel"}` presses Cancel and is captured once the sheet is gone and its
+/// preview closed. `"merged"` is captured once the merge this
 /// desktop started has ended ready and the view it read again holds its result, selected, with
 /// nothing Select asked for still in flight, its previews among it; a failed
 /// or cancelled merge fails it with the row's words.
@@ -2429,8 +2438,30 @@ pub enum SelectStep {
     Merge {
         position: u32,
         mode: MergeMode,
+        #[serde(default, skip_serializing_if = "is_false")]
+        last_settings: bool,
     },
+    MergePreview(MergePreviewStep),
     Merged,
+}
+
+/// A gesture on the open merge preview sheet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum MergePreviewStep {
+    Alignment(MergeToggle),
+    Deghost(MergeToggle),
+    Overlay(bool),
+    Merge(MergeMode),
+    Cancel,
+}
+
+/// Alignment's or deghosting's choice on the sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeToggle {
+    Auto,
+    Off,
 }
 
 /// Which merge a bracket header's action makes: Pick merged, which adds the result to the
@@ -2504,6 +2535,7 @@ impl SelectStep {
             | Self::ContinueInBackground
             | Self::CancelWork
             | Self::Merge { .. }
+            | Self::MergePreview(_)
             | Self::Merged => Ok(()),
         }
     }
