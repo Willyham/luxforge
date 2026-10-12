@@ -102,9 +102,9 @@ fn cell<'a, M: Clone + 'a>(field: GridField<'a, M>) -> Element<'a, M> {
             .size(theme::SIZE_GRID_FIELD)
             .wrapping(Wrapping::None)
             .style(theme::ink(if model.enabled {
-                Token::TextLabel
+                theme::Ink::Derived(theme::Derived::ControlLabel)
             } else {
-                Token::TextTertiary
+                theme::Ink::Token(Token::TextTertiary)
             })),
         on_reset,
         model.enabled,

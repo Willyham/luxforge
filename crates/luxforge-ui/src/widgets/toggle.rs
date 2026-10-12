@@ -54,9 +54,9 @@ fn label<'a>(model: &ToggleModel) -> iced::widget::Text<'a, crate::Theme> {
     text(model.label.clone())
         .size(theme::SIZE_CONTROL)
         .style(theme::ink(if model.enabled {
-            Token::TextLabel
+            theme::Ink::Derived(theme::Derived::ControlLabel)
         } else {
-            Token::TextTertiary
+            theme::Ink::Token(Token::TextTertiary)
         }))
 }
 

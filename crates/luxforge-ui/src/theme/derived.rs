@@ -1,5 +1,6 @@
-//! The colours the catalog boards draw that no token names: the Select workspace's grid, sources,
-//! filter bar, sheets, filmstrip and Missing originals.
+//! The colours the boards draw that no token names: the Select workspace's grid, sources, filter
+//! bar, sheets, filmstrip and Missing originals, and the tools panel's module bands, group labels
+//! and control labels.
 //!
 //! Each is one mix of the running palette's tokens, per channel in encoded sRGB and rounded to the
 //! nearest code, as the core derives a theme's tokens ([UI themes](../../../../docs/design/ui-themes.md#derived-tokens)).
@@ -59,6 +60,15 @@ pub enum Derived {
     OrganizeChipOutline,
     /// A filled organize chip under the pointer: the text at 4.3% over the control.
     RowHoverOnControl,
+    /// A module band in the tools panel: the panel 90% toward the control, a clear step over the
+    /// section body so a module reads apart from its controls.
+    ModuleBand,
+    /// A sub-group's label (WHITE BALANCE, TONE): the secondary text 24% toward the control, a
+    /// step under the control labels it heads, which the capitals set apart instead.
+    GroupLabel,
+    /// A control's label in a section body (a slider's, a field's, a toggle's): the label colour
+    /// 52% toward the secondary text, so the band's title and the value read before it.
+    ControlLabel,
 }
 
 impl Derived {
@@ -87,6 +97,9 @@ impl Derived {
             Derived::FacetRowHover => mix(Derived::CellSurface.resolve(p), p.text, 0.0445),
             Derived::OrganizeChipOutline => mix(p.control, p.text_tertiary, 0.19),
             Derived::RowHoverOnControl => mix(p.control, p.text, 0.043),
+            Derived::ModuleBand => mix(p.background, p.control, 0.9),
+            Derived::GroupLabel => mix(p.text_secondary, p.control, 0.24),
+            Derived::ControlLabel => mix(p.text_label, p.text_secondary, 0.52),
         }
     }
 }
@@ -111,7 +124,8 @@ mod tests {
         [colour.r, colour.g, colour.b].map(|channel| (channel * 255.0).round() as u8)
     }
 
-    /// Luxforge Dark draws each board value: exactly, or within the one code named.
+    /// Luxforge Dark draws each board value: exactly, or within the one code named. The tools
+    /// panel's three are the Module panels board's.
     #[test]
     fn luxforge_dark_draws_the_catalog_boards_values() {
         let dark = Palette::luxforge_dark();
@@ -134,6 +148,9 @@ mod tests {
             (Derived::FacetRowHover, [38, 38, 41]),
             (Derived::OrganizeChipOutline, [0x3a, 0x3a, 0x40]),
             (Derived::RowHoverOnControl, [52, 52, 57]),
+            (Derived::ModuleBand, [0x2b, 0x2b, 0x30]),
+            (Derived::GroupLabel, [0x8a, 0x8a, 0x90]),
+            (Derived::ControlLabel, [0xb8, 0xb8, 0xbd]),
         ];
         for (derived, board) in exact {
             assert_eq!(code(derived.resolve(&dark)), board, "{derived:?}");
