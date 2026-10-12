@@ -209,6 +209,20 @@ pub(crate) struct Preferences {
     /// [`PreferenceChange`] names it, so `preferences.set`, its `null` and every reset keep it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) usage_statistics: Option<crate::usage::consent::UsageRecord>,
+    /// Whether a release build checks for updates at launch and then daily
+    /// ([`crate::update`]). On unless the person turned it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) update_checks: Option<bool>,
+    /// Whether an update downloads in the background and installs at the next ordinary quit. Off
+    /// unless the person turned it on; it applies only while checks are on, and never to an update
+    /// that changes the catalog format ([`crate::update::UpdatePolicy::installs_automatically`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) update_install_automatically: Option<bool>,
+    /// The version the person skipped. Only `update.skip` writes it, through
+    /// [`PreferenceStore::set_skipped_version`]: no [`PreferenceChange`] names it, so
+    /// `preferences.set`, its `null` and every reset keep it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) update_skipped_version: Option<String>,
 }
 
 /// What the Settings sheet's General rows show, compared before and after a write to decide
@@ -221,6 +235,7 @@ type GeneralRows<'a> = (
     CanvasBackground,
     u16,
     Option<&'a Path>,
+    (bool, bool),
 );
 
 impl Preferences {
@@ -256,6 +271,14 @@ impl Preferences {
         self.workspace.unwrap_or_default()
     }
 
+    pub(crate) fn update_checks(&self) -> bool {
+        self.update_checks.unwrap_or(true)
+    }
+
+    pub(crate) fn update_install_automatically(&self) -> bool {
+        self.update_install_automatically.unwrap_or(false)
+    }
+
     /// The active theme's id, Luxforge Dark's when none is stored.
     pub(crate) fn theme(&self) -> &str {
         self.theme.as_deref().unwrap_or(LUXFORGE_DARK_ID)
@@ -271,6 +294,7 @@ impl Preferences {
             self.canvas_background(),
             self.interface_size(),
             self.catalog.as_deref(),
+            (self.update_checks(), self.update_install_automatically()),
         )
     }
 
@@ -321,6 +345,10 @@ impl Preferences {
         }
         if let Some(record) = &self.usage_statistics {
             record.check()?;
+        }
+        if let Some(version) = &self.update_skipped_version {
+            crate::update::check_version(version)
+                .map_err(|reason| format!("update_skipped_version: {reason}"))?;
         }
         for (name, path) in [
             ("catalog", &self.catalog),
@@ -383,6 +411,8 @@ pub(crate) struct PreferenceChange {
     pub(crate) export_folder: Option<Option<PathBuf>>,
     pub(crate) hdr_merge: Option<Option<HdrMergePreference>>,
     pub(crate) theme: Option<Option<String>>,
+    pub(crate) update_checks: Option<Option<bool>>,
+    pub(crate) update_install_automatically: Option<Option<bool>>,
 }
 
 impl PreferenceChange {
@@ -415,6 +445,11 @@ impl PreferenceChange {
         put(&mut preferences.export_folder, self.export_folder);
         put(&mut preferences.hdr_merge, self.hdr_merge);
         put(&mut preferences.theme, self.theme);
+        put(&mut preferences.update_checks, self.update_checks);
+        put(
+            &mut preferences.update_install_automatically,
+            self.update_install_automatically,
+        );
     }
 }
 
@@ -466,6 +501,23 @@ impl PreferenceStore {
                 let answer = apply(&mut preferences.usage_statistics)?;
                 preferences.check().map_err(Error::validation)?;
                 Ok(answer)
+            })
+    }
+
+    /// One locked read-modify-write of the skipped update version alone, leaving every preference
+    /// as it was: `update.skip`'s write. Returns whether the stored version changed; an unchanged
+    /// one writes nothing. A version that breaks the rule is refused by name and nothing is written.
+    pub(crate) fn set_skipped_version(&self, version: &str) -> Result<bool, Error> {
+        self.0
+            .as_ref()
+            .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
+            .transact(|preferences| {
+                if preferences.update_skipped_version.as_deref() == Some(version) {
+                    return Ok(false);
+                }
+                preferences.update_skipped_version = Some(version.to_owned());
+                preferences.check().map_err(Error::validation)?;
+                Ok(true)
             })
     }
 
@@ -606,6 +658,8 @@ mod tests {
                 deghost: crate::merge::hdr::DeghostMode::Auto,
             })),
             theme: Some(Some(STORED_THEME.to_owned())),
+            update_checks: Some(Some(false)),
+            update_install_automatically: Some(Some(true)),
         }
     }
 
@@ -732,6 +786,7 @@ mod tests {
             Some(crate::merge::hdr::AlignmentMode::Off)
         );
         assert_eq!(reopened.theme(), STORED_THEME);
+        assert!(!reopened.update_checks() && reopened.update_install_automatically());
         let launch = LaunchPreferences::read(Some(root.clone()));
         assert!(launch.problem.is_none());
         assert_eq!(launch.catalog, reopened.catalog);
@@ -771,8 +826,11 @@ mod tests {
             export_folder: Some(None),
             hdr_merge: Some(None),
             theme: Some(None),
+            update_checks: Some(None),
+            update_install_automatically: Some(None),
         };
         let (_, after) = store.set(reset).unwrap();
+        assert!(after.update_checks() && !after.update_install_automatically());
         assert_eq!(after, Preferences::default());
         assert_eq!(after.theme(), LUXFORGE_DARK_ID);
         assert_eq!(
@@ -993,11 +1051,54 @@ mod tests {
                 catalog: Some(Some(PathBuf::from("/tmp/catalog.sqlite"))),
                 ..PreferenceChange::default()
             },
+            PreferenceChange {
+                update_checks: Some(Some(false)),
+                ..PreferenceChange::default()
+            },
+            PreferenceChange {
+                update_install_automatically: Some(Some(true)),
+                ..PreferenceChange::default()
+            },
         ] {
             let mut changed = defaults.clone();
             change.apply(&mut changed);
             assert_ne!(changed.general(), defaults.general());
         }
+    }
+
+    #[test]
+    fn preferences_the_skipped_update_version_is_written_only_by_its_own_write() {
+        let root = temp_path("preferences-skipped-update");
+        let store = PreferenceStore::new(Some(root.clone()));
+        assert_eq!(store.read().unwrap().update_skipped_version, None);
+        assert!(store.set_skipped_version("0.2.0").unwrap());
+        assert!(!store.set_skipped_version("0.2.0").unwrap(), "unchanged");
+        let error = store.set_skipped_version("0.2.0/../x").unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error
+                .detail
+                .starts_with("update_skipped_version: version must be"),
+            "{}",
+            error.detail
+        );
+        // preferences.set's every field and every reset keep it.
+        store.set(every_field()).unwrap();
+        let (_, after) = store
+            .set(PreferenceChange {
+                update_checks: Some(None),
+                theme: Some(None),
+                ..PreferenceChange::default()
+            })
+            .unwrap();
+        assert_eq!(after.update_skipped_version.as_deref(), Some("0.2.0"));
+        let path = root.join("preferences.json");
+        let bytes = br#"{"format":1,"update_skipped_version":""}"#;
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(store.read().unwrap_err().kind, ErrorKind::Incompatible);
+        assert!(store.set_skipped_version("0.3.0").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

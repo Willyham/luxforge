@@ -14,7 +14,7 @@ use iced::{
     event::Status,
     keyboard::{self, Key, Modifiers, key::Named},
 };
-use luxforge_core::flags::{FlagList, RANGE_MASKS};
+use luxforge_core::flags::{FlagList, PRERELEASE_CHANNEL, RANGE_MASKS};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
@@ -130,6 +130,7 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
             "developer",
             RANGE_MASKS,
             "ai.generative",
+            PRERELEASE_CHANNEL,
             "proof.choice",
             "proof.number"
         ]

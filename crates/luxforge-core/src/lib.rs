@@ -64,6 +64,9 @@ pub mod theme;
 /// The service that answers every pixel read off the catalog owner and renders an export's bands:
 /// the contract a host's GPU provider implements, and the reference renderer's own service.
 pub mod tiles;
+/// Automatic updates: the update state, preferences and policy, and the port a platform's
+/// mechanism implements (`docs/design/auto-update.md`).
+pub mod update;
 /// Optional usage and performance statistics: consent, typed events and bounded delivery.
 pub mod usage;
 
