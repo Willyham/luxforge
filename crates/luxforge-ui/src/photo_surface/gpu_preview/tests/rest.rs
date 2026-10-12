@@ -290,6 +290,7 @@ fn rest_of(tiles: &[GpuPlan]) -> GpuRest {
         }),
         stages: None,
         light_sweeps: Arc::from([]),
+        overview: None,
     }
 }
 
@@ -768,4 +769,170 @@ fn a_percentage_views_backdrop_fills_what_its_region_frame_does_not_cover() {
     assert!(!seen.drawn_photo_uncovered);
     paint(&device, &queue, &mut pipeline, &handing_none());
     settle(&pipeline);
+}
+
+/// The minimap overview (`docs/design/minimap.md`): a picture at rest handed with one reduces its
+/// final tiles to it as well, by the reference's area average, and the surface keeps the version
+/// its want awaits once the last tile is in, drawn alone by an overview primitive; a reference
+/// overview handed in a want is uploaded once and drawn as its codes; a want that names neither
+/// retires both; and no want lets every overview go, its bytes with it.
+#[test]
+#[slow]
+fn a_picture_at_rest_reduces_its_tiles_to_the_overview_its_surface_keeps() {
+    use crate::photo_surface::{OVERVIEW_GPU_BUDGET, OverviewShown, OverviewUpload, OverviewWant};
+    let test = "a_picture_at_rest_reduces_its_tiles_to_the_overview_its_surface_keeps";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let source = GpuSource::codes(3, Arc::new(rgba.clone()), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    // The overview 64 × 48, half the stage, beside the 64 × 64 view.
+    let (across, down) = (coverage(WIDTH, 64), coverage(HEIGHT, 48));
+    let rest = GpuRest {
+        overview: Some(luxforge_gpu::RestOverview {
+            version: 7,
+            reduction: RestReduction {
+                view: (64, 48),
+                across: axis(&across),
+                down: axis(&down),
+            },
+        }),
+        ..rest_of(&tiles)
+    };
+    pipeline.compile_now(&device, &tiles[0]);
+    let awaiting = OverviewWant {
+        keep: None,
+        awaited: Some(7),
+        upload: None,
+    };
+    let drawing = PhotoPrimitive {
+        source: Some(source.clone()),
+        rest: Some(rest.clone()),
+        overview: Some(awaiting.clone()),
+        ..primitive(ID, None)
+    };
+    let mut frames = 0;
+    loop {
+        paint(&device, &queue, &mut pipeline, &drawing);
+        frames += 1;
+        let seen = diagnostics(&pipeline, ID);
+        let overview = seen.gpu_overview.expect("the overview's figures");
+        if seen.drawn_rest == Some(1) {
+            assert_eq!(
+                overview.holds(7),
+                Some(OverviewShown {
+                    version: 7,
+                    width: 64,
+                    height: 48
+                }),
+                "{overview:?}"
+            );
+            assert_eq!((overview.builds, overview.uploads), (1, 0));
+            assert_eq!(overview.reducing, None);
+            assert!(overview.bytes > 0 && overview.bytes <= OVERVIEW_GPU_BUDGET);
+            // Read live, the reduction's buffers perhaps retired since: the texture at least.
+            assert!((64 * 48 * 4..=OVERVIEW_GPU_BUDGET).contains(&seen.gpu_preview_overview_bytes));
+            break;
+        }
+        assert_eq!(
+            overview.holds(7),
+            None,
+            "frame {frames}: before the last tile"
+        );
+        assert!(frames < 6, "the rest was never drawn");
+    }
+    // Drawn alone, one to one: each pixel the reference's area average of the tiles' codes within
+    // a code, as the view's is.
+    let overview_draw = |version| {
+        let visible = crate::photo_surface::Visible {
+            clip: iced::Rectangle::new(iced::Point::ORIGIN, Size::new(64.0, 48.0)),
+            offset: Vector::ZERO,
+            size: Size::new(64.0, 48.0),
+            bright: None,
+        };
+        PhotoPrimitive::overview(ID, version, visible, 0.0)
+    };
+    let drawn = paint_into(&device, &queue, &mut pipeline, &overview_draw(7), (64, 48));
+    let held = held_codes(&rgba);
+    for y in 0..48usize {
+        for x in 0..64usize {
+            let reference: [u8; 3] = [0, 1, 2].map(|channel| {
+                let mut sum = 0.0;
+                for j in down.1[y]..down.1[y + 1] {
+                    let sy = (down.0[y] + j - down.1[y]) as usize;
+                    for i in across.1[x]..across.1[x + 1] {
+                        let sx = (across.0[x] + i - across.1[x]) as usize;
+                        sum += down.2[j as usize]
+                            * across.2[i as usize]
+                            * srgb::decode(held[sy * WIDTH as usize + sx][channel]);
+                    }
+                }
+                srgb::code(sum)
+            });
+            let at = (y * 64 + x) * 4;
+            let gpu = [drawn[at + 2], drawn[at + 1], drawn[at]];
+            for channel in 0..3 {
+                assert!(
+                    gpu[channel].abs_diff(reference[channel]) <= 1,
+                    "({x}, {y}) channel {channel}: {} against {}",
+                    gpu[channel],
+                    reference[channel]
+                );
+            }
+        }
+    }
+    // A version the surface does not hold draws nothing.
+    let blank = paint_into(&device, &queue, &mut pipeline, &overview_draw(9), (64, 48));
+    assert!(blank.chunks_exact(4).all(|pixel| pixel == [255, 0, 0, 255]));
+    // A reference overview kept beside it, uploaded once however often it is handed.
+    let upload = OverviewUpload {
+        version: 8,
+        width: 16,
+        height: 12,
+        rgba: Arc::new([40u8, 90, 200, 255].repeat(16 * 12)),
+    };
+    let both = PhotoPrimitive {
+        overview: Some(OverviewWant {
+            keep: Some(7),
+            awaited: Some(8),
+            upload: Some(upload),
+        }),
+        ..primitive(ID, None)
+    };
+    for _ in 0..3 {
+        paint(&device, &queue, &mut pipeline, &both);
+    }
+    let figures = diagnostics(&pipeline, ID).gpu_overview.expect("figures");
+    assert!(figures.holds(7).is_some() && figures.holds(8).is_some());
+    assert_eq!(
+        (figures.builds, figures.uploads, figures.upload_bytes),
+        (1, 1, 16 * 12 * 4)
+    );
+    let uploaded = paint_into(&device, &queue, &mut pipeline, &overview_draw(8), (64, 48));
+    assert!(
+        uploaded
+            .chunks_exact(4)
+            .all(|pixel| pixel == [200, 90, 40, 255])
+    );
+    // A want naming only the upload retires the reduced one.
+    let only = PhotoPrimitive {
+        overview: Some(OverviewWant {
+            keep: Some(8),
+            awaited: None,
+            upload: None,
+        }),
+        ..primitive(ID, None)
+    };
+    paint(&device, &queue, &mut pipeline, &only);
+    let figures = diagnostics(&pipeline, ID).gpu_overview.expect("figures");
+    assert_eq!(figures.holds(7), None);
+    assert!(figures.holds(8).is_some());
+    // No want lets every overview go, and its storage with it.
+    paint(&device, &queue, &mut pipeline, &handing_none());
+    let figures = diagnostics(&pipeline, ID).gpu_overview.expect("figures");
+    assert_eq!(figures.held, [None, None]);
+    settle(&pipeline);
+    assert_eq!(pipeline.figures.preview.overview(), 0);
 }

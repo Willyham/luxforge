@@ -2114,14 +2114,18 @@ dependencies = [
  "luxforge-evidence",
  "luxforge-gpu",
  "luxforge-input",
+ "luxforge-install",
  "luxforge-net",
  "luxforge-onnx",
  "luxforge-reference",
+ "luxforge-sparkle",
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-ui",
+ "luxforge-update",
  "rfd",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",
@@ -2229,6 +2233,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "luxforge-install"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "luxforge-test-macros",
+ "luxforge-testbase",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "luxforge-jpeg"
 version = "0.0.0"
 dependencies = [
@@ -2312,6 +2327,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "luxforge-sparkle"
+version = "0.0.0"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "luxforge-test-macros"
 version = "0.0.0"
 
@@ -2350,6 +2375,24 @@ dependencies = [
  "luxforge-test-macros",
  "luxforge-testbase",
  "wgpu",
+]
+
+[[package]]
+name = "luxforge-update"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "flate2",
+ "memmap2",
+ "ring",
+ "roxmltree",
+ "rustix 1.1.5",
+ "semver",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "zeroize",
 ]
 
 [[package]]
@@ -5378,6 +5421,7 @@ dependencies = [
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
+ "luxforge-update",
  "percent-encoding",
  "regex",
  "roxmltree",
@@ -5396,13 +5440,16 @@ name = "xtask-cli"
 version = "0.0.0"
 dependencies = [
  "luxforge-test-macros",
+ "luxforge-update",
  "percent-encoding",
  "regex",
  "semver",
  "serde_json",
  "sha2",
+ "tar",
  "tempfile",
  "time",
+ "zeroize",
 ]
 
 [[package]]

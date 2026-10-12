@@ -25,6 +25,7 @@ luxforge-raw = { path = "../crates/luxforge-raw" }
 luxforge-reference = { path = "../crates/luxforge-reference" }
 luxforge-testbase = { path = "../crates/luxforge-testbase" }
 luxforge-testkit = { path = "../crates/luxforge-testkit" }
+luxforge-update = { path = "../crates/luxforge-update" }
 sha2.workspace = true
 tempfile = "=3.27.0"
 flate2 = "=1.1.10"

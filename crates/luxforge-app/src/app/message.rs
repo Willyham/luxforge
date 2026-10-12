@@ -20,6 +20,7 @@ pub(crate) mod history;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask;
+pub(crate) mod move_to_applications;
 pub(crate) mod overlay;
 pub(crate) mod palette;
 pub(crate) mod performance;
@@ -36,6 +37,8 @@ pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
+pub(crate) mod unsupported_catalog;
+pub(crate) mod update;
 pub(crate) mod usage;
 pub(crate) mod view;
 pub(crate) mod visibility;
@@ -76,6 +79,8 @@ pub(crate) enum Message {
     Settings(settings::SettingsMessage),
     /// Usage statistics: the startup notice and the Privacy tab.
     Usage(usage::UsageMessage),
+    /// Automatic updates: the offer, the Updates group and Check for Updates.
+    Update(update::UpdateMessage),
     /// An owner answer to the desktop's preference writer or to a read of the preferences.
     Preferences(preferences::PreferenceMessage),
     /// One Appearance-tab gesture or theme library answer.
@@ -92,6 +97,10 @@ pub(crate) enum Message {
     /// Developing picks and the Develop folder: Develop N's confirmation, the filmstrip and moving
     /// through it.
     Develop(develop::DevelopMessage),
+    /// The unsupported-catalog sheet, shown before any catalog is open; the editor never sees one.
+    UnsupportedCatalog(unsupported_catalog::UnsupportedCatalogMessage),
+    /// The question a macOS release build asks when it runs outside Applications.
+    MoveToApplications(move_to_applications::MoveMessage),
     Close,
 }
 

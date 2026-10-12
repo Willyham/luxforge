@@ -13,6 +13,7 @@ use super::{
     models::{self, ModelsModel},
     preferences::{GeneralRow, PreferenceWriter, general_rows},
     themes::{AppearanceModel, Themes, appearance},
+    update::{Switches, Updates, UpdatesGroup, group},
     usage::{PrivacyModel, Usage, privacy},
 };
 use luxforge_core::{
@@ -206,6 +207,8 @@ pub(crate) struct SettingsModel {
     pub(crate) privacy: Option<PrivacyModel>,
     /// The Models tab, while it is open.
     pub(crate) models: Option<ModelsModel>,
+    /// General's Updates group.
+    pub(crate) updates: UpdatesGroup,
 }
 
 /// The modules and capability statuses the Models tab is drawn from.
@@ -224,6 +227,7 @@ pub(crate) fn derive(
     view_state: &ViewState,
     usage: &Usage,
     models: ModelInputs<'_>,
+    updates: &Updates,
 ) -> SettingsModel {
     let Some(open) = settings.open else {
         return SettingsModel::default();
@@ -269,7 +273,29 @@ pub(crate) fn derive(
                 view_state.menu.as_ref(),
             )
         }),
+        updates: group(updates, update_switches(preferences), now_ms()),
     }
+}
+
+/// The Updates group's two switches as the preference writer shows them: the stored answer with
+/// the changes outstanding laid over it, or `None` while the preferences have not been read.
+fn update_switches(preferences: &PreferenceWriter) -> Option<Switches> {
+    let applied = preferences.applied()?;
+    Some(Switches {
+        checks: applied.update_checks,
+        install_automatically: applied.update_install_automatically,
+        checks_saving: preferences.saving("update_checks"),
+        install_saving: preferences.saving("update_install_automatically"),
+    })
+}
+
+/// Milliseconds since the Unix epoch, which the last check's time is said against.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 fn row(settings: &Settings, flag: &ListedFlag) -> FlagRow {
@@ -429,7 +455,8 @@ mod tests {
                 &Themes::default(),
                 &view(),
                 &Usage::default(),
-                no_models()
+                no_models(),
+                &Updates::default()
             ),
             SettingsModel::default()
         );
@@ -443,6 +470,7 @@ mod tests {
             &view(),
             &Usage::default(),
             no_models(),
+            &Updates::default(),
         );
         assert!(unread.loading && unread.rows.is_empty());
     }
@@ -456,6 +484,7 @@ mod tests {
             &view(),
             &Usage::default(),
             no_models(),
+            &Updates::default(),
         );
         assert_eq!(model.unrecognized, ["gone"]);
         let [developer, choice, number] = model.rows.as_slice() else {
@@ -500,7 +529,8 @@ mod tests {
                 &Themes::default(),
                 &view(),
                 &Usage::default(),
-                no_models()
+                no_models(),
+                &Updates::default()
             )
             .rows[0]
                 .notes,
@@ -514,7 +544,8 @@ mod tests {
                 &Themes::default(),
                 &view(),
                 &Usage::default(),
-                no_models()
+                no_models(),
+                &Updates::default()
             )
             .rows[0]
                 .notes,
@@ -534,6 +565,7 @@ mod tests {
             &view(),
             &Usage::default(),
             no_models(),
+            &Updates::default(),
         );
         assert!(matches!(
             &model.rows[2].control,
@@ -564,7 +596,7 @@ mod tests {
             .number_text
             .insert("proof.number".into(), "33".into());
         assert!(matches!(
-            &derive(&settings, &PreferenceWriter::default(), &Themes::default(), &view(), &Usage::default(), no_models()).rows[2].control,
+            &derive(&settings, &PreferenceWriter::default(), &Themes::default(), &view(), &Usage::default(), no_models(), &Updates::default()).rows[2].control,
             FlagControl::Number { text, invalid: true, .. } if text == "33"
         ));
     }
@@ -582,6 +614,7 @@ mod tests {
             &view(),
             &Usage::default(),
             no_models(),
+            &Updates::default(),
         );
         assert_eq!(
             ineligible.tabs,
@@ -602,6 +635,7 @@ mod tests {
                 ..Usage::default()
             },
             no_models(),
+            &Updates::default(),
         );
         assert_eq!(eligible.tabs.last(), Some(&SettingsTab::Privacy));
         assert!(eligible.privacy.is_some_and(|privacy| privacy.loading));

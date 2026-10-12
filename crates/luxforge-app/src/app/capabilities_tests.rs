@@ -307,8 +307,7 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
     assert!(!model.loading && model.enabled);
     assert_eq!(model.resources[0].state, "Not installed");
     assert_eq!(model.resources[0].detail, "v1 · 20 B");
-    assert_eq!(model.permissions, "0 permissions");
-    assert!(!model.revoke_all, "nothing to revoke");
+    assert_eq!(model.setup, None, "only a fill module has a setup");
     // The form holds the module-level setting, drawn as a number field; the profile block's
     // endpoint and secret are set through the API.
     assert_eq!(model.fields.len(), 1);
@@ -416,7 +415,7 @@ fn a_settings_conflict_reads_the_settings_again_and_says_so_on_one_status_line()
 }
 
 #[test]
-fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws_every_grant() {
+fn consent_install_task_and_apply_go_through_the_notice() {
     let mut proof = Proof::start();
     let log = attach_log(&mut proof.editor);
     proof.expand();
@@ -457,7 +456,10 @@ fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws
     let sent = proof.answer();
     assert_eq!(sent[0]["method"], "module.permission.deny");
     assert!(proof.editor.workspace.canvas.notices.is_empty());
-    assert_eq!(proof.block().permissions, "0 permissions · 1 declined");
+    assert_eq!(
+        proof.editor.snapshot()["capabilities"][MODULE]["permissions"]["denials"],
+        1
+    );
     proof.send(CapabilityMessage::Install {
         module_id: MODULE.into(),
         resource: "proof-palette".into(),
@@ -591,47 +593,6 @@ fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws
     assert_eq!(
         proof.editor.snapshot()["capabilities"][MODULE]["tasks"][TASK]["applied"],
         true
-    );
-    // Revoke all lists the module's grants and withdraws each live one through the one revoke
-    // method, and the counts read after it say so.
-    let block = proof.block();
-    assert_eq!(
-        block.permissions, "2 permissions",
-        "the grant cleared the denial"
-    );
-    assert!(block.revoke_all);
-    proof.send(CapabilityMessage::RevokeAll(MODULE.into()));
-    assert_eq!(proof.editor.capability_started[0].1, Operation::RevokeAll);
-    let sent = proof.answer();
-    let methods: Vec<&str> = sent
-        .iter()
-        .map(|request| request["method"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        methods,
-        [
-            "module.permission.list",
-            "module.permission.revoke",
-            "module.permission.revoke",
-            "module.status"
-        ]
-    );
-    assert!(sent[1]["params"]["mutation"]["request_id"].is_string());
-    let block = proof.block();
-    assert_eq!(block.permissions, "0 permissions · 2 revoked");
-    assert!(!block.revoke_all, "nothing is left to revoke");
-    assert_eq!(
-        proof.editor.status.text,
-        "Revoked 2 permission(s) of luxforge.capabilities"
-    );
-    let listed = proof.api("module.permission.list", json!({"module_id": MODULE}));
-    assert!(
-        listed["grants"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|grant| !grant["revoked"].is_null()),
-        "{listed}"
     );
     // Nothing the desktop recorded holds the key.
     let events = logged(&mut proof.editor, &log);

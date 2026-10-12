@@ -382,105 +382,127 @@ struct Case {
 }
 
 /// Every family on both paths, each planned once from the source over the whole output stage, as
-/// the picture at rest is, and drawn in tiles of [`SIDE`]: the windows the region planner gives
-/// each tile's rectangle, anchored to the plan, every global estimate read from the store the
-/// exact render filled. `O(cases × tiles)` CPU work: each tile's window is the CPU's own.
+/// the picture at rest is, and drawn in tiles of [`SIDE`] ([`case`]).
 fn cases() -> Vec<Case> {
     let registry = registry();
+    let mut cases = Vec::new();
+    let mut versions = 0;
+    for (format, version) in [(BoundaryFormat::Half, 1), (BoundaryFormat::Float, 2)] {
+        for (family, recipe) in families() {
+            cases.push(case(
+                &registry,
+                format,
+                version,
+                &mut versions,
+                family,
+                &recipe,
+            ));
+        }
+    }
+    cases
+}
+
+/// `recipe` over the source in `format`, the GPU's source of `version`, planned once from the
+/// source over the whole output stage, as the picture at rest is, and drawn in tiles of [`SIDE`]:
+/// the windows the region planner gives each tile's rectangle, anchored to the plan, every global
+/// estimate read from the store the exact render filled, each boundary's version the next of
+/// `versions`. `O(tiles)` CPU work: each tile's window is the CPU's own.
+fn case(
+    registry: &ModuleRegistry,
+    format: BoundaryFormat,
+    version: u64,
+    versions: &mut u64,
+    family: &str,
+    recipe: &Recipe,
+) -> Case {
     let stage = Stage {
         width: WIDTH,
         height: HEIGHT,
     };
-    let mut cases = Vec::new();
-    let mut versions = 0;
-    for (format, path, version) in [
-        (BoundaryFormat::Half, "the byte path", 1),
-        (BoundaryFormat::Float, "the linear path", 2),
-    ] {
-        let source = source(format);
-        let gpu = gpu_source(version, &source);
-        for (family, recipe) in families() {
-            let name = format!("{family} on {path}");
-            // The exact render, whose boundaries name every tile's window.
-            let context = RenderContext::new();
-            let exact = render(
-                &registry,
-                &source,
-                &recipe,
-                RenderOptions::exact(&Cancel::never()),
-                &context,
+    let path = match format {
+        BoundaryFormat::Half => "the byte path",
+        BoundaryFormat::Float => "the linear path",
+    };
+    let source = source(format);
+    let gpu = gpu_source(version, &source);
+    let name = format!("{family} on {path}");
+    // The exact render, whose boundaries name every tile's window.
+    let context = RenderContext::new();
+    let exact = render(
+        registry,
+        &source,
+        recipe,
+        RenderOptions::exact(&Cancel::never()),
+        &context,
+    )
+    .expect("the exact render");
+    let request = GpuPlanRequest::exact(0, stage).from_source();
+    let request = match format {
+        BoundaryFormat::Float => request.linear(),
+        BoundaryFormat::Half => request,
+    };
+    let plan = match gpu_plan(registry, recipe, request).expect("a stack") {
+        GpuAnswer::Plan(plan) => *plan,
+        GpuAnswer::Fallback(reason) => panic!("{name}: {reason}"),
+    };
+    let anchor = plan.anchor();
+    let output = plan.geometry.output();
+    let stage_grid = plan.geometry.stage_grid(1.0).expect("a stage grid");
+    let mut tiles = Vec::new();
+    for y0 in (0..output.height).step_by(SIDE as usize) {
+        for x0 in (0..output.width).step_by(SIDE as usize) {
+            let rect = Region {
+                x0,
+                y0,
+                width: SIDE.min(output.width - x0),
+                height: SIDE.min(output.height - y0),
+            };
+            let frame = luxforge_core::qualification::region_boundary(
+                &exact,
+                0,
+                [rect.x0, rect.y0, rect.width, rect.height],
+                format,
             )
-            .expect("the exact render");
-            let request = GpuPlanRequest::exact(0, stage).from_source();
-            let request = match format {
-                BoundaryFormat::Float => request.linear(),
-                BoundaryFormat::Half => request,
-            };
-            let plan = match gpu_plan(&registry, &recipe, request).expect("a stack") {
-                GpuAnswer::Plan(plan) => *plan,
-                GpuAnswer::Fallback(reason) => panic!("{name}: {reason}"),
-            };
-            let anchor = plan.anchor();
-            let output = plan.geometry.output();
-            let stage_grid = plan.geometry.stage_grid(1.0).expect("a stage grid");
-            let mut tiles = Vec::new();
-            for y0 in (0..output.height).step_by(SIDE as usize) {
-                for x0 in (0..output.width).step_by(SIDE as usize) {
-                    let rect = Region {
-                        x0,
-                        y0,
-                        width: SIDE.min(output.width - x0),
-                        height: SIDE.min(output.height - y0),
-                    };
-                    let frame = luxforge_core::qualification::region_boundary(
-                        &exact,
-                        0,
-                        [rect.x0, rect.y0, rect.width, rect.height],
-                        format,
-                    )
-                    .expect("the tile's window");
-                    let window = anchored(
-                        Region {
-                            x0: frame.origin.0,
-                            y0: frame.origin.1,
-                            width: frame.width,
-                            height: frame.height,
-                        },
-                        anchor,
-                    );
-                    versions += 1;
-                    let boundary = GpuBoundary::derived(
-                        &gpu,
-                        Derivation::Cut {
-                            origin: (window.x0, window.y0),
-                        },
-                        window.width,
-                        window.height,
-                        versions,
-                    )
-                    .expect("a derived boundary");
-                    let grid = stage_grid
-                        .as_ref()
-                        .map(|grid| WarpGrid::new(&grid.part(rect).expect("the tile's part")));
-                    let plan = surface_plan_over(
-                        &plan,
-                        boundary,
-                        (window.x0, window.y0),
-                        grid.as_ref(),
-                        Some(rect),
-                    )
-                    .expect("a runnable plan");
-                    tiles.push(Tile { rect, window, plan });
-                }
-            }
-            cases.push(Case {
-                name,
-                source: gpu.clone(),
-                tiles,
-            });
+            .expect("the tile's window");
+            let window = anchored(
+                Region {
+                    x0: frame.origin.0,
+                    y0: frame.origin.1,
+                    width: frame.width,
+                    height: frame.height,
+                },
+                anchor,
+            );
+            *versions += 1;
+            let boundary = GpuBoundary::derived(
+                &gpu,
+                Derivation::Cut {
+                    origin: (window.x0, window.y0),
+                },
+                window.width,
+                window.height,
+                *versions,
+            )
+            .expect("a derived boundary");
+            let grid = stage_grid
+                .as_ref()
+                .map(|grid| WarpGrid::new(&grid.part(rect).expect("the tile's part")));
+            let plan = surface_plan_over(
+                &plan,
+                boundary,
+                (window.x0, window.y0),
+                grid.as_ref(),
+                Some(rect),
+            )
+            .expect("a runnable plan");
+            tiles.push(Tile { rect, window, plan });
         }
     }
-    cases
+    Case {
+        name,
+        source: gpu,
+        tiles,
+    }
 }
 
 /// The first pixel two tiles' codes differ at, as the failure reports it: its place in the output
@@ -650,6 +672,90 @@ fn two_runs_are_byte_identical() {
             case.name
         );
     }
+}
+
+/// A repair step is solved once for the tiles of its plan (`luxforge_gpu::tiles`, "Repairs"): the
+/// runner fills its read set and runs its passes for the Clone and Heal family's first tile, and
+/// every later tile reads the planes it kept, each tile still the codes a runner keeping nothing
+/// draws, bit for bit. A source of another version, or another repair step, is solved again.
+#[test]
+#[slow]
+fn a_repair_is_solved_once_for_the_tiles_of_its_plan() {
+    let test = "a_repair_is_solved_once_for_the_tiles_of_its_plan";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(
+        install_output_encoding(),
+        "the surface holds the core's output encoding"
+    );
+    let registry = registry();
+    let family = |wanted: &str| {
+        families()
+            .into_iter()
+            .find(|(family, _)| *family == wanted)
+            .unwrap_or_else(|| panic!("the {wanted} family"))
+            .1
+    };
+    let mut versions = 0;
+    let heal = family("Clone and Heal");
+    let case_of = |version, recipe: &Recipe, family, versions: &mut u64| {
+        case(
+            &registry,
+            BoundaryFormat::Half,
+            version,
+            versions,
+            family,
+            recipe,
+        )
+    };
+    let first = case_of(1, &heal, "Clone and Heal", &mut versions);
+    let mut runner = crate::adapters::tile_runner(&backend, &name)
+        .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
+    let solved = |runner: &TileRunner| runner.figures().repairs;
+    // The first tile solves the step; the rest read it, each the codes of a fresh evaluation.
+    codes(&mut runner, &first, &first.tiles[0]);
+    assert_eq!(solved(&runner), 1, "the first tile solves the repair");
+    let last = first.tiles.last().expect("tiles");
+    for tile in [&first.tiles[1], last] {
+        let before = solved(&runner);
+        let kept = codes(&mut runner, &first, tile);
+        assert_eq!(
+            solved(&runner),
+            before,
+            "a later tile reads the solved planes"
+        );
+        runner.release();
+        let fresh = codes(&mut runner, &first, tile);
+        assert_eq!(
+            solved(&runner),
+            before + 1,
+            "a released runner solves it again"
+        );
+        if let Some(difference) = first_difference(tile.rect, &kept, &fresh) {
+            panic!("{test}: the tile at {:?}: {difference}", tile.rect);
+        }
+    }
+    // Another version of the source, and another repair step, are solved again.
+    let before = solved(&runner);
+    let moved = case_of(3, &heal, "Clone and Heal", &mut versions);
+    codes(&mut runner, &moved, &moved.tiles[0]);
+    assert_eq!(
+        solved(&runner),
+        before + 1,
+        "another source's tile solves it"
+    );
+    let hundred = family("a hundred Clone and Heal corrections");
+    let other = case_of(3, &hundred, "a hundred corrections", &mut versions);
+    codes(&mut runner, &other, &other.tiles[0]);
+    assert_eq!(solved(&runner), before + 2, "another repair step is solved");
+    codes(&mut runner, &moved, &moved.tiles[1]);
+    assert_eq!(
+        solved(&runner),
+        before + 2,
+        "the first step's planes are still kept"
+    );
+    eprintln!("{test}: the runner's figures {:?}", runner.figures());
 }
 
 /// What the runner would hold for one tile of a 60-megapixel RAW (9504 × 6336) through Detail and

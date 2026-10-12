@@ -32,6 +32,16 @@ struct State {
     completed: Vec<Value>,
     coalesced: usize,
     geometry: Option<Value>,
+    /// Raw mouse events to route through the widgets on the next redraw, and what they published.
+    route: Option<Route>,
+}
+
+/// A scripted pointer gesture: its events, each at its window position, routed in order through
+/// the actual laid-out widget tree in one redraw, and the messages the widgets published for them.
+struct Route {
+    events: Vec<(Event, Point)>,
+    dispatched: bool,
+    messages: Vec<String>,
 }
 
 struct Input {
@@ -118,6 +128,39 @@ impl Probe {
         state.coalesced = 0;
     }
 
+    /// Route `events`, each at its window position, through the widgets on the next redraw,
+    /// replacing any route not yet taken up.
+    pub(crate) fn route(&self, events: Vec<(Event, Point)>) {
+        self.0.lock().expect("cursor probe lock").route = Some(Route {
+            events,
+            dispatched: false,
+            messages: Vec::new(),
+        });
+    }
+
+    /// The messages a dispatched route's events published, each named by its debug form, taken
+    /// once; `None` while the route waits for its redraw or none was armed.
+    pub(crate) fn route_messages(&self) -> Option<Vec<String>> {
+        let mut state = self.0.lock().expect("cursor probe lock");
+        if state.route.as_ref().is_some_and(|route| route.dispatched) {
+            return state.route.take().map(|route| route.messages);
+        }
+        None
+    }
+
+    fn take_route(&self) -> Option<Vec<(Event, Point)>> {
+        let mut state = self.0.lock().expect("cursor probe lock");
+        let route = state.route.as_mut().filter(|route| !route.dispatched)?;
+        route.dispatched = true;
+        Some(std::mem::take(&mut route.events))
+    }
+
+    fn route_published(&self, messages: Vec<String>) {
+        if let Some(route) = self.0.lock().expect("cursor probe lock").route.as_mut() {
+            route.messages = messages;
+        }
+    }
+
     pub(crate) fn geometry(&self) -> Option<Value> {
         self.0.lock().expect("cursor probe lock").geometry.clone()
     }
@@ -178,7 +221,8 @@ impl Probe {
 
     pub(crate) fn waiting(&self) -> bool {
         let state = self.0.lock().expect("cursor probe lock");
-        !state.path.is_empty()
+        state.route.as_ref().is_some_and(|route| !route.dispatched)
+            || !state.path.is_empty()
             || state
                 .input
                 .as_ref()
@@ -370,6 +414,39 @@ impl Widget<Message, Theme, Renderer> for NativeCursor<'_> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if matches!(
+            event,
+            Event::Window(iced::window::Event::RedrawRequested(_))
+        ) && let Some(events) = self.probe.take_route()
+        {
+            let mut published = Vec::new();
+            for (routed_event, point) in events {
+                // A shell of its own, so what the routed event captured never marks the redraw
+                // the real widgets still have to see.
+                let mut messages = Vec::new();
+                let mut routed = Shell::new(&mut messages);
+                self.content.as_widget_mut().update(
+                    &mut tree.children[0],
+                    &routed_event,
+                    layout,
+                    mouse::Cursor::Available(point),
+                    renderer,
+                    clipboard,
+                    &mut routed,
+                    viewport,
+                );
+                drop(routed);
+                for message in messages {
+                    let mut name = format!("{message:?}");
+                    name.truncate(96);
+                    published.push(name);
+                    shell.publish(message);
+                }
+            }
+            self.probe.route_published(published);
+            shell.invalidate_layout();
+            shell.request_redraw();
+        }
         if matches!(
             event,
             Event::Window(iced::window::Event::RedrawRequested(_))

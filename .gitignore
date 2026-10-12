@@ -9,6 +9,8 @@
 /fixtures/generated/
 /fixtures/jpg/
 .env
+# The local reference stack's update store (services/usage-statistics/install-feeds.py).
+/services/usage-statistics/update-store/
 .env.*
 !.env.example
 .DS_Store

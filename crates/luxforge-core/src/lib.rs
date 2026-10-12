@@ -64,6 +64,9 @@ pub mod theme;
 /// The service that answers every pixel read off the catalog owner and renders an export's bands:
 /// the contract a host's GPU provider implements, and the reference renderer's own service.
 pub mod tiles;
+/// Automatic updates: the update state, preferences and policy, and the port a platform's
+/// mechanism implements (`docs/design/auto-update.md`).
+pub mod update;
 /// Optional usage and performance statistics: consent, typed events and bounded delivery.
 pub mod usage;
 
@@ -92,6 +95,8 @@ pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
 pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
 pub use draft::{Draft, DraftTarget, declared_target};
+/// The catalog format this build opens, which release builds record for the update feed.
+pub use editor::CATALOG_FORMAT;
 pub use editor::{
     ActionResult, AssetRecord, BatchStaleAcknowledgement, DraftStamp, EditorService, EditorState,
     Evaluation, FirstOpen, HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD,
@@ -170,6 +175,10 @@ pub use render::gpu::{
     SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights,
     gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps, plan_stream_sweeps,
     plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
+};
+pub use render::overview::{
+    OVERVIEW_BOUNDS, OVERVIEW_CPU_BYTES, OVERVIEW_GPU_BYTES, Overview, overview_cpu_bytes,
+    overview_reduction, overview_size, reduce_overview,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

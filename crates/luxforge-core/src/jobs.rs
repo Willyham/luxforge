@@ -1050,6 +1050,18 @@ impl Jobs {
             .any(|entry| entry.family() == family && entry.is_live())
     }
 
+    /// Every queued or running job of one of `kinds`, in identity order.
+    pub(crate) fn live_of(&self, kinds: &[JobKind]) -> Vec<(JobId, JobKind)> {
+        let mut live: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.is_live() && kinds.contains(&entry.record.kind))
+            .map(|(job_id, entry)| (job_id.clone(), entry.record.kind))
+            .collect();
+        live.sort_by(|(left, _), (right, _)| left.cmp(right));
+        live
+    }
+
     /// Which joinable source flight will allocate new planes: [`JobKind::Prepare`] when a live
     /// preparation of an original nobody has left is among them, else [`JobKind::Develop`] for a
     /// redevelopment, and `None` when there is neither. A flight that only reads artifacts

@@ -85,12 +85,17 @@ mod requests;
 #[cfg(test)]
 mod theme_tests;
 pub(super) mod themes;
+pub(super) mod update;
+#[cfg(test)]
+mod update_tests;
 pub(super) mod usage;
 pub(crate) mod usage_events;
 #[cfg(test)]
 mod usage_events_tests;
 #[cfg(test)]
 mod usage_tests;
+#[cfg(test)]
+mod view_tests;
 pub(super) mod views;
 
 /// The catalog owner's thread's name, which reads no pixel (performance rule 5): a read reaching
@@ -228,6 +233,10 @@ enum OwnerMessage {
     /// The tile service answered a parked read: the answer waits in the owner's own channel of
     /// them, which the owner drains after every message ([`Owner::pixels_read`]).
     PixelsRead,
+    /// The update port's state changed, or a check it ran finished ([`update::serve`]). Nothing
+    /// polls for this: the port's notifier posts it, and the owner reads the port after every
+    /// message.
+    Update,
     Stop,
 }
 
@@ -1561,6 +1570,7 @@ fn owner_loop(
     // on it or polls for it.
     let pixel_completions = completions.clone();
     let analysis_started = completions.clone();
+    let update_wake = completions.clone();
     let mut queue = AnalysisQueue::new(Arc::new(move || {
         let _ = completions.send(OwnerMessage::AnalysisReady);
     }));
@@ -1634,9 +1644,15 @@ fn owner_loop(
         parked_accepts: HashMap::new(),
         call_parks: true,
         catalog,
+        // The port's notifier never blocks, whatever thread signals it: a wake that finds the
+        // channel full is not needed, since the owner reads the port after every message.
+        updates: update::Updates::new(move || {
+            let _ = update_wake.try_send(OwnerMessage::Update);
+        }),
         #[cfg(test)]
         fault: None,
     };
+    update::launch(&mut owner);
     // A catalog with indexed folders has them watched from its opening.
     files::opened(&mut owner);
     loop {
@@ -1645,6 +1661,7 @@ fn owner_loop(
         owner.expire_event_waits();
         owner.wake_job_waits();
         owner.host.runtime().release_idle();
+        update::answer_held(&mut owner);
         // A merge preview left idle closes on the same wake-up.
         merge::expire_previews(&mut owner);
         let message = match owner.next_event_deadline() {
@@ -1675,6 +1692,8 @@ fn owner_loop(
                 OwnerMessage::Call(call) => owner.call(call),
                 // Its answer is taken below, with any other that has arrived.
                 OwnerMessage::PixelsRead => {}
+                // Read below, after every message.
+                OwnerMessage::Update => {}
                 #[cfg(test)]
                 OwnerMessage::HoldTiles(hold) => {
                     if let Some(tiles) = &owner.reference_tiles {
@@ -1782,6 +1801,9 @@ fn owner_loop(
             Ok(ControlFlow::Continue(())) => {}
             Err(_) => owner.contained(owed),
         }
+        // What the update port changed is announced, and each check that ended or expired is
+        // answered.
+        update::serve(&mut owner);
         owner.notify_watchers(caller);
         owner.wake_event_waits();
         // A parked read whose stack or draft this message moved on is cancelled: its replay would
@@ -1981,6 +2003,8 @@ pub(super) struct Owner {
     /// The catalog's owner-side state, one field per lane and one for browse views, each in its own
     /// file.
     catalog: catalog::CatalogLanes,
+    /// The update port's notifier, the checks the owner started and the calls waiting for them.
+    updates: update::Updates,
     #[cfg(test)]
     fault: Option<Fault>,
 }
@@ -2113,6 +2137,13 @@ impl Owner {
             && result.is_ok()
         {
             files::defer(self, call, deferred);
+            return;
+        }
+        // So is a check waiting for the update port.
+        if let Some(generation) = self.updates.parking.take()
+            && result.is_ok()
+        {
+            update::park(self, call.request.id, call.response, generation);
             return;
         }
         let (id, sequence, response) = (call.request.id, self.log.sequence, call.response);
@@ -2408,6 +2439,7 @@ impl Owner {
             .chain(self.job_waits.iter().filter_map(|held| held.deadline))
             .chain(self.host.runtime().next_deadline())
             .chain(self.catalog.merge.previews.next_idle())
+            .chain(self.updates.deadline())
             .min()
     }
 
@@ -2508,6 +2540,7 @@ impl Owner {
     fn contained(&mut self, owed: Owed) {
         self.record_announced();
         self.deferred = None;
+        self.updates.parking = None;
         let error = || Error::internal("the catalog owner failed while serving this message");
         match owed {
             Owed::Call(id, response) => {
@@ -3098,6 +3131,10 @@ pub(super) fn flags_set(
         developer,
     )? {
         announce_once(&mut owner.announced, &call.origin);
+        // The pre-release channel reaches the update port at once.
+        if params.flag == crate::flags::PRERELEASE_CHANNEL {
+            update::applied(owner);
+        }
     }
     flags_list(owner, call, NoParams {})
 }
@@ -3118,6 +3155,9 @@ host_params! {
         export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
         hdr_merge: Option<Option<Value>> = json("{alignment, deghost}, each auto or off: the remembered settings of the last HDR merge, which the desktop's option-click merges with; null resets it to the defaults"),
         theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
+        update_checks: Option<Option<bool>> = boolean().notes("check for updates at launch and then daily; null resets it to on"),
+        update_install_automatically: Option<Option<bool>> = boolean().notes("download an update in the background and install it at the next ordinary quit, only while update_checks is on and never for an update that changes the catalog format; null resets it to off"),
+        update_ask_to_move: Option<Option<bool>> = boolean().notes("on macOS, a release build launched outside Applications asks to move itself there (update.move-to-applications); false is the question's Don't ask again; null resets it to on"),
     }
 }
 
@@ -3166,8 +3206,21 @@ pub(super) fn preferences_set(
             }
             theme => theme,
         },
+        update_checks: params.update_checks,
+        update_install_automatically: params.update_install_automatically,
+        update_ask_to_move: params.update_ask_to_move,
     };
     let (before, stored) = owner.host.preferences.set(change)?;
+    // The update preferences reach the update port at once.
+    if (
+        before.update_checks(),
+        before.update_install_automatically(),
+    ) != (
+        stored.update_checks(),
+        stored.update_install_automatically(),
+    ) {
+        update::applied(owner);
+    }
     owner
         .service
         .set_auto_collapse(stored.auto_collapse_history());

@@ -277,6 +277,11 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `theme.inspect` | Exempt (read) | Reads a theme file before import. |
 | `theme.list` | Exempt (read) | Lists themes. |
 | `theme.read` | Exempt (read) | Reads a theme. |
+| `update.check` | Exempt (privacy) | Updates report nothing ([automatic updates](../design/auto-update.md#outcome-and-scope)). |
+| `update.install` | Exempt (privacy) | Updates report nothing. |
+| `update.move-to-applications` | Exempt (privacy) | Updates report nothing. |
+| `update.skip` | Exempt (privacy) | Updates report nothing. |
+| `update.status` | Exempt (read) | Reads the update state. |
 | `usage.prompt.claim` | Exempt (privacy) | Statistics consent; statistics commands never record. |
 | `usage.read` | Exempt (read) | The statistics' own read; statistics commands and their reads never record. |
 | `usage.set` | Exempt (privacy) | Statistics consent; statistics commands never record. |

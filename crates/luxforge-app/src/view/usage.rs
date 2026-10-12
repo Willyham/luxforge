@@ -1,4 +1,5 @@
-//! The usage statistics startup notice: a small card over the bottom of the workspace, above the
+//! The usage statistics startup notice, and the layer the workspace's notices share: a small card
+//! over the bottom of the workspace, above the
 //! floating strip at the foot of the canvas or the grid (and Develop's filmstrip, when it is
 //! shown), so it covers none of their controls, with the design's words and its two neutral
 //! buttons. It is not modal: it takes no
@@ -12,7 +13,7 @@ use crate::{
 };
 use iced::{
     Alignment, Length, Padding,
-    widget::{container, mouse_area},
+    widget::{column, container, mouse_area},
 };
 use luxforge_ui::{Element, Icon, NoticeCardModel, Tone, notice_card, theme};
 
@@ -26,10 +27,11 @@ pub(crate) fn clearance(filmstrip: bool) -> f32 {
         + theme::STRIP_HEIGHT
 }
 
-pub(crate) fn notice(model: &UsageNotice, filmstrip: bool) -> Element<'_, Message> {
+/// The startup notice's card.
+pub(crate) fn card(model: &UsageNotice) -> Element<'_, Message> {
     let [share, decline] = model.actions;
     // A neutral card, so neither button is drawn as the primary one: neither is preselected.
-    let card = notice_card(
+    notice_card(
         &NoticeCardModel {
             icon: Icon::Information,
             title: model.title.to_owned(),
@@ -40,11 +42,21 @@ pub(crate) fn notice(model: &UsageNotice, filmstrip: bool) -> Element<'_, Messag
             (share.to_owned(), Message::Usage(UsageMessage::Share)),
             (decline.to_owned(), Message::Usage(UsageMessage::Decline)),
         ],
-    );
-    // The layer fills the window but only the card takes the pointer, so everything around it
-    // stays usable. The card claims it over all of itself, so a brush under it draws no cursor of
+    )
+}
+
+/// The workspace's notices, stacked over the bottom of the workspace above the floating strip
+/// (and Develop's filmstrip when `filmstrip` is shown): the update offer over the usage statistics
+/// notice when both are up.
+pub(crate) fn layer<'a>(cards: Vec<Element<'a, Message>>, filmstrip: bool) -> Element<'a, Message> {
+    // The layer fills the window but only the cards take the pointer, so everything around them
+    // stays usable. Each card claims it over all of itself, so a brush under it draws no cursor of
     // its own there.
-    container(mouse_area(card).interaction(iced::mouse::Interaction::Idle))
+    let cards = cards.into_iter().fold(
+        column![].spacing(theme::SPACING).align_x(Alignment::Center),
+        |cards, card| cards.push(mouse_area(card).interaction(iced::mouse::Interaction::Idle)),
+    );
+    container(cards)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Center)

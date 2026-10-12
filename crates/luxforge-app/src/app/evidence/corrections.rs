@@ -14,7 +14,6 @@ use crate::{
         remove::RemoveWait,
     },
     brush::{Handle, Modifiers},
-    state::remove::TierAction,
 };
 use iced::{Subscription, Task};
 use luxforge_evidence::{CorrectionHandle, CorrectionStep, PressModifier, RemoveStep, RemoveUntil};
@@ -328,32 +327,18 @@ impl Editor {
                 }
                 (RemoveMessage::Tier(tier), RemoveUntil::Done)
             }
-            RemoveStep::Download => {
-                let message = if let Some(encoder) = &model.encoder {
-                    RemoveMessage::Download {
-                        module_id: encoder.module_id.clone(),
-                        resource: encoder.resource.clone(),
-                    }
-                } else {
-                    match model
+            RemoveStep::Setup => {
+                // The add-on's button while a prompt shows it, else the setup's main line's.
+                let line = model.addon.as_ref().or_else(|| {
+                    model
                         .unoffered
                         .as_ref()
-                        .and_then(|unoffered| unoffered.action.as_ref())
-                    {
-                        Some((
-                            _,
-                            TierAction::Download {
-                                module_id,
-                                resource,
-                            },
-                        )) => RemoveMessage::Download {
-                            module_id: module_id.clone(),
-                            resource: resource.clone(),
-                        },
-                        None => return Err("Remove offers no download".into()),
-                    }
-                };
-                (message, RemoveUntil::Done)
+                        .and_then(|unoffered| unoffered.setup.as_ref())
+                });
+                match line.and_then(|line| line.action.as_ref()) {
+                    Some((_, action)) => (RemoveMessage::Setup(action.clone()), RemoveUntil::Done),
+                    None => return Err("Remove offers no setup button".into()),
+                }
             }
             RemoveStep::Accept => (RemoveMessage::Accept, RemoveUntil::Done),
         };

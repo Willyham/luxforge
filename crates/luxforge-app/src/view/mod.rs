@@ -19,11 +19,15 @@ pub(crate) mod corrections_panel;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 pub(crate) mod develop;
+pub(crate) mod fill_setup;
 mod gallery;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
+pub(crate) mod minimap;
+pub(crate) mod minimap_geometry;
+pub(crate) mod move_to_applications;
 pub(crate) mod palette;
 pub(crate) mod query_choice;
 pub(crate) mod select;
@@ -35,6 +39,8 @@ pub(crate) mod state_panel;
 pub(crate) mod status_bar;
 pub(crate) mod title_bar;
 pub(crate) mod tools_panel;
+pub(crate) mod unsupported_catalog;
+pub(crate) mod update;
 pub(crate) mod usage;
 mod warped_path;
 
@@ -125,6 +131,11 @@ pub(crate) struct Surfaces<'a> {
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
     /// ([`crate::app::gpu_settle`]).
     pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,
+    /// The minimap overviews the photograph's surface may keep, handed with every frame that
+    /// draws it ([`crate::app::overview`]).
+    pub(crate) overview: Option<&'a luxforge_ui::OverviewWant>,
+    /// The high-zoom minimap's card, when the canvas shows one ([`crate::app::minimap`]).
+    pub(crate) minimap: Option<minimap::MinimapModel>,
 }
 
 impl Surfaces<'_> {
@@ -216,10 +227,11 @@ pub(crate) fn workspace<'a>(
     if let Some(sheet) = copy_settings::confirmation(&model.copy_settings) {
         layers = layers.push(sheet);
     }
-    // The usage statistics notice sits under the palette and the sheets, which a claimed notice
-    // waits for anyway.
-    if let Some(notice) = &model.usage_notice {
-        layers = layers.push(usage::notice(notice, model.develop.strip.is_some()));
+    // The update offer, the move question and the usage statistics notice sit under the palette
+    // and the sheets,
+    // which a claimed usage notice waits for anyway.
+    if let Some(notices) = notices(model, model.develop.strip.is_some()) {
+        layers = layers.push(notices);
     }
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
@@ -228,6 +240,20 @@ pub(crate) fn workspace<'a>(
         layers = layers.push(sheet);
     }
     layers.into()
+}
+
+/// The workspace's notices over the bottom of the workspace: the update offer, the move into
+/// Applications question and the usage statistics notice, top to bottom. The move question waits
+/// for the usage notice, so those two never show together. `None` while none is up.
+fn notices(model: &Workspace, filmstrip: bool) -> Option<Element<'_, Message>> {
+    let cards: Vec<Element<'_, Message>> = model
+        .update_notice
+        .iter()
+        .map(update::card)
+        .chain(model.move_notice.iter().map(move_to_applications::card))
+        .chain(model.usage_notice.iter().map(usage::card))
+        .collect();
+    (!cards.is_empty()).then(|| usage::layer(cards, filmstrip))
 }
 
 /// A 1 px vertical rule between the middle row's regions.

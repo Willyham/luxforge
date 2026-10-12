@@ -7,7 +7,11 @@
 //! from its own `module.status` answer (`fill_tiers`), and every candidate's label from the job
 //! that published it. Everything here is plain data the app layer turns into requests; nothing is
 //! a request until a gesture sends one.
-use crate::state::{Inputs, settings};
+use crate::state::{
+    Inputs,
+    fill_setup::{self, SetupLine, SetupModel},
+    settings,
+};
 use luxforge_core::{
     AssetId, CandidateRead, CandidateState, ModuleDescriptor, ParameterKind, flags::FlagList,
     jobs::JobStatus,
@@ -300,27 +304,12 @@ pub(crate) struct TierOption {
     pub(crate) title: String,
 }
 
-/// The one thing a person can do about an unoffered tier.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TierAction {
-    /// Install the model's file through the capability block's own install and consent notice.
-    Download { module_id: String, resource: String },
-}
-
-/// Why no tier is offered, and the one action it allows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Why no tier is offered: a few plain words for the status bar and Generate, and the setup's
+/// main line when setting AI editing up is what is missing ([`fill_setup`]).
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Unoffered {
     pub(crate) reason: String,
-    pub(crate) action: Option<(String, TierAction)>,
-}
-
-/// The prompt's text encoder is not installed: the field offers its download.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct EncoderOffer {
-    pub(crate) module_id: String,
-    pub(crate) resource: String,
-    /// Its install is running.
-    pub(crate) installing: bool,
+    pub(crate) setup: Option<SetupLine>,
 }
 
 /// The generation running on the photograph on screen.
@@ -359,7 +348,10 @@ pub(crate) struct RemoveModel {
     pub(crate) unoffered: Option<Unoffered>,
     pub(crate) prompt: String,
     pub(crate) prompt_max: usize,
-    pub(crate) encoder: Option<EncoderOffer>,
+    /// The setup's add-on, while a prompt is typed and Replace is not added yet.
+    pub(crate) addon: Option<SetupLine>,
+    /// Nothing is in flight for the fill module, so a setup button may send; Cancel always may.
+    pub(crate) setup_enabled: bool,
     /// `Generate`, or `Replace` with a prompt.
     pub(crate) action: String,
     /// Why Generate cannot be pressed now.
@@ -396,41 +388,20 @@ pub(crate) fn chosen_tier<'a>(tiers: &'a [FillTier], choice: Option<&str>) -> Op
         .or_else(|| offered().next())
 }
 
-/// Why `tier` is not offered, in the order a person can act on it: the runtime, then the model. A
-/// tier is listed only while its flags are on, so a flag is never the reason.
-fn unoffered(module: &str, tier: &FillTier) -> Unoffered {
-    let title = tier_title(&tier.tier);
-    let missing = |kind: &str| tier.missing.iter().find(|missing| missing.kind == kind);
-    if missing("runtime").is_some() {
-        return Unoffered {
-            reason: "No inference runtime is available on this computer".into(),
-            action: None,
-        };
-    }
-    if missing("model").is_some() {
-        let model = tier.models.first();
-        let installing = model.is_some_and(|model| model.state == "installing");
-        return Unoffered {
-            reason: match (installing, model) {
-                (true, Some(model)) => format!("Downloading {}\u{2026}", model.title),
-                _ => format!(
-                    "{title} fill needs its model installed, also listed in Settings \u{203a} Models"
-                ),
-            },
-            action: model.filter(|_| !installing).map(|model| {
-                (
-                    "Download".into(),
-                    TierAction::Download {
-                        module_id: module.to_owned(),
-                        resource: model.resource.clone(),
-                    },
-                )
-            }),
-        };
-    }
-    Unoffered {
-        reason: format!("{title} fill is not offered"),
-        action: None,
+/// Why `tier` is not offered. A missing runtime or model is the setup's to say: its main line,
+/// with what to press. A tier is listed only while its flags are on, so a flag is never the
+/// reason.
+fn unoffered(tier: &FillTier, setup: Option<&SetupModel>) -> Unoffered {
+    let missing = |kind: &str| tier.missing.iter().any(|missing| missing.kind == kind);
+    match setup.filter(|_| missing("runtime") || missing("model")) {
+        Some(setup) => Unoffered {
+            reason: setup.main.reason.clone(),
+            setup: Some(setup.main.clone()),
+        },
+        None => Unoffered {
+            reason: format!("{} fill is not offered", tier_title(&tier.tier)),
+            setup: None,
+        },
     }
 }
 
@@ -471,22 +442,19 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
     let tier_index = chosen
         .and_then(|chosen| options.iter().position(|option| option.tier == chosen.tier))
         .unwrap_or(0);
+    let setup = fill_setup::derive(module, inputs.capabilities.module(&module.id), flags);
     let unoffered = match (chosen, tiers.first()) {
-        (None, Some(tier)) => Some(unoffered(&module.id, tier)),
+        (None, Some(tier)) => Some(unoffered(tier, setup.as_ref())),
         _ => None,
     };
     let asset = inputs.document.state.as_ref().map(|state| &state.asset.id);
     let prompt = panel.prompt.trim();
-    let encoder = chosen
-        .filter(|_| !prompt.is_empty())
-        .and_then(FillTier::installed_model)
-        .and_then(|model| model.text_encoder.as_ref())
-        .filter(|encoder| encoder.state != "installed")
-        .map(|encoder| EncoderOffer {
-            module_id: module.id.clone(),
-            resource: encoder.resource.clone(),
-            installing: encoder.state == "installing",
-        });
+    // Replace is offered once a prompt asks for it.
+    let addon = setup
+        .as_ref()
+        .filter(|_| chosen.is_some() && !prompt.is_empty())
+        .and_then(|setup| setup.addon.clone())
+        .filter(|addon| !addon.installed);
     let running_job = asset.and_then(|asset| panel.running_on(asset));
     let running = running_job.map(|job| Running {
         fraction: job.fraction,
@@ -544,8 +512,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         )
     } else if !selection {
         Some("Paint over what to remove first".into())
-    } else if encoder.is_some() {
-        Some("Replace needs the text encoder installed".into())
+    } else if let Some(addon) = &addon {
+        Some(addon.reason.clone())
     } else if busy {
         Some(crate::state::IN_FLIGHT.into())
     } else {
@@ -557,11 +525,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
     let newest_ready = asset
         .and_then(|asset| panel.newest(asset))
         .is_some_and(|job| job.status == JobStatus::Ready && job.next_seed.is_some());
-    // Why no tier is offered, with its action: what the person can do next.
-    let why = unoffered.as_ref().map(|unoffered| match &unoffered.action {
-        Some((label, _)) => format!("{} \u{b7} {label}", unoffered.reason),
-        None => unoffered.reason.clone(),
-    });
+    // Why no tier is offered: what the person can do next.
+    let why = unoffered.as_ref().map(|unoffered| unoffered.reason.clone());
     let hint = match (&running, selection, strip.is_empty()) {
         (Some(running), _, _) => format!("{} \u{b7} Esc cancels", running.sentence),
         (None, _, _) if why.is_some() => why.unwrap_or_default(),
@@ -581,7 +546,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         unoffered,
         prompt: panel.prompt.clone(),
         prompt_max: chosen.map_or(PROMPT_FALLBACK, |tier| prompt_max(module, &tier.task)),
-        encoder,
+        addon,
+        setup_enabled: setup.as_ref().is_some_and(|setup| setup.enabled),
         action,
         generate_reason,
         selection,
@@ -630,10 +596,10 @@ impl RemoveModel {
             "tier": self.tiers.get(self.tier).map(|tier| tier.tier.clone()),
             "unoffered": self.unoffered.as_ref().map(|unoffered| json!({
                 "reason": unoffered.reason,
-                "action": unoffered.action.as_ref().map(|(label, _)| label.clone()),
+                "setup": unoffered.setup.as_ref().map(SetupLine::summary),
             })),
             "prompt": self.prompt,
-            "encoder": self.encoder.as_ref().map(|offer| json!({"resource": offer.resource, "installing": offer.installing})),
+            "addon": self.addon.as_ref().map(SetupLine::summary),
             "action": self.action,
             "generate_reason": self.generate_reason,
             "selection": self.selection,
@@ -680,39 +646,45 @@ mod tests {
         json!([{"model": "m", "title": "Model", "resource": "m-file", "state": state, "runtime": "run-m", "text_encoder": {"resource": "m-text", "state": "not-installed"}}])
     }
 
-    /// The runtime is the first thing to act on, then the model, whose action is its download
-    /// unless that is running. A flag is never the reason: a tier behind one that is off is not
+    /// A missing runtime or model is the setup's to say, with its main line; anything else names
+    /// the tier as not offered. A flag is never the reason: a tier behind one that is off is not
     /// listed at all.
     #[test]
-    fn an_unoffered_tier_names_one_reason_and_its_one_action() {
-        let runtime = tier(
-            json!([{"kind": "runtime", "id": "inference", "state": "unavailable"}, {"kind": "model", "id": "generative", "state": "not-installed"}]),
-            model("not-installed"),
-        );
-        let first = unoffered("ai", &runtime);
-        assert_eq!(first.action, None);
-        assert_eq!(
-            first.reason,
-            "No inference runtime is available on this computer"
-        );
-        let download = tier(
+    fn an_unoffered_tier_shows_the_setup_when_a_model_or_runtime_is_missing() {
+        let main = SetupLine {
+            resource: Some("m-file".into()),
+            text: "Remove objects and fill in parts of a photo.".into(),
+            detail: Some("One-time download \u{b7} 20 B".into()),
+            progress: None,
+            action: None,
+            installed: false,
+            reason: "Set up AI editing first".into(),
+        };
+        let setup = SetupModel {
+            module_id: "ai".into(),
+            heading: Some("Set up AI editing".into()),
+            main: main.clone(),
+            addon: None,
+            enabled: true,
+            covers: Vec::new(),
+        };
+        for missing in [
             json!([{"kind": "model", "id": "generative", "state": "not-installed"}]),
-            model("not-installed"),
+            json!([{"kind": "runtime", "id": "inference", "state": "unavailable"}]),
+        ] {
+            let shown = unoffered(&tier(missing, model("not-installed")), Some(&setup));
+            assert_eq!(shown.reason, "Set up AI editing first");
+            assert_eq!(shown.setup, Some(main.clone()));
+        }
+        let other = unoffered(
+            &tier(
+                json!([{"kind": "other", "id": "x", "state": "off"}]),
+                model("installed"),
+            ),
+            Some(&setup),
         );
-        assert_eq!(
-            unoffered("ai", &download).action.unwrap().1,
-            TierAction::Download {
-                module_id: "ai".into(),
-                resource: "m-file".into()
-            }
-        );
-        let installing = tier(
-            json!([{"kind": "model", "id": "generative", "state": "not-installed"}]),
-            model("installing"),
-        );
-        let installing = unoffered("ai", &installing);
-        assert_eq!(installing.action, None);
-        assert!(installing.reason.starts_with("Downloading Model"));
+        assert_eq!(other.reason, "Generative fill is not offered");
+        assert_eq!(other.setup, None);
     }
 
     #[test]

@@ -99,7 +99,8 @@ pub use histogram::{
 };
 pub use hover_panel::hover_panel;
 pub use icon_button::{
-    Icon, IconButtonModel, header_icon_button, icon_button, title_bar_icon_button, with_tooltip,
+    Icon, IconButtonModel, header_icon_button, icon, icon_button, title_bar_icon_button,
+    with_tooltip,
 };
 pub use inline_menu::inline_menu;
 pub use inline_notice::inline_notice;
@@ -115,7 +116,7 @@ pub use metric_row::{MetricRowModel, metric_row};
 pub use mode_control::{CombineMode, ModeControlModel, mode_control};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
 pub use notched_slider::{NotchedSliderModel, StepKeys, arrow_step, notched_panel, notched_slider};
-pub use notice_card::{NoticeCardModel, Tone, notice_card};
+pub use notice_card::{NoticeCardModel, Tone, notice_card, notice_card_with};
 pub use number_field::{
     NumberFieldModel, ValueEdit, boxed_input, channel_row, compact_number_field, label_line,
     number_field, value_input,
@@ -199,7 +200,6 @@ pub(crate) use coverage_thumbnail::coverage_thumbnail;
 pub(crate) use double_click::double_click;
 pub(crate) use floating_bar::floating_bar;
 pub(crate) use histogram::clip_triangle;
-pub(crate) use icon_button::icon;
 pub(crate) use popover::POPOVER_GAP;
 pub(crate) use section_header::section_header;
 pub(crate) use text::value_text;

@@ -59,6 +59,7 @@ mod mask_range_smoke;
 mod mask_smoke;
 mod minify_smoke;
 mod mixer_smoke;
+mod move_to_applications_smoke;
 mod no_gpu_render_smoke;
 mod package;
 mod performance_smoke;
@@ -78,8 +79,11 @@ mod select_catalog_smoke;
 mod select_smoke;
 mod settings_smoke;
 mod smoke;
+mod sparkle;
 mod stats;
 mod theme_smoke;
+mod unsupported_catalog_smoke;
+mod update_journey;
 mod usage_backend_smoke;
 mod usage_measure;
 mod usage_receiver;
@@ -206,6 +210,7 @@ fn main_result() -> Result {
             )?;
         }
         "release-sign" => release_sign::run(&root, &mut a)?,
+        "update-journey" => update_journey::run(&root, &mut a)?,
         "release-assemble" => {
             let tag = a.value("--tag")?.ok_or("Required: --tag")?;
             let input = absolute(&root, &a.path("--input")?);
@@ -218,6 +223,8 @@ fn main_result() -> Result {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
+        "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
         "develop" => {
             let debug = a.flag("--debug");
@@ -273,8 +280,17 @@ fn main_result() -> Result {
         }
         "test" => {
             let quick = a.flag("--quick");
+            let native = a.flag("--native-watchers");
             a.done()?;
-            check::tests(&root, quick)?;
+            ensure(
+                !(quick && native),
+                "--quick and --native-watchers are separate gates",
+            )?;
+            if native {
+                check::native_watchers(&root)?;
+            } else {
+                check::tests(&root, quick)?;
+            }
         }
         "build" | "fmt" | "lint" => {
             let release = a.flag("--release");

@@ -10,6 +10,9 @@ use crate::state::{
 use luxforge_core::{Chord, MASK_MODE, POINTER_MODE};
 use serde_json::{Map, Value};
 
+/// The palette's entry that checks for updates now.
+pub(crate) const CHECK_FOR_UPDATES: &str = "Check for Updates";
+
 /// The palette's entry for the reference renderer's export, which the title bar's Export menu does
 /// not offer.
 pub(crate) const REFERENCE_EXPORT: &str = "Export reference render\u{2026}";
@@ -101,6 +104,8 @@ pub(crate) enum PaletteAction {
     Settings(crate::state::settings::SettingsTab),
     /// Choose a theme, by its id, as its Appearance row does.
     Theme(String),
+    /// Check for updates now, as the Updates group's Check now does.
+    CheckForUpdates,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -317,6 +322,13 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             PaletteAction::Settings(crate::state::settings::SettingsTab::Models),
         ));
     }
+    // Checks the feed now, as Settings › General's Check now does; a build that does not update
+    // itself answers why, which the status bar says.
+    entries.push((
+        CHECK_FOR_UPDATES.to_owned(),
+        "update.check".to_owned(),
+        PaletteAction::CheckForUpdates,
+    ));
     // Privacy only where the sheet lists it: a launch eligible for usage statistics.
     if inputs.usage.eligible {
         entries.push((

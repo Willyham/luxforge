@@ -507,6 +507,9 @@ fn usage_generic_preference_writes_and_resets_keep_the_record() {
             export_folder: Some(None),
             hdr_merge: Some(None),
             theme: Some(None),
+            update_checks: Some(None),
+            update_install_automatically: Some(None),
+            update_ask_to_move: Some(None),
         })
         .unwrap();
     store.set_flag("developer", Some(json!(true))).unwrap();

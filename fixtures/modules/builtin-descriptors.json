@@ -5625,7 +5625,7 @@
           {
             "id": "download-klein",
             "kind": "download-artifact",
-            "purpose": "Install FLUX.2 klein 4B with the object removal LoRA",
+            "purpose": "Set up AI editing: download the model that removes and fills, which runs on this computer",
             "resource": "generative-klein-4b"
           },
           {
@@ -5644,7 +5644,7 @@
           {
             "id": "download-klein-text-encoder",
             "kind": "download-artifact",
-            "purpose": "Install Text encoder for Replace (Qwen3-4B)",
+            "purpose": "Add Replace: download the model that reads what you describe, which runs on this computer",
             "resource": "generative-klein-text-encoder"
           },
           {
