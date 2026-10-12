@@ -5,9 +5,11 @@ generative fill" and "Blinded comparison").
 It drives the editor's own `luxforge-json` (never the GUI) and the probe, and never downloads:
 
   prepare  write each case's upright input JPEG, its brush stroke and the stroke's footprint mask
-  stage    stage klein's pinned files from a local models directory into a data root, so the
+  stage    stage klein's pinned files from a local models directory into a data root
+           (`--root`) or a resources directory (`--resources`, such as the desktop's own), so the
            ordinary install job hashes them and fetches nothing (the conditioning is a release
-           asset that may not be published yet)
+           asset that may not be published yet); each file is checked against its pinned length
+           and SHA-256 first
   editor   per case, one `luxforge-json` process under `/usr/bin/time -l`: install if needed,
            Generate, Regenerate, accept and export each candidate; record times, progress, peak
            memory and `uptime` (`--once`: Generate alone; `--prompt`: a Replace, then a
@@ -16,21 +18,27 @@ It drives the editor's own `luxforge-json` (never the GUI) and the probe, and ne
   sheets   blinded contact sheets: the input with the region outlined, then each method's result
            under a letter in a per-case random order; the key is written separately
 
-Needs Python 3 with Pillow and NumPy. Every path is an argument; nothing is written outside --out
-and --root.
+Needs Python 3 with Pillow and NumPy (`stage` needs Python 3 alone). Every path is an argument;
+nothing is written outside --out, --root and --resources.
 """
 import argparse
+import hashlib
 import json
 import random
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+try:
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+except ImportError:
+    # `stage` needs neither: it runs on Python 3 alone.
+    np = Image = ImageDraw = ImageFont = ImageOps = None
 
 AI = "luxforge.ai"
 MODEL = "generative-klein-4b"
@@ -209,17 +217,41 @@ def resources(client):
     return module["resources"]
 
 
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for block in iter(lambda: file.read(1 << 22), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def stage(args):
-    root = Path(args.root)
-    root.mkdir(parents=True, exist_ok=True)
-    client = Json(args.json, root)
+    """Stage every luxforge.ai resource's pinned files from `--models` where an install looks for
+    a transfer it can resume: `<resources>/.staging/luxforge.ai/<id>/<version>/` with its
+    `.partial.json`. The install then hashes them and fetches nothing it already holds.
+
+    `--root` is a `luxforge-json --data-root`, whose resources directory is
+    `<root>/data/modules/resources`. `--resources` names a resources directory itself, such as the
+    desktop's own (`~/Library/Application Support/Luxforge/modules/resources` on macOS); the
+    descriptors are then listed from a temporary root, so nothing but the staged files is written
+    there."""
+    listing = Path(args.root) if args.root else Path(tempfile.mkdtemp(prefix="generative-kit-"))
+    listing.mkdir(parents=True, exist_ok=True)
+    client = Json(args.json, listing)
     declared = resources(client)
     client.finish()
-    models = Path(args.models)
+    if args.resources:
+        shutil.rmtree(listing)
+        resources_dir = Path(args.resources).expanduser()
+    else:
+        resources_dir = listing / "data/modules/resources"
+    models = Path(args.models).expanduser()
     for resource in declared:
-        version_dir = (
-            root / "data/modules/resources/.staging" / AI / resource["id"] / resource["version"]
-        )
+        installed = resources_dir / AI / resource["id"] / resource["version"] / "installed.json"
+        if installed.exists():
+            print(f"{resource['id']} {resource['version']} is already installed")
+            continue
+        version_dir = resources_dir / ".staging" / AI / resource["id"] / resource["version"]
         version_dir.mkdir(parents=True, exist_ok=True)
         pins = [
             {
@@ -237,6 +269,10 @@ def stage(args):
             target = version_dir / pin["name"]
             if source.stat().st_size != pin["bytes"]:
                 raise SystemExit(f"{source} is not {pin['bytes']} bytes")
+            # A file that is not its pin would be fetched again from the start, or, for the
+            # conditioning while its release asset is unpublished, fail the install.
+            if sha256_of(source) != pin["sha256"]:
+                raise SystemExit(f"{source} is not the pinned file (SHA-256 {pin['sha256']})")
             if target.exists():
                 target.unlink()
             # A copy-on-write clone where the file system offers one (APFS), else a copy.
@@ -580,8 +616,14 @@ def main():
     p.set_defaults(run=prepare)
     p = sub.add_parser("stage")
     p.add_argument("--json", required=True)
-    p.add_argument("--models", required=True)
-    p.add_argument("--root", required=True)
+    p.add_argument("--models", required=True, help="the directory holding the local files")
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--root", help="a luxforge-json --data-root")
+    group.add_argument(
+        "--resources",
+        help="a resources directory itself, such as the desktop's "
+        "~/Library/Application Support/Luxforge/modules/resources",
+    )
     p.set_defaults(run=stage)
     p = sub.add_parser("editor")
     p.add_argument("--json", required=True)
