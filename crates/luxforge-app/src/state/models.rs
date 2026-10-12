@@ -9,7 +9,7 @@
 //! default model tiers yet, so the tab shows none.
 use super::{
     MenuTarget,
-    capabilities::{CapabilityStore, ModuleCapabilities, human_bytes},
+    capabilities::{CapabilityStore, ModuleCapabilities, human_bytes, version_label},
 };
 use luxforge_core::{
     ModuleDescriptor,
@@ -258,8 +258,8 @@ fn row(
         .map(|model| model.state.as_str());
     let files = resource.files.len() + 1;
     let mut detail = format!(
-        "v{} · {}",
-        resource.version,
+        "{} · {}",
+        version_label(&resource.version),
         human_bytes(resource.total_bytes())
     );
     if files > 1 {
@@ -423,6 +423,17 @@ mod tests {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         row
+    }
+
+    #[test]
+    fn a_version_that_names_its_files_reads_without_a_v() {
+        assert_eq!(version_label("2"), "v2");
+        assert_eq!(version_label("1.4"), "v1.4");
+        assert_eq!(
+            version_label("klein-4b-q4_0-3b1f5a9d-lora-0e3f5879-cond-ba26d15a"),
+            "klein-4b-q4_0-3b1f5a9d-lora-0e3f5879-cond-ba26d15a"
+        );
+        assert_eq!(version_label(""), "");
     }
 
     #[test]
