@@ -314,7 +314,6 @@ pub(in crate::api) fn batch_export(
     params: BatchExport,
 ) -> Result<Value, Error> {
     let settings = Arc::new(params.settings);
-    export::writable_now(&settings)?;
     // The one chosen folder, or none when each photograph goes beside its own original.
     let chosen = batch::export_folder(&settings.folder)?;
     let assets = targets::assets(&owner.service, &params.targets, || {
@@ -332,7 +331,6 @@ pub(in crate::api) fn batch_export(
             )));
         }
     }
-    let options = export::Options::of(&settings, false);
     // Each photograph streams through the owner's tile service as `export.write`'s job does.
     let tiles = Arc::clone(&owner.tiles);
     let (client, origin) = (call.client, call.origin.clone());
@@ -384,7 +382,7 @@ pub(in crate::api) fn batch_export(
                         continue;
                     }
                     Err(refused) => {
-                        progress.skip(batch::refused(&asset, &refused));
+                        progress.skip(batch::export_refused(&asset, &refused));
                         continue;
                     }
                 };
@@ -393,16 +391,18 @@ pub(in crate::api) fn batch_export(
                         let written = export::write(
                             *plan,
                             &destination,
-                            options,
+                            &settings,
+                            false,
                             tiles.as_ref(),
                             job.control,
                             &phase,
-                            &mut |fraction| progress.within(fraction),
+                            &mut |fraction, _| progress.within(fraction),
                         )?;
                         Ok(BatchWritten {
                             asset_id: asset.clone(),
                             path: destination.path().to_path_buf(),
                             renderer: written.renderer.into(),
+                            quality: written.quality,
                         })
                     });
                 match written {
@@ -421,7 +421,7 @@ pub(in crate::api) fn batch_export(
                     Err(stopped) if stopped.kind == ErrorKind::Cancelled => {
                         return Box::new(move |_: &mut Owner| Err(stopped));
                     }
-                    Err(refused) => progress.skip(batch::refused(&asset, &refused)),
+                    Err(refused) => progress.skip(batch::export_refused(&asset, &refused)),
                 }
             }
             let report = progress.finish();

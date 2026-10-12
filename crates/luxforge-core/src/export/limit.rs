@@ -15,9 +15,6 @@
 //!   attempt; the encode checks it within.
 //! - When nothing fits at the lowest quality tried, the search refuses with `validation` and
 //!   `data.code` [`LIMIT_UNREACHABLE`], naming the limit and that quality, and answers no bytes.
-// `export.write` searches through here once the export's settings arrive
-// (`tasks/rendering/export-settings.json`); until then only the tests call it.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::Error;
 use serde_json::json;
@@ -45,6 +42,8 @@ pub(crate) struct LimitProgress {
 pub(crate) struct Limited {
     pub(crate) bytes: Vec<u8>,
     pub(crate) quality: u8,
+    /// The encodes made, which the tests count; each was reported as it began.
+    #[cfg(test)]
     pub(crate) attempts: u32,
 }
 
@@ -136,6 +135,7 @@ pub(crate) fn search(
     Ok(Limited {
         bytes,
         quality,
+        #[cfg(test)]
         attempts,
     })
 }

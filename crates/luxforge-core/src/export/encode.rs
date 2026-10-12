@@ -34,7 +34,7 @@
 //!   writes it as ICC chunks numbered from 1.
 
 use super::limit::{self, LimitProgress, Limited};
-use crate::{Error, Raster};
+use crate::Error;
 use luxforge_jpeg::{Encoder, Progress, Settings};
 use std::{
     io::{self, Write},
@@ -43,25 +43,14 @@ use std::{
 
 const EXIF_HEADER: &[u8] = b"Exif\0\0";
 
-/// How a JPEG's chroma is sampled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// Until the export's settings arrive (`tasks/rendering/export-settings.json`) every export is
-// baseline 4:4:4 and none is limited, so only the tests reach this.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) enum Chroma {
-    /// 4:4:4: a chroma sample for every pixel.
-    Full,
-    /// 4:2:0: a chroma sample for every 2 × 2 pixels.
-    Half,
-}
+/// How a JPEG's chroma is sampled: the settings' own [`Chroma`], read here as the pixels one
+/// chroma sample covers, across and down, as the codec takes them.
+pub(crate) use super::settings::Chroma;
 
-impl Chroma {
-    /// The pixels one chroma sample covers, across and down, as the codec takes them.
-    fn pixels(self) -> (u8, u8) {
-        match self {
-            Self::Full => (1, 1),
-            Self::Half => (2, 2),
-        }
+fn sampling(chroma: Chroma) -> (u8, u8) {
+    match chroma {
+        Chroma::Full => (1, 1),
+        Chroma::Half => (2, 2),
     }
 }
 
@@ -86,12 +75,9 @@ pub(crate) const BASELINE_90: JpegOptions = JpegOptions {
 /// given: an optimised encode's coefficient arrays, about 12 bytes a pixel at 4:4:4 and 6 at
 /// 4:2:0, with no cap; nothing that scales with the image for a baseline one. Pure, for
 /// `export.plan`.
-// Until the export's settings arrive (`tasks/rendering/export-settings.json`) every export is
-// baseline 4:4:4 and none is limited, so only the tests reach this.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn encoder_bytes(width: u32, height: u32, options: &JpegOptions) -> u64 {
     if options.optimise {
-        luxforge_jpeg::coefficient_bytes(width, height, options.chroma.pixels())
+        luxforge_jpeg::coefficient_bytes(width, height, sampling(options.chroma))
     } else {
         0
     }
@@ -99,9 +85,10 @@ pub(crate) fn encoder_bytes(width: u32, height: u32, options: &JpegOptions) -> u
 
 /// Encode one rendered frame: [`encode_jpeg_rows`] given the whole frame as one band, which the
 /// encoder reads in place.
+#[cfg(test)]
 pub(crate) fn encode_jpeg<W: Write>(
     out: W,
-    frame: &Raster,
+    frame: &crate::Raster,
     options: &JpegOptions,
     exif: Option<&[u8]>,
     pixels_per_inch: Option<u16>,
@@ -133,7 +120,7 @@ pub(crate) fn encode_jpeg<W: Write>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_jpeg_rows<W: Write, B: AsRef<[u8]>>(
     out: W,
-    (width, height): (u32, u32),
+    size: (u32, u32),
     bands: impl IntoIterator<Item = Result<(u32, B), Error>>,
     options: &JpegOptions,
     exif: Option<&[u8]>,
@@ -141,54 +128,157 @@ pub(crate) fn encode_jpeg_rows<W: Write, B: AsRef<[u8]>>(
     progress: &mut dyn FnMut(f64),
     cancel: &dyn Fn() -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let app1 = exif.map(|exif| [EXIF_HEADER, exif].concat());
-    let segments: Vec<(u8, &[u8])> = app1.iter().map(|app1| (1, app1.as_slice())).collect();
-    let settings = Settings {
-        quality: options.quality,
-        chroma: options.chroma.pixels(),
-        optimise: options.optimise,
-        pixels_per_inch,
-        segments: &segments,
-        icc: Some(srgb_profile()),
-    };
     let mut last_reported = 0.0;
     let mut step = |at: Progress| {
-        if cancel().is_err() {
-            return Err(Error::cancelled("export encode cancelled"));
-        }
         if (at.rows > 0 || at.pass > 0)
             && (at.fraction - last_reported >= 0.01 || at.fraction == 1.0)
         {
             last_reported = at.fraction;
             progress(at.fraction);
         }
+    };
+    encode(
+        out,
+        size,
+        bands,
+        options,
+        exif,
+        pixels_per_inch,
+        &mut step,
+        cancel,
+    )
+}
+
+/// Where an encode is, as an export reports it: the rows given so far, as a fraction of the
+/// frame's, then, for an optimised encode, the fraction of its further passes done.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum JpegProgress {
+    Rows(f64),
+    Optimising(f64),
+}
+
+/// [`encode_jpeg_rows`] reporting [`JpegProgress`]: the rows, then an optimised encode's passes,
+/// each from 0 to 1, never decreasing within its stage, at most about once per 1% of it and
+/// always as the passes begin and at the end.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_jpeg_stages<W: Write, B: AsRef<[u8]>>(
+    out: W,
+    size: (u32, u32),
+    bands: impl IntoIterator<Item = Result<(u32, B), Error>>,
+    options: &JpegOptions,
+    exif: Option<&[u8]>,
+    pixels_per_inch: Option<u16>,
+    progress: &mut dyn FnMut(JpegProgress),
+    cancel: &dyn Fn() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let height = f64::from(size.1.max(1));
+    let mut last: Option<JpegProgress> = None;
+    let mut step = |at: Progress| {
+        let now = if at.pass > 0 && at.passes > 1 {
+            // Each pass is an equal share of the whole, the rows the first.
+            let passes = f64::from(at.passes);
+            JpegProgress::Optimising(
+                ((at.fraction * passes - 1.0) / (passes - 1.0)).clamp(0.0, 1.0),
+            )
+        } else if at.pass > 0 {
+            JpegProgress::Rows(1.0)
+        } else {
+            JpegProgress::Rows((at.rows as f64 / height).min(1.0))
+        };
+        let report = match (last, now) {
+            (None, _) => true,
+            (Some(JpegProgress::Rows(_)), JpegProgress::Optimising(_)) => true,
+            (Some(JpegProgress::Rows(was)), JpegProgress::Rows(fraction))
+            | (Some(JpegProgress::Optimising(was)), JpegProgress::Optimising(fraction)) => {
+                fraction - was >= 0.01 || (fraction == 1.0 && was < 1.0)
+            }
+            (Some(JpegProgress::Optimising(_)), JpegProgress::Rows(_)) => false,
+        };
+        if report {
+            last = Some(now);
+            progress(now);
+        }
+    };
+    encode(
+        out,
+        size,
+        bands,
+        options,
+        exif,
+        pixels_per_inch,
+        &mut step,
+        cancel,
+    )
+}
+
+/// The one encode behind [`encode_jpeg_rows`] and [`encode_jpeg_stages`]: `cancel` checked at
+/// every one of libjpeg's reports, each then handed to `step`.
+#[allow(clippy::too_many_arguments)]
+fn encode<W: Write, B: AsRef<[u8]>>(
+    out: W,
+    (width, height): (u32, u32),
+    bands: impl IntoIterator<Item = Result<(u32, B), Error>>,
+    options: &JpegOptions,
+    exif: Option<&[u8]>,
+    pixels_per_inch: Option<u16>,
+    step: &mut dyn FnMut(Progress),
+    cancel: &dyn Fn() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let app1 = exif.map(|exif| [EXIF_HEADER, exif].concat());
+    let segments: Vec<(u8, &[u8])> = app1.iter().map(|app1| (1, app1.as_slice())).collect();
+    let settings = Settings {
+        quality: options.quality,
+        chroma: sampling(options.chroma),
+        optimise: options.optimise,
+        pixels_per_inch,
+        segments: &segments,
+        icc: Some(srgb_profile()),
+    };
+    let mut checked = |at: Progress| {
+        if cancel().is_err() {
+            return Err(Error::cancelled("export encode cancelled"));
+        }
+        step(at);
         Ok(())
     };
     // Dropped on any error, the session is abandoned as `Encoder::abort` abandons it.
     let mut encoder = Encoder::start(out, width, height, &settings)?;
     for band in bands {
         let (count, rgba) = band?;
-        encoder.write_rows(count as usize, rgba.as_ref(), &mut step)?;
+        encoder.write_rows(count as usize, rgba.as_ref(), &mut checked)?;
     }
-    encoder.finish_with(&mut step)
+    encoder.finish_with(&mut checked)
 }
 
 /// A writer into memory that refuses the write that would take it past `limit` bytes, so an
-/// attempt that cannot fit stops as soon as it passes the limit and never holds more than it.
-// Until the export's settings arrive (`tasks/rendering/export-settings.json`) every export is
-// baseline 4:4:4 and none is limited, so only the tests reach this.
-#[cfg_attr(not(test), allow(dead_code))]
+/// attempt that cannot fit stops as soon as it passes the limit and never holds more than it: its
+/// buffer grows by doubling, but never past the limit.
 struct Capped {
     bytes: Vec<u8>,
     limit: usize,
     passed: bool,
 }
 
+impl Capped {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            passed: false,
+        }
+    }
+}
+
 impl Write for Capped {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.bytes.len() + buf.len() > self.limit {
+        let needed = self.bytes.len() + buf.len();
+        if needed > self.limit {
             self.passed = true;
             return Err(io::Error::other("the file passed its size limit"));
+        }
+        if needed > self.bytes.capacity() {
+            let grown = (self.bytes.capacity() * 2).max(needed).min(self.limit);
+            self.bytes.reserve_exact(grown - self.bytes.len());
         }
         self.bytes.extend_from_slice(buf);
         Ok(buf.len())
@@ -199,17 +289,18 @@ impl Write for Capped {
     }
 }
 
-/// Encode the held `frame` into memory as the highest quality, at most `options.quality`, whose
-/// file is at most `limit_bytes`, by [`limit::search`]: at most eight whole encodes, one after
-/// another, each stopped as soon as its file passes the limit and its encoder released before the
-/// next starts. `progress` hears each attempt and its encode; `cancel` is checked between attempts
-/// and inside each encode. When nothing fits at quality 10 the refusal is `limit-unreachable` and
-/// nothing is answered to write.
-// Until the export's settings arrive (`tasks/rendering/export-settings.json`) every export is
-// baseline 4:4:4 and none is limited, so only the tests reach this.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Encode the held `width` × `height` RGBA8 frame `rgba` into memory as the highest quality, at
+/// most `options.quality`, whose file is at most `limit_bytes`, by [`limit::search`]: at most
+/// eight whole encodes, one after another, each stopped as soon as its file passes the limit and
+/// its encoder released before the next starts. `progress` hears each attempt and its encode;
+/// `cancel` is checked between attempts and inside each encode. When nothing fits at quality 10
+/// the refusal is `limit-unreachable` and nothing is answered to write. Beside the frame it holds
+/// one attempt's encoder ([`encoder_bytes`]), that attempt's file and the best so far, each at most
+/// the limit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_jpeg_limited(
-    frame: &Raster,
+    (width, height): (u32, u32),
+    rgba: &[u8],
     options: &JpegOptions,
     limit_bytes: u64,
     exif: Option<&[u8]>,
@@ -219,18 +310,15 @@ pub(crate) fn encode_jpeg_limited(
 ) -> Result<Limited, Error> {
     let limit = usize::try_from(limit_bytes).unwrap_or(usize::MAX);
     let mut attempt = |quality: u8, fraction: &mut dyn FnMut(f64)| {
-        let mut capped = Capped {
-            bytes: Vec::new(),
-            limit,
-            passed: false,
-        };
+        let mut capped = Capped::new(limit);
         let options = JpegOptions {
             quality,
             ..*options
         };
-        let encoded = encode_jpeg(
+        let encoded = encode_jpeg_rows(
             &mut capped,
-            frame,
+            (width, height),
+            std::iter::once(Ok((height, rgba))),
             &options,
             exif,
             pixels_per_inch,
@@ -262,7 +350,7 @@ pub(crate) fn srgb_profile() -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ErrorKind, SnapshotId};
+    use crate::{ErrorKind, Raster, SnapshotId};
 
     use image::{ImageDecoder, codecs::jpeg::JpegDecoder};
     use luxforge_jpeg::MAX_SEGMENT_PAYLOAD;

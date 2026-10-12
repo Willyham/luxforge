@@ -816,6 +816,9 @@ pub struct BatchWritten {
     pub asset_id: AssetId,
     pub path: PathBuf,
     pub renderer: super::RenderedBy,
+    /// The quality the file was encoded at, a size limit's choice included; none for a TIFF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u8>,
 }
 
 /// A `batch.apply-settings` or `batch.export` job's result.

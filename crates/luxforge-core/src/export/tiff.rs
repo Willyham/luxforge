@@ -32,9 +32,6 @@
 //!   the last row, are refused as `internal`; a failure of `out` is `file-access`. However the
 //!   writing stops, nothing more is written.
 
-// Until the export job writes TIFF, only the tests reach the writer.
-#![cfg_attr(not(test), allow(dead_code))]
-
 mod strips;
 
 use super::metadata::CaptureMetadata;
@@ -92,6 +89,14 @@ pub(crate) fn tiff_worst_case_bytes(
     // IFD0's entries and short values, the EXIF payload's bound and its own IFD headers.
     let directories = 2 * 64 * 1024 + strips * 8 + icc_bytes as u64;
     8 + samples + deflate + directories
+}
+
+/// Whether a `width` × `height` TIFF of `depth` samples with the export's sRGB profile always
+/// fits a classic TIFF's 4 GiB, as [`TiffWriter::start`] requires: what `export.plan` refuses
+/// `tiff-too-large` before anything renders.
+pub(crate) fn tiff_fits(width: u32, height: u32, depth: Depth) -> bool {
+    tiff_worst_case_bytes(width, height, depth, super::encode::srgb_profile().len())
+        <= MAX_FILE_BYTES
 }
 
 /// The refusal of a TIFF whose file could pass 4 GiB, with [`TIFF_TOO_LARGE`] as `data.code`.
