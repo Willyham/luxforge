@@ -22,7 +22,7 @@ A persistent list of the work that can start now: each plan below has a validate
 | --- | --- | --- | --- |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [AI editing](../tasks/editing/ai-editing.json) ([design](design/ai-editing.md)) | TASK-008 the model-selection mask kind | Not on the generative-first path; the Corrections foundation is delivered | High tier |
-| [Automatic updates](../tasks/project/auto-update.json) ([design](design/auto-update.md)) | TASK-004 macOS disk image | Implementation authorized on 2026-10-12, Linux first and then macOS; TASK-001 to TASK-003 are in progress. Update key, the production API with its update store, candidate tags and a clean-install session are late qualification inputs | High tier |
+| [Automatic updates](../tasks/project/auto-update.json) ([design](design/auto-update.md)) | TASK-010 qualification and documentation | TASK-001 to TASK-009 are implemented. Needs the owner's update key, the production API with its update store and publication credential, candidate tags and a clean-install session | High tier |
 | [Dependency advisories](../tasks/project/dependency-advisories.json) | TASK-001 ttf-parser exception, due 2026-10-29; TASK-002 paste exception, due 2026-12-18 | The audit fails once an exception expires | High tier |
 
 ### Validated, awaiting authorization

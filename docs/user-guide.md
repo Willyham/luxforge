@@ -250,7 +250,7 @@ Agents and scripts read the choice and delivery counts with `usage.read`, and ca
 
 ### Updates
 
-Luxforge will check for and install its own updates once each platform's updater arrives: Sparkle on macOS and Luxforge's own updater on Linux ([design](design/auto-update.md)). Neither exists in any build yet, so today every build says it does not update itself and you update by downloading the new version by hand. What follows is the interface those updaters will drive.
+Luxforge checks for and installs its own updates: through Sparkle on macOS and through its own updater on Linux ([design](design/auto-update.md)). Only a release build updates itself, and only once Luxforge publishes signed updates, which it does not yet; until then a release build says it cannot update itself, and you update by downloading the new version by hand. A development build never updates itself.
 
 **Settings › General** starts with an **Updates** group: the version you are running, **Check now** with when the last check ended and what it found, **Check for updates automatically** (on by default) and **Install updates automatically** (off by default, and unavailable while checks are off). Checks contact `api.luxforge.app` and send only the app version. A build that cannot update itself shows why instead of these controls, for example that it is a development build or that it must be moved into Applications first. The palette's **Check for Updates** checks at once and says what it found in the status bar.
 
