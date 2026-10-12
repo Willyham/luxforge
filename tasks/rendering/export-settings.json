@@ -3,12 +3,12 @@
   "plan_id": "export-settings",
   "title": "Export settings: JPEG, WebP and TIFF with presets, resizing and optimisation",
   "objective": "Deliver an Export sheet with Web, Print and Master presets and the person's own, exporting JPEG, lossy WebP and 8/16-bit TIFF with resizing, optimised encoding, file-size limits and metadata levels through one ExportSettings API, then output sharpening, with declared-tolerance GPU correctness and recorded measurements.",
-  "context_summary": "The owner requested a plan with UX designs (2026-10-07) and chose: JPEG, WebP and TIFF (no DNG); lossy WebP; a sheet that writes directly into its folder with an editable suffix; output sharpening after the core delivery. The owner decided on 2026-10-08 that optimisation and file-size limits have no memory cap, with a large-image warning in the sheet and a progress bar for long exports. Other defaults (preset values, preset storage, Lanczos-3, Annex K tables, the 24 MP warning threshold, the progress-bar rule, metadata levels, shortcuts) are recorded proposals in the design; routine layout and code organisation are delegated. Implementation is not authorized by the planning request. No external inputs block delivery: generated 24/60 MP JPEGs and supplied RAW fixtures suffice; missing native Windows/Linux GPU evidence stays unrun. Re-review against current main and use the roadmap high-tier model minimum. The design, docs/design/export-settings.md, is the contract for every task; its boards are in docs/design/export-settings/.",
+  "context_summary": "The owner requested a plan with UX designs (2026-10-07) and chose: JPEG, WebP and TIFF (no DNG); lossy WebP; a sheet that writes directly into its folder with an editable suffix; output sharpening after the core delivery. The owner decided on 2026-10-08 that optimisation and file-size limits have no memory cap, with a large-image warning in the sheet and a progress bar for long exports. Other defaults (preset values, preset storage, Lanczos-3, Annex K tables, the 24 MP warning threshold, the progress-bar rule, metadata levels, shortcuts) are recorded proposals in the design; routine layout and code organisation are delegated. The owner authorized implementation on 2026-10-12. No external inputs block delivery: generated 24/60 MP JPEGs and supplied RAW fixtures suffice; missing native Windows/Linux GPU evidence stays unrun. Re-review against current main and use the roadmap high-tier model minimum. The design, docs/design/export-settings.md, is the contract for every task; its boards are in docs/design/export-settings/.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Define ExportSettings, export presets and the export API: export.plan with settings, export.write replacing export.jpeg, batch.export with settings, export.presets.* and the remembered last export.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Deliver the settings type, validation, output-size arithmetic, name rule, metadata levels, preset store and command registrations consumed by TASK-005 and TASK-006. Rendering and encoding stay today's (full-size baseline JPEG) until TASK-005 wires the new paths; settings a format or renderer cannot honour yet are refused by name, never ignored.",
@@ -107,7 +107,7 @@
     {
       "id": "TASK-002",
       "description": "Add JPEG quality, chroma and Optimise options to luxforge-jpeg, with the coefficient-memory limit and a bounded limit-file-size search.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Deliver encoder options consumed by TASK-005: quality 1-100, chroma 4:4:4 or 4:2:0, and Optimise (progressive scans, optimised Huffman tables, trellis quantisation) while keeping the standard Annex K quantisation tables for both settings, so a quality value means the same with Optimise on or off.",
@@ -172,7 +172,7 @@
     {
       "id": "TASK-003",
       "description": "Add lossy WebP and 8/16-bit TIFF encoders with ICC and metadata, behind the export encode interface.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Deliver encoders consumed by TASK-005. WebP: pinned libwebp-sys with vendored C source and its mux API; lossy 4:2:0 at a quality, Optimise as the slowest method with sharp RGB-to-YUV; ICCP and EXIF chunks; refuse outputs over 16,383 px a side before encoding. It encodes a whole picture and must accept a borrowed frame without a second full copy where the API allows.",
@@ -242,7 +242,7 @@
     {
       "id": "TASK-004",
       "description": "Render resized and 16-bit export output on the reference renderer and the GPU tile worker, and add both export kinds to gpu-qualification with the design's declared limits.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Deliver render paths consumed by TASK-005: an output size below the stage and an output encoding of 8 or 16 bits per channel.",
