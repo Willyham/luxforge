@@ -16,5 +16,6 @@
 
 pub mod hdr;
 pub(crate) mod job;
+pub mod panorama;
 pub(crate) mod preview;
 pub(crate) mod providers;

@@ -24,12 +24,10 @@ fn resolution(provenance: &MergeProvenance) -> &HdrResolution {
     resolved
 }
 
-// The generator, compiled in from its one source: the core cannot name `luxforge-testkit`, which
-// depends on it. Its `Bracket::write`, which every test here calls before reading a frame, admits
-// the RAW test cameras through the core's own `luxforge_raw`.
-#[allow(dead_code)]
-#[path = "../../../../luxforge-testkit/src/hdr_bracket.rs"]
-mod hdr_bracket;
+// The generator, compiled into the core's tests once (`crate::merge::hdr::hdr_bracket`). Its
+// `Bracket::write`, which every test here calls before reading a frame, admits the RAW test
+// cameras through the core's own `luxforge_raw`.
+use crate::merge::hdr::hdr_bracket;
 
 use hdr_bracket::{Bracket, BracketSpec, HEIGHT, WIDTH};
 
