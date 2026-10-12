@@ -229,9 +229,15 @@ fn a_derived_source_opens_samples_analyses_and_exports_through_the_owner() {
     let exported = opened.settled(&accepted["job_id"]);
     assert_eq!(exported["status"], "ready", "{exported}");
     let mut expected = Vec::new();
-    crate::export::encode::encode_jpeg(&mut expected, &reference, None, None, &mut |_| {}, &|| {
-        Ok(())
-    })
+    crate::export::encode::encode_jpeg(
+        &mut expected,
+        &reference,
+        &crate::export::encode::BASELINE_90,
+        None,
+        None,
+        &mut |_| {},
+        &|| Ok(()),
+    )
     .unwrap();
     assert!(
         fs::read(&destination).unwrap() == expected,

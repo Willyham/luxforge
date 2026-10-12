@@ -371,8 +371,16 @@ fn assert_matches(path: &Path, frame: &crate::Raster, what: &str) {
 /// the job rendered exactly that frame and added nothing to it.
 fn assert_encodes(path: &Path, frame: &crate::Raster, what: &str) {
     let mut expected = Vec::new();
-    crate::export::encode::encode_jpeg(&mut expected, frame, None, None, &mut |_| {}, &|| Ok(()))
-        .unwrap();
+    crate::export::encode::encode_jpeg(
+        &mut expected,
+        frame,
+        &crate::export::encode::BASELINE_90,
+        None,
+        None,
+        &mut |_| {},
+        &|| Ok(()),
+    )
+    .unwrap();
     assert!(
         fs::read(path).unwrap() == expected,
         "{what}: the file is not the encoding of the reference frame"
