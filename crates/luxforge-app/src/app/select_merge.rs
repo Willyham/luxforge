@@ -326,6 +326,10 @@ impl Editor {
                 if serial != self.select.merge_plans {
                     return Task::none();
                 }
+                self.select.plan_answers.push(match &result {
+                    Ok(plan) => json!({"kind": kind, "plan": plan}),
+                    Err(error) => json!({"kind": kind, "error": error}),
+                });
                 if let Some(MergeMenu {
                     kind: MergeMenuKind::Frames { kinds, .. },
                     ..
@@ -1293,6 +1297,7 @@ impl Editor {
         self.select.merge_plans += 1;
         let serial = self.select.merge_plans;
         self.select.plan_sent.clear();
+        self.select.plan_answers.clear();
         let mut tasks = Vec::with_capacity(frames.len());
         for kind in frames {
             let Some((request, _)) = self.selection_request(kind, MergeOptions::default()) else {
@@ -1313,6 +1318,20 @@ impl Editor {
             ));
         }
         Task::batch(tasks)
+    }
+
+    /// No merge read Select draws is in flight: the open menu's plans have all answered, and the
+    /// Info band's `merge.inspect` has. An evidence step waits for these beside
+    /// [`Editor::select_quiet`].
+    pub(crate) fn merge_reads_quiet(&self) -> bool {
+        let merge = &self.select.state.merge;
+        let planned =
+            merge.menu.is_none() || self.select.plan_answers.len() >= self.select.plan_sent.len();
+        let inspected = merge
+            .inspected
+            .as_ref()
+            .is_none_or(|(_, answer)| answer.is_some());
+        planned && inspected
     }
 
     /// The panorama result the Info panel shows alone, inspected once for its band's projection
@@ -1443,10 +1462,20 @@ impl Editor {
             "put_back": merge.put_back.as_ref().map(|put_back| put_back.merge_id.clone()),
             "sheet": sheet,
             "closed": self.select.preview_closed,
-            "menu": merge.menu.is_some(),
+            "menu": self.workspace.select.merge.menu.as_ref().map(|menu| {
+                menu.groups.iter().map(|group| json!({
+                    "heading": group.heading,
+                    "entries": group.entries.iter().map(|entry| json!({
+                        "label": entry.label,
+                        "enabled": entry.action.is_some(),
+                        "reason": entry.reason,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>()
+            }),
             "sent": self.select.merge_sent,
             "stack": self.select.stack_sent,
             "plan": self.select.plan_sent,
+            "plan_answers": self.select.plan_answers,
             "inspect": self.select.inspect_sent,
             "record": self.select.merge_record,
             "preview_record": self.select.preview_record,

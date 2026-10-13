@@ -228,7 +228,7 @@ impl Editor {
         }
         // A gesture that asked the owner for nothing (the Metadata browser opened over counts it
         // holds) is captured at once; any other once what it asked for has answered.
-        if self.select_quiet() {
+        if self.select_quiet() && self.merge_reads_quiet() {
             self.capture_next_frame();
         } else {
             self.await_step(Settle::Select);
@@ -238,7 +238,7 @@ impl Editor {
 
     /// A right-click on the grid cell showing view position `position`, at its centre, as the grid
     /// publishes it.
-    fn context_press(&self, position: u32) -> Result<Vec<Message>, String> {
+    pub(super) fn context_press(&self, position: u32) -> Result<Vec<Message>, String> {
         let layout = &self.select.layout;
         let cell = layout
             .cell_of_item(position)
