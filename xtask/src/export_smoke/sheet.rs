@@ -193,10 +193,17 @@ fn plan(sources: &[PathBuf]) -> Plan {
                 ..SheetEdit::default()
             },
         ),
+        // An optimised full-chroma JPEG at quality 100 under the smallest size limit: the limit
+        // search encodes the whole frame several times, so the export runs for seconds however
+        // quickly this host encodes one flat frame, and it is cancelled before it ends.
         edit(
             "large-warned",
             SheetEdit {
                 format: Some("jpeg".into()),
+                quality: Some(100),
+                chroma: Some("full".into()),
+                limit: Some(true),
+                limit_kb: Some("11".into()),
                 ..SheetEdit::default()
             },
         ),
@@ -677,7 +684,14 @@ fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                         .as_str()
                         .is_some_and(|text| text.starts_with("1 photo will be left out"))
             })
-            && model(edited)["can_export"] == true,
+            && model(edited)["can_export"] == true
+            && model(edited)["export_label"] == format!("Export {}", count - 1)
+            && model(edited)["summary"].as_str().is_some_and(|summary| {
+                summary.starts_with(&format!(
+                    "{} files \u{b7} 1 left out \u{b7} WebP",
+                    count - 1
+                ))
+            }),
         format!(
             "The batch sheet does not say which photograph it leaves out: {}",
             model(edited)
