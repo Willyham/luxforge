@@ -35,39 +35,51 @@ fn resample_cuts_cover_the_output_once_within_their_bounds() {
     ] {
         let columns = taps(stage.0, output.0, reach);
         let rows = taps(stage.1, output.1, reach);
-        let cuts = resample_cuts(&columns, &rows, limit).unwrap();
-        let mut seen = vec![0u8; output.0 as usize * output.1 as usize];
-        let mut last = (0u32, 0u32);
-        for cut in &cuts {
-            assert!(
-                (cut.rows.start, cut.columns.start) >= last,
-                "{stage:?} -> {output:?}: in order"
-            );
-            last = (cut.rows.start, cut.columns.start);
-            assert!(cut.rows.len() <= RESAMPLE_ROWS as usize);
-            let window = ResampleCut {
-                columns: &columns[cut.columns.start as usize..cut.columns.end as usize],
-                rows: &rows[cut.rows.start as usize..cut.rows.end as usize],
-                depth: ResampleDepth::Sixteen,
-            }
-            .window()
-            .unwrap();
-            let side = limit.min(RESAMPLE_SIDE);
-            assert!(window[2] <= side && window[3] <= side, "{window:?}");
-            assert!(
-                u64::from(window[2]) * u64::from(window[3]) <= RESAMPLE_SCRATCH_TEXELS,
-                "{window:?}"
-            );
-            for y in cut.rows.clone() {
-                for x in cut.columns.clone() {
-                    seen[(y * output.0 + x) as usize] += 1;
+        for margin in [0, 9] {
+            // A 100-fold reduction sharpened with the widest margin: one output pixel's window, with
+            // the 9 pixels either side its sharpening reads, can hold more than the scratch, and is
+            // refused for the reference to draw.
+            let cuts = match resample_cuts(&columns, &rows, limit, margin) {
+                Err(GpuFallback::TextureLimit { .. }) if margin > 0 && reach >= 300 => continue,
+                cuts => cuts.unwrap(),
+            };
+            let mut seen = vec![0u8; output.0 as usize * output.1 as usize];
+            let mut last = (0u32, 0u32);
+            for cut in &cuts {
+                assert!(
+                    (cut.rows.start, cut.columns.start) >= last,
+                    "{stage:?} -> {output:?}: in order"
+                );
+                last = (cut.rows.start, cut.columns.start);
+                assert!(cut.rows.len() <= RESAMPLE_ROWS as usize);
+                // A sharpened cut's window holds its margin too.
+                let across = extended(&cut.columns, margin, columns.len());
+                let down = extended(&cut.rows, margin, rows.len());
+                let window = ResampleCut {
+                    columns: &columns[across.start as usize..across.end as usize],
+                    rows: &rows[down.start as usize..down.end as usize],
+                    depth: ResampleDepth::Sixteen,
+                    sharpen: None,
+                }
+                .window()
+                .unwrap();
+                let side = limit.min(RESAMPLE_SIDE);
+                assert!(window[2] <= side && window[3] <= side, "{window:?}");
+                assert!(
+                    u64::from(window[2]) * u64::from(window[3]) <= RESAMPLE_SCRATCH_TEXELS,
+                    "{window:?}"
+                );
+                for y in cut.rows.clone() {
+                    for x in cut.columns.clone() {
+                        seen[(y * output.0 + x) as usize] += 1;
+                    }
                 }
             }
+            assert!(
+                seen.iter().all(|&count| count == 1),
+                "{stage:?} -> {output:?} with a margin of {margin}"
+            );
         }
-        assert!(
-            seen.iter().all(|&count| count == 1),
-            "{stage:?} -> {output:?}"
-        );
     }
 }
 
@@ -78,11 +90,11 @@ fn resample_cuts_refuse_taps_no_window_holds() {
     let columns = taps(20000, 2, 6000);
     let rows = taps(10, 10, 0);
     assert!(matches!(
-        resample_cuts(&columns, &rows, 16384),
+        resample_cuts(&columns, &rows, 16384, 0),
         Err(GpuFallback::TextureLimit { .. })
     ));
     assert!(matches!(
-        resample_cuts(&[], &rows, 16384),
+        resample_cuts(&[], &rows, 16384, 0),
         Err(GpuFallback::TextureLimit { .. })
     ));
 }
@@ -98,6 +110,7 @@ fn resample_passes_and_thresholds_are_valid() {
     super::super::validate(across_source()).unwrap();
     for depth in [ResampleDepth::Eight, ResampleDepth::Sixteen] {
         super::super::validate(&down_source(depth).unwrap()).unwrap();
+        super::super::validate(&sharpen_source(depth)).unwrap();
     }
     let (words, weights) = packed(
         &[
@@ -114,4 +127,46 @@ fn resample_passes_and_thresholds_are_valid() {
     );
     assert_eq!(words, [0, 2, 0, 1, 1, 2]);
     assert_eq!(weights, [0.25, 0.75, 1.0]);
+}
+
+/// A sharpened cut reads back its interior alone and charges its kernel, its uniform words and
+/// its sharpened codes beside the extended cut's own buffers.
+#[test]
+fn a_sharpened_cut_reads_back_its_interior_and_charges_its_pass() {
+    let columns = taps(100, 50, 2);
+    let rows = taps(80, 40, 2);
+    let weights = [0.25f32, 0.5, 0.25];
+    let plain = ResampleCut {
+        columns: &columns[3..20],
+        rows: &rows[0..12],
+        depth: ResampleDepth::Eight,
+        sharpen: None,
+    };
+    let sharpened = ResampleCut {
+        sharpen: Some(CutSharpen {
+            weights: &weights,
+            amount: 0.7,
+            interior: [1, 0, 15, 11],
+        }),
+        ..plain
+    };
+    assert_eq!(plain.read_back(), (17, 12));
+    assert_eq!(sharpened.read_back(), (15, 11));
+    let (before, after) = (
+        cut_buffers(&plain).unwrap(),
+        cut_buffers(&sharpened).unwrap(),
+    );
+    assert_eq!(after.readback, 15 * 11 * 4);
+    assert_eq!(after.sharpened, 3 * 4 + SHARPEN_PARAMS_BYTES + 15 * 11 * 4);
+    assert_eq!(
+        after.codes, before.codes,
+        "the extended cut's codes are computed whole"
+    );
+    assert_eq!(before.sharpened, 0);
+    assert_eq!(
+        extended(&(0..5), 3, 40),
+        0..8,
+        "a margin stops at the output's edges"
+    );
+    assert_eq!(extended(&(30..40), 3, 40), 27..40);
 }

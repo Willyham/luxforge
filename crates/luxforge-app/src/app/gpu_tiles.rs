@@ -81,12 +81,15 @@ use luxforge_core::{
         Answered, Band, BandSender, BandStream, Depth, EXPORT_BANDS_IN_FLIGHT, OutputSpec, Pixels,
         ReadAnswer, ReadPixels, ReadStage, ReadValues, ReferenceReads, TILE_QUEUE_CAPACITY,
         TileCall, TileFallback, TileReads, TileService, TileSession, TileStatus, TileUnavailable,
-        clipped, lanczos_taps,
+        clipped, lanczos_taps, sharpen::WEIGHT_SUM,
     },
 };
 use luxforge_gpu::{
     Derivation, GpuBoundary, GpuSource,
-    resample::{ResampleCut, ResampleDepth, ResampleRange, ResampleTaps, resample_charge},
+    resample::{
+        CutSharpen, ResampleCut, ResampleDepth, ResampleRange, ResampleTaps, extended,
+        resample_charge,
+    },
     tiles::GPU_TILE_BUDGET,
     tiles::TILES_IN_FLIGHT,
     tiles::Ticket,
@@ -550,8 +553,8 @@ impl TileService for GpuTiles {
     /// the side its every tile fits at when it begins drawing it. A worker that could not start,
     /// has stopped or already holds as many streams as calls ends the stream at once with why, as
     /// does an `output` larger than the output stage or empty (`validation`). An output smaller
-    /// than the stage, or at 16 bits, is resampled from the held output stage
-    /// (`luxforge_gpu::resample`).
+    /// than the stage, at 16 bits or sharpened is resampled, and sharpened, from the held output
+    /// stage (`luxforge_gpu::resample`).
     fn stream(
         &self,
         evaluation: &Stack,
@@ -729,11 +732,15 @@ struct Drawing {
     resample: Option<Resampling>,
 }
 
-/// A resampled stream (`luxforge_gpu::resample`): an output smaller than the output stage, or at 16
-/// bits. Its tiles draw their linear values into the output stage the runner holds, two in flight;
-/// its cuts are then read back band by band, as a full-size stream's tiles are.
+/// A resampled stream (`luxforge_gpu::resample`): an output smaller than the output stage, at 16
+/// bits, or sharpened. Its tiles draw their linear values into the output stage the runner holds,
+/// two in flight; its cuts are then read back band by band, as a full-size stream's tiles are, a
+/// sharpened stream's each computed its kernel's radius wider and its interior sharpened.
 struct Resampling {
     depth: ResampleDepth,
+    /// The output sharpening's weights, the core's own over their sum, and its amount as a
+    /// fraction; `None` unsharpened.
+    sharpen: Option<(Vec<f32>, f32)>,
     /// Each output column's and row's taps, the core's own narrowed to `f32`.
     columns: Vec<ResampleTaps>,
     rows: Vec<ResampleTaps>,
@@ -746,13 +753,30 @@ struct Resampling {
 }
 
 impl Resampling {
-    /// The cut `index` as the runner draws it.
+    /// The cut `index` as the runner draws it: a sharpened stream's extended by its radius on
+    /// every side the output has room for, its interior the cut's own range.
     fn cut(&self, index: usize) -> ResampleCut<'_> {
         let range = &self.cuts[index];
+        let margin = self
+            .sharpen
+            .as_ref()
+            .map_or(0, |(weights, _)| (weights.len() / 2) as u32);
+        let columns = extended(&range.columns, margin, self.columns.len());
+        let rows = extended(&range.rows, margin, self.rows.len());
         ResampleCut {
-            columns: &self.columns[range.columns.start as usize..range.columns.end as usize],
-            rows: &self.rows[range.rows.start as usize..range.rows.end as usize],
+            columns: &self.columns[columns.start as usize..columns.end as usize],
+            rows: &self.rows[rows.start as usize..rows.end as usize],
             depth: self.depth,
+            sharpen: self.sharpen.as_ref().map(|(weights, amount)| CutSharpen {
+                weights,
+                amount: *amount,
+                interior: [
+                    range.columns.start - columns.start,
+                    range.rows.start - rows.start,
+                    range.columns.end - range.columns.start,
+                    range.rows.end - range.rows.start,
+                ],
+            }),
         }
     }
 }
@@ -1884,14 +1908,14 @@ impl Worker {
     }
 
     /// A resampled stream's cuts of `output` from a `stage` output stage, and what its held stage
-    /// and largest cut take: `None` for the stage's own size at 8 bits, which is read back as its
-    /// tiles' codes.
+    /// and largest cut take: `None` for the stage's own size at 8 bits unsharpened, which is read
+    /// back as its tiles' codes.
     fn resampling(
         &self,
         output: OutputSpec,
         stage: (u32, u32),
     ) -> Result<Option<(Resampling, u64, u64)>, TileFallback> {
-        if output.is_full(stage.0, stage.1) && output.depth == Depth::Eight {
+        if output.is_exact_frame(stage.0, stage.1) {
             return Ok(None);
         }
         let taps = |from, to| {
@@ -1911,8 +1935,23 @@ impl Worker {
             Depth::Eight => ResampleDepth::Eight,
             Depth::Sixteen => ResampleDepth::Sixteen,
         };
+        // The core's own kernel, each whole weight over their sum, and its amount.
+        let sharpen = output.sharpen.map(|sharpen| {
+            let kernel = sharpen.kernel();
+            let weights = kernel
+                .weights
+                .iter()
+                .map(|weight| (*weight as f64 / WEIGHT_SUM as f64) as f32)
+                .collect::<Vec<_>>();
+            (weights, kernel.percent as f32 / 100.0)
+        });
+        let margin = sharpen
+            .as_ref()
+            .map_or(0, |(weights, _)| (weights.len() / 2) as u32);
         let runner = self.runner()?;
-        let cuts = runner.resample_cuts(&columns, &rows).map_err(fallback_of)?;
+        let cuts = runner
+            .resample_cuts(&columns, &rows, margin)
+            .map_err(fallback_of)?;
         let held = runner.output_charge(stage).map_err(fallback_of)?;
         drop(runner);
         let mut band_of = Vec::with_capacity(cuts.len());
@@ -1926,6 +1965,7 @@ impl Worker {
         }
         let resampling = Resampling {
             depth,
+            sharpen,
             columns,
             rows,
             cuts,

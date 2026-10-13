@@ -18,6 +18,15 @@
 //! - **Encoding.** 8-bit codes through the installed output encoding's thresholds, as the photo
 //!   surface's output quantizer encodes them ([`super::tail::encoding`]); 16-bit codes through the
 //!   core's 16-bit thresholds ([`install_wide_encoding`]), searched in a storage buffer.
+//! - **Output sharpening.** A sharpened cut ([`CutSharpen`]) is computed `r` output pixels wider
+//!   on every side the output has room for, its kernel's radius, so a third pass reads the
+//!   neighbours of every pixel it writes, whichever cut they lie in: for each pixel of the cut's
+//!   interior it takes the luma `Y′` of the codes (Rec. 709's weights on the encoded values), blurs
+//!   it by the core's Gaussian weights across and down, a coordinate past the extended cut clamped
+//!   to its edge (which is the output's edge wherever it matters), and adds
+//!   `round(a · (Y′ − blur))`, held so no channel clips, to all three codes, in `f32`, as the
+//!   core's reference does in whole numbers (`luxforge_core::tiles::sharpen`). Only the interior
+//!   is read back.
 //! - **Bounds.** A cut's window is at most the device's largest texture side, at most 8,192, either
 //!   way, and at most [`RESAMPLE_SCRATCH_TEXELS`] texels, so one output pixel's taps span at most
 //!   2,048 × 2,048 stage pixels at an even reduction, about 340 times; a cut holds at most
@@ -77,12 +86,31 @@ pub struct ResampleRange {
     pub rows: std::ops::Range<u32>,
 }
 
-/// One cut of an output: its columns' and rows' taps, and the depth it is encoded at.
+/// One cut of an output: its columns' and rows' taps, and the depth it is encoded at. A sharpened
+/// cut's taps are its extended rectangle's, its interior within them ([`CutSharpen`]).
 #[derive(Clone, Copy, Debug)]
 pub struct ResampleCut<'a> {
     pub columns: &'a [ResampleTaps],
     pub rows: &'a [ResampleTaps],
     pub depth: ResampleDepth,
+    pub sharpen: Option<CutSharpen<'a>>,
+}
+
+/// A cut's output sharpening: one axis's Gaussian weights, `2r + 1` summing to one, the amount
+/// as a fraction, and the interior read back, `[left, top, width, height]` in output pixels of the
+/// extended cut its taps describe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CutSharpen<'a> {
+    pub weights: &'a [f32],
+    pub amount: f32,
+    pub interior: [u32; 4],
+}
+
+impl CutSharpen<'_> {
+    /// Taps a side, `r`.
+    pub fn radius(&self) -> u32 {
+        (self.weights.len() / 2) as u32
+    }
 }
 
 /// The stage pixels `taps` read, `[first, end)`; `None` for no taps.
@@ -93,6 +121,14 @@ fn span(taps: &[ResampleTaps]) -> Option<(u32, u32)> {
 }
 
 impl ResampleCut<'_> {
+    /// The output pixels it reads back, `(columns, rows)`: a sharpened cut's interior, or all of it.
+    pub fn read_back(&self) -> (u32, u32) {
+        match &self.sharpen {
+            Some(sharpen) => (sharpen.interior[2], sharpen.interior[3]),
+            None => (self.columns.len() as u32, self.rows.len() as u32),
+        }
+    }
+
     /// The window of the stage its taps read, `[x, y, width, height]`.
     pub fn window(&self) -> Option<[u32; 4]> {
         let (x0, x1) = span(self.columns)?;
@@ -101,15 +137,23 @@ impl ResampleCut<'_> {
     }
 }
 
+/// The output pixels `range` of `len` reaches with `margin` more on either side, within `[0, len)`.
+pub fn extended(range: &std::ops::Range<u32>, margin: u32, len: usize) -> std::ops::Range<u32> {
+    range.start.saturating_sub(margin)..(range.end.saturating_add(margin)).min(len as u32)
+}
+
 /// The cuts of an output whose columns' and rows' taps are `columns` and `rows`, on a device whose
 /// largest texture side is `limit` ([module documentation](self), "Bounds"): bands of at most
 /// [`RESAMPLE_ROWS`] whole output rows, top to bottom, each cut across into windows the scratch
-/// holds, left to right. Refused, `texture-limit`, where one output pixel's taps reach past a
-/// window's largest side, and for an empty output.
+/// holds, left to right. Each range is the cut's interior: a sharpened output's cuts are computed
+/// `margin` output pixels wider on each side ([`extended`]), and their windows hold that. Refused,
+/// `texture-limit`, where one output pixel's taps, with the margin's, reach past a window's
+/// largest side, and for an empty output.
 pub fn resample_cuts(
     columns: &[ResampleTaps],
     rows: &[ResampleTaps],
     limit: u32,
+    margin: u32,
 ) -> Result<Vec<ResampleRange>, GpuFallback> {
     let side = limit.clamp(1, RESAMPLE_SIDE);
     let refused = |width: u32, height: u32| GpuFallback::TextureLimit {
@@ -119,49 +163,58 @@ pub fn resample_cuts(
     };
     span(columns).ok_or(refused(0, 0))?;
     span(rows).ok_or(refused(0, 0))?;
+    // The stage pixels the output pixels `range` read, with the margin's.
+    let reach = |taps: &[ResampleTaps], range: std::ops::Range<u32>| {
+        let range = extended(&range, margin, taps.len());
+        span(&taps[range.start as usize..range.end as usize]).expect("a range of taps")
+    };
     // The rows a band's window may hold: as many as leave room across for the widest one output
-    // column's taps, so a band is cut across into windows as narrow as one column needs.
-    let across = columns
-        .iter()
-        .map(|taps| taps.weights.len() as u32)
+    // column's taps, with the margin's, so a band is cut across into windows as narrow as one
+    // column needs.
+    let across = (0..columns.len() as u32)
+        .map(|column| {
+            let (first, end) = reach(columns, column..column + 1);
+            end - first
+        })
         .max()
         .unwrap_or(1)
         .clamp(1, side);
     let tallest = (RESAMPLE_SCRATCH_TEXELS / u64::from(across)).min(u64::from(side)) as u32;
     let mut cuts = Vec::new();
-    let mut top = 0;
-    while top < rows.len() {
+    let mut top = 0u32;
+    let height = rows.len() as u32;
+    while top < height {
         let mut bottom = top + 1;
-        let (first, mut end) = (rows[top].first, rows[top].end());
+        let (first, end) = reach(rows, top..bottom);
         if end - first > tallest {
             return Err(refused(across, end - first));
         }
-        while bottom < rows.len()
-            && bottom - top < RESAMPLE_ROWS as usize
-            && rows[bottom].end().max(end) - first.min(rows[bottom].first) <= tallest
-        {
-            end = end.max(rows[bottom].end());
+        while bottom < height && bottom - top < RESAMPLE_ROWS && {
+            let (first, end) = reach(rows, top..bottom + 1);
+            end - first <= tallest
+        } {
             bottom += 1;
         }
-        let (first, end) = span(&rows[top..bottom]).expect("a band of rows");
+        let (first, end) = reach(rows, top..bottom);
         let high = end - first;
         let widest = (RESAMPLE_SCRATCH_TEXELS / u64::from(high)).min(u64::from(side)) as u32;
-        let mut left = 0;
-        while left < columns.len() {
-            let (start, mut stop) = (columns[left].first, columns[left].end());
+        let mut left = 0u32;
+        let width = columns.len() as u32;
+        while left < width {
+            let (start, stop) = reach(columns, left..left + 1);
             if stop - start > widest {
                 return Err(refused(stop - start, high));
             }
             let mut right = left + 1;
-            while right < columns.len()
-                && columns[right].end().max(stop) - start.min(columns[right].first) <= widest
-            {
-                stop = stop.max(columns[right].end());
+            while right < width && {
+                let (start, stop) = reach(columns, left..right + 1);
+                stop - start <= widest
+            } {
                 right += 1;
             }
             cuts.push(ResampleRange {
-                columns: left as u32..right as u32,
-                rows: top as u32..bottom as u32,
+                columns: left..right,
+                rows: top..bottom,
             });
             left = right;
         }
@@ -195,8 +248,9 @@ pub(crate) fn float_bytes(values: &[f32]) -> Vec<u8> {
 }
 
 /// The bytes of each buffer a cut creates, in the order [`super::tiles::TileRunner`] creates them:
-/// the scratch window, the sums across, the columns' and rows' words and weights, the codes and the
-/// readback copy. `None` for a cut with no taps.
+/// the scratch window, the sums across, the columns' and rows' words and weights, the codes, a
+/// sharpened cut's kernel, uniform words and sharpened codes, and the readback copy. `None` for a
+/// cut with no taps.
 pub(crate) fn cut_buffers(cut: &ResampleCut<'_>) -> Option<CutBytes> {
     let [_, _, width, height] = cut.window()?;
     let (columns, rows) = (cut.columns.len() as u64, cut.rows.len() as u64);
@@ -205,13 +259,20 @@ pub(crate) fn cut_buffers(cut: &ResampleCut<'_>) -> Option<CutBytes> {
             .map(|taps| taps.weights.len() as u64)
             .sum::<u64>()
     };
-    let codes = columns * rows * u64::from(cut.depth.pixel_bytes());
+    let pixel = u64::from(cut.depth.pixel_bytes());
+    let codes = columns * rows * pixel;
+    let (read_columns, read_rows) = cut.read_back();
+    let readback = u64::from(read_columns) * u64::from(read_rows) * pixel;
+    let sharpened = cut.sharpen.as_ref().map_or(0, |sharpen| {
+        sharpen.weights.len() as u64 * 4 + SHARPEN_PARAMS_BYTES + readback
+    });
     Some(CutBytes {
         scratch: u64::from(width) * u64::from(height) * 16,
         across: columns * u64::from(height) * 16,
         taps: (columns + rows) * 12 + (weights(cut.columns) + weights(cut.rows)) * 4,
         codes,
-        readback: codes,
+        sharpened,
+        readback,
     })
 }
 
@@ -222,13 +283,15 @@ pub(crate) struct CutBytes {
     pub across: u64,
     pub taps: u64,
     pub codes: u64,
+    /// A sharpened cut's kernel, uniform words and sharpened codes; none for another.
+    pub sharpened: u64,
     pub readback: u64,
 }
 
 impl CutBytes {
     /// Everything but its readback copy, which the GPU holds until it is done with the cut.
     pub fn transient(&self) -> u64 {
-        self.scratch + self.across + self.taps + self.codes + PARAMS_BYTES
+        self.scratch + self.across + self.taps + self.codes + self.sharpened + PARAMS_BYTES
     }
 
     pub fn total(&self) -> u64 {
@@ -244,6 +307,9 @@ pub fn resample_charge(cut: &ResampleCut<'_>) -> u64 {
 
 /// The bytes of a cut's uniform words.
 pub(crate) const PARAMS_BYTES: u64 = 16;
+
+/// The bytes of a sharpened cut's uniform words.
+pub(crate) const SHARPEN_PARAMS_BYTES: u64 = 32;
 
 /// The bytes of the 16-bit thresholds' buffer.
 pub(crate) const WIDE_BYTES: u64 = (WIDE_THRESHOLDS * 4) as u64;
@@ -382,6 +448,91 @@ fn lf_resample_down(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 ";
 
+/// The sharpening pass, before its entry: each interior pixel's luma blurred across and down from
+/// the extended cut's codes, its change rounded half away from zero, held so no channel clips, and
+/// added to its three codes.
+const SHARPEN: &str = "
+struct LfSharpen {
+    columns: u32, rows: u32, left: u32, top: u32,
+    width: u32, height: u32, radius: u32, amount: f32,
+}
+@group(0) @binding(0) var<uniform> lf_sharpen: LfSharpen;
+@group(0) @binding(1) var<storage, read> lf_kernel: array<f32>;
+@group(0) @binding(2) var<storage, read> lf_codes: array<u32>;
+@group(0) @binding(3) var<storage, read_write> lf_sharpened: array<u32>;
+
+fn lf_luma(rgb: vec3<f32>) -> f32 {
+    return dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// The interior pixel `id` sharpened: its codes and their change, held to [0, top].
+fn lf_sharpened_rgb(id: vec3<u32>, top: f32) -> vec3<f32> {
+    let r = i32(lf_sharpen.radius);
+    let x = i32(lf_sharpen.left + id.x);
+    let y = i32(lf_sharpen.top + id.y);
+    var blurred = 0.0;
+    for (var dy = -r; dy <= r; dy = dy + 1) {
+        let yy = u32(clamp(y + dy, 0, i32(lf_sharpen.rows) - 1));
+        var across = 0.0;
+        for (var dx = -r; dx <= r; dx = dx + 1) {
+            let xx = u32(clamp(x + dx, 0, i32(lf_sharpen.columns) - 1));
+            across = across + lf_kernel[u32(dx + r)] * lf_luma(lf_rgb(xx, yy));
+        }
+        blurred = blurred + lf_kernel[u32(dy + r)] * across;
+    }
+    let rgb = lf_rgb(u32(x), u32(y));
+    let high = lf_sharpen.amount * (lf_luma(rgb) - blurred);
+    var change = sign(high) * floor(abs(high) + 0.5);
+    change = clamp(change, -min(rgb.r, min(rgb.g, rgb.b)), top - max(rgb.r, max(rgb.g, rgb.b)));
+    return rgb + vec3<f32>(change);
+}
+";
+
+/// The sharpening pass's entry at 8 bits: a word a pixel.
+const SHARPEN_EIGHT: &str = "
+fn lf_rgb(x: u32, y: u32) -> vec3<f32> {
+    let word = lf_codes[y * lf_sharpen.columns + x];
+    return vec3<f32>(f32(word & 255u), f32((word >> 8u) & 255u), f32((word >> 16u) & 255u));
+}
+
+@compute @workgroup_size(8, 8)
+fn lf_sharpen_codes(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= lf_sharpen.width || id.y >= lf_sharpen.height {
+        return;
+    }
+    let rgb = vec3<u32>(lf_sharpened_rgb(id, 255.0));
+    lf_sharpened[id.y * lf_sharpen.width + id.x] = rgb.r | (rgb.g << 8u) | (rgb.b << 16u) | (255u << 24u);
+}
+";
+
+/// The sharpening pass's entry at 16 bits: two words a pixel.
+const SHARPEN_SIXTEEN: &str = "
+fn lf_rgb(x: u32, y: u32) -> vec3<f32> {
+    let at = (y * lf_sharpen.columns + x) * 2u;
+    let first = lf_codes[at];
+    return vec3<f32>(f32(first & 65535u), f32(first >> 16u), f32(lf_codes[at + 1u] & 65535u));
+}
+
+@compute @workgroup_size(8, 8)
+fn lf_sharpen_codes(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= lf_sharpen.width || id.y >= lf_sharpen.height {
+        return;
+    }
+    let rgb = vec3<u32>(lf_sharpened_rgb(id, 65535.0));
+    let at = (id.y * lf_sharpen.width + id.x) * 2u;
+    lf_sharpened[at] = rgb.r | (rgb.g << 16u);
+    lf_sharpened[at + 1u] = rgb.b | (65535u << 16u);
+}
+";
+
+/// The source of the sharpening pass at `depth`.
+pub(crate) fn sharpen_source(depth: ResampleDepth) -> String {
+    match depth {
+        ResampleDepth::Eight => format!("{SHARPEN}{SHARPEN_EIGHT}"),
+        ResampleDepth::Sixteen => format!("{SHARPEN}{SHARPEN_SIXTEEN}"),
+    }
+}
+
 /// The source of the pass across.
 pub(crate) fn across_source() -> &'static str {
     ACROSS
@@ -402,6 +553,10 @@ pub(crate) struct Pipelines {
     pub eight: wgpu::ComputePipeline,
     pub sixteen: wgpu::ComputePipeline,
     pub down_layout: wgpu::BindGroupLayout,
+    /// The sharpening pass at 8 and 16 bits.
+    pub sharpen_eight: wgpu::ComputePipeline,
+    pub sharpen_sixteen: wgpu::ComputePipeline,
+    pub sharpen_layout: wgpu::BindGroupLayout,
 }
 
 impl Pipelines {
@@ -454,6 +609,16 @@ impl Pipelines {
                     buffer(5, Some(true)),
                 ],
             });
+            let sharpen_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("luxforge.resample.sharpen"),
+                    entries: &[
+                        buffer(0, None),
+                        buffer(1, Some(true)),
+                        buffer(2, Some(true)),
+                        buffer(3, Some(false)),
+                    ],
+                });
             let pipeline = |label, source: &str, entry, layout: &wgpu::BindGroupLayout| {
                 let module = super::validate(source)?;
                 let pipeline_layout =
@@ -496,8 +661,21 @@ impl Pipelines {
                     "lf_resample_down",
                     &down_layout,
                 )?,
+                sharpen_eight: pipeline(
+                    "luxforge.resample.sharpen.eight",
+                    &sharpen_source(ResampleDepth::Eight),
+                    "lf_sharpen_codes",
+                    &sharpen_layout,
+                )?,
+                sharpen_sixteen: pipeline(
+                    "luxforge.resample.sharpen.sixteen",
+                    &sharpen_source(ResampleDepth::Sixteen),
+                    "lf_sharpen_codes",
+                    &sharpen_layout,
+                )?,
                 across_layout,
                 down_layout,
+                sharpen_layout,
             })
         })();
         let validation = super::answered(device.pop_error_scope());
