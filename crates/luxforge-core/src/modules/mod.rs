@@ -187,9 +187,11 @@ pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
 pub(crate) use repair::{RepairKind, RepairOperation};
 pub use selection_proof::PROOF_SELECTION_ARTIFACT;
 pub(crate) use selection_proof::SelectionProofModule;
+#[cfg(any(test, feature = "qualification"))]
+pub(crate) use spatial::ESTIMATE_REDUCTION;
 pub(crate) use spatial::{
-    ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
-    PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
+    Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction,
+    SPATIAL_BUDGET_BYTES, SpatialUnit, estimate_reduction,
 };
 pub use spatial::{MAX_MASKED_SPATIAL_LAYERS, Region, SpatialOperation};
 pub use vignette::VIGNETTE_EFFECT;

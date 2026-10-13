@@ -6,12 +6,13 @@
 //!
 //! The block is generated from the descriptor, so any module that declares settings, resources or
 //! tasks gets the same surface: one row per resource, a settings form of the module-level fields
-//! drawn with the tool panel's own control kinds, the permission counts with Revoke all, and one
-//! status line. What it does not draw — provider profiles, secrets, single grants — is reached
-//! through the `module.*` methods every client calls.
+//! drawn with the tool panel's own control kinds, and one status line; a fill module's models are
+//! drawn as its setup instead ([`crate::state::fill_setup`]). What it does not draw — provider
+//! profiles, secrets, grants — is reached through the `module.*` methods every client calls.
 use crate::state::{
     Inputs,
     canvas::{Notice, NoticeAction, NoticeIcon, NoticeTone},
+    fill_setup::{self, SetupModel},
     number::{NumberSpec, number_text},
     settings::{resource_offered, task_offered},
 };
@@ -151,9 +152,6 @@ pub(crate) enum Operation {
     Cancel {
         job: String,
     },
-    /// Withdraw every live grant of the module: `module.permission.list`, then one
-    /// `module.permission.revoke` per live grant.
-    RevokeAll,
     RunTask {
         task: String,
         asset: Option<AssetId>,
@@ -179,7 +177,6 @@ impl Operation {
             Self::Remove { .. } => "remove",
             Self::Unload { .. } => "unload",
             Self::Cancel { .. } => "cancel",
-            Self::RevokeAll => "revoke-all",
             Self::RunTask { .. } => "task",
             Self::Consent { allow: true, .. } => "allow",
             Self::Consent { allow: false, .. } => "deny",
@@ -381,13 +378,11 @@ pub(crate) struct CapabilityModel {
     pub(crate) loading: bool,
     /// Nothing is in flight for this module, so its buttons may send.
     pub(crate) enabled: bool,
+    /// The fill module's setup, drawn first; the resources it covers have no row of their own.
+    pub(crate) setup: Option<SetupModel>,
     pub(crate) resources: Vec<ResourceRowModel>,
     /// The module-level settings, each drawn as the tools panel draws a control of its kind.
     pub(crate) fields: Vec<FieldModel>,
-    /// `2 permissions · 1 declined`, from the counts `module.status` reports.
-    pub(crate) permissions: String,
-    /// Some grant is live, so Revoke all has something to withdraw.
-    pub(crate) revoke_all: bool,
     /// The one status line: a failure, a conflict, or settings the module cannot use.
     pub(crate) status_line: Option<String>,
 }
@@ -399,8 +394,7 @@ pub(crate) enum ResourceAction {
     Remove,
 }
 
-/// One resource on one row: its title, `v1 · 20 B · Installing 35%`, and the one action its state
-/// allows.
+/// One resource: its title, `v1 · 20 B · Installing 35%`, and the one action its state allows.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResourceRowModel {
     pub(crate) id: String,
@@ -486,7 +480,12 @@ pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<
         return None;
     }
     let state = inputs.capabilities.module(&module.id);
-    let counts = state.permission_counts();
+    let setup = fill_setup::derive(module, state, flags);
+    let covered = |id: &str| {
+        setup
+            .as_ref()
+            .is_some_and(|setup| setup.covers.iter().any(|covered| covered == id))
+    };
     Some(CapabilityModel {
         module_id: module.id.clone(),
         loading: state.settings.is_none() && state.status.is_none() && state.message.is_none(),
@@ -494,12 +493,11 @@ pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<
         resources: module
             .resources
             .iter()
-            .filter(|declared| resource_offered(flags, declared))
+            .filter(|declared| resource_offered(flags, declared) && !covered(&declared.id))
             .map(|declared| resource_row(declared, state))
             .collect(),
+        setup,
         fields: settings_form(module, state),
-        permissions: permissions_text(counts),
-        revoke_all: counts.live > 0,
         status_line: status_line(state),
     })
 }
@@ -525,7 +523,7 @@ fn progress_percent(job: Option<&JobRecord>) -> String {
 }
 
 /// A tracked job by id, falling back to the status's own record of it.
-fn job<'a>(state: &'a ModuleCapabilities, id: &str) -> Option<&'a JobRecord> {
+pub(crate) fn job<'a>(state: &'a ModuleCapabilities, id: &str) -> Option<&'a JobRecord> {
     state
         .jobs
         .iter()
@@ -571,15 +569,23 @@ fn resource_row(declared: &ResourceDescriptor, state: &ModuleCapabilities) -> Re
     ResourceRowModel {
         id: declared.id.clone(),
         title: declared.title.clone(),
-        detail: format!(
-            "{} · {}",
-            version_label(&declared.version),
-            human_bytes(declared.total_bytes())
-        ),
+        detail: resource_detail(&declared.version, declared.total_bytes()),
         state: text,
         progress,
         action,
         job: job_id,
+    }
+}
+
+/// A resource row's version and size: `v1 · 20 B`. A version that names its files
+/// (`klein-4b-q4_0-…`) is too long for the tools panel, so the row gives only the size and
+/// Settings › Models shows the version in full.
+pub(crate) fn resource_detail(version: &str, bytes: u64) -> String {
+    let size = human_bytes(bytes);
+    if version.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("{} · {size}", version_label(version))
+    } else {
+        size
     }
 }
 
@@ -606,22 +612,6 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
         unit += 1;
     }
     format!("{value:.1} {}", UNITS[unit])
-}
-
-fn permissions_text(counts: PermissionCounts) -> String {
-    let PermissionCounts {
-        live,
-        revoked,
-        denials,
-    } = counts;
-    let mut text = format!("{live} permission{}", if live == 1 { "" } else { "s" });
-    if revoked > 0 {
-        text.push_str(&format!(" · {revoked} revoked"));
-    }
-    if denials > 0 {
-        text.push_str(&format!(" · {denials} declined"));
-    }
-    text
 }
 
 /// A stable widget identity for one module-level setting.
@@ -704,7 +694,7 @@ fn applied(open: Option<&EditorState>, artifact: &str) -> bool {
 }
 
 /// A disclosure line starts with a capital, whatever the module wrote.
-fn capitalised(text: &str) -> String {
+pub(crate) fn capitalised(text: &str) -> String {
     let mut characters = text.chars();
     match characters.next() {
         Some(first) => first.to_uppercase().chain(characters).collect(),
@@ -898,18 +888,24 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
 
 /// What a captured frame's state reports for every capability-declaring module: the settings as
 /// the core read them (a secret only as whether it is present), each resource, the jobs, each
-/// task's newest run on the open asset, the permission counts, the open consent notice and the
-/// status line. It never holds a secret: none reaches this store.
+/// task's newest run on the open asset, the permission counts, a fill module's setup, the open
+/// consent notice and the status line. It never holds a secret: none reaches this store.
 pub(crate) fn summary(
     store: &CapabilityStore,
     modules: &[ModuleDescriptor],
     open: Option<&EditorState>,
+    flags: Option<&FlagList>,
 ) -> Value {
     Value::Object(
         modules
             .iter()
             .filter(|module| declares(module))
-            .map(|module| (module.id.clone(), module_summary(module, store, open)))
+            .map(|module| {
+                (
+                    module.id.clone(),
+                    module_summary(module, store, open, flags),
+                )
+            })
             .collect(),
     )
 }
@@ -918,6 +914,7 @@ fn module_summary(
     module: &ModuleDescriptor,
     store: &CapabilityStore,
     open: Option<&EditorState>,
+    flags: Option<&FlagList>,
 ) -> Value {
     let state = store.module(&module.id);
     let asset = open.map(|open| &open.asset.id);
@@ -1020,6 +1017,7 @@ fn module_summary(
             "revoked": counts.revoked,
             "denials": counts.denials,
         },
+        "setup": fill_setup::derive(module, state, flags).as_ref().map(SetupModel::summary),
         "consent": consent,
         "status_line": status_line(state),
     })

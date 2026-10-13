@@ -48,6 +48,8 @@ mod entries;
 mod evaluate;
 mod history;
 mod masks;
+#[cfg(test)]
+mod paged_source_render_tests;
 pub(crate) mod pixels;
 mod plan;
 mod source;
@@ -470,6 +472,9 @@ impl<'a> AnalysisSelection<'a> {
 #[derive(Debug)]
 pub(crate) struct AnalysisPlan {
     pub identity: AnalysisIdentity,
+    /// Over a paged derived source ([`crate::PreviewSource::Paged`]) the reference renders it in
+    /// bands from windows of its level 0 (`crate::render::bands`, `docs/design/panorama-merge.md`,
+    /// "The reference on paged sources").
     pub evaluation: Result<Evaluation, Error>,
 }
 
@@ -479,6 +484,8 @@ pub(crate) struct AnalysisPlan {
 pub(crate) struct ExportPlan {
     /// The asset, entry, snapshot, recipe hash, source fingerprint and output stage.
     pub identity: AnalysisIdentity,
+    /// Over a paged derived source the GPU streams it from windows of its level 0, or the
+    /// reference renders it in bands.
     pub evaluation: Evaluation,
     /// The original's supported EXIF fields, read once when its source was prepared.
     pub capture: Arc<crate::export::CaptureMetadata>,

@@ -78,6 +78,12 @@ pub use preview::{
 pub use proxy::{AnalysisProxy, ProxyBuilder};
 pub use resample::{AlignedRect, SourceWindow, resample_rect, source_window};
 
+/// The synthetic RAW bracket generator, compiled in from its one source for the core's tests: the
+/// core cannot name `luxforge-testkit`, which depends on it.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../../luxforge-testkit/src/hdr_bracket.rs"]
+pub(crate) mod hdr_bracket;
 #[cfg(test)]
 mod hdr_merge_alignment;
 #[cfg(test)]

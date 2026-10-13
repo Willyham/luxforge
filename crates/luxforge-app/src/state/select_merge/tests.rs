@@ -101,6 +101,8 @@ fn plan() -> MergePlan {
             available_bytes: None,
             temp_ceiling_bytes: 1,
             scratch_limit_bytes: 1,
+            scale: None,
+            provisional: false,
         },
         provider: ProviderState {
             module: "luxforge.hdr".into(),
@@ -230,6 +232,7 @@ fn hdr_merge_requests_send_only_what_was_chosen() {
         reference: Some("/a/2.NEF".into()),
         overrides: vec![("/a/1.NEF".into(), -2.0)],
         folder: FolderPick::Proposed,
+        ..MergeOptions::default()
     };
     let params = create_params(
         &chosen,
@@ -398,16 +401,19 @@ fn merge_preview_requests_name_the_preview_and_its_whole_options() {
 /// deghosting, sent as an agent writes them; what a merge stores back is the same pair.
 #[test]
 fn merge_preview_last_settings_come_from_the_remembered_state() {
-    let defaults = MergeOptions::last(None);
+    let defaults = MergeOptions::last(None, None);
     assert_eq!(defaults, MergeOptions::default());
-    assert!(defaults.wire().is_empty());
+    assert!(defaults.wire(MergeKind::Hdr).is_empty());
     let remembered = HdrMergePreference {
         alignment: AlignmentMode::Off,
         deghost: DeghostMode::Auto,
     };
-    let last = MergeOptions::last(Some(remembered));
+    let last = MergeOptions::last(Some(remembered), None);
     assert_eq!((last.alignment, last.deghost), (Toggle::Off, Toggle::Auto));
-    assert_eq!(Value::Object(last.wire()), json!({"alignment": "off"}));
+    assert_eq!(
+        Value::Object(last.wire(MergeKind::Hdr)),
+        json!({"alignment": "off"})
+    );
     assert_eq!(last.remembered(), remembered);
     assert_eq!(
         MergeOptions::default().remembered(),
@@ -415,71 +421,103 @@ fn merge_preview_last_settings_come_from_the_remembered_state() {
     );
 }
 
-/// The selection menu's HDR group: its heading, its one Merge HDR item with its hint and the
-/// ellipsis that ⌥ drops; a plan's refusal disables it with its reason, and so does a merge
-/// already running.
+/// A selection's merge menu, of 3 frames: the HDR group and the Panorama group, each headed by its
+/// kind with its one item and hint and the ellipsis that ⌥ drops; a plan's refusal disables only
+/// its own kind's item with its reason, and a merge already running disables both.
 #[test]
-fn merge_preview_menu_is_the_hdr_group_and_option_drops_the_ellipsis() {
-    let mut merge = SelectMerge {
-        menu: Some(MergeMenu {
+fn merge_preview_menu_offers_each_kind_and_option_drops_the_ellipsis() {
+    let offers = |hdr: Option<&str>, panorama: Option<&str>| {
+        vec![
+            KindOffer {
+                kind: MergeKind::Hdr,
+                refusal: hdr.map(str::to_owned),
+            },
+            KindOffer {
+                kind: MergeKind::Panorama,
+                refusal: panorama.map(str::to_owned),
+            },
+        ]
+    };
+    let frames = |count, kinds| {
+        Some(MergeMenu {
             x: 0.0,
             y: 0.0,
-            kind: MergeMenuKind::Frames {
-                kind: MergeKind::Hdr,
-                count: 3,
-                refusal: None,
-            },
-        }),
+            kind: MergeMenuKind::Frames { count, kinds },
+        })
+    };
+    let mut merge = SelectMerge {
+        menu: frames(3, offers(None, None)),
         ..SelectMerge::default()
     };
     let menu = derive(&merge).menu.unwrap();
-    assert_eq!(menu.heading, Some("HDR"));
-    let labels: Vec<_> = menu
+    let headings: Vec<_> = menu.groups.iter().map(|group| group.heading).collect();
+    assert_eq!(headings, [Some("HDR"), Some("Panorama")]);
+    let hdr = menu.group("HDR").unwrap();
+    let labels: Vec<_> = hdr
         .entries
         .iter()
         .map(|entry| entry.label.as_str())
         .collect();
     assert_eq!(labels, ["Merge HDR\u{2026}"]);
     assert_eq!(
-        menu.entries[0].hint,
+        hdr.entries[0].hint,
         Some("Merge the frames into one HDR photograph in the catalog")
     );
     assert_eq!(
-        menu.entries[0].action,
+        hdr.entries[0].action,
         Some(MergeAction::Start(MergeKind::Hdr))
+    );
+    let panorama = menu.group("Panorama").unwrap();
+    assert_eq!(panorama.entries.len(), 1);
+    assert_eq!(panorama.entries[0].label, "Merge panorama\u{2026}");
+    assert_eq!(
+        panorama.entries[0].hint,
+        Some("Merge the frames into one panorama in the catalog")
+    );
+    assert_eq!(
+        panorama.entries[0].action,
+        Some(MergeAction::Start(MergeKind::Panorama))
     );
     merge.option = true;
     let menu = derive(&merge).menu.unwrap();
-    assert_eq!(menu.entries[0].label, "Merge HDR");
+    assert_eq!(menu.group("HDR").unwrap().entries[0].label, "Merge HDR");
+    assert_eq!(
+        menu.group("Panorama").unwrap().entries[0].label,
+        "Merge panorama"
+    );
 
     let reason = "Exposures must differ: DSC_4102.NEF and DSC_4103.NEF are both 0 EV";
-    merge.menu = Some(MergeMenu {
-        x: 0.0,
-        y: 0.0,
-        kind: MergeMenuKind::Frames {
-            kind: MergeKind::Hdr,
-            count: 7,
-            refusal: Some(reason.into()),
-        },
-    });
-    for entry in derive(&merge).menu.unwrap().entries {
-        assert!(entry.action.is_none());
-        assert_eq!(entry.reason.as_deref(), Some(reason));
-    }
-    merge.menu = Some(MergeMenu {
-        x: 0.0,
-        y: 0.0,
-        kind: MergeMenuKind::Frames {
-            kind: MergeKind::Hdr,
-            count: 3,
-            refusal: None,
-        },
-    });
+    merge.menu = frames(7, offers(Some(reason), None));
+    let menu = derive(&merge).menu.unwrap();
+    let hdr = &menu.group("HDR").unwrap().entries[0];
+    assert!(hdr.action.is_none());
+    assert_eq!(hdr.reason.as_deref(), Some(reason));
+    let panorama = &menu.group("Panorama").unwrap().entries[0];
+    assert_eq!(
+        panorama.action,
+        Some(MergeAction::Start(MergeKind::Panorama))
+    );
+    assert_eq!(panorama.reason, None);
+
+    merge.menu = frames(3, offers(None, None));
     merge.starting = Some(request());
-    for entry in derive(&merge).menu.unwrap().entries {
-        assert!(entry.action.is_none());
-        assert_eq!(entry.reason.as_deref(), Some(BUSY));
+    for group in derive(&merge).menu.unwrap().groups {
+        for entry in group.entries {
+            assert!(entry.action.is_none());
+            assert_eq!(entry.reason.as_deref(), Some(BUSY));
+        }
     }
+}
+
+/// Each kind is offered only within its input bounds: HDR's 2–9, a panorama's 2–32.
+#[test]
+fn panorama_merge_menu_offers_each_kind_within_its_bounds() {
+    assert!(offered(1).is_empty());
+    assert_eq!(offered(2), [MergeKind::Hdr, MergeKind::Panorama]);
+    assert_eq!(offered(9), [MergeKind::Hdr, MergeKind::Panorama]);
+    assert_eq!(offered(10), [MergeKind::Panorama]);
+    assert_eq!(offered(32), [MergeKind::Panorama]);
+    assert!(offered(33).is_empty());
 }
 
 /// The sheet's states in turn: reading the frames, preparing with the job's words and bar while
@@ -559,11 +597,13 @@ fn merge_preview_sheet_draws_each_state_from_the_owner_answers() {
         width,
         height,
         regions,
+        stitch,
         updating,
     } = &model.picture
     else {
         panic!("a picture: {:?}", model.picture);
     };
+    assert!(stitch.is_none(), "HDR draws no stitch");
     assert_eq!(path, &PathBuf::from("/cache/merge-preview-0.jpg"));
     assert_eq!((*width, *height), (1024, 681));
     assert!(regions.is_empty(), "the overlay is off until shown");
@@ -714,4 +754,357 @@ fn merge_preview_words_and_geometry() {
         }
     }
     assert!(hatch(&square[..2], 5.0).is_empty());
+}
+
+/// A panorama request of seven frames DSC_4101–4107.NEF.
+fn panorama_request() -> MergeRequest {
+    MergeRequest {
+        kind: MergeKind::Panorama,
+        targets: Targets::Files {
+            file_ids: (1..=7).map(FileId).collect(),
+        },
+        options: MergeOptions::default(),
+        source: None,
+        anchor: 0,
+        frames: 7,
+    }
+}
+
+/// A plan of the seven frames, as `merge.plan` answers a panorama: no exposures, the panorama's
+/// parameters and its estimates.
+fn panorama_plan() -> MergePlan {
+    let mut plan = plan();
+    plan.kind = MergeKind::Panorama;
+    plan.plan_id = "plan-pano".into();
+    plan.inputs = (0..7)
+        .map(|at| {
+            let mut input = plan.inputs[0].clone();
+            input.ordinal = at;
+            input.path = PathBuf::from(format!("/cards/DSC_{}.NEF", 4101 + at));
+            input.file_name = format!("DSC_{}.NEF", 4101 + at);
+            input.file_id = Some(FileId(i64::from(at) + 1));
+            input
+        })
+        .collect();
+    plan.exposures = None;
+    plan.reference = Some(3);
+    plan.parameters = MergeParameters::Panorama(Default::default());
+    plan.estimates.width = Some(38_400);
+    plan.estimates.height = Some(8_900);
+    plan.estimates.source_bytes = Some(4_400_000_000);
+    plan
+}
+
+/// A ready panorama revision: the stack's order puts the plan's last frame first, the reference
+/// is the stack's fourth, the crop loses 9% and every frame has its outline.
+fn panorama_revision(revision: u32) -> MergePreview {
+    let order: Vec<u32> = vec![6, 0, 1, 2, 3, 4, 5];
+    MergePreview {
+        preview_id: preview_id(),
+        revision,
+        kind: MergeKind::Panorama,
+        options: WireOptions::Panorama(Default::default()),
+        path: Some(PathBuf::from(format!("/cache/pano-{revision}.jpg"))),
+        width: 1024,
+        height: 237,
+        diagnostics: Some(MergePreviewDiagnostics::Panorama(
+            luxforge_core::catalog_types::PanoramaPreviewDiagnostics {
+                proxy_side: 1024,
+                projection: PanoramaProjection::Cylindrical,
+                field_of_view_deg: [164.2, 40.6],
+                crop_loss: 0.091,
+                reference: 3,
+                max_residual_px: 0.3,
+                frames: order
+                    .iter()
+                    .map(|at| PathBuf::from(format!("/cards/DSC_{}.NEF", 4101 + at)))
+                    .collect(),
+            },
+        )),
+        overlays: Some(MergePreviewOverlays::Panorama(
+            luxforge_core::catalog_types::PanoramaPreviewOverlays {
+                covered: vec![vec![
+                    [0.0, 0.0],
+                    [1024.0, 0.0],
+                    [1024.0, 237.0],
+                    [0.0, 237.0],
+                ]],
+                crop: [20.0, 12.0, 984.0, 210.0],
+                frames: (0..7)
+                    .map(|frame| luxforge_core::catalog_types::PanoramaFrameOutline {
+                        frame,
+                        outline: vec![
+                            [f64::from(frame) * 140.0, 0.0],
+                            [f64::from(frame) * 140.0 + 180.0, 0.0],
+                            [f64::from(frame) * 140.0 + 180.0, 237.0],
+                        ],
+                    })
+                    .collect(),
+            },
+        )),
+        output: Some(MergeOutput {
+            width: 38_400,
+            height: 8_900,
+            scale: 1.0,
+            source_bytes: 4_400_000_000,
+        }),
+        refusal: None,
+    }
+}
+
+fn open_panorama() -> PreviewSheet {
+    PreviewSheet::new(
+        panorama_request(),
+        SheetContext {
+            names: vec!["DSC_4101.NEF".into(), "DSC_4107.NEF".into()],
+            camera: Some("Nikon Z 8".into()),
+            capture: None,
+        },
+        Vec::new(),
+    )
+}
+
+/// A panorama's requests carry only what was chosen, under `panorama`: the reference by path, the
+/// projection unless Auto and Boundary Warp unless 0; never HDR's fields.
+#[test]
+fn panorama_merge_requests_send_only_what_was_chosen() {
+    let mut request = panorama_request();
+    assert_eq!(
+        plan_params(request.kind, &request.targets, &request.options),
+        json!({"kind": "panorama", "targets": {"kind": "files", "file_ids": [1, 2, 3, 4, 5, 6, 7]}})
+    );
+    let id = preview_id();
+    assert_eq!(
+        preview_update_params(MergeKind::Panorama, &id, &request.options),
+        json!({"preview_id": "merge-preview-0123456789abcdef0123456789abcdef", "panorama": {}})
+    );
+    request.options.alignment = Toggle::Off;
+    request.options.projection = PanoramaProjection::Spherical;
+    request.options.boundary_warp = 40;
+    request.options.reference = Some("/cards/DSC_4104.NEF".into());
+    assert_eq!(
+        preview_update_params(MergeKind::Panorama, &id, &request.options),
+        json!({
+            "preview_id": "merge-preview-0123456789abcdef0123456789abcdef",
+            "panorama": {"reference": "/cards/DSC_4104.NEF", "projection": "spherical", "boundary_warp": 40},
+        })
+    );
+    let create = create_params(&request, CreateFrom::Preview(&id), None, &mutation());
+    assert_eq!(create["kind"], "panorama");
+    assert_eq!(create["preview_id"], json!(id));
+    assert!(create.get("hdr").is_none() && create.get("plan_id").is_none());
+    assert_eq!(create["panorama"]["projection"], "spherical");
+
+    // ⌥-click's settings: the remembered projection and Boundary Warp, HDR's apart.
+    let remembered = PanoramaMergePreference {
+        projection: PanoramaProjection::Cylindrical,
+        boundary_warp: 25,
+    };
+    let last = MergeOptions::last(None, Some(remembered));
+    assert_eq!(
+        Value::Object(last.wire(MergeKind::Panorama)),
+        json!({"projection": "cylindrical", "boundary_warp": 25})
+    );
+    assert!(last.wire(MergeKind::Hdr).is_empty());
+    assert_eq!(last.remembered_panorama(), remembered);
+    assert_eq!(
+        MergeOptions::last(None, None).remembered_panorama(),
+        PanoramaMergePreference::default()
+    );
+}
+
+/// A panorama sheet's states: its title and frames while reading, the ready picture with its
+/// status line, numbered frames in the stack's order with the reference named, Auto's choice,
+/// the output, and the overlays drawn only while shown.
+#[test]
+fn panorama_merge_sheet_draws_the_stitch_its_frames_and_overlays() {
+    let mut sheet = open_panorama();
+    let model = sheet::model(&sheet, None);
+    assert_eq!(model.title, "Merge panorama \u{b7} 7 photos");
+    assert_eq!(model.kind, MergeKind::Panorama);
+    assert!(model.reading);
+    let settings = model.panorama.expect("a panorama's settings");
+    assert_eq!(settings.projection, PanoramaProjection::Auto);
+    assert_eq!(settings.resolved, None);
+    assert!(settings.outlines && settings.crop);
+    assert_eq!(settings.frames_legend, "Frames 1\u{2013}7");
+
+    // Planned: the frames in the plan's order, unnumbered, the plan's reference named.
+    sheet.planned(panorama_plan());
+    let model = sheet::model(&sheet, None);
+    let names: Vec<_> = model
+        .frames
+        .iter()
+        .map(|frame| frame.name.as_str())
+        .collect();
+    assert_eq!(names[0], "DSC_4101.NEF");
+    assert!(model.frames.iter().all(|frame| frame.number.is_none()));
+    assert_eq!(
+        model.panorama.unwrap().reference.as_deref(),
+        Some("Reference: DSC_4104.NEF")
+    );
+    assert_eq!(
+        model.output.as_deref(),
+        Some("38,400 \u{d7} 8,900 \u{b7} 342 MP \u{b7} 4.1 GB")
+    );
+
+    // Ready: the stack's order and numbers, the reference by its place, Auto's choice.
+    sheet.adopt(panorama_revision(0));
+    let model = sheet::model(&sheet, None);
+    assert_eq!(
+        model.status,
+        "Preview from 1,024-pixel frames \u{b7} Cylindrical, 164\u{b0} \u{d7} 41\u{b0} \u{b7} Crop loses 9% at the edges"
+    );
+    let numbered: Vec<_> = model
+        .frames
+        .iter()
+        .map(|frame| (frame.number.unwrap(), frame.name.as_str()))
+        .collect();
+    assert_eq!(numbered[0], (1, "DSC_4107.NEF"));
+    assert_eq!(numbered[1], (2, "DSC_4101.NEF"));
+    let reference: Vec<_> = model
+        .frames
+        .iter()
+        .filter(|frame| frame.reference)
+        .collect();
+    assert_eq!(reference.len(), 1);
+    assert_eq!(reference[0].name, "DSC_4103.NEF");
+    let settings = model.panorama.clone().unwrap();
+    assert_eq!(
+        settings.reference.as_deref(),
+        Some("Reference: 4 \u{b7} DSC_4103.NEF")
+    );
+    assert_eq!(
+        settings.resolved.as_deref(),
+        Some("Auto chose Cylindrical for a 164\u{b0} \u{d7} 41\u{b0} field.")
+    );
+    let Picture::Ready {
+        stitch: Some(stitch),
+        regions,
+        ..
+    } = &model.picture
+    else {
+        panic!("a stitched picture: {:?}", model.picture);
+    };
+    assert!(regions.is_empty(), "no deghost regions on a panorama");
+    assert_eq!(stitch.crop, Some([20.0, 12.0, 984.0, 210.0]));
+    assert_eq!(stitch.covered.len(), 1);
+    let numbers: Vec<_> = stitch.frames.iter().map(|(number, _)| *number).collect();
+    assert_eq!(numbers, [1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(
+        model.output.as_deref(),
+        Some("38,400 \u{d7} 8,900 \u{b7} 342 MP \u{b7} 4.1 GB")
+    );
+    assert!(model.enabled);
+
+    // A projection chosen: Auto's caption goes; the overlays hide when switched off.
+    sheet.request.options.projection = PanoramaProjection::Perspective;
+    sheet.outlines = false;
+    let model = sheet::model(&sheet, None);
+    assert_eq!(model.panorama.unwrap().resolved, None);
+    let Picture::Ready {
+        stitch: Some(stitch),
+        ..
+    } = &model.picture
+    else {
+        panic!("a stitched picture");
+    };
+    assert!(stitch.frames.is_empty() && stitch.crop.is_some());
+    sheet.crop = false;
+    let model = sheet::model(&sheet, None);
+    let Picture::Ready {
+        stitch: Some(stitch),
+        ..
+    } = &model.picture
+    else {
+        panic!("a stitched picture");
+    };
+    assert!(stitch.crop.is_none() && stitch.covered.is_empty());
+
+    // A person's reference names it by its place in the stack.
+    sheet.request.options.reference = Some("/cards/DSC_4107.NEF".into());
+    let model = sheet::model(&sheet, None);
+    assert_eq!(
+        model.panorama.unwrap().reference.as_deref(),
+        Some("Reference: 1 \u{b7} DSC_4107.NEF")
+    );
+
+    // A refusal replaces the picture and disables Merge.
+    sheet.failed("Too little overlap between DSC_4104.NEF and DSC_4105.NEF".into());
+    let model = sheet::model(&sheet, None);
+    assert!(matches!(model.picture, Picture::Refused(_)));
+    assert!(model.status_refused && !model.enabled);
+}
+
+/// The crop's words round to whole percent, with a sliver said as under 1%.
+#[test]
+fn panorama_merge_crop_words() {
+    assert_eq!(sheet::crop_words(0.0), "Crop loses 0% at the edges");
+    assert_eq!(sheet::crop_words(0.003), "Crop loses under 1% at the edges");
+    assert_eq!(sheet::crop_words(0.091), "Crop loses 9% at the edges");
+    assert_eq!(sheet::crop_words(2.0), "Crop loses 100% at the edges");
+}
+
+/// A panorama stack's words: "Panorama · 7 photos" and "Pano · 7" on its result, "Frame 2 of 7"
+/// under each original, its own icon, and the Info band's projection and field of view as
+/// `merge.inspect` answers them, "Reading the merge…" until it does.
+#[test]
+fn panorama_merge_stack_words_footers_and_band() {
+    assert_eq!(
+        stack_words(MergeKind::Panorama, 7),
+        ("Panorama \u{b7} 7 photos", "Pano \u{b7} 7")
+    );
+    let merge_id: MergeId =
+        serde_json::from_value(json!("merge-0123456789abcdef0123456789abcdef")).unwrap();
+    let mut stack = RowStack {
+        merge_id: merge_id.clone(),
+        kind: MergeKind::Panorama,
+        role: StackRole::Original,
+        size: 7,
+        collapsed: 0,
+        expansion: None,
+        ordinal: Some(1),
+        offset_ev: None,
+        outside_filter: false,
+    };
+    let cell = stack_cell(Some(&stack), None);
+    assert_eq!(cell.exposure, Some("Frame 2 of 7"));
+    assert_eq!(cell.icon, Some(KindIcon::Panorama));
+    assert_eq!(stack_band(&stack, None).title, "Frame 2 of 7");
+    assert_eq!(panorama_leader(Some(&stack)), None);
+
+    stack.role = StackRole::Leader;
+    stack.ordinal = None;
+    stack.expansion = Some(StackExpansion::Collapsed);
+    let cell = stack_cell(Some(&stack), None);
+    assert_eq!(
+        cell.badge.map(|(long, short, _)| (long, short)),
+        Some(("Panorama \u{b7} 7 photos", "Pano \u{b7} 7"))
+    );
+    assert_eq!(panorama_leader(Some(&stack)), Some(&merge_id));
+    let band = stack_band(&stack, None);
+    assert_eq!(band.title, "Panorama \u{b7} 7 photos");
+    assert_eq!(
+        band_detail(&band, None).as_deref(),
+        Some("Reading the merge\u{2026}")
+    );
+    let facts = PanoramaFacts {
+        projection: Some(PanoramaProjection::Cylindrical),
+        field_of_view_deg: Some([164.2, 40.6]),
+    };
+    assert_eq!(
+        band_detail(&band, Some(&(merge_id.clone(), Some(Ok(facts))))).as_deref(),
+        Some("Cylindrical \u{b7} 164\u{b0} \u{d7} 41\u{b0}")
+    );
+    assert_eq!(
+        band_detail(&band, Some(&(merge_id.clone(), Some(Err("gone".into()))))).as_deref(),
+        Some("gone")
+    );
+    assert_eq!(
+        inspect_params(&merge_id),
+        json!({"merge_id": "merge-0123456789abcdef0123456789abcdef"})
+    );
+    // An HDR stack's band reads nothing more.
+    stack.kind = MergeKind::Hdr;
+    assert_eq!(band_detail(&stack_band(&stack, None), None), None);
 }

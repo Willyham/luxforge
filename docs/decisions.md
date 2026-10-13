@@ -597,7 +597,7 @@ The [design](design/usage-statistics.md) and [task plan](../tasks/project/usage-
 
 ## High-zoom minimap planning
 
-The owner requested a plan for a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction; lower-right placement and other layout/engineering defaults remain recommendations. The owner authorized implementation on 2026-10-13; native qualification remains outstanding.
+The owner requested a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction with lower-right placement and the other layout and engineering defaults as recorded defaults. The owner asked on 2026-10-12 for the plan to be built, and it is implemented; corpus qualification, broader rendered coverage and measurements remain outstanding.
 
 ## Copy and paste settings planning
 

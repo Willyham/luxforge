@@ -186,6 +186,10 @@ impl Editor {
                 }
             },
             ViewMessage::Panned(x, y) => return self.pan(x, y),
+            ViewMessage::MinimapPress(point) => return self.minimap_press(point),
+            ViewMessage::MinimapDrag(point) => return self.minimap_drag(point),
+            ViewMessage::MinimapRelease => self.minimap_end("release"),
+            ViewMessage::MinimapWheel(x, y) => return self.minimap_wheel(x, y),
             ViewMessage::Fit => {
                 self.usage_interaction(luxforge_core::usage::Feature::Zoom, true);
                 self.view_state.zoom = "Fit".into();

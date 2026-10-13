@@ -556,6 +556,8 @@ fn render_with<T>(
         None,
     )
     .of_kind(request.asset.source.tag());
+    // A paged source's tiers are its overview's, the stack over its resident level.
+    let evaluation = evaluation.overview()?.unwrap_or(evaluation);
     let keys = request.keys();
     let (rasters, renderer) = draw(evaluation, &keys, tiles, cancel)?;
     let renderer = RenderedBy::from(renderer);
@@ -791,13 +793,33 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
                 read: Box::new(read.clone()),
                 first_open: None,
             };
-            let Prepared::Derived(_, derived, _) = work
+            let derived = match work
                 .run(&[], cancel.flag())
                 .map_err(|error| cancelled_or(cancel, error))?
-            else {
-                return Err(Error::internal(
-                    "a derived source's work prepared something else",
-                ));
+            {
+                Prepared::Derived(_, derived, _) => derived,
+                // A paged source's previews render from its resident level, read whole here on the
+                // lane's worker, never from level 0 ([`crate::Evaluation::overview`]).
+                Prepared::Paged(_, paged, _) => {
+                    paged
+                        .source
+                        .resident_level(cancel.flag())
+                        .map_err(|error| cancelled_or(cancel, error))?;
+                    let source = PreviewSource::Paged(crate::PagedPreview::new(paged.source));
+                    if source.dimensions() != (asset.width, asset.height)
+                        || source.fingerprint() != asset.fingerprint
+                    {
+                        return Err(Error::internal(
+                            "the prepared source is not the one the asset records",
+                        ));
+                    }
+                    return Ok(PreparedRender { source, verified });
+                }
+                _ => {
+                    return Err(Error::internal(
+                        "a derived source's work prepared something else",
+                    ));
+                }
             };
             let source = PreviewSource::Raw {
                 image: derived.linear,
@@ -860,7 +882,7 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
                 settings: LinearSettings::default(),
             }
         }
-        PreparedSource::Derived(_) => {
+        PreparedSource::Derived(_) | PreparedSource::Paged(_) => {
             return Err(Error::internal("a file's work prepared a derived source"));
         }
     };

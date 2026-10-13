@@ -401,21 +401,19 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze) -> GpuSpatialUnit {
 }
 
 /// Dehaze's light link over its whole input `stage` (`docs/design/gpu-preview.md`, "The global
-/// estimate"): the [`crate::modules::ESTIMATE_REDUCTION`]-pixel block means of its input beside each
-/// block's channel minimum, each block of the whole stage's grid written by whichever tile of the
+/// estimate"): the block means of its input at the stage's reduction factor
+/// ([`crate::modules::estimate_reduction`], the CPU reduction's own) beside each block's channel
+/// minimum, each block of the whole stage's grid written by whichever tile of the
 /// stage holds it ([`REDUCE_BLOCKS`]), then the one-workgroup selection of the brightest blocks
 /// into the light plane, as the CPU's preparation selects them from the host's reduction
 /// ([`dehaze::Dehaze::prepare`]). Neither reads the amount, so every Dehaze amount over one input
 /// has one light.
 pub(super) fn dehaze_light(stage: crate::modules::Stage) -> GpuLightPasses {
     let (blocks, light) = (0, 1);
+    let factor = crate::modules::estimate_reduction(stage);
     let planes = vec![
         // The whole stage's block means: read by the selection alone, within the link.
-        plane(
-            GpuPlaneFormat::Quad,
-            crate::modules::ESTIMATE_REDUCTION,
-            true,
-        ),
+        plane(GpuPlaneFormat::Quad, factor, true),
         GpuPlane {
             format: GpuPlaneFormat::Quad,
             size: GpuPlaneSize::LIGHT,
@@ -425,7 +423,7 @@ pub(super) fn dehaze_light(stage: crate::modules::Stage) -> GpuLightPasses {
     let mut words = Words::default();
     let w = words.push(&[
         Word::U(REDUCE_BLOCKS),
-        Word::U(crate::modules::ESTIMATE_REDUCTION),
+        Word::U(factor),
         Word::U(stage.width),
         Word::U(stage.height),
     ]);

@@ -181,7 +181,7 @@ fn settle(service: &dyn TileService, client: ClientId) {
 
 /// `plan` as the photo surface's plain data over its tile's window of `gpu`, a lens warp's tail
 /// through its part of the whole stage's grid, as the worker converts a tile.
-fn converted(plan: &TilePlan, gpu: &GpuSource, version: u64) -> GpuPlan {
+pub(super) fn converted(plan: &TilePlan, gpu: &GpuSource, version: u64) -> GpuPlan {
     let window = plan.tile.window;
     let boundary = GpuBoundary::derived(
         gpu,

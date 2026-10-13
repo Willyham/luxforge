@@ -15,7 +15,7 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
-use super::{FolderChoice, HdrOptions, MergeId, MergeKind, MergePreviewId};
+use super::{FolderChoice, HdrOptions, MergeId, MergeKind, MergePreviewId, PanoramaOptions};
 use crate::{AssetId, PresetId, SettingsOrigin, api::params::host_params};
 use std::path::PathBuf;
 
@@ -302,11 +302,14 @@ host_params! {
 // Merges.
 
 /// What a merge's `targets` name, as its notes say.
-const MERGE_TARGETS: &str = "the frames to merge, as many as the kind takes (hdr: a bracket's 2 to 9 RAW frames): {kind: paths, paths: [...]}, {kind: files, file_ids: [...]}, {kind: assets, asset_ids: [...]} (photographs developed from them; never a merged result) or {kind: selection}, files and photographs alike";
+const MERGE_TARGETS: &str = "the frames to merge, as many as the kind takes (hdr: a bracket's 2 to 9 RAW frames; panorama: 2 to 32 overlapping frames, all RAW or all JPEG): {kind: paths, paths: [...]}, {kind: files, file_ids: [...]}, {kind: assets, asset_ids: [...]} (photographs developed from them; never a merged result) or {kind: selection}, files and photographs alike";
 /// What a merge's `kind` names.
 const MERGE_KIND: &str = "what the merge makes: one of the kinds this build has a provider for; another kind is refused not-ready naming its provider";
 /// What a merge's `hdr` options are.
 const MERGE_HDR: &str = "an hdr merge's options, each defaulted when left out: {reference?: path, the input whose exposure and white balance the result keeps (default the metadata's median exposure, else the middle of the capture order); exposure_overrides?: [{path, offset_ev}], an input's EV offset from the reference, replacing what its metadata or the fit resolves; alignment?: auto | off (default auto, fitting each frame's rigid motion; off checks the framing only); deghost?: auto | off (default auto, showing each moving region from one exposure)}; validation on a request of another kind";
+
+/// What a merge's `panorama` options are.
+const MERGE_PANORAMA: &str = "a panorama merge's options, each defaulted when left out: {reference?: path, the frame whose white balance, metadata and centre-pixel scale the result keeps (default the frame nearest the panorama's centre); projection?: auto | perspective | cylindrical | spherical (default auto, resolved from the registered field of view; perspective is refused past its field); boundary_warp?: 0 to 100 (default 0, cropping to the largest clean rectangle; 100 warps the covered region onto its bounding rectangle)}; validation on a request of another kind";
 
 /// The kinds a merge request may name: those this build has a provider for.
 fn merge_kinds() -> impl Iterator<Item = &'static str> {
@@ -319,11 +322,12 @@ host_params! {
         kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
         targets: Targets = json(MERGE_TARGETS),
         hdr: Option<HdrOptions> = json(MERGE_HDR),
+        panorama: Option<PanoramaOptions> = json(MERGE_PANORAMA),
     }
 }
 
 host_params! {
-    /// `merge.create`: Merge HDR, the result made in its catalog folder.
+    /// `merge.create`: Merge HDR or Merge panorama, the result made in its catalog folder.
     pub(crate) struct MergeCreate {
         kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
         targets: Targets = json(MERGE_TARGETS),
@@ -331,6 +335,7 @@ host_params! {
         plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
         preview_id: Option<MergePreviewId> = string(64).notes("the caller's open merge.preview of these inputs, whose spool, proxies and alignment the merge takes over, reading and aligning nothing again (a preview still preparing is continued); the options must be its latest revision's: conflict otherwise, and for a preview that is not open"),
         hdr: Option<HdrOptions> = json(MERGE_HDR),
+        panorama: Option<PanoramaOptions> = json(MERGE_PANORAMA),
         folder: Option<FolderChoice> = json("{kind: place, name}, {kind: existing, folder_id, days?} or {kind: new, name, parent_id?}, as pick.develop's into names one, resolved for the reference frame's capture day; default the choice merge.plan proposes"),
     }
 }
@@ -341,6 +346,7 @@ host_params! {
         kind: MergeKind = enumeration(merge_kinds()).notes(MERGE_KIND),
         targets: Targets = json(MERGE_TARGETS),
         hdr: Option<HdrOptions> = json(MERGE_HDR),
+        panorama: Option<PanoramaOptions> = json(MERGE_PANORAMA),
         plan_id: Option<String> = string(64).notes("merge.plan's plan_id: refused with conflict when the inputs or options are no longer what was planned"),
     }
 }
@@ -349,7 +355,8 @@ host_params! {
     /// `merge.preview-update`: the full new options of the caller's open preview.
     pub(crate) struct MergePreviewUpdate {
         preview_id: MergePreviewId = string(64).notes("merge-preview-…: the caller's open preview"),
-        hdr: HdrOptions = json("the preview's full new hdr options, as merge.preview takes them: {reference?, exposure_overrides?, alignment?, deghost?}; a field left out is its default, not the previous revision's"),
+        hdr: Option<HdrOptions> = json("an hdr preview's full new options, as merge.preview takes them: {reference?, exposure_overrides?, alignment?, deghost?}; a field left out is its default, not the previous revision's; validation for a preview of another kind"),
+        panorama: Option<PanoramaOptions> = json("a panorama preview's full new options, as merge.preview takes them: {reference?, projection?, boundary_warp?}; a field left out is its default, not the previous revision's; a projection or Boundary Warp change redraws from the retained registration, a reference change registers again on the retained features, and neither reads a frame; validation for a preview of another kind"),
     }
 }
 
@@ -383,6 +390,7 @@ host_params! {
         mutation: MutationRequest,
         kind: Option<MergeKind> = enumeration(merge_kinds()).notes("the recorded merge's kind; validation when it names another"),
         hdr: Option<HdrOptions> = json("an hdr merge's options as merge.create takes them, each left out defaulting to the recorded one: {reference?, exposure_overrides? ([] clears the recorded ones), alignment?, deghost?}; validation for a merge of another kind"),
+        panorama: Option<PanoramaOptions> = json("a panorama merge's options as merge.create takes them, each left out defaulting to the recorded one: {reference?, projection?, boundary_warp?}; another Boundary Warp is a new result; validation for a merge of another kind"),
         folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the replaced result's folder"),
     }
 }

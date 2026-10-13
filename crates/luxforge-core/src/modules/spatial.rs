@@ -40,14 +40,36 @@ pub const MAX_MASKED_SPATIAL_LAYERS: usize = 16;
 /// process past it.
 pub(crate) const SPATIAL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The per-side factor of the reduction a global estimate is prepared from. The reduced frame is at
-/// most [`MAX_REDUCTION_PIXELS`] pixels, because the host accepts at most 64 megapixels.
+/// The per-side factor of the reduction a global estimate is prepared from on a stage within the
+/// camera limits: every stage whose grid at this factor holds at most [`MAX_REDUCTION_PIXELS`]
+/// pixels, which is every stage up to about 67 megapixels. A larger stage, a paged derived
+/// source's, takes the factor [`estimate_reduction`] scales from this one.
 pub(crate) const ESTIMATE_REDUCTION: u32 = 16;
 
 /// The largest reduced frame [`Reduction`] will build: 2^18 pixels, which is the 0.25 megapixel
-/// bound the design states. A 64 MP stage reduced by 16 per side rounds up to at most 250,880
-/// pixels, so this bound is never the binding constraint on a stage the host accepts.
+/// bound the design states. [`estimate_reduction`] chooses the factor that keeps a stage's grid
+/// within it, so it is never exceeded by a stage the host accepts.
 pub(crate) const MAX_REDUCTION_PIXELS: u64 = 262_144;
+
+/// The per-side factor of the reduction a global estimate of `stage` is prepared from: the smallest
+/// multiple of [`ESTIMATE_REDUCTION`] whose grid over the stage holds at most
+/// [`MAX_REDUCTION_PIXELS`] pixels (`docs/design/panorama-merge.md`, "Rendering, samples and
+/// export": the Dehaze light's grid scales its factor on large stages). [`ESTIMATE_REDUCTION`]
+/// itself for every stage up to about 67 megapixels, so a camera-sized stage's estimate is
+/// unchanged; 48 for a 512-megapixel panorama. A multiple keeps every block of the larger grid the
+/// union of whole blocks of the finer one. `O(1)` for every stage the host accepts.
+pub(crate) fn estimate_reduction(stage: Stage) -> u32 {
+    let mut factor = ESTIMATE_REDUCTION;
+    loop {
+        let (width, height) = Reduction::dimensions(stage, factor);
+        if u64::from(width) * u64::from(height) <= MAX_REDUCTION_PIXELS
+            || factor >= stage.width.max(stage.height)
+        {
+            return factor;
+        }
+        factor += ESTIMATE_REDUCTION;
+    }
+}
 
 /// The largest global estimate a unit may return, in bytes.
 pub(super) const MAX_GLOBAL_BYTES: usize = 4096;

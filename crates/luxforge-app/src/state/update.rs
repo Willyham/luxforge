@@ -177,6 +177,7 @@ fn job_words(kind: &str) -> String {
         "export" => "an export".into(),
         "batch-export" => "a batch export".into(),
         "hdr-merge" => "an HDR merge".into(),
+        "panorama-merge" => "a panorama merge".into(),
         "develop-picks" => "developing picks".into(),
         "batch-settings" => "applying settings to photos".into(),
         "install" => "a module install".into(),

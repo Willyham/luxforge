@@ -241,6 +241,11 @@ pub(crate) struct Presentation {
     reduction_job: Option<PreviewJob>,
     /// Whether the frame on screen is the reduced one.
     pub(crate) presented_reduced: bool,
+    /// The generation whose frame is a paged derived source's overview (`docs/design/panorama-merge.md`,
+    /// "Rendering, samples and export"): smaller than its stage at every zoom, so it is shown
+    /// reduced at 100% and above too, never reduced again from its retained frame, whose report
+    /// counts the overview.
+    pub(crate) overview_generation: Option<u64>,
     /// Whether the frame on screen is a drag tick's display-size proxy, and how it approximates.
     pub(crate) presented_proxy: Option<cpu_proxy::ProxyFrame>,
     /// The exact frame of the newest job whose exact phase landed.
@@ -429,8 +434,12 @@ impl Presentation {
             result,
             report,
             display,
+            overview,
             ..
         } = *outcome;
+        if overview {
+            self.overview_generation = Some(generation);
+        }
         let frame = result.map(|raster| ExactFrame {
             generation,
             raster: Arc::new(raster),
@@ -587,7 +596,10 @@ impl Presentation {
     /// What a zoom that wants the exact frame reduced to the view — or, with `wants_reduced`
     /// false, the exact frame itself — finds for the frame on screen.
     pub(crate) fn zoom(&self, wants_reduced: bool) -> Zoomed {
-        if self.presented_generation == 0 || wants_reduced == self.presented_reduced {
+        if self.presented_generation == 0
+            || wants_reduced == self.presented_reduced
+            || self.overview_generation == Some(self.presented_generation)
+        {
             return Zoomed::Kept;
         }
         if self.presenter.photo().is_none() && self.render_error.is_some() {
@@ -654,6 +666,7 @@ impl Presentation {
             dissolve: None,
             gpu_warm: None,
             gpu_source: None,
+            gpu_window: None,
             gpu_rest: None,
             stage_rest: None,
             gpu_counts: None,
@@ -661,6 +674,8 @@ impl Presentation {
             compare_source: None,
             compare_change: None,
             compare_rest: None,
+            overview: None,
+            minimap: None,
         }
     }
 
@@ -819,7 +834,10 @@ pub(super) fn viewport_rect(
         return None;
     }
     let edge = |start: f32, length: f32, limit: u32| {
-        let start = start.clamp(0.0, (limit as f32 * scale - length).max(0.0));
+        let start = start.clamp(
+            0.0,
+            view::canvas_view::overhang(limit as f32 * scale, length),
+        );
         let first = ((start / scale).floor() as i64 - 1).clamp(0, i64::from(limit)) as u32;
         let last = (((start + length) / scale).ceil() as i64 + 1)
             .clamp(i64::from(first), i64::from(limit)) as u32;
@@ -1042,6 +1060,8 @@ impl Editor {
                 }
             }
             PreviewMessage::GridReady(answer) => self.gpu_grid_ready(*answer),
+            PreviewMessage::WindowRead(answer) => self.gpu_window_read(*answer),
+            PreviewMessage::OverviewReduced(reduced) => self.overview_reduced(*reduced),
             PreviewMessage::ThumbnailSource(planned) => self.thumbnail_source_planned(planned),
             PreviewMessage::Loaded(result) => {
                 if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
@@ -1826,6 +1846,13 @@ impl Editor {
             self.proxy_bounds()
         };
         let content = self.presentation.admit(&job);
+        // What the content's pixels are, which the minimap overview keys it by.
+        self.overviews.admitted(
+            content,
+            job.evaluation.pixel_content_key().ok().map(|pixels| {
+                super::overview::OverviewContent::Pixels(pixels, job.evaluation.source().identity())
+            }),
+        );
         self.request_mask_coverage(&job, content);
         self.gpu_warm_from(job.gpu_warm.as_deref());
         // Every boundary is derived from the job's own source on the GPU: the surface is handed it
@@ -1841,7 +1868,11 @@ impl Editor {
         // where its view draws the stack at its own size or larger or the GPU cannot draw them.
         if committed && let Some(rest) = job.gpu_rest.as_mut() {
             let tiles = rest.tiles.take().and_then(Result::ok);
+            let handed = tiles.is_some();
             self.gpu_rest_from(tiles, region_view);
+            if handed {
+                self.gpu_rest_content(content);
+            }
             self.gpu.rest_planned_at = planned_at.filter(|_| !region_view);
         }
         self.gpu_resident_from(job.gpu_rest.take(), region_view, committed);
@@ -2014,6 +2045,7 @@ impl Editor {
     fn reduce_retained(&mut self, bounds: ProxyBounds) -> bool {
         let Some(exact) = self.presentation.exact.as_ref().filter(|frame| {
             !frame.approximate_white_balance
+                && self.presentation.overview_generation != Some(frame.generation)
                 && frame.content == Some(self.presentation.presented_content)
                 && self.presentation.presented_content == self.presentation.content_serial
         }) else {

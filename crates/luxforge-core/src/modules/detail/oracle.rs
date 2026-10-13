@@ -474,10 +474,10 @@ fn detail_export_evaluates_exact_detail_once() {
         )
         .unwrap();
     let plan = service.export_plan(&asset, None).unwrap();
-    let context = plan.evaluation.context();
+    let evaluation = &plan.evaluation;
+    let context = evaluation.context();
     let (before_compiles, before_frames) = (context.compiles(), context.spatial_frames());
-    let frame = plan
-        .evaluation
+    let frame = evaluation
         .exact(&Cancel::never())
         .unwrap()
         .frame(plan.identity.snapshot_id.clone())

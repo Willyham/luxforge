@@ -1,0 +1,138 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "watcher-verification",
+  "title": "Deterministic quick checks and native watcher qualification",
+  "objective": "Retain watcher correctness coverage in quick while making real OS notification delivery an explicit required native gate.",
+  "context_summary": "The owner authorized the split after reproducible FSEvents delivery waits in aggregate quick runs. Keep production behavior and hang bounds unchanged. Main marks tests taking 100 ms or more slow; apply that policy to injected journeys as well. Native qualification failures remain open; they do not block independent harness delivery. See the contract for mandatory release and watcher-change coverage.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Make core watcher invariants deterministic using fixture-owned injected notifications and cursor observations.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. High-tier model minimum applies. No subagents or external inputs are required. Routine engineering choices are delegated within the contract."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Watcher verification contract",
+          "target": "docs/engineering/watcher-verification.md",
+          "relevance": "Authorized scope, test split, required gate and honest qualification"
+        }
+      ],
+      "acceptance_criteria": [
+        "Cheap quick watcher checks and slower ordinary journeys use the production lane over scratch files without native event delivery.",
+        "Rename identity, reconciliation, exclusions, rescan cancellation, stale recovery and cursor safety remain covered.",
+        "Real native core journeys explicitly use the platform source."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted correctness checks at completion; retain real native failures and scope rather than treating retries or exclusions as qualification."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core --lib api::owner::files::tests::watching"
+        ],
+        "expected_results": [
+          "Cheap quick watcher checks and slower ordinary journeys use the production lane over scratch files without native event delivery.",
+          "Rename identity, reconciliation, exclusions, rescan cancellation, stale recovery and cursor safety remain covered.",
+          "Real native core journeys explicitly use the platform source."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Partition ordinary and native tests and add a separately required native watcher gate.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. High-tier model minimum applies. No subagents or external inputs are required. Routine engineering choices are delegated within the contract."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Watcher verification contract",
+          "target": "docs/engineering/watcher-verification.md",
+          "relevance": "Authorized scope, test split, required gate and honest qualification"
+        }
+      ],
+      "acceptance_criteria": [
+        "Own-name native_watch_ selection is explicit, disjoint from ordinary tests, and an empty native gate fails.",
+        "CLI help, non-quick verify, hosted checks, tag builds and local release initiation retain the required native gate.",
+        "No deadline increase or automatic retry changes qualification."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted correctness checks at completion; retain real native failures and scope rather than treating retries or exclusions as qualification."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask-cli check::tests",
+          "tools/cargo-cached test -p xtask verify::tests"
+        ],
+        "expected_results": [
+          "Own-name native_watch_ selection is explicit, disjoint from ordinary tests, and an empty native gate fails.",
+          "CLI help, non-quick verify, hosted checks, tag builds and local release initiation retain the required native gate.",
+          "No deadline increase or automatic retry changes qualification."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Verify the partition and update current verification, catalog and release documentation.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Implementation authorized by the owner. High-tier model minimum applies. No subagents or external inputs are required. Routine engineering choices are delegated within the contract.",
+        "Local macOS quick and the separate nine-test native gate passed. Windows/Linux native and hosted CI execution are unrun; historical load-induced native delivery failures remain retained evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Watcher verification contract",
+          "target": "docs/engineering/watcher-verification.md",
+          "relevance": "Authorized scope, test split, required gate and honest qualification"
+        }
+      ],
+      "acceptance_criteria": [
+        "Finished-work quick passes with native tests visibly excluded.",
+        "The native gate is invoked and its actual result retained; a failure remains unqualified rather than suppressing it.",
+        "Current documentation and feature status distinguish quick correctness from native qualification."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted correctness checks at completion; retain real native failures and scope rather than treating retries or exclusions as qualification."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW",
+          "tools/cargo-cached xtask test --native-watchers"
+        ],
+        "expected_results": [
+          "Finished-work quick passes with native tests visibly excluded.",
+          "The native gate is invoked and its actual result retained; a failure remains unqualified rather than suppressing it.",
+          "Current documentation and feature status distinguish quick correctness from native qualification."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003"
+      ]
+    }
+  ]
+}

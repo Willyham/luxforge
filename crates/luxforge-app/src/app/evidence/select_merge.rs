@@ -14,7 +14,8 @@ use crate::app::{
 use crate::state::select::{Block, MomentAction};
 use crate::state::select_merge::{MergeAction, Toggle};
 use iced::Task;
-use luxforge_evidence::{MergePreviewStep, MergeToggle};
+use luxforge_core::catalog_types::MergeKind;
+use luxforge_evidence::{MergeChoice, MergePreviewStep, MergeToggle};
 use serde_json::json;
 
 /// What a running merge step still waits for.
@@ -111,6 +112,100 @@ impl Editor {
         Task::batch([scrolled, held, task, released])
     }
 
+    /// Right-click the grid cell showing view position `position`, as the grid does: over a
+    /// selection of frames, the selection's merge menu opens and plans each kind it offers. Settled
+    /// as Select is, whose reads count the menu's plans until each has answered.
+    pub(super) fn merge_menu_step(&mut self, position: u32) -> Task<Message> {
+        if !self.select_shown() {
+            return self.fail_step("Select is not shown");
+        }
+        // Scrolled to the cell first, as a person scrolls to the photograph they right-click.
+        let scroll =
+            self.select
+                .layout
+                .reveal(position, self.select.scroll, self.select.viewport.height);
+        let scrolled = self.update(Message::Select(SelectMessage::Scrolled(scroll)));
+        let messages = match self.context_press(position) {
+            Ok(messages) => messages,
+            Err(reason) => return self.fail_step(reason),
+        };
+        let mut tasks = vec![scrolled];
+        tasks.extend(messages.into_iter().map(|message| self.update(message)));
+        if self.select.state.merge.menu.is_none() {
+            return self.fail_step(format!(
+                "no merge menu opened over position {position}: {}",
+                self.status.text
+            ));
+        }
+        // A menu that asked the owner for nothing (a result's stack actions) is captured at once;
+        // the selection's once each kind's plan has answered.
+        if self.select_quiet() && self.merge_reads_quiet() {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Select);
+        }
+        Task::batch(tasks)
+    }
+
+    /// Press `kind`'s Merge item on the open selection menu, as the menu does, with ⌥ held when
+    /// `last_settings`, which is let go after; refused as the menu draws it disabled.
+    pub(super) fn merge_choose_step(
+        &mut self,
+        kind: MergeChoice,
+        last_settings: bool,
+    ) -> Task<Message> {
+        if !self.select_shown() {
+            return self.fail_step("Select is not shown");
+        }
+        let kind = match kind {
+            MergeChoice::Hdr => MergeKind::Hdr,
+            MergeChoice::Panorama => MergeKind::Panorama,
+        };
+        let held = self.update(Message::Select(SelectMessage::Merge(MergeMessage::Option(
+            last_settings,
+        ))));
+        let entry = self.workspace.select.merge.menu.as_ref().and_then(|menu| {
+            menu.groups
+                .iter()
+                .flat_map(|group| &group.entries)
+                .find(|entry| entry.label.starts_with(merge_word(kind)))
+                .cloned()
+        });
+        let action = match entry {
+            Some(entry) => match (entry.action, entry.reason) {
+                (Some(action), _) => action,
+                (None, reason) => {
+                    let _ = self.update(Message::Select(SelectMessage::Merge(
+                        MergeMessage::Option(false),
+                    )));
+                    return self.fail_step(format!(
+                        "{} is disabled: {}",
+                        entry.label,
+                        reason.unwrap_or_default()
+                    ));
+                }
+            },
+            None => {
+                let _ = self.update(Message::Select(SelectMessage::Merge(MergeMessage::Option(
+                    false,
+                ))));
+                return self.fail_step(format!("the open menu offers no {}", merge_word(kind)));
+            }
+        };
+        let task = self.update(Message::Select(SelectMessage::Merge(MergeMessage::Act(
+            action,
+        ))));
+        let released = self.update(Message::Select(SelectMessage::Merge(MergeMessage::Option(
+            false,
+        ))));
+        self.await_merge(if last_settings {
+            MergeWait::Running
+        } else {
+            MergeWait::Preview
+        });
+        Task::batch([held, task, released])
+    }
+
     /// A gesture on the open merge preview sheet, through the sheet's own action.
     pub(super) fn merge_preview_step(&mut self, step: MergePreviewStep) -> Task<Message> {
         if !self.select_shown() {
@@ -130,7 +225,20 @@ impl Editor {
             MergePreviewStep::Deghost(value) => {
                 (MergeAction::Deghost(toggle(value)), MergeWait::Preview)
             }
+            // The slider dragged to the amount and let go, which sends it.
+            MergePreviewStep::BoundaryWarp(amount) => {
+                let _ = self.update(Message::Select(SelectMessage::Merge(MergeMessage::Act(
+                    MergeAction::BoundaryWarp(amount),
+                ))));
+                (MergeAction::BoundaryWarpReleased, MergeWait::Preview)
+            }
             MergePreviewStep::Overlay(shown) => (MergeAction::Overlay(shown), MergeWait::Preview),
+            MergePreviewStep::FrameOutlines(shown) => {
+                (MergeAction::FrameOutlines(shown), MergeWait::Preview)
+            }
+            MergePreviewStep::CropCoverage(shown) => {
+                (MergeAction::CropCoverage(shown), MergeWait::Preview)
+            }
             MergePreviewStep::Merge => (MergeAction::SheetMerge, MergeWait::Running),
             MergePreviewStep::Cancel => (MergeAction::SheetClose, MergeWait::Closed),
         };
@@ -273,6 +381,7 @@ impl Editor {
                 if self.select.held_click.is_none()
                     && !self.select.state.loading
                     && self.select_quiet()
+                    && self.merge_reads_quiet()
                 {
                     Reached::Yes
                 } else {
@@ -280,5 +389,13 @@ impl Editor {
                 }
             }
         }
+    }
+}
+
+/// The words a kind's Merge item begins with, as the menu labels it.
+fn merge_word(kind: MergeKind) -> &'static str {
+    match kind {
+        MergeKind::Hdr => "Merge HDR",
+        MergeKind::Panorama => "Merge panorama",
     }
 }

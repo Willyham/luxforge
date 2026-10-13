@@ -68,6 +68,19 @@ enum Pixels {
     Codes(Arc<dyn AsRef<[u8]> + Send + Sync>),
     /// Red, then green, then blue, each the base planes' size, row by row.
     Planes(Arc<dyn AsRef<[f32]> + Send + Sync>),
+    /// Planes read a window at a time: a paged derived source's level 0, which no whole frame of
+    /// is held, read when a slot over a window of it first uploads.
+    Reader(Arc<dyn SourceReader>),
+}
+
+/// The planes of `rect`, `[x, y, width, height]` of a source too large to hold whole, read when a
+/// slot over that window uploads: a paged derived source's level 0 read through its chunk cache.
+/// Worker work, which blocks its caller on the read; never handed to a surface, whose upload runs
+/// on the interface thread, which is handed windows already read ([`GpuSource::filled`]).
+pub trait SourceReader: Send + Sync {
+    /// Red, then green, then blue, each `rect`'s size, row by row; `None` when the read failed or
+    /// was cancelled, which the reader keeps for its caller to name.
+    fn read(&self, rect: [u32; 4]) -> Option<Arc<dyn AsRef<[f32]> + Send + Sync>>;
 }
 
 /// The prepared source a photograph's every picture on the GPU is derived from, as the caller
@@ -189,6 +202,52 @@ impl GpuSource {
             stage,
             window: [0, 0, stage.0, stage.1],
             map,
+        })
+    }
+
+    /// A paged derived source's level 0, `stage` pixels of three planes upright, of which no whole
+    /// frame is ever held: no pixels, only the geometry its windows are cut from. A window of it
+    /// is handed its own planes once they are read ([`Self::filled`]); a slot over this source
+    /// itself, or a window not filled, uploads nothing and derives nothing. `None` for an empty
+    /// stage.
+    pub fn paged(version: u64, stage: (u32, u32)) -> Option<Self> {
+        (stage.0 > 0 && stage.1 > 0).then_some(Self {
+            version,
+            pixels: None,
+            kind: SourceKind::Planes,
+            held: stage,
+            base: stage,
+            crop: (0, 0),
+            stage,
+            window: [0, 0, stage.0, stage.1],
+            map: [1, 0, 0, 0, 1, 0],
+        })
+    }
+
+    /// A source of `stage` pixels of three planes upright, read a window at a time through
+    /// `reader` when a slot over the window uploads ([`SourceReader`]): what a worker that draws a
+    /// paged derived source's level 0 in tiles holds. `None` for an empty stage.
+    pub fn reading(version: u64, stage: (u32, u32), reader: Arc<dyn SourceReader>) -> Option<Self> {
+        Self::paged(version, stage).map(|source| Self {
+            pixels: Some(Pixels::Reader(reader)),
+            ..source
+        })
+    }
+
+    /// This window of a source, holding `planes`, its own held texels, red then green then blue,
+    /// row by row, as a paged source's window read gives them, in place of the source's pixels:
+    /// addressed in the whole content stage as before, so it cuts and uploads as the same window
+    /// of a source holding every pixel would. `None` for codes, or when `planes` does not hold
+    /// exactly the held texels.
+    pub fn filled<P: AsRef<[f32]> + Send + Sync + 'static>(&self, planes: Arc<P>) -> Option<Self> {
+        let expected = (self.held.0 as usize)
+            .checked_mul(self.held.1 as usize)?
+            .checked_mul(3)?;
+        (self.kind == SourceKind::Planes && (*planes).as_ref().len() == expected).then(|| Self {
+            pixels: Some(Pixels::Planes(planes)),
+            base: self.held,
+            crop: (0, 0),
+            ..self.clone()
         })
     }
 
@@ -388,6 +447,10 @@ pub struct SourceSlot {
     window: [u32; 4],
     /// It holds the whole content stage, not a window of it.
     whole: bool,
+    /// The held texels of a source read a window at a time ([`SourceReader`]), read on the first
+    /// upload and let go once every row is written; their origin in the source's planes.
+    read: Option<Arc<dyn AsRef<[f32]> + Send + Sync>>,
+    reads_from: Option<(u32, u32)>,
 }
 
 impl SourceSlot {
@@ -482,6 +545,12 @@ impl SourceSlot {
             }
         }
         let bindings = layouts.source_bindings(device, source.kind, &textures);
+        // A source read a window at a time is uploaded from the held texels alone, once read.
+        let reads_from = matches!(source.pixels, Some(Pixels::Reader(_))).then_some(source.crop);
+        let (base, crop) = match reads_from {
+            Some(_) => (source.held, (0, 0)),
+            None => (source.base, source.crop),
+        };
         Ok(Self {
             version: source.version,
             kind: source.kind,
@@ -492,11 +561,13 @@ impl SourceSlot {
             bindings,
             rows: 0,
             bytes,
-            base: source.base,
-            crop: source.crop,
+            base,
+            crop,
             map: source.map,
             window: source.window,
             whole: source.window == [0, 0, source.stage.0, source.stage.1],
+            read: None,
+            reads_from,
         })
     }
 
@@ -506,6 +577,22 @@ impl SourceSlot {
     pub fn upload(&mut self, queue: &wgpu::Queue, source: &GpuSource, limit: u64) -> u64 {
         let Some(pixels) = &source.pixels else {
             return 0;
+        };
+        // A source read a window at a time: its held texels, read once.
+        let read;
+        let pixels = match (pixels, self.reads_from) {
+            (Pixels::Reader(reader), Some((x, y))) => {
+                if self.read.is_none() {
+                    self.read = reader.read([x, y, self.held.0, self.held.1]);
+                }
+                let Some(planes) = &self.read else {
+                    return 0;
+                };
+                read = Pixels::Planes(Arc::clone(planes));
+                &read
+            }
+            (Pixels::Reader(_), None) => return 0,
+            (pixels, _) => pixels,
         };
         let (width, height) = self.held;
         let row_bytes = u64::from(width) * self.kind.pixel_bytes();
@@ -545,6 +632,7 @@ impl SourceSlot {
                             extent,
                         );
                     }
+                    Pixels::Reader(_) => unreachable!("a read source uploads its read planes"),
                     Pixels::Planes(planes) => {
                         let values: &[u8] = bytemuck::cast_slice((**planes).as_ref());
                         let plane = u64::from(self.base.0) * u64::from(self.base.1);
@@ -571,6 +659,10 @@ impl SourceSlot {
             }
             self.rows += rows;
             written += u64::from(rows) * row_bytes;
+        }
+        if self.ready() {
+            // Every row is on the GPU: the read texels go.
+            self.read = None;
         }
         written
     }
@@ -1140,6 +1232,59 @@ mod tests {
             }
         }
         assert!(orientation_map(9, (width, height)).is_none());
+    }
+
+    /// A paged source's window, filled with its own planes, holds and addresses the texels the
+    /// same window of a whole source holding those planes would, and refuses planes of another
+    /// size; the paged source itself holds no pixels.
+    #[test]
+    fn paged_source_render_windows_are_filled_with_their_own_planes() {
+        let (width, height) = (40u32, 30u32);
+        let whole: Vec<f32> = (0..width * height * 3).map(|value| value as f32).collect();
+        let full = GpuSource::planes(
+            7,
+            Arc::new(whole.clone()),
+            (width, height),
+            [0, 0, width, height],
+            1,
+        )
+        .expect("whole planes");
+        let paged = GpuSource::paged(7, (width, height)).expect("a stage");
+        assert!(!paged.holds_pixels());
+        let rect = [10, 5, 12, 9];
+        let window = paged.window(rect).expect("inside");
+        let mut planes = Vec::new();
+        for channel in 0..3 {
+            for y in 5..14 {
+                let row = (channel * height + y) * width;
+                planes.extend_from_slice(&whole[(row + 10) as usize..(row + 22) as usize]);
+            }
+        }
+        assert!(window.filled(Arc::new(vec![0.0f32; 5])).is_none());
+        let filled = window.filled(Arc::new(planes)).expect("its own planes");
+        let expected = full.window(rect).expect("inside");
+        assert!(filled.holds_pixels());
+        assert_eq!(
+            (
+                filled.held,
+                filled.stage,
+                filled.window,
+                filled.map,
+                filled.version
+            ),
+            (
+                expected.held,
+                expected.stage,
+                expected.window,
+                expected.map,
+                expected.version
+            )
+        );
+        assert_eq!((filled.base, filled.crop), ((12, 9), (0, 0)));
+        // A cut of the filled window is the same window again.
+        let inner = filled.window([12, 6, 4, 4]).expect("inside");
+        assert_eq!(inner.crop, (2, 1));
+        assert!(filled.window([0, 0, 4, 4]).is_none());
     }
 
     /// The shaders of both kinds validate with the `naga` wgpu uses.

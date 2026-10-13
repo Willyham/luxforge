@@ -281,7 +281,9 @@ impl EditorService {
 /// - `derived_sources` records each published source by its identity, the SHA-256 of its manifest,
 ///   with the manifest's length, its dimensions, colour and chunk count; `derived_source_chunks`
 ///   is the manifest-chunk references, each chunk's place, hash and length, so a collection knows
-///   every object a source retains without reading its manifest. Neither row ever changes.
+///   every object a source retains without reading its manifest. A paged source's chunks are every
+///   level's, level 0 first, in manifest order (`docs/design/panorama-merge.md`, "Large derived
+///   sources"), at most 5,462. Neither row ever changes.
 /// - `asset_sources` is the asset-source reference: the one source a derived photograph reads,
 ///   never replaced and never deleted except with the photograph's whole record by emptying
 ///   Removed. It is what retains a source, whatever the photograph's visibility.
@@ -292,7 +294,7 @@ const DERIVED_SOURCE_SCHEMA: &str = "
         width INTEGER NOT NULL CHECK (width > 0),
         height INTEGER NOT NULL CHECK (height > 0),
         colour TEXT NOT NULL,
-        chunk_count INTEGER NOT NULL CHECK (chunk_count BETWEEN 1 AND 256),
+        chunk_count INTEGER NOT NULL CHECK (chunk_count BETWEEN 1 AND 5462),
         created_ms INTEGER NOT NULL
     );
     CREATE TABLE derived_source_chunks (

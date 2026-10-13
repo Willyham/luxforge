@@ -19,11 +19,14 @@ pub(crate) mod corrections_panel;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 pub(crate) mod develop;
+pub(crate) mod fill_setup;
 mod gallery;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
+pub(crate) mod minimap;
+pub(crate) mod minimap_geometry;
 pub(crate) mod move_to_applications;
 pub(crate) mod palette;
 pub(crate) mod query_choice;
@@ -109,6 +112,9 @@ pub(crate) struct Surfaces<'a> {
     /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while the GPU
     /// stage is refused.
     pub(crate) gpu_source: Option<&'a luxforge_gpu::GpuSource>,
+    /// A window of a paged source's level 0 the pipeline holds beside it at 100% and above
+    /// ([`crate::app::gpu_paged`]).
+    pub(crate) gpu_window: Option<&'a luxforge_gpu::GpuSource>,
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
     pub(crate) gpu_rest: Option<&'a luxforge_gpu::GpuRest>,
@@ -128,6 +134,11 @@ pub(crate) struct Surfaces<'a> {
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
     /// ([`crate::app::gpu_settle`]).
     pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,
+    /// The minimap overviews the photograph's surface may keep, handed with every frame that
+    /// draws it ([`crate::app::overview`]).
+    pub(crate) overview: Option<&'a luxforge_ui::OverviewWant>,
+    /// The high-zoom minimap's card, when the canvas shows one ([`crate::app::minimap`]).
+    pub(crate) minimap: Option<minimap::MinimapModel>,
 }
 
 impl Surfaces<'_> {

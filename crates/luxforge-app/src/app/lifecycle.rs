@@ -102,7 +102,7 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
 }
 
 /// Whether this launch may collect usage statistics once someone opts in: explicit test
-/// eligibility with an evidence run's loopback receiver, or production's, which the core decides
+/// eligibility with an evidence run's receiver, or build routing, which the core decides
 /// from the launch mode, the build and its activation switch. Eligibility is never consent.
 pub(super) fn usage_eligibility(config: &Config) -> luxforge_core::usage::Eligibility {
     use luxforge_core::usage::{Eligibility, LaunchMode};

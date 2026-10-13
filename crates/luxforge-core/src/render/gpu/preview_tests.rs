@@ -645,3 +645,51 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
         other => panic!("{other:?}"),
     }
 }
+
+/// At 100% and above the picture at rest's tiles carry the minimap's overview only when it is
+/// added: a second reduction of the same tiles to at most 256 × 256 with the reference's coverage,
+/// which leaves the tiles, their view's reduction — the backdrop — and their share as planned.
+#[test]
+fn an_overview_is_a_second_reduction_of_the_same_tiles() {
+    let presence = Layer::new(
+        crate::PRESENCE_EFFECT,
+        json!({"texture": 30.0, "clarity": 25.0}),
+    );
+    let stack = evaluation(vec![presence.clone()], vec![presence], None);
+    let region = GpuView::Region {
+        rect: crate::modules::Region {
+            x0: 100,
+            y0: 80,
+            width: 200,
+            height: 120,
+        },
+        magnification: 2.0,
+    };
+    let rest = plan_rest(&stack, region).unwrap();
+    let Some(Ok(tiles)) = rest.tiles else {
+        panic!("tiles: {:?}", rest.tiles);
+    };
+    assert_eq!(tiles.overview, None, "no overview unless asked for");
+    let with = tiles.clone().with_overview(crate::OVERVIEW_BOUNDS);
+    let overview = with.overview.clone().expect("an overview");
+    assert_eq!(overview.view, (256, 171));
+    assert_eq!(overview.across, crate::area_coverage(WIDTH, 256));
+    assert_eq!(overview.down, crate::area_coverage(HEIGHT, 171));
+    assert_eq!(
+        crate::RestTiles {
+            overview: None,
+            ..(*with).clone()
+        },
+        *tiles,
+        "everything else as planned"
+    );
+    // A smaller view's bounds give a smaller overview; a stage within them is its own size.
+    let small = tiles.clone().with_overview(ProxyBounds {
+        width: 120,
+        height: 120,
+    });
+    assert_eq!(
+        small.overview.map(|overview| overview.view),
+        Some((120, 80))
+    );
+}

@@ -29,6 +29,9 @@ pub struct Output {
 pub struct Diagnostics {
     pub gpu_source: Option<SourceFigures>,
     pub gpu_source_refused: Option<(u64, GpuFallback)>,
+    /// The window held beside the source, and the last one that could not be held, and why.
+    pub gpu_window: Option<SourceFigures>,
+    pub gpu_window_refused: Option<(u64, GpuFallback)>,
     pub gpu_retirement_failures: u64,
 }
 
@@ -77,6 +80,8 @@ pub struct State {
     pub tick_counted: Option<(u64, u64)>,
     pub tick_counts: Option<TickCounted>,
     pub evaluation: EvaluationFigures,
+    /// The minimap overviews this surface holds beside its picture ([`execution::overview`]).
+    pub overview: OverviewStore,
 }
 impl State {
     pub fn rest_figures(&self) -> Option<RestFigures> {

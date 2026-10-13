@@ -50,6 +50,15 @@ impl Cancel {
         }
     }
 
+    /// The same token, cancelled exactly when this one is, reporting to no meter: for work whose
+    /// tiles are not the ones a whole render planned, such as the reference's banded mode.
+    pub(crate) fn without_progress(&self) -> Self {
+        Self {
+            cancelled: self.cancelled.clone(),
+            progress: None,
+        }
+    }
+
     /// The meter this token reports to, if any.
     pub(crate) fn progress(&self) -> Option<&RenderProgress> {
         self.progress.as_ref()
