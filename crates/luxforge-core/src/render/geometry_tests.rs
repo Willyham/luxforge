@@ -145,7 +145,7 @@ fn colour_before_a_crop_is_applied_only_where_the_crop_reads_and_stays_exact() {
         Layer {
             id: LayerId::new(),
             effect_id: crate::BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
             payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
             mask: None,
             artifacts: Vec::new(),

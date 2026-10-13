@@ -98,7 +98,7 @@ impl ForwardModel<'_> {
         payload.extend(values.fields());
         let Processing::Color(basic) = module.compile(
             BASIC_EFFECT,
-            crate::EFFECT_FORMAT,
+            crate::current_effect_format(BASIC_EFFECT),
             &Value::Object(payload),
             self.stage,
         )?

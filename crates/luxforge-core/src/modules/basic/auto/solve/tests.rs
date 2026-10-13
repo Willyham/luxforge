@@ -7,7 +7,7 @@ use luxforge_test_macros::slow;
 fn compile(values: AutoToneValues) -> Result<Vec<ColorOperation>, Error> {
     let unit = BasicModule::new().compile(
         BASIC_EFFECT,
-        EFFECT_FORMAT,
+        crate::current_effect_format(BASIC_EFFECT),
         &Value::Object(values.fields()),
         CompileStage::exact(Stage {
             width: 32,
@@ -191,32 +191,34 @@ fn by_the_design_through(
     values.exposure = exposure(values);
     // Steps 2 and 3.
     let bands = stats(values, false);
-    values.highlights = (-250. * bands.bright).clamp(-100., 0.).round();
-    values.shadows = (200. * bands.dark).clamp(0., 60.).round();
+    values.highlights = slider("highlights", (-250. * bands.bright).clamp(-100., 0.));
+    values.shadows = slider("shadows", (200. * bands.dark).clamp(0., 60.));
     // Step 4.
     let spread = stats(values, false);
-    values.contrast = (100. * (0.60 - (spread.p90 - spread.p10)))
-        .clamp(-50., 50.)
-        .round();
+    values.contrast = slider(
+        "contrast",
+        (100. * (0.60 - (spread.p90 - spread.p10))).clamp(-50., 50.),
+    );
     values = endpoints(values);
     // Step 7: exactly one more sweep of Exposure, Whites and Blacks.
     values.exposure = exposure(values);
     values = endpoints(values);
     // Step 8.
     let chroma = stats(values, true).mean_chroma;
-    values.vibrance = (60. * (1. - chroma / 0.07)).clamp(0., 25.).round();
+    values.vibrance = slider("vibrance", (60. * (1. - chroma / 0.07)).clamp(0., 25.));
     values.saturation = if chroma > 0.14 {
-        (-60. * (chroma / 0.14 - 1.)).clamp(-15., 0.).round()
+        slider("saturation", (-60. * (chroma / 0.14 - 1.)).clamp(-15., 0.))
     } else {
         0.
     };
     values
 }
 
-/// A dark neutral ramp: its first Exposure is the analytical solution `log2(t / m)` for the target
-/// median's linear value `t` and the input median `m`, rounded to the 0.01 EV grid, because Basic's
-/// Exposure scales linear light and a neutral ramp's median is its middle sample; it has no chroma,
-/// so Vibrance is its +25 bound and Saturation 0; and every value is the design's.
+/// A dark neutral ramp: its first Exposure is the slider value applying the analytical strength
+/// `log2(t / m)` for the target median's linear value `t` and the input median `m`, rounded to the
+/// 0.01 grid, because Basic's Exposure scales linear light by its strength and a neutral ramp's
+/// median is its middle sample; it has no chroma, so Vibrance applies its +25 bound and Saturation
+/// 0; and every value is the design's.
 #[test]
 fn auto_tone_dark_neutral_ramp_equals_the_designs_steps_and_its_analytical_exposure() {
     let input = ramp();
@@ -229,7 +231,12 @@ fn auto_tone_dark_neutral_ramp_equals_the_designs_steps_and_its_analytical_expos
     .unwrap();
     let middle = f64::from(input.rgb[511][0]);
     let linear_target = ((0.46_f64 + 0.055) / 1.055).powf(2.4);
-    let first = ((linear_target / middle).log2() * 100.).round() / 100.;
+    let first =
+        (crate::modules::basic::response::value("exposure", (linear_target / middle).log2())
+            .unwrap()
+            * 100.)
+            .round()
+            / 100.;
     assert_eq!(
         report.bands,
         statistics(
@@ -248,7 +255,7 @@ fn auto_tone_dark_neutral_ramp_equals_the_designs_steps_and_its_analytical_expos
     );
     assert_eq!(report.values, by_the_design(&input));
     assert_eq!(report.values.highlights, 0.);
-    assert_eq!(report.values.vibrance, 25.);
+    assert_eq!(report.values.vibrance, slider("vibrance", 25.));
     assert_eq!(report.values.saturation, 0.);
     assert!(
         serde_json::to_vec(&report).unwrap().len() < 3500,
@@ -451,11 +458,11 @@ fn auto_tone_first_exposure_matches_exhaustive_picture_oracles_with_bright_and_c
         assert_eq!(report.bands, exhaustive[guarded]);
         assert_eq!(
             report.values.highlights,
-            (-250. * report.bands.bright).clamp(-100., 0.).round()
+            slider("highlights", (-250. * report.bands.bright).clamp(-100., 0.))
         );
         assert_eq!(
             report.values.shadows,
-            (200. * report.bands.dark).clamp(0., 60.).round()
+            slider("shadows", (200. * report.bands.dark).clamp(0., 60.))
         );
     }
 }

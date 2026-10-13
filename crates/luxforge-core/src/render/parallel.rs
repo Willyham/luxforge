@@ -75,9 +75,9 @@ pub(crate) fn force(pooled: Option<bool>) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::{
-        BASIC_EFFECT, CROP_EFFECT, CropStage, EFFECT_FORMAT, Layer, LayerId, LinearImage,
-        LinearSettings, ModuleRegistry, PRESENCE_EFFECT, PreviewSource, ProxyBounds, ProxyPlan,
-        RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, SnapshotId, Transform,
+        BASIC_EFFECT, CROP_EFFECT, CropStage, Layer, LayerId, LinearImage, LinearSettings,
+        ModuleRegistry, PRESENCE_EFFECT, PreviewSource, ProxyBounds, ProxyPlan, RECIPE_FORMAT,
+        Recipe, RenderContext, RenderOptions, SnapshotId, Transform,
         render::testing::{frame_in, linear},
         render::tests::{fitted_crop, gradient, turn},
     };
@@ -88,7 +88,7 @@ mod tests {
         Layer {
             id: LayerId::new(),
             effect_id: effect_id.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(effect_id),
             payload,
             mask: None,
             artifacts: Vec::new(),

@@ -14,7 +14,7 @@ fn the_listing_reports_values_components_and_the_bound_layers() {
     let layer = Layer {
         id: LayerId::new(),
         effect_id: crate::BASIC_EFFECT.to_owned(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
         payload: json!({}),
         mask: Some(mask.clone()),
         artifacts: Vec::new(),

@@ -2167,7 +2167,7 @@ mod tests {
         let basic = |payload: Value, mask: Option<crate::MaskId>| crate::Layer {
             id: LayerId::new(),
             effect_id: crate::BASIC_EFFECT.into(),
-            effect_format: crate::EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
             payload,
             mask,
             artifacts: Vec::new(),

@@ -1,6 +1,6 @@
 # Saturation and Vibrance mathematics
 
-Status: frozen and implemented as the `colour-adjust` unit of the Basic module ([design](basic-and-histogram.md)). This document, the independent f64 reference under `crates/luxforge-reference/src/colour.rs` and `fixtures/basic/colour-cases.json` define the numerical oracle for Vibrance and Saturation. The CPU reference unit is checked against that oracle; its module-owned WGSL is qualified against the CPU within the declared GPU output tolerance. Read it alongside [Basic adjustments and histogram](basic-and-histogram.md) and the accepted ranges in [product decisions](../decisions.md#basic-adjustments-and-histogram).
+Status: frozen and implemented as the `colour-adjust` unit of the Basic module ([design](basic-and-histogram.md)). This document, the independent f64 reference under `crates/luxforge-reference/src/colour.rs` and `fixtures/basic/colour-cases.json` define the numerical oracle for Vibrance and Saturation. The CPU reference unit is checked against that oracle; its module-owned WGSL is qualified against the CPU within the declared GPU output tolerance. Read it alongside [Basic adjustments and histogram](basic-and-histogram.md) and the accepted ranges in [product decisions](../decisions.md#basic-adjustments-and-histogram). The Vibrance and Saturation below are the strengths the unit receives: the sliders' values through their frozen responses ([Basic realigned](lightroom-alignment.md#basic-realigned)), within ±100.
 
 ## Candidate: Oklab chroma scaling
 

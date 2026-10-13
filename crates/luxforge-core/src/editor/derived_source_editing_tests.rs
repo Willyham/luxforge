@@ -316,7 +316,16 @@ fn a_derived_source_stays_linear_until_the_sdr_boundary() {
     assert_eq!((neutral.width, neutral.height), (WIDTH, HEIGHT));
     assert_eq!(codes(&neutral, 1.0), 0, "the stored values' codes exactly");
     assert!(values.iter().any(|value| *value < 0.0) && values.iter().any(|value| *value > 3.0));
-    apply(&mut service, &asset, "set-basic", json!({"exposure": -2.0}));
+    // The Exposure value whose strength is exactly two stops down.
+    let exposure = crate::basic_response("exposure")
+        .and_then(|response| response.value(-2.0))
+        .expect("a reachable strength");
+    apply(
+        &mut service,
+        &asset,
+        "set-basic",
+        json!({"exposure": exposure}),
+    );
     let darker = service.render_current(&asset).unwrap();
     assert_eq!(
         codes(&darker, 0.25),

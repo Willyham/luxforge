@@ -1173,7 +1173,7 @@ mod tests {
             crate::Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: serde_json::json!({"exposure":1.0}),
                 mask: None,
                 artifacts: Vec::new(),

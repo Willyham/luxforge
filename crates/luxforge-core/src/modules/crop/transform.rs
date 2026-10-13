@@ -576,7 +576,7 @@ mod tests {
         Layer {
             id: LayerId::new(),
             effect_id: effect_id.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(effect_id),
             payload: json!({}),
             mask: None,
             artifacts: Vec::new(),
@@ -790,7 +790,7 @@ mod tests {
             (
                 "wrong effect",
                 BASIC_EFFECT,
-                EFFECT_FORMAT,
+                crate::current_effect_format(crate::BASIC_EFFECT),
                 ErrorKind::Incompatible,
             ),
             (

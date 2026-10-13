@@ -343,13 +343,11 @@ pub(super) fn average_patch(pixels: &[[u8; 3]]) -> Result<[f64; 3], Reason> {
     Ok(mean)
 }
 
-/// Solve for the `(temperature, tint)` pair whose [`target_uv`] is this patch's own chromaticity:
-/// the pair that, applied by [`WhiteBalance`], maps the patch to neutral.
+/// Solve for the `(temperature, tint)` strengths whose [`target_uv`] is this patch's own
+/// chromaticity: the pair that, applied by [`WhiteBalance`], maps the patch to neutral.
 ///
-/// Bounded 2-D Newton's method seeded at `(0, 0)` with a finite-difference Jacobian. The converged
-/// pair is rounded to the nearest whole step, and a rounded value outside the representable range is
-/// reported as [`Reason::OutOfRange`] rather than clamped.
-pub(super) fn neutral_settings(mean_linear_rgb: [f64; 3]) -> Result<(i64, i64), Reason> {
+/// Bounded 2-D Newton's method seeded at `(0, 0)` with a finite-difference Jacobian.
+fn neutral_strengths(mean_linear_rgb: [f64; 3]) -> Result<(f64, f64), Reason> {
     if mean_linear_rgb.iter().any(|value| !value.is_finite()) {
         return Err(Reason::NonFinite);
     }
@@ -398,6 +396,32 @@ pub(super) fn neutral_settings(mean_linear_rgb: [f64; 3]) -> Result<(i64, i64), 
     if !converged {
         return Err(Reason::DidNotConverge);
     }
+    Ok((temperature, tint))
+}
+
+/// The neutral picker's answer: the Temperature and Tint slider values whose strengths
+/// ([`super::response`]) neutralize the patch, each rounded to the nearest whole step. A strength
+/// beyond what the slider reaches is reported as [`Reason::OutOfRange`] rather than clamped.
+pub(super) fn neutral_values(mean_linear_rgb: [f64; 3]) -> Result<(i64, i64), Reason> {
+    let (temperature, tint) = neutral_strengths(mean_linear_rgb)?;
+    let value = |field: &str, strength: f64, is_temperature: bool| {
+        super::response::value(field, strength)
+            .map(f64::round)
+            .ok_or(Reason::OutOfRange {
+                temperature: is_temperature,
+                value: strength.round(),
+            })
+    };
+    let temperature = value(super::TEMPERATURE, temperature, true)?;
+    let tint = value(super::TINT, tint, false)?;
+    Ok((temperature as i64, tint as i64))
+}
+
+/// The frozen solver's answer in strengths, rounded to whole steps and refused outside the
+/// strengths' former ±100: what the reference's committed cases record.
+#[cfg(test)]
+fn neutral_settings(mean_linear_rgb: [f64; 3]) -> Result<(i64, i64), Reason> {
+    let (temperature, tint) = neutral_strengths(mean_linear_rgb)?;
     let temperature = temperature.round();
     let tint = tint.round();
     if temperature.abs() > PARAMETER_RANGE {

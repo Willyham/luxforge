@@ -757,8 +757,8 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
     let raster = result.raster().expect("a frame").clone();
     assert_eq!((raster.width, raster.height), (source.width, source.height));
 
-    // The lift the layer applies, in linear light: one stop down.
-    let gain = 0.5_f64;
+    // The lift the layer applies, in linear light: Exposure -1's gain through its response.
+    let gain = super::gain(-1.0);
     let mut compared = 0usize;
     let mut ends = 0usize;
     let mut worst = 0.0f64;

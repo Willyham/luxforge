@@ -7,7 +7,7 @@
 //! module only exercises the unit through the real host pipeline (`ModuleRegistry`, `render`), as
 //! the Exposure module does.
 
-use super::basic_layer;
+use super::{basic_layer, strength};
 use luxforge_core::{ModuleRegistry, SnapshotId};
 use luxforge_reference::tone::ToneParams;
 use luxforge_testkit::fixtures::render;
@@ -182,6 +182,15 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
     let stack = recipe(vec![basic_layer(payload)]);
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a rendered pixel");
     let actual = rendered.pixel(0, 0).expect("the pixel");
+    // The references take the strengths the stored slider values apply.
+    let ev = strength("exposure", ev);
+    let params = ToneParams {
+        contrast: strength("contrast", params.contrast),
+        highlights: strength("highlights", params.highlights),
+        shadows: strength("shadows", params.shadows),
+        whites: strength("whites", params.whites),
+        blacks: strength("blacks", params.blacks),
+    };
 
     let linear_in = [
         luxforge_reference::srgb::decode(input[0]),

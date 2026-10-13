@@ -3,13 +3,15 @@
 //! scale, a reversed control and a range shortfall recovered by the fit; a known gain, chroma
 //! scale, hue rotation and locality by the pointwise measures; a known blur's radius, a known
 //! sharpening's overshoot and halo, a known band gain and noise deviation by the spatial measures;
-//! known crossings by the profiles; and known positions and shifts by the dot measures.
+//! known crossings by the profiles; known positions and shifts by the dot measures; and a joint
+//! fit over two subject classes and a slope floor on known tables.
 
 use luxforge_reference::colour::{self, Oklab};
 use luxforge_reference::lr_align::{
-    self, Band, Direction, Lab, Target, axis_profile, band_energy, band_gains, blur_from_gains,
-    box_blur, carried, crossing, deviation, dots, edge, grid_angle, keystone, linear_gain,
-    locality, match_points, orientation, radial_profile, sectors, tone_locality,
+    self, Band, Direction, DistanceTable, Lab, Target, axis_profile, band_energy, band_gains,
+    blur_from_gains, box_blur, carried, continued_within_ties, crossing, deviation, dots, edge,
+    grid_angle, joint_fit, keystone, linear_gain, locality, match_points, orientation,
+    radial_profile, sectors, tone_locality, with_slope_floor,
 };
 use luxforge_reference::{SplitMix64, srgb};
 
@@ -578,4 +580,95 @@ fn tone_locality_tells_a_local_tone_change_from_a_pointwise_one() {
         })
         .collect();
     assert!(tone_locality(&neutral, &local, 1.0, 20) > 5.0);
+}
+
+/// A table whose distance at each Lightroom value is least at `best(value)`, growing by one per
+/// unit away from it.
+fn table(values: &[f64], lightroom: &[f64], best: impl Fn(f64) -> f64) -> DistanceTable {
+    DistanceTable {
+        values: values.to_vec(),
+        rows: lightroom
+            .iter()
+            .map(|lr| (*lr, values.iter().map(|v| (v - best(*lr)).abs()).collect()))
+            .collect(),
+    }
+}
+
+#[test]
+fn a_joint_fit_meets_between_two_classes_and_follows_the_one_alone() {
+    let dense: Vec<f64> = (0..=40).map(|i| -100.0 + 5.0 * f64::from(i)).collect();
+    let coarse: Vec<f64> = (0..=8).map(|i| -100.0 + 25.0 * f64::from(i)).collect();
+    // The targets ask for twice the value, the photographs for the value itself, at ±50 and ±100
+    // only; the targets alone hold ±25.
+    let targets = table(&dense, &[-100.0, -50.0, -25.0, 25.0, 50.0], |v| {
+        (2.0 * v).clamp(-100.0, 100.0)
+    });
+    let photographs = table(&coarse, &[-100.0, -50.0, 50.0, 100.0], |v| v);
+    let fit = joint_fit(
+        &[targets.clone(), photographs],
+        Some((0.0, 0.0)),
+        (-100.0, 100.0),
+    );
+    let at = |lr: f64| {
+        fit.points
+            .iter()
+            .find(|p| (p.lightroom - lr).abs() < 1e-9)
+            .unwrap()
+    };
+    // At 25 the targets alone decide: 50.
+    assert!((at(25.0).luxforge - 50.0).abs() < 1e-6, "{:?}", at(25.0));
+    // At 50 the targets want 100 and the photographs 50: every value between is an equal mean.
+    let fifty = at(50.0);
+    assert!((50.0..=100.0).contains(&fifty.luxforge), "{fifty:?}");
+    assert!((fifty.residual - 25.0).abs() < 1e-6, "{fifty:?}");
+    // At 100 only the photographs hold it: 100.
+    assert!((at(100.0).luxforge - 100.0).abs() < 1e-6, "{:?}", at(100.0));
+    assert_eq!(fit.direction, Direction::Increasing);
+    assert_eq!(targets.at(25.0, 47.5), Some(2.5));
+    assert_eq!(targets.at(10.0, 0.0), None);
+}
+
+#[test]
+fn a_slope_floor_lifts_a_flat_run_outward_and_keeps_neutral_and_the_limits() {
+    let knots = [
+        [-100.0, -30.0],
+        [-50.0, -30.0],
+        [0.0, 0.0],
+        [50.0, 100.0],
+        [100.0, 100.0],
+    ];
+    let floored = with_slope_floor(&knots, 0.0, 0.1, (-200.0, 100.0));
+    assert_eq!(floored[2], [0.0, 0.0]);
+    assert_eq!(floored[0], [-100.0, -35.0]);
+    assert_eq!(floored[1], [-50.0, -30.0]);
+    // The top is held at the limit and the step below it gives way.
+    assert_eq!(floored[4], [100.0, 100.0]);
+    assert_eq!(floored[3], [50.0, 95.0]);
+    assert!(floored.windows(2).all(|p| p[1][1] > p[0][1]));
+}
+
+#[test]
+fn a_saturated_point_continues_the_slope_within_its_ties() {
+    let point = |lightroom: f64, luxforge: f64, span: [f64; 2]| lr_align::FitPoint {
+        lightroom,
+        luxforge,
+        residual: 0.0,
+        identity: None,
+        shortfall: false,
+        span,
+    };
+    // 50 is determined at 40; 100 could be anything from 50 to 100, and the slope continued
+    // from 0 through 50 reaches 80 there. -100 is determined and stays.
+    let knots = continued_within_ties(
+        &[
+            point(-100.0, -90.0, [-90.0, -90.0]),
+            point(50.0, 40.0, [40.0, 40.0]),
+            point(100.0, 50.0, [50.0, 100.0]),
+        ],
+        (0.0, 0.0),
+    );
+    assert_eq!(
+        knots,
+        vec![[-100.0, -90.0], [0.0, 0.0], [50.0, 40.0], [100.0, 80.0]]
+    );
 }

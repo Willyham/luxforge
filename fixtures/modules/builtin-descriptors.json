@@ -3274,7 +3274,7 @@
                 "max": 5.0,
                 "min": -5.0,
                 "name": "exposure",
-                "notes": "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
+                "notes": "multiplies the linear-light channels by 2 to the power of the strength its response gives the value, which follows Lightroom's Exposure (about 1.3 stops at +1 EV, 6.5 at +5). On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
                 "precision": 2,
                 "required": false,
                 "step": 0.01,
@@ -3619,7 +3619,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 1,
+            "format": 2,
             "id": "luxforge.basic.adjust",
             "maskable": true,
             "order": 0,
@@ -7030,7 +7030,7 @@
         "optional": {
           "blacks": "moves the black point, crushing or lifting the darkest tones, separately from Shadows",
           "contrast": "changes midtone separation with a fixed pivot at encoded mid-grey using a smooth, monotone S-curve",
-          "exposure": "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
+          "exposure": "multiplies the linear-light channels by 2 to the power of the strength its response gives the value, which follows Lightroom's Exposure (about 1.3 stops at +1 EV, 6.5 at +5). On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
           "highlights": "smoothly lifts or crushes the image's bright tones while leaving pure white exactly unchanged",
           "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
           "saturation": "scales chroma uniformly about the achromatic axis; -100 is neutral grayscale, not merely a strong desaturation",
@@ -7083,7 +7083,7 @@
             "max": 5.0,
             "min": -5.0,
             "name": "exposure",
-            "notes": "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
+            "notes": "multiplies the linear-light channels by 2 to the power of the strength its response gives the value, which follows Lightroom's Exposure (about 1.3 stops at +1 EV, 6.5 at +5). On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
             "precision": 2,
             "required": false,
             "step": 0.01,

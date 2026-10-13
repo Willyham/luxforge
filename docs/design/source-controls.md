@@ -52,7 +52,7 @@ Recommended, in four parts:
 
 ### Exposure
 
-There is one Exposure, `set-basic.exposure`: −5..+5 EV, `2^EV` in linear light, on every kind and every target, and it acts once. On RAW it moves from the source read into the colour run, so it now follows pixel-stage layers; later retouching then does not depend on exposure. The source read multiplies in f64 and Basic's unit applies an f32 gain, so the move is byte-identical only where `2^EV` is exact. [Verification](#verification) measures the bound before the change lands.
+There is one Exposure, `set-basic.exposure`: −5..+5 EV, `2^s` in linear light for the strength `s` its response gives the value, on every kind and every target, and it acts once. On RAW it moves from the source read into the colour run, so it now follows pixel-stage layers; later retouching then does not depend on exposure. The source read multiplies in f64 and Basic's unit applies an f32 gain, so the move is byte-identical only where `2^EV` is exact. [Verification](#verification) measures the bound before the change lands.
 
 ### White balance on a RAW photo
 

@@ -650,21 +650,19 @@ fn a_round_is_deterministic_and_reads_back_from_its_files() {
             .collect();
         assert_eq!(refused, recorded, "{}", variant["id"]);
     }
-    // Exposure −5 lies at its calibration's shortfall, so the reader refuses it; −3 lands where
-    // the frozen calibration puts it.
+    // Exposure's slider follows Lightroom's response, so the reader transfers each value as it is.
     let exposure = |id: &str| variants.iter().find(|variant| variant["id"] == id).unwrap();
     assert_eq!(
         exposure("wedge__exposure__-5")["settings"],
         json!({"Exposure2012": "-5.00"})
     );
-    assert_eq!(exposure("wedge__exposure__-5")["luxforge"], json!({}));
-    let converted = luxforge_core::lightroom_calibration("Exposure2012", -3.0)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        exposure("wedge__exposure__-3")["luxforge"],
-        json!({"set-basic": {"exposure": converted}})
-    );
+    assert!(luxforge_core::lightroom_calibration("Exposure2012", -5.0).is_none());
+    for (id, value) in [("wedge__exposure__-5", -5.0), ("wedge__exposure__-3", -3.0)] {
+        assert_eq!(
+            exposure(id)["luxforge"],
+            json!({"set-basic": {"exposure": value}})
+        );
+    }
     let mask = variants
         .iter()
         .find(|variant| variant["family"] == "mask-radial")

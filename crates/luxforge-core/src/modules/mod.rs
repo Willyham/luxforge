@@ -53,6 +53,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
 /// now; every other built-in effect is at the shared [`crate::EFFECT_FORMAT`].
 const BUILTIN_FORMATS: &[(&str, u32)] = &[
     raw::RAW_BUILTIN_FORMAT,
+    (BASIC_EFFECT, basic::BASIC_EFFECT_FORMAT),
     (MIXER_EFFECT, mixer::MIXER_EFFECT_FORMAT),
 ];
 
@@ -71,6 +72,8 @@ pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
 pub use basic::auto as auto_tone;
+/// Basic's slider responses, public for the Lightroom alignment's fold.
+pub use basic::response::{Response as BasicResponse, response as basic_response};
 pub(crate) use candidate_proof::CandidateProofModule;
 #[cfg(test)]
 pub(crate) use candidate_proof::{

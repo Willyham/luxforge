@@ -6,7 +6,7 @@
 //! around a code threshold within which one code of difference is permitted is
 //! `1e-6 + 1e-6 · |threshold|`, because production decodes and multiplies in f32.
 
-use super::{basic_layer, mutation};
+use super::{basic_layer, mutation, strength, value_at};
 use luxforge_core::{
     BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, ModuleRegistry, MutationOutcome,
     ORIENTATION_EFFECT, Orientation, SnapshotId, SourceImage, Transform,
@@ -41,7 +41,8 @@ struct ExposureCase {
 }
 
 /// Every case of `fixtures/basic/exposure-cases.json`, rendered through a real Basic layer at the
-/// exact input codes the corpus names. The corpus covers 0, ±0.5, ±1, ±2 and ±5 EV, the identity
+/// exact input codes the corpus names, the case's EV stored as the slider's value and held to the
+/// reference at its strength. The corpus covers 0, ±0.5, ±1, ±2 and ±5 EV, the identity
 /// codes and the explicit clip and floor boundaries.
 #[test]
 fn every_corpus_case_renders_through_a_real_basic_layer() {
@@ -69,6 +70,8 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
         )
         .expect("a rendered exposure");
         assert_eq!((rendered.width, rendered.height), (inputs.len() as u32, 1));
+        // The layer stores the corpus's value as the slider's, which applies its strength.
+        let applied = strength("exposure", ev);
         for (index, case) in group.iter().enumerate() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
@@ -80,11 +83,12 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
                 "the reference disagrees with the corpus at {:?} {ev} EV",
                 case.input
             );
+            let expected = evaluate_pixel(case.input, &[RefOp::Exposure(applied)]);
             for (channel, input) in case.input.iter().enumerate() {
-                let linear = exposure(srgb::decode(*input), ev);
+                let linear = exposure(srgb::decode(*input), applied);
                 fixtures::assert_code_near_threshold(
                     pixel[channel],
-                    case.expected[channel],
+                    expected[channel],
                     linear,
                     CODE_BAND,
                     format_args!("input {:?} channel {channel} at {ev} EV", case.input),
@@ -144,7 +148,8 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
             .order
             .iter()
             .map(|step| match step.as_str() {
-                "exposure" => exposure_layer(file.ev),
+                // The file records the gain's EV, the strength.
+                "exposure" => exposure_layer(value_at("exposure", file.ev)),
                 "mirror" => Layer::orientation(Orientation::of(Transform::MirrorHorizontal)),
                 other => panic!("{name}: unknown step {other}"),
             })

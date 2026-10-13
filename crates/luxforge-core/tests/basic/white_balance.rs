@@ -9,9 +9,9 @@
 //! of the exact threshold between two codes. Identity stacks, byte sharing, the picker's own
 //! integer answers and history behaviour are exact with no tolerance at all.
 
-use super::basic_layer;
+use super::{basic_layer, strength, value_at};
 use luxforge_core::{
-    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, ModuleRegistry, OwnerHandle, SnapshotId,
+    ApiRequest, BASIC_EFFECT, ModuleRegistry, OwnerHandle, SnapshotId, current_effect_format,
 };
 use luxforge_reference::srgb;
 use luxforge_reference::white_balance::{self, RejectReason};
@@ -96,9 +96,11 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
         let (temperature, tint) = (group[0].temperature, group[0].tint);
         let inputs: Vec<[u8; 3]> = group.iter().map(|case| case.input_rgb_u8).collect();
         let source = source_of(inputs.len() as u32, 1, &inputs);
-        let stack = recipe(vec![basic_layer(
-            json!({"temperature": temperature, "tint": tint}),
-        )]);
+        // The corpus records strengths; the layer stores the slider values that apply them.
+        let stack = recipe(vec![basic_layer(json!({
+            "temperature": value_at("temperature", temperature),
+            "tint": value_at("tint", tint),
+        }))]);
         let rendered =
             render(&registry, &source, SnapshotId::new(), &stack).expect("a rendered correction");
         for (index, case) in group.iter().enumerate() {
@@ -137,7 +139,7 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
     let Processing::Color(operation) = module
         .compile(
             BASIC_EFFECT,
-            EFFECT_FORMAT,
+            current_effect_format(BASIC_EFFECT),
             &payload,
             luxforge_core::CompileStage::exact(Stage {
                 width: 4,
@@ -149,12 +151,17 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
         panic!("expected a colour operation");
     };
     assert_eq!(operation.len(), 2);
+    let (temperature, tint, ev) = (
+        strength("temperature", 60.0),
+        strength("tint", -25.0),
+        strength("exposure", 2.0),
+    );
     assert_eq!(
         operation.units()[0].describe(),
-        "white-balance(+60, -25)",
+        format!("white-balance({temperature:+}, {tint:+})"),
         "white balance is the first unit of the run"
     );
-    assert_eq!(operation.units()[1].describe(), "exposure(+2)");
+    assert_eq!(operation.units()[1].describe(), format!("exposure({ev:+})"));
 
     // The rendered bytes against the reference composed in that order, including inputs the
     // exposure drives above 1.0 so the output boundary's clamp is exercised.
@@ -175,8 +182,8 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
     .expect("a rendered mixed layer");
     for (index, input) in inputs.iter().enumerate() {
         let linear = input.map(srgb::decode);
-        let balanced = white_balance::apply(60.0, -25.0, linear);
-        let exposed = balanced.map(|value| value * 4.0);
+        let balanced = white_balance::apply(temperature, tint, linear);
+        let exposed = balanced.map(|value| value * ev.exp2());
         for (channel, value) in exposed.into_iter().enumerate() {
             fixtures::assert_code_near_threshold(
                 rendered.pixel(index as u32, 0).expect("a pixel")[channel],
@@ -297,16 +304,16 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
         picked["temperature"].as_i64().expect("a temperature"),
         picked["tint"].as_i64().expect("a tint"),
     );
-    assert_eq!(
-        reference_settings(&picked).expect("a solved patch"),
-        (temperature as i32, tint as i32),
-        "the picker's answer is the independent reference's answer for the codes it read"
+    assert_is_the_reference(&picked, "the picker's answer");
+    // The cast was built from the corpus patch that solves to strengths (20, -20); a JPEG round
+    // trip and a flatter patch move it a little, never far.
+    let (warmth, green) = (
+        strength("temperature", temperature as f64),
+        strength("tint", tint as f64),
     );
-    // The cast was built from the corpus patch that solves to (20, -20); a JPEG round trip and a
-    // flatter patch move it a little, never far.
     assert!(
-        (temperature - 20).abs() <= 3 && (tint + 20).abs() <= 6,
-        "the recovered correction ({temperature}, {tint}) is not near the cast it was built from"
+        (warmth - 20.0).abs() <= 4.0 && (green + 20.0).abs() <= 7.0,
+        "the recovered correction ({warmth}, {green}) is not near the cast it was built from"
     );
 
     // Applying it is an ordinary set-basic: one entry, and the patch becomes neutral to the code.
@@ -331,10 +338,12 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
     )
     .unwrap();
     let rgba: Vec<i64> = serde_json::from_value(sampled["rgba"].clone()).expect("a pixel");
+    // Within two codes: a whole step of the realigned Tint moves the colour further than one of
+    // the strengths the reference solves.
     let spread = rgba[..3].iter().max().unwrap() - rgba[..3].iter().min().unwrap();
     assert!(
-        spread <= 1,
-        "the corrected patch is not neutral to the code: {rgba:?}"
+        spread <= 2,
+        "the corrected patch is not neutral within two codes: {rgba:?}"
     );
 
     owner.disconnect(client);
@@ -479,6 +488,21 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
     let _ = fs::remove_file(image.path);
 }
 
+/// The picker's answer is the independent reference's for the codes it read: the reference solves
+/// strengths, and the picker answers the whole slider values whose strengths are nearest them,
+/// within half a slider step's strength and the reference's own rounding.
+fn assert_is_the_reference(answer: &Value, case: &str) {
+    let solved = reference_settings(answer).expect("a solved patch");
+    for (field, reference) in [("temperature", solved.0), ("tint", solved.1)] {
+        let value = answer[field].as_f64().expect("a slider value");
+        let half_step = (strength(field, value + 0.5) - strength(field, value - 0.5)) / 2.0;
+        assert!(
+            (strength(field, value) - f64::from(reference)).abs() <= half_step + 0.5,
+            "{case}: {field} {value} is not the reference's strength {reference}"
+        );
+    }
+}
+
 /// The patch is clipped at the stage's edges, and every refusal names its reason first and commits
 /// nothing.
 #[test]
@@ -540,14 +564,7 @@ fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
                     expected.2 * expected.3,
                     "{case}: every sampled pixel is reported"
                 );
-                assert_eq!(
-                    reference_settings(&result).expect("a solved patch"),
-                    (
-                        result["temperature"].as_i64().unwrap() as i32,
-                        result["tint"].as_i64().unwrap() as i32
-                    ),
-                    "{case}"
-                );
+                assert_is_the_reference(&result, case);
             }
             None => {
                 // A corner sitting on the blown-white block is refused, not clamped inward.

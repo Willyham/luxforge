@@ -1331,7 +1331,7 @@ mod tests {
         let make = |id: &str, payload: serde_json::Value| crate::Layer {
             id: crate::LayerId::new(),
             effect_id: id.into(),
-            effect_format: crate::EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(id),
             payload,
             mask: None,
             artifacts: Vec::new(),

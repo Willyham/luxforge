@@ -53,9 +53,17 @@ const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 const WIDTH: u32 = 24;
 const HEIGHT: u32 = 16;
 
-/// The exposure a masked layer applies, in EV. Large enough that a coverage difference of one part
+/// The Exposure a masked layer holds, the slider's value. Large enough that a coverage difference of one part
 /// in a thousand is visible in the output codes rather than lost in the quantizer.
 const MASKED_EV: f64 = 2.0;
+
+/// The linear gain Basic's Exposure applies at slider value `ev`: two to the strength its frozen
+/// response gives the value.
+fn gain(ev: f64) -> f64 {
+    luxforge_core::basic_response("exposure")
+        .map_or(ev, |response| response.strength(ev))
+        .exp2()
+}
 
 /// The stages the compiled gradients are held to the reference on: both 24 MP orientations, a
 /// square and a panorama.

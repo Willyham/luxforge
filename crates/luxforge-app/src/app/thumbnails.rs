@@ -356,9 +356,9 @@ mod tests {
     use super::*;
     use crate::app::testing::fresh_stack;
     use luxforge_core::{
-        AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EntryId, Evaluation,
-        HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, PreviewSource, RECIPE_FORMAT, Recipe,
-        RenderContext, Snapshot, SnapshotId, SourceImage, Stage,
+        AssetId, BASIC_EFFECT, Component, ComponentMode, EntryId, Evaluation, HistoryEntry, Layer,
+        LayerId, Mask, ModuleRegistry, PreviewSource, RECIPE_FORMAT, Recipe, RenderContext,
+        Snapshot, SnapshotId, SourceImage, Stage,
         analysis::{MaskPixels, coverage_grid},
         mask::CompiledMask,
     };
@@ -400,7 +400,7 @@ mod tests {
         Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure": exposure}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),

@@ -1087,6 +1087,162 @@ pub fn knots(points: &[FitPoint], anchor: Option<(f64, f64)>, range: (f64, f64))
         .collect()
 }
 
+/// One subject class's distances for a joint fit: the Luxforge values they were found at, strictly
+/// increasing, and for each Lightroom value its response's distance at every one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DistanceTable {
+    pub values: Vec<f64>,
+    pub rows: Vec<(f64, Vec<f64>)>,
+}
+
+impl DistanceTable {
+    /// The distance of the row for Lightroom's `lightroom` at Luxforge's `value`, by linear
+    /// interpolation, `None` without that row or outside the values.
+    pub fn at(&self, lightroom: f64, value: f64) -> Option<f64> {
+        let (_, row) = self
+            .rows
+            .iter()
+            .find(|(v, _)| (v - lightroom).abs() < 1e-9)?;
+        let values = &self.values;
+        if value < values[0] - 1e-9 || value > values[values.len() - 1] + 1e-9 {
+            return None;
+        }
+        let upper = values
+            .partition_point(|v| *v < value - 1e-9)
+            .min(values.len() - 1);
+        if upper == 0 || (values[upper] - value).abs() <= 1e-9 {
+            return Some(row[upper]);
+        }
+        let t = (value - values[upper - 1]) / (values[upper] - values[upper - 1]);
+        Some(row[upper - 1] + t * (row[upper] - row[upper - 1]))
+    }
+}
+
+/// The level A fit of several subject classes together (the targets and the photographs, say):
+/// each Lightroom value any table holds is matched at the Luxforge value whose mean distance over
+/// the tables holding it is least, on the union of the tables' values inside the span they share,
+/// each table read by linear interpolation; then refined, made monotone and tabulated as
+/// [`fit_by`] does.
+pub fn joint_fit(tables: &[DistanceTable], anchor: Option<(f64, f64)>, range: (f64, f64)) -> Fit {
+    let low = tables
+        .iter()
+        .map(|t| t.values[0])
+        .fold(f64::NEG_INFINITY, f64::max);
+    let high = tables
+        .iter()
+        .map(|t| t.values[t.values.len() - 1])
+        .fold(f64::INFINITY, f64::min);
+    let mut values: Vec<f64> = tables
+        .iter()
+        .flat_map(|t| t.values.iter().copied())
+        .filter(|v| *v >= low - 1e-9 && *v <= high + 1e-9)
+        .collect();
+    values.sort_by(f64::total_cmp);
+    values.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let mut lightroom: Vec<f64> = tables
+        .iter()
+        .flat_map(|t| t.rows.iter().map(|(v, _)| *v))
+        .collect();
+    lightroom.sort_by(f64::total_cmp);
+    lightroom.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    // A candidate is the Luxforge value itself, so the refinement and every pooled value read the
+    // tables between their values.
+    let targets: Vec<(f64, f64)> = lightroom.iter().map(|lr| (*lr, *lr)).collect();
+    fit_by(
+        &values,
+        &values,
+        &targets,
+        |lr: &f64, value: &f64| {
+            let found: Vec<f64> = tables.iter().filter_map(|t| t.at(*lr, *value)).collect();
+            if found.is_empty() {
+                f64::INFINITY
+            } else {
+                found.iter().sum::<f64>() / found.len() as f64
+            }
+        },
+        Some(|a: &f64, b: &f64, t: f64| a + t * (b - a)),
+        anchor,
+        range,
+    )
+}
+
+/// A fit's points as knots `[Lightroom, Luxforge]` through `neutral` (Lightroom's, Luxforge's),
+/// each point moved within its span, where any value is within [`TIE`] of the best, to the value
+/// nearest the slope of the point before it continued outward from neutral: a chart that
+/// saturates (a wedge clipped to white) cannot tell the values in its span apart, and the
+/// continued slope keeps the slider moving there rather than the span's first value.
+pub fn continued_within_ties(points: &[FitPoint], neutral: (f64, f64)) -> Vec<[f64; 2]> {
+    let mut sorted: Vec<&FitPoint> = points.iter().collect();
+    sorted.sort_by(|a, b| a.lightroom.total_cmp(&b.lightroom));
+    let mut knots: Vec<[f64; 2]> = sorted.iter().map(|p| [p.lightroom, p.luxforge]).collect();
+    let centre = knots.partition_point(|k| k[0] < neutral.0);
+    if knots
+        .get(centre)
+        .is_none_or(|k| (k[0] - neutral.0).abs() > 1e-9)
+    {
+        knots.insert(centre, [neutral.0, neutral.1]);
+    } else {
+        knots[centre][1] = neutral.1;
+    }
+    let span_of = |lightroom: f64| {
+        sorted
+            .iter()
+            .find(|p| (p.lightroom - lightroom).abs() < 1e-9)
+            .map(|p| p.span)
+    };
+    let continued = |inner: [f64; 2], before: [f64; 2], at: f64| {
+        let slope = (inner[1] - before[1]) / (inner[0] - before[0]);
+        inner[1] + slope * (at - inner[0])
+    };
+    for i in centre + 2..knots.len() {
+        if let Some([low, high]) = span_of(knots[i][0]) {
+            knots[i][1] = continued(knots[i - 1], knots[i - 2], knots[i][0]).clamp(low, high);
+        }
+    }
+    for i in (0..centre.saturating_sub(1)).rev() {
+        if let Some([low, high]) = span_of(knots[i][0]) {
+            knots[i][1] = continued(knots[i + 1], knots[i + 2], knots[i][0]).clamp(low, high);
+        }
+    }
+    knots
+}
+
+/// `knots`, `[Lightroom, Luxforge]` in Lightroom order, made strictly increasing with every step at
+/// least `floor` times its Lightroom step, moving outward from the knot at `neutral`, which is
+/// kept, and then inward from the ends wherever that passed `limits`: a flat run of a pooled map
+/// would otherwise leave a stretch of slider that changes nothing.
+pub fn with_slope_floor(
+    knots: &[[f64; 2]],
+    neutral: f64,
+    floor: f64,
+    limits: (f64, f64),
+) -> Vec<[f64; 2]> {
+    let mut out = knots.to_vec();
+    let Some(centre) = out.iter().position(|k| (k[0] - neutral).abs() < 1e-9) else {
+        return out;
+    };
+    for i in centre + 1..out.len() {
+        let least = out[i - 1][1] + floor * (out[i][0] - out[i - 1][0]);
+        out[i][1] = out[i][1].max(least);
+    }
+    for i in (0..centre).rev() {
+        let most = out[i + 1][1] - floor * (out[i + 1][0] - out[i][0]);
+        out[i][1] = out[i][1].min(most);
+    }
+    let n = out.len();
+    out[n - 1][1] = out[n - 1][1].min(limits.1);
+    for i in (centre + 1..n - 1).rev() {
+        let most = out[i + 1][1] - floor * (out[i + 1][0] - out[i][0]);
+        out[i][1] = out[i][1].min(most);
+    }
+    out[0][1] = out[0][1].max(limits.0);
+    for i in 1..centre {
+        let least = out[i - 1][1] + floor * (out[i][0] - out[i - 1][0]);
+        out[i][1] = out[i][1].max(least);
+    }
+    out
+}
+
 /// `work` over every item on a bounded pool of scoped threads, the results in item order.
 fn parallel_map<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let workers = std::thread::available_parallelism()
