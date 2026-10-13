@@ -242,3 +242,127 @@ fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit()
     join.join().unwrap();
     drop(dir);
 }
+
+/// The photo surface's window of level 0 at 100% and above ([`super::gpu_paged`]): a view's region
+/// at the far corner asks for that region grown by the margin and clamped to level 0, read through
+/// the source's chunk cache as the very planes published; a pan within it asks for no other read; a
+/// pan beyond it cancels the read in flight, whose answer is then dropped; and a window is never
+/// level 0 whole.
+#[test]
+#[slow]
+fn paged_source_render_surface_windows_follow_the_view_and_drop_stale_reads() {
+    use super::gpu_paged::{PagedWindows, WINDOW_MARGIN, WindowAnswer, read_window};
+    let test = "paged_source_render_surface_windows_follow_the_view_and_drop_stale_reads";
+    let (dir, catalog, asset, planes) = published("surface");
+    let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+    let client = owner.register();
+    let job = tasks::ready_preview_job(&owner, PreviewRequest::new(client, asset))
+        .unwrap_or_else(|error| panic!("{test}: the preview job: {error}"));
+    let PreviewSource::Paged(paged) = job.evaluation.source() else {
+        panic!("{test}: a paged photograph previews a paged source");
+    };
+    let identity = paged.identity();
+    let view = Region {
+        x0: WIDTH - 900,
+        y0: 40,
+        width: 900,
+        height: 200,
+    };
+    let mut windows = PagedWindows::default();
+    assert!(windows.covering(&identity, view).is_none());
+    windows.want(paged, view);
+    assert!(windows.wanting());
+    let (reading, rect, cancel) = windows.start().expect("a read to start");
+    assert_eq!(
+        [rect.x0, rect.y0, rect.width, rect.height],
+        [view.x0 - WINDOW_MARGIN, 0, 900 + WINDOW_MARGIN, HEIGHT],
+        "{test}: the region and its margin, clamped to level 0"
+    );
+    assert!(windows.start().is_none(), "{test}: one read in flight");
+    let read = read_window(&reading, rect, &cancel);
+    let window = read.clone().expect("the window reads");
+    for channel in 0..3usize {
+        for row in [0u32, rect.height - 1] {
+            let at = |x: u32| {
+                let plane = channel * (window.rect[2] * window.rect[3]) as usize;
+                window.planes[plane + (row * window.rect[2] + x) as usize]
+            };
+            let whole = |x: u32| {
+                planes[channel * (WIDTH * HEIGHT) as usize
+                    + ((rect.y0 + row) * WIDTH + rect.x0 + x) as usize]
+            };
+            for x in [0, rect.width / 2, rect.width - 1] {
+                assert_eq!(at(x), whole(x), "{test}: channel {channel} ({x}, {row})");
+            }
+        }
+    }
+    assert_eq!(
+        windows.finish(
+            WindowAnswer {
+                identity: identity.clone(),
+                rect,
+                read
+            },
+            7
+        ),
+        Ok(true)
+    );
+    let held = windows
+        .covering(&identity, view)
+        .expect("the window holds the view");
+    assert_eq!(held.stage, (WIDTH, HEIGHT));
+    assert_eq!(held.gpu.version(), 7);
+    assert!(
+        held.gpu.bytes() < u64::from(WIDTH) * u64::from(HEIGHT) * 3 * 4 / 8,
+        "{test}: never level 0 whole ({} bytes)",
+        held.gpu.bytes()
+    );
+    assert!(windows.handed().is_some());
+
+    // A pan within the window reads nothing; one beyond it cancels the read in flight.
+    let within = Region {
+        x0: view.x0 - 100,
+        ..view
+    };
+    windows.want(paged, within);
+    assert!(
+        windows.start().is_none(),
+        "{test}: the window held serves a pan within it"
+    );
+    let far = Region { x0: 2_000, ..view };
+    windows.want(paged, far);
+    let (_, first, stale) = windows.start().expect("a read for the far region");
+    let further = Region { x0: 6_000, ..view };
+    windows.want(paged, further);
+    let (_, _, fresh) = windows.start().expect("a read for the further region");
+    assert!(
+        stale.check().is_err(),
+        "{test}: the stale read is cancelled"
+    );
+    assert!(fresh.check().is_ok());
+    assert_eq!(
+        windows.finish(
+            WindowAnswer {
+                identity: identity.clone(),
+                rect: first,
+                read: Err("cancelled".into())
+            },
+            8
+        ),
+        Ok(false),
+        "{test}: a stale answer is dropped"
+    );
+    assert!(
+        windows.covering(&identity, view).is_some(),
+        "{test}: the held window stays"
+    );
+    windows.clear();
+    assert!(windows.handed().is_none() && !windows.wanting());
+    assert!(
+        fresh.check().is_err(),
+        "{test}: clearing cancels the read in flight"
+    );
+    owner.stop();
+    join.join().unwrap();
+    drop(dir);
+}

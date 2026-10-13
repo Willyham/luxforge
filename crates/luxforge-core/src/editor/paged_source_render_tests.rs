@@ -55,7 +55,8 @@ fn published(name: &str) -> (std::path::PathBuf, EditorService, AssetId) {
 /// exactly that preparation, which reads the level's chunks and none of level 0; then Fit is
 /// planned over the overview, the resident level reduced to the view, and 100% at the far corner
 /// over a window of level 0 around the visible region, while the histogram's tiles count the
-/// overview at both. Planning reads no pixel.
+/// overview at both. Planning reads no pixel. The reference renderer's frame of the job is the
+/// overview too, reduced to the view and counted at the level's size, and reads none of level 0.
 #[test]
 #[slow]
 fn paged_source_render_views_are_planned_over_the_overview_or_a_level_0_window() {
@@ -168,6 +169,42 @@ fn paged_source_render_views_are_planned_over_the_overview_or_a_level_0_window()
         "the backdrop and counts are the overview's"
     );
     assert_eq!(payload_work::take(), 0, "planning reads no pixel");
+
+    // The reference renderer's frame: the overview, shown reduced, its report the overview's.
+    let mut job = job;
+    job.analyse = true;
+    job.proxy = Some(bounds);
+    let mut queue = crate::PreviewQueue::default();
+    let generation = queue.request(job);
+    let result = luxforge_testbase::wait_for("the overview frame", || queue.poll());
+    assert_eq!(result.generation, generation);
+    let exact = result.exact().expect("the exact phase");
+    assert!(exact.overview, "the frame is the overview");
+    let raster = exact.result.as_ref().expect("the overview renders");
+    assert_eq!(
+        (raster.width, raster.height),
+        LEVEL,
+        "the stack over the level"
+    );
+    let display = exact.display.as_ref().expect("always shown reduced");
+    assert!(display.width <= bounds.width && display.height <= bounds.height);
+    let report = exact.report.as_ref().expect("a report");
+    assert_eq!(
+        (report.width, report.height),
+        LEVEL,
+        "the histogram counts the overview"
+    );
+    assert_eq!(
+        (result.identity.width, result.identity.height),
+        (WIDTH, HEIGHT),
+        "framed on level 0's stage"
+    );
+    luxforge_testbase::wait_until("the job to end", || !queue.is_busy());
+    assert_eq!(
+        payload_work::take(),
+        0,
+        "the overview reads none of level 0"
+    );
     drop(service);
     fs::remove_dir_all(directory).unwrap();
 }

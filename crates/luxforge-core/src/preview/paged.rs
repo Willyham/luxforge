@@ -94,7 +94,7 @@ impl PagedPreview {
     /// are drawn from: the source alone, at its whole size, never the resident level's identity
     /// ([`Self::level_identity`]), so a GPU source holding a window of level 0 is never taken for
     /// one holding the level, nor a plan over one for a plan over the other.
-    pub(crate) fn identity(&self) -> ProxyIdentity {
+    pub fn identity(&self) -> ProxyIdentity {
         let (width, height) = self.dimensions();
         ProxyIdentity::Raw {
             fingerprint: self.fingerprint().to_owned(),
