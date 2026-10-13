@@ -63,6 +63,8 @@ pub fn check_resources(root: &Path, target: &str) -> Result {
     );
     if target == TARGETS[0].0 {
         required.push(root.join(icon::DIRECTORY).join(icon::ICNS));
+    } else {
+        required.extend(release_linux::inputs(root));
     }
     for path in required {
         ensure(
@@ -349,6 +351,14 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
         metadata["minimum_system_version"] = json!(MACOS_MINIMUM_SYSTEM_VERSION);
         metadata["deployment_targets"] = json!(deployment_targets);
     }
+    if target == TARGETS[1].0 {
+        let named: Vec<_> = EXECUTABLES
+            .iter()
+            .copied()
+            .zip(binaries.iter().map(PathBuf::as_path))
+            .collect();
+        release_linux::complete(root, &resource_root, &tag, number, &named, &mut metadata)?;
+    }
     write_json(&resource_root.join("build.json"), &metadata)?;
     let archive = archive_payload(out, &tag, &target)?;
     let disk_image = if target == TARGETS[0].0 {
@@ -446,8 +456,15 @@ mod tests {
             assert!(missing(TARGETS[1].0).unwrap().contains(name), "{name}");
             fs::write(lens.join(name), b"{}").unwrap();
         }
-        // Only the macOS bundle needs the ICNS.
+        // Only the Linux payload needs the desktop integration and the PNG and SVG icons.
+        for input in release_linux::inputs(&root) {
+            let name = input.file_name().unwrap().to_str().unwrap().to_owned();
+            assert!(missing(TARGETS[1].0).unwrap().contains(&name), "{name}");
+            fs::create_dir_all(input.parent().unwrap()).unwrap();
+            fs::write(&input, b"input").unwrap();
+        }
         assert_eq!(missing(TARGETS[1].0), None);
+        // Only the macOS bundle needs the ICNS.
         assert!(missing(TARGETS[0].0).unwrap().contains(icon::ICNS));
         fs::write(root.join(icon::DIRECTORY).join(icon::ICNS), b"icns").unwrap();
         assert_eq!(missing(TARGETS[0].0), None);

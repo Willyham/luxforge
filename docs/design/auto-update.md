@@ -404,7 +404,7 @@ Otherwise it reports `linux-notify`. It still checks and offers the update, `upd
 
 Any failure before the swap, a cancelled download included, removes its staging directory and leaves the installed payload untouched. Every refusal names its code in `update.status`'s `error`.
 
-**The desktop entry.** After a swap, a user-level desktop entry is refreshed when its `Exec` program lies inside this payload. The entry is `$XDG_DATA_HOME/applications/luxforge.desktop`, or `~/.local/share/applications/luxforge.desktop`. The refresh rewrites `Exec` and `TryExec` for the installed executable, and `X-Luxforge-Version` and `X-Luxforge-Build` for the new build, then replaces the file with a rename. That prompts the desktop environment to read the entry and its icon again. The install helper that would write the entry does not exist yet.
+**The desktop entry.** After a swap, a user-level desktop entry is refreshed when its `Exec` program lies inside this payload. The entry is `$XDG_DATA_HOME/applications/luxforge.desktop`, or `~/.local/share/applications/luxforge.desktop`. The refresh rewrites `Exec` and `TryExec` for the installed executable, and `X-Luxforge-Version` and `X-Luxforge-Build` for the new build, then replaces the file with a rename. That prompts the desktop environment to read the entry and its icon again. `Exec` is read and written as the Desktop Entry Specification encodes it: string escapes, then the quoting rule (`"`, `` \` ``, `\$` inside quotes), then `%%`, as the payload's [desktop-integration helper](release-v0.1.md#deliverables) writes it. A path with a backslash or line break is not written.
 
 **The port** (`LinuxPayloadPort`):
 
