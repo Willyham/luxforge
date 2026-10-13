@@ -2,8 +2,9 @@
 //! (`docs/design/lightroom-alignment.md`, "The rig" and "Running a round"). `measure` is
 //! [`measure`]'s; the rest of this module is the generator.
 //!
-//! `generate --round N --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST]` writes a round
-//! folder for the owner to import into a scratch Lightroom Classic catalog and export:
+//! `generate --round N --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...]`
+//! writes a round folder, or with `--families` the part of one those families make, for the owner
+//! to import into a scratch Lightroom Classic catalog and export:
 //!
 //! - `targets/`: the synthetic JPEG targets the round uses, without XMP, the sources Luxforge
 //!   renders its own side from.
@@ -39,7 +40,7 @@ use serde_json::Map;
 use settings::{Field, Fields, Kind};
 
 const FORMAT: u32 = 1;
-const USAGE: &str = "lr-align generate --round 1|2 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...]";
+const USAGE: &str = "lr-align generate --round 1|2 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...]";
 /// The folder inside the round that the owner imports, and the one the exports go to.
 const LIGHTROOM: &str = "lightroom";
 const EXPORTS: &str = "exports";
@@ -64,9 +65,25 @@ pub fn run(root: &Path, mut a: Args) -> Result {
     let supplied = a
         .value("--manifest")?
         .map(|p| absolute(root, Path::new(&p)));
+    let only: Option<Vec<String>> = a
+        .value("--families")?
+        .map(|v| v.to_string_lossy().split(',').map(str::to_owned).collect());
     a.done()?;
-    let families =
+    let mut families =
         rounds::round(round).ok_or(format!("lr-align defines rounds 1 and 2, not {round}"))?;
+    // A part of a round: only the named families, each with every variant it has, for a session
+    // that re-exports what changed or adds what an earlier session could not.
+    if let Some(only) = &only {
+        let unknown: Vec<&String> = only
+            .iter()
+            .filter(|id| !families.iter().any(|family| &family.id == *id))
+            .collect();
+        ensure(
+            unknown.is_empty(),
+            format!("round {round} has no families {unknown:?}"),
+        )?;
+        families.retain(|family| only.contains(&family.id));
+    }
     let mut photos = Vec::new();
     let mut excluded = Vec::new();
     if let Some(cache) = &cache {
