@@ -1059,6 +1059,7 @@ fn export_sheet_steps_round_trip_and_refuse_unknown_choices() {
         {"export":{"again":{}}},
         {"export":{"with_preset":{"name":"Web"}}},
         {"export":{"bar":true}},
+        {"export":{"progressed":{"ms":10000}}},
         {"export":{"edit":{"folder":{"path":"/tmp/out"}}}},
         {"export":{"scroll_end":true}},
     ]));
@@ -1084,6 +1085,10 @@ fn export_sheet_steps_round_trip_and_refuse_unknown_choices() {
         ),
         (json!({"export":{"preset":" "}}), "export preset name"),
         (json!({"export":{"close":false}}), "takes true"),
+        (
+            json!({"export":{"progressed":{"ms":0}}}),
+            "export progressed ms",
+        ),
         (
             json!({"export":{"edit":{"folder":{"path":""}}}}),
             "folder path",

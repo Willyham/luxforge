@@ -28,7 +28,7 @@ use crate::{
         jobs::{BATCH_EXPORT, BATCH_SETTINGS},
     },
     editor::{
-        ExportPlan, PreparedAction, library_rows,
+        ExportPlan, PreparedAction,
         pixels::{DeferredRead, PixelAnswer, PixelMemo, Replay},
     },
     library::{
@@ -396,12 +396,8 @@ pub(in crate::api) fn batch_export(
                     Ok(planned) => planned,
                     Err(stopped) => return Box::new(move |_: &mut Owner| Err(stopped)),
                 };
-                let (plan, original, folder) = match planned {
-                    Ok(Planned::Export {
-                        plan,
-                        original,
-                        folder,
-                    }) => (plan, original, folder),
+                let (plan, stem, folder) = match planned {
+                    Ok(Planned::Export { plan, stem, folder }) => (plan, stem, folder),
                     Ok(Planned::Skipped(skip)) => {
                         progress.skip(skip);
                         continue;
@@ -412,7 +408,7 @@ pub(in crate::api) fn batch_export(
                     }
                 };
                 let written =
-                    batch::destination(&folder, &original, &settings).and_then(|destination| {
+                    batch::destination(&folder, &stem, &settings).and_then(|destination| {
                         let written = export::write(
                             *plan,
                             &destination,
@@ -458,11 +454,11 @@ pub(in crate::api) fn batch_export(
 
 /// One photograph's export as the owner planned it.
 enum Planned {
-    /// Its current entry, frozen as `export.write` freezes it; where its original is, whose name
-    /// the exported file is named from; and the folder the settings put it in.
+    /// Its current entry, frozen as `export.write` freezes it; the file stem the exported file is
+    /// named from ([`export::export_stem`]); and the folder the settings put it in.
     Export {
         plan: Box<ExportPlan>,
-        original: PathBuf,
+        stem: String,
         folder: PathBuf,
     },
     Skipped(crate::catalog_types::BatchSkip),
@@ -511,16 +507,15 @@ fn plan(
     ) {
         return Err(notice.refusal());
     }
+    let stem = export::export_stem(owner, asset, target.original.as_deref())?
+        .ok_or_else(|| Error::validation(format!("{asset} has no file name to export under")))?;
     drop(target);
     let plan = owner.service.export_plan(asset, Some(&entry_id))?;
-    let original = library_rows::asset_source(&owner.service.connection, asset)?
-        .ok_or_else(|| Error::validation(format!("unknown asset {asset}")))?
-        .locator;
     // A refusing notice already left out a photograph with no folder.
     let folder = original_folder.ok_or_else(|| Error::internal("an export with no folder"))?;
     Ok(Planned::Export {
         plan: Box::new(plan),
-        original,
+        stem,
         folder,
     })
 }

@@ -656,6 +656,8 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
             "stage": {"width": 480, "height": 320},
             "output": {"width": 480, "height": 320},
             "suggested": suggested,
+            "stem": "DSC_0042",
+            "name": "DSC_0042-edited.jpg",
             "estimate": 0,
             "notices": [],
             "stale": [],

@@ -214,7 +214,8 @@ pub(crate) const MAX_PROBES: u32 = 64;
 
 /// The export's name rule: `<stem><suffix>.<extension>` in `directory`, else
 /// `<stem><suffix>-2.<extension>`, `-3` and so on, probing at most [`MAX_PROBES`] names; `None`
-/// once all of them are taken. `stem` is used as-is: it comes from an existing file name, and the
+/// once all of them are taken. A name the editor gives has no spaces: each run of whitespace in the
+/// stem and suffix is one `-` ([`spaceless`]). The stem comes from an existing file name and the
 /// suffix is checked with the settings, so nothing further needs sanitizing.
 pub(crate) fn suggest(
     directory: &Path,
@@ -223,17 +224,37 @@ pub(crate) fn suggest(
     format: ExportFormat,
 ) -> Option<PathBuf> {
     let extension = format.extension();
+    let name = spaceless(&format!("{stem}{suffix}"));
     for n in 1..=MAX_PROBES {
         let candidate = if n == 1 {
-            directory.join(format!("{stem}{suffix}.{extension}"))
+            directory.join(format!("{name}.{extension}"))
         } else {
-            directory.join(format!("{stem}{suffix}-{n}.{extension}"))
+            directory.join(format!("{name}-{n}.{extension}"))
         };
         if fs::symlink_metadata(&candidate).is_err() {
             return Some(candidate);
         }
     }
     None
+}
+
+/// `name` with each run of whitespace made one `-`, so a suggested file name needs no quoting in a
+/// shell: `IMG 0001 edited` is `IMG-0001-edited`.
+pub(crate) fn spaceless(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut space = false;
+    for c in name.chars() {
+        if c.is_whitespace() {
+            if !space {
+                out.push('-');
+            }
+            space = true;
+        } else {
+            out.push(c);
+            space = false;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -443,6 +464,15 @@ mod tests {
                 assert_eq!(error.kind, crate::ErrorKind::Validation, "{name}");
             }
         }
+    }
+
+    #[test]
+    fn suggest_names_a_file_with_no_spaces() {
+        let dir = scratch();
+        assert_eq!(
+            suggest(&dir, "IMG 0001  copy", " for web", ExportFormat::Jpeg),
+            Some(dir.join("IMG-0001-copy-for-web.jpg"))
+        );
     }
 
     #[test]

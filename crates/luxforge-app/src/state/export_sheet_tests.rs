@@ -69,6 +69,8 @@ fn plan(notices: Value, suggested: Value) -> Value {
         "stage": {"width": 6048, "height": 4024},
         "output": {"width": 2048, "height": 1363},
         "suggested": suggested,
+        "stem": "DSC_0042",
+        "name": "DSC_0042-web.jpg",
         "estimate": {"bytes": 1},
         "notices": notices,
     })
@@ -212,6 +214,43 @@ fn the_large_image_notice_shows_exactly_when_the_plan_carries_it() {
     );
     // It warns; it never blocks.
     assert!(model_large.can_export);
+}
+
+/// A merge's result is named from the stem its plan answers, its first input's with the kind's
+/// suffix; a plan that names no file and refuses nothing says why Export is off.
+#[test]
+fn the_plans_stem_names_the_file_and_a_plan_naming_none_says_why() {
+    let presets = [web()];
+    let mut merged = plan(json!([]), json!("/p/LXF_0005-pano-web.jpg"));
+    merged["stem"] = json!("LXF_0005-pano");
+    merged["name"] = json!("LXF_0005-pano-web.jpg");
+    let shown = model(Some(&answered(sheet(), merged)), Some(&presets), None).unwrap();
+    assert_eq!(shown.stem, "LXF_0005-pano");
+    assert_eq!(shown.taken, None);
+    assert!(shown.can_export && shown.refusals.is_empty());
+    let mut nameless = plan(json!([]), Value::Null);
+    nameless["stem"] = Value::Null;
+    nameless["name"] = Value::Null;
+    let shown = model(Some(&answered(sheet(), nameless)), Some(&presets), None).unwrap();
+    assert!(!shown.can_export);
+    assert_eq!(
+        shown.refusals,
+        ["This photograph has no file name to export under"]
+    );
+    let full = model(
+        Some(&answered(sheet(), plan(json!([]), Value::Null))),
+        Some(&presets),
+        None,
+    )
+    .unwrap();
+    assert!(!full.can_export);
+    assert_eq!(
+        full.refusals,
+        [
+            "DSC_0042-web.jpg and the next names after it are all taken in this folder; choose \
+          another folder or suffix"
+        ]
+    );
 }
 
 #[test]
