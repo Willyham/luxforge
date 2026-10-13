@@ -1543,16 +1543,15 @@ fn validate_lens_optics(
             ))
             .with_data(json!({"reason":"source-optics-changed"})));
         }
-        let stage = registry
-            .compile_layers(
-                asset.width,
-                asset.height,
-                &recipe.layers[..index],
-                &recipe.masks,
-                &recipe.strokes,
-                &recipe.artifacts,
-            )?
-            .stage();
+        // From the prefix's source and geometry layers alone, so a stored stack whose repair
+        // patches or model masks are not bound is checked as a bound one is.
+        let stage = registry.geometry_stage(
+            asset.width,
+            asset.height,
+            &recipe.layers[..index],
+            &recipe.strokes,
+            &recipe.artifacts,
+        )?;
         if stage.width.max(stage.height) != profile.normalization.resolved_long
             || stage.width.min(stage.height) != profile.normalization.resolved_short
         {
