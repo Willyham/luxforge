@@ -11,6 +11,12 @@
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/develop.png" alt="The Luxforge Develop workspace editing a Nikon Z6 RAW of a bamboo bridge: history on the left, the photograph in the centre, the histogram, Look and Basic adjustments on the right" width="1100">
+  <br>
+  <sub>The Develop workspace editing a RAW file, captured from the running app.</sub>
+</p>
+
 ---
 
 ## Getting started
@@ -52,11 +58,16 @@ These are the core principles that development follows.
 
 Luxforge is pre-release. Everything is v0, formats can change between builds, and there is no qualified public download yet. With that said, a lot already works and has been checked on Apple silicon Macs.
 
-<p align="center">
-  <img src="docs/screenshots/develop.png" alt="The Luxforge Develop workspace editing a Nikon Z6 RAW of a bamboo bridge: history on the left, the photograph in the centre, the histogram, Look and Basic adjustments on the right" width="1100">
-  <br>
-  <sub>The Develop workspace editing a RAW file, captured from the running app.</sub>
-</p>
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/select.png" alt="The Select workspace: events and folders on the left, a grid of five photographs with two picked, and the selected photograph's metadata on the right"><br><sub><b>Select</b>: browse a folder, pick photographs and develop them into the catalog.</sub></td>
+    <td width="50%"><img src="docs/screenshots/masking.png" alt="Mask mode with Sky, Face and Foreground masks; Face combines a radial gradient, a subtracting brush and an intersecting luminance range, with a green coverage overlay and local Clarity controls"><br><sub><b>Masking</b>: a radial gradient, a subtracting brush and a luminance intersection shape a local adjustment.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/grading.png" alt="The colour mixer's Grading tab with shadow, midtone and highlight wheels beside a terraced landscape"><br><sub><b>Colour grading</b>: shadow, midtone and highlight wheels in the colour mixer.</sub></td>
+    <td width="50%"><img src="docs/screenshots/corrections.png" alt="Corrections mode on a drone photograph of a lagoon, with six Heal spots over kayaks and the Corrections stack on the right"><br><sub><b>Corrections</b>: Heal spots, each with an automatic source, removing kayaks from a drone RAW.</sub></td>
+  </tr>
+</table>
 
 ### Browse, pick, develop
 
@@ -89,17 +100,6 @@ Luxforge is pre-release. Everything is v0, formats can change between builds, an
 
 - **The JSON API** covers every operation, and the **`luxforge-ctl`** command line drives the photograph open in the running editor (see [Scripting it](#scripting-it)).
 - **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top. Every edit is attributed in history.
-
-<table>
-  <tr>
-    <td width="50%"><img src="docs/screenshots/select.png" alt="The Select workspace: events and folders on the left, a grid of five photographs with two picked, and the selected photograph's metadata on the right"><br><sub><b>Select</b>: browse a folder, pick photographs and develop them into the catalog.</sub></td>
-    <td width="50%"><img src="docs/screenshots/masking.png" alt="Mask mode with Sky, Face and Foreground masks; Face combines a radial gradient, a subtracting brush and an intersecting luminance range, with a green coverage overlay and local Clarity controls"><br><sub><b>Masking</b>: a radial gradient, a subtracting brush and a luminance intersection shape a local adjustment.</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/screenshots/grading.png" alt="The colour mixer's Grading tab with shadow, midtone and highlight wheels beside a terraced landscape"><br><sub><b>Colour grading</b>: shadow, midtone and highlight wheels in the colour mixer.</sub></td>
-    <td width="50%"><img src="docs/screenshots/corrections.png" alt="Corrections mode on a drone photograph of a lagoon, with six Heal spots over kayaks and the Corrections stack on the right"><br><sub><b>Corrections</b>: Heal spots, each with an automatic source, removing kayaks from a drone RAW.</sub></td>
-  </tr>
-</table>
 
 ### On the way
 
