@@ -149,32 +149,44 @@ Registration is built as pure numerics in `luxforge_core::merge::panorama` (`pro
 
 ### Projection and output size
 
-- **Projections.** Perspective (rectilinear) keeps straight lines straight and suits fields under about 120° wide. Cylindrical suits wide single rows. Spherical (equirectangular) suits tall, multi-row or 360° panoramas. Auto chooses from the registered field of view (delegated thresholds) and records which it chose. Perspective is refused beyond its field (`ExcessiveFieldOfView`), and the plan suggests Cylindrical.
-- **Scale.** The output's scale matches the reference frame's centre pixel: about one output pixel to one input pixel there, never upscaled.
-- **Too large at full scale.** A stitch above the large-source limits (65,000 pixels a side, 512 MP, 6 GiB of float RGB) is scaled down uniformly to fit. The plan's estimate and the job's progress report the scale before saving, and provenance records it. The plan names the scale whenever it can predict one.
-- **One resample.** Every output pixel maps back through the boundary warp, the projection and the frame's rotation, focal length and radial term to an input position. Each frame is resampled once in the linear domain from its developed pixels. The interpolation kernel is delegated; whatever it is, results are finite and the reference comparison holds.
+The stitch is built as pure numerics in `luxforge_core::merge::panorama` (`projection`, `layout`, `photometric`, `seams`, `blend`, `warp`, `stitch`); no job runs it yet. `plan_stitch` lays out a stitch from the registration and each frame's colour proxy without reading a frame, and `StitchPlan::render_chunk` draws any rectangle of the result from windows of the frames' full-resolution pixels that the caller reads on request.
+
+- **Projections.** Perspective (rectilinear) keeps straight lines straight. Cylindrical suits wide single rows. Spherical (equirectangular) suits tall, multi-row or 360° panoramas. Perspective is refused (`ExcessiveFieldOfView`, suggesting Cylindrical) when any frame's edge lies more than 60° from the plane's centre horizontally or vertically (120° across), or behind the plane. Cylindrical is refused (suggesting Spherical) beyond 70° of latitude. Auto chooses Perspective for a field within 90° × 90° that Perspective can show, Cylindrical when no frame edge passes 55° of latitude, and Spherical otherwise, and records its choice.
+- **Layout.** The output plane is the levelled world's: yaw across and, for the angular projections, latitude (Spherical) or its tangent (Cylindrical) down. The bounding rectangle holds every frame's boundary, traced at 256 points an edge. A row that closes the circle wraps exactly once around 360°; otherwise the plane's seam lies in the widest gap between frames.
+- **Scale.** Full scale makes the reference frame's centre pixel at most one output pixel in any direction (the inverse of the projection's largest stretch there), so nothing is upscaled.
+- **Too large at full scale.** A stitch above the large-source limits (65,000 pixels a side, 512 MP, 6 GiB of float RGB) is scaled down uniformly to fit. The scale and the full-scale size are in the plan's diagnostics. Below an eighth of full scale it is refused as `OutputTooLarge`, naming the full-scale size. Below full scale each output pixel averages `n × n` points, `n = ⌈1/scale⌉`, at most 4.
+- **One resample.** Every output pixel maps back through the boundary warp, the projection and the frame's rotation, focal length and radial term to an input position. Each frame is sampled once, bilinearly with clamped taps, in the linear domain. Each output pixel depends only on its position and the plan, so the result is bit-identical for any split into chunks. A render reads one frame window at a time, at most 8 Mi pixels, splitting a tile whose window would be larger.
 
 ### Exposure, colour and seams
 
-- **Photometric fit.** After normalization from metadata (RAW) or none (JPEG), a robust per-frame gain is fitted from overlapping, unclipped, low-gradient samples, anchored on the reference (gain 1). JPEG frames fit one gain a channel, because in-camera white balance may vary. RAW frames fit one gain a frame, since their white balance is common. Gains, residuals and confidence are recorded. Vignetting left after a profile is left to the blend; fitting a radial fall-off is an implementer choice.
-- **Seams.** Seams are placed on the proxies by a minimum-cost cut through each overlap (graph cut or equivalent, delegated). The cost is colour difference, gradient and clipping, so a moving subject is taken whole from one frame rather than doubled. The seam map scales to full resolution with a bounded transition width. Seams are not editable.
-- **Blending** is band-limited across seams (multiband in the manner of Burt and Adelson, or an equivalent), with its widest band bounded. Each output chunk is then computed from bounded windows of the frames and the seam map. Blending may not produce non-finite values. Any overshoot it introduces is bounded by the blend's declared kernel and recorded in diagnostics; nothing is clamped.
-- **Diagnostics** record per-frame gains, seam lengths, frames contributing to each output region, pixels from clipped samples, and the largest registration residual.
+Gains, seams and the blend are solved on the **plan grid**: square cells of the reference's colour-proxy factor at the output's scale, grown until the grid is at most 4,096 cells a side and 2²⁰ cells. A frame covers a cell when all four of its corner pixels lie in the frame, and is eligible there when it also covers the eight neighbours.
+
+- **Photometric fit.** Each cell shared by eligible frames (on a lattice of at most 2¹⁶ cells, at most 4 frames a cell) yields a sample where both frames are unclipped, every channel is above 2⁻¹² and the brightness gradient is at most 0.1 stop a proxy pixel. Each pair with at least 16 samples contributes the median `log2` ratio, weighted by its count up to 4,096. A weighted least-squares fit anchored on the reference (gain 1) gives each frame's gain: one a channel for JPEG, one a frame for RAW. Each gain records its RMS residual, its sample count and an uncertainty in stops.
+- **Seams.** Frames join the composite from the reference outward, each next the frame sharing the most eligible cells with it. Each join is a minimum s–t cut over the overlap: cells beside the composite alone stay with it, cells beside the new frame alone go to it, and cutting between two cells costs `c(p) + c(q) + 1`. A cell's cost `c` is the mean `log2` colour difference, plus the difference of the two frames' brightness gradients, plus 4 where either sample is clipped, quantized at 1/32 stop and capped at 255. The cut is Boykov and Kolmogorov's algorithm, exact up to 2¹⁵ overlap cells. Larger overlaps are cut coarse to fine: halved recursively, cut, then refined exactly within two coarse cells of the coarse seam. A moving subject is therefore taken whole from one frame.
+- **Blending** has two bands split at the plan grid. Detail switches at the seam, through bilinear weights of the four cells around each point. The low band (a Gaussian of σ = 4 cells, reach 12) fades across it as a per-cell correction field. Each output point therefore reads only its frames at its own position and the plan, and a chunk reads bounded windows. Output is never clamped. Each chunk records its largest overshoot past the frames' own samples, along with clipped and uncovered pixels.
+- **Diagnostics** (`StitchDiagnostics`, serializable for provenance) record:
+  - the projection and how it was chosen, the field and the scale;
+  - the full-scale size, the Boundary Warp amount, the crop, and the covered and lost pixels;
+  - per-frame gains, seam lengths between each pair, and each frame's contributing pixels and bounds;
+  - an estimate of the pixels taken from clipped samples, and the largest registration residual;
+  - the plan grid, the mesh size, the blend's width in pixels and the supersampling.
+- **Bounds.** A plan holds at most 160 MiB besides the colour proxies, at the largest grid and 32 frames; with 32 frames' proxies it fits the panorama's 512 MiB scratch limit. A render holds at most 192 MiB besides the chunk it returns. Cancellation is checked at every stage, frame, cut phase, mesh sweep batch, tile and window.
 
 ### Boundary Warp and the crop
 
 A stitch's covered region is ragged. The stored result is always a rectangle of covered pixels, because derived sources have no alpha and the renderer's frames are opaque by contract.
 
-- **Boundary Warp 0** (default): crop to the largest axis-aligned rectangle of pixels every frame's mapping covers, as HDR's coverage does. Ties go to the smallest top row, then bottom row.
-- **Boundary Warp 100:** a smooth, content-preserving mesh warp of the covered region onto its bounding rectangle, in the manner of He, Chang and Sun's rectangling, so the result loses almost no content but bends near the edges. The mesh's resolution and energy terms are delegated; it is bounded, deterministic and solved on the proxy.
-- **Between:** each mesh vertex's displacement is scaled by the amount, then the result is cropped to the largest rectangle the warped region covers.
-- **Rules.** The warp is part of the one output mapping, so pixels are still resampled once. Provenance records the amount, the warp mesh, the crop rectangle and the pixels lost. A crop under a quarter of the bounding rectangle on a side is refused as `InsufficientCoverage`.
+- **Boundary Warp 0** (default): crop to the largest axis-aligned rectangle of plan cells whose corner pixels some frame covers. Ties go to the smallest top row, then bottom row, then left column.
+- **Boundary Warp 100:** a smooth mesh warp of the covered region onto its bounding rectangle, solved on the plan grid. Mesh vertices lie every 8 cells, at most 128 quads a side. Edge vertices move straight inwards to the region's interior edge within half a mesh spacing, corners move to the nearest interior cell, and the rest of the mesh is the harmonic (membrane) interpolation, relaxed until no vertex moves more than 10⁻⁴ pixel. This is the smoothness term of He, Chang and Sun's rectangling without its line-preserving term, so straight lines bend gently near the edges.
+- **Between:** each vertex's displacement is scaled by the amount, then the result is cropped to the largest rectangle the warped region covers. Every amount shares the plan's scale, gains and seams, and `StitchPlan::with_boundary_warp` replans only the warp and crop.
+- **Rules.** The warp is part of the one output mapping, so pixels are still resampled once. The plan exposes the amount, the warp mesh, the crop rectangle and the pixels lost for provenance. A crop under a quarter of the bounding rectangle on a side is refused as `InsufficientCoverage`, suggesting Boundary Warp.
+- **Preview.** `StitchPlan::preview` draws the whole warped bounding rectangle from the colour proxies, at most 2,048 pixels a side by default, with the same arithmetic as a render. Its overlays, in picture coordinates, are the covered region as row runs, the crop rectangle, and each frame's outline in stack order. Stack order is rows top to bottom, then each row left to right.
 
 ### The provider and its evidence
 
 The provider is `{module: "luxforge.panorama", version: 1}`, a lazy merge provider beside `luxforge.hdr`. It owns suitability, registration, projection, photometric fitting, seams, blending and the warp. The core owns admission, resources, publication, stacks, transactions and history, as for HDR. Its pure numerics take no file, catalog or job work.
 
-`cargo test -p luxforge-core panorama_merge` checks the following against an independent f64 reference (`luxforge_reference::panorama`):
+`cargo test -p luxforge-core panorama_registration` and `cargo test -p luxforge-core panorama_stitch` check the following against an independent f64 reference (`luxforge_reference::panorama`):
 
 - **Scenes.** Synthetic scenes are rendered through known rotations, focal lengths, radial distortion, gains, noise and a moving subject, with 2–32 frames in single and multiple rows, including a 360° row.
 - **Registration.** Every corner of every frame is within a declared pixel tolerance. The focal length and radial term are within declared tolerances.
@@ -184,7 +196,14 @@ The provider is `{module: "luxforge.panorama", version: 1}`, a lazy merge provid
 - **Fixtures and determinism.** Complete stitched buffers match the reference within a declared tolerance. Output is bit-identical for any split into output chunks.
 - **Coverage.** Every typed refusal is checked, along with cancellation at every stage and the stated bounds.
 
-The tolerances are set by the implementer and recorded here when delivered.
+Registration's tolerances are under [Registration](#registration). The stitch's, for synthetic 320 × 240 frames:
+
+- Layouts and mappings match the reference within 10⁻⁶ pixel, and its crop rectangles exactly, under every projection and Boundary Warp 0.
+- A stitched sample is within 0.2% of the scene on average over the crop and 4% at every pixel, relative to the scene value plus 0.02. Blending passes the frames' own samples by at most 0.005.
+- Gains are within 1%.
+- A moving subject is never doubled.
+- At Boundary Warp 100 the crop covers at least 95% of the bounding rectangle.
+- A banded cut costs at most 10% more than the exact cut.
 
 ## Large derived sources
 
