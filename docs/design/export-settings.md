@@ -1,6 +1,6 @@
 # Export settings
 
-Status: **in progress; the owner authorized implementation on 2026-10-12**. The owner asked for more comprehensive export with settings, JPEG, WebP and a lossless hand-off format, and optimised output by default for the web with a separate print setting. The owner's choices of 2026-10-07 are under [decisions](#decisions). The other defaults are recommendations recorded under [proposals](#proposals-with-recorded-defaults). [Tasks](../../tasks/rendering/export-settings.json) hold the implementation work. `export.write` and `batch.export` write every setting below, output sharpening included, and the desktop's sheet, menu, palette entries and Select's batch export are delivered over them, with their rendered journey (`cargo xtask smoke --scenario export`, and `select` for the batch). Corpus qualification, output sharpening's judgement in print and the measurements remain. This design extends the [JPEG export](export.md) and keeps its freeze, render, publish and never-replace rules unchanged.
+Status: **delivered** on the M4 Mac; the owner authorized implementation on 2026-10-12. The owner asked for more comprehensive export with settings, JPEG, WebP and a lossless hand-off format, and optimised output by default for the web with a separate print setting. The owner's choices of 2026-10-07 are under [decisions](#decisions). The other defaults are recommendations recorded under [proposals](#proposals-with-recorded-defaults). `export.write` and `batch.export` write every setting below, output sharpening included, and the desktop's sheet, menu, palette entries and Select's batch export are delivered over them, with their rendered journey (`cargo xtask smoke --scenario export`, and `select` for the batch). The GPU's resized, 16-bit and sharpened exports are within their declared limits on the whole corpus, and the cost of every format and preset is measured on both renderers ([qualification and measurement](#qualification-and-measurement)). What remains is listed under [outstanding](#outstanding). This design extends the [JPEG export](export.md) and keeps its freeze, render, publish and never-replace rules unchanged.
 
 Boards: [Web preset](export-settings/web.png), [Print preset, changed](export-settings/print.png), [many photographs from Select](export-settings/batch.png) and [components and states](export-settings/components.png). The standalone pages are under [export-settings/html](export-settings/html/index.html).
 
@@ -275,26 +275,43 @@ Each of these stands until the owner records otherwise. The implementer owns rou
    - an optimised 60 MP export, with its warning, progress bar and a cancel
 10. **Measurement.** Measured once, after feature work, on the M4 in release, for 24 MP and 60 MP on both renderers: wall time and peak additional memory per format and preset, the cost of Optimise (whose measured rate may then refine the warning's wording), the number of encodes a limit search takes, and resampling's share of the export.
 
-## Performance-rules review for implementation
+## Performance-rules review
 
-- **Reading the original.** Unchanged. Export reads the original only through the prepared, verified source.
-- **New full-frame allocations.** These are a resized reference's output frame, a WebP frame and a limit search's frame. The evaluated-frame limit still holds for the reference's frames. The GPU's stage textures stay inside the tile worker's budget. Optimised JPEG's coefficient arrays, a limit search's frame and a WebP's frame scale with the output, with no cap, by the owner's decisions of 2026-10-08 and 2026-10-13. They are reported in advance and warned about above 24 MP, and only one export holds them at a time. A band is shared with the encoder, not copied.
+The [checklist](../engineering/performance-rules.md#review-checklist), answered once for the finished change:
+
+- **Reading the original.** Unchanged. `export.write` and `batch.export` read the original only through the prepared, verified source, and a batch prepares each photograph on the source worker in turn. `export.plan` reads, hashes and decodes nothing.
+- **New full-frame allocations.** On the reference: the stage's terminal at 16 bits (six bytes a pixel) for a resized, 16-bit or sharpened output, and the output frame cut from it; within the 512 MiB evaluated-frame limit. A full-size 8-bit output is the exact frame itself, read in place, and sharpening works in place on the output frame. A held format's frame (4 bytes a pixel), Optimise's coefficient arrays (`luxforge_jpeg::coefficient_bytes`) and libwebp's state (`webp_held_bytes`) scale with the output with no cap, by the owner's decisions of 2026-10-08 and 2026-10-13, are reported by `export.plan` and warned about above 24 MP, and only one export holds them at a time. On the GPU: the held output stage in `Rgba32Float` (16 bytes a pixel) and its largest cut, charged to `GPU_TILE_BUDGET` before anything is created, or the reference's (`tiles-budget`, `texture-limit`). A paged source is served in bands within the bounds of [paged sources](#paged-sources). A band is shared with the encoder, not copied.
 - **No frame for a plan or validation.** `export.plan` and settings validation never render. The sheet plans only on changes that affect the plan, one plan in flight.
-- **Owner thread.** It does only planning, validation and bounded name checks. All frame work runs on the export lane or the tile worker.
+- **Owner thread.** Planning in `O(layers)`, validation and at most 64 name checks a plan; the batch sheet's one plan request covers every selected photograph. All frame work runs on the export lane or the tile worker.
 - **Desktop messages.** The sheet adds plan calls and job reads only: no `asset.state`, history refresh, preview job or upload. The existing job-read stream reads the export.
 - **Timers.** None are added. Job reads stay gated on a queued or running job. Progress is rounded to whole percent, so a running export sends at most about a hundred progress updates. The one-second delay before the bar appears uses the job's own elapsed time on its reads, not a new timer.
 - **Caches.** None are added. A limit search re-encodes the frame it holds and never renders again.
-- **Pixel tests.** The reference resampler and output sharpening have exact-buffer tests. GPU resized, 16-bit and sharpened exports go through `gpu-qualification` against the declared limits. Band-sharing tests support the no-copy claim.
-- **Measurement scope.** The general 24 MP `editor-performance` workload does not measure export. The final task measures export directly and records that scope.
+- **`editor-performance`.** Not run: its 24 MP workload does not export. Export is measured directly by `export_settings_measurement` ([measurement](#qualification-and-measurement)), whose scope is recorded in [performance](../specs/performance.md#export-settings).
+- **Pixel tests.** Exact-buffer tests hold the reference resampler, 16-bit output encoding, output sharpening and every banded output of a paged source (`bands_output`) to stepwise references. `gpu-qualification`'s `export-resized`, `export-16bit` and `export-sharpened` kinds hold the GPU's outputs to the reference within the declared limits on the whole corpus ([qualification](#qualification-and-measurement)). Band-sharing tests support the no-copy claim.
 
-## Execution
+## Qualification and measurement
 
-Eight tasks in five waves:
+**Qualification.** `gpu-qualification --kind export,export-resized,export-16bit,export-sharpened` with the private RAW manifest, on the M4 Pro's Metal adapter, over the whole corpus with every generated fixture present, the zone plates included:
 
-1. Four independent outputs start together: the settings, presets and API; JPEG encoding options and the limit search; the WebP and TIFF encoders; and resized and 16-bit output on both renderers.
-2. Integration joins them into `export.write` and `batch.export`.
-3. The desktop's sheet, menu and batch are the first useful delivery, with their rendered journey and current documentation.
-4. Output sharpening is the second delivery.
-5. Qualification on the corpus, the measurements and the final documentation come last.
+| Kind | Stacks within the limit | Past it | Gaps |
+| --- | ---: | ---: | --- |
+| `export` | 414 | 0 | none |
+| `export-resized` | 409 | 0 | the 5 stacks over the paged derived source, which the reference renders (`tiles-budget`, [paged sources](#paged-sources)) |
+| `export-16bit` | 409 | 0 | the same 5 |
+| `export-sharpened` | 409 | 0 | the same 5 |
 
-None of these tasks asks the owner a question or waits for approval. Re-review each task against current `main` before implementing it. The plan uses the roadmap's high-tier model minimum.
+Every GPU export was the same bytes from a second device. Ten of the corpus's 424 stacks did not run for any kind: the model-mask and frozen-patch stacks over the Z 6 and Air 2S RAWs, whose setup fails before rendering because the qualification harness does not bind their artifact to the RAW stack (`source-unavailable`). They are a defect of the harness, not of export. The run is a selection of kinds, so the release gate counts it incomplete; its export rows are the whole corpus. The worst figures per kind are in [GPU-first](gpu-first.md#the-contract).
+
+**Measurement.** `export_settings_measurement`, in release, times every format and preset on both renderers (the generated 24 MP and 60 MP JPEGs and the Nikon Z 6 NEF, Basic exposure alone) and reads each export's peak memory in a process of its own; the figures and their scope are in [performance](../specs/performance.md#export-settings). What they decide:
+
+- **The large-image warning's wording stands.** Optimise makes a full-size JPEG export several times slower on both renderers, its encode about ten times slower, and a limit search takes seven or eight encodes; the notice's *several times slower* describes both.
+- **The memory estimate holds.** Optimise adds about what `luxforge_jpeg::coefficient_bytes` estimates to the reference's peak, and no more.
+
+## Outstanding
+
+- **A GPU resample that streams from windows.** A paged source's resized, 16-bit or sharpened export is the reference's ([paged sources](#paged-sources)).
+- **The held output stage's cost on the GPU.** A full-size sharpened or 16-bit export on the GPU goes through the held `Rgba32Float` stage and its cuts. Over a light stack on a JPEG it is slower than the reference's, which renders such a stack in milliseconds, and its stage holds 16 bytes an output pixel in the tile worker's budget. Over the Z 6 RAW, whose reference render takes longer, the two are about as fast. Streaming a full-size output's cuts without the stage would remove both costs.
+- **Output sharpening's judgement in print.** Its constants were set by eye on screen ([output sharpening](#rendering)).
+- **The harness's RAW artifact stacks.** The ten model-mask and frozen-patch stacks over RAW sources do not run in `gpu-qualification`, for any kind.
+- **Native GPU evidence on Windows and Linux.** Qualification and measurement ran only on the M4 Pro's Metal adapter.
+- **Wide-gamut output** needs its own decision and tolerance ([decisions](../decisions.md#export)).

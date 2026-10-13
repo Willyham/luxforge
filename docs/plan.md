@@ -37,8 +37,6 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 ### In progress
 
-[Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)): the owner authorized implementation on 2026-10-12. TASK-001 settings, presets and API, TASK-002 JPEG options and the limit search, TASK-003 the WebP and TIFF encoders and TASK-004 resized and 16-bit output are complete; TASK-005 joined them into `export.write` and `batch.export`, and TASK-006 delivered the desktop's Export sheet, menu and batch sheet. TASK-007, output sharpening, is in progress; TASK-008, full-corpus qualification, measurements and final documentation, follows.
-
 [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)): the owner asked on 2026-10-12 for the plan to be built. The minimap is implemented and documented, with a passing background zoom journey on generated 24 MP and 60 MP JPEGs. TASK-004 remains in progress for the GPU corpus qualification, RAW/resize/recovery rendered coverage and photo-sized M4 measurements, which have not been run.
 
 [Auto tone](../tasks/editing/auto-tone.json) is implemented, with owner M4/corpus qualification outstanding: bounded sampling, the solver, API, desktop controls, presets and the local fitting rig. The owner's Lightroom exports and review come after delivery.
@@ -86,9 +84,11 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 
 ## Output
 
-**Export.** The Export sheet, presets, JPEG, WebP and TIFF, resizing, Optimise, file-size limits and metadata levels are delivered ([export settings](design/export-settings.md), [export](design/export.md)). What remains ([tasks](../tasks/rendering/export-settings.json)):
-- Output sharpening (Screen, Matte, Glossy by Low, Standard, High), in progress
-- Full-corpus `gpu-qualification` of the resized, 16-bit and sharpened export kinds, and measuring export cost on the M4 at 24 MP and 60 MP on both renderers
+**Export.** The Export sheet, presets, JPEG, WebP and TIFF, resizing, Optimise, file-size limits, metadata levels and output sharpening are delivered, qualified on the whole corpus and measured on the M4 ([export settings](design/export-settings.md), [export](design/export.md)). What remains ([outstanding](design/export-settings.md#outstanding)):
+- A GPU resample that streams from windows, so a paged source's resized, 16-bit and sharpened exports stay on the GPU
+- A full-size sharpened or 16-bit GPU export without the held output stage, which makes it slower than the reference's on a light JPEG stack
+- Output sharpening's judgement in print
+- Native Windows and Linux GPU evidence
 - Wide-gamut output still needs its own decision and tolerance (owner, 2026-10-07)
 
 ## Library

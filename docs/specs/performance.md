@@ -3409,7 +3409,7 @@ Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cach
 
 Peak memory was measured with the `image` encoder only: `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once. One export raised the process peak from 173 to 285 MiB at 24 MP and from 416 to 661 MiB at 60 MP, and by 1 to 8 MiB for the three RAWs, whose frame fits under the peak RAW development already reached. Each difference is how far one export raises the process's peak, not the export's own allocation. The libjpeg-turbo encoder streams 16 rows at a time into the file, as the `image` encoder streamed blocks, so it adds no whole-frame buffer; its peak has not been re-measured.
 
-Every figure here is the reference renderer's export. The GPU export ([export](../design/export.md#behavior), stage 4 of [GPU-first](../design/gpu-first.md)), whose tiles the desktop's tile worker draws, is timed against the reference export at 24 and 60 MP on a trivial and a heavy stack in [export at 24 and 60 MP](#export-at-24-and-60-mp): on the heavy stack 0.95 s against 0.76 s at 24 MP and 10.4 s against 2.2 s at 60 MP. Its process peak memory and its export of the supplied RAWs are not measured.
+Every figure here is the reference renderer's export. The GPU export ([export](../design/export.md#behavior), stage 4 of [GPU-first](../design/gpu-first.md)), whose tiles the desktop's tile worker draws, is timed against the reference export at 24 and 60 MP on a trivial and a heavy stack in [export at 24 and 60 MP](#export-at-24-and-60-mp): on the heavy stack 0.95 s against 0.76 s at 24 MP and 10.4 s against 2.2 s at 60 MP. Both renderers' peak memory, and their export of the Z 6, are measured for every format and preset in [export settings](#export-settings).
 
 ### JPEG decode: libjpeg-turbo against zune-jpeg
 
@@ -5209,6 +5209,46 @@ cargo test --release -p luxforge-app --bins -- --ignored trivial_export_timing_g
 ```
 
 The picture at rest is read from the run's `app/events.jsonl` (`gpu_rest`, `gpu_rest_drawn`); a launch's first RSS sample from `measurements.json`'s `rss_samples`.
+
+## Export settings
+
+What each [export setting](../design/export-settings.md) costs, GPU against reference, measured once after feature work by `export_settings_measurement` (`crates/luxforge-app/src/app/gpu_tiles_worker_tests.rs`), in release, on 2026-10-13.
+
+- **Host.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, shared with other sessions' builds and runs. One-minute load 5.9 and 5.5 at the start of the 24 MP and 60 MP timing runs, rising to about 10 while they ran, and 9.6 at the start of the Z 6's, above `verify`'s threshold of 8.0. The GPU and reference exports alternate, so the load weighs on both alike.
+- **Build.** Source `6dbc9662` with the measurement test (`export-settings-task-008`), `--locked`, Cargo.lock `7215b616…`; the test binary `e95b25c5…`, the same executable the [qualification](../design/export-settings.md#qualification-and-measurement) ran.
+- **Scope.** Through the catalog owner's export lane as the desktop starts it, with the desktop's GPU tile worker; the original as it is (the generated `24mp.jpg` and `60mp.jpg`, and the Nikon Z 6 NEF, 4024 × 6048) with Basic exposure +0.3, a light stack, so the figures are the settings' own cost more than the render's. Each configuration on a fresh owner and worker, one export of each renderer as a warm-up, then five of each, alternating; medians of five. Time is `export.write` to the job's end, read through `job.wait`; phases are the spans between the job's progress messages. Memory is the process's lifetime peak footprint above its footprint before the export, in a process that prepared the photograph and exported once on one renderer: what an export adds to a process that has not exported. A GPU export's figure includes opening the tile worker's device and its charges, which on the M4's unified memory are in the footprint. One process per configuration and renderer, so one sample each. The generated JPEGs are flat patterns, so their file sizes are not those of photographs; the Z 6's are.
+
+Medians in milliseconds, GPU / reference; then peak additional memory in MB, GPU / reference:
+
+| Configuration | 24 MP JPEG | 60 MP JPEG | Z 6 NEF |
+| --- | --- | --- | --- |
+| JPEG q90 4:4:4, full size | 73 / 56; 602 / 117 | 162 / 140; 745 / 263 | 122 / 350; 843 / 98 |
+| The same, optimised | 488 / 477; 780 / 400 | 1,227 / 1,182; 1,216 / 975 | 805 / 981; 963 / 342 |
+| Web | 95 / 67; 911 / 249 | 159 / 109; 1,514 / 499 | 177 / 332; 1,300 / 204 |
+| Print | 307 / 95; 923 / 112 | 893 / 239; 1,512 / 259 | 308 / 362; 1,268 / 101 |
+| Master (16-bit TIFF, Deflate) | 386 / 197; 923 / 214 | 1,034 / 487; 1,524 / 497 | 3,009 / 3,080; 1,317 / 342 |
+| Master, uncompressed | 316 / 122; 921 / 219 | 819 / 204; 1,536 / 860 | 290 / 314; 1,273 / 342 |
+| WebP q80, full size | 514 / 488; 651 / 151 | 1,308 / 1,493; 863 / 366 | 948 / 1,104; 937 / 110 |
+| The same, optimised | 1,161 / 1,127; 651 / 329 | 2,876 / 2,794; 1,076 / 785 | 1,785 / 1,936; 1,001 / 281 |
+| JPEG q90 4:4:4, limited | 366 / 387; 651 / 117 | 917 / 984; 862 / 258 | 524 / 678; 909 / 99 |
+| JPEG q90 4:4:4, long edge 2048 | 74 / 39; 921 / 241 | 204 / 103; 1,518 / 499 | 113 / 259; 1,307 / 192 |
+
+- **Optimise.** A full-size JPEG export is 6.6 to 7.6 times slower on the GPU and 2.8 to 8.5 times on the reference, whose render of the Z 6 is a larger share. The encode itself, `encoding` and `optimising` together against the baseline's `encoding`, is 9.7 to 10.6 times slower. It adds 283 MB to the reference's peak at 24 MP and 712 MB at 60 MP, against `coefficient_bytes`' 288 and 723 MB, and 244 MB on the Z 6. The Z 6's file is 16% smaller (3,244 to 2,718 KiB). For a TIFF, Deflate takes the Z 6's Master from about 0.3 s to 3.0 s on both renderers, and its file from 139 to 109 MiB.
+- **Limit file size.** Each limit is halfway between the unlimited files at qualities 10 and 90 on the GPU. The search took 7 encodes on the GPU and 8 on the reference for the generated JPEGs, whose two renderers' files differ by a few bytes, choosing qualities 64 and 65 at 24 MP and 62 and 65 at 60 MP; 8 on both for the Z 6, at quality 80. A search takes 4.3 to 5.7 times a single unlimited export on the GPU, and 1.9 to 7.0 times on the reference, whose share of rendering varies.
+- **Resampling's share.** On the reference, the `resampling` phase of a long edge of 2048 is 17 of 39 ms at 24 MP, 44 of 103 ms at 60 MP and 17 of 259 ms on the Z 6; Web's, which includes its sharpening, is 22, 41 and 25 ms. Print's, a full-size sharpening, is 38, 97 and 42 ms. On the GPU the resample is the stream's last sweep, inside `encoding`: the resized export costs about what the full-size baseline does (74 against 73 ms at 24 MP, 204 against 162 ms at 60 MP, 113 against 122 ms on the Z 6).
+- **The held output stage.** Print and Master on the GPU go through the held `Rgba32Float` stage at full size: on the generated JPEGs 3.2 to 3.7 times the reference's Print and 2.0 to 2.1 times its Master, whose render of a light stack takes 8 to 19 ms. On the Z 6 they are about as fast. The stage is the tile worker's peak of 1,313 MB at 60 MP, against 324 MB for the streamed baseline.
+- **Against the provisional 60 MP export budget** (at most 1 GiB of process memory): the reference's process peaks at 487 to 1,171 MiB, Optimise's being the highest; the GPU's at 952 to 1,706 MiB, of which the tile worker's charges are 309 to 1,253 MiB of GPU memory in the same footprint.
+
+Evidence: `target/task-008-measure/` in the `export-settings-task-008` worktree (`timing.jsonl`, `memory.jsonl`, `load.log`, `table.md`).
+
+```sh
+cargo test --release --locked -p luxforge-app --bin luxforge --no-run
+# One process per source for timing; with LUXFORGE_EXPORT_MEMORY=gpu|reference, one per
+# configuration and renderer for memory (LUXFORGE_EXPORT_LIMIT_BYTES gives the limit search its limit).
+LUXFORGE_EXPORT_SOURCES=24mp|60mp|raw LUXFORGE_EXPORT_RAW=/ABSOLUTE/Z6.NEF LUXFORGE_EXPORT_OUTPUT=FILE \
+  [LUXFORGE_EXPORT_CONFIGURATIONS=NAME,...] [LUXFORGE_EXPORT_MEMORY=gpu|reference] \
+  target/release/deps/luxforge-HASH --ignored --exact app::gpu_tiles_worker_tests::export_settings_measurement --nocapture
+```
 
 ## The per-frame light's reduction factor
 

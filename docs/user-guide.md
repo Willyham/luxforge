@@ -746,7 +746,7 @@ Below the cards are the settings, each showing only what applies to the format:
 - **Size**: Full size, Long edge *N* px or Fit within *W* × *H* px. The readout gives the exact output size. A photograph is never enlarged.
 - **Print size**: **Set print size** adds a density in pixels per inch and shows the physical size; **Remove** takes it away. It changes no pixel.
 - **Quality** (JPEG and WebP), with **Optimise file size**, **Chroma** for JPEG, and **Limit file size to** *N* KB, which writes the highest quality that fits.
-- **Bit depth** for TIFF. Optimise file size is then lossless compression.
+- **Bit depth** for TIFF. Optimise file size is then lossless compression: the same pixels in a smaller file, several times slower to write for a photograph's 16-bit TIFF.
 - **Sharpen**: None, Screen, Matte or Glossy, then Low, Standard or High. Output sharpening restores the crispness resizing and printing take away, at the file's final size, on brightness alone, so it adds no colour fringes. Screen suits a file seen on a display. Matte and Glossy suit prints on those papers and follow the print density, 300 pixels per inch when none is set; Matte sharpens harder, since matte paper softens more. Paper sharpening looks strong on screen at 100%: judge it in print. The amount is disabled while Sharpen is None. This is separate from Detail's sharpening, which is part of the edit.
 - **Metadata**: None, Copyright, All but location or All.
 - **Save to**: the original's folder or a chosen one (**Choose…** opens the folder dialog), and the suffix. The name to be written is shown. A taken name is reported with the name written instead, such as *DSC_0042-web.jpg exists there; this writes DSC_0042-web-2.jpg*.
