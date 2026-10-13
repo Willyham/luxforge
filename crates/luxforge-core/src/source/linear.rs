@@ -52,6 +52,15 @@ pub(crate) const RENDERED_FRAME: PlaneLimits = PlaneLimits {
     ..CAMERA_SOURCE
 };
 
+/// A window of a stage the reference's banded mode allocates whole, such as its spatial frame of a
+/// band of a paged source: the camera limits but for the side, which may be as wide as a paged
+/// derived source's (`docs/design/panorama-merge.md`, "The reference on paged sources").
+pub(crate) const RENDERED_WINDOW: PlaneLimits = PlaneLimits {
+    name: "linear window",
+    max_side: PAGED_DERIVED_SOURCE.max_side,
+    ..CAMERA_SOURCE
+};
+
 impl PlaneLimits {
     /// Whether a `width` × `height` image lies within these limits; a refusal names the bound.
     pub(crate) fn check(self, width: u32, height: u32) -> Result<u64, Error> {

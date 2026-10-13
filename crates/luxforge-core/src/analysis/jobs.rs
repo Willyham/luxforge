@@ -12,13 +12,14 @@
 //! reduction happen on the worker, which wakes the owner through its own channel, so no timer and
 //! no polling loop is involved.
 
-use super::{DOMAIN, Report, deserialize_domain, reduce};
+use super::{DOMAIN, Report, deserialize_domain, reduce, reduce_bands};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
     AssetId, DraftStamp, EntryId, Error, Evaluation, HistoryEntry, JobId, Recipe, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     latest::{Latest, Running, WAITING_RESULTS},
+    render::bands::Banded,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -307,16 +308,31 @@ fn analyse(
         })
     });
     let cancel = running.abandoned();
-    let result = evaluation
-        .exact(cancel)
-        .and_then(|render| render.frame(identity.snapshot_id.clone()))
-        .and_then(|raster| {
-            let report = reduce(&raster.rgba, raster.width, raster.height, cancel);
-            // No per-result raster is retained: the frame is released here, before the bounded
-            // report travels back to the owner.
-            drop(raster);
-            report
-        });
+    let result = match evaluation.source().paged() {
+        None => evaluation
+            .exact(cancel)
+            .and_then(|render| render.frame(identity.snapshot_id.clone()))
+            .and_then(|raster| {
+                let report = reduce(&raster.rgba, raster.width, raster.height, cancel);
+                // No per-result raster is retained: the frame is released here, before the
+                // bounded report travels back to the owner.
+                drop(raster);
+                report
+            }),
+        // A paged source has no whole frame: the reference renders its output in bands, each
+        // counted and released as it comes (`docs/design/panorama-merge.md`, "The reference on
+        // paged sources").
+        Some(paged) => evaluation.compiled().and_then(|compiled| {
+            let banded = Banded::new(
+                paged.source().as_ref(),
+                compiled,
+                evaluation.context(),
+                cancel,
+            )?;
+            let stage = banded.stage();
+            reduce_bands(stage.width, stage.height, banded.bands(), cancel)
+        }),
+    };
     // The frame is rendered; the artifacts the stack was bound with go with its evaluation.
     drop(evaluation);
     // The activity ends before the outcome is handed over, so a client that reads the job as
@@ -418,7 +434,7 @@ mod tests {
             .register(crate::modules::HeldModule::shared(gate.clone()))
             .expect("a valid holding module");
         let (width, height) = (64, 48);
-        let evaluation = Evaluation::new(
+        let evaluation = crate::Evaluation::new(
             Arc::new(registry),
             crate::RenderContext::new(),
             crate::PreviewSource::Jpeg(crate::SourceImage {

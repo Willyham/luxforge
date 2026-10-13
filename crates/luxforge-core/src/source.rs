@@ -10,8 +10,8 @@ pub use linear::LinearImage;
 #[cfg(test)]
 pub(crate) use linear::finiteness_scans_during;
 pub(crate) use linear::{
-    CAMERA_SOURCE, PAGED_DERIVED_SOURCE, PlaneLimits, RENDERED_FRAME, RESIDENT_DERIVED_SOURCE,
-    ViewReader, Walk, layout,
+    CAMERA_SOURCE, PAGED_DERIVED_SOURCE, PlaneLimits, RENDERED_FRAME, RENDERED_WINDOW,
+    RESIDENT_DERIVED_SOURCE, ViewReader, Walk, layout,
 };
 pub use optics::{OpticalIdentity, SourceOptics};
 

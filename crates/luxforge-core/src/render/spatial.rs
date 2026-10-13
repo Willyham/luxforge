@@ -10,16 +10,19 @@ use super::context::{SpatialBudget, SpatialReservation};
 use crate::Cancel;
 #[cfg(test)]
 use crate::ErrorKind;
+#[cfg(any(test, feature = "qualification"))]
+use crate::modules::ESTIMATE_REDUCTION;
 use crate::{
     Error,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
-        PlanesMut, Reduction, Region, SpatialOperation, Stage,
+        Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction,
+        Region, SpatialOperation, Stage, estimate_reduction,
     },
 };
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::ops::Range;
 #[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
@@ -73,6 +76,9 @@ impl Tiling {
 #[derive(Clone, Debug)]
 pub(crate) struct SpatialPlan {
     stage: Stage,
+    /// The rectangle of the stage whose tiles are run: the whole stage, or a window of it the
+    /// reference's banded mode materializes ([`Self::within`]).
+    area: Region,
     /// Each unit's halo at this stage, in evaluation order.
     halos: Vec<u32>,
     summed_halo: u32,
@@ -134,12 +140,22 @@ impl SpatialPlan {
         let largest = largest_slot_values(operation, stage, &regions, tile);
         Ok(Self {
             stage,
+            area: Region::whole(stage),
             halos,
             summed_halo,
             tile,
             working_set,
             largest,
         })
+    }
+
+    /// This plan run over `area` of its stage alone: the stage's own tiles cut to it. Every tile's
+    /// value is the whole stage's whatever rectangle it is cut to (each unit reads its input
+    /// rectangle grown by its halo and clamped to the stage, never to the area), and a cut tile is
+    /// no larger than the tile it is cut from, so the plan's working set still bounds it.
+    pub(crate) fn within(mut self, area: Region) -> Self {
+        self.area = area;
+        self
     }
 
     #[cfg(test)]
@@ -161,16 +177,22 @@ impl SpatialPlan {
         self.tile
     }
 
-    /// Every output tile of the stage, in row-major order, aligned to the stage origin with
-    /// partial tiles at the right and bottom edges.
+    /// Every output tile of the plan's area, in row-major order: the stage's tiles, aligned to the
+    /// stage origin with partial tiles at the right and bottom edges, each cut to the area
+    /// ([`Self::within`]; the whole stage unless a window was asked for).
     pub(crate) fn tiles(&self) -> Vec<Region> {
+        let area = self.area;
         let mut tiles = Vec::new();
-        let mut y0 = 0;
-        while y0 < self.stage.height {
-            let height = self.tile.min(self.stage.height - y0);
-            let mut x0 = 0;
-            while x0 < self.stage.width {
-                let width = self.tile.min(self.stage.width - x0);
+        if area.is_empty() {
+            return tiles;
+        }
+        let side = self.tile.max(1);
+        let mut y0 = area.y0;
+        while y0 < area.y1() {
+            let height = ((y0 / side + 1) * side).min(area.y1()) - y0;
+            let mut x0 = area.x0;
+            while x0 < area.x1() {
+                let width = ((x0 / side + 1) * side).min(area.x1()) - x0;
                 tiles.push(Region {
                     x0,
                     y0,
@@ -1045,10 +1067,7 @@ pub(crate) fn run_tiles<T: Send>(
     }
     // Before the reservation, so a cancelled render never takes working sets it will not use.
     cancel.check()?;
-    let large = super::parallel::pooled(
-        super::parallel::RenderPass::Spatial,
-        plan.stage.width as u64 * plan.stage.height as u64,
-    );
+    let large = super::parallel::pooled(super::parallel::RenderPass::Spatial, plan.area.pixels());
     let workers = rayon::current_num_threads();
     if !large || tiles.len() == 1 {
         return run_serially(plan, budget, cancel, &tiles, large, workers, work, write);
@@ -1351,11 +1370,12 @@ pub(crate) fn resolve_globals(
 const REDUCTION_SPAN: u32 = 64;
 
 /// Build the bounded reduction a global estimate is prepared from: a box average over
-/// [`ESTIMATE_REDUCTION`]-pixel blocks anchored at the stage origin, with a partial block averaged
-/// over its actual pixels. `fill` reads one rectangle of the stage in linear sRGB into three planes,
-/// in the layout [`Planes`] reads: one block row of at most [`REDUCTION_SPAN`] blocks at a time, so
-/// the stage is read by rows ([`block_means`]), on the pool above the parallel threshold with each
-/// worker's fill serial.
+/// [`estimate_reduction`]-pixel blocks anchored at the stage origin ([`ESTIMATE_REDUCTION`] on
+/// every stage within the camera limits), with a partial block averaged over its actual pixels.
+/// `fill` reads one rectangle of the stage in linear sRGB into three planes, in the layout
+/// [`Planes`] reads: one block row of at most [`REDUCTION_SPAN`] blocks at a time, so the stage is
+/// read by rows ([`block_means`]), on the pool above the parallel threshold with each worker's fill
+/// serial.
 ///
 /// The reduced frame is at most [`MAX_REDUCTION_PIXELS`] pixels, so this allocates about 3 MiB at
 /// the largest stage the host accepts whatever the source is, plus one fill's planes per worker.
@@ -1366,12 +1386,14 @@ pub(crate) fn build_reduction_cancellable(
     cancel: &Cancel,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync,
 ) -> Result<Reduction, Error> {
-    let (width, mut blocks) = reduction_blocks(stage)?;
+    let factor = estimate_reduction(stage);
+    let (width, mut blocks) = reduction_blocks(stage, factor)?;
     let row = |planes: &mut Vec<f32>, j: usize, row: &mut [[f32; 3]]| -> Result<(), Error> {
         cancel.check()?;
         for (span, blocks) in row.chunks_mut(REDUCTION_SPAN as usize).enumerate() {
             block_means(
                 stage,
+                factor,
                 j as u32,
                 span as u32 * REDUCTION_SPAN,
                 blocks,
@@ -1393,10 +1415,72 @@ pub(crate) fn build_reduction_cancellable(
             .enumerate()
             .try_for_each(|(j, values)| row(&mut planes, j, values))?;
     }
-    let reduction = reduction_from(stage, &blocks)?;
+    let reduction = reduction_from(stage, factor, &blocks)?;
     #[cfg(any(test, feature = "qualification"))]
     cells::capture(stage, cancel, &fill, &reduction)?;
     Ok(reduction)
+}
+
+/// [`build_reduction_cancellable`] over a stage read in full-width bands, for the reference's
+/// banded mode (`super::bands`), which cannot read a rectangle of a stage on its own but produces
+/// it band by band: `band` fills the three planes of each full-width band of whole block rows it is
+/// handed, in order from the top, each at most `rows` rows rounded up to whole block rows, into the
+/// buffer it is lent, which it resizes. Every block is summed from the band holding it in the one
+/// order every reduction sums in ([`block_mean`]), so the reduction is the whole-frame one bit for
+/// bit, while no more than one band of the stage is held.
+pub(crate) fn build_reduction_banded(
+    stage: Stage,
+    rows: u32,
+    cancel: &Cancel,
+    mut band: impl FnMut(Region, &mut Vec<f32>) -> Result<(), Error>,
+) -> Result<Reduction, Error> {
+    let factor = estimate_reduction(stage);
+    let (width, mut blocks) = reduction_blocks(stage, factor)?;
+    let rows = rows.max(1).div_ceil(factor) * factor;
+    let mut planes = Vec::new();
+    let mut y0 = 0;
+    while y0 < stage.height {
+        cancel.check()?;
+        let region = Region {
+            x0: 0,
+            y0,
+            width: stage.width,
+            height: rows.min(stage.height - y0),
+        };
+        band(region, &mut planes)?;
+        let len = region.pixels() as usize;
+        if planes.len() < 3 * len {
+            return Err(Error::internal(
+                "a reduction band holds fewer planes than its rows",
+            ));
+        }
+        let stride = region.width as usize;
+        let first = (y0 / factor) as usize * width as usize;
+        let count = region.height.div_ceil(factor) as usize * width as usize;
+        let read = |(offset, block): (usize, &mut [f32; 3])| {
+            let (j, i) = (offset / width as usize, offset % width as usize);
+            let top = j * factor as usize;
+            let bottom = (top + factor as usize).min(region.height as usize);
+            let left = i * factor as usize;
+            let right = (left + factor as usize).min(stride);
+            *block = std::array::from_fn(|channel| {
+                block_mean(
+                    &planes[channel * len..(channel + 1) * len],
+                    stride,
+                    top..bottom,
+                    left..right,
+                )
+            });
+        };
+        let held = &mut blocks[first..first + count];
+        if region.pixels() >= luxforge_raw::PARALLEL_PIXELS {
+            held.par_iter_mut().enumerate().for_each(read);
+        } else {
+            held.iter_mut().enumerate().for_each(read);
+        }
+        y0 += region.height;
+    }
+    reduction_from(stage, factor, &blocks)
 }
 
 /// [`build_reduction_cancellable`] over a stage `fetch` answers one pixel at a time, for a test
@@ -1411,9 +1495,9 @@ pub(crate) fn build_reduction(
     })
 }
 
-/// The reduced frame's width and its zeroed blocks, or the bound it would exceed.
-fn reduction_blocks(stage: Stage) -> Result<(u32, Vec<[f32; 3]>), Error> {
-    let (width, height) = Reduction::dimensions(stage, ESTIMATE_REDUCTION);
+/// The reduced frame's width at `factor` and its zeroed blocks, or the bound it would exceed.
+fn reduction_blocks(stage: Stage, factor: u32) -> Result<(u32, Vec<[f32; 3]>), Error> {
+    let (width, height) = Reduction::dimensions(stage, factor);
     let pixels = u64::from(width) * u64::from(height);
     if pixels > MAX_REDUCTION_PIXELS {
         return Err(Error::resource_limit(format!(
@@ -1423,20 +1507,35 @@ fn reduction_blocks(stage: Stage) -> Result<(u32, Vec<[f32; 3]>), Error> {
     Ok((width, vec![[0.0_f32; 3]; pixels as usize]))
 }
 
-/// The means of reduced blocks `i0..i0 + blocks.len()` of block row `j`, from one `fill` of the
-/// part of the stage they cover into `planes`, which grows to the largest fill and is reused. Each
-/// block is its pixels summed in `f64`, row by row and left to right, over the part of the block
-/// inside the stage: the one order every reduction sums in, however many blocks a fill reads, so a
-/// global estimate never depends on how its stage was read.
+/// The mean of the values of `rows` × `columns` of one plane `stride` values a row, summed in `f64`
+/// row by row and left to right: the one order every reduction sums a block in, however its stage
+/// was read.
+#[inline]
+fn block_mean(plane: &[f32], stride: usize, rows: Range<usize>, columns: Range<usize>) -> f32 {
+    let count = (rows.len() * columns.len()) as f64;
+    let mut sum = 0.0_f64;
+    for row in rows {
+        for value in &plane[row * stride + columns.start..row * stride + columns.end] {
+            sum += f64::from(*value);
+        }
+    }
+    (sum / count) as f32
+}
+
+/// The means of reduced blocks `i0..i0 + blocks.len()` of block row `j` at `factor`, from one
+/// `fill` of the part of the stage they cover into `planes`, which grows to the largest fill and is
+/// reused. Each block is its pixels summed in `f64`, row by row and left to right, over the part
+/// of the block inside the stage ([`block_mean`]): the one order every reduction sums in, however
+/// many blocks a fill reads, so a global estimate never depends on how its stage was read.
 fn block_means(
     stage: Stage,
+    factor: u32,
     j: u32,
     i0: u32,
     blocks: &mut [[f32; 3]],
     planes: &mut Vec<f32>,
     fill: &impl Fn(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let factor = ESTIMATE_REDUCTION;
     let (top, left) = (j * factor, i0 * factor);
     let region = Region {
         x0: left,
@@ -1454,26 +1553,24 @@ fn block_means(
     for (offset, block) in blocks.iter_mut().enumerate() {
         let from = offset * factor as usize;
         let to = (from + factor as usize).min(stride);
-        let count = f64::from(region.height) * (to - from) as f64;
         *block = std::array::from_fn(|channel| {
-            let mut sum = 0.0_f64;
-            for row in planes[channel * len..(channel + 1) * len].chunks_exact(stride) {
-                for value in &row[from..to] {
-                    sum += f64::from(*value);
-                }
-            }
-            (sum / count) as f32
+            block_mean(
+                &planes[channel * len..(channel + 1) * len],
+                stride,
+                0..region.height as usize,
+                from..to,
+            )
         });
     }
     Ok(())
 }
 
-fn reduction_from(stage: Stage, blocks: &[[f32; 3]]) -> Result<Reduction, Error> {
+fn reduction_from(stage: Stage, factor: u32, blocks: &[[f32; 3]]) -> Result<Reduction, Error> {
     let mut planes = Vec::with_capacity(blocks.len() * 3);
     for channel in 0..3 {
         planes.extend(blocks.iter().map(|block| block[channel]));
     }
-    Reduction::new(stage, ESTIMATE_REDUCTION, planes)
+    Reduction::new(stage, factor, planes)
 }
 
 /// Qualification only: the reductions one render's global estimates are prepared from, and their
@@ -3851,7 +3948,7 @@ mod tests {
             }
             assert_eq!(
                 rows,
-                reduction_from(stage, &means).unwrap(),
+                reduction_from(stage, factor, &means).unwrap(),
                 "{width}x{height}, by rows"
             );
         }
