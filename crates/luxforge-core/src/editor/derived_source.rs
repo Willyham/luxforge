@@ -474,6 +474,32 @@ impl EditorService {
         self.publish_derived_with(&published, name, |_| Ok(()))
     }
 
+    /// A derived photograph of `width × height` whose planes `fill` writes a chunk at a time —
+    /// each chunk's rectangle `[x, y, width, height]` and its three planes, red row by row, then
+    /// green, then blue — streamed as a merge's worker writes its result, so a source past the
+    /// camera limits is written paged without its frame ever held whole, and published by
+    /// [`Self::publish_derived_with`]. For the qualification harness.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn publish_streamed(
+        &mut self,
+        name: &str,
+        width: u32,
+        height: u32,
+        mut fill: impl FnMut([u32; 4], &mut [f32]),
+    ) -> Result<AssetId, Error> {
+        let published = self.derived_source_writer().write_with(
+            width,
+            height,
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+            |rect, planes| {
+                fill([rect.x, rect.y, rect.width, rect.height], planes);
+                Ok(())
+            },
+        )?;
+        self.publish_derived_with(&published, name, |_| Ok(()))
+    }
+
     /// How a worker reads and verifies the source of the derived photograph `asset_id`: its
     /// recorded identity and manifest length, after checking the root is this catalog's and, by
     /// stat, that every recorded object of a resident source is present with its recorded length.

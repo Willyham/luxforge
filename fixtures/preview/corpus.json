@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "scope": "The qualification corpus the tolerance of the GPU against the reference renderer is judged on (docs/design/gpu-first.md, The contract; docs/design/gpu-preview.md, The preview error limit): every source, every recipe over the sources it applies to, each at Fit, 33%, 50% and 100%. A source carries its SHA-256, resolved by `cargo xtask preview-corpus`, or an explicit gap. A RAW source is named by its id in the private RAW manifest (`--manifest FILE`), which holds the file's path and the hash this file repeats. A synthetic derived source, an HDR merge's result, has no file: it names the generator of its planes and records their SHA-256, and the harness stores them as a derived photograph. A recipe is a list of evidence-script steps, run after the source opens and before the view step; its class says which limits it is held to. This file lists what to measure; it records no measurement.",
+  "scope": "The qualification corpus the tolerance of the GPU against the reference renderer is judged on (docs/design/gpu-first.md, The contract; docs/design/gpu-preview.md, The preview error limit): every source, every recipe over the sources it applies to, each at Fit, 33%, 50% and 100%. A source carries its SHA-256, resolved by `cargo xtask preview-corpus`, or an explicit gap. A RAW source is named by its id in the private RAW manifest (`--manifest FILE`), which holds the file's path and the hash this file repeats. A synthetic derived source, an HDR or panorama merge's result, has no file: it names the generator of its planes and records their SHA-256, and the harness stores them as a derived photograph. A recipe is a list of evidence-script steps, run after the source opens and before the view step; its class says which limits it is held to. This file lists what to measure; it records no measurement.",
   "views": [
     {"id": "fit", "step": {"view": {"zoom": "fit"}}},
     {"id": "33%", "step": {"view": {"zoom": 33}}},
@@ -16,7 +16,8 @@
     {"id": "raw-z6", "kind": "raw", "manifest_id": "nikon-z6", "dimensions": [4024, 6048], "sha256": "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb", "description": "The owner's Nikon Z 6 NEF, resolved through the private RAW manifest."},
     {"id": "raw-x100vi", "kind": "raw", "manifest_id": "fujifilm-x100vi", "dimensions": [7728, 5152], "sha256": "187e3403bdb93617a906e059209e91037e56efbaf5b6824700e96e0d4abd7246", "description": "The owner's Fujifilm X100VI RAF, resolved through the private RAW manifest."},
     {"id": "raw-air2s", "kind": "raw", "manifest_id": "dji-air2s", "dimensions": [5464, 3640], "sha256": "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d", "description": "The supplied DJI Air 2S (FC3411) DNG, resolved through the private RAW manifest."},
-    {"id": "derived-merge", "kind": "synthetic-derived", "generator": "luxforge_testkit::derived::planes", "dimensions": [6048, 4024], "sha256": "1f73c8bec8e299866d2193c357df03d1bae01bf8693a4155bebb843459ee79ce", "description": "A synthetic HDR merge's result at a Nikon Z 6's size, stored as a derived photograph: linear-sRGB planes ramping from just below zero to four times diffuse white, hues turning down the frame, a band of fine texture, hard-edged blocks, a little noise and patches out of the sRGB gamut whose red is negative."}
+    {"id": "derived-merge", "kind": "synthetic-derived", "generator": "luxforge_testkit::derived::planes", "dimensions": [6048, 4024], "sha256": "1f73c8bec8e299866d2193c357df03d1bae01bf8693a4155bebb843459ee79ce", "description": "A synthetic HDR merge's result at a Nikon Z 6's size, stored as a derived photograph: linear-sRGB planes ramping from just below zero to four times diffuse white, hues turning down the frame, a band of fine texture, hard-edged blocks, a little noise and patches out of the sRGB gamut whose red is negative."},
+    {"id": "derived-paged", "kind": "synthetic-derived", "generator": "luxforge_testkit::derived::planes", "dimensions": [20000, 8000], "sha256": "231f75263d8d182b6e2e6af9f87337537cd93001ea77690efc6d4a63a2580b80", "description": "A synthetic panorama merge's result of 160 MP, wider than the camera limits' 16,384, so the catalog stores it paged: the same planes as derived-merge's at this size, streamed into chunks as a merge's worker writes them. Its picture below 100% is the overview, the stack over its resident level, held to the overview limits against the banded reference reduced the same way; at 100%, its samples and its export read level 0 through windows, held to the class's limits against the banded reference."}
   ],
   "recipes": [
     {
@@ -24,7 +25,7 @@
       "family": "basic",
       "class": "pointwise",
       "description": "A full Basic layer: every field of Basic, White balance included, away from zero.",
-      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "derived-merge"],
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "derived-merge", "derived-paged"],
       "steps": [
         {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0, "whites": -15.0, "blacks": 15.0, "vibrance": 30.0, "saturation": 15.0, "temperature": 20.0, "tint": -10.0}}}
       ]
@@ -155,7 +156,7 @@
       "family": "mask-radial",
       "class": "pointwise",
       "description": "A rotated, feathered radial mask carrying a masked Basic layer.",
-      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge", "derived-paged"],
       "steps": [
         {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
         {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
@@ -213,7 +214,7 @@
       "family": "crop",
       "class": "pointwise",
       "description": "A straightened 16:9 crop under a Basic edit.",
-      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge", "derived-paged"],
       "steps": [
         {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}},
         {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
@@ -312,7 +313,7 @@
       "family": "presence",
       "class": "spatial",
       "description": "Presence texture +100, clarity +100.",
-      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge", "derived-paged"],
       "steps": [
         {"api": {"method": "edit.set-presence", "params": {"texture": 100, "clarity": 100}}}
       ]
@@ -453,7 +454,7 @@
       "family": "detail",
       "class": "spatial",
       "description": "Detail at the study's moderate parameter set (fixtures/detail/corpus.json).",
-      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge", "derived-paged"],
       "steps": [
         {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
       ]
@@ -538,7 +539,7 @@
       "family": "detail",
       "class": "spatial",
       "description": "Detail at the moderate parameter set, then Presence with all three fields through a radial mask.",
-      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge", "derived-paged"],
       "steps": [
         {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}},
         {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},

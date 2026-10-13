@@ -281,7 +281,7 @@ fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit()
     eprintln!("{test}: the worker's figures {:?}", service.figures());
     owner.stop();
     join.join().unwrap();
-    drop(dir);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The photo surface's window of level 0 at 100% and above ([`super::gpu_paged`]): a view's region
@@ -405,5 +405,5 @@ fn paged_source_render_surface_windows_follow_the_view_and_drop_stale_reads() {
     );
     owner.stop();
     join.join().unwrap();
-    drop(dir);
+    let _ = std::fs::remove_dir_all(dir);
 }
