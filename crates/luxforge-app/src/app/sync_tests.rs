@@ -323,6 +323,7 @@ fn nothing_new() -> tasks::SyncResult {
         usage: false,
         updates: false,
         own: Vec::new(),
+        moved: Default::default(),
     }
 }
 
