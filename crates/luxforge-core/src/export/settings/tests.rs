@@ -274,7 +274,10 @@ fn the_output_spec_sharpens_for_the_settings_density_or_300_ppi() {
     );
     settings.pixels_per_inch = Some(240);
     assert_eq!(
-        settings.output_spec((600, 400)).sharpen.map(|s| s.pixels_per_inch),
+        settings
+            .output_spec((600, 400))
+            .sharpen
+            .map(|s| s.pixels_per_inch),
         Some(240)
     );
     settings.sharpen = None;

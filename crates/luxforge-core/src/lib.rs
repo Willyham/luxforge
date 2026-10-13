@@ -113,8 +113,6 @@ pub use export::{
         OutputSize,
     },
 };
-/// Output sharpening, an export setting (`docs/design/export-settings.md`, "Output sharpening").
-pub use tiles::sharpen::{Sharpen, SharpenAmount, SharpenMedium};
 /// The RAW test cameras' process-wide switch, which the desktop turns on only for a launch with
 /// `LUXFORGE_TEST_CAMERAS=1`: see `luxforge_raw::admit_test_cameras`.
 pub use luxforge_raw::{admit_test_cameras, test_cameras_admitted};
@@ -197,6 +195,8 @@ pub use render::{
     Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
+/// Output sharpening, an export setting (`docs/design/export-settings.md`, "Output sharpening").
+pub use tiles::sharpen::{Sharpen, SharpenAmount, SharpenMedium};
 
 // The catalog's public surface beyond `catalog_types`.
 pub use index::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, index_dir};
