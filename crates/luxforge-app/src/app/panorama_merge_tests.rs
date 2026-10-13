@@ -747,14 +747,14 @@ fn panorama_merge_pending_row_cancels_and_a_failure_names_its_frame() {
 
 /// A panorama larger than a resident source may be (the test stitch magnifies the row past
 /// 16,384 pixels a side) is published paged; viewed in its catalog folder, `D` opens it in Develop
-/// through the open every photograph takes, and Select is shown again after. The editor says what
-/// it holds: this build edits a paged source only once its GPU paged path is built.
+/// through the open every photograph takes, its frame drawn with no render error, and Select is
+/// shown again after, as it was.
 #[test]
 #[slow]
 fn panorama_merge_paged_result_opens_in_develop_and_select_returns() {
     use crate::app::{
         develop::folder_strip_now,
-        message::{develop::DevelopMessage, sync::SyncMessage},
+        message::{develop::DevelopMessage, preview::PreviewMessage, sync::SyncMessage},
         tasks,
     };
     use crate::state::select::Shown;
@@ -803,36 +803,25 @@ fn panorama_merge_paged_result_opens_in_develop_and_select_returns() {
         &editor.open_generation,
         editor.drawn(),
     );
-    let refusal = opened.as_ref().err().cloned();
+    assert!(opened.is_ok(), "{:?}", opened.as_ref().err());
     let _ = editor.update(Message::Sync(SyncMessage::ImportRefreshed(
         switch.generation,
         opened.map(Box::new),
     )));
-    match refusal {
-        // Until the GPU paged path is built, the core refuses to evaluate a recipe over a paged
-        // source: the open ends, the status bar says why, and nothing is left half open.
-        Some(refusal) => {
-            assert!(
-                refusal.starts_with("resource-limit:") && refusal.contains("paged derived source"),
-                "{refusal}"
-            );
-            assert_eq!(editor.status.text, refusal);
-            assert!(editor.document.state.is_none());
-            assert!(editor.develop.switch.is_none(), "the open has ended");
-        }
-        // Once it is, the result is the open photograph at its whole size.
-        None => {
-            let state = editor.document.state.as_ref().expect("the result open");
-            assert_eq!(state.asset.id, asset_id);
-            assert!(
-                state.asset.width > 16_384
-                    || u64::from(state.asset.width) * u64::from(state.asset.height) > 128_000_000,
-                "{} × {}",
-                state.asset.width,
-                state.asset.height
-            );
-        }
-    }
+    luxforge_testbase::wait_until("the paged result's frame on screen", || {
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+        editor.presentation.presented_entry.is_some() && !editor.presentation.queue.is_busy()
+    });
+    let state = editor.document.state.as_ref().expect("the result open");
+    assert_eq!(state.asset.id, asset_id);
+    let (width, height) = (state.asset.width, state.asset.height);
+    assert!(
+        width > 16_384 || u64::from(width) * u64::from(height) > 128_000_000,
+        "a paged result: {width} × {height}"
+    );
+    let snapshot = editor.snapshot();
+    assert_eq!(snapshot["render_error"], Value::Null, "{snapshot}");
+    assert!(editor.develop.switch.is_none(), "the open has ended");
 
     // Select again, as it was: the result's folder in view.
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
