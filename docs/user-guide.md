@@ -19,6 +19,8 @@ There are no published downloads yet. Initial [v0.1 release preparation](design/
 
 **Installing on macOS.** A macOS build comes as a disk image (`.dmg`). Open it, and drag **Luxforge** onto the **Applications** folder shown beside it; then eject the disk image and open Luxforge from Applications. Luxforge can only update itself from Applications. If you open it straight from the disk image, or from anywhere else such as Downloads, it asks once the workspace is ready: **Move Luxforge to Applications?** (see [Updates](#updates)).
 
+**Installing on Linux.** A Linux build comes as a tarball. Extract it anywhere you can write, such as your home folder, and run `./Luxforge/luxforge`; `luxforge-json` and `luxforge-ctl` are beside it. `./Luxforge/desktop-integration.sh install` adds Luxforge to your application launcher, for you only, and `uninstall` removes that entry and its icon and nothing else; neither needs root or changes your PATH. Run install again after moving the folder. `Luxforge/INSTALL.txt` lists what the build needs: a Vulkan driver, the X11 or Wayland libraries it names and a working XDG desktop portal with a file-chooser backend. Removing the folder leaves your catalogs, settings, logs and originals in place.
+
 macOS is the primary platform. Linux has automated build and functional checks; native desktop qualification remains open. Windows support will come later, and Windows CI is disabled. See [platform status](engineering/platforms.md).
 
 After [developer setup](engineering/development.md), start an optimized build with a catalog and an optional original:

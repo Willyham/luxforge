@@ -430,7 +430,7 @@
     {
       "id": "TASK-007",
       "description": "Complete candidate installation/help/release documentation using actual built artifacts.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004"
       ],
@@ -439,7 +439,8 @@
         "Describe extraction/copy to Applications, CLI helpers, external catalog/settings/artifact paths, manual updates, closed-owner backups, data-preserving uninstall and current-format refusal without migration promises.",
         "Include issue-report steps with version/OS/adapter/recording mode, errors and sanitized logs; private originals/catalogs are optional, never requested as a default.",
         "Update README/user guide/platform/status/development packaging docs when implemented behavior exists. Until publication use candidate instructions and do not invent public download links. No updater, stores or placeholder controls.",
-        "Prepare shared notes and macOS help from the built macOS payload; Linux packaging supplies its actual installed layout/runtime instructions and final Linux qualification reconciles them with the shared docs. No artificial dependency on Linux native hardware for documentation preparation."
+        "Prepare shared notes and macOS help from the built macOS payload; Linux packaging supplies its actual installed layout/runtime instructions and final Linux qualification reconciles them with the shared docs. No artificial dependency on Linux native hardware for documentation preparation.",
+        "Progress 2026-10-13: the release notes draft, the user guide's macOS and Linux installation, the packaged README.txt and the Linux INSTALL.txt describe the current payloads, data locations, updates and issue reports. Remaining: reconcile them with an extracted clean tag candidate, and fill the release fields with real download, hash and evidence links at publication."
       ],
       "context_links": [
         {
