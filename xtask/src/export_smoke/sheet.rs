@@ -218,6 +218,8 @@ fn pair_plan(sources: &[PathBuf]) -> Plan {
 fn plan(sources: &[PathBuf]) -> Plan {
     let (large, wide) = (&sources[0], &sources[1]);
     let raw = (sources.len() == 4).then(|| &sources[2]);
+    // Another photograph opened: its own entry is shown, which no commit made, so the step
+    // expects no count of commits against the photograph before it.
     let open = |name: &str, path: &Path| {
         Step::new(
             name,
@@ -225,7 +227,6 @@ fn plan(sources: &[PathBuf]) -> Plan {
                 path: path.display().to_string(),
             },
         )
-        .commits(0)
     };
     let mut steps: Vec<Step> = sources
         .iter()
