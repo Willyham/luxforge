@@ -14,9 +14,9 @@ The destination is an **automatically published GitHub pre-release**, after both
 
 `cargo xtask release TAG [--dry-run]` uses the lightweight tooling. Require an attached `main` branch, a clean index and working tree including untracked files, and the release workflow committed at HEAD. Read `origin`'s single configured push destination directly, without relying on cached tracking refs, and require its `main` commit to equal HEAD. Reject a local or remote tag whose normalized version is already used, including the `v0.1`/`v0.1.0` alias. No branch, manifest, commit, existing tag or remote configuration is changed to pass these checks.
 
-For an actual release, run the existing quick checks, repeat the Git/remote checks and require the same commit and push destination. Create an annotated tag at that verified commit and push only its explicit ref, without force or incidental follow-tags. This starts the existing hosted build/publication workflow; local signing and building are not added. Return after the tag push rather than waiting for hosted jobs. A push failure returns failure and retains the local tag with a clear recovery message, since the remote outcome may be uncertain. Never delete or overwrite an existing tag automatically.
+For an actual release, run quick checks and the native watcher gate, repeat the Git/remote checks and require the same commit and push destination. Create an annotated tag at that verified commit and push only its explicit ref, without force or incidental follow-tags. This starts the existing hosted build/publication workflow; local signing and building are not added. Return after the tag push rather than waiting for hosted jobs. A push failure returns failure and retains the local tag with a clear recovery message, since the remote outcome may be uncertain. Never delete or overwrite an existing tag automatically.
 
-`--dry-run` performs the Git/remote checks and prints the planned version/commit/actions, skipping quick checks and all Git mutations. Testing uses isolated repositories and local bare remotes, including rejected pushes; implementing this command does not invoke it against the owner's remote. Native/distribution qualification and hosted signing setup remain separate inputs.
+`--dry-run` performs the Git/remote checks and prints the planned version/commit/actions, skipping quick and native watcher checks and all Git mutations. Testing uses isolated repositories and local bare remotes, including rejected pushes; implementing this command does not invoke it against the owner's remote. Native/distribution qualification and hosted signing setup remain separate inputs.
 
 ## Signing
 
@@ -31,7 +31,7 @@ The identity job captures the exact commit; both build lanes check out that comm
 ## Acceptance and verification
 
 - Short/full/prerelease tags normalize consistently; invalid and shell-like tags fail before build.
-- Release initiation checks clean synchronized main and unused normalized versions, runs quick checks and rechecks before pushing exactly one annotated tag. Isolated Git tests cover dry-run, rejected state, changed state and failed push without triggering the owner's workflow.
+- Release initiation checks clean synchronized main and unused normalized versions, runs quick and native watcher checks and rechecks before pushing exactly one annotated tag. Isolated Git tests cover dry-run, rejected state, changed state and failed push without triggering the owner's workflow.
 - Both complete payloads preserve executable permissions and notices after installation, and all binaries agree on the tag version.
 - Metadata and final archive hashes bind both targets to one immutable source commit; a dirty local rehearsal is explicitly labelled.
 - Signing plan and command failures are covered without real credentials or Apple submissions.

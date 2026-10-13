@@ -165,9 +165,9 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
-    PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
-    PreviewSource, Queued, ViewState, Zoom,
+    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PagedPreview, PhaseOutcome,
+    PreviewIntent, PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult,
+    PreviewSession, PreviewSource, Queued, SourceWindow, ViewState, Zoom,
 };
 pub use proxy::{ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage};
 pub use render::gpu::{
@@ -181,10 +181,15 @@ pub use render::gpu::{
     GpuRepairOperation, GpuResident, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep,
     GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES, REPAIR_ATLAS_SIDE,
     REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX, REST_BACKDROP_BOUNDS, REST_SHARE_MAX, REST_TILE_SIDES,
-    REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH,
-    SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights,
-    gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps, plan_stream_sweeps,
-    plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
+    REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_BAND_BYTES, STREAM_TILE_SIDES,
+    SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored,
+    band_sides, gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream,
+    plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes,
+    rest_slot_bytes,
+};
+pub use render::overview::{
+    OVERVIEW_BOUNDS, OVERVIEW_CPU_BYTES, OVERVIEW_GPU_BYTES, Overview, overview_cpu_bytes,
+    overview_reduction, overview_size, reduce_overview,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -290,6 +295,100 @@ pub mod qualification {
         let mut service = crate::EditorService::open(catalog)?;
         service.import(anchor)?;
         service.publish_planes("synthetic-merge.hdr", width, height, planes)
+    }
+
+    /// [`publish_derived`] with the planes written a chunk at a time by `fill`, handed each
+    /// chunk's rectangle `[x, y, width, height]` and its three planes: a source past the camera
+    /// limits is written paged, as a panorama merge writes its result, with no frame of it held.
+    pub fn publish_derived_streamed(
+        catalog: &std::path::Path,
+        anchor: &std::path::Path,
+        width: u32,
+        height: u32,
+        fill: impl FnMut([u32; 4], &mut [f32]),
+    ) -> Result<crate::AssetId, crate::Error> {
+        let mut service = crate::EditorService::open(catalog)?;
+        service.import(anchor)?;
+        service.publish_streamed("synthetic-merge.panorama", width, height, fill)
+    }
+
+    /// The reference renderer's banded mode over a paged derived source's level 0
+    /// (`docs/design/panorama-merge.md`, "The reference on paged sources"), which the GPU's
+    /// pictures, samples and export of a paged source are qualified against: no whole frame of it
+    /// is ever held.
+    pub struct PagedReference<'a> {
+        banded: crate::render::bands::Banded<'a>,
+        snapshot: crate::SnapshotId,
+        fingerprint: String,
+    }
+
+    /// `with` handed the banded reference of `evaluation`, whose source is paged, its first pass
+    /// run under `cancel`; refused with `validation` for a source that is not paged.
+    pub fn paged_reference<T>(
+        evaluation: &crate::Evaluation,
+        cancel: &crate::Cancel,
+        with: impl FnOnce(&PagedReference<'_>) -> T,
+    ) -> Result<T, crate::Error> {
+        let paged = evaluation
+            .source()
+            .paged()
+            .ok_or_else(|| crate::Error::validation("the source is not paged"))?;
+        let banded = crate::render::bands::Banded::new(
+            paged.source().as_ref(),
+            evaluation.compiled()?,
+            evaluation.context(),
+            cancel,
+        )?;
+        Ok(with(&PagedReference {
+            banded,
+            snapshot: evaluation.entry().snapshot.id.clone(),
+            fingerprint: paged.source().id().to_string(),
+        }))
+    }
+
+    impl PagedReference<'_> {
+        /// The output stage.
+        pub fn stage(&self) -> (u32, u32) {
+            let stage = self.banded.stage();
+            (stage.width, stage.height)
+        }
+
+        /// The output's codes over `[x, y, width, height]`, RGBA row by row: the whole render's
+        /// there.
+        pub fn rgba(&self, [x0, y0, width, height]: [u32; 4]) -> Result<Vec<u8>, crate::Error> {
+            self.banded.rgba(crate::modules::Region {
+                x0,
+                y0,
+                width,
+                height,
+            })
+        }
+
+        /// The output in full-width bands from the top, each its row count and its codes, RGBA
+        /// row by row, as the reference export encodes them.
+        pub fn bands(&self) -> impl Iterator<Item = Result<(u32, Vec<u8>), crate::Error>> + '_ {
+            self.banded.bands()
+        }
+
+        /// The output reduced to fit `bounds` by the linear-light area average the reference frame
+        /// is reduced by at a view smaller than the stage, band by band: what the GPU's overview of
+        /// the source is held to. `None` when the output already fits.
+        pub fn reduced(
+            &self,
+            bounds: crate::ProxyBounds,
+        ) -> Result<Option<crate::Raster>, crate::Error> {
+            self.banded
+                .reduced(bounds, self.snapshot.clone(), &self.fingerprint)
+        }
+
+        /// The output's counts, band by band, by the core's reducer.
+        pub fn report(
+            &self,
+            cancel: &crate::Cancel,
+        ) -> Result<crate::analysis::Report, crate::Error> {
+            let (width, height) = self.stage();
+            crate::analysis::reduce_bands(width, height, self.bands(), cancel)
+        }
     }
 
     /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as

@@ -14,7 +14,8 @@ use crate::{
     },
     state::{
         corrections::{BandSlider, CorrectionNotice, CorrectionRow, CorrectionsModel, ExpandedRow},
-        remove::{RemoveModel, TierAction},
+        fill_setup::SetupLine,
+        remove::RemoveModel,
     },
 };
 use iced::{
@@ -255,6 +256,33 @@ fn remove_button<'a>(
     )
 }
 
+/// A line of AI editing's setup, as the tools panel's card draws it, with the band's buttons.
+fn setup_line(line: &SetupLine, enabled: bool) -> Element<'_, Message> {
+    super::fill_setup::line(
+        line,
+        enabled,
+        &|action| remove_message(RemoveMessage::Setup(action)),
+        &|label, accent, press| {
+            labelled_button(
+                &LabelledButtonModel {
+                    label: label.into(),
+                    icon: None,
+                    key_hint: None,
+                    tone: if accent {
+                        ButtonTone::Primary
+                    } else {
+                        ButtonTone::Control
+                    },
+                    size: ButtonSize::Regular,
+                    fill: false,
+                    enabled: press.is_some(),
+                },
+                press,
+            )
+        },
+    )
+}
+
 /// The prompt field's focus identity.
 pub(crate) const PROMPT_ID: &str = "remove-prompt";
 /// A strip cell's preview side, in points.
@@ -300,24 +328,10 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
     if model.reading {
         group = group.push(caption("Reading the fill tiers\u{2026}"));
     } else if let Some(unoffered) = &model.unoffered {
-        group = group.push(inline_notice(Tone::Neutral, unoffered.reason.clone()));
-        if let Some((label, action)) = &unoffered.action {
-            let press = match action {
-                TierAction::Download {
-                    module_id,
-                    resource,
-                } => RemoveMessage::Download {
-                    module_id: module_id.clone(),
-                    resource: resource.clone(),
-                },
-            };
-            group = group.push(remove_button(
-                label,
-                ButtonTone::Control,
-                None,
-                Some(remove_message(press)),
-            ));
-        }
+        group = group.push(match &unoffered.setup {
+            Some(line) => setup_line(line, model.setup_enabled),
+            None => inline_notice(Tone::Neutral, unoffered.reason.clone()),
+        });
     } else {
         let tiers: Vec<String> = model.tiers.iter().map(|tier| tier.tier.clone()).collect();
         group = group.push(
@@ -355,26 +369,8 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
             }
         }
         group = group.push(prompt);
-        if let Some(offer) = &model.encoder {
-            group = group.push(inline_notice(
-                Tone::Neutral,
-                if offer.installing {
-                    "Downloading the text encoder Replace needs\u{2026}"
-                } else {
-                    "Replace needs the model's text encoder"
-                },
-            ));
-            if !offer.installing {
-                group = group.push(remove_button(
-                    "Download",
-                    ButtonTone::Control,
-                    None,
-                    Some(remove_message(RemoveMessage::Download {
-                        module_id: offer.module_id.clone(),
-                        resource: offer.resource.clone(),
-                    })),
-                ));
-            }
+        if let Some(addon) = &model.addon {
+            group = group.push(setup_line(addon, model.setup_enabled));
         } else if !model.prompt.trim().is_empty() {
             group = group.push(note(
                 format!(
@@ -423,8 +419,10 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
                     .is_none()
                     .then(|| remove_message(RemoveMessage::Generate)),
             ));
+            // The add-on's line above already says what Replace needs.
             if let Some(reason) = &model.generate_reason
                 && model.selection
+                && model.addon.is_none()
             {
                 group = group.push(note(reason.clone(), Token::TextTertiary));
             }

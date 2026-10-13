@@ -60,6 +60,12 @@ use std::borrow::Cow;
 /// own figures, never from what is in use.
 pub const STREAM_TILE_SIDES: [u32; 3] = [2048, 1024, 512];
 
+/// The most bytes one band of an export stream's codes takes: a band is the output stage's whole
+/// width, four bytes a pixel, `side` rows tall, so a stream of a wide output is drawn at a side
+/// whose band fits ([`PreparedStream::band_sides`]): a 65,000-pixel-wide band is never 2,048 rows
+/// high.
+pub const STREAM_BAND_BYTES: u64 = 256 << 20;
+
 /// The one tile a read of a stage renders on the GPU ([`plan_read`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TilePlan {
@@ -218,6 +224,18 @@ impl PreparedStream {
         })
     }
 
+    /// The output stage the stream covers.
+    pub fn output(&self) -> Stage {
+        self.output
+    }
+
+    /// Those of `sides` whose band of the output stage's codes fits [`STREAM_BAND_BYTES`], longest
+    /// first as given; the shortest of them alone when none does, which a stage no wider than
+    /// 65,000 pixels never needs at 512.
+    pub fn band_sides(&self, sides: &[u32]) -> Vec<u32> {
+        band_sides(self.output.width, sides)
+    }
+
     /// Another tile grid from the same compilation and GPU plan; no source preparation or plan.
     pub fn stream(&self, side: u32) -> Result<StreamPlan, TileFallback> {
         let (output, side, anchor) = (self.output, side.max(1), self.plan.anchor());
@@ -299,6 +317,18 @@ impl PreparedStream {
     }
 }
 
+/// Those of `sides` whose band of a `width`-pixel output's codes fits [`STREAM_BAND_BYTES`]
+/// ([`PreparedStream::band_sides`]).
+pub fn band_sides(width: u32, sides: &[u32]) -> Vec<u32> {
+    let fits = |side: &u32| u64::from(width) * u64::from(*side) * 4 <= STREAM_BAND_BYTES;
+    let kept: Vec<u32> = sides.iter().copied().filter(fits).collect();
+    if kept.is_empty() {
+        sides.iter().copied().min().into_iter().collect()
+    } else {
+        kept
+    }
+}
+
 /// `evaluation`'s output stage for an export in staged sweeps ([`super::GpuSweeps`]), each sweep at
 /// the longest of [`STREAM_TILE_SIDES`] whose middle tile's slot and light links fit `budget`
 /// beside the stage textures, its tiles row by row so the last sweep's bands are its rows; or why
@@ -320,8 +350,10 @@ pub fn plan_stream_sweeps_at(
     budget: u64,
     sides: &[u32],
 ) -> Result<super::GpuStaging, TileFallback> {
-    PreparedStream::of(evaluation)?
-        .strategy(budget, sides)
+    let prepared = PreparedStream::of(evaluation)?;
+    let sides = prepared.band_sides(sides);
+    prepared
+        .strategy(budget, &sides)
         .map(|(staging, _)| staging)
 }
 
@@ -375,13 +407,25 @@ impl<'a> Planned<'a> {
                     layers: prefix(&recipe.layers, layer).map_err(refused)?.to_vec(),
                     ..recipe.clone()
                 };
-                let compiled = registry.compile(width, height, &before).map_err(refused)?;
+                let exact = evaluation.full_stage();
+                let compiled = if evaluation.is_overview() {
+                    registry.compile_sampled(
+                        width,
+                        height,
+                        exact.0,
+                        exact.1,
+                        &before,
+                        crate::mask_field::MaskSampling::ThinFeature,
+                    )
+                } else {
+                    registry.compile(width, height, &before)
+                }
+                .map_err(refused)?;
                 (Cow::Owned(compiled), Some(before))
             }
         };
-        let linear = matches!(source, PreviewSource::Raw { .. });
-        let request = GpuPlanRequest::exact(0, full).from_source();
-        let request = if linear { request.linear() } else { request };
+        let linear = source.linear();
+        let request: GpuPlanRequest = super::preview::source_request(evaluation);
         let planned = before.as_ref().unwrap_or(recipe);
         let answer = compiled
             .gpu_plan(
@@ -633,6 +677,7 @@ mod tests {
                 let request = match &source {
                     PreviewSource::Raw { .. } => request.linear(),
                     PreviewSource::Jpeg(_) => request,
+                    PreviewSource::Paged(_) => unreachable!("no paged source here"),
                 };
                 let plan = planned(gpu_plan(&ModuleRegistry::builtin(), &recipe, request));
                 let compiled = evaluation.compiled().unwrap();
@@ -740,6 +785,7 @@ mod tests {
                 let request = match &source {
                     PreviewSource::Raw { .. } => request.linear(),
                     PreviewSource::Jpeg(_) => request,
+                    PreviewSource::Paged(_) => unreachable!("no paged source here"),
                 };
                 assert_eq!(
                     read.plan,

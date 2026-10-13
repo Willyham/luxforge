@@ -147,6 +147,18 @@ struct HeldSource {
     /// Why the surface could not hold it, which every boundary of it names until a job hands its
     /// pixels again.
     refused: Option<&'static str>,
+    /// A paged derived source's level 0, whose windows a region's boundaries are cut from
+    /// ([`super::gpu_paged`]); the source held is then its resident level.
+    paged: Option<luxforge_core::PagedPreview>,
+}
+
+/// What identifies the source the surface holds for `source`: its own identity, or a paged
+/// source's resident level's, which it holds in its place.
+pub(crate) fn held_identity(source: &PreviewSource) -> ProxyIdentity {
+    source
+        .paged()
+        .and_then(luxforge_core::PagedPreview::level_identity)
+        .unwrap_or_else(|| source.identity())
 }
 
 /// Conversion belongs to each resource's identity; ready data and a refusal cannot coexist.
@@ -214,6 +226,7 @@ impl RestVariants {
                 stages: picture.stages.clone(),
                 light_sweeps: Arc::clone(&picture.light_sweeps),
                 reduction: None,
+                overview: picture.overview.clone(),
             },
             None => picture.clone(),
         };
@@ -228,6 +241,11 @@ struct HeldRest {
     conversion: Conversion<RestVariants>,
     /// This content's counts are wanted, independently from whether its picture is handed.
     wanted: bool,
+    /// The minimap overview version its tiles are swept with as well, if they carry one
+    /// ([`super::overview`]).
+    overview: Option<u64>,
+    /// The content serial whose job handed the tiles, which the overview keys them by.
+    content: Option<u64>,
 }
 
 /// One settled resource's handoff. Crop, retained Compare content and warming remain independent.
@@ -251,6 +269,7 @@ fn same_tiles(held: &luxforge_core::RestTiles, new: &luxforge_core::RestTiles) -
         light_sweeps,
         output,
         reduction: _,
+        overview: _,
         source,
         format,
     } = new;
@@ -274,6 +293,7 @@ fn rest_of(
     grids: &mut Grids,
     tiles: &luxforge_core::RestTiles,
     version: u64,
+    overview: Option<u64>,
 ) -> Result<Option<luxforge_gpu::GpuRest>, &'static str> {
     let source = source
         .filter(|source| source.identity == tiles.source)
@@ -289,20 +309,29 @@ fn rest_of(
             Ok(Some(grid)) => Some(grid),
         },
     };
-    rest_over(&source.gpu, stage.as_deref(), tiles, versions, version).map(Some)
+    rest_over(
+        &source.gpu,
+        stage.as_deref(),
+        tiles,
+        versions,
+        version,
+        overview,
+    )
+    .map(Some)
 }
 
 /// `tiles` over the source `gpu` as the surfaces draw them under `version`, through `stage`, the
 /// whole output stage's grid of their lens warp when they draw through one: each tile's plan over
 /// its window cut from the source under a version of its own from `versions`, with no clipping
-/// marks. The reason when a tile's plan is one the surface cannot run. `O(tiles × steps)`, no
-/// pixel.
+/// marks; and the minimap overview the tiles carry as `overview`'s version. The reason when a
+/// tile's plan is one the surface cannot run. `O(tiles × steps)`, no pixel.
 fn rest_over(
     gpu: &GpuSource,
     stage: Option<&CoordinateGrid>,
     tiles: &luxforge_core::RestTiles,
     versions: &mut u64,
     version: u64,
+    overview: Option<u64>,
 ) -> Result<luxforge_gpu::GpuRest, &'static str> {
     let mut plans = Vec::with_capacity(tiles.tiles.len());
     for tile in &tiles.tiles {
@@ -447,6 +476,18 @@ fn rest_over(
                 across: axis(reduction.across.clone()),
                 down: axis(reduction.down.clone()),
             }),
+        overview: tiles
+            .overview
+            .as_ref()
+            .zip(overview)
+            .map(|(reduction, version)| luxforge_gpu::RestOverview {
+                version,
+                reduction: luxforge_gpu::RestReduction {
+                    view: reduction.view,
+                    across: axis(reduction.across.clone()),
+                    down: axis(reduction.down.clone()),
+                },
+            }),
     })
 }
 
@@ -463,7 +504,17 @@ pub(crate) fn rest_now(
         .map(|warp| grid_of(&GridKey::stage(warp)))
         .transpose()?;
     let mut versions = version;
-    rest_over(gpu, stage.as_deref(), tiles, &mut versions, version).map_err(str::to_owned)
+    // An overview the tiles carry is swept under the rest's own version.
+    let overview = tiles.overview.as_ref().map(|_| version);
+    rest_over(
+        gpu,
+        stage.as_deref(),
+        tiles,
+        &mut versions,
+        version,
+        overview,
+    )
+    .map_err(str::to_owned)
 }
 
 /// A boundary derived for the release gate's harness, where its texels lie in the plan's boundary
@@ -513,10 +564,23 @@ impl AsRef<[f32]> for DevelopedPlanes {
     }
 }
 
-/// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, or a
-/// RAW development's planes through its view, each shared with the preview job, never copied.
+/// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, a
+/// RAW development's planes through its view, or a paged derived source's resident level, once
+/// read, each shared with the preview job, never copied. A window of a paged source's level 0 is
+/// held beside it ([`GpuPreview::window`]).
 pub(crate) fn gpu_source_of(version: u64, source: &PreviewSource) -> Option<GpuSource> {
     match source {
+        PreviewSource::Paged(paged) => {
+            let level = paged.level()?;
+            let (_, base, crop, orientation) = level.shared_planes();
+            GpuSource::planes(
+                version,
+                Arc::new(DevelopedPlanes(level.clone())),
+                base,
+                crop,
+                orientation,
+            )
+        }
         PreviewSource::Jpeg(image) => {
             GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
         }
@@ -601,13 +665,56 @@ fn derivation_of(request: &SourceBoundary, stage: (u32, u32)) -> Result<Derived,
 /// `O(source + proxy)` for a reduction's coverage; no pixel is read.
 fn derive_held(
     source: Option<&HeldSource>,
+    windows: &mut super::gpu_paged::PagedWindows,
     versions: &mut u64,
     grids: &mut Grids,
     request: &SourceBoundary,
 ) -> Result<Held, &'static str> {
-    let source = source
-        .filter(|source| source.identity == *request.key.source())
-        .ok_or("source-missing")?;
+    let source = source.ok_or("source-missing")?;
+    // A region of a paged source's level 0: cut from the window of it held beside the resident
+    // level, asked for here when none holds the region (`boundary-pending` until it is read).
+    if let Some(paged) = source
+        .paged
+        .as_ref()
+        .filter(|paged| paged.identity() == *request.key.source())
+    {
+        let (width, height) = paged.dimensions();
+        let wanted = request.window.unwrap_or(Region {
+            x0: 0,
+            y0: 0,
+            width,
+            height,
+        });
+        let Some(window) = windows.covering(request.key.source(), wanted) else {
+            windows.want(paged, wanted);
+            return Err("boundary-pending");
+        };
+        let grid = match GridKey::of(request) {
+            None => None,
+            Some(key) => grids
+                .of(key)
+                .map_err(|()| "boundary-pending")?
+                .map(|grid| gpu_plan::WarpGrid::new(&grid)),
+        };
+        let Derived {
+            derivation,
+            size,
+            origin,
+        } = derivation_of(request, window.stage).map_err(|_| "boundary-size")?;
+        *versions += 1;
+        let boundary = GpuBoundary::derived(&window.gpu, derivation, size.0, size.1, *versions)
+            .ok_or("boundary-size")?;
+        return Ok(Held {
+            key: request.key.clone(),
+            boundary,
+            origin,
+            grid,
+            grid_key: GridKey::of(request),
+        });
+    }
+    if source.identity != *request.key.source() {
+        return Err("source-missing");
+    }
     if let Some(reason) = source.refused {
         return Err(reason);
     }
@@ -1067,6 +1174,10 @@ pub(crate) struct GpuPreviews {
     sources: u64,
     /// A lens warp's coordinate grids, by boundary key.
     grids: Grids,
+    /// A window of a paged source's level 0 held beside its resident level at 100% and above, and
+    /// the committed stack's region view plan waiting for it to be read.
+    windows: super::gpu_paged::PagedWindows,
+    window_rest: Option<Box<(CorePlan, SourceBoundary)>>,
     stamps: Stamps,
     /// The last boundary version handed out: each held boundary is derived once.
     versions: u64,
@@ -1099,6 +1210,9 @@ pub(crate) struct GpuPreviews {
     /// The budget a test holds a region's boundary to, in place of the surface's.
     #[cfg(test)]
     pub(crate) budget: Option<u64>,
+    /// What a test reports of the surface's minimap overviews, which no test draws.
+    #[cfg(test)]
+    pub(crate) overview_report: Option<luxforge_ui::OverviewFigures>,
     /// The figure a test asks the owner to plan a region's reduced stage beside it past, in place
     /// of the core's ([`luxforge_core::REDUCED_AFTER_BYTES`]).
     #[cfg(test)]
@@ -1503,6 +1617,7 @@ impl GpuPreviews {
             "source": source,
             "rest": rest,
             "warm": self.warm.as_ref().map(GpuWarm::version),
+            "window": self.windows.summary(),
         })
     }
 
@@ -1608,6 +1723,7 @@ impl Editor {
         let resident = &mut self.gpu.resident;
         let stamps = &mut self.gpu.stamps;
         let source = self.gpu.source.as_ref();
+        let windows = &mut self.gpu.windows;
         let versions = &mut self.gpu.versions;
         let grids = &mut self.gpu.grids;
         let drag = match &mut self.gpu.drag {
@@ -1727,7 +1843,7 @@ impl Editor {
                     // The surface's own name for a plan over the budget.
                     Some("budget-exceeded")
                 } else {
-                    match derive_held(source, versions, grids, &request) {
+                    match derive_held(source, windows, versions, grids, &request) {
                         Ok(held) => {
                             derived_now = Some(derived_evidence(&held, false));
                             drag.held = Some(held);
@@ -1895,7 +2011,7 @@ impl Editor {
         if self.gpu_preview_allowed().is_err() {
             return;
         }
-        let identity = source.identity();
+        let identity = held_identity(source);
         let (surface, _) = self.surface_source();
         let asset = self
             .document
@@ -1922,6 +2038,8 @@ impl Editor {
                 }
             }
             slot => {
+                // Another photograph or development: a window of the last one goes with it.
+                self.gpu.windows.clear();
                 self.gpu.sources += 1;
                 let version = self.gpu.sources;
                 let Some(gpu) = gpu_source_of(version, source) else {
@@ -1940,6 +2058,7 @@ impl Editor {
                     gpu,
                     asset,
                     refused: None,
+                    paged: source.paged().cloned(),
                 });
                 self.event("gpu_source", || {
                     json!({"version": version, "width": stage.0, "height": stage.1,
@@ -2010,13 +2129,14 @@ impl Editor {
     /// The coordinate grids asked for since the last message, each computed off the interface
     /// thread on the runtime's blocking pool and answered as a [`GridAnswer`].
     fn gpu_compute_grids(&mut self) -> iced::Task<super::Message> {
+        let window = self.gpu_read_window();
         let started = self.gpu.grids.start();
         if started.is_empty() {
-            return iced::Task::none();
+            return window;
         }
         let count = started.len();
         self.event("gpu_grid_requested", || json!({"grids": count}));
-        iced::Task::batch(started.into_iter().map(|key| {
+        let grids = started.into_iter().map(|key| {
             super::tasks::owner_task(
                 {
                     let key = key.clone();
@@ -2028,7 +2148,68 @@ impl Editor {
                     ))
                 },
             )
-        }))
+        });
+        iced::Task::batch(grids.chain([window]))
+    }
+
+    /// The window of a paged source's level 0 asked for since the last message, read off the
+    /// interface thread on the runtime's blocking pool and answered as a
+    /// [`super::gpu_paged::WindowAnswer`]; the read in flight for another is cancelled.
+    fn gpu_read_window(&mut self) -> iced::Task<super::Message> {
+        let Some((paged, rect, cancel)) = self.gpu.windows.start() else {
+            return iced::Task::none();
+        };
+        self.event(
+            "gpu_window_requested",
+            || json!({"rect": [rect.x0, rect.y0, rect.width, rect.height]}),
+        );
+        let identity = paged.identity();
+        super::tasks::owner_task(
+            move || super::gpu_paged::read_window(&paged, rect, &cancel),
+            move |read| {
+                super::Message::Preview(super::message::preview::PreviewMessage::WindowRead(
+                    Box::new(super::gpu_paged::WindowAnswer {
+                        identity,
+                        rect,
+                        read,
+                    }),
+                ))
+            },
+        )
+    }
+
+    /// A window of a paged source's level 0 read: held beside its resident level under a new
+    /// version when it is still the one wanted, and the picture at rest and the crop stage that
+    /// waited for it derived from it.
+    pub(crate) fn gpu_window_read(&mut self, answer: super::gpu_paged::WindowAnswer) {
+        self.gpu.sources += 1;
+        let version = self.gpu.sources;
+        let rect = [
+            answer.rect.x0,
+            answer.rect.y0,
+            answer.rect.width,
+            answer.rect.height,
+        ];
+        let held = self.gpu.windows.finish(answer, version);
+        self.event("gpu_window", || match &held {
+            Ok(held) => json!({"version": version, "rect": rect, "held": held}),
+            Err(why) => json!({"rect": rect, "held": false, "why": why}),
+        });
+        if held == Ok(true) {
+            if let Some(waiting) = self.gpu.window_rest.take() {
+                let (plan, request) = *waiting;
+                self.gpu_rest_view(plan, request);
+            }
+            self.gpu_convert_rest();
+            self.gpu_convert_stage();
+        }
+    }
+
+    /// The window of a paged source's level 0 the surfaces are handed beside the source, while the
+    /// gate allows the GPU stage.
+    pub(crate) fn gpu_window_handed(&self) -> Option<&GpuSource> {
+        self.gpu_preview_allowed().ok()?;
+        self.gpu.windows.handed()
     }
 
     /// A lens warp's grid computed for a boundary key: held for every boundary of that key derived
@@ -2065,6 +2246,11 @@ impl Editor {
         // Every committed job sets the picture at rest's view plan or lets the last one go: a plan
         // of an earlier stack is never drawn at rest.
         self.gpu.at_rest = None;
+        self.gpu.window_rest = None;
+        // Below 100% no window of a paged source's level 0 is drawn from.
+        if !region {
+            self.gpu.windows.clear();
+        }
         if self.gpu_preview_allowed().is_err() {
             return;
         }
@@ -2095,6 +2281,15 @@ impl Editor {
             self.gpu_at_rest_over(&plan, boundary, origin, grid, region);
             return;
         }
+        self.gpu_rest_view(*plan, request);
+    }
+
+    /// The committed stack's view plan `plan` held at rest over the boundary `request` names: the
+    /// resident boundary, or one derived from the source the surface holds. A region of a paged
+    /// source whose window of level 0 is still being read is kept, and derived once it is
+    /// ([`Self::gpu_window_read`]).
+    fn gpu_rest_view(&mut self, plan: CorePlan, request: SourceBoundary) {
+        self.gpu.window_rest = None;
         let held = match self
             .gpu
             .resident
@@ -2112,6 +2307,7 @@ impl Editor {
                 }
                 let derived = derive_held(
                     self.gpu.source.as_ref(),
+                    &mut self.gpu.windows,
                     &mut self.gpu.versions,
                     &mut self.gpu.grids,
                     &request,
@@ -2123,6 +2319,9 @@ impl Editor {
                             "gpu_boundary",
                             || json!({"held": false, "resident": true, "why": why}),
                         );
+                        if why == "boundary-pending" && self.gpu.windows.wanting() {
+                            self.gpu.window_rest = Some(Box::new((plan, request)));
+                        }
                         return;
                     }
                 };
@@ -2298,9 +2497,17 @@ impl Editor {
             }
             return;
         };
+        let overview = tiles.overview.as_ref().and(self.overviews.sweep_version());
+        // Tiles handed without a minimap overview keep held ones swept with one: the overview
+        // is not swept again ([`super::overview`]). Tiles handed for a sweep the held ones were
+        // not swept as are drawn again: the lifecycle let the earlier sweep's overview go.
         if self.gpu.rest.as_ref().is_some_and(|held| {
-            held.tiles == tiles
-                || (region && held.tiles.reduction.is_some() && same_tiles(&held.tiles, &tiles))
+            (overview.is_none() || held.overview == overview)
+                && (held.tiles == tiles
+                    || (region
+                        && held.tiles.reduction.is_some()
+                        && same_tiles(&held.tiles, &tiles)
+                        && (tiles.overview.is_none() || held.tiles.overview == tiles.overview)))
         }) {
             return;
         }
@@ -2313,6 +2520,8 @@ impl Editor {
             },
             conversion: Conversion::Pending,
             wanted: false,
+            overview,
+            content: None,
         });
         self.gpu_convert_rest();
     }
@@ -2363,6 +2572,7 @@ impl Editor {
             &mut gpu.grids,
             &held.tiles,
             held.version,
+            None,
         ) {
             Ok(None) | Err("source-missing") => return,
             Ok(Some(converted)) => {
@@ -2428,6 +2638,7 @@ impl Editor {
             &mut gpu.grids,
             &held.tiles,
             held.versions.picture,
+            held.overview,
         ) {
             Ok(None) => return,
             Ok(Some(converted)) => {
@@ -2527,10 +2738,109 @@ impl Editor {
             && super::gpu_settle::clip_flags(&self.session.workspace).is_none()
         {
             Some(RestPresentation::Picture(&ready.picture))
-        } else if held.wanted {
+        } else if held.wanted
+            || held
+                .overview
+                .is_some_and(|version| self.overviews.awaits(version))
+        {
+            // For their counts, or for the minimap overview swept beside them where no backdrop
+            // is drawn.
             Some(RestPresentation::Counts(&ready.counts))
         } else {
             None
+        }
+    }
+
+    /// Evidence: whether a picture at rest is held, and the content serial it was handed for.
+    pub(crate) fn gpu_rest_held_content(&self) -> Option<Option<u64>> {
+        self.gpu.rest.as_ref().map(|held| held.content)
+    }
+
+    /// Evidence: whether a picture at rest is held, and the overview version it is swept as.
+    pub(crate) fn gpu_rest_held_overview(&self) -> Option<Option<u64>> {
+        self.gpu.rest.as_ref().map(|held| held.overview)
+    }
+
+    /// The content serial whose committed job just handed the picture at rest held: what the
+    /// minimap overview keys its sweep by.
+    pub(crate) fn gpu_rest_content(&mut self, content: u64) {
+        if let Some(held) = self.gpu.rest.as_mut() {
+            held.content = Some(content);
+        }
+    }
+
+    /// The key of the minimap overview the held picture at rest can be swept with: its content's,
+    /// over its output stage, while its conversion is not refused.
+    pub(crate) fn gpu_rest_overview_key(
+        &self,
+        asset: &luxforge_core::AssetId,
+    ) -> Option<super::overview::OverviewKey> {
+        let held = self.gpu.rest.as_ref()?;
+        if held.conversion.refusal().is_some() {
+            return None;
+        }
+        let content = self.overviews.content(held.content?)?.clone();
+        let output = held.tiles.output;
+        super::overview::key_of(
+            asset,
+            content,
+            super::overview::OverviewStage {
+                kind: super::overview::StageKind::Output,
+                width: output.width,
+                height: output.height,
+            },
+        )
+    }
+
+    /// Whether the picture at rest swept with overview `version` stopped with a fallback, or its
+    /// conversion was refused.
+    pub(crate) fn gpu_rest_overview_failed(&self, version: u64) -> bool {
+        let Some(held) = self
+            .gpu
+            .rest
+            .as_ref()
+            .filter(|held| held.overview == Some(version))
+        else {
+            return false;
+        };
+        if held.conversion.refusal().is_some() {
+            return true;
+        }
+        #[cfg(test)]
+        let figures: Option<luxforge_gpu::RestFigures> = None;
+        #[cfg(not(test))]
+        let figures =
+            luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_rest;
+        figures.is_some_and(|figures| {
+            (figures.version == held.versions.picture || figures.version == held.versions.counts)
+                && figures.fallback.is_some()
+        })
+    }
+
+    /// Sweep the held picture at rest again with the minimap overview `version` reduced beside it:
+    /// one bounded sweep of the same tiles, the content's counts and backdrop drawn again with it.
+    pub(crate) fn overview_sweep(&mut self, version: u64) {
+        let Some(held) = self.gpu.rest.as_ref() else {
+            self.overviews.sweep_lost(version);
+            return;
+        };
+        let content = held.content;
+        let tiles = held
+            .tiles
+            .clone()
+            .with_overview(luxforge_core::OVERVIEW_BOUNDS);
+        self.overviews.swept();
+        self.gpu_rest_from(Some(tiles), true);
+        match self.gpu.rest.as_mut() {
+            Some(held) if held.overview == Some(version) => {
+                held.content = content;
+                let picture = held.versions.picture;
+                self.event(
+                    "overview_sweep",
+                    || json!({"version": version, "rest": picture}),
+                );
+            }
+            _ => self.overviews.sweep_lost(version),
         }
     }
 

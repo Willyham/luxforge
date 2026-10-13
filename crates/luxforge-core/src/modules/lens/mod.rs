@@ -126,18 +126,75 @@ impl LensModule {
             .own_layer(LENS_EFFECT)?
             .map_or_else(|| context.insertion_index_for(LENS_EFFECT), |(i, _)| i);
         let stage = context.stage_before(index)?;
-        let identity = &optics.identity;
-        let input = resolve::ResolveInput {
-            make: identity.make.clone().unwrap_or_default(),
-            model: identity.model.clone().unwrap_or_default(),
-            lens_model: identity.lens_model.clone(),
-            focal_mm: identity.focal_mm,
-            focal_35mm: identity.focal_35mm,
-            focal_override: parameters.get("focal").and_then(Value::as_f64),
+        let input = resolve_input(
+            &optics,
             stage,
-        };
+            parameters.get("focal").and_then(Value::as_f64),
+        );
         Ok((optics, input))
     }
+}
+/// What profile resolution reads of a photo: its optical identity at the stage the lens layer
+/// reads, with a focal length supplied explicitly when there is one.
+fn resolve_input(
+    optics: &SourceOptics,
+    stage: super::Stage,
+    focal_override: Option<f64>,
+) -> resolve::ResolveInput {
+    let identity = &optics.identity;
+    resolve::ResolveInput {
+        make: identity.make.clone().unwrap_or_default(),
+        model: identity.model.clone().unwrap_or_default(),
+        lens_model: identity.lens_model.clone(),
+        focal_mm: identity.focal_mm,
+        focal_35mm: identity.focal_35mm,
+        focal_override,
+        stage,
+    }
+}
+/// The profile first-open detection selects for a photo with `optics` whose lens layer reads
+/// `stage`: its detected profile when the source is known not to correct distortion and the
+/// profile applies as it stands, else none. What [`ToolModule::first_open`] selects, and what a
+/// panorama merge bakes into its frames (`crate::merge::panorama::frames`).
+pub(crate) fn first_open_profile(
+    index: &index::LensIndex,
+    optics: &SourceOptics,
+    stage: super::Stage,
+) -> Option<String> {
+    if optics.ledger.distortion.status != luxforge_raw::OpticalStatus::KnownUnapplied {
+        return None;
+    }
+    resolve::detect(index, &resolve_input(optics, stage, None))
+        .detected
+        .filter(|detected| detected.eligible)
+        .map(|detected| detected.key)
+}
+/// Profile `key` resolved against a photo with `optics` at `stage` and frozen, as its selection
+/// with no acknowledgement freezes it.
+pub(crate) fn frozen_profile(
+    index: &index::LensIndex,
+    optics: &SourceOptics,
+    stage: super::Stage,
+    key: &str,
+) -> Result<payload::Profile, Error> {
+    let resolution = resolve::resolve(index, key, &resolve_input(optics, stage, None))?;
+    payload::Profile::from_resolution(resolution, optics, false)
+}
+/// The distortion mapping a frozen `profile` compiles to at `stage`.
+pub(crate) fn warp_step(
+    profile: &payload::Profile,
+    stage: super::Stage,
+) -> Result<WarpStep, Error> {
+    WarpStep::radial(
+        match profile.model {
+            index::DistortionModel::Poly3 => super::RadialModel::Poly3,
+            index::DistortionModel::Poly5 => super::RadialModel::Poly5,
+            index::DistortionModel::PtLens => super::RadialModel::PtLens,
+        },
+        profile.terms,
+        profile.normalization.unit_scale,
+        stage,
+    )
 }
 impl ToolModule for LensModule {
     fn descriptor(&self) -> &ModuleDescriptor {
@@ -300,14 +357,13 @@ impl ToolModule for LensModule {
             return Ok(None);
         }
         let index = index::shared()?;
-        let (_, input) = self.input(context, &Map::new())?;
-        Ok(resolve::detect(&index, &input)
-            .detected
-            .filter(|detected| detected.eligible)
-            .map(|detected| ActionInput {
+        let (optics, input) = self.input(context, &Map::new())?;
+        Ok(
+            first_open_profile(&index, &optics, input.stage).map(|key| ActionInput {
                 action_id: SELECT.into(),
-                parameters: Map::from_iter([("profile".into(), Value::String(detected.key))]),
-            }))
+                parameters: Map::from_iter([("profile".into(), Value::String(key))]),
+            }),
+        )
     }
     fn await_first_open(&self) {
         index::wait_ready();
@@ -325,16 +381,7 @@ impl ToolModule for LensModule {
                 stage.width,
                 stage.height,
             ))),
-            Some(profile) => Ok(Processing::Warp(WarpStep::radial(
-                match profile.model {
-                    index::DistortionModel::Poly3 => super::RadialModel::Poly3,
-                    index::DistortionModel::Poly5 => super::RadialModel::Poly5,
-                    index::DistortionModel::PtLens => super::RadialModel::PtLens,
-                },
-                profile.terms,
-                profile.normalization.unit_scale,
-                stage,
-            )?)),
+            Some(profile) => Ok(Processing::Warp(warp_step(&profile, stage)?)),
         }
     }
 }

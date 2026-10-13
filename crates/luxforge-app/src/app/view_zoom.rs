@@ -3,8 +3,12 @@
 use super::{Editor, message::Message, outcome::Outcome, tasks};
 use crate::{
     layout,
-    state::canvas::PhotoView,
-    view::{canvas::FIT_PADDING, canvas_view::CanvasView},
+    state::canvas::{PhotoView, ZoomView},
+    view::{
+        canvas::FIT_PADDING,
+        canvas_view::{CanvasView, overhang, scrolled_origin},
+        minimap_geometry::{self, NavStage, Viewport},
+    },
 };
 use iced::{
     Point, Rectangle, Size, Task,
@@ -57,12 +61,8 @@ fn pinched_view(
         }
         Zoom::Percent { value } => {
             let mut view = CanvasView::percent(value, scale_factor)?;
-            let origin = |content: f32, available: f32, offset: f32| {
-                (available - content).max(0.0) / 2.0
-                    - offset.clamp(0.0, (content - available).max(0.0))
-            };
-            view.origin.x = origin(stage.0 as f32 * view.scale, canvas.width, pan.0);
-            view.origin.y = origin(stage.1 as f32 * view.scale, canvas.height, pan.1);
+            view.origin.x = scrolled_origin(stage.0 as f32 * view.scale, canvas.width, pan.0);
+            view.origin.y = scrolled_origin(stage.1 as f32 * view.scale, canvas.height, pan.1);
             view
         }
     };
@@ -74,7 +74,7 @@ fn pinched_view(
     let new_scale = percent / 100.0 / scale_factor;
     let (x, y) = old.stage_point(pointer);
     let offset = |pixel: f64, at: f32, length: f64, available: f32| {
-        (pixel as f32 * new_scale - at).clamp(0.0, (length as f32 * new_scale - available).max(0.0))
+        (pixel as f32 * new_scale - at).clamp(0.0, overhang(length as f32 * new_scale, available))
     };
     let target = ViewState {
         zoom: Zoom::Percent { value: percent },
@@ -104,7 +104,7 @@ pub(crate) fn revealed_pan(
     }
     let axis = |stage: f64, available: f32, point: f64, pan: f32| {
         let content = stage as f32 * scale;
-        let range = (content - available).max(0.0);
+        let range = overhang(content, available);
         if range <= 0.0 {
             return pan;
         }
@@ -124,6 +124,72 @@ pub(crate) fn revealed_pan(
 }
 
 impl Editor {
+    /// The main view the minimap shows, when it shows one: a Develop photograph at a stored
+    /// percentage of at least 200%, over the stage the canvas draws now — a crop draft's box or the
+    /// photograph's output stage — in the canvas region the layout leaves, at the display scale
+    /// and the scrollable's local offset. `None` at Fit, below the threshold, in Select or a
+    /// gallery page, with no photograph drawn, or for degenerate geometry. A pan it answers is
+    /// applied as any other, through [`Editor::reveal_pan`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn minimap_viewport(&self) -> Option<Viewport> {
+        self.minimap_viewport_in(&self.surfaces())
+    }
+
+    /// [`Self::minimap_viewport`] over the stage `surfaces` draws.
+    pub(crate) fn minimap_viewport_in(
+        &self,
+        surfaces: &crate::view::Surfaces<'_>,
+    ) -> Option<Viewport> {
+        if self.document.state.is_none() || self.gallery_page().is_some() || self.select_shown() {
+            return None;
+        }
+        let Zoom::Percent { value } = self.session.preview.view.zoom else {
+            return None;
+        };
+        let percent = minimap_geometry::eligible(ZoomView::Percent(value))?;
+        let stage = NavStage::drawn(&self.workspace.canvas, surfaces)?;
+        let [left, top, right, bottom] = layout::canvas_logical(
+            self.view_state.window,
+            self.session.workspace.state_panel,
+            self.session.workspace.tools_panel,
+            self.filmstrip_shown(),
+        );
+        Viewport::new(
+            stage,
+            percent,
+            self.view_state.scale_factor,
+            Rectangle::new(Point::new(left, top), Size::new(right - left, bottom - top)),
+            self.view_state.local_pan,
+        )
+    }
+
+    /// A `view.set` this client's session answered outside the desktop's own input — a script's
+    /// request on the same session — is this client's view all the same: the answer is adopted and
+    /// the scrollable follows its pan, as [`Self::reveal_pan`] does. An answer older than the
+    /// session held is not adopted and moves nothing.
+    pub(crate) fn follow_view(&mut self, session: ClientSession) -> Task<Message> {
+        let revision = session.revision;
+        let pan = (session.preview.view.pan_x, session.preview.view.pan_y);
+        self.adopt(session);
+        if self.session.revision != revision {
+            return Task::none();
+        }
+        self.view_state.local_pan = pan;
+        self.view_state.pan.drop_pending();
+        if self.view_state.pan.in_flight() {
+            self.view_state.pan.offer(pan);
+        }
+        self.note_view_motion();
+        self.event("view_followed", || json!({"pan": [pan.0, pan.1]}));
+        operation::scroll_to(
+            super::crop::SURFACE_ID,
+            AbsoluteOffset {
+                x: Some(pan.0),
+                y: Some(pan.1),
+            },
+        )
+    }
+
     /// Scroll the photograph to `pan` through `view.set`, as a pinch does: the session is told in
     /// this update and the scrollable follows.
     pub(super) fn reveal_pan(&mut self, pan: (f32, f32)) -> Task<Message> {
@@ -163,6 +229,14 @@ impl Editor {
             || self.view_state.picker_open
             || matches!(self.workspace.canvas.photo, PhotoView::Empty(_))
         {
+            return Task::none();
+        }
+        // A pinch over the minimap is the minimap's: it never zooms the photograph under it.
+        if self.minimap_holds(Point::new(input.x as f32, input.y as f32)) {
+            self.event(
+                "view_pinch_held",
+                || json!({"by":"minimap","pointer":[input.x,input.y]}),
+            );
             return Task::none();
         }
         let stage = self
@@ -509,6 +583,199 @@ mod tests {
             .unwrap()
             .0
         );
+        finish(editor, catalog);
+    }
+
+    /// A photograph of `dimensions` on screen: its frame presented as the content shown.
+    fn drawn_picture(editor: &mut Editor, dimensions: (u32, u32)) {
+        let (_, raster) = crate::app::testing::analysed(editor, 1, &[[80, 90, 100, 255]], 1, 1);
+        editor.presentation.presenter.show_reduced(&raster, 7);
+        editor.presentation.presented_content = 7;
+        editor.presentation.dimensions = Some(dimensions);
+        editor.rederive();
+    }
+
+    /// Set this client's zoom through `view.set`, as the title bar's field and an agent do.
+    fn zoom(editor: &mut Editor, zoom: serde_json::Value) {
+        let (value, _) = tasks::call(
+            &editor.owner,
+            editor.client,
+            "view.set",
+            json!({ "zoom": zoom }),
+        )
+        .unwrap();
+        editor.adopt(serde_json::from_value(value).unwrap());
+    }
+
+    fn assert_near(actual: [f64; 4], expected: [f64; 4]) {
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(a, e)| (a - e).abs() < 0.001),
+            "{actual:?} is not {expected:?}"
+        );
+    }
+
+    /// The minimap's view is the editor's own: the stored percentage decides, and the canvas the
+    /// layout leaves beside both open panels, the 2× display and the scrollable's local offset
+    /// place it. Expected values are worked from the layout constants by hand.
+    #[test]
+    fn the_minimap_views_the_canvas_the_layout_leaves_at_the_stored_zoom() {
+        use crate::app::testing::{boot, finish, real_photo};
+        let (empty, catalog) = boot();
+        assert!(empty.minimap_viewport().is_none(), "no photograph");
+        finish(empty, catalog.clone());
+        let (mut editor, _, _) = real_photo(&catalog);
+        drawn_picture(&mut editor, (6000, 4000));
+        editor.view_state.window = (1440.0, 900.0);
+        editor.view_state.set_system_scale_factor(2.0);
+        assert!(editor.session.workspace.state_panel && editor.session.workspace.tools_panel);
+        assert!(!editor.filmstrip_shown());
+        assert!(editor.minimap_viewport().is_none(), "Fit");
+        zoom(&mut editor, json!({"mode": "percent", "value": 199.9}));
+        assert!(editor.minimap_viewport().is_none(), "199.9%");
+        zoom(&mut editor, json!({"mode": "percent", "value": 200.0}));
+        assert!(editor.minimap_viewport().is_some(), "200%");
+        zoom(&mut editor, json!({"mode": "percent", "value": 400.0}));
+        editor.view_state.local_pan = (1000.0, 500.0);
+        let view = editor.minimap_viewport().expect("400%");
+        assert_eq!(view.stage(), NavStage::photo((6000, 4000)));
+        assert_eq!(view.scale(), 2.0);
+        assert_eq!(view.pan(), (1000.0, 500.0));
+        // The canvas is 241..1139 by 44..874: 898 × 830 logical. Two logical pixels per stage
+        // pixel, moved by 1000 × 500, shows columns 500..949 and rows 250..665.
+        assert_eq!(view.pan_range(), (12000.0 - 898.0, 8000.0 - 830.0));
+        assert_near(view.visible().unwrap(), [500.0, 250.0, 949.0, 665.0]);
+        // Hiding the tools panel widens the canvas to 241..1440: 1199 logical.
+        editor.session.workspace.tools_panel = false;
+        assert_near(
+            editor.minimap_viewport().unwrap().visible().unwrap(),
+            [500.0, 250.0, 1099.5, 665.0],
+        );
+        finish(editor, catalog);
+    }
+
+    /// At an interface size of 125% the layout is 1152 × 720 logical pixels of 2.5 physical
+    /// pixels each, and the rectangle follows the photograph the surface snaps to that grid.
+    #[test]
+    fn the_minimap_view_follows_the_interface_scale() {
+        use crate::app::testing::{boot, finish, real_photo};
+        let (empty, catalog) = boot();
+        finish(empty, catalog.clone());
+        let (mut editor, _, _) = real_photo(&catalog);
+        drawn_picture(&mut editor, (6000, 4000));
+        editor.view_state.window = (1440.0, 900.0);
+        editor.view_state.set_system_scale_factor(2.0);
+        editor.view_state.set_interface_size(125);
+        zoom(&mut editor, json!({"mode": "percent", "value": 200.0}));
+        editor.view_state.local_pan = (1000.3, 400.6);
+        let view = editor.minimap_viewport().expect("200%");
+        assert_eq!(view.scale(), 0.8);
+        // The canvas is 241..851 by 44..694 logical: 602.5..2127.5 by 110..1735 physical,
+        // clipped at 603..2128. The photograph, moved by 1000 and 401 logical pixels, is drawn
+        // from −1897.5 and −892.5 physical, snapped half to even to −1898 and −892, at two
+        // physical pixels per stage pixel.
+        assert_near(view.visible().unwrap(), [1250.5, 501.0, 2013.0, 1313.5]);
+        finish(editor, catalog);
+    }
+
+    /// Navigating in the minimap is a pan through the same `view.set` an API client sends: the
+    /// same client's equivalent request leaves the identical session and visible region, another
+    /// client's view is untouched either way, and no edit, history entry or preview content
+    /// changes.
+    #[test]
+    fn minimap_navigation_is_the_same_view_set_as_an_api_client_and_edits_nothing() {
+        use crate::app::testing::{boot, finish, real_photo};
+        use crate::view::minimap_geometry::Overview;
+        let (empty, catalog) = boot();
+        finish(empty, catalog.clone());
+        let (mut editor, asset, agent) = real_photo(&catalog);
+        drawn_picture(&mut editor, (6000, 4000));
+        editor.view_state.window = (1440.0, 900.0);
+        editor.view_state.set_system_scale_factor(2.0);
+        zoom(&mut editor, json!({"mode": "percent", "value": 400.0}));
+        let state = |editor: &Editor| {
+            tasks::call(
+                &editor.owner,
+                agent,
+                "asset.state",
+                json!({"asset_id": asset}),
+            )
+            .unwrap()
+            .0
+        };
+        let before = state(&editor);
+        let generation = editor.session.preview.generation;
+        let agent_view = |editor: &Editor| {
+            let (value, _) = tasks::call(&editor.owner, agent, "session.state", json!({})).unwrap();
+            serde_json::from_value::<ClientSession>(value)
+                .unwrap()
+                .preview
+                .view
+        };
+        assert_eq!(agent_view(&editor), ViewState::default());
+
+        // A click at the card's centre is stage (3000, 2000): 6000 × 4000 logical less half the
+        // 898 × 830 canvas.
+        let view = editor.minimap_viewport().unwrap();
+        let overview = Overview::place(view.stage().size, Size::new(180.0, 120.0)).unwrap();
+        let pan = overview
+            .press(&view, Point::new(90.0, 60.0))
+            .unwrap()
+            .pan
+            .unwrap();
+        assert_eq!(pan, (5551.0, 3585.0));
+        let _ = editor.reveal_pan(pan);
+        let gui = editor.session.preview.view.clone();
+        assert_eq!(
+            gui,
+            ViewState {
+                zoom: Zoom::Percent { value: 400.0 },
+                pan_x: 5551.0,
+                pan_y: 3585.0,
+            }
+        );
+        assert_eq!(editor.view_state.local_pan, pan);
+        let shown = editor.minimap_viewport().unwrap().visible().unwrap();
+        assert_near(shown, [2775.5, 1792.5, 3224.5, 2207.5]);
+
+        // The same client asking for the same pan through the API: the identical session.
+        let (value, _) = tasks::call(
+            &editor.owner,
+            editor.client,
+            "view.set",
+            json!({"pan_x": 5551.0, "pan_y": 3585.0}),
+        )
+        .unwrap();
+        let api: ClientSession = serde_json::from_value(value).unwrap();
+        assert_eq!(api.preview.view, gui);
+        assert_eq!(api.preview, editor.session.preview);
+        editor.adopt(api);
+        assert_eq!(editor.minimap_viewport().unwrap().visible(), Some(shown));
+
+        // Clients are isolated in both directions.
+        assert_eq!(agent_view(&editor), ViewState::default());
+        tasks::call(
+            &editor.owner,
+            agent,
+            "view.set",
+            json!({"pan_x": 1.0, "pan_y": 2.0}),
+        )
+        .unwrap();
+        let (own, _) =
+            tasks::call(&editor.owner, editor.client, "session.state", json!({})).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ClientSession>(own)
+                .unwrap()
+                .preview
+                .view,
+            gui
+        );
+
+        // Nothing was edited, recorded or rendered anew.
+        assert_eq!(editor.session.preview.generation, generation);
+        assert_eq!(state(&editor), before);
         finish(editor, catalog);
     }
 

@@ -120,12 +120,12 @@ fn release(
     );
     if dry_run {
         println!(
-            "Dry run: Git/remote checks passed. Would run quick checks, create an annotated tag and push only {} to origin. No tag created or pushed; quick checks did not run.",
+            "Dry run: Git/remote checks passed. Would run quick and native watcher checks, create an annotated tag and push only {} to origin. No tag created or pushed; quick and native watcher checks did not run.",
             tag.tag
         );
         return Ok(());
     }
-    println!("Running quick checks before creating the release tag...");
+    println!("Running quick and native watcher checks before creating the release tag...");
     checks()?;
     ensure(
         preflight(root, tag)? == state,
@@ -182,7 +182,10 @@ pub fn run(root: &Path, args: &mut Args) -> Result {
     )?;
     let tag = ReleaseTag::parse(args.0.remove(0).to_str().ok_or("Invalid tag encoding")?)?;
     args.done()?;
-    release(root, &tag, dry_run, &mut || check::check(root, true))
+    release(root, &tag, dry_run, &mut || {
+        check::check(root, true)?;
+        check::native_watchers(root)
+    })
 }
 
 #[cfg(test)]

@@ -63,6 +63,8 @@ mod experiment_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
+#[cfg(test)]
+mod paged_export_tests;
 // The catalog's owner-side homes, one file each: the index, preview and library lanes and
 // browse views ([`catalog`]).
 pub(super) mod candidates;
@@ -94,6 +96,8 @@ pub(crate) mod usage_events;
 mod usage_events_tests;
 #[cfg(test)]
 mod usage_tests;
+#[cfg(test)]
+mod view_tests;
 pub(super) mod views;
 
 /// The catalog owner's thread's name, which reads no pixel (performance rule 5): a read reaching
@@ -560,6 +564,9 @@ impl SourceTaskKind {
             Self::Prepare(SourceWork::Artifacts(asset_id)) => {
                 (JobKind::Artifacts, Some(asset_id.clone()))
             }
+            Self::Prepare(SourceWork::Level { asset_id, .. }) => {
+                (JobKind::Prepare, Some(asset_id.clone()))
+            }
             Self::Collect(_) => (JobKind::Collect, None),
             Self::Accept(work) => (JobKind::Artifacts, Some(work.asset_id().clone())),
         }
@@ -691,6 +698,17 @@ impl SourceQueue {
                     path: asset_id.as_str().into(),
                     signature: None,
                     expected_fingerprint: None,
+                    gains_bits: None,
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
+            // One paged source's resident level is one read, whoever asks.
+            SourceWork::Level { asset_id, source } => (
+                SourceFlightKey {
+                    path: asset_id.as_str().into(),
+                    signature: None,
+                    expected_fingerprint: Some(format!("{}/resident-level", source.id())),
                     gains_bits: None,
                     artifacts: flight_artifacts(&artifacts),
                 },
@@ -900,6 +918,13 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
             asset_id: Some(request.asset_id.clone()),
             job_id: Some(task.id.to_string()),
         },
+        SourceTaskKind::Prepare(SourceWork::Level { asset_id, .. }) => ActivitySpec {
+            kind: "source.prepare",
+            label: "Reading saved source",
+            detail: None,
+            asset_id: Some(asset_id.clone()),
+            job_id: Some(task.id.to_string()),
+        },
         SourceTaskKind::Prepare(SourceWork::Artifacts(asset_id)) => ActivitySpec {
             kind: "artifacts.read",
             label: "Verifying artifacts",
@@ -925,8 +950,9 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
 }
 
 /// One source task's work on the worker: the service's own preparation ([`SourceWork::run`]), or a
-/// collection's removal of files. A developed RAW's linear planes hold a lease on the worker's
-/// memory gate until they are released.
+/// collection's removal of files. A developed RAW's linear planes, and a paged derived source's
+/// overview, chunk cache and resident level, hold a lease on the worker's memory gate until they
+/// are released.
 fn run_source_task(
     kind: SourceTaskKind,
     reads: &[ArtifactRead],
@@ -938,6 +964,9 @@ fn run_source_task(
             let mut prepared = work.run(reads, cancel)?;
             if let Some(linear) = prepared.linear_mut() {
                 linear.hold(gate.lease());
+            }
+            if let Some(paged) = prepared.paged_mut() {
+                paged.hold(gate);
             }
             Ok(SourceResult::Prepared(Box::new(prepared)))
         }
@@ -3152,6 +3181,7 @@ host_params! {
         window: Option<Option<Value>> = json("{width, height, x, y} in the system's points: width and height within 320..=16384 and a finite position; null resets it to the default frame"),
         export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
         hdr_merge: Option<Option<Value>> = json("{alignment, deghost}, each auto or off: the remembered settings of the last HDR merge, which the desktop's option-click merges with; null resets it to the defaults"),
+        panorama_merge: Option<Option<Value>> = json("{projection, boundary_warp}: projection auto, perspective, cylindrical or spherical and boundary_warp within 0..=100, the remembered settings of the last panorama merge, which the desktop's option-click merges with; null resets it to the defaults"),
         theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
         update_checks: Option<Option<bool>> = boolean().notes("check for updates at launch and then daily; null resets it to on"),
         update_install_automatically: Option<Option<bool>> = boolean().notes("download an update in the background and install it at the next ordinary quit, only while update_checks is on and never for an update that changes the catalog format; null resets it to off"),
@@ -3195,6 +3225,7 @@ pub(super) fn preferences_set(
         window: decoded("window", params.window)?,
         export_folder: params.export_folder,
         hdr_merge: decoded("hdr_merge", params.hdr_merge)?,
+        panorama_merge: decoded("panorama_merge", params.panorama_merge)?,
         theme: match params.theme {
             // Luxforge Dark is the default, so choosing it removes the stored choice.
             Some(Some(id)) if id == crate::theme::LUXFORGE_DARK_ID => Some(None),

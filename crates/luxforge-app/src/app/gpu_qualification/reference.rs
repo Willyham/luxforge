@@ -48,12 +48,24 @@
 //! pixel count (owner, 2026-10-05), the summed bin difference reported beside them. A stack whose
 //! tiles the GPU cannot draw is a gap naming why.
 //!
+//! **The minimap's overview** is the GPU's ([`overview_kind`]): the stack's picture at rest planned
+//! at 200%, the minimap's threshold, over the visible region of [`super::LARGEST_WINDOW`], its
+//! tiles at full resolution carrying the overview's reduction beside the backdrop's
+//! ([`luxforge_core::RestTiles::with_overview`]), drawn by the photo surface's own drawing and the
+//! overview read back from its store; against the reference frame reduced to the overview's size by
+//! the independent linear-light reduction, by the display limit of the stack's class over every
+//! pixel, the core's own reduction of the reference frame — the overview where the reference draws
+//! the stage — reported beside it. A stack whose tiles or overview the GPU cannot draw is a gap
+//! naming why.
+//!
 //! It writes `cells.json` to `LUXFORGE_GPU_CORPUS_OUTPUT`, rewritten after every stack, and judges
 //! nothing: `cargo xtask gpu-qualification` holds every cell to its limit and writes the report. A
 //! cell's frames are written as PNGs under `frames/` only when a frame the gate judges passes a
 //! limit — the picture at rest, and the motion frame where the owner gates it
 //! (`LUXFORGE_GPU_QUALIFICATION_MOTION=rest` or `reference`) — or for every cell with
 //! `LUXFORGE_GPU_QUALIFICATION_FRAMES=all`.
+mod paged;
+
 use super::{CorpusSource, EMPTY_MASK, Opened, corpus_sources, fit_bounds, headless, write_png};
 use crate::app::gpu_tiles::GpuTiles;
 use crate::app::{
@@ -61,9 +73,10 @@ use crate::app::{
     gpu_preview::{derived_now, gpu_source_of, rest_now},
 };
 use luxforge_core::{
-    Cancel, ClientId, Evaluation, GpuAnswer, GpuPreview, GpuView, PreviewRequest, ProxyBounds,
-    Raster, Region, RenderOptions, RendererReason,
+    Cancel, ClientId, Evaluation, GpuAnswer, GpuPreview, GpuView, OVERVIEW_BOUNDS, PreviewRequest,
+    ProxyBounds, Raster, Region, RenderOptions, RendererReason,
     analysis::Report,
+    overview_size,
     tiles::{Answered as Drawn, ReadStage, ReadValues, TileCall, TileFallback, TileService},
 };
 use luxforge_gpu::{
@@ -573,9 +586,25 @@ fn measure(
         PreviewRequest::new(opened.client, opened.asset.clone()),
     )?;
     let evaluation = job.evaluation;
+    // A paged source has no whole frame: its reference is the banded one.
+    if evaluation.source().paged().is_some() {
+        return paged::measure(
+            (qualifier, exporters),
+            surface,
+            settings,
+            class,
+            &opened,
+            &evaluation,
+            cell,
+            record,
+        );
+    }
     let exact = luxforge_core::render(
         evaluation.registry(),
-        evaluation.source(),
+        evaluation
+            .source()
+            .whole()
+            .map_err(|error| error.to_string())?,
         evaluation.recipe(),
         RenderOptions::exact(&Cancel::never()),
         evaluation.context(),
@@ -592,7 +621,7 @@ fn measure(
         || settings
             .kinds
             .iter()
-            .any(|kind| matches!(kind, Kind::Histogram | Kind::Sample)))
+            .any(|kind| matches!(kind, Kind::Histogram | Kind::Sample | Kind::Overview)))
     .then(|| gpu_source_of(1, evaluation.source()))
     .map(|gpu| gpu.ok_or("the photograph's source cannot be held on the GPU"))
     .transpose()?;
@@ -667,6 +696,28 @@ fn measure(
                 };
                 let measured = export_kind(&reference, drawn, class)?;
                 eprintln!("{cell}: export: {measured}");
+                measured
+            }
+            Kind::Overview => {
+                let drawn = match gpu.as_ref() {
+                    Some(gpu) => gpu_overview(surface, &evaluation, gpu, stage)?,
+                    None => Err("no source held on the GPU".to_owned()),
+                };
+                let (mut measured, expected) =
+                    overview_kind(&reference, &drawn, OVERVIEW_BOUNDS, class)?;
+                // Its frames where it passes a limit, or for every cell on request.
+                if let (Ok(drawn), Some(expected)) = (&drawn, expected)
+                    && (settings.all_frames || measured["passed"] == false)
+                {
+                    let mut frames = Vec::new();
+                    for (suffix, codes) in [("gpu", &drawn.codes), ("reference", &expected)] {
+                        let file = format!("{cell}--overview-{suffix}");
+                        write_png(&settings.output.join("frames"), &file, drawn.size, codes)?;
+                        frames.push(format!("frames/{file}.png"));
+                    }
+                    measured["frames"] = json!(frames);
+                }
+                eprintln!("{cell}: overview: {measured}");
                 measured
             }
         };
@@ -1741,6 +1792,153 @@ fn export_kind(reference: &Raster, exported: Exported, class: Class) -> Result<V
     }))
 }
 
+/// The zoom the overview kind plans the picture at rest at: the minimap's threshold, the least
+/// zoom whose picture at rest carries the overview.
+const OVERVIEW_ZOOM: f32 = 200.0;
+
+/// The GPU's minimap overview of a stack: its codes, three bytes a pixel, its size, and what drew
+/// it, the tiles drawn among them.
+struct DrawnOverview {
+    codes: Vec<u8>,
+    size: (u32, u32),
+    renderer: String,
+    tiles: usize,
+}
+
+/// The GPU's overview of `evaluation`'s stack, a `stage` frame, as the editor draws it at the
+/// minimap's threshold: the picture at rest planned at 200% over the visible region of
+/// [`super::LARGEST_WINDOW`], its tiles at full resolution each over its window cut from the
+/// source `gpu`, carrying the overview's reduction beside the backdrop's, drawn by `surface` and the
+/// overview read back from its store. Why not, where the editor would draw no overview on the GPU:
+/// tiles the GPU cannot draw, a picture at rest that stops, an overview refused.
+fn gpu_overview(
+    surface: &mut HeadlessSurface,
+    evaluation: &Evaluation,
+    gpu: &GpuSource,
+    stage: (u32, u32),
+) -> Result<Result<DrawnOverview, String>, String> {
+    let Some(rect) = super::largest_view(stage, OVERVIEW_ZOOM) else {
+        return Ok(Err("no visible region at 200%".to_owned()));
+    };
+    let rest = luxforge_core::qualification::rest_plan(
+        evaluation,
+        GpuView::Region {
+            rect,
+            magnification: f64::from(OVERVIEW_ZOOM) / 100.0,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let tiles = match rest.tiles {
+        Some(Ok(tiles)) => tiles.with_overview(OVERVIEW_BOUNDS),
+        Some(Err(reason)) => {
+            return Ok(Err(format!(
+                "{}: the reference draws this stack at rest: {reason}",
+                reason.code()
+            )));
+        }
+        None => return Ok(Err("the picture at rest planned no tiles".to_owned())),
+    };
+    let handed = rest_now(gpu, &tiles, 1)?;
+    let drawn = match surface.rest(gpu, &handed) {
+        Ok(drawn) => drawn,
+        Err(fallback) => {
+            return Ok(Err(format!("the picture at rest in tiles: {fallback:?}")));
+        }
+    };
+    let renderer = match (drawn.figures.sweeps, tiles.light_sweeps.len()) {
+        (0, 0) => "the picture at rest in tiles".to_owned(),
+        (0, light_sweeps) => {
+            format!("the picture at rest in tiles after {light_sweeps} light sweep(s)")
+        }
+        (sweeps, _) => format!("the picture at rest in {sweeps} staged sweeps"),
+    };
+    Ok(match drawn.overview {
+        Some(Ok(overview)) => Ok(DrawnOverview {
+            codes: rgb_codes(&overview.codes),
+            size: overview.size,
+            renderer,
+            tiles: drawn.figures.tiles as usize,
+        }),
+        Some(Err(fallback)) => Err(format!("the overview was refused: {fallback:?}")),
+        None => Err("the picture at rest drew no overview".to_owned()),
+    })
+}
+
+/// The minimap's overview of a stack against the reference, the overview the editor draws within
+/// `bounds` (the core's [`OVERVIEW_BOUNDS`] in the gate): the GPU's, `drawn`, against `reference`
+/// reduced to the overview's size by the independent linear-light reduction, by `class`'s display
+/// limit over every pixel; and the core's own reduction of the reference frame, the overview the
+/// desktop shows where the reference draws the stage, reported beside it. A gap where the GPU drew
+/// none, naming why. Answers the reduced reference too, for the frames of a cell past its limit.
+fn overview_kind(
+    reference: &Raster,
+    drawn: &Result<DrawnOverview, String>,
+    bounds: ProxyBounds,
+    class: Class,
+) -> Result<(Value, Option<Vec<u8>>), String> {
+    let stage = (reference.width, reference.height);
+    let size = overview_size(stage, bounds).ok_or("an empty stage")?;
+    let drawn = match drawn {
+        Ok(drawn) => drawn,
+        Err(reason) => {
+            return Ok((
+                json!({"status": "gap", "reason": reason, "reference": {"stage": [stage.0, stage.1]}}),
+                None,
+            ));
+        }
+    };
+    if drawn.size != size {
+        return Err(format!(
+            "the GPU's overview is {}x{}, a {}x{} stage's is {}x{}",
+            drawn.size.0, drawn.size.1, stage.0, stage.1, size.0, size.1
+        ));
+    }
+    let expected = reduce(&reference.rgba, 4, stage, size)?;
+    if drawn.codes.len() != expected.len() {
+        return Err(format!(
+            "the GPU's overview holds {} codes where its {}x{} size holds {}",
+            drawn.codes.len(),
+            size.0,
+            size.1,
+            expected.len()
+        ));
+    }
+    let against = compare(&drawn.codes, &expected, size)?;
+    let reference_overview =
+        match luxforge_core::reduce_overview(&reference.rgba, stage, size, &Cancel::never()) {
+            Ok(overview) => {
+                let codes: Vec<u8> = rgb_of(&overview.rgba).collect();
+                let largest = codes
+                    .iter()
+                    .zip(&expected)
+                    .map(|(core, independent)| core.abs_diff(*independent))
+                    .max()
+                    .unwrap_or(0);
+                json!({
+                    "status": "measured",
+                    "largest_code_difference": largest,
+                    "statistics": statistics(&compare(&codes, &expected, size)?),
+                })
+            }
+            Err(error) => json!({"status": "refused", "reason": error.to_string()}),
+        };
+    Ok((
+        json!({
+            "status": "measured",
+            "renderer": drawn.renderer,
+            "tiles": drawn.tiles,
+            "zoom": OVERVIEW_ZOOM,
+            "stage": [stage.0, stage.1],
+            "size": [size.0, size.1],
+            "against": "the reference frame reduced to the overview's size",
+            "statistics": statistics(&against),
+            "passed": preview_error::verdict(&against, class).passed(),
+            "reference_overview": reference_overview,
+        }),
+        Some(expected),
+    ))
+}
+
 /// The GPU qualification against the reference renderer, which `cargo xtask gpu-qualification`
 /// runs in release with the environment [`against_reference`] reads.
 #[test]
@@ -1937,7 +2135,7 @@ fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
     let context = luxforge_core::RenderContext::new();
     let frame = luxforge_core::render(
         &registry,
-        &source,
+        source.whole().expect("a test's source is never paged"),
         &recipe,
         RenderOptions::exact(&Cancel::never()),
         &context,
@@ -2036,4 +2234,138 @@ fn the_reference_at_a_view_is_reduced_or_cut_in_bands_as_one_pass_would_be() {
         )
         .unwrap()
     );
+}
+
+/// The overview kind holds the GPU's overview to the reference frame reduced to the overview's size
+/// by the independent reduction, by the display limit of the stack's class; the core's reduction of
+/// the reference frame is reported beside it; an overview the GPU did not draw is a gap naming why,
+/// and one of another size or length is an error, never a pass.
+#[test]
+fn the_overview_comparison_judges_the_gpus_overview_against_the_reduced_reference() {
+    let reference = raster(64, 48, |x, y| {
+        [(x * 4) as u8, (y * 5) as u8, ((x + y) * 2) as u8]
+    });
+    // Bounds of 16 × 16 fit the 64 × 48 stage to 16 × 12, as 256 × 256 fit a photograph.
+    let bounds = ProxyBounds {
+        width: 16,
+        height: 16,
+    };
+    let expected = tolerance::reduce_srgb8(&reference.rgba, 4, (64, 48), (16, 12)).unwrap();
+    let drawn = |codes: Vec<u8>, size: (u32, u32)| {
+        Ok(DrawnOverview {
+            codes,
+            size,
+            renderer: "the picture at rest in tiles".to_owned(),
+            tiles: 4,
+        })
+    };
+    let (judged, reduced) = overview_kind(
+        &reference,
+        &drawn(expected.clone(), (16, 12)),
+        bounds,
+        Class::Pointwise,
+    )
+    .unwrap();
+    assert_eq!(reduced.as_deref(), Some(expected.as_slice()));
+    assert_eq!(
+        (&judged["status"], &judged["passed"], &judged["size"]),
+        (&json!("measured"), &json!(true), &json!([16, 12])),
+        "{judged}"
+    );
+    assert_eq!(judged["statistics"]["mean"], 0.0);
+    assert_eq!(judged["reference_overview"]["status"], "measured");
+    assert!(
+        judged["reference_overview"]["largest_code_difference"]
+            .as_u64()
+            .is_some_and(|codes| codes <= 1),
+        "{judged}"
+    );
+
+    // Far from the reference: past the limit, whatever the class.
+    let far: Vec<u8> = expected
+        .chunks_exact(3)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2].saturating_add(60)])
+        .collect();
+    let (judged, _) =
+        overview_kind(&reference, &drawn(far, (16, 12)), bounds, Class::Spatial).unwrap();
+    assert_eq!(judged["passed"], false, "{judged}");
+
+    let (gap, reduced) = overview_kind(
+        &reference,
+        &Err("the overview was refused: BudgetExceeded".to_owned()),
+        bounds,
+        Class::Pointwise,
+    )
+    .unwrap();
+    assert_eq!(
+        (&gap["status"], &gap["reason"], reduced),
+        (
+            &json!("gap"),
+            &json!("the overview was refused: BudgetExceeded"),
+            None
+        )
+    );
+    assert!(
+        overview_kind(
+            &reference,
+            &drawn(expected.clone(), (16, 16)),
+            bounds,
+            Class::Pointwise
+        )
+        .is_err()
+    );
+    assert!(
+        overview_kind(
+            &reference,
+            &drawn(expected[3..].to_vec(), (16, 12)),
+            bounds,
+            Class::Pointwise
+        )
+        .is_err()
+    );
+}
+
+/// The overview kind's GPU side, as the gate runs it on each stack: a stack's picture at rest
+/// planned at 200% carries the overview, drawn on this host's adapter and read back at the
+/// overview's size, within the display limit of the reference frame reduced to it. A host with no
+/// adapter prints that it was skipped and asserts nothing.
+#[test]
+#[slow]
+fn the_overview_kind_draws_a_stacks_overview_at_200_within_the_display_tolerance() {
+    let test = "the_overview_kind_draws_a_stacks_overview_at_200_within_the_display_tolerance";
+    let Some(qualifier) = headless(test) else {
+        return;
+    };
+    let photograph = crate::app::gpu_window_tests::source(luxforge_core::BoundaryFormat::Half);
+    let recipe = luxforge_core::Recipe {
+        layers: vec![luxforge_core::Layer::new(
+            luxforge_core::BASIC_EFFECT,
+            json!({"exposure": 0.4, "contrast": 20.0}),
+        )],
+        ..luxforge_core::Recipe::default()
+    };
+    let evaluation = crate::app::gpu_rest_tests::committed(photograph.clone(), recipe.clone());
+    let reference = luxforge_core::render(
+        &crate::app::gpu_tiles_tests::registry(),
+        photograph.whole().expect("a test's source is never paged"),
+        &recipe,
+        RenderOptions::exact(&Cancel::never()),
+        &luxforge_core::RenderContext::new(),
+    )
+    .and_then(|rendered| rendered.frame(luxforge_core::SnapshotId::new()))
+    .expect("the reference frame");
+    let stage = (reference.width, reference.height);
+    let gpu = gpu_source_of(1, evaluation.source()).expect("the source held on the GPU");
+    let mut surface = qualifier.surface();
+    let drawn = gpu_overview(&mut surface, &evaluation, &gpu, stage).expect("planned");
+    let (judged, _) = overview_kind(&reference, &drawn, OVERVIEW_BOUNDS, Class::Pointwise)
+        .unwrap_or_else(|error| panic!("{test}: {error}"));
+    eprintln!("{test}: adapter {}: {judged}", qualifier.adapter());
+    assert_eq!(judged["status"], "measured", "{judged}");
+    assert_eq!(
+        judged["size"],
+        json!(overview_size(stage, OVERVIEW_BOUNDS).map(|size| [size.0, size.1])),
+        "{judged}"
+    );
+    assert_eq!(judged["passed"], true, "{judged}");
 }

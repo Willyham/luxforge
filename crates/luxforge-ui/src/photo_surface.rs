@@ -94,8 +94,13 @@
 //! last drew to that frame, asking for redraws only while the dissolve runs.
 
 mod mips;
+mod overview;
 
 pub use mips::admissible as mips_admissible;
+pub use overview::{
+    OVERVIEW_GPU_BUDGET, OverviewFigures, OverviewImage, OverviewShown, OverviewSurface,
+    OverviewUpload, OverviewWant, overview_image,
+};
 
 use iced::{
     ContentFit, Element, Event, Length, Point, Rectangle, Size, Vector,
@@ -227,6 +232,8 @@ impl SurfaceFigures {
         let gpu = self.signals.diagnostics();
         overall.gpu_source = gpu.gpu_source;
         overall.gpu_source_refused = gpu.gpu_source_refused;
+        overall.gpu_window = gpu.gpu_window;
+        overall.gpu_window_refused = gpu.gpu_window_refused;
         overall.gpu_retirement_failures += gpu.gpu_retirement_failures;
         drop(gpu);
         let draws = self.draws.lock().expect("surface draw identities lock");
@@ -253,6 +260,7 @@ impl SurfaceFigures {
         overall.drawn_backdrop = drawn.drawn_backdrop;
         overall.drawn_rest_dissolve = drawn.drawn_rest_dissolve;
         overall.gpu_rest = drawn.gpu_rest;
+        overall.gpu_overview = drawn.gpu_overview;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
         overall.first_drawn = drawn.first_drawn;
         // Read live: a lost device's callback changes it between draws.
@@ -269,6 +277,7 @@ impl SurfaceFigures {
         overall.gpu_preview_budget_bytes = self.preview.budget();
         overall.gpu_preview_in_use_bytes = self.preview.in_use();
         overall.gpu_preview_scratch_bytes = self.preview.scratch();
+        overall.gpu_preview_overview_bytes = self.preview.overview();
         overall.gpu_preview_peak_bytes = self.preview.peak();
         overall.gpu_preview_passes = self.preview.passes();
         overall.gpu_preview_spatial_passes = self.preview.spatial_passes();
@@ -489,6 +498,9 @@ pub struct SurfaceDiagnostics {
     /// takes its scratch planes from in turn, resident or retiring: one pool a slot, charged once
     /// however many links share it.
     pub gpu_preview_scratch_bytes: u64,
+    /// Of `gpu_preview_in_use_bytes`, the minimap overview's storage on every surface, resident,
+    /// in progress and retiring, within [`OVERVIEW_GPU_BUDGET`].
+    pub gpu_preview_overview_bytes: u64,
     /// The most `gpu_preview_in_use_bytes` has been.
     pub gpu_preview_peak_bytes: u64,
     /// How many passes the GPU stage has encoded: a redraw of an unchanged plan encodes none.
@@ -522,6 +534,10 @@ pub struct SurfaceDiagnostics {
     /// more tiles than a pass binds, or no derivation passes on the device. Cleared by the next
     /// source held.
     pub gpu_source_refused: Option<(u64, GpuFallback)>,
+    /// The window held beside the source ([`PhotoSurface::gpu_window`]), and the last that could
+    /// not be held, and why.
+    pub gpu_window: Option<gpu_preview::SourceFigures>,
+    pub gpu_window_refused: Option<(u64, GpuFallback)>,
     /// How many boundaries the GPU stage has derived from the source it holds, over every frame.
     pub gpu_source_derived: u64,
     /// The picture at rest this surface draws in tiles: how far it has got, or why it stopped
@@ -536,6 +552,10 @@ pub struct SurfaceDiagnostics {
     /// The picture at rest's dissolve the last draw drew, from the plan's output under it to the
     /// rest output its last tile completed: `from` the plan's boundary, `to` the rest's version.
     pub drawn_rest_dissolve: Option<DrawnDissolve>,
+    /// The minimap overviews this surface holds, one it could not reserve, and its builds and
+    /// uploads, as its last draw found them ([`PhotoSurface::gpu_overview`]); `None` before it
+    /// drew. Its `bytes` are the pipeline's overview bytes then.
+    pub gpu_overview: Option<OverviewFigures>,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.
@@ -779,8 +799,12 @@ pub struct PhotoSurface {
     dissolve: Option<Dissolve>,
     /// The prepared source the pipeline holds on the GPU; see [`PhotoSurface::gpu_source`].
     source: Option<GpuSource>,
+    /// A window held beside it; see [`PhotoSurface::gpu_window`].
+    window: Option<GpuSource>,
     /// The picture at rest the GPU stage draws in tiles; see [`PhotoSurface::gpu_rest`].
     rest: Option<GpuRest>,
+    /// The minimap overviews the surface may keep; see [`PhotoSurface::gpu_overview`].
+    overview: Option<OverviewWant>,
     /// The time of the redraw this widget last saw, which its draw takes the dissolve's share at.
     clock: Option<Instant>,
     width: Length,
@@ -825,7 +849,9 @@ pub fn photo_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        window: None,
         rest: None,
+        overview: None,
         clock: None,
         width,
         height,
@@ -861,7 +887,9 @@ pub fn viewport_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        window: None,
         rest: None,
+        overview: None,
         clock: None,
         width,
         height,
@@ -890,7 +918,9 @@ pub fn stage_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        window: None,
         rest: None,
+        overview: None,
         clock: None,
         width,
         height,
@@ -1004,6 +1034,16 @@ impl PhotoSurface {
         self
     }
 
+    /// Hold `window` beside the source: a window of a source too large to hold whole, already
+    /// read — a paged derived source's level 0 around a view at 100% and above, the source then
+    /// its resident level — which boundaries derived from it are drawn from as from the source.
+    /// Charged to the GPU-preview budget and uploaded as the source is; retired at the end of a
+    /// frame in which no surface hands it.
+    pub fn gpu_window(mut self, window: Option<&GpuSource>) -> Self {
+        self.window = window.cloned();
+        self
+    }
+
     /// Draw the picture at rest on the GPU, process-first ([`GpuRest`]): its tiles a frame at a
     /// time through a slot of the surface's own, reduced into the view's size, and, once the last
     /// is in, the photograph drawn from the rest output in place of its frame, through the same
@@ -1015,6 +1055,16 @@ impl PhotoSurface {
     /// the next frame.
     pub fn gpu_rest(mut self, rest: Option<&GpuRest>) -> Self {
         self.rest = rest.cloned();
+        self
+    }
+
+    /// Keep the minimap overviews `want` names, and upload the reference overview it hands, once
+    /// ([`overview`]): the settled version and the one awaited, which a picture at rest handed
+    /// with an overview ([`GpuRest::overview`]) reduces as it draws its tiles. Without a want the
+    /// surface lets every overview go, so every frame that draws the photograph at a minimap's zoom
+    /// hands it. [`overview_image`] draws a version the surface holds.
+    pub fn gpu_overview(mut self, want: Option<&OverviewWant>) -> Self {
+        self.overview = want.cloned();
         self
     }
 
@@ -1055,6 +1105,15 @@ impl PhotoSurface {
                 && diagnostics
                     .gpu_source_refused
                     .is_none_or(|(version, _)| version != source.version())
+        }) || self.window.as_ref().is_some_and(|window| {
+            window.holds_pixels()
+                && diagnostics.gpu_stage == GpuStageState::Available
+                && diagnostics
+                    .gpu_window
+                    .is_none_or(|held| held.version != window.version() || !held.ready)
+                && diagnostics
+                    .gpu_window_refused
+                    .is_none_or(|(version, _)| version != window.version())
         });
         // A picture at rest whose tiles remain, the next one ready to draw: one a frame until the
         // last, and then each frame of its dissolve. A tile that waits for its sequence to compile
@@ -1156,7 +1215,10 @@ impl PhotoSurface {
             gpu_options: self.gpu_options.clone(),
             dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
             source: self.source.clone(),
+            window: self.window.clone(),
             rest: self.rest_drawn().cloned(),
+            overview: self.overview.clone(),
+            overview_draw: None,
             offset: visible.offset,
             size: visible.size,
             bright: visible.bright,
@@ -1358,8 +1420,15 @@ pub struct PhotoPrimitive {
     dissolve: Option<gpu_preview::DissolveFrame>,
     /// The prepared source the pipeline holds for every surface ([`PhotoSurface::gpu_source`]).
     source: Option<GpuSource>,
+    /// A window held beside it ([`PhotoSurface::gpu_window`]).
+    window: Option<GpuSource>,
     /// A whole-frame photograph's picture at rest on the GPU ([`PhotoSurface::gpu_rest`]).
     rest: Option<GpuRest>,
+    /// The minimap overviews the surface keeps ([`PhotoSurface::gpu_overview`]).
+    overview: Option<OverviewWant>,
+    /// An overview widget's primitive: the overview version it draws of the surface, and nothing
+    /// else ([`overview_image`]).
+    overview_draw: Option<u64>,
     offset: Vector,
     size: Size,
     bright: Option<(Rectangle, f32)>,
@@ -1636,6 +1705,10 @@ impl shader::Primitive for PhotoPrimitive {
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
+        if let Some(version) = self.overview_draw {
+            self.prepare_overview_draw(pipeline, queue, bounds, viewport.scale_factor(), version);
+            return;
+        }
         // Out of the map while it is written, so the budget reads every other surface's charge
         // from the map and this one's from `surface`.
         let mut surface = pipeline
@@ -1718,6 +1791,7 @@ impl shader::Primitive for PhotoPrimitive {
         // The source every derived boundary is drawn from, before any plan derives one: held for
         // every surface, a frame's rows of it written.
         pipeline.fit_source(device, queue, self.source.as_ref());
+        pipeline.fit_window(device, queue, self.window.as_ref());
         // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
         // without a plan it releases the slot, unless a dissolve into a frame already in its
         // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
@@ -1766,6 +1840,9 @@ impl shader::Primitive for PhotoPrimitive {
             (None, _) => None,
         };
         surface.rest_frame = surface.rest_dissolving(now);
+        // The overviews after the picture at rest, so one its last tile just finished is kept
+        // when it is the one awaited.
+        pipeline.prepare_overview(&mut surface, device, queue, self.overview.as_ref());
         // The warm list after the frame's own plan and the picture at rest have asked for theirs,
         // so the compile thread takes the picture on screen's sequences first.
         pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
@@ -1859,6 +1936,10 @@ impl shader::Primitive for PhotoPrimitive {
     }
 
     fn draw(&self, pipeline: &PhotoPipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
+        if let Some(version) = self.overview_draw {
+            self.draw_overview(pipeline, render_pass, version);
+            return true;
+        }
         // The render pass's viewport is already the visible part of this widget and its scissor
         // that part clipped to the layer, so each tile's quad is positioned inside that frame by
         // its uniform alone and whatever of it falls outside is clipped. The layers are drawn in
@@ -2205,6 +2286,15 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_backdrop = drawn_backdrop;
         diagnostic.drawn_rest_dissolve = drawn_rest_dissolve;
         diagnostic.gpu_rest = surface.rest_figures();
+        diagnostic.gpu_overview =
+            Some(surface.overview_figures(pipeline.figures.preview.overview()));
+        // A finished overview held, or one refused, wakes the desktop once, as a status does.
+        let overview_changed = diagnostic
+            .gpu_overview
+            .map(|figures| (figures.held, figures.refused))
+            != previous
+                .gpu_overview
+                .map(|figures| (figures.held, figures.refused));
         diagnostic.drawn_content = drawn_content;
         let newly_drawn =
             drawn_full_version.is_some() && previous.drawn_full_version != drawn_full_version;
@@ -2256,7 +2346,7 @@ impl shader::Primitive for PhotoPrimitive {
                 None => clocks.remove(&self.surface),
             };
         }
-        if status_changed {
+        if status_changed || overview_changed {
             // A draw can discover staleness after the app has built its status bar. One buffered
             // wake refreshes that label on the next update, and another clears it after recovery.
             wake_surface();
@@ -2381,6 +2471,8 @@ struct SurfaceSlots {
     state: luxforge_gpu::State,
     gpu_picture: Option<Picture>,
     rest_picture: Option<Picture>,
+    /// The finished minimap overviews the surface holds, bound for drawing ([`overview`]).
+    overview_pictures: Vec<Picture>,
     /// This frame's GPU stage: the boundary version it evaluated, or why the frame is the CPU's.
     /// `None` when the frame was handed no plan.
     gpu_outcome: Option<Result<u64, GpuFallback>>,
@@ -2597,6 +2689,7 @@ impl PhotoPipeline {
             state: luxforge_gpu::State::default(),
             gpu_picture: None,
             rest_picture: None,
+            overview_pictures: Vec::new(),
             gpu_outcome: None,
             gpu_hold: false,
             gpu_held_frame: false,
@@ -2646,6 +2739,7 @@ impl PhotoPipeline {
         }
         self.release_gpu(&mut surface);
         self.release_rest(&mut surface);
+        self.release_overview(&mut surface);
     }
 
     /// Every surface in the map. While `prepare` writes one it is out of the map, so these are
@@ -4318,7 +4412,10 @@ mod gpu_surface_tests {
             gpu_options: Default::default(),
             dissolve: None,
             source: None,
+            window: None,
             rest: None,
+            overview: None,
+            overview_draw: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             bright: None,
@@ -4345,7 +4442,10 @@ mod gpu_surface_tests {
             gpu_options: Default::default(),
             dissolve: None,
             source: None,
+            window: None,
             rest: None,
+            overview: None,
+            overview_draw: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             bright: None,

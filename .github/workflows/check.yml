@@ -70,6 +70,8 @@ jobs:
           VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
           VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
           __EGL_VENDOR_LIBRARY_FILENAMES: /nonexistent/egl-vendor.json
+      - name: Native watcher delivery and recovery gate
+        run: cargo xtask test --native-watchers
       - name: Editor acceptance in release (macOS)
         if: runner.os != 'Linux'
         run: cargo run --release --locked --package xtask -- editor-acceptance --output artifacts/editor-acceptance

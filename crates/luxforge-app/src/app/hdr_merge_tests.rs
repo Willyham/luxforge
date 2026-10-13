@@ -271,11 +271,11 @@ fn frame(path: &Path, broken: &AtomicBool) -> Option<SyntheticFrame> {
     })
 }
 
-fn merge(editor: &mut Editor, message: MergeMessage) {
+pub(super) fn merge(editor: &mut Editor, message: MergeMessage) {
     let _ = editor.update(Message::Select(SelectMessage::Merge(message)));
 }
 
-fn act(editor: &mut Editor, action: MergeAction) {
+pub(super) fn act(editor: &mut Editor, action: MergeAction) {
     merge(editor, MergeMessage::Act(action));
 }
 
@@ -304,7 +304,7 @@ fn bracket_header(editor: &Editor) -> Option<(u32, Vec<String>)> {
 }
 
 /// The pending row's title, detail and button, when the grid draws one.
-fn pending_row(editor: &Editor) -> Option<(String, String, String, bool)> {
+pub(super) fn pending_row(editor: &Editor) -> Option<(String, String, String, bool)> {
     editor
         .select
         .state
@@ -325,7 +325,7 @@ fn pending_row(editor: &Editor) -> Option<(String, String, String, bool)> {
 
 /// Run the merge start the editor has in flight, as its owner task would: the request it was
 /// asked for and every request it sent.
-fn start(editor: &mut Editor) -> MergeRequest {
+pub(super) fn start(editor: &mut Editor) -> MergeRequest {
     let request = editor
         .select
         .state
@@ -354,7 +354,7 @@ fn start(editor: &mut Editor) -> MergeRequest {
 }
 
 /// The requests the newest merge start sent, by method.
-fn sent_merge(editor: &Editor, method: &str) -> Value {
+pub(super) fn sent_merge(editor: &Editor, method: &str) -> Value {
     editor
         .select
         .merge_sent
@@ -367,7 +367,7 @@ fn sent_merge(editor: &Editor, method: &str) -> Value {
 
 /// Follow the running merge's job as its `job.wait` reader does, handing every record to the
 /// editor, until it ends; its last record.
-fn follow(editor: &mut Editor) -> Value {
+pub(super) fn follow(editor: &mut Editor) -> Value {
     let job = editor
         .select
         .state
@@ -406,7 +406,7 @@ fn follow(editor: &mut Editor) -> Value {
 }
 
 /// Run the `stack.set-expanded` the editor has in flight, as its owner task would, and settle.
-fn expand(editor: &mut Editor) -> Value {
+pub(super) fn expand(editor: &mut Editor) -> Value {
     let params = editor.select.stack_sent.clone().expect("a stack request");
     let query = editor.select.state.query.clone().unwrap();
     let serial = editor.select.serial;
@@ -416,17 +416,37 @@ fn expand(editor: &mut Editor) -> Value {
     params
 }
 
-/// Run the `merge.plan` the menu or the form has in flight, as its owner task would.
+/// Run every `merge.plan` the menu has in flight, one a kind offered, as its owner task would,
+/// and answer HDR's request.
 fn plan(editor: &mut Editor) -> Value {
-    let params = editor.select.plan_sent.clone().expect("a plan request");
+    plan_all(editor)
+        .into_iter()
+        .find(|params| params["kind"] == "hdr")
+        .expect("an HDR plan request")
+}
+
+/// Run every `merge.plan` the menu has in flight, as its owner task would, and answer them.
+pub(super) fn plan_all(editor: &mut Editor) -> Vec<Value> {
+    let sent = editor.select.plan_sent.clone();
+    assert!(!sent.is_empty(), "a plan request");
     let serial = editor.select.merge_plans;
-    let result = plan_now(&editor.owner, editor.client, params.clone());
-    merge(editor, MergeMessage::Planned { serial, result });
-    params
+    for params in &sent {
+        let kind: MergeKind = serde_json::from_value(params["kind"].clone()).unwrap();
+        let result = plan_now(&editor.owner, editor.client, params.clone());
+        merge(
+            editor,
+            MergeMessage::Planned {
+                serial,
+                kind,
+                result,
+            },
+        );
+    }
+    sent
 }
 
 /// Shift-click the cell at `item`.
-fn extend(editor: &mut Editor, item: u32) {
+pub(super) fn extend(editor: &mut Editor, item: u32) {
     let layout = &editor.select.layout;
     let cell = layout.cell(layout.cell_of_item(item).unwrap());
     let press = GridPress {
@@ -443,7 +463,7 @@ fn extend(editor: &mut Editor, item: u32) {
 }
 
 /// A right-click on the cell at `item`.
-fn context(editor: &mut Editor, item: u32) {
+pub(super) fn context(editor: &mut Editor, item: u32) {
     let layout = &editor.select.layout;
     let cell = layout.cell(layout.cell_of_item(item).unwrap());
     let _ = editor.update(Message::Select(SelectMessage::Context(GridContext {
@@ -455,7 +475,7 @@ fn context(editor: &mut Editor, item: u32) {
 }
 
 /// The position of the row whose file is called `name`.
-fn position_of(editor: &Editor, name: &str) -> u32 {
+pub(super) fn position_of(editor: &Editor, name: &str) -> u32 {
     let count = editor.select.state.summary.as_ref().unwrap().count;
     (0..count)
         .find(|&at| {
@@ -470,7 +490,7 @@ fn position_of(editor: &Editor, name: &str) -> u32 {
 }
 
 /// The active row.
-fn active(editor: &Editor) -> luxforge_core::catalog_types::ViewRow {
+pub(super) fn active(editor: &Editor) -> luxforge_core::catalog_types::ViewRow {
     let at = editor
         .session
         .browse
@@ -759,15 +779,15 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .menu
         .clone()
         .expect("the menu");
-    assert_eq!(menu.heading, Some("HDR"));
-    assert_eq!(menu.entries[0].label, "Merge HDR");
+    let hdr = menu.group("HDR").expect("the HDR group");
+    assert_eq!(hdr.entries[0].label, "Merge HDR");
     assert_eq!(
-        menu.entries[0].hint,
+        hdr.entries[0].hint,
         Some("Merge the frames into one HDR photograph in the catalog")
     );
-    assert_eq!(menu.entries.len(), 1, "one merge action: {menu:?}");
-    assert!(menu.entries[0].action.is_none());
-    assert_eq!(menu.entries[0].reason.as_deref(), Some(reason.as_str()));
+    assert_eq!(hdr.entries.len(), 1, "one merge action: {menu:?}");
+    assert!(hdr.entries[0].action.is_none());
+    assert_eq!(hdr.entries[0].reason.as_deref(), Some(reason.as_str()));
     act(&mut editor, MergeAction::CloseMenu);
 
     // The bracket's frames, selected: Merge HDR.
@@ -776,8 +796,9 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     context(&mut editor, 2);
     plan(&mut editor);
     let menu = editor.workspace.select.merge.menu.clone().unwrap();
-    assert!(menu.entries[0].action.is_some(), "{menu:?}");
-    assert_eq!(menu.entries.len(), 1, "one merge action: {menu:?}");
+    let hdr = menu.group("HDR").expect("the HDR group");
+    assert!(hdr.entries[0].action.is_some(), "{menu:?}");
+    assert_eq!(hdr.entries.len(), 1, "one merge action: {menu:?}");
     act(&mut editor, MergeAction::Start(MergeKind::Hdr));
     start(&mut editor);
     let record = follow(&mut editor);
@@ -842,7 +863,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .menu
         .clone()
         .expect("the stack menu");
-    let remove = menu
+    let remove = menu.groups[0]
         .entries
         .iter()
         .find(|entry| entry.label == "Remove merge")
@@ -1011,7 +1032,7 @@ fn hdr_merge_pending_row_cancels_and_a_failure_names_its_input() {
 
 /// Wait on `job` as a `job.wait` reader does, handing each record to `deliver`, until it ends; its
 /// last record.
-fn follow_job(
+pub(super) fn follow_job(
     editor: &mut Editor,
     client: ClientId,
     job: &str,
@@ -1042,7 +1063,7 @@ fn follow_job(
 }
 
 /// The open sheet.
-fn sheet(editor: &Editor) -> &PreviewSheet {
+pub(super) fn sheet(editor: &Editor) -> &PreviewSheet {
     editor
         .select
         .state
@@ -1053,7 +1074,7 @@ fn sheet(editor: &Editor) -> &PreviewSheet {
 }
 
 /// Run the sheet's opening, as its owner task does: the plan, then `merge.preview`.
-fn open_preview(editor: &mut Editor) {
+pub(super) fn open_preview(editor: &mut Editor) {
     let (serial, request) = {
         let sheet = sheet(editor);
         assert!(sheet.asking, "the sheet's opening in flight");
@@ -1070,7 +1091,7 @@ fn open_preview(editor: &mut Editor) {
 }
 
 /// Run the `merge.preview-update` the sheet sent, as its owner task does; its parameters.
-fn update_preview(editor: &mut Editor) -> Value {
+pub(super) fn update_preview(editor: &mut Editor) -> Value {
     let (serial, sent) = {
         let sheet = sheet(editor);
         assert!(sheet.asking, "the sheet's update in flight");
@@ -1089,7 +1110,7 @@ fn update_preview(editor: &mut Editor) -> Value {
 
 /// Follow the sheet's preview job to its revision, then decode its picture as the update loop
 /// does; the job's last record.
-fn follow_preview(editor: &mut Editor) -> Value {
+pub(super) fn follow_preview(editor: &mut Editor) -> Value {
     let job = sheet(editor).job.clone().expect("a preview job");
     let client = editor.client;
     let record = follow_job(editor, client, &job, |editor, record| {
@@ -1110,7 +1131,7 @@ fn follow_preview(editor: &mut Editor) -> Value {
 
 /// A JSON client's own preview of the same frames: `merge.plan`, then `merge.preview` of
 /// `params` with its own plan, followed to its revision.
-fn client_preview(
+pub(super) fn client_preview(
     editor: &mut Editor,
     agent: ClientId,
     plan: &Value,
@@ -1126,7 +1147,7 @@ fn client_preview(
 }
 
 /// The same revision, but for the preview's own identity and picture.
-fn same_revision(desktop: &MergePreview, client: &MergePreview) {
+pub(super) fn same_revision(desktop: &MergePreview, client: &MergePreview) {
     assert_eq!(desktop.revision, client.revision);
     assert_eq!(desktop.kind, client.kind);
     assert_eq!(desktop.options, client.options);
@@ -1141,7 +1162,7 @@ fn same_revision(desktop: &MergePreview, client: &MergePreview) {
 }
 
 /// Complete the preference write in flight, as its owner task does.
-fn save_preferences(editor: &mut Editor) {
+pub(super) fn save_preferences(editor: &mut Editor) {
     let change = editor
         .preferences
         .writing()

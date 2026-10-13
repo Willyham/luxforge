@@ -31,7 +31,7 @@ use iced::{Subscription, Task, futures::stream::BoxStream};
 use luxforge_core::{
     AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
-        grants::{self, GrantList},
+        grants,
         host::{self, TASK_PREFIX},
         resources, runtime,
         settings::{self, SettingsRead},
@@ -116,41 +116,6 @@ fn classify(error: CallError, retry: &Operation) -> Outcome {
     Outcome::Failed(error)
 }
 
-/// Withdraw every live grant the module holds, one `module.permission.revoke` each, and say how
-/// many were withdrawn.
-fn revoke_all(
-    owner: &OwnerHandle,
-    client: ClientId,
-    module_id: &str,
-    sent: &mut Vec<Value>,
-) -> Result<Value, CallError> {
-    let listed = call(
-        owner,
-        client,
-        grants::LIST,
-        json!({"module_id": module_id}),
-        sent,
-    )?;
-    let list: GrantList = parse(listed).map_err(|message| CallError {
-        code: "internal".into(),
-        message,
-        data: None,
-        job_id: None,
-    })?;
-    let mut revoked = 0;
-    for grant in list.grants.iter().filter(|grant| grant.is_live()) {
-        call(
-            owner,
-            client,
-            grants::REVOKE,
-            json!({"grant_id": grant.grant_id, "mutation": request()}),
-            sent,
-        )?;
-        revoked += 1;
-    }
-    Ok(json!({"revoked": revoked}))
-}
-
 /// Run one operation's own requests and say what they came to. A settings write puts the fresh
 /// settings it answers with into `settings`.
 fn perform(
@@ -223,7 +188,6 @@ fn perform(
             sent,
         ),
         Operation::Cancel { job } => call(owner, client, JOB_CANCEL, json!({"job_id": job}), sent),
-        Operation::RevokeAll => revoke_all(owner, client, module_id, sent),
         Operation::RunTask {
             task,
             asset,
@@ -647,9 +611,6 @@ impl Editor {
             CapabilityMessage::Cancel { module_id, job } => {
                 return self.capability_op(&module_id, Operation::Cancel { job });
             }
-            CapabilityMessage::RevokeAll(module_id) => {
-                return self.capability_op(&module_id, Operation::RevokeAll);
-            }
             CapabilityMessage::RunTask { module_id, task } => {
                 return match self.task_operation(&module_id, &task) {
                     Ok(op) => {
@@ -857,7 +818,7 @@ impl Editor {
             _ => None,
         };
         match outcome {
-            Outcome::Done(answer) => {
+            Outcome::Done(_) => {
                 state.message = None;
                 if let Operation::Set { field, .. } = &op {
                     state.edits.remove(field);
@@ -867,12 +828,6 @@ impl Editor {
                         run.phase = TaskPhase::Job(record.job_id.as_str().to_owned());
                     }
                     state.track(record.clone(), true);
-                }
-                if op == Operation::RevokeAll {
-                    self.status.text = format!(
-                        "Revoked {} permission(s) of {module_id}",
-                        answer["revoked"].as_u64().unwrap_or(0)
-                    );
                 }
             }
             Outcome::Consent { consent, retry } => {

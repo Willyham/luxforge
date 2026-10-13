@@ -123,8 +123,14 @@ fn recipe_render_samples(
     let context = RenderContext::new();
     for _ in 0..samples {
         let started = Instant::now();
-        let raster = render(registry, source, recipe, RenderOptions::default(), &context)?
-            .frame(SnapshotId::new())?;
+        let raster = render(
+            registry,
+            source.whole()?,
+            recipe,
+            RenderOptions::default(),
+            &context,
+        )?
+        .frame(SnapshotId::new())?;
         timings.push(milliseconds(started));
         ensure(!raster.rgba.is_empty(), "Colour render was empty")?;
         stage = (raster.width, raster.height);
@@ -212,7 +218,9 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             service.render_context(),
         )?
         .frame(original_job.evaluation.entry().snapshot.id.clone())?,
-        PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
+        PreviewSource::Raw { .. } | PreviewSource::Paged(_) => {
+            return Err("JPEG performance input expected".into());
+        }
     };
     let original_render_ms = milliseconds(started);
     ensure(
@@ -337,7 +345,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let exposure_only_sha256 = frame_sha256(
         &render(
             &colour_registry,
-            colour_job.evaluation.source(),
+            colour_job.evaluation.source().whole()?,
             &exposure_only,
             RenderOptions::default(),
             &RenderContext::new(),
@@ -524,7 +532,9 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             service.render_context(),
         )?
         .frame(cold_job.evaluation.entry().snapshot.id.clone())?,
-        PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
+        PreviewSource::Raw { .. } | PreviewSource::Paged(_) => {
+            return Err("JPEG performance input expected".into());
+        }
     };
     let cold_original_render_ms = milliseconds(started);
     ensure(

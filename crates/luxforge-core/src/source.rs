@@ -9,7 +9,10 @@ mod optics;
 pub use linear::LinearImage;
 #[cfg(test)]
 pub(crate) use linear::finiteness_scans_during;
-pub(crate) use linear::{ViewReader, Walk, layout};
+pub(crate) use linear::{
+    CAMERA_SOURCE, PAGED_DERIVED_SOURCE, PlaneLimits, RENDERED_FRAME, RENDERED_WINDOW,
+    RESIDENT_DERIVED_SOURCE, ViewReader, Walk, layout,
+};
 pub use optics::{OpticalIdentity, SourceOptics};
 
 use crate::{
@@ -26,7 +29,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -180,12 +183,24 @@ struct Upright {
 /// written into one frame: rows go straight into it when the EXIF orientation is 1, and otherwise
 /// through a strip of [`UPRIGHT_STRIP_ROWS`] rows placed where the orientation puts them.
 fn decode_upright(bytes: &[u8]) -> Result<Upright, Error> {
+    decode_upright_with(bytes, |profile, components| match profile {
+        Some(profile) => crate::profile::check(profile, components),
+        None => Ok(()),
+    })
+    .map(|(upright, ())| upright)
+}
+
+/// [`decode_upright`] with the embedded ICC profile (`None` when the file has none) and the
+/// component count handed to `profile` before the first row is decoded, instead of the editor's
+/// sRGB check: what it answers comes back beside the frame, and its refusal refuses the decode.
+fn decode_upright_with<T>(
+    bytes: &[u8],
+    profile: impl FnOnce(Option<&[u8]>, u8) -> Result<T, Error>,
+) -> Result<(Upright, T), Error> {
     // The codec walks the container and bounds the declared frame by these limits before libjpeg
     // reads anything, then checks libjpeg's own reading of it against them.
     let mut decoder = luxforge_jpeg::Decoder::new(bytes, JPEG_LIMITS)?;
-    if let Some(profile) = decoder.icc_profile() {
-        crate::profile::check(profile, decoder.components())?;
-    }
+    let colour = profile(decoder.icc_profile(), decoder.components())?;
     let orientation = jpeg_orientation(bytes);
     let (width, height) = (decoder.width() as usize, decoder.height() as usize);
     let (upright_width, upright_height) = if orientation >= 5 {
@@ -220,12 +235,15 @@ fn decode_upright(bytes: &[u8]) -> Result<Upright, Error> {
         }
     }
     decoder.finish()?;
-    Ok(Upright {
-        rgba: frame,
-        width: upright_width as u32,
-        height: upright_height as u32,
-        orientation,
-    })
+    Ok((
+        Upright {
+            rgba: frame,
+            width: upright_width as u32,
+            height: upright_height as u32,
+            orientation,
+        },
+        colour,
+    ))
 }
 
 /// Decode the complete upright source once for non-destructive recipe evaluation.
@@ -250,14 +268,36 @@ pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
 pub(crate) fn decode_source(bytes: &[u8], fingerprint: String) -> Result<SourceImage, Error> {
     let capture = Arc::new(CaptureMetadata::from_jpeg(bytes));
     let upright = decode_upright(bytes)?;
-    Ok(SourceImage {
+    Ok(source_image(upright, fingerprint, capture))
+}
+
+/// [`decode_source`] under the same limits and orientation, with the embedded ICC profile read by
+/// `profile` rather than checked as the editor's sRGB: a merge's JPEG frame, whose colour profile
+/// it converts itself ([`crate::profile::RgbProfile`]). What `profile` answers comes back beside
+/// the source.
+pub(crate) fn decode_source_with<T>(
+    bytes: &[u8],
+    fingerprint: String,
+    profile: impl FnOnce(Option<&[u8]>, u8) -> Result<T, Error>,
+) -> Result<(SourceImage, T), Error> {
+    let capture = Arc::new(CaptureMetadata::from_jpeg(bytes));
+    let (upright, colour) = decode_upright_with(bytes, profile)?;
+    Ok((source_image(upright, fingerprint, capture), colour))
+}
+
+fn source_image(
+    upright: Upright,
+    fingerprint: String,
+    capture: Arc<CaptureMetadata>,
+) -> SourceImage {
+    SourceImage {
         width: upright.width,
         height: upright.height,
         rgba: upright.rgba,
         fingerprint,
         orientation: upright.orientation,
         capture,
-    })
+    }
 }
 
 const CAMERA_CHUNK_PIXELS: usize = 65_536;
@@ -326,6 +366,21 @@ pub(crate) enum PreparedSource {
     /// A derived photograph's stored source (`docs/design/hdr-merge.md#durable-derived-source`),
     /// read and verified on a worker into one allocation of linear planes.
     Derived(DerivedPrepared),
+    /// A paged derived photograph's stored source (`docs/design/panorama-merge.md`, "Large derived
+    /// sources"): its manifest and overview, never a whole frame. A path that needs a whole frame
+    /// refuses it by name (`crate::artifacts::derived_source::paged_source::no_whole_frame`).
+    Paged(PagedPrepared),
+}
+
+/// A paged derived source as it is prepared: the verified manifest and smallest level, with windows
+/// of any level and the resident level read on demand through the source
+/// ([`crate::artifacts::derived_source::PagedSource`]). Shared, and held on the source worker's
+/// memory gate for as long as any holder of it lives.
+#[derive(Clone, Debug)]
+pub(crate) struct PagedPrepared {
+    pub(crate) source: Arc<crate::artifacts::derived_source::PagedSource>,
+    /// What an export writes of the photograph's capture: nothing yet, as for any derived source.
+    pub(crate) capture: Arc<CaptureMetadata>,
 }
 
 /// A derived source as it is prepared: its verified planes, linear sRGB/D65 with their signs and
@@ -391,11 +446,12 @@ impl PreparedSource {
                 }
             }
             Self::Derived(derived) => (derived.linear.width(), derived.linear.height()),
+            Self::Paged(paged) => (paged.source.width(), paged.source.height()),
         }
     }
     pub(crate) fn metadata(&self) -> Option<&RawMetadata> {
         match self {
-            Self::Jpeg(_) | Self::Derived(_) => None,
+            Self::Jpeg(_) | Self::Derived(_) | Self::Paged(_) => None,
             Self::Raw(raw) => Some(raw.sensor.metadata()),
         }
     }
@@ -406,6 +462,7 @@ impl PreparedSource {
             Self::Jpeg(image) => &image.capture,
             Self::Raw(raw) => &raw.capture,
             Self::Derived(derived) => &derived.capture,
+            Self::Paged(paged) => &paged.capture,
         }
     }
 }
@@ -521,23 +578,46 @@ pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], 
 /// owner retains beside its current one ([`SecondDevelopment`]), whose [`Retention`] takes it out
 /// of the count. Each adopted set of planes carries a [`PlaneLease`], shared by every view and
 /// clone of them; the last one dropping wakes the worker. A cancelled job wakes it through [`Self::wake`]. Nothing polls.
+///
+/// The gate also counts bytes: every lease carries the bytes it holds — a development's planes, a
+/// paged derived source's overview and the chunks its cache holds at the moment
+/// (`crate::artifacts::derived_source::paged_source`) — retained or not, and a paged source's
+/// cache grows only while the total stays within [`GATE_ADMITTED_BYTES`] ([`PlaneLease::try_charge`]),
+/// so its chunks and a development held beside it never together pass what the gate admits.
 #[derive(Default)]
 pub(crate) struct PlaneGate {
-    live: Mutex<usize>,
+    live: Mutex<Live>,
     released: Condvar,
 }
 
+/// What the gate counts: the leases a worker waits for, and the bytes every lease holds.
+#[derive(Default)]
+struct Live {
+    /// Leases not taken out of the count by a [`Retention`].
+    leases: usize,
+    /// The bytes of every lease, retained or not.
+    bytes: u64,
+}
+
+/// The most bytes the gate admits across every lease it holds: one source's planes at the camera
+/// limit (1.5 GiB) beside a paged source's chunk cache at its own 1.5 GiB bound. A whole
+/// development is never refused (it is already allocated when it is leased); a paged source's
+/// cache evicts, or reads through without keeping, rather than pass it.
+pub(crate) const GATE_ADMITTED_BYTES: u64 = 2 * luxforge_raw::MAX_RGB_BYTES as u64;
+
 impl PlaneGate {
-    fn live(&self) -> MutexGuard<'_, usize> {
+    fn live(&self) -> MutexGuard<'_, Live> {
         self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// A hold on the gate for one development's planes, released when it drops.
+    /// A hold on the gate for one development's planes, released when it drops. It holds no bytes
+    /// until it is charged ([`LinearImage::hold`] charges a development's planes).
     pub(crate) fn lease(self: &Arc<Self>) -> PlaneLease {
-        *self.live() += 1;
+        self.live().leases += 1;
         PlaneLease {
             gate: Arc::clone(self),
             retained: AtomicBool::new(false),
+            bytes: AtomicU64::new(0),
         }
     }
 
@@ -545,7 +625,7 @@ impl PlaneGate {
     /// and [`Self::wake`] called. Returns whether it stopped.
     pub(crate) fn wait_released(&self, stop: &AtomicBool) -> bool {
         let mut live = self.live();
-        while *live > 0 && !stop.load(Ordering::Relaxed) {
+        while live.leases > 0 && !stop.load(Ordering::Relaxed) {
             live = self
                 .released
                 .wait(live)
@@ -561,20 +641,34 @@ impl PlaneGate {
         self.released.notify_all();
     }
 
+    /// Whether every lease's bytes and `bytes` more stay within [`GATE_ADMITTED_BYTES`]: what a
+    /// paged source asks before it reads its resident level whole.
+    pub(crate) fn admits(&self, bytes: u64) -> bool {
+        self.live().bytes + bytes <= GATE_ADMITTED_BYTES
+    }
+
     /// How many developments the gate is waiting for.
     #[cfg(test)]
     pub(crate) fn counted(&self) -> usize {
-        *self.live()
+        self.live().leases
+    }
+
+    /// The bytes every lease holds, retained or not.
+    #[cfg(test)]
+    pub(crate) fn counted_bytes(&self) -> u64 {
+        self.live().bytes
     }
 }
 
 /// One development's hold on the [`PlaneGate`]. It counts against the gate unless a [`Retention`]
-/// holds it.
+/// holds it, and its bytes count whatever holds it.
 pub(crate) struct PlaneLease {
     gate: Arc<PlaneGate>,
     /// Whether a [`Retention`] has taken these planes out of the gate's count. Changed and read
     /// only under the gate's lock.
     retained: AtomicBool,
+    /// The bytes this lease holds. Changed only under the gate's lock.
+    bytes: AtomicU64,
 }
 
 impl PlaneLease {
@@ -586,24 +680,54 @@ impl PlaneLease {
             return;
         }
         if retained {
-            *live -= 1;
-            if *live == 0 {
+            live.leases -= 1;
+            if live.leases == 0 {
                 self.gate.released.notify_all();
             }
         } else {
-            *live += 1;
+            live.leases += 1;
         }
+    }
+
+    /// Count `bytes` more against the gate, whatever it already holds: planes that already exist.
+    pub(crate) fn charge(&self, bytes: u64) {
+        let mut live = self.gate.live();
+        live.bytes += bytes;
+        self.bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// Count `bytes` more against the gate only while every lease's bytes together stay within
+    /// [`GATE_ADMITTED_BYTES`]; answers whether it did. What a paged source's chunk cache asks
+    /// before it keeps another chunk.
+    pub(crate) fn try_charge(&self, bytes: u64) -> bool {
+        let mut live = self.gate.live();
+        if live.bytes + bytes > GATE_ADMITTED_BYTES {
+            return false;
+        }
+        live.bytes += bytes;
+        self.bytes.fetch_add(bytes, Ordering::Relaxed);
+        true
+    }
+
+    /// Stop counting `bytes` this lease charged, such as a chunk its cache evicted.
+    pub(crate) fn discharge(&self, bytes: u64) {
+        let mut live = self.gate.live();
+        let held = self.bytes.load(Ordering::Relaxed);
+        let bytes = bytes.min(held);
+        self.bytes.store(held - bytes, Ordering::Relaxed);
+        live.bytes -= bytes;
     }
 }
 
 impl Drop for PlaneLease {
     fn drop(&mut self) {
         let mut live = self.gate.live();
+        live.bytes -= self.bytes.load(Ordering::Relaxed);
         if self.retained.load(Ordering::Relaxed) {
             return;
         }
-        *live -= 1;
-        if *live == 0 {
+        live.leases -= 1;
+        if live.leases == 0 {
             self.gate.released.notify_all();
         }
     }
@@ -1732,6 +1856,7 @@ mod tests {
                     {
                         PreviewSource::Raw { image, .. } => image,
                         PreviewSource::Jpeg(_) => unreachable!(),
+                        PreviewSource::Paged(_) => unreachable!("no paged source here"),
                     };
                     (image(base), image(exact))
                 }

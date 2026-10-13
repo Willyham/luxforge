@@ -1,5 +1,6 @@
 //! What one preview job renders — the evaluation it was planned with — and how it presents it.
 
+use super::paged::PagedPreview;
 use crate::{
     Error, Evaluation, LinearImage, LinearSettings, ProxyBounds, RenderSource, SourceImage,
     analysis::AnalysisIdentity,
@@ -14,6 +15,9 @@ pub enum PreviewSource {
         image: LinearImage,
         settings: LinearSettings,
     },
+    /// A paged derived source (`docs/design/panorama-merge.md`, "Rendering, samples and export"):
+    /// no whole frame of level 0, its resident level and windows of level 0 read through it.
+    Paged(PagedPreview),
 }
 
 impl PreviewSource {
@@ -21,6 +25,7 @@ impl PreviewSource {
         match self {
             Self::Jpeg(image) => image.orientation,
             Self::Raw { image, .. } => image.view().1,
+            Self::Paged(_) => 1,
         }
     }
 
@@ -29,6 +34,7 @@ impl PreviewSource {
         match self {
             Self::Jpeg(image) => &image.fingerprint,
             Self::Raw { image, .. } => image.fingerprint(),
+            Self::Paged(paged) => paged.fingerprint(),
         }
     }
 
@@ -45,24 +51,53 @@ impl PreviewSource {
         match self {
             Self::Jpeg(image) => (image.width, image.height),
             Self::Raw { image, .. } => (image.width(), image.height()),
+            Self::Paged(paged) => paged.dimensions(),
         }
     }
 
-    /// The pixels a render of this source reads, borrowed.
+    /// Whether frames of this source take the linear path: a RAW development's planes and a
+    /// derived source's, resident or paged, unclamped between segments.
+    pub(crate) fn linear(&self) -> bool {
+        matches!(self, Self::Raw { .. } | Self::Paged(_))
+    }
+
+    /// The paged source this is, if it is one.
+    pub fn paged(&self) -> Option<&PagedPreview> {
+        match self {
+            Self::Paged(paged) => Some(paged),
+            _ => None,
+        }
+    }
+
+    /// The pixels a whole-frame render of this source reads, borrowed: refused for a paged source,
+    /// which has no whole frame (`resource-limit`, naming it), never allocated in its place.
+    pub fn whole(&self) -> Result<RenderSource<'_>, Error> {
+        match self {
+            Self::Jpeg(image) => Ok(RenderSource::Byte(image)),
+            Self::Raw { image, settings } => Ok(RenderSource::Linear {
+                image,
+                settings: *settings,
+            }),
+            Self::Paged(paged) => Err(
+                crate::artifacts::derived_source::paged_source::no_whole_frame(
+                    "a whole-frame render",
+                    paged.source().id(),
+                ),
+            ),
+        }
+    }
+
+    /// The pixels a test's whole-frame render reads: never a paged source's.
+    #[cfg(test)]
     pub(crate) fn input(&self) -> RenderSource<'_> {
-        self.into()
+        self.whole().expect("a test renders no paged source whole")
     }
 }
 
+#[cfg(test)]
 impl<'a> From<&'a PreviewSource> for RenderSource<'a> {
     fn from(source: &'a PreviewSource) -> Self {
-        match source {
-            PreviewSource::Jpeg(image) => Self::Byte(image),
-            PreviewSource::Raw { image, settings } => Self::Linear {
-                image,
-                settings: *settings,
-            },
-        }
+        source.input()
     }
 }
 

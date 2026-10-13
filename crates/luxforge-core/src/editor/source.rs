@@ -9,7 +9,7 @@ use crate::{
     Snapshot,
     artifacts::{
         self, ArtifactRead, VerifiedArtifact,
-        derived_source::{DerivedSourceRead, read_derived_source},
+        derived_source::{DerivedSourceRead, PreparedDerived, prepare_derived},
     },
     atomic_file::file_error,
     catalog_types::HeaderMetadata,
@@ -17,8 +17,8 @@ use crate::{
     library::availability,
     open_source_bytes, read_bounded_file,
     source::{
-        DerivedPrepared, PreparedSource, RawPreparation, RawPrepared, SecondDevelopment,
-        decode_source,
+        DerivedPrepared, PagedPrepared, PreparedSource, RawPreparation, RawPrepared,
+        SecondDevelopment, decode_source,
     },
 };
 use luxforge_raw::RawSource;
@@ -332,16 +332,25 @@ pub(crate) enum SourceWork {
         /// owner can plan its first-open actions without waiting.
         first_open: Option<Arc<crate::ModuleRegistry>>,
     },
-    /// Read and verify a derived photograph's stored source into one allocation of linear planes
-    /// (`crate::artifacts::derived_source::read_derived_source`), its fingerprint, the source's
-    /// identity, checked against the photograph's when it is adopted. Nothing else is read: no
-    /// file of an input it was made from.
+    /// Read and verify a derived photograph's stored source
+    /// (`crate::artifacts::derived_source::prepare_derived`): a resident source into one allocation
+    /// of linear planes, its fingerprint the source's identity, or a paged source's manifest and
+    /// smallest level, never its whole frame; checked against the photograph's when it is adopted.
+    /// Nothing else is read: no file of an input it was made from.
     Derived {
         asset_id: AssetId,
         read: Box<DerivedSourceRead>,
         /// As [`Self::File`]'s: for a photograph whose head has never moved, the registry whose
         /// first-open readiness the worker awaits.
         first_open: Option<Arc<crate::ModuleRegistry>>,
+    },
+    /// Read the resident level of a paged derived source the cache holds, whole and verified
+    /// (`crate::artifacts::derived_source::PagedSource::resident_level`): what every view of it
+    /// below the level's scale is drawn over. Held by the source itself, counted by the plane
+    /// gate; nothing is adopted.
+    Level {
+        asset_id: AssetId,
+        source: Arc<crate::artifacts::derived_source::PagedSource>,
     },
     /// Redevelop the cached RAW mosaic at new gains.
     Develop(Box<RawDevelopment>),
@@ -380,6 +389,7 @@ impl Completion {
 pub(crate) enum Prepared {
     File(PreparedFile, Vec<VerifiedArtifact>),
     Derived(AssetId, DerivedPrepared, Vec<VerifiedArtifact>),
+    Paged(AssetId, PagedPrepared, Vec<VerifiedArtifact>),
     Develop(RawDevelopment, RawPrepared, Vec<VerifiedArtifact>),
     Artifacts(AssetId, Vec<VerifiedArtifact>),
 }
@@ -469,15 +479,30 @@ impl SourceWork {
                 read: source,
                 first_open,
             } => {
-                let linear = read_derived_source(&source, cancel)?;
+                let prepared = prepare_derived(&source, cancel)?;
                 if let Some(registry) = first_open {
                     registry.await_first_open();
                 }
-                let prepared = DerivedPrepared {
-                    linear,
-                    capture: Arc::default(),
-                };
-                Ok(Prepared::Derived(asset_id, prepared, read()?))
+                Ok(match prepared {
+                    PreparedDerived::Resident(linear) => {
+                        let prepared = DerivedPrepared {
+                            linear,
+                            capture: Arc::default(),
+                        };
+                        Prepared::Derived(asset_id, prepared, read()?)
+                    }
+                    PreparedDerived::Paged(source) => {
+                        let prepared = PagedPrepared {
+                            source: Arc::from(source),
+                            capture: Arc::default(),
+                        };
+                        Prepared::Paged(asset_id, prepared, read()?)
+                    }
+                })
+            }
+            Self::Level { asset_id, source } => {
+                source.resident_level(cancel)?;
+                Ok(Prepared::Artifacts(asset_id, read()?))
             }
             Self::Develop(request) => {
                 let developed = RawPrepared::develop(
@@ -519,12 +544,24 @@ impl Prepared {
                 PreparedSource::Raw(raw) => raw,
                 PreparedSource::Jpeg(_) => return None,
                 PreparedSource::Derived(derived) => return Some(&mut derived.linear),
+                PreparedSource::Paged(_) => return None,
             },
             Self::Derived(_, derived, _) => return Some(&mut derived.linear),
             Self::Develop(_, raw, _) => raw,
-            Self::Artifacts(..) => return None,
+            Self::Paged(..) | Self::Artifacts(..) => return None,
         };
         raw.linear.as_mut()
+    }
+
+    /// The paged source this preparation opened, if any, while only it holds it, so the source
+    /// worker can hold its overview, chunk cache and resident level against its memory gate.
+    pub(crate) fn paged_mut(
+        &mut self,
+    ) -> Option<&mut crate::artifacts::derived_source::PagedSource> {
+        match self {
+            Self::Paged(_, paged, _) => Arc::get_mut(&mut paged.source),
+            _ => None,
+        }
     }
 }
 
@@ -808,7 +845,7 @@ impl EditorService {
             }
             // A derived source's planes are the whole source: it goes, and is read again when it
             // is next asked for.
-            Some((PreparedSource::Derived(_), _)) => *cache = None,
+            Some((PreparedSource::Derived(_) | PreparedSource::Paged(_), _)) => *cache = None,
             Some((PreparedSource::Jpeg(_), _)) | None => {}
         }
     }
@@ -870,6 +907,21 @@ impl EditorService {
             .map(|_| state))
     }
 
+    /// The paged derived source the cache holds for `asset_id`, shared, if it holds one.
+    fn cached_paged(
+        &self,
+        asset_id: &AssetId,
+    ) -> Option<Arc<crate::artifacts::derived_source::PagedSource>> {
+        let cache = self.source_cache.borrow();
+        match cache.as_ref().filter(|cached| cached.asset_id == *asset_id) {
+            Some(cached) => match &cached.source {
+                PreparedSource::Paged(paged) => Some(paged.source.clone()),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+
     /// Metadata-only stale-read guard, also for a preset's uncommitted RAW development. Both
     /// retained developments are immutable and valid while the original's signature matches.
     pub(super) fn holds_verified_source(
@@ -907,6 +959,8 @@ impl EditorService {
                 .identity()
                     == *wanted
             }
+            // No preview source is a paged source's whole frame.
+            PreparedSource::Paged(_) => false,
         })
     }
 
@@ -951,6 +1005,17 @@ impl EditorService {
             }
             return Ok(Preparing::Work(work, reads));
         };
+        // A paged source the cache holds whose resident level is still to be read: a preview
+        // refused for it asked for exactly that.
+        if let Some(source) = self.cached_paged(asset_id)
+            && source.resident_now().is_none()
+        {
+            let work = SourceWork::Level {
+                asset_id: asset_id.clone(),
+                source,
+            };
+            return Ok(Preparing::Work(work, reads));
+        }
         let development = match needs.gains {
             Some(gains) => self.raw_development(asset_id, gains)?,
             None => None,
@@ -996,7 +1061,26 @@ impl EditorService {
         let (completed, verified) = match prepared {
             Prepared::File(file, verified) => (self.adopt_original(file)?, verified),
             Prepared::Derived(asset_id, derived, verified) => {
-                (self.adopt_derived(&asset_id, derived)?, verified)
+                let (size, fingerprint) = (
+                    (derived.linear.width(), derived.linear.height()),
+                    derived.linear.fingerprint().to_owned(),
+                );
+                let source = PreparedSource::Derived(derived);
+                (
+                    self.adopt_derived(&asset_id, source, size, &fingerprint)?,
+                    verified,
+                )
+            }
+            Prepared::Paged(asset_id, paged, verified) => {
+                let (size, fingerprint) = (
+                    (paged.source.width(), paged.source.height()),
+                    paged.source.id().as_str().to_owned(),
+                );
+                let source = PreparedSource::Paged(paged);
+                (
+                    self.adopt_derived(&asset_id, source, size, &fingerprint)?,
+                    verified,
+                )
             }
             Prepared::Develop(request, developed, verified) => (
                 Completion::of(self.install_development(&request, developed)?),
@@ -1072,15 +1156,18 @@ impl EditorService {
         Ok(Completion { state, first_open })
     }
 
-    /// Adopt a derived photograph's source into the verified cache once a worker has read and
-    /// verified its stored objects: the planes must be the source the photograph records, by
-    /// identity and dimensions, and its manifest still there ([`Self::derived_signature`]). A
-    /// photograph whose head has never moved then has its first-open actions committed, as an
-    /// original's does ([`Self::adopt_original`]).
+    /// Adopt a derived photograph's source, resident or paged, into the verified cache once a
+    /// worker has read and verified its stored objects: `source`, of `size` and identity
+    /// `fingerprint`, must be the source the photograph records, by identity and dimensions, and
+    /// its manifest still there ([`Self::derived_signature`]). A photograph whose head has never
+    /// moved then has its first-open actions committed, as an original's does
+    /// ([`Self::adopt_original`]).
     fn adopt_derived(
         &mut self,
         asset_id: &AssetId,
-        prepared: DerivedPrepared,
+        source: PreparedSource,
+        size: (u32, u32),
+        fingerprint: &str,
     ) -> Result<Completion, Error> {
         let state = self.state(asset_id)?;
         let Some(interpretation) = state.asset.source.derived() else {
@@ -1088,9 +1175,7 @@ impl EditorService {
                 "the photograph is no longer a derived one",
             ));
         };
-        let linear = &prepared.linear;
-        let size = (linear.width(), linear.height());
-        if linear.fingerprint() != interpretation.source_id.as_str()
+        if fingerprint != interpretation.source_id.as_str()
             || state.asset.fingerprint != interpretation.source_id.as_str()
             || size != (interpretation.width, interpretation.height)
             || size != (state.asset.width, state.asset.height)
@@ -1104,7 +1189,7 @@ impl EditorService {
         self.source_cache.replace(Some(CachedSource {
             asset_id: state.asset.id.clone(),
             signature,
-            source: PreparedSource::Derived(prepared),
+            source,
             second: SecondDevelopment::default(),
         }));
         if state.revision != 0 {

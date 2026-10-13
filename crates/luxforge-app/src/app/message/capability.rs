@@ -49,8 +49,6 @@ pub(crate) enum CapabilityMessage {
         module_id: String,
         job: String,
     },
-    /// Withdraw every live grant of the module.
-    RevokeAll(String),
     RunTask {
         module_id: String,
         task: String,
@@ -74,4 +72,21 @@ pub(crate) enum CapabilityMessage {
     /// failed. The reader sends nothing for a job it finds as it did before, and each entry stands
     /// alone, so a message holds only the entries that changed.
     Polled(Vec<(String, String, Result<JobRecord, String>)>),
+}
+
+impl From<crate::state::fill_setup::SetupAction> for CapabilityMessage {
+    /// A setup button's request: the capability block's own install or cancel.
+    fn from(action: crate::state::fill_setup::SetupAction) -> Self {
+        use crate::state::fill_setup::SetupAction;
+        match action {
+            SetupAction::Install {
+                module_id,
+                resource,
+            } => Self::Install {
+                module_id,
+                resource,
+            },
+            SetupAction::Cancel { module_id, job } => Self::Cancel { module_id, job },
+        }
+    }
 }

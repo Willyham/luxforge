@@ -506,6 +506,7 @@ fn usage_generic_preference_writes_and_resets_keep_the_record() {
             window: Some(None),
             export_folder: Some(None),
             hdr_merge: Some(None),
+            panorama_merge: Some(None),
             theme: Some(None),
             update_checks: Some(None),
             update_install_automatically: Some(None),
@@ -556,4 +557,28 @@ fn usage_a_record_round_trips_in_its_one_shape() {
         [0x00, 0x11]
     );
     assert_eq!(serde_json::to_value(stored).unwrap(), record);
+}
+
+#[test]
+fn usage_hosted_developer_eligibility_still_needs_explicit_consent() {
+    let dir = Dir::new("developer-consent");
+    let usage = launched(
+        Usage::new(Eligibility::Developer {
+            release: super::super::TEST_RELEASE.into(),
+        }),
+        &dir,
+    );
+    let state = usage.read(&dir.store());
+    assert_eq!(state.destination, super::super::TEST_DESTINATION);
+    assert!(!state.effective);
+    assert!(usage.active().is_none());
+    assert!(usage.claim(&dir.store()).unwrap());
+    assert!(
+        usage.active().is_none(),
+        "claiming never enables collection"
+    );
+    enable(&usage, &dir, "developer-on").unwrap();
+    assert!(usage.read(&dir.store()).effective);
+    disable(&usage, &dir, "developer-off").unwrap();
+    assert!(usage.active().is_none());
 }

@@ -1787,11 +1787,11 @@ fn a_drafted_white_balance_hits_the_proxy_built_over_the_same_planes() {
     let source = PreviewSource::Raw {
         image: match exact.evaluation.source() {
             PreviewSource::Raw { image, .. } => image.clone(),
-            PreviewSource::Jpeg(_) => unreachable!(),
+            _ => unreachable!(),
         },
         settings: match drafted.evaluation.source() {
             PreviewSource::Raw { settings, .. } => *settings,
-            PreviewSource::Jpeg(_) => unreachable!(),
+            _ => unreachable!(),
         },
     };
     let drafted = rebuilt(drafted, |parts| parts.source = source);

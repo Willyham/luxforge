@@ -12,7 +12,7 @@ cargo xtask release v0.1
 
 The command validates the tag, requires an attached `main` branch and a clean index/working tree including untracked files, and checks that the release workflow is committed. It queries `origin`'s actual push destination and requires its live `main` to match HEAD; a stale tracking ref cannot pass. Existing local or remote normalized versions are refused, so `v0.1.0` cannot reuse a `v0.1` release.
 
-It runs quick checks, rechecks the checkout and remote, creates an annotated tag at the verified commit and pushes only that tag. It returns after the push; GitHub Actions builds and publishes asynchronously. It does not commit changes, update/push `main`, modify Cargo versions, export credentials or overwrite tags. This command starts public pre-release publication after the hosted builds/uploads succeed.
+It runs quick and native watcher checks, rechecks the checkout and remote, creates an annotated tag at the verified commit and pushes only that tag. It returns after the push; GitHub Actions builds and publishes asynchronously. It does not commit changes, update/push `main`, modify Cargo versions, export credentials or overwrite tags. This command starts public pre-release publication after the hosted builds/uploads succeed.
 
 Preview the Git/remote checks and planned actions with:
 
@@ -20,7 +20,7 @@ Preview the Git/remote checks and planned actions with:
 cargo xtask release v0.1 --dry-run
 ```
 
-Dry-run creates/pushes no tag and skips quick checks. If a real push fails, the local tag is retained because the remote outcome may be uncertain. Inspect the tag at `origin`'s push destination before retrying; remove a local-only failed tag deliberately only after confirming it was never published. A successful push is monitored under **Actions → Release builds** rather than rerunning the release command for the same version.
+Dry-run creates/pushes no tag and skips quick and native watcher checks. If a real push fails, the local tag is retained because the remote outcome may be uncertain. Inspect the tag at `origin`'s push destination before retrying; remove a local-only failed tag deliberately only after confirming it was never published. A successful push is monitored under **Actions → Release builds** rather than rerunning the release command for the same version.
 
 `v0.1` builds version `0.1.0`. Full tags such as `v0.1.2`, prereleases such as `v0.2.0-rc.1`, and SemVer build suffixes also work. Invalid tags fail before native compilation. The workflow binds both builds to the initially selected commit and refuses delivery if the tag moves. No separate Cargo version edit is needed: the tag supplies the compiled application version, while ordinary developer builds use the workspace version. The source checkout and lockfile stay unchanged.
 

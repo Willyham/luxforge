@@ -13,7 +13,7 @@ use luxforge_core::{
     MaskOverlayColour,
     preferences::{
         BrushPreference, CanvasBackground, CatalogSelection, HdrMergePreference, INTERFACE_SIZES,
-        RawLook, WindowFrame, WorkspacePreference,
+        PanoramaMergePreference, RawLook, WindowFrame, WorkspacePreference,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -102,6 +102,9 @@ preferences! {
     /// The last HDR merge's alignment and deghosting, which ⌥-click merges with, or `None` for
     /// the defaults.
     hdr_merge: Option<HdrMergePreference>,
+    /// The last panorama merge's projection and Boundary Warp, which ⌥-click merges with, or
+    /// `None` for the defaults.
+    panorama_merge: Option<PanoramaMergePreference>,
     /// The active theme's id, Luxforge Dark's when none is stored. The Appearance tab and the
     /// palette's theme entries set it; the desktop draws the theme it names.
     theme: String,
@@ -714,6 +717,7 @@ mod tests {
             "window": null,
             "export_folder": null,
             "hdr_merge": null,
+            "panorama_merge": null,
             "theme": "luxforge.dark",
             "update_checks": true,
             "update_install_automatically": false,

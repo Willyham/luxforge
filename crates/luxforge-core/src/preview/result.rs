@@ -95,6 +95,11 @@ pub struct ExactOutcome {
     /// the failure that building or rendering the proxy returned. `None` when the job asked for no
     /// proxy or got one.
     pub proxy_declined: Option<String>,
+    /// Whether the frame is a paged derived source's overview (`docs/design/panorama-merge.md`,
+    /// "Rendering, samples and export"): the stack over its resident level, smaller than its stage,
+    /// which `display` always holds reduced and which is never presented at full size. Its
+    /// [`Self::report`] counts the overview.
+    pub overview: bool,
 }
 
 impl PreviewResult {
