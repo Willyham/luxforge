@@ -206,6 +206,7 @@ impl PreviewSource {
                     orientation,
                 }
             }
+            Self::Paged(paged) => paged.identity(),
         }
     }
 }
@@ -882,6 +883,7 @@ mod tests {
         match source {
             PreviewSource::Jpeg(image) => image,
             PreviewSource::Raw { .. } => panic!("a JPEG proxy stays a JPEG source"),
+            PreviewSource::Paged(_) => unreachable!("no paged source here"),
         }
     }
 

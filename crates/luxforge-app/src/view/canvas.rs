@@ -740,6 +740,7 @@ fn plain<'a>(
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
     let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
+    let gpu_window = surfaces.gpu_window;
     // The picture at rest, or the same tiles where the picture is not drawn, for their counts
     // alone or at 100% and above as the backdrop: a whole frame draws either, a percentage view's
     // region the counts' or the backdrop under its region frame.
@@ -772,6 +773,7 @@ fn plain<'a>(
                 .gpu_change(gpu_change)
                 .gpu_warm(gpu_warm)
                 .gpu_source(gpu_source)
+                .gpu_window(gpu_window)
                 .gpu_rest(gpu_rest)
                 .gpu_overview(overview)
                 .dissolve(dissolve)
@@ -904,6 +906,7 @@ fn plain<'a>(
                         .gpu_change(gpu_change)
                         .gpu_warm(gpu_warm)
                         .gpu_source(gpu_source)
+                        .gpu_window(gpu_window)
                         .gpu_rest(gpu_rest)
                         .gpu_overview(surfaces.overview)
                         .dissolve(dissolve)
@@ -931,6 +934,7 @@ fn plain<'a>(
                     .gpu_change(gpu_change)
                     .gpu_warm(gpu_warm)
                     .gpu_source(gpu_source)
+                    .gpu_window(gpu_window)
                     .gpu_rest(gpu_counts)
                     .gpu_overview(surfaces.overview)
                     .dissolve(dissolve)
@@ -1034,6 +1038,7 @@ fn comparison<'a>(
             .gpu_tag(surfaces.gpu_tag)
             .gpu_change(surfaces.gpu_change)
             .gpu_source(surfaces.gpu_source)
+            .gpu_window(surfaces.gpu_window)
             .gpu_rest(surfaces.gpu_rest.or(surfaces.gpu_counts))
             .gpu_overview(surfaces.overview)
             .into()
@@ -1052,6 +1057,7 @@ fn comparison<'a>(
                 .gpu_tag(surfaces.gpu_tag)
                 .gpu_change(surfaces.gpu_change)
                 .gpu_source(surfaces.gpu_source)
+                .gpu_window(surfaces.gpu_window)
                 .gpu_rest(surfaces.gpu_rest.or(surfaces.gpu_counts))
                 .gpu_overview(surfaces.overview)
                 .into(),
@@ -1701,6 +1707,7 @@ mod tests {
             dissolve: None,
             gpu_warm: None,
             gpu_source: None,
+            gpu_window: None,
             gpu_rest: None,
             gpu_counts: None,
             compare_gpu: None,

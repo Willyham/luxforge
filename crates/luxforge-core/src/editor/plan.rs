@@ -16,7 +16,7 @@ use crate::{
         StageContext, StageQuestions, check_parameters, check_target, not_applicable,
         take_parameters,
     },
-    render::{Compiled, Render, RenderOptions, RenderSource},
+    render::{Compiled, Render, RenderOptions},
     source::PreparedSource,
 };
 use serde_json::{Map, Value, json};
@@ -1154,6 +1154,25 @@ impl HostStage<'_> {
         Ok((linear, settings))
     }
 
+    /// The source a pixel read of this stage evaluates: the decoded JPEG, the developed or derived
+    /// planes ([`Self::linear`]), or a paged source, which the tile service reads through windows
+    /// of level 0 and the reference refuses by name.
+    fn preview_source(&self) -> Result<crate::PreviewSource, Error> {
+        Ok(match self.source()? {
+            PreparedSource::Jpeg(image) => crate::PreviewSource::Jpeg(image.clone()),
+            PreparedSource::Paged(paged) => {
+                crate::PreviewSource::Paged(crate::PagedPreview::new(paged.source.clone()))
+            }
+            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
+                let (image, settings) = self.linear()?;
+                crate::PreviewSource::Raw {
+                    image: image.clone(),
+                    settings,
+                }
+            }
+        })
+    }
+
     /// The prefix before `index`, compiled once for this stage context and cloned from
     /// `sample_prefixes` on every later call for the same index. Cloning a [`Compiled`] copies its
     /// operation lists, not pixels, and is far cheaper than compiling it again, so this is what
@@ -1340,24 +1359,11 @@ impl StageQuestions for HostStage<'_> {
     /// `O(layers)` once rather than once per point, and nothing is rasterized either way.
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         let compiled = self.compiled_prefix(index)?;
-        let source = match self.source()? {
-            PreparedSource::Jpeg(image) => RenderSource::Byte(image),
-            PreparedSource::Raw(_) | PreparedSource::Derived(_) | PreparedSource::Paged(_) => {
-                let (image, settings) = self.linear()?;
-                RenderSource::Linear { image, settings }
-            }
-        };
-        let preview = match source {
-            RenderSource::Byte(image) => crate::PreviewSource::Jpeg(image.clone()),
-            RenderSource::Linear { image, settings } => crate::PreviewSource::Raw {
-                image: image.clone(),
-                settings,
-            },
-        };
+        let preview = self.preview_source()?;
         if let Some(answer) = self.service.deferred_read(
             self.asset,
             self.recipe,
-            preview,
+            preview.clone(),
             None,
             self.input_wide(&compiled)?,
             super::pixels::PixelRead::Point { index, x, y },
@@ -1368,6 +1374,9 @@ impl StageQuestions for HostStage<'_> {
             };
         }
         refuse_on_owner()?;
+        // A paged source has no whole frame for the reference to sample: its samples are the tile
+        // service's, read through windows of level 0.
+        let source = preview.whole()?;
         let context = self.service.render_context();
         if compiled.evaluates_spatial() {
             let wide = self.input_wide(&compiled)?;
@@ -1390,16 +1399,7 @@ impl StageQuestions for HostStage<'_> {
 
     fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         let compiled = self.compiled_prefix(index)?;
-        let preview = match self.source()? {
-            PreparedSource::Jpeg(image) => crate::PreviewSource::Jpeg(image.clone()),
-            PreparedSource::Raw(_) | PreparedSource::Derived(_) | PreparedSource::Paged(_) => {
-                let (image, settings) = self.linear()?;
-                crate::PreviewSource::Raw {
-                    image: image.clone(),
-                    settings,
-                }
-            }
-        };
+        let preview = self.preview_source()?;
         if let Some(answer) = self.service.deferred_read(
             self.asset,
             self.recipe,
@@ -1416,7 +1416,7 @@ impl StageQuestions for HostStage<'_> {
         refuse_on_owner()?;
         let wide = self.input_wide(&compiled)?;
         crate::render::prefix_pixels(
-            preview.input(),
+            preview.whole()?,
             compiled,
             self.service.render_context(),
             &crate::Cancel::never(),
@@ -1545,6 +1545,7 @@ pub fn operations_limit(operations: crate::EffectOperations) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RenderSource;
     use crate::editor::{
         MutationOutcome,
         test_support::{
