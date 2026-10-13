@@ -968,7 +968,7 @@ impl Editor {
             None => outcome::Presented::Photo,
         };
         self.outcome(Outcome::Presented(presented));
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
@@ -1521,7 +1521,7 @@ impl Editor {
         } else {
             (frame.raster().width, frame.raster().height)
         };
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.preview_dimensions = Some(stage);
             self.event(
                 "decoded",
@@ -1632,7 +1632,7 @@ impl Editor {
         self.outcome(Outcome::PreviewFailed {
             newest: generation >= self.presentation.preview_generation,
         });
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.phase = "error";
             self.activity.error_code = Some(error.kind.code().into());
@@ -2240,7 +2240,7 @@ impl Editor {
             None => outcome::Presented::Photo,
         };
         self.outcome(Outcome::Presented(presented));
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
