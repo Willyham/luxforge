@@ -155,6 +155,8 @@ impl Journey {
         self.stages.push(json!({"stage": name, "detail": detail}));
     }
 
+    /// `run` refuses off macOS before any journey starts, so only macOS samples the desktop.
+    #[cfg(target_os = "macos")]
     fn sample_frontmost(&mut self, moment: &str, ours: &[u32]) -> Result {
         let pid = launch::frontmost_pid()?;
         self.frontmost.push(json!({"at": moment, "pid": pid}));
@@ -162,6 +164,11 @@ impl Journey {
             !ours.contains(&pid),
             format!("The journey's app (pid {pid}) became the frontmost application {moment}"),
         )
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn sample_frontmost(&mut self, _moment: &str, _ours: &[u32]) -> Result {
+        Err("update-journey samples the frontmost application on macOS only".into())
     }
 
     fn run(&mut self) -> Result {

@@ -15,6 +15,13 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# CDLA-Permissive-2.0: the Mozilla root certificates `ureq` bundles with its `native-tls` feature.
+# Only `ort-sys`'s build script reaches it, on the TLS of its pinned ONNX Runtime download; no
+# shipped binary links it.
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
