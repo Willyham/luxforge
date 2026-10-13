@@ -565,11 +565,11 @@ fn a_folder_resolves_to_the_originals_or_the_chosen_one() {
     );
 }
 
-/// A WebP whose frame and libwebp's state would pass the evaluated-frame limit is refused as
-/// `webp-too-large` before anything renders, as a side past 16,383 px is; a TIFF that could pass
-/// the format's 4 GiB is refused as `tiff-too-large`, by the writer's own bound.
+/// A WebP of any size within the format's 16,383 px a side is written, with no memory cap: above
+/// 24 MP it carries `large-image`, which warns and never refuses (owner, 2026-10-13); a TIFF that
+/// could pass the format's 4 GiB is refused as `tiff-too-large`, by the writer's own bound.
 #[test]
-fn a_webp_past_the_frame_limit_and_a_tiff_past_4_gib_refuse_the_export() {
+fn a_large_webp_is_warned_and_a_tiff_past_4_gib_refuses_the_export() {
     let folder = luxforge_testbase::paths::temp_dir("export-settings-too-large");
     let codes = |settings: &ExportSettings, output| -> Vec<(&'static str, bool)> {
         settings
@@ -583,12 +583,22 @@ fn a_webp_past_the_frame_limit_and_a_tiff_past_4_gib_refuse_the_export() {
         quality: 80,
         limit_bytes: None,
     };
-    // 48 MP: 8 bytes a pixel plain fits 512 MiB, 15 optimised does not.
-    let large = (8000, 6000);
-    webp.optimise = false;
-    assert!(codes(&webp, large).is_empty());
-    webp.optimise = true;
-    assert_eq!(codes(&webp, large), [(WEBP_TOO_LARGE, true)]);
+    // 48 MP and the largest WebP, 268 MP, past the 512 MiB frame limit plain or optimised: warned
+    // with the held bytes, never refused; 24 MP is below the threshold.
+    for optimise in [false, true] {
+        webp.optimise = optimise;
+        for output in [(8000, 6000), (WEBP_MAX_SIDE, WEBP_MAX_SIDE)] {
+            assert_eq!(codes(&webp, output), [(LARGE_IMAGE, false)], "{output:?}");
+            let notice = &webp.notices(output, Some(&folder))[0];
+            assert_eq!(notice.bytes, Some(webp.held_bytes(output)));
+        }
+        assert!(codes(&webp, (6000, 4000)).is_empty());
+    }
+    // Past the format's side, refused.
+    assert_eq!(
+        codes(&webp, (WEBP_MAX_SIDE + 1, 100)),
+        [(WEBP_TOO_LARGE, true)]
+    );
 
     let mut tiff = ExportSettings::from_json(&tiff()).unwrap();
     // 750 MP: a 16-bit TIFF could pass 4 GiB, an 8-bit one cannot.
