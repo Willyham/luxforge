@@ -195,7 +195,7 @@ impl Editor {
         }
         self.outcome(Outcome::EntryShown(&entry));
         self.show_entry(entry.clone());
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.preview_dimensions = Some(stage);
         }
         // The status bar names the GPU's picture once the surface draws it; until then it renders.
@@ -222,7 +222,7 @@ impl Editor {
             })
         });
         self.outcome(Outcome::Presented(outcome::Presented::Photo));
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
