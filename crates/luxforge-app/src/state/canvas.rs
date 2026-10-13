@@ -105,6 +105,17 @@ pub(crate) enum ZoomView {
     Percent(f32),
 }
 
+impl ZoomView {
+    /// Whether the view shows the minimap: a stored percentage of at least 200, the session's own
+    /// rule ([`luxforge_core::Zoom::shows_overview`]); Fit never does.
+    pub(crate) fn shows_minimap(self) -> bool {
+        match self {
+            Self::Fit => false,
+            Self::Percent(value) => luxforge_core::Zoom::Percent { value }.shows_overview(),
+        }
+    }
+}
+
 /// What the surface shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PhotoView {
