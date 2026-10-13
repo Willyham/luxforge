@@ -155,6 +155,16 @@ pub struct HdrMergePreference {
     pub deghost: crate::merge::hdr::DeghostMode,
 }
 
+/// The remembered settings of the person's last panorama merge, which the desktop's ⌥-click merges
+/// with: the projection and the Boundary Warp amount (0 to 100). The folder and the reference
+/// belong to one set of frames and are not remembered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanoramaMergePreference {
+    pub projection: crate::catalog_types::PanoramaProjection,
+    pub boundary_warp: u8,
+}
+
 /// The stored preferences: each field holds the person's explicit choice, or nothing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,6 +206,9 @@ pub(crate) struct Preferences {
     /// The last HDR merge's alignment and deghosting; the defaults when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) hdr_merge: Option<HdrMergePreference>,
+    /// The last panorama merge's projection and Boundary Warp; the defaults when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) panorama_merge: Option<PanoramaMergePreference>,
     /// The feature flags the person chose, by identity, exactly as stored: a value no flag claims,
     /// or one that does not fit its flag, is kept for [`crate::flags`] to report.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -330,6 +343,14 @@ impl Preferences {
                 check_brush(name, value)?;
             }
         }
+        if let Some(panorama) = &self.panorama_merge
+            && panorama.boundary_warp > crate::catalog_types::MAX_BOUNDARY_WARP
+        {
+            return Err(format!(
+                "panorama_merge.boundary_warp must be within 0..={}",
+                crate::catalog_types::MAX_BOUNDARY_WARP
+            ));
+        }
         if let Some(window) = &self.window {
             for (name, value) in [("width", window.width), ("height", window.height)] {
                 if !value.is_finite() || !WINDOW_SIZE_RANGE.contains(&value) {
@@ -422,6 +443,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) window: Option<Option<WindowFrame>>,
     pub(crate) export_folder: Option<Option<PathBuf>>,
     pub(crate) hdr_merge: Option<Option<HdrMergePreference>>,
+    pub(crate) panorama_merge: Option<Option<PanoramaMergePreference>>,
     pub(crate) theme: Option<Option<String>>,
     pub(crate) update_checks: Option<Option<bool>>,
     pub(crate) update_install_automatically: Option<Option<bool>>,
@@ -457,6 +479,7 @@ impl PreferenceChange {
         put(&mut preferences.window, self.window);
         put(&mut preferences.export_folder, self.export_folder);
         put(&mut preferences.hdr_merge, self.hdr_merge);
+        put(&mut preferences.panorama_merge, self.panorama_merge);
         put(&mut preferences.theme, self.theme);
         put(&mut preferences.update_checks, self.update_checks);
         put(
@@ -671,6 +694,10 @@ mod tests {
                 alignment: crate::merge::hdr::AlignmentMode::Off,
                 deghost: crate::merge::hdr::DeghostMode::Auto,
             })),
+            panorama_merge: Some(Some(PanoramaMergePreference {
+                projection: crate::catalog_types::PanoramaProjection::Cylindrical,
+                boundary_warp: 40,
+            })),
             theme: Some(Some(STORED_THEME.to_owned())),
             update_checks: Some(Some(false)),
             update_install_automatically: Some(Some(true)),
@@ -841,6 +868,7 @@ mod tests {
             window: Some(None),
             export_folder: Some(None),
             hdr_merge: Some(None),
+            panorama_merge: Some(None),
             theme: Some(None),
             update_checks: Some(None),
             update_install_automatically: Some(None),
