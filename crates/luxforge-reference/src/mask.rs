@@ -808,6 +808,102 @@ pub fn blend(input: f64, effect: f64, m: f64) -> f64 {
     (1.0 - m) * input + m * effect
 }
 
+// ---------------------------------------------------------------------------
+// The model selection, frozen in `docs/design/ai-editing.md#the-model-kind`.
+//
+// A model component's coverage is a stored 8-bit alpha raster, `width × height`
+// bytes in row-major order, stretched over the whole content stage: the raster's
+// texel `(i, j)` has its centre at the stored normalized position
+// `((i + 0.5) / width, (j + 0.5) / height)`. It is sampled bilinearly with the
+// edges clamped, then thresholded and feathered by the frozen `smooth`.
+// ---------------------------------------------------------------------------
+
+/// A model component's payload as this reference reads it: the alpha raster and
+/// the two numbers that shape it, `threshold` in `1..=100` and `feather` in
+/// `0..=100`, both percentages.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Model {
+    pub width: u32,
+    pub height: u32,
+    /// `width · height` alpha codes, row-major.
+    pub alpha: std::sync::Arc<[u8]>,
+    pub threshold: f64,
+    pub feather: f64,
+}
+
+/// The alpha raster at mask-space point `(u, v)`, bilinear between texel
+/// centres with the edges clamped, as a fraction in `[0, 1]`:
+///
+/// ```text
+/// kx  = width * H / W                      -- once per component
+/// ky  = height                             -- once per component
+/// ax  = u * kx - 0.5
+/// ay  = v * ky - 0.5
+/// x0  = floor(ax),  fx = ax - x0
+/// y0  = floor(ay),  fy = ay - y0
+/// i0  = clamp(x0, 0, width - 1),  i1 = clamp(x0 + 1, 0, width - 1)
+/// j0  = clamp(y0, 0, height - 1), j1 = clamp(y0 + 1, 0, height - 1)
+/// top    = a(i0, j0) + fx * (a(i1, j0) - a(i0, j0))
+/// bottom = a(i0, j1) + fx * (a(i1, j1) - a(i0, j1))
+/// alpha  = (top + fy * (bottom - top)) / 255
+/// ```
+///
+/// Where all four codes are equal the interpolation is exact, so a run of
+/// zero codes samples to exactly `0.0` and a run of 255 to exactly `1.0`.
+pub fn model_alpha(model: &Model, stage: &Stage, u: f64, v: f64) -> f64 {
+    let kx = f64::from(model.width) * f64::from(stage.height) / f64::from(stage.width);
+    let ky = f64::from(model.height);
+    let ax = u * kx - 0.5;
+    let ay = v * ky - 0.5;
+    let x0 = ax.floor();
+    let y0 = ay.floor();
+    let fx = ax - x0;
+    let fy = ay - y0;
+    let last_x = i64::from(model.width) - 1;
+    let last_y = i64::from(model.height) - 1;
+    let i0 = (x0 as i64).clamp(0, last_x) as usize;
+    let i1 = (x0 as i64 + 1).clamp(0, last_x) as usize;
+    let j0 = (y0 as i64).clamp(0, last_y) as usize;
+    let j1 = (y0 as i64 + 1).clamp(0, last_y) as usize;
+    let width = model.width as usize;
+    let at = |i: usize, j: usize| f64::from(model.alpha[j * width + i]);
+    let top = at(i0, j0) + fx * (at(i1, j0) - at(i0, j0));
+    let bottom = at(i0, j1) + fx * (at(i1, j1) - at(i0, j1));
+    (top + fy * (bottom - top)) / 255.0
+}
+
+/// The model selection's coverage at mask-space point `(u, v)`:
+///
+/// ```text
+/// t    = threshold / 100                   -- once per component
+/// w    = (feather / 100) * min(t, 1 - t)   -- once per component
+/// lo   = t - w                             -- once per component
+/// span = w + w                             -- once per component
+/// hard = (span == 0)                       -- once per component
+/// a    = model_alpha(u, v)
+/// c    = if hard { if a >= t { 1 } else { 0 } }
+///        else    { smooth(clamp((a - lo) / span, 0, 1)) }
+/// ```
+///
+/// The band `[lo, lo + span]` is centred on the threshold and never leaves
+/// `[0, 1]`, so a zero alpha is exactly zero coverage at every threshold and
+/// feather: `lo >= 0`, and the hard edge's threshold is at least `0.01`. That is
+/// what lets the raster's non-zero rectangle bound the component. At the
+/// defaults, threshold 50 and feather 100, the band is `[0, 1]` and the
+/// coverage is `smooth(alpha)`.
+pub fn model_coverage(model: &Model, stage: &Stage, u: f64, v: f64) -> f64 {
+    let t = model.threshold / 100.0;
+    let w = (model.feather / 100.0) * t.min(1.0 - t);
+    let lo = t - w;
+    let span = w + w;
+    let a = model_alpha(model, stage, u, v);
+    if span == 0.0 {
+        if a >= t { 1.0 } else { 0.0 }
+    } else {
+        smooth(((a - lo) / span).clamp(0.0, 1.0))
+    }
+}
+
 #[cfg(test)]
 mod internal_tests {
     use super::*;

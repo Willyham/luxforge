@@ -42,7 +42,8 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Component, ComponentId, ComponentMode, Control, Error, Mask, ParameterDescriptor,
+    ArtifactId, ArtifactTable, Component, ComponentId, ComponentMode, Control, Error, Mask,
+    ParameterDescriptor,
     modules::{Region, Stage},
     path::StrokeTable,
     render::gpu::{GpuComponent, GpuDescription, GpuProgram},
@@ -52,7 +53,10 @@ use std::sync::Arc;
 mod brush;
 /// The `mask.*` host command family: what each command declares, does and labels.
 pub mod commands;
+/// The guided upsampler every model mask and removal region is refined by.
+pub mod guided;
 mod linear;
+mod model;
 mod parameters;
 mod radial;
 mod range;
@@ -72,12 +76,17 @@ pub static MASK_GPU_PROGRAMS: &[&GpuProgram] = &[
     &brush::PROGRAM,
     &range::LUMINANCE_PROGRAM,
     &range::COLOUR_PROGRAM,
+    &model::PROGRAM,
 ];
 
 /// The brush's GPU storage block's bound, which a painted stroke's ticks stay within.
 pub use brush::GPU_BLOCK_WORDS_MAX as BRUSH_GPU_BLOCK_WORDS_MAX;
 pub use brush::{SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
+pub use model::{
+    ALPHA_KIND, ALPHA_SIDE_MAX, FEATHER_DEFAULT as MODEL_FEATHER_DEFAULT, ModelSelection,
+    THRESHOLD_DEFAULT as MODEL_THRESHOLD_DEFAULT, check_alpha,
+};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
 pub use range::REFINE_DEFAULT;
 pub(crate) use range::{REFINE_MAX, REFINE_MIN};
@@ -236,6 +245,18 @@ struct ComponentKind {
     /// and edited as ever; only `mask.create-<kind>` and `mask.add-<kind>` are refused, naming the
     /// flag, and a client leaves the kind out of what it offers to create.
     experiment: Option<&'static str>,
+    /// The derived artifact a component of this kind is bound to at compile time, for a kind whose
+    /// coverage is a stored raster rather than a rule: how to find it in a payload and what its
+    /// recorded metadata must be. `None` for every kind that references none. The artifact store
+    /// reads it to bind, admit, pin and retain a mask's artifacts exactly as a layer's.
+    artifact: Option<ArtifactUse>,
+}
+
+/// How a kind references a derived artifact: the one it names in a stored payload, and the check a
+/// recorded artifact's metadata passes before a component may reference it.
+struct ArtifactUse {
+    of: fn(&Component) -> Option<ArtifactId>,
+    check: fn(&str, Option<u32>, Option<u32>, u64) -> Result<(u32, u32), String>,
 }
 
 /// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
@@ -275,6 +296,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Linear gradient",
         band: None,
         experiment: None,
+        artifact: None,
     },
     ComponentKind {
         kind: radial::KIND,
@@ -289,6 +311,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Radial gradient",
         band: None,
         experiment: None,
+        artifact: None,
     },
     ComponentKind {
         kind: brush::KIND,
@@ -303,6 +326,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Brush",
         band: None,
         experiment: None,
+        artifact: None,
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
@@ -317,6 +341,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Luminance range",
         band: Some(range::luminance_band),
         experiment: Some(crate::flags::RANGE_MASKS),
+        artifact: None,
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
@@ -335,6 +360,25 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         // A colour range is a set of swatches and a radius, not a band on one axis.
         band: None,
         experiment: Some(crate::flags::RANGE_MASKS),
+        artifact: None,
+    },
+    ComponentKind {
+        kind: model::KIND,
+        gpu_changed: anywhere,
+        validate: model::validate,
+        compile: model::compile,
+        parameters: Some(model::parameters),
+        samples: None,
+        value_based: false,
+        limits: &[],
+        icon: "model",
+        menu_title: "Model selection",
+        band: None,
+        experiment: None,
+        artifact: Some(ArtifactUse {
+            of: model::artifact_of,
+            check: model::check_alpha,
+        }),
     },
 ];
 
@@ -536,6 +580,7 @@ pub(crate) fn component_sample_parameters(kind: &str) -> Option<Vec<ParameterDes
 struct Binding<'a> {
     stage: Stage,
     strokes: &'a StrokeTable,
+    artifacts: &'a ArtifactTable,
     mask: &'a str,
 }
 
@@ -651,6 +696,18 @@ impl CompiledMask {
     /// turns those addresses into geometry, and a reference it cannot answer refuses here — with the
     /// store's own message, before any pixel is read.
     pub fn new(mask: &Mask, stage: Stage, strokes: &StrokeTable) -> Result<Self, Error> {
+        Self::bound(mask, stage, strokes, &ArtifactTable::default())
+    }
+
+    /// [`Self::new`] with the recipe's bound artifacts, which a kind whose coverage is a stored
+    /// raster reads ([`crate::Recipe::artifacts`]). A component naming an artifact `artifacts`
+    /// does not hold is refused by name, as an unresolved stroke is.
+    pub fn bound(
+        mask: &Mask,
+        stage: Stage,
+        strokes: &StrokeTable,
+        artifacts: &ArtifactTable,
+    ) -> Result<Self, Error> {
         if stage.width == 0 || stage.height == 0 {
             return Err(Error::validation(format!(
                 "mask {} cannot be compiled against an empty {}x{} stage",
@@ -660,6 +717,7 @@ impl CompiledMask {
         let binding = Binding {
             stage,
             strokes,
+            artifacts,
             mask: &mask.name,
         };
         let mut components = Vec::with_capacity(mask.components.len());
@@ -906,9 +964,11 @@ pub(crate) fn check_painted_occupancy(
     else {
         return Ok(());
     };
+    let artifacts = ArtifactTable::default();
     let binding = Binding {
         stage,
         strokes,
+        artifacts: &artifacts,
         mask: &mask.name,
     };
     rules::segments_per_pixel(&mask.name, &held.name, brush::densest_cell(held, &binding)?)
@@ -924,6 +984,52 @@ fn kind_of(component: &Component) -> Result<&'static ComponentKind, Error> {
         .iter()
         .find(|entry| entry.kind == component.kind)
         .ok_or_else(|| rules::unknown_kind(&component.kind))
+}
+
+/// The derived artifact one stored component references, when its kind binds one and its payload
+/// names it. A kind this build does not know references none it can name.
+pub(crate) fn component_artifact(component: &Component) -> Option<ArtifactId> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == component.kind)
+        .and_then(|entry| entry.artifact.as_ref())
+        .and_then(|artifact| (artifact.of)(component))
+}
+
+/// Every derived artifact `masks` reference, in mask and component order, repeats included.
+pub(crate) fn mask_artifacts(masks: &[Mask]) -> impl Iterator<Item = ArtifactId> + '_ {
+    masks
+        .iter()
+        .flat_map(|mask| &mask.components)
+        .filter_map(component_artifact)
+}
+
+/// Whether a recorded artifact may be what `component` references: its kind's check over the
+/// artifact's recorded kind, dimensions and length, refused naming the artifact and the component.
+/// A component of a kind that binds no artifact passes.
+pub(crate) fn check_component_artifact(
+    component: &Component,
+    id: &ArtifactId,
+    kind: &str,
+    width: Option<u32>,
+    height: Option<u32>,
+    bytes: u64,
+) -> Result<(), Error> {
+    let Some(artifact) = COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == component.kind)
+        .and_then(|entry| entry.artifact.as_ref())
+    else {
+        return Ok(());
+    };
+    (artifact.check)(kind, width, height, bytes)
+        .map(|_| ())
+        .map_err(|reason| {
+            Error::validation(format!(
+                "artifact {id} of component {} {reason}",
+                component.name
+            ))
+        })
 }
 
 /// Every component of one stored mask, checked by its kind's row without being bound to a stage.

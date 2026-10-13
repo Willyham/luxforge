@@ -433,7 +433,7 @@
     {
       "id": "TASK-008",
       "description": "Add the model-selection mask kind, artifact binding for mask components, and the shared guided upsampler with its reference.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],

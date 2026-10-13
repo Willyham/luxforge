@@ -55,7 +55,7 @@ impl Kind for Radial {
     /// range, any angle, and a feather that lands on each of the three cases the study names — the
     /// explicit `0`, the `100` that starts the ramp at the centre, and a feather so small that
     /// `1 - feather / 100` rounds to exactly `1.0`, which is the hard edge reached by rounding.
-    fn sample(rng: &mut SplitMix64, _: &[(u32, u32)], _: &mut StrokeTable) -> (Value, Falloff) {
+    fn sample(rng: &mut SplitMix64, _: &[(u32, u32)], _: &mut Store) -> (Value, Falloff) {
         let radius = |rng: &mut SplitMix64| match rng.next_usize(8) {
             0 => rng.next_range(1e-4, 1e-2),
             1 => rng.next_range(2.0, 12.0),
@@ -85,16 +85,16 @@ impl Kind for Radial {
     }
 
     /// An ellipse dragged off the canvas selects nothing.
-    fn nothing(_: &mut StrokeTable) -> Vec<Value> {
+    fn nothing(_: &mut Store) -> Vec<Value> {
         vec![radial(-0.9, -0.9, 0.1, 0.1, 30.0, 40.0)]
     }
 
     /// The inner ellipse is where the inversion is exactly zero.
-    fn inverted_whole(_: &mut StrokeTable) -> Option<(Value, (u32, u32))> {
+    fn inverted_whole(_: &mut Store) -> Option<(Value, (u32, u32))> {
         Some((radial(0.5, 0.5, 0.2, 0.2, 0.0, 50.0), (20, 15)))
     }
 
-    fn feathered(_: &mut StrokeTable) -> Value {
+    fn feathered(_: &mut Store) -> Value {
         radial(0.5, 0.5, 0.4, 0.3, 20.0, 100.0)
     }
 
@@ -194,7 +194,7 @@ impl Kind for Radial {
         ]
     }
 
-    fn ramps(_: &mut StrokeTable) -> Vec<Ramp> {
+    fn ramps(_: &mut Store) -> Vec<Ramp> {
         // span = 0.5 and the narrower radius is 0.2, so the ramp is 0.1 units — 400 px at 4000 of
         // height, 24 at 240, and below two pixels at 16.
         let ellipse = radial(0.5, 0.5, 0.4, 0.2, 0.0, 50.0);

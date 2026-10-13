@@ -67,7 +67,7 @@ impl Kind for Brush {
     fn sample(
         rng: &mut SplitMix64,
         _: &[(u32, u32)],
-        strokes: &mut StrokeTable,
+        strokes: &mut Store,
     ) -> (Value, Falloff) {
         let count = 1 + rng.next_usize(4);
         let held: Vec<Stroke> = (0..count)
@@ -87,7 +87,7 @@ impl Kind for Brush {
 
     /// A component whose only stroke erases, one whose stroke has no flow, and one with no strokes
     /// at all cannot add coverage anywhere.
-    fn nothing(strokes: &mut StrokeTable) -> Vec<Value> {
+    fn nothing(strokes: &mut Store) -> Vec<Value> {
         vec![
             brushed(strokes, &[line(0.1, 50.0, 100.0, true)]),
             brushed(strokes, &[line(0.1, 50.0, 0.0, false)]),
@@ -97,12 +97,12 @@ impl Kind for Brush {
 
     /// A dab in the middle of the frame: its inversion is exactly one outside the capsule and
     /// exactly zero at its full-flow core.
-    fn inverted_whole(strokes: &mut StrokeTable) -> Option<(Value, (u32, u32))> {
+    fn inverted_whole(strokes: &mut Store) -> Option<(Value, (u32, u32))> {
         let dab = Stroke::capture(&[[0.5, 0.5]], 0.1, 50.0, 100.0, false).expect("a legal stroke");
         Some((brushed(strokes, &[dab]), (20, 15)))
     }
 
-    fn feathered(strokes: &mut StrokeTable) -> Value {
+    fn feathered(strokes: &mut Store) -> Value {
         let wide = Stroke::capture(&[[0.2, 0.3], [0.8, 0.7]], 0.3, 100.0, 100.0, false)
             .expect("a legal stroke");
         brushed(strokes, &[wide])
@@ -136,7 +136,7 @@ impl Kind for Brush {
     /// 0.1 at feather 50 has a ramp of half the radius, 20 px on a 400 px stage, up to the radius's
     /// own quantization onto the stored path grid, which is what `size()` reports. A hard-edged
     /// stroke has no ramp at all and says so, and a component with no strokes draws no feature.
-    fn ramps(strokes: &mut StrokeTable) -> Vec<Ramp> {
+    fn ramps(strokes: &mut Store) -> Vec<Ramp> {
         let soft = line(0.1, 50.0, 100.0, false);
         let expected = soft.size() * 0.5 * 400.0;
         assert!((expected - 20.0).abs() < 0.01, "{expected}");

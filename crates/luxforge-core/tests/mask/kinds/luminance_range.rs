@@ -57,7 +57,7 @@ impl Kind for LuminanceRange {
     // 9044 at the seed.
     const ALONE_PARTIAL: usize = 2000;
 
-    fn sample(rng: &mut SplitMix64, _: &[(u32, u32)], _: &mut StrokeTable) -> (Value, Falloff) {
+    fn sample(rng: &mut SplitMix64, _: &[(u32, u32)], _: &mut Store) -> (Value, Falloff) {
         let band = sample_band(rng);
         let oracle = compile_luminance_range(&band);
         (
@@ -66,17 +66,17 @@ impl Kind for LuminanceRange {
         )
     }
 
-    fn nothing(_: &mut StrokeTable) -> Vec<Value> {
+    fn nothing(_: &mut Store) -> Vec<Value> {
         Vec::new()
     }
 
-    fn inverted_whole(_: &mut StrokeTable) -> Option<(Value, (u32, u32))> {
+    fn inverted_whole(_: &mut Store) -> Option<(Value, (u32, u32))> {
         None
     }
 
     /// A narrow band with wide shoulders, so nearly every pixel of the synthetic stage sits on a
     /// shoulder rather than at an endpoint.
-    fn feathered(_: &mut StrokeTable) -> Value {
+    fn feathered(_: &mut Store) -> Value {
         luminance_payload(&RefLuminanceRange {
             low: 50.0,
             low_feather: 50.0,
@@ -124,7 +124,7 @@ impl Kind for LuminanceRange {
 
     /// A value test draws nothing a pixel grid can miss, so the thin-feature rule never fires for
     /// one — at any stage, and at the proxy size it is asked about.
-    fn ramps(strokes: &mut StrokeTable) -> Vec<Ramp> {
+    fn ramps(strokes: &mut Store) -> Vec<Ramp> {
         value_based_ramps(Self::feathered(strokes))
     }
 }
