@@ -214,6 +214,10 @@ fn menu_over_the_row(editor: &mut Editor) -> Vec<Value> {
     click(editor, first);
     extend(editor, first + 2);
     context(editor, first + 2);
+    assert!(
+        !editor.merge_reads_quiet(),
+        "the menu's plans are in flight"
+    );
     plan_all(editor)
 }
 
@@ -275,6 +279,15 @@ fn panorama_merge_menu_and_sheet_requests_are_a_json_clients() {
     let plans = menu_over_the_row(&mut editor);
     let kinds: Vec<&Value> = plans.iter().map(|params| &params["kind"]).collect();
     assert_eq!(kinds, [&json!("hdr"), &json!("panorama")]);
+    // Each answer is kept for evidence; until all have come, Select's reads are not quiet.
+    let answered: Vec<&Value> = editor
+        .select
+        .plan_answers
+        .iter()
+        .map(|answer| &answer["kind"])
+        .collect();
+    assert_eq!(answered, [&json!("hdr"), &json!("panorama")]);
+    assert!(editor.merge_reads_quiet());
     let files: Vec<Value> = (0..3)
         .map(|at| {
             let at = position_of(&editor, NAMES[at]);
@@ -570,7 +583,9 @@ fn panorama_merge_menu_and_sheet_requests_are_a_json_clients() {
     let band = info.stack.as_ref().expect("the stack band");
     assert_eq!(band.title, "Panorama \u{b7} 3 photos");
     assert_eq!(band.detail.as_deref(), Some("Reading the merge\u{2026}"));
+    assert!(!editor.merge_reads_quiet(), "the band's read is in flight");
     let params = inspect(&mut editor);
+    assert!(editor.merge_reads_quiet());
     assert_eq!(params, json!({"merge_id": stack.merge_id}));
     let (inspected, _) = call(&editor.owner, agent, "merge.inspect", params).unwrap();
     assert_eq!(inspected["projection"], "spherical", "{inspected}");

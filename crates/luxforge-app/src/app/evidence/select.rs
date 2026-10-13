@@ -92,6 +92,11 @@ impl Editor {
                 position,
                 last_settings,
             } => self.merge_step(position, last_settings),
+            SelectStep::MergeMenu(position) => self.merge_menu_step(position),
+            SelectStep::MergeChoose {
+                kind,
+                last_settings,
+            } => self.merge_choose_step(kind, last_settings),
             SelectStep::MergePreview(step) => self.merge_preview_step(step),
             SelectStep::Merged => self.merged_step(),
         }
@@ -445,16 +450,22 @@ impl Editor {
         self.settle_step(Settle::Select, by);
     }
 
-    /// The owner's own answers a merge's frames are checked against: every HDR merge on the
-    /// activity board, running or recent, by job (`activity.list`).
+    /// The owner's own answers a merge's frames are checked against: every HDR or panorama merge
+    /// on the activity board, running or recent, by job and kind (`activity.list`).
     pub(super) fn owner_merges(&self) -> Value {
         let merges = match call(&self.owner, self.client, "activity.list", json!({})) {
             Ok((board, _)) => json!(
                 ["active", "recent"]
                     .into_iter()
                     .flat_map(|list| board[list].as_array().cloned().unwrap_or_default())
-                    .filter(|entry| entry["kind"] == "merge.hdr")
-                    .map(|entry| json!({"job_id": entry["job_id"], "outcome": entry["outcome"]}))
+                    .filter(
+                        |entry| entry["kind"] == "merge.hdr" || entry["kind"] == "merge.panorama"
+                    )
+                    .map(|entry| json!({
+                        "job_id": entry["job_id"],
+                        "kind": entry["kind"],
+                        "outcome": entry["outcome"],
+                    }))
                     .collect::<Vec<_>>()
             ),
             Err(error) => json!({ "error": error }),

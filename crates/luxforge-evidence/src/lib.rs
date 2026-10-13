@@ -2463,9 +2463,20 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// With `"last_settings": true` it is ⌥-clicked: the merge starts at once with the last HDR
 /// merge's settings, and it is captured once the merge's pending row shows the job's first
 /// progress, or fails with the reason when the merge is refused or has already ended.
+/// `{"merge_menu": 3}` right-clicks the grid cell showing that view position, as the grid does:
+/// over a selection of frames it opens the selection's merge menu, which plans each kind it offers
+/// at once, and is captured once every plan has answered. `{"merge_choose": {"kind":
+/// "panorama"}}` (or `"hdr"`) presses that kind's Merge item on the open menu, or fails with the
+/// reason it is disabled; it is captured as a header's Merge HDR is, the sheet drawing its
+/// preview, and with `"last_settings": true` it is pressed with ⌥ held, merging at once with the
+/// kind's remembered settings.
 /// `{"merge_preview": {"alignment": "off"}}` (`"deghost"`, each `"auto"` or `"off"`) changes the
 /// open sheet's setting and is captured once the revision of the new settings is drawn;
-/// `{"merge_preview": {"overlay": true}}` turns Show deghost overlay on or off, captured at once;
+/// `{"merge_preview": {"boundary_warp": 60}}` drags a panorama's Boundary Warp to that amount and
+/// lets it go, captured the same way;
+/// `{"merge_preview": {"overlay": true}}` turns Show deghost overlay on or off, and
+/// `{"merge_preview": {"frame_outlines": true}}` and `{"merge_preview": {"crop_coverage": true}}`
+/// a panorama's Frame outlines and Crop and coverage, each captured at once;
 /// `{"merge_preview": "merge"}` presses the sheet's Merge and is captured as a header's ⌥-click
 /// is; `{"merge_preview": "cancel"}` presses Cancel and is captured once the sheet is gone and its
 /// preview closed. `"merged"` is captured once the merge this
@@ -2512,9 +2523,26 @@ pub enum SelectStep {
         #[serde(default, skip_serializing_if = "is_false")]
         last_settings: bool,
     },
+    MergeMenu(u32),
+    MergeChoose {
+        kind: MergeChoice,
+        #[serde(default, skip_serializing_if = "is_false")]
+        last_settings: bool,
+    },
     MergePreview(MergePreviewStep),
     Merged,
 }
+
+/// The kind of merge a `merge_choose` step presses on the selection's merge menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeChoice {
+    Hdr,
+    Panorama,
+}
+
+/// The most a panorama's Boundary Warp is dragged to.
+pub const MAX_BOUNDARY_WARP: u8 = 100;
 
 /// A gesture on the open merge preview sheet.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2522,7 +2550,10 @@ pub enum SelectStep {
 pub enum MergePreviewStep {
     Alignment(MergeToggle),
     Deghost(MergeToggle),
+    BoundaryWarp(u8),
     Overlay(bool),
+    FrameOutlines(bool),
+    CropCoverage(bool),
     Merge,
     Cancel,
 }
@@ -2589,6 +2620,13 @@ impl SelectStep {
                 }
                 Ok(())
             }
+            Self::MergePreview(MergePreviewStep::BoundaryWarp(amount))
+                if *amount > MAX_BOUNDARY_WARP =>
+            {
+                Err(format!(
+                    "select merge_preview boundary_warp takes an integer from 0 to {MAX_BOUNDARY_WARP}"
+                ))
+            }
             Self::Switch(_)
             | Self::Arrow { .. }
             | Self::Click { .. }
@@ -2597,6 +2635,8 @@ impl SelectStep {
             | Self::ContinueInBackground
             | Self::CancelWork
             | Self::Merge { .. }
+            | Self::MergeMenu(_)
+            | Self::MergeChoose { .. }
             | Self::MergePreview(_)
             | Self::Merged => Ok(()),
         }
