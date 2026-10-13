@@ -25,6 +25,7 @@ mod presets;
 mod processing;
 mod raw;
 mod registry;
+mod selection_proof;
 mod repair;
 mod spatial;
 mod vignette;
@@ -71,6 +72,8 @@ pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
 pub use basic::auto as auto_tone;
 pub(crate) use candidate_proof::CandidateProofModule;
+pub(crate) use selection_proof::SelectionProofModule;
+pub use selection_proof::PROOF_SELECTION_ARTIFACT;
 #[cfg(test)]
 pub(crate) use candidate_proof::{
     CANDIDATE_PROOF_MODULE, CANDIDATE_PROOF_TASK, PROOF_PATCH_LABEL, proof_code, proof_coverage,

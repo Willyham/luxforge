@@ -1490,6 +1490,360 @@
             "title": "Update colour range"
           },
           {
+            "id": "mask.create-model",
+            "notes": "a new mask whose first component is an add model component; a mask never exists empty, so the initial component is required and its mode is always add",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "artifact",
+                "name": "artifact",
+                "notes": "the selection's alpha raster: a published mask-alpha artifact of at most 4096 px a side, stretched over the content stage",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "class",
+                "notes": "what the model selected, such as sky or subject",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "model",
+                "notes": "the model resource that computed the selection",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 128,
+                "name": "model_version",
+                "notes": "the model resource's version when the selection was computed",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "input_fingerprint",
+                "notes": "the source identity the selection was computed from, as lowercase hex SHA-256",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "prefix_hash",
+                "notes": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 50.0,
+                "fine_step": 0.1,
+                "kind": "number",
+                "max": 100.0,
+                "min": 1.0,
+                "name": "threshold",
+                "notes": "the alpha at the middle of the edge, as a percentage of full alpha",
+                "precision": 0,
+                "required": true,
+                "step": 1.0,
+                "unit": "%",
+                "zero": 50.0
+              },
+              {
+                "default": 100.0,
+                "fine_step": 0.1,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "feather",
+                "notes": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+                "precision": 0,
+                "required": true,
+                "step": 1.0,
+                "unit": "%",
+                "zero": 100.0
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "New model mask"
+          },
+          {
+            "id": "mask.add-model",
+            "notes": "a second, third, … model component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "mask",
+                "notes": "the mask this command addresses",
+                "of": "mask",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "enum",
+                "name": "mode",
+                "notes": "how this component joins the coverage the components before it composed",
+                "options": [
+                  "add",
+                  "subtract",
+                  "intersect"
+                ],
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "artifact",
+                "name": "artifact",
+                "notes": "the selection's alpha raster: a published mask-alpha artifact of at most 4096 px a side, stretched over the content stage",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "class",
+                "notes": "what the model selected, such as sky or subject",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "model",
+                "notes": "the model resource that computed the selection",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 128,
+                "name": "model_version",
+                "notes": "the model resource's version when the selection was computed",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "input_fingerprint",
+                "notes": "the source identity the selection was computed from, as lowercase hex SHA-256",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "prefix_hash",
+                "notes": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 50.0,
+                "fine_step": 0.1,
+                "kind": "number",
+                "max": 100.0,
+                "min": 1.0,
+                "name": "threshold",
+                "notes": "the alpha at the middle of the edge, as a percentage of full alpha",
+                "precision": 0,
+                "required": true,
+                "step": 1.0,
+                "unit": "%",
+                "zero": 50.0
+              },
+              {
+                "default": 100.0,
+                "fine_step": 0.1,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "feather",
+                "notes": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+                "precision": 0,
+                "required": true,
+                "step": 1.0,
+                "unit": "%",
+                "zero": 100.0
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Add model"
+          },
+          {
+            "id": "mask.set-model",
+            "notes": "a field patch over one model component's geometry; the fields the request names are validated and merged over the stored payload, and a component of any other kind is refused by name rather than patched with a model's fields",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "mask",
+                "notes": "the mask this command addresses",
+                "of": "mask",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "component",
+                "notes": "the component inside that mask",
+                "of": "component",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "artifact",
+                "name": "artifact",
+                "notes": "the selection's alpha raster: a published mask-alpha artifact of at most 4096 px a side, stretched over the content stage",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "class",
+                "notes": "what the model selected, such as sky or subject",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "model",
+                "notes": "the model resource that computed the selection",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 128,
+                "name": "model_version",
+                "notes": "the model resource's version when the selection was computed",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "input_fingerprint",
+                "notes": "the source identity the selection was computed from, as lowercase hex SHA-256",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 64,
+                "name": "prefix_hash",
+                "notes": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 50.0,
+                "fine_step": 0.1,
+                "kind": "number",
+                "max": 100.0,
+                "min": 1.0,
+                "name": "threshold",
+                "notes": "the alpha at the middle of the edge, as a percentage of full alpha",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": "%",
+                "zero": 50.0
+              },
+              {
+                "default": 100.0,
+                "fine_step": 0.1,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "feather",
+                "notes": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": "%",
+                "zero": 100.0
+              }
+            ],
+            "patch": true,
+            "preset": false,
+            "title": "Update model"
+          },
+          {
             "id": "mask.add-colour-range-sample",
             "notes": "add one sampled colour to a colour range component, in linear sRGB in the domain of the operation this mask modulates — the value a pick on the canvas reads from the stage that operation receives. At most 5 of them; sampling a colour the component already holds changes nothing, because the selection folds its samples by nearest and a duplicate is a no-op",
             "parameters": [
@@ -1768,6 +2122,20 @@
             "kind": "number",
             "label": "Refine",
             "parameter": "refine",
+            "style": "field"
+          },
+          {
+            "action": "mask.set-model",
+            "kind": "number",
+            "label": "Threshold",
+            "parameter": "threshold",
+            "style": "field"
+          },
+          {
+            "action": "mask.set-model",
+            "kind": "number",
+            "label": "Feather",
+            "parameter": "feather",
             "style": "field"
           }
         ],
@@ -8425,6 +8793,150 @@
         ],
         "revision_of": "asset"
       },
+      "mask.add-model": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "a second, third, … model component of a mask, with its mode given explicitly rather than guessed from a modifier key",
+        "optional": {
+          "feather": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+          "threshold": "the alpha at the middle of the edge, as a percentage of full alpha"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "mask",
+            "notes": "the mask this command addresses",
+            "of": "mask",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "enum",
+            "name": "mode",
+            "notes": "how this component joins the coverage the components before it composed",
+            "options": [
+              "add",
+              "subtract",
+              "intersect"
+            ],
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "artifact",
+            "name": "artifact",
+            "notes": "the selection's alpha raster: a published mask-alpha artifact of at most 4096 px a side, stretched over the content stage",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "class",
+            "notes": "what the model selected, such as sky or subject",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "model",
+            "notes": "the model resource that computed the selection",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 128,
+            "name": "model_version",
+            "notes": "the model resource's version when the selection was computed",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "input_fingerprint",
+            "notes": "the source identity the selection was computed from, as lowercase hex SHA-256",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "prefix_hash",
+            "notes": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 50.0,
+            "fine_step": 0.1,
+            "kind": "number",
+            "max": 100.0,
+            "min": 1.0,
+            "name": "threshold",
+            "notes": "the alpha at the middle of the edge, as a percentage of full alpha",
+            "precision": 0,
+            "required": true,
+            "step": 1.0,
+            "unit": "%",
+            "zero": 50.0
+          },
+          {
+            "default": 100.0,
+            "fine_step": 0.1,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "feather",
+            "notes": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+            "precision": 0,
+            "required": true,
+            "step": 1.0,
+            "unit": "%",
+            "zero": 100.0
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "mask",
+          "mode",
+          "artifact",
+          "class",
+          "model",
+          "model_version",
+          "input_fingerprint",
+          "prefix_hash"
+        ],
+        "revision_of": "asset"
+      },
       "mask.add-radial": {
         "mutates": true,
         "mutation": "revision",
@@ -8884,6 +9396,122 @@
         "required": [
           "asset_id",
           "mutation"
+        ],
+        "revision_of": "asset"
+      },
+      "mask.create-model": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "a new mask whose first component is an add model component; a mask never exists empty, so the initial component is required and its mode is always add",
+        "optional": {
+          "feather": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+          "threshold": "the alpha at the middle of the edge, as a percentage of full alpha"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "artifact",
+            "name": "artifact",
+            "notes": "the selection's alpha raster: a published mask-alpha artifact of at most 4096 px a side, stretched over the content stage",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "class",
+            "notes": "what the model selected, such as sky or subject",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "model",
+            "notes": "the model resource that computed the selection",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 128,
+            "name": "model_version",
+            "notes": "the model resource's version when the selection was computed",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "input_fingerprint",
+            "notes": "the source identity the selection was computed from, as lowercase hex SHA-256",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "prefix_hash",
+            "notes": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 50.0,
+            "fine_step": 0.1,
+            "kind": "number",
+            "max": 100.0,
+            "min": 1.0,
+            "name": "threshold",
+            "notes": "the alpha at the middle of the edge, as a percentage of full alpha",
+            "precision": 0,
+            "required": true,
+            "step": 1.0,
+            "unit": "%",
+            "zero": 50.0
+          },
+          {
+            "default": 100.0,
+            "fine_step": 0.1,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "feather",
+            "notes": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+            "precision": 0,
+            "required": true,
+            "step": 1.0,
+            "unit": "%",
+            "zero": 100.0
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "artifact",
+          "class",
+          "model",
+          "model_version",
+          "input_fingerprint",
+          "prefix_hash"
         ],
         "revision_of": "asset"
       },
@@ -9847,6 +10475,146 @@
             "step": 1.0,
             "unit": "%",
             "zero": 0.0
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation",
+          "mask",
+          "component"
+        ],
+        "revision_of": "asset"
+      },
+      "mask.set-model": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "a field patch over one model component's geometry; the fields the request names are validated and merged over the stored payload, and a component of any other kind is refused by name rather than patched with a model's fields",
+        "optional": {
+          "artifact": "the selection's alpha raster: a published mask-alpha artifact of at most 4096 px a side, stretched over the content stage",
+          "class": "what the model selected, such as sky or subject",
+          "feather": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+          "input_fingerprint": "the source identity the selection was computed from, as lowercase hex SHA-256",
+          "model": "the model resource that computed the selection",
+          "model_version": "the model resource's version when the selection was computed",
+          "prefix_hash": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+          "threshold": "the alpha at the middle of the edge, as a percentage of full alpha"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "mask",
+            "notes": "the mask this command addresses",
+            "of": "mask",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "component",
+            "notes": "the component inside that mask",
+            "of": "component",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "artifact",
+            "name": "artifact",
+            "notes": "the selection's alpha raster: a published mask-alpha artifact of at most 4096 px a side, stretched over the content stage",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "class",
+            "notes": "what the model selected, such as sky or subject",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "model",
+            "notes": "the model resource that computed the selection",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 128,
+            "name": "model_version",
+            "notes": "the model resource's version when the selection was computed",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "input_fingerprint",
+            "notes": "the source identity the selection was computed from, as lowercase hex SHA-256",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 64,
+            "name": "prefix_hash",
+            "notes": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 50.0,
+            "fine_step": 0.1,
+            "kind": "number",
+            "max": 100.0,
+            "min": 1.0,
+            "name": "threshold",
+            "notes": "the alpha at the middle of the edge, as a percentage of full alpha",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": "%",
+            "zero": 50.0
+          },
+          {
+            "default": 100.0,
+            "fine_step": 0.1,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "feather",
+            "notes": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": "%",
+            "zero": 100.0
           }
         ],
         "patch": true,

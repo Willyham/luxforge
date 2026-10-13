@@ -31,7 +31,7 @@ use super::{
     BasicModule, CandidateProofModule, CanvasInteraction, CapabilitiesProofModule,
     CorrectionsModule, CropModule, CurveModule, DetailModule, LensModule, LookModule, MixerModule,
     ModelsProofModule, ModuleDescriptor, PerspectiveModule, PresenceModule, PresetsModule,
-    RawModule, ToolModule, VignetteModule, ai::AiModule, controls_module,
+    RawModule, SelectionProofModule, ToolModule, VignetteModule, ai::AiModule, controls_module,
 };
 use crate::Error;
 #[cfg(test)]
@@ -44,15 +44,15 @@ use std::{
 /// The linked providers a run serves, in the order a registry lists them, which is the order a
 /// client's tools panel draws their sections in: crop first, then presets (which owns no layer),
 /// Corrections, RAW, the RAW look, Basic, Presence, Tone curve, Detail, the colour mixer, lens
-/// correction, perspective, the vignette, the controls proof, the candidate proof and AI editing
-/// (`luxforge.ai`, which draws no section). The list is a presentation order, not the pipeline's: a
-/// layer's place in a stack is its effect's declared stage and order, so the look's section sits
-/// above Basic's while its layer follows Basic's. The two proofs are test modules — their
-/// descriptors declare `developer` — so only a `developer` run gets them; AI editing also serves
+/// correction, perspective, the vignette, the controls proof, the candidate proof, the selection
+/// proof and AI editing (`luxforge.ai`, which draws no section). The list is a presentation order,
+/// not the pipeline's: a layer's place in a stack is its effect's declared stage and order, so the
+/// look's section sits above Basic's while its layer follows Basic's. The three proofs are test
+/// modules — their descriptors declare `developer` — so only a `developer` run gets them; AI editing also serves
 /// the developer models in one. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
-    let linked: [Arc<dyn ToolModule>; 16] = [
+    let linked: [Arc<dyn ToolModule>; 17] = [
         Arc::new(CropModule::new()),
         Arc::new(PresetsModule::new()),
         Arc::new(CorrectionsModule::new()),
@@ -68,6 +68,7 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(VignetteModule::new()),
         Arc::new(controls_module()),
         Arc::new(CandidateProofModule::new()),
+        Arc::new(SelectionProofModule::new()),
         Arc::new(AiModule::for_run(developer)),
     ];
     linked
