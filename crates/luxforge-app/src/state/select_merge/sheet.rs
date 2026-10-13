@@ -486,7 +486,7 @@ fn picture(sheet: &PreviewSheet) -> (Picture, String, bool, Option<&'static str>
                         crate::state::select::thousands(diagnostics.proxy_side)
                     )
                 }
-                None => "Preview".to_owned(),
+                Some(MergePreviewDiagnostics::Panorama(_)) | None => "Preview".to_owned(),
             };
             (
                 Picture::Ready {

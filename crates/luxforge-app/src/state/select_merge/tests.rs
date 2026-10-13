@@ -101,6 +101,8 @@ fn plan() -> MergePlan {
             available_bytes: None,
             temp_ceiling_bytes: 1,
             scratch_limit_bytes: 1,
+            scale: None,
+            provisional: false,
         },
         provider: ProviderState {
             module: "luxforge.hdr".into(),
