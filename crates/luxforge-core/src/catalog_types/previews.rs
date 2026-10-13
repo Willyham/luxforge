@@ -178,6 +178,14 @@ pub enum PreviewAnswer {
         job_id: JobId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fallback: Option<PreviewInfo>,
+        /// Whether the fallback shows what was asked for, edits included: a file's other stage
+        /// always; for a photograph, another tier or renderer generation of the same entry, or its
+        /// camera preview while that entry is the photograph's Original, and never an earlier
+        /// entry's render nor the camera preview of an edited entry. False with no fallback. A
+        /// client that must never show a photograph without its current edits shows a fallback
+        /// only when this is true.
+        #[serde(default)]
+        fallback_current: bool,
     },
 }
 
