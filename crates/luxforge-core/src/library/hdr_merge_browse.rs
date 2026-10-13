@@ -845,10 +845,9 @@ fn hdr_merge_browse_remove_put_back_undo_and_redo_keep_unrelated_picks() {
     scene.finish();
 }
 
-/// Browse reads a panorama stack, which this build cannot make, beside an HDR one: its rows carry
-/// its kind and size and no EV offset, and `stack.inspect` lists its originals without offsets
-/// and, since this build reads no panorama provenance, without a reference; HDR's reference comes
-/// from its provenance.
+/// Browse reads a panorama stack beside an HDR one: its rows carry its kind and size and no EV
+/// offset, and `stack.inspect` lists its originals without offsets and, since this one's
+/// provenance is incomplete, without a reference; HDR's reference comes from its provenance.
 #[test]
 #[slow]
 fn merge_kind_browse_reads_a_panorama_stack_beside_an_hdr_one() {
@@ -862,8 +861,8 @@ fn merge_kind_browse_reads_a_panorama_stack_beside_an_hdr_one() {
             |row| row.get(0),
         )
         .unwrap();
-    // A panorama of the two singles, led by the other folder's photograph, as a later build
-    // records one: its inputs have no EV offset.
+    // A panorama of the two singles, led by the other folder's photograph, with provenance
+    // missing its resolution: its inputs have no EV offset.
     let panorama = MergeId::new();
     connection
         .execute(
@@ -972,7 +971,7 @@ fn merge_kind_browse_reads_a_panorama_stack_beside_an_hdr_one() {
         .collect();
     assert_eq!(offsets, [&json!(-1.0), &json!(0.0), &json!(1.0)]);
     assert_eq!(inspected["originals"][1]["reference"], true);
-    // The panorama's provenance is kept as it was written, and read as incompatible.
+    // The incomplete provenance is kept as it was written, and read as incompatible.
     let refused = call(
         &live,
         client,
