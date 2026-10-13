@@ -391,6 +391,7 @@ fn primitive(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>) -> PhotoPrimit
         source: None,
         window: None,
         rest: None,
+        rest_under: false,
         overview: None,
         overview_draw: None,
         offset: Vector::new(0.0, 0.0),

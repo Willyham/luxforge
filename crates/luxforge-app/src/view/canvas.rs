@@ -746,6 +746,9 @@ fn plain<'a>(
     // region the counts' or the backdrop under its region frame.
     let gpu_rest = surfaces.gpu_rest.or(surfaces.gpu_counts);
     let gpu_counts = surfaces.gpu_counts;
+    // Through a gesture's frames, over a stack the GPU presented, that picture stands in for the
+    // photograph's frame, an earlier stack's, wherever no plan's output is drawn.
+    let gpu_rest_under = surfaces.gpu_rest_under;
     let overview = surfaces.overview;
     let dissolve = surfaces.dissolve;
     match model.zoom {
@@ -775,6 +778,7 @@ fn plain<'a>(
                 .gpu_source(gpu_source)
                 .gpu_window(gpu_window)
                 .gpu_rest(gpu_rest)
+                .gpu_rest_under(gpu_rest_under)
                 .gpu_overview(overview)
                 .dissolve(dissolve)
                 .into();
@@ -908,6 +912,7 @@ fn plain<'a>(
                         .gpu_source(gpu_source)
                         .gpu_window(gpu_window)
                         .gpu_rest(gpu_rest)
+                        .gpu_rest_under(gpu_rest_under)
                         .gpu_overview(surfaces.overview)
                         .dissolve(dissolve)
                         .into(),
@@ -936,6 +941,7 @@ fn plain<'a>(
                     .gpu_source(gpu_source)
                     .gpu_window(gpu_window)
                     .gpu_rest(gpu_counts)
+                    .gpu_rest_under(gpu_rest_under)
                     .gpu_overview(surfaces.overview)
                     .dissolve(dissolve)
                     .into()
@@ -1709,6 +1715,7 @@ mod tests {
             gpu_source: None,
             gpu_window: None,
             gpu_rest: None,
+            gpu_rest_under: false,
             gpu_counts: None,
             compare_gpu: None,
             compare_source: None,

@@ -738,6 +738,7 @@ mod tests {
             gpu_source: None,
             gpu_window: None,
             gpu_rest: None,
+            gpu_rest_under: false,
             gpu_counts: None,
             compare_gpu: None,
             compare_source: None,
