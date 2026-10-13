@@ -61,7 +61,7 @@ Import from and alignment with Lightroom Classic.
 
 | Plan | Purpose |
 | --- | --- |
-| [Lightroom alignment](lightroom/lightroom-alignment.json) | Decided; the generator (TASK-001) authorized 2026-10-13 and complete, the rest not authorized: the measurement rig over deterministic reference-rendered study outputs, two Lightroom rounds by the owner, calibrated conversions for the importers with RAW preset white balance in its round, each control's response realigned by editing area with its CPU reference and GPU program, targeted behaviour changes past the threshold, and validation on the owner's real edits |
+| [Lightroom alignment](lightroom/lightroom-alignment.json) | Decided; the generator (TASK-001) and measurement and fitting (TASK-002) authorized 2026-10-13 and complete, the rest not authorized: the measurement rig over deterministic reference-rendered study outputs, two Lightroom rounds by the owner, calibrated conversions for the importers with RAW preset white balance in its round, each control's response realigned by editing area with its CPU reference and GPU program, targeted behaviour changes past the threshold, and validation on the owner's real edits |
 | [Lightroom import](lightroom/lightroom-import.json) | Decided, not authorized: a read-only import of Lightroom Classic catalogs and sidecar folders, the photographs worked on with their organization, settings, report, re-mapping and Lightroom's first grid tiles only, with no import undo (phase 1), masks (phase 2), and mappings that land with later capabilities or alignment measurements (phase 3) |
 
 ### Interface (`interface/`)
@@ -98,7 +98,7 @@ The RAW looks plan runs on the owner's decisions of 2026-10-05 in [decisions](..
 
 The Lightroom import plan runs on the owner's decisions of 2026-10-06 in [decisions](../docs/decisions.md#lightroom-import). Implementation is not authorized; its first task, confirming the catalog format against a copy of the owner's catalog, needs no code.
 
-The Lightroom alignment plan runs on the owner's decisions of 2026-10-06 in [decisions](../docs/decisions.md#lightroom-alignment). Only TASK-001, the generator, is authorized (2026-10-13). Its rounds need the owner to import and export in Lightroom; its response changes raise each module's format marker, so earlier recipes are refused.
+The Lightroom alignment plan runs on the owner's decisions of 2026-10-06 in [decisions](../docs/decisions.md#lightroom-alignment). Only TASK-001, the generator, and TASK-002, measurement and fitting, are authorized (2026-10-13); both are complete. Its rounds need the owner to import and export in Lightroom; its response changes raise each module's format marker, so earlier recipes are refused.
 
 UI themes are implemented and their plan is deleted; the outcome is in the [UI themes design](../docs/design/ui-themes.md) and [feature status](../docs/features.md), and the remaining questions are a [product decisions](project/product-decisions.json) task.
 
