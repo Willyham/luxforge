@@ -82,6 +82,8 @@ fn merge_kind_schemas_list_the_registered_kinds_and_their_options() {
 #[slow]
 fn merge_kind_panorama_without_its_stitch_plans_but_is_not_ready_to_merge() {
     let bench = Bench::new("kind-panorama", 1);
+    // A build without the panorama stitch.
+    bench.lane(|lane| lane.remove_panorama());
     let targets = json!({"kind": "paths", "paths": bench.paths(0)});
     let first = bench.merged(0, "first");
     // Planning reads headers alone and names the provider's state.
@@ -95,7 +97,7 @@ fn merge_kind_panorama_without_its_stitch_plans_but_is_not_ready_to_merge() {
     assert_eq!(plan["provider"]["available"], false);
     assert_eq!(
         plan["provider"]["reason"],
-        "this build's panorama stitch is not built yet"
+        "this build has no panorama stitch"
     );
     for (method, params) in [
         (
@@ -112,7 +114,7 @@ fn merge_kind_panorama_without_its_stitch_plans_but_is_not_ready_to_merge() {
         assert_eq!(refused["code"], "not-ready", "{method}: {refused}");
         assert_eq!(
             refused["message"],
-            "panorama merging is not available: this build's panorama stitch is not built yet",
+            "panorama merging is not available: this build has no panorama stitch",
             "{method}"
         );
         assert_eq!(refused["data"]["kind"], "panorama", "{method}");
