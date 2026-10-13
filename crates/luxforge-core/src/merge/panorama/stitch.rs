@@ -53,7 +53,7 @@ use super::refusal::Refusal;
 use super::registration::{MAX_FRAMES, MIN_FRAMES, PanoramaRegistration};
 use super::seams::{self, NONE, SeamGrid, SeamSample};
 use super::warp::{self, WarpMesh};
-use crate::merge::hdr::{ColourProxy, FrameRect, PixelRect, SensorLevel};
+use crate::merge::hdr::{ColourProxy, FrameRect, PixelRect, SensorLevel, SourceWindow};
 use crate::{Cancel, Error};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -161,10 +161,17 @@ impl PlanGrid {
     }
 }
 
-/// A rectangle of one frame's full-resolution pixels, as a caller reads it for
-/// [`StitchPlan::render_chunk`]: planar linear RGB and each pixel's [`SensorLevel`], row-major
-/// over `rect`.
-#[derive(Clone, Debug, PartialEq)]
+/// Where a render reads the frames' full-resolution pixels: one window at a time, each a
+/// rectangle of one frame of at most [`MAX_WINDOW_PIXELS`] (planar linear RGB and each pixel's
+/// [`SensorLevel`]). A read may replace the last window read.
+pub trait FrameWindows {
+    /// `rect` of frame `frame` (by request position), exactly.
+    fn read(&mut self, frame: usize, rect: PixelRect) -> Result<SourceWindow<'_>, Error>;
+}
+
+/// A rectangle of one frame's full-resolution pixels, owned: planar linear RGB and each pixel's
+/// [`SensorLevel`], row-major over `rect`.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameWindow {
     pub rect: PixelRect,
     pub rgb: [Vec<f32>; 3],
@@ -172,13 +179,61 @@ pub struct FrameWindow {
 }
 
 impl FrameWindow {
-    fn view(&self) -> FrameRect<'_> {
-        FrameRect {
-            width: self.rect.width as usize,
-            height: self.rect.height as usize,
-            stride: self.rect.width as usize,
-            rgb: [&self.rgb[0], &self.rgb[1], &self.rgb[2]],
-            levels: &self.levels,
+    pub fn source(&self) -> SourceWindow<'_> {
+        SourceWindow {
+            x: self.rect.x,
+            y: self.rect.y,
+            frame: FrameRect {
+                width: self.rect.width as usize,
+                height: self.rect.height as usize,
+                stride: self.rect.width as usize,
+                rgb: [&self.rgb[0], &self.rgb[1], &self.rgb[2]],
+                levels: &self.levels,
+            },
+        }
+    }
+}
+
+/// [`FrameWindows`] from a function answering each window as a [`FrameWindow`], holding the last.
+pub struct WindowReader<F> {
+    read: F,
+    last: FrameWindow,
+}
+
+impl<F: FnMut(usize, PixelRect) -> Result<FrameWindow, Error>> WindowReader<F> {
+    pub fn new(read: F) -> Self {
+        Self {
+            read,
+            last: FrameWindow::default(),
+        }
+    }
+}
+
+impl<F: FnMut(usize, PixelRect) -> Result<FrameWindow, Error>> FrameWindows for WindowReader<F> {
+    fn read(&mut self, frame: usize, rect: PixelRect) -> Result<SourceWindow<'_>, Error> {
+        self.last = (self.read)(frame, rect)?;
+        Ok(self.last.source())
+    }
+}
+
+/// What rendering a chunk measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ChunkStats {
+    /// Pixels any of whose weighted taps was clipped.
+    pub clipped_pixels: u64,
+    /// Pixels no frame covered, drawn from the nearest frame's edge.
+    pub uncovered_pixels: u64,
+    /// The largest amount by which a pixel left the range of the samples it blends, linear.
+    pub max_overshoot: f32,
+}
+
+impl ChunkStats {
+    /// Both chunks' measures together.
+    pub fn and(self, other: Self) -> Self {
+        Self {
+            clipped_pixels: self.clipped_pixels + other.clipped_pixels,
+            uncovered_pixels: self.uncovered_pixels + other.uncovered_pixels,
+            max_overshoot: self.max_overshoot.max(other.max_overshoot),
         }
     }
 }
@@ -189,12 +244,7 @@ pub struct StitchedChunk {
     pub rect: PixelRect,
     /// Planar linear RGB, row-major over `rect`.
     pub rgb: [Vec<f32>; 3],
-    /// Pixels any of whose weighted taps was clipped.
-    pub clipped_pixels: u64,
-    /// Pixels no frame covered, drawn from the nearest frame's edge.
-    pub uncovered_pixels: u64,
-    /// The largest amount by which a pixel left the range of the samples it blends, linear.
-    pub max_overshoot: f32,
+    pub stats: ChunkStats,
 }
 
 /// The seam between two frames, by length.
@@ -253,15 +303,6 @@ pub struct StitchDiagnostics {
     pub supersample: u32,
 }
 
-/// One row's covered run in the preview picture, `[x0, x1)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CoveredRun {
-    pub y: u32,
-    pub x0: u32,
-    pub x1: u32,
-}
-
 /// A frame's outline in the preview picture.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -280,7 +321,9 @@ pub struct FrameOutline {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PanoramaOverlays {
-    pub covered: Vec<CoveredRun>,
+    /// The covered region's outline: closed polygons along picture pixels' edges, each corner
+    /// once, clockwise on screen around covered pixels (holes run the other way).
+    pub covered: Vec<Vec<[f64; 2]>>,
     /// `[x, y, width, height]`.
     pub crop: [f64; 4],
     /// In stack order.
@@ -312,6 +355,13 @@ struct PointPlan {
     positions: [[f64; 2]; 4],
     correction: [f64; 3],
     uncovered: bool,
+}
+
+/// A chunk being drawn: its rectangle, its three planes and what it measured.
+struct Chunk<'a> {
+    rect: PixelRect,
+    out: &'a mut [f32],
+    stats: ChunkStats,
 }
 
 /// A stitch laid out and ready to render. See the module documentation.
@@ -369,10 +419,34 @@ pub fn plan_stitch_with_progress(
     )
 }
 
+/// [`plan_stitch_with_progress`] within `limits`.
 pub(crate) fn plan_with_limits(
     registration: &PanoramaRegistration,
     proxies: &[ColourProxy],
     options: &StitchOptions,
+    limits: &OutputLimits,
+    cancel: &Cancel,
+    progress: &mut dyn FnMut(StitchStage),
+) -> Result<StitchPlan, Error> {
+    plan_with_exposure(
+        registration,
+        proxies,
+        options,
+        &[],
+        limits,
+        cancel,
+        progress,
+    )
+}
+
+/// [`plan_with_limits`] starting the photometric fit from each frame's scale to the reference's
+/// exposure from its settings (`exposure`, one a frame; empty for none): the fit measures what the
+/// overlaps say beyond it, and a frame whose overlaps give too few samples keeps it.
+pub(crate) fn plan_with_exposure(
+    registration: &PanoramaRegistration,
+    proxies: &[ColourProxy],
+    options: &StitchOptions,
+    exposure: &[f64],
     limits: &OutputLimits,
     cancel: &Cancel,
     progress: &mut dyn FnMut(StitchStage),
@@ -387,6 +461,23 @@ pub(crate) fn plan_with_limits(
              proxy each"
         )));
     }
+    if !exposure.is_empty()
+        && (exposure.len() != n || exposure.iter().any(|e| !e.is_finite() || *e <= 0.0))
+    {
+        return Err(Error::validation(
+            "a panorama's exposure scales are one positive scale a frame",
+        ));
+    }
+    // Each frame's starting gain, relative to the reference's.
+    let start: Vec<f64> = (0..n)
+        .map(|f| {
+            if exposure.is_empty() {
+                1.0
+            } else {
+                exposure[f] / exposure[reference]
+            }
+        })
+        .collect();
     if options.boundary_warp > 100 {
         return Err(Error::validation("Boundary Warp is 0 to 100"));
     }
@@ -572,7 +663,12 @@ pub(crate) fn plan_with_limits(
             bits(eligible[cell])
                 .filter_map(|frame| {
                     let sample = plan.proxy_sample(&proxies[frame], frame, d)?;
-                    usable_for_gain(&sample).then_some((frame, sample.rgb))
+                    usable_for_gain(&sample).then(|| {
+                        (
+                            frame,
+                            sample.rgb.map(|v| (f64::from(v) * start[frame]) as f32),
+                        )
+                    })
                 })
                 .collect()
         })
@@ -583,6 +679,9 @@ pub(crate) fn plan_with_limits(
     }
     drop(cell_samples);
     plan.gains = samples.solve(reference);
+    for (gain, start) in plan.gains.iter_mut().zip(&start) {
+        gain.gain = gain.gain.map(|g| g * start);
+    }
     let gain_of = |frame: usize| plan.gains[frame].gain.map(|g| g as f32);
 
     // Seams.
@@ -1154,17 +1253,37 @@ impl StitchPlan {
         )
     }
 
-    /// Draw `rect` of the result, reading each frame's full-resolution pixels through `read` as a
-    /// [`FrameWindow`] of exactly the rectangle asked for. Windows are at most
-    /// [`MAX_WINDOW_PIXELS`] and read one at a time; `rect` is drawn in tiles of at most
-    /// [`MAX_TILE_POINTS`] points, smaller where a window would be larger. Checks `cancel` per tile
-    /// and per window.
+    /// Draw `rect` of the result as a [`StitchedChunk`]: see [`Self::render_into`].
     pub fn render_chunk(
         &self,
         rect: PixelRect,
-        read: &mut dyn FnMut(usize, PixelRect) -> Result<FrameWindow, Error>,
+        windows: &mut dyn FrameWindows,
         cancel: &Cancel,
     ) -> Result<StitchedChunk, Error> {
+        let pixels = rect.pixels() as usize;
+        let mut out = vec![0.0; 3 * pixels];
+        let stats = self.render_into(rect, windows, &mut out, cancel)?;
+        let blue = out.split_off(2 * pixels);
+        let green = out.split_off(pixels);
+        Ok(StitchedChunk {
+            rect,
+            rgb: [out, green, blue],
+            stats,
+        })
+    }
+
+    /// Draw `rect` of the result into `out`, three planes of `rect`'s pixels (red, green, blue),
+    /// reading each frame's full-resolution pixels through `windows`. Windows are at most
+    /// [`MAX_WINDOW_PIXELS`] and read one at a time; `rect` is drawn in tiles of at most
+    /// [`MAX_TILE_POINTS`] points, smaller where a window would be larger. Checks `cancel` per tile
+    /// and per window.
+    pub fn render_into(
+        &self,
+        rect: PixelRect,
+        windows: &mut dyn FrameWindows,
+        out: &mut [f32],
+        cancel: &Cancel,
+    ) -> Result<ChunkStats, Error> {
         if rect.is_empty()
             || u64::from(rect.x) + u64::from(rect.width) > u64::from(self.crop.width)
             || u64::from(rect.y) + u64::from(rect.height) > u64::from(self.crop.height)
@@ -1174,12 +1293,13 @@ impl StitchPlan {
             ));
         }
         let pixels = rect.pixels() as usize;
-        let mut chunk = StitchedChunk {
+        if out.len() < 3 * pixels {
+            return Err(Error::internal("a chunk buffer is shorter than its chunk"));
+        }
+        let mut chunk = Chunk {
             rect,
-            rgb: [vec![0.0; pixels], vec![0.0; pixels], vec![0.0; pixels]],
-            clipped_pixels: 0,
-            uncovered_pixels: 0,
-            max_overshoot: 0.0,
+            out,
+            stats: ChunkStats::default(),
         };
         let n = self.supersample as usize;
         let side = (((MAX_TILE_POINTS / (n * n)) as f64).sqrt() as u32).max(1);
@@ -1196,7 +1316,7 @@ impl StitchPlan {
         }
         while let Some(tile) = tiles.pop() {
             cancel.check()?;
-            if !self.render_tile(tile, &mut chunk, read, cancel)? {
+            if !self.render_tile(tile, &mut chunk, windows, cancel)? {
                 // A window would be too large: split the tile.
                 if tile.width <= 1 && tile.height <= 1 {
                     return Err(Error::resource_limit(
@@ -1221,7 +1341,7 @@ impl StitchPlan {
                 }
             }
         }
-        Ok(chunk)
+        Ok(chunk.stats)
     }
 
     /// The points of result rectangle `tile`, `n × n` a pixel, row-major by pixel.
@@ -1249,8 +1369,8 @@ impl StitchPlan {
     fn render_tile(
         &self,
         tile: PixelRect,
-        chunk: &mut StitchedChunk,
-        read: &mut dyn FnMut(usize, PixelRect) -> Result<FrameWindow, Error>,
+        chunk: &mut Chunk<'_>,
+        source: &mut dyn FrameWindows,
         cancel: &Cancel,
     ) -> Result<bool, Error> {
         let points = self.tile_points(tile);
@@ -1291,17 +1411,23 @@ impl StitchPlan {
                 width: x1 - x0 + 1,
                 height: y1 - y0 + 1,
             };
-            let window = read(f, rect)?;
+            let window = source.read(f, rect)?;
+            let view = window.frame;
             let need = rect.pixels() as usize;
-            if window.rect != rect
-                || window.rgb.iter().any(|p| p.len() != need)
-                || window.levels.len() != need
+            if (window.x, window.y) != (x0, y0)
+                || (view.width, view.height) != (rect.width as usize, rect.height as usize)
+                || view.stride < view.width
+                || view
+                    .rgb
+                    .iter()
+                    .any(|p| p.len() < (view.height - 1) * view.stride + view.width)
+                || view.levels.len() < (view.height - 1) * view.stride + view.width
+                || need == 0
             {
                 return Err(Error::internal(
                     "a frame window does not match the rectangle asked for",
                 ));
             }
-            let view = window.view();
             let gain = self.gains[f].gain;
             let origin = [f64::from(x0), f64::from(y0)];
             acc.par_iter_mut()
@@ -1329,6 +1455,7 @@ impl StitchPlan {
         // Average each pixel's points.
         let n2 = (self.supersample * self.supersample) as usize;
         let width = chunk.rect.width as usize;
+        let plane = chunk.rect.pixels() as usize;
         for py in 0..tile.height as usize {
             for px in 0..tile.width as usize {
                 let p = py * tile.width as usize + px;
@@ -1350,12 +1477,12 @@ impl StitchPlan {
                 }
                 let o = (tile.y - chunk.rect.y) as usize + py;
                 let o = o * width + (tile.x - chunk.rect.x) as usize + px;
-                for (plane, sum) in chunk.rgb.iter_mut().zip(sum) {
-                    plane[o] = (sum / n2 as f64) as f32;
+                for (c, sum) in sum.into_iter().enumerate() {
+                    chunk.out[c * plane + o] = (sum / n2 as f64) as f32;
                 }
-                chunk.clipped_pixels += u64::from(any_clipped);
-                chunk.uncovered_pixels += u64::from(any_uncovered);
-                chunk.max_overshoot = chunk.max_overshoot.max(overshoot as f32);
+                chunk.stats.clipped_pixels += u64::from(any_clipped);
+                chunk.stats.uncovered_pixels += u64::from(any_uncovered);
+                chunk.stats.max_overshoot = chunk.stats.max_overshoot.max(overshoot as f32);
             }
         }
         Ok(true)
@@ -1438,26 +1565,8 @@ impl StitchPlan {
                 covered[j * w + i] = cov;
             }
         }
-        let mut runs = Vec::new();
-        for j in 0..h {
-            let mut i = 0;
-            while i < w {
-                if !covered[j * w + i] {
-                    i += 1;
-                    continue;
-                }
-                let start = i;
-                while i < w && covered[j * w + i] {
-                    i += 1;
-                }
-                runs.push(CoveredRun {
-                    y: j as u32,
-                    x0: start as u32,
-                    x1: i as u32,
-                });
-            }
-        }
         cancel.check()?;
+        let outline = trace_outline(&covered, w, h);
         let to_picture = |b: [f64; 2]| [(b[0] + 0.5) / c, (b[1] + 0.5) / c];
         let frames = self
             .order
@@ -1477,7 +1586,7 @@ impl StitchPlan {
             rgb,
             covered,
             overlays: PanoramaOverlays {
-                covered: runs,
+                covered: outline,
                 crop: [
                     f64::from(crop.x) / c,
                     f64::from(crop.y) / c,
@@ -1572,6 +1681,81 @@ pub fn plan_scratch_bytes(cells: usize, frames: usize) -> usize {
 /// The most bytes [`StitchPlan::render_chunk`] holds at once besides the chunk it returns: one
 /// tile's point plans and accumulators and one frame's window.
 pub fn render_scratch_bytes() -> usize {
+    tile_scratch_bytes() + (MAX_WINDOW_PIXELS * WINDOW_PIXEL_BYTES) as usize
+}
+
+/// [`render_scratch_bytes`] without the window: one tile's point plans and accumulators.
+pub fn tile_scratch_bytes() -> usize {
     MAX_TILE_POINTS * (size_of::<PointPlan>() + 3 * 3 * 8 + 1)
-        + (MAX_WINDOW_PIXELS * WINDOW_PIXEL_BYTES) as usize
+}
+
+/// The outline of the `true` pixels of a `width × height` mask (pixel `(i, j)` covering
+/// `[i, i + 1) × [j, j + 1)`): closed polygons along pixel edges, each corner once, clockwise on
+/// screen (y down) around the marked pixels. At a vertex where two marked pixels touch only
+/// diagonally the outline turns right, keeping them apart.
+pub(crate) fn trace_outline(mask: &[bool], width: usize, height: usize) -> Vec<Vec<[f64; 2]>> {
+    // Directions: right, down, left, up; each vertex's outgoing boundary edges, one bit each.
+    const STEP: [(isize, isize); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+    let at = |i: isize, j: isize| {
+        i >= 0
+            && j >= 0
+            && (i as usize) < width
+            && (j as usize) < height
+            && mask[j as usize * width + i as usize]
+    };
+    let vw = width + 1;
+    let mut out = vec![0_u8; vw * (height + 1)];
+    for j in 0..height {
+        for i in 0..width {
+            if !mask[j * width + i] {
+                continue;
+            }
+            let (x, y) = (i as isize, j as isize);
+            if !at(x, y - 1) {
+                out[j * vw + i] |= 1;
+            }
+            if !at(x + 1, y) {
+                out[j * vw + i + 1] |= 2;
+            }
+            if !at(x, y + 1) {
+                out[(j + 1) * vw + i + 1] |= 4;
+            }
+            if !at(x - 1, y) {
+                out[(j + 1) * vw + i] |= 8;
+            }
+        }
+    }
+    let mut polygons = Vec::new();
+    for start in 0..out.len() {
+        while out[start] != 0 {
+            let mut direction = out[start].trailing_zeros() as usize;
+            let mut vertex = start;
+            let mut path: Vec<(usize, usize)> = Vec::new();
+            loop {
+                out[vertex] &= !(1 << direction);
+                path.push((vertex, direction));
+                let (dx, dy) = STEP[direction];
+                let (x, y) = ((vertex % vw) as isize + dx, (vertex / vw) as isize + dy);
+                vertex = y as usize * vw + x as usize;
+                if vertex == start {
+                    break;
+                }
+                // Right, straight, then left.
+                direction = [1, 0, 3]
+                    .into_iter()
+                    .map(|turn| (direction + turn) % 4)
+                    .find(|&d| out[vertex] & (1 << d) != 0)
+                    .unwrap_or(direction);
+            }
+            let corners: Vec<[f64; 2]> = (0..path.len())
+                .filter(|&k| path[(k + path.len() - 1) % path.len()].1 != path[k].1)
+                .map(|k| {
+                    let v = path[k].0;
+                    [(v % vw) as f64, (v / vw) as f64]
+                })
+                .collect();
+            polygons.push(corners);
+        }
+    }
+    polygons
 }

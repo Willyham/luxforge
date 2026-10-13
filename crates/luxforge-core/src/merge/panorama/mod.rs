@@ -54,8 +54,6 @@ pub mod refusal;
 pub mod registration;
 pub mod seams;
 pub mod stitch;
-// What the job hands a stitch is read by the stitch, which this build has only in its tests.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod stitching;
 pub mod suitability;
 pub mod warp;
@@ -75,9 +73,9 @@ pub use registration::{
     register_with_progress,
 };
 pub use stitch::{
-    Contribution, CoveredRun, FrameOutline, FrameWindow, PanoramaOverlays, PanoramaPreview,
-    PlanGrid, SeamLength, StitchDiagnostics, StitchOptions, StitchPlan, StitchStage, StitchedChunk,
-    plan_stitch, plan_stitch_with_progress,
+    ChunkStats, Contribution, FrameOutline, FrameWindow, FrameWindows, PanoramaOverlays,
+    PanoramaPreview, PlanGrid, SeamLength, StitchDiagnostics, StitchOptions, StitchPlan,
+    StitchStage, StitchedChunk, WindowReader, plan_stitch, plan_stitch_with_progress,
 };
 pub use warp::WarpMesh;
 

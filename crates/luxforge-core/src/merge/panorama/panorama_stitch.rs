@@ -163,7 +163,7 @@ fn reader(recorded: &Recorded) -> impl FnMut(usize, PixelRect) -> Result<FrameWi
 fn render(plan: &StitchPlan, recorded: &Recorded, side: u32) -> ([Vec<f32>; 3], u64, u64) {
     let (w, h) = plan.output_size();
     let mut out: [Vec<f32>; 3] = std::array::from_fn(|_| vec![f32::NAN; (w * h) as usize]);
-    let mut read = reader(recorded);
+    let mut read = stitch::WindowReader::new(reader(recorded));
     let (mut clipped, mut uncovered) = (0, 0);
     for y in (0..h).step_by(side as usize) {
         for x in (0..w).step_by(side as usize) {
@@ -176,8 +176,8 @@ fn render(plan: &StitchPlan, recorded: &Recorded, side: u32) -> ([Vec<f32>; 3], 
             let chunk = plan
                 .render_chunk(rect, &mut read, &Cancel::never())
                 .unwrap();
-            clipped += chunk.clipped_pixels;
-            uncovered += chunk.uncovered_pixels;
+            clipped += chunk.stats.clipped_pixels;
+            uncovered += chunk.stats.uncovered_pixels;
             for yy in 0..rect.height {
                 for xx in 0..rect.width {
                     let i = ((y + yy) * w + x + xx) as usize;
@@ -202,9 +202,13 @@ fn overshoot(plan: &StitchPlan, recorded: &Recorded) -> f32 {
         height: h,
     };
     let chunk = plan
-        .render_chunk(rect, &mut reader(recorded), &Cancel::never())
+        .render_chunk(
+            rect,
+            &mut stitch::WindowReader::new(reader(recorded)),
+            &Cancel::never(),
+        )
         .unwrap();
-    chunk.max_overshoot
+    chunk.stats.max_overshoot
 }
 
 fn reference_projection(projection: Projection) -> reference::Projection {
@@ -985,15 +989,23 @@ fn panorama_stitch_preview_overlays_and_stack_order() {
         let q = plan.frame_position(outline.frame, pixel).unwrap();
         assert!(q[0].abs() < 1e-3 && q[1].abs() < 1e-3, "{q:?}");
     }
-    let covered: u64 = overlays
+    // The outline encloses exactly the covered pixels: outer outlines clockwise, holes not.
+    let area: f64 = overlays
         .covered
         .iter()
-        .map(|r| u64::from(r.x1 - r.x0))
+        .map(|polygon| {
+            let n = polygon.len();
+            (0..n)
+                .map(|k| {
+                    let ([x0, y0], [x1, y1]) = (polygon[k], polygon[(k + 1) % n]);
+                    x0 * y1 - x1 * y0
+                })
+                .sum::<f64>()
+                / 2.0
+        })
         .sum();
-    assert_eq!(
-        covered,
-        preview.covered.iter().filter(|&&c| c).count() as u64
-    );
+    assert_eq!(area, preview.covered.iter().filter(|&&c| c).count() as f64);
+    assert!(overlays.covered.iter().all(|polygon| polygon.len() >= 4));
     // A reduced picture keeps its shape and scale.
     let small = plan
         .preview(&recorded.proxies, 256, &Cancel::never())
@@ -1059,10 +1071,10 @@ fn panorama_stitch_cancellation_ends_every_stage() {
     .unwrap();
     let cancel = Cancel::new();
     let mut inner = reader(&three);
-    let mut read = |frame: usize, rect: PixelRect| {
+    let mut read = stitch::WindowReader::new(|frame: usize, rect: PixelRect| {
         cancel.cancel();
         inner(frame, rect)
-    };
+    });
     let (w, h) = plan.output_size();
     let error = plan
         .render_chunk(
@@ -1150,4 +1162,36 @@ fn panorama_stitch_registered_end_to_end() {
             && (f64::from(a.1) / f64::from(b.1) - 1.0).abs() < 0.05
     );
     assert!(plan.gains().iter().all(|g| (g.gain[0] - 1.0).abs() < 0.01));
+}
+
+#[test]
+fn panorama_stitch_outlines_regions_holes_and_diagonal_touches() {
+    // A 4 × 4 ring around a hole, and a pixel touching it only diagonally.
+    let (w, h) = (6, 5);
+    let mut mask = vec![false; w * h];
+    for y in 0..4 {
+        for x in 0..4 {
+            mask[y * w + x] = !((1..=2).contains(&x) && (1..=2).contains(&y));
+        }
+    }
+    mask[4 * w + 4] = true;
+    let polygons = stitch::trace_outline(&mask, w, h);
+    let area = |polygon: &Vec<[f64; 2]>| {
+        let n = polygon.len();
+        (0..n)
+            .map(|k| {
+                let ([x0, y0], [x1, y1]) = (polygon[k], polygon[(k + 1) % n]);
+                x0 * y1 - x1 * y0
+            })
+            .sum::<f64>()
+            / 2.0
+    };
+    let mut areas: Vec<f64> = polygons.iter().map(area).collect();
+    areas.sort_by(f64::total_cmp);
+    assert_eq!(areas, vec![-4.0, 1.0, 16.0], "{polygons:?}");
+    assert_eq!(
+        polygons.iter().map(Vec::len).sum::<usize>(),
+        12,
+        "only corners: {polygons:?}"
+    );
 }
