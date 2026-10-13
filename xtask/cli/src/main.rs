@@ -88,6 +88,8 @@ fn main_result() -> Result<ExitCode> {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "release-gate" => xtask_cli::release_verify::run_gate(&mut a)?,
+        "release-verify" => xtask_cli::release_verify::run_verify(&mut a)?,
         "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
         "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "check" => {
@@ -211,6 +213,8 @@ mod tests {
                 "release",
                 "release-tag",
                 "release-assemble",
+                "release-gate",
+                "release-verify",
                 "update-record",
                 "update-feed",
                 "check-repository",

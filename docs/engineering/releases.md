@@ -131,3 +131,31 @@ The output must be new. On macOS it holds the ZIP and the disk image, both label
 ## Qualification status
 
 A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a complete corresponding-source/licence review. Those gates, the application icon/desktop integration and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.
+
+## Recording gate results and verifying readiness
+
+Download every asset of the candidate's pre-release into a new directory: the downloads, `release.json`, both platform records, `release-notes.md`, the source archive and `SHA256SUMS`. This local copy is the packet. Published assets are never changed.
+
+Record each gate's result as its qualification finishes ([shape](../design/release-v0.1.md#gate-results-and-readiness)):
+
+```sh
+cargo xtask release-gate --packet PACKET --gate qualification.macos-arm64.native_full_verification \
+  --status passed --evidence m4-full-2026-10-20/summary.json \
+  --scope "M4 full tier in the background test bundle; not Finder launch or Gatekeeper" \
+  --bundle background-test --executable-identity before-signing \
+  --executable luxforge=SHA256 --executable luxforge-json=SHA256 --executable luxforge-ctl=SHA256
+
+cargo xtask release-gate --packet PACKET --gate distribution.advisory_disposition \
+  --status passed --evidence distribution-review/advisories.md \
+  --scope "Fresh audit of the locked graph for both targets" --disposition distribution
+```
+
+Gates are `distribution.NAME` or `qualification.PLATFORM.NAME`, as `release.json` lists them. `--executable` gives the SHA-256 (`shasum -a 256`) of each executable the evidence ran; it must be the candidate's `final` hash, or on macOS its `before_signing` hash for evidence from before signing. Linux results take no `--bundle`. `--status not-run` with no other option withdraws a result. The command refuses an inconsistent packet, a malformed result, evidence from another build and evidence or scope text that looks like a private path, coordinates, a photo name, a secret or an email address. It rewrites only `release.json` and its `SHA256SUMS` line. Keep the evidence itself in the private evidence store.
+
+Check the packet and write its public summary, outside the packet:
+
+```sh
+cargo xtask release-verify --packet PACKET --summary artifacts/release-summary.json
+```
+
+It lists every reason the packet is not ready and fails unless it is ready. The summary is written either way, with `release_ready` and `status` (`release-ready` or `not-ready`), and states the identity, assets, signing and each gate's status and scope; evidence references other than `https` links become `private`. It is not written if anything in it still looks private. An unsigned candidate, a rehearsal, a one-platform packet or any gate other than `passed` is never ready.
