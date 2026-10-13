@@ -539,10 +539,11 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
         "The crop module is not reported unavailable",
     )?;
     // No photo drawn: the editor records no photograph rectangle, and the canvas region carries
-    // none of the fixture's own colours.
+    // none of the fixture's own colours. The canvas alone: the filmstrip under it shows the
+    // photograph's catalog preview once that has loaded.
     let image = frame2.image()?;
-    let [left, right] = frame2.columns()?.unwrap_or([0, image.width()]);
-    let has_fixture_colour = (0..image.height()).step_by(4).any(|y| {
+    let [left, top, right, bottom] = frame2.canvas()?;
+    let has_fixture_colour = (top..bottom).step_by(4).any(|y| {
         (left..right).step_by(4).any(|x| {
             let p = image.get_pixel(x, y).0;
             fixtures::COLORS
