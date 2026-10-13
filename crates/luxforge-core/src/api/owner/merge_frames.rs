@@ -137,4 +137,28 @@ impl OwnerHandle {
             )))
             .expect("the owner is running");
     }
+
+    /// Stitch panoramas from now on with the core's own test stitch
+    /// (`merge::panorama::stitching::simple`) in place of the production stitch, for a test that
+    /// needs what the production stitch never does: everything else — the frames' shared reads,
+    /// registration, the preview, the durable writer and the publication — is the production
+    /// path. `magnify` scales the output past 1, so a test publishes a large (paged) result from
+    /// small frames; `refuse` makes every stitch plan refuse as `output-too-large` naming the
+    /// first frame. For a test, through the `test-holds` feature, which only `[dev-dependencies]`
+    /// turn on.
+    pub fn merge_panorama_test_stitch(&self, magnify: f64, refuse: bool) {
+        use crate::merge::panorama::stitching::{Stitcher, simple::SimpleStitcher};
+        let stitcher: Arc<dyn Stitcher> = Arc::new(SimpleStitcher {
+            magnify,
+            refuse,
+            ..SimpleStitcher::default()
+        });
+        self.sender
+            .send(OwnerMessage::Catalog(CatalogMessage::Merge(
+                LibraryMessage::Run(Box::new(move |owner| {
+                    owner.catalog.merge.set_panorama(stitcher, None);
+                })),
+            )))
+            .expect("the owner is running");
+    }
 }
