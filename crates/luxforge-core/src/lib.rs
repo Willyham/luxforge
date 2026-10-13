@@ -155,9 +155,9 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
-    PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
-    PreviewSource, Queued, ViewState, Zoom,
+    MaskCoverageTarget, MaskOverlayOutcome, OVERVIEW_PERCENT, PREVIEW_PROGRESS_QUIET, PhaseOutcome,
+    PreviewIntent, PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult,
+    PreviewSession, PreviewSource, Queued, ViewState, Zoom,
 };
 pub use proxy::{ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage};
 pub use render::gpu::{
