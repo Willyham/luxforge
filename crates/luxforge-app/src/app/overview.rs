@@ -140,8 +140,11 @@ pub(crate) struct Overviews {
     wanted: Option<OverviewKey>,
     wanted_content: Option<u64>,
     current: Option<Overview>,
-    /// A key none can be made of, and why.
+    /// A key none could be made of, and why: the GPU's failure, which a reference frame held of
+    /// the same content may still stand in for, or the reference's.
     failed: Option<(OverviewKey, &'static str)>,
+    /// A key the reference could not reduce, which it is not asked again.
+    reference_failed: Option<OverviewKey>,
     reducing: Option<Reducing>,
     /// The picture at rest's version whose readback was taken up last.
     adopted_version: Option<u64>,
@@ -192,6 +195,13 @@ impl Overviews {
     /// The overview held, whatever it shows.
     pub(crate) fn current(&self) -> Option<&Overview> {
         self.current.as_ref()
+    }
+
+    /// Whether making the overview of `key` failed.
+    pub(crate) fn failed_for(&self, key: &OverviewKey) -> bool {
+        self.failed
+            .as_ref()
+            .is_some_and(|(failed, _)| failed == key)
     }
 
     /// Whether the overview of `key` is held, or cannot be made: nothing to draw for it.
@@ -278,6 +288,7 @@ impl Overviews {
         self.wanted_content = None;
         self.current = None;
         self.failed = None;
+        self.reference_failed = None;
         self.adopted_version = None;
     }
 
@@ -449,9 +460,16 @@ impl Editor {
         let Some(key) = self.overviews.wanted().cloned() else {
             return Task::none();
         };
-        if self.overviews.settled(&key)
+        // The GPU makes it unless it failed to, in which case a reference frame held of the same
+        // content stands in; the reference itself is not asked twice.
+        let gpu_failed = self.overviews.failed_for(&key);
+        if self
+            .overviews
+            .current()
+            .is_some_and(|current| current.key == key)
             || self.overviews.reducing.is_some()
-            || self.gpu.makes_overview(&key)
+            || self.overviews.reference_failed.as_ref() == Some(&key)
+            || (self.gpu.makes_overview(&key) && !gpu_failed)
         {
             return Task::none();
         }
@@ -517,6 +535,7 @@ impl Editor {
             // Cancelled for newer content, or a frame it could not reduce.
             Err(why) => {
                 if ours {
+                    self.overviews.reference_failed = Some(key.clone());
                     self.overviews.fail(key, "reference-failed");
                 }
                 self.event(
