@@ -476,7 +476,7 @@ Decided the same day ([design](design/lightroom-alignment.md#decided)):
 - **Validation on the owner's real edits** runs locally, figures only, with consent asked each run (A7).
 - **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
 
-The [task plan](../tasks/lightroom/lightroom-alignment.json) is written; whether it is authorized remains open.
+The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, on 2026-10-13; whether the rest is authorized remains open.
 
 ## Colour grading
 
@@ -555,7 +555,7 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 - What is the first external module the owner would use, and what enablement and recovery behaviour does it need? A processing tool needs its CPU reference and GPU qualification; external GPU loading is not delivered by the built-in module interface.
 - Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They cover the six bundled Omarchy themes, contrast floors and moving an imported theme's own ink to meet them, the Omarchy forms read, the Theme canvas-background default, the Appearance tab, and leaving Omarchy's current theme and the system appearance for later.
 - [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
-- Are [Lightroom import](design/lightroom-import.md) and [Lightroom alignment](design/lightroom-alignment.md) authorised for implementation? Their design decisions, including the scope refinements below, do not grant that authorisation.
+- Are [Lightroom import](design/lightroom-import.md) and [Lightroom alignment](design/lightroom-alignment.md) beyond its generator authorised for implementation? Their design decisions, including the scope refinements below, do not grant that authorisation.
 - Which measured workloads and responsiveness budgets become acceptance requirements? Accepted renderer budgets do not establish a bound on total native GPU memory.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? Current RAW preset white-balance conversion has no calibration; calibrated conversion belongs to the planned Lightroom alignment work, as decided below.
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a single-click add that snaps to the drawn curve, endpoints the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.
@@ -597,7 +597,7 @@ The [design](design/usage-statistics.md) and [task plan](../tasks/project/usage-
 
 ## High-zoom minimap planning
 
-The owner requested a plan for a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction; lower-right placement and other layout/engineering defaults remain recommendations. This request authorizes planning only; implementation and native qualification remain outstanding.
+The owner requested a plan for a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction; lower-right placement and other layout/engineering defaults remain recommendations. The owner authorized implementation on 2026-10-13; native qualification remains outstanding.
 
 ## Copy and paste settings planning
 
