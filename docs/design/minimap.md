@@ -1,6 +1,6 @@
 # High-zoom minimap
 
-Status: **planned; implementation is not authorized by the planning request**. The owner requested a minimap at zoom levels of 200% or more. The owner chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below remain recommendations. [Tasks](../../tasks/interface/minimap.json) contain the implementation work.
+Status: **in implementation**, authorized by the owner on 2026-10-13. The owner requested a minimap at zoom levels of 200% or more and chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below are proposed defaults the implementation follows as recorded. [Tasks](../../tasks/interface/minimap.json) contain the implementation work.
 
 ## Behavior and scope
 
@@ -34,7 +34,7 @@ Reuse the desktop's immediate local pan and one-in-flight/one-newest-pending coa
 
 ## Overview rendering and lifetime
 
-At 100% and above, the GPU's picture-at-rest tiles already cover the full output stage for histogram/clipping counts; their reduction is currently absent. Add an optional bounded overview reduction to that existing final tile sweep at eligible zooms. Keep it independent of the main region output: it must neither replace the full-detail main view nor start a second photo surface that prepares/uploads another source or renders the stack again. Support staged and chained tiles, light sweeps and the existing fallback. CPU reduction borrows an already-required retained reference frame on a worker. It never requests a full reference render just to update the minimap.
+At 100% and above, the GPU's picture-at-rest tiles already cover the full output stage for histogram/clipping counts, and are reduced to the backdrop the view's region is drawn over (`REST_BACKDROP_BOUNDS`, up to 2048 × 2048), kept across pan and zoom ([GPU preview](gpu-preview.md)). The backdrop is not the overview: it is up to 64 MiB, exists only for a stage larger than its bounds, and reducing it again is not the single area average the reference is held to. Add an optional bounded overview reduction to that existing final tile sweep at eligible zooms, beside the backdrop. Keep it independent of the main region output: it must neither replace the full-detail main view nor start a second photo surface that prepares/uploads another source or renders the stack again. Support staged and chained tiles, light sweeps and the existing fallback. CPU reduction borrows an already-required retained reference frame on a worker. It never requests a full reference render just to update the minimap.
 
 An overview processes first at full stage resolution, then area-averages linear light and quantizes by the existing output encoding. It is a navigation thumbnail of the selected edited image, not the source, a camera/catalog preview or a stretched GPU region. Its settled output is held to the current declared display tolerance against the whole-frame CPU reference reduced with the same coverage. Add this output kind to the qualification cases; do not invent a looser minimap tolerance. Exact CPU reduction tests cover the same coverage independently.
 
