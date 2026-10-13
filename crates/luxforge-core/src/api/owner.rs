@@ -63,6 +63,8 @@ mod experiment_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
+#[cfg(test)]
+mod paged_export_tests;
 // The catalog's owner-side homes, one file each: the index, preview and library lanes and
 // browse views ([`catalog`]).
 pub(super) mod candidates;

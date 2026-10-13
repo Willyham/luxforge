@@ -1,6 +1,6 @@
 use super::{
     AnalysisPlan, AnalysisSelection, AssetRecord, DraftStamp, EditorService, ExportPlan,
-    ExportTarget, PixelSample, SamplePlan,
+    ExportTarget, PixelSample, SamplePlan, Sourced,
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 #[cfg(test)]
@@ -143,6 +143,14 @@ impl<S> Evaluation<S> {
             sensor: self.sensor,
             kind: self.kind,
         }
+    }
+}
+
+impl Evaluation<Arc<crate::artifacts::derived_source::PagedSource>> {
+    /// The paged source the stack is evaluated on, which the reference reads in bands
+    /// ([`crate::render::bands::Banded`]).
+    pub(crate) fn source(&self) -> &Arc<crate::artifacts::derived_source::PagedSource> {
+        &self.source
     }
 }
 
@@ -419,6 +427,42 @@ impl EditorService {
         let needs = stack.needs();
         let prepared =
             self.needing(needs, self.verified_prepared(&stack.asset, needs.developed))?;
+        self.read_prepared(stack, prepared)
+    }
+
+    /// [`Self::read`] for an export or a full-resolution analysis, which the reference renders in
+    /// bands when the source is paged ([`Sourced::Paged`]): the same verified source, read the
+    /// same way, except that a paged source is held as it is prepared rather than refused for
+    /// having no whole frame.
+    fn read_sourced(&self, stack: Stack) -> Result<(Sourced, Arc<CaptureMetadata>), Error> {
+        let needs = stack.needs();
+        let prepared =
+            self.needing(needs, self.verified_prepared(&stack.asset, needs.developed))?;
+        let PreparedSource::Paged(paged) = prepared else {
+            let (evaluation, capture) = self.read_prepared(stack, prepared)?;
+            return Ok((Sourced::Whole(evaluation), capture));
+        };
+        let source = paged.source;
+        if (source.width(), source.height()) != (stack.asset.width, stack.asset.height)
+            || source.id().as_str() != stack.asset.fingerprint
+        {
+            return Err(Error::internal(
+                "the prepared source is not the original the asset records",
+            ));
+        }
+        Ok((
+            Sourced::Paged(stack.evaluation.reading(source)),
+            paged.capture,
+        ))
+    }
+
+    /// [`Self::read`] of a source already verified.
+    fn read_prepared(
+        &self,
+        stack: Stack,
+        prepared: PreparedSource,
+    ) -> Result<(Evaluation, Arc<CaptureMetadata>), Error> {
+        let needs = stack.needs();
         let capture = prepared.capture().clone();
         let source = self.needing(
             needs,
@@ -540,7 +584,7 @@ impl EditorService {
         // an approximate white balance.
         let evaluation = match stack.evaluation.compiled() {
             Err(failure) => Err(failure),
-            Ok(_) => Ok(self.read(stack)?.0),
+            Ok(_) => Ok(self.read_sourced(stack)?.0),
         };
         Ok(AnalysisPlan {
             identity,
@@ -583,7 +627,7 @@ impl EditorService {
         let stack = self.evaluation(asset_id, saved(entry_id), Purpose::Exact)?;
         stack.evaluation.compiled()?;
         let identity = stack.evaluation.identity()?;
-        let (evaluation, capture) = self.read(stack)?;
+        let (evaluation, capture) = self.read_sourced(stack)?;
         Ok(ExportPlan {
             identity,
             evaluation,
