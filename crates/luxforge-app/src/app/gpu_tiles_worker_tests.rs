@@ -2958,7 +2958,7 @@ fn export_settings_measurement() {
             "jpg",
         ),
     ];
-    let median = |values: Vec<f64>| luxforge_testbase::Distribution::of(values).map(|d| d.p50);
+    let middle = |values: Vec<f64>| luxforge_testbase::Distribution::of(values).map(|d| d.p50);
     for (source, original) in &sources {
         assert!(original.is_file(), "{} is missing", original.display());
         for (name, settings, extension) in &configurations {
@@ -3169,7 +3169,7 @@ fn export_settings_measurement() {
             }
             let summary = |rows: &[Value]| {
                 let figure =
-                    |key: &str| median(rows.iter().filter_map(|row| row[key].as_f64()).collect());
+                    |key: &str| middle(rows.iter().filter_map(|row| row[key].as_f64()).collect());
                 let mut phases = serde_json::Map::new();
                 for row in rows {
                     for phase in row["phases"].as_array().into_iter().flatten() {
@@ -3179,7 +3179,7 @@ fn export_settings_measurement() {
                     }
                 }
                 for (phase, spans) in &mut phases {
-                    *spans = json!(median(
+                    *spans = json!(middle(
                         rows.iter()
                             .map(|row| row["phases"]
                                 .as_array()
