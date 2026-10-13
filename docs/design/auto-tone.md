@@ -187,8 +187,8 @@ The constants above are the starting targets. They live in one versioned `AutoTo
   - It is declared in Basic's descriptor as a header action, and it is drawn by the existing sub-group header with actions. There is no Basic-specific widget code.
   - **Shortcut:** Cmd+U / Ctrl+U, Lightroom's, declared as the action's `shortcut` (`Command+U`) in Basic's descriptor; the desktop's key binding and palette hint come from that declaration.
 - **Run:** a click sends `edit.auto-tone` with the expected revision. While the analysis runs the button shows a busy state, and a second click is ignored. The entry then appears in history and the sliders follow it.
+- **Mask target:** while the Basic section edits a mask's layer, it does not show Auto, and the palette does not offer it, as Lightroom's mask panels have no Auto. Cmd+U stays bound there and is refused with its reason in the status bar.
 - **Disabled, with a tooltip saying why:**
-  - on a mask target;
   - for a historical entry;
   - during an open draft or Compare;
   - without a photo.
@@ -243,7 +243,7 @@ The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coord
 4. **Presets.**
    - The preset composite runs Auto after the other steps, refuses the overlapping set at store, skips a degenerate photo and analyses each photo of a batch separately.
    - The import maps `AutoTone` in XMP and `.lrtemplate` with its report.
-5. **Desktop.** A real background rendered journey on the M4 correlates the button, the history row, the slider values, the session state, logs and captures, on generated photos and the supplied RAW fixtures. It covers busy state, the disabled states, Cmd+U, undo, a refusal and the preset create form.
+5. **Desktop.** A real background rendered journey on the M4 correlates the button, the history row, the slider values, the session state, logs and captures, on generated photos and the supplied RAW fixtures. It covers busy state, the disabled states, Auto's absence on a mask, Cmd+U, undo, a refusal and the preset create form.
 6. **Measurement.** Once delivery is complete, release photo-sized measurements on the M4 record click-to-entry latency for 24 MP and 60 MP, warm and cold, on the GPU and the reference, together with sample bytes and solve time.
    - Provisional targets: p95 at or below 250 ms (24 MP) and 400 ms (60 MP) on the GPU, warm.
    - A miss is reported with its figures and does not block delivery.
