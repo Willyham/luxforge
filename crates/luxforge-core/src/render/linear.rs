@@ -643,8 +643,9 @@ impl PixelDomain for Linear<'_> {
         Ok(vec![0.0_f32; values])
     }
 
-    /// The rendered-window limit ([`RENDERED_WINDOW`]) bounds a window's float frame: the camera
-    /// limits but for its side, which may be as wide as a paged source.
+    /// The rendered-window limit ([`RENDERED_WINDOW`]) bounds a float frame of a window or of a
+    /// whole stage: the camera limits but for its side, which may be as wide as a paged source's
+    /// stage.
     fn area_frame(area: Region, _: bool) -> Result<Vec<f32>, Error> {
         let (values, _) = RENDERED_WINDOW.layout(area.width, area.height)?;
         Ok(vec![0.0_f32; values])
