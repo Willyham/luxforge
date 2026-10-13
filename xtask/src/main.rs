@@ -75,6 +75,7 @@ mod raw_editor;
 mod raw_panel_smoke;
 mod release_build;
 mod release_sign;
+mod release_source;
 mod resolve_missing_smoke;
 mod scenario;
 mod select_catalog_smoke;
@@ -212,6 +213,7 @@ fn main_result() -> Result {
             )?;
         }
         "release-sign" => release_sign::run(&root, &mut a)?,
+        "release-source" => release_source::run(&root, &mut a)?,
         "update-journey" => update_journey::run(&root, &mut a)?,
         "release-assemble" => {
             let tag = a.value("--tag")?.ok_or("Required: --tag")?;
