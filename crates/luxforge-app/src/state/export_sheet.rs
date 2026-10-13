@@ -210,6 +210,9 @@ pub(crate) struct BatchPlan {
     /// Each refusing notice's code, how many photographs it would leave out and the first one's
     /// words.
     pub(crate) refused: Vec<(String, u32, String)>,
+    /// How many photographs the batch will leave out: those with a refusing notice, each once,
+    /// and those that could not be planned.
+    pub(crate) left_out: u32,
     /// How many could not be planned at all, and the first reason.
     pub(crate) failed: u32,
     pub(crate) failure: Option<String>,
@@ -225,6 +228,7 @@ impl BatchPlan {
             Ok(plan) => plan,
             Err(reason) => {
                 self.failed += 1;
+                self.left_out += 1;
                 self.failure.get_or_insert_with(|| reason.to_owned());
                 return;
             }
@@ -236,9 +240,11 @@ impl BatchPlan {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned());
         }
+        let mut refuses = false;
         for notice in plan["notices"].as_array().into_iter().flatten() {
             let code = notice["code"].as_str().unwrap_or_default();
             if notice["refuses"] == true {
+                refuses = true;
                 match self.refused.iter_mut().find(|(seen, ..)| seen == code) {
                     Some((_, count, _)) => *count += 1,
                     None => self.refused.push((
@@ -251,6 +257,9 @@ impl BatchPlan {
                 self.large += 1;
                 self.largest = self.largest.max(notice["bytes"].as_u64().unwrap_or(0));
             }
+        }
+        if refuses {
+            self.left_out += 1;
         }
     }
 }
@@ -693,7 +702,7 @@ pub(crate) fn model(
     let settings = &sheet.settings;
     let changed = sheet.changed(listed);
     let format = settings.format();
-    let (title, subtitle, export_label, stem) = match &sheet.target {
+    let (title, subtitle, mut export_label, stem) = match &sheet.target {
         SheetTarget::Single {
             file_name, stem, ..
         } => (
@@ -761,6 +770,16 @@ pub(crate) fn model(
         Some(SheetPlan::Batch(plan)) => Some(plan),
         _ => None,
     };
+    // A batch writes every photograph its plans do not leave out.
+    let writing = match &sheet.target {
+        SheetTarget::Single { .. } => None,
+        SheetTarget::Batch { count, .. } => {
+            Some(count.saturating_sub(batch.map_or(0, |plan| plan.left_out)))
+        }
+    };
+    if let Some(writing) = writing {
+        export_label = format!("Export {writing}");
+    }
     let readout = match (&sheet.target, single) {
         (SheetTarget::Batch { .. }, _) => match settings.size {
             OutputSize::Full => "Each photo at its full size".to_owned(),
@@ -881,13 +900,7 @@ pub(crate) fn model(
         && fresh
         && match &sheet.target {
             SheetTarget::Single { .. } => !refuses,
-            SheetTarget::Batch { count, .. } => {
-                *count > 0
-                    && batch.is_none_or(|plan| {
-                        plan.refused.iter().map(|(_, n, _)| n).sum::<u32>() + plan.failed
-                            < plan.planned.max(1)
-                    })
-            }
+            SheetTarget::Batch { .. } => writing.is_some_and(|writing| writing > 0),
         };
     let own = sheet
         .preset(listed)
@@ -949,7 +962,7 @@ pub(crate) fn model(
         taken,
         refusals,
         invalid: sheet.invalid.clone(),
-        summary: summary(sheet, single),
+        summary: summary(sheet, single, writing, batch),
         update: own,
         save_as: true,
         naming: sheet.naming.as_ref().map(|naming| {
@@ -1083,13 +1096,19 @@ fn physical_text(physical: &Value) -> String {
     )
 }
 
-/// The footer's summary: `1639 × 2048 · JPEG 80 · optimised · sRGB`, or for a batch `5 files ·
-/// WebP 80 · optimised · long edge 2048`.
-fn summary(sheet: &ExportSheet, plan: Option<&Value>) -> String {
+/// The footer's summary: `1639 × 2048 · JPEG 80 · optimised · sRGB`, or for a batch the files it
+/// will write and the photographs it leaves out, `4 files · 1 left out · WebP 80 · optimised ·
+/// long edge 2048`.
+fn summary(
+    sheet: &ExportSheet,
+    plan: Option<&Value>,
+    writing: Option<u32>,
+    batch: Option<&BatchPlan>,
+) -> String {
     let settings = &sheet.settings;
     let mut parts: Vec<String> = Vec::new();
-    match &sheet.target {
-        SheetTarget::Single { .. } => {
+    match (&sheet.target, writing) {
+        (SheetTarget::Single { .. }, _) => {
             if let Some(plan) = plan {
                 parts.push(format!(
                     "{} \u{d7} {}",
@@ -1098,11 +1117,17 @@ fn summary(sheet: &ExportSheet, plan: Option<&Value>) -> String {
                 ));
             }
         }
-        SheetTarget::Batch { count, .. } => parts.push(if *count == 1 {
-            "1 file".to_owned()
-        } else {
-            format!("{count} files")
-        }),
+        (SheetTarget::Batch { count, .. }, writing) => {
+            let writing = writing.unwrap_or(*count);
+            parts.push(if writing == 1 {
+                "1 file".to_owned()
+            } else {
+                format!("{writing} files")
+            });
+            if let Some(left_out) = batch.map(|plan| plan.left_out).filter(|n| *n > 0) {
+                parts.push(format!("{left_out} left out"));
+            }
+        }
     }
     let format = format_label(settings.format());
     parts.push(

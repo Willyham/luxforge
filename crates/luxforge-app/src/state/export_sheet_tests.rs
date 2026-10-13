@@ -287,7 +287,10 @@ fn a_batch_sheet_counts_its_photographs_and_the_ones_it_will_leave_out() {
     let shown = model(Some(&sheet), Some(&presets), None).unwrap();
     assert_eq!(shown.title, "Export 5 photos");
     assert_eq!(shown.subtitle, "4 RAW \u{b7} 1 JPEG \u{b7} current edits");
-    assert_eq!(shown.export_label, "Export 5");
+    assert_eq!(
+        shown.export_label, "Export 4",
+        "the photograph left out is not counted"
+    );
     assert_eq!(shown.name.as_deref(), Some("DSC_0001-web.jpg, \u{2026}"));
     assert_eq!(
         shown.large_image.as_deref(),
@@ -303,8 +306,44 @@ fn a_batch_sheet_counts_its_photographs_and_the_ones_it_will_leave_out() {
     assert!(shown.can_export, "one left out does not hold the rest");
     assert_eq!(
         shown.summary,
-        "5 files \u{b7} JPEG 80 \u{b7} optimised \u{b7} long edge 2048 \u{b7} sRGB"
+        "4 files \u{b7} 1 left out \u{b7} JPEG 80 \u{b7} optimised \u{b7} long edge 2048 \u{b7} sRGB"
     );
+}
+
+#[test]
+fn a_batch_that_can_write_nothing_cannot_export() {
+    let presets = [web()];
+    let mut sheet = ExportSheet::new(
+        SheetTarget::Batch {
+            count: 2,
+            raw: 0,
+            jpeg: 2,
+            assets: Vec::new(),
+        },
+        false,
+        web().settings,
+        Some(WEB.into()),
+    );
+    let refused = |code: &str| json!({"code": code, "refuses": true, "message": "m"});
+    let mut batch = BatchPlan::default();
+    // Two refusing notices leave one photograph out once.
+    batch.count(Ok(&json!({"suggested": null, "notices": [
+        refused("webp-too-large"), refused("folder-missing")]})));
+    batch.count(Ok(
+        &json!({"suggested": null, "notices": [refused("webp-too-large")]}),
+    ));
+    assert_eq!(batch.left_out, 2);
+    sheet.plan.answered = Some(sheet.settings.clone());
+    sheet.plan.asked = Some(sheet.settings.clone());
+    sheet.plan.answer = Some(SheetPlan::Batch(batch));
+    let shown = model(Some(&sheet), Some(&presets), None).unwrap();
+    assert_eq!(shown.export_label, "Export 0");
+    assert!(
+        shown
+            .summary
+            .starts_with("0 files \u{b7} 2 left out \u{b7} ")
+    );
+    assert!(!shown.can_export);
 }
 
 #[test]
