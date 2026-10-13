@@ -12,7 +12,7 @@
 //!
 //! Nothing here touches the file system: whether a chosen folder exists is the caller's to check,
 //! once, where it plans or writes.
-use crate::{Error, render::limits::MAX_FRAME_BYTES, tiles::output::Depth};
+use crate::{Error, tiles::output::Depth};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -632,66 +632,62 @@ impl ExportSettings {
         }
     }
 
-    /// Whether the export holds memory that scales with its output: an optimised JPEG, or any
-    /// size limit.
+    /// Whether the export holds memory that scales with its output: an optimised JPEG, any WebP
+    /// (libwebp encodes a whole picture), or any size limit.
     fn holds_output(&self) -> bool {
-        (self.format() == ExportFormat::Jpeg && self.optimise) || self.limit_bytes().is_some()
+        match self.format() {
+            ExportFormat::Jpeg => self.optimise || self.limit_bytes().is_some(),
+            ExportFormat::Webp => true,
+            ExportFormat::Tiff => false,
+        }
     }
 
     /// The notices a plan of an output of `width` × `height` carries, in order: `large-image` when
-    /// an optimised or size-limited output passes [`LARGE_IMAGE_PIXELS`], with the estimate;
-    /// `webp-too-large` when a WebP side passes [`WEBP_MAX_SIDE`], or when its frame and
-    /// libwebp's state would pass the evaluated-frame limit; `tiff-too-large` when a TIFF could
-    /// pass the format's 4 GiB; `folder-missing` when `folder` is not an existing directory, or is
-    /// `None` because the photograph has no original folder.
+    /// an output that holds memory with its size (an optimised JPEG, a WebP or a size limit) passes
+    /// [`LARGE_IMAGE_PIXELS`], with the estimate, which warns and never refuses (owner,
+    /// 2026-10-08 and 2026-10-13: no memory cap); `webp-too-large` when a WebP side passes the
+    /// format's [`WEBP_MAX_SIDE`]; `tiff-too-large` when a TIFF could pass the format's 4 GiB;
+    /// `folder-missing` when `folder` is not an existing directory, or is `None` because the
+    /// photograph has no original folder.
     pub fn notices(&self, output: (u32, u32), folder: Option<&Path>) -> Vec<Notice> {
         let (width, height) = output;
         let pixels = u64::from(width) * u64::from(height);
         let mut notices = Vec::new();
         if self.holds_output() && pixels > LARGE_IMAGE_PIXELS {
             let bytes = self.held_bytes(output);
-            let doing = if self.format() == ExportFormat::Jpeg && self.optimise {
-                "optimising"
-            } else {
-                "limiting the file size of"
+            let megapixels = pixels as f64 / 1_000_000.0;
+            let megabytes = bytes.div_ceil(1_000_000);
+            let message = match (self.format(), self.optimise, self.limit_bytes()) {
+                (ExportFormat::Webp, false, None) => format!(
+                    "Large image: WebP holds the whole {megapixels:.1} MP output while it \
+                     encodes, about {megabytes} MB"
+                ),
+                (_, true, None) => format!(
+                    "Large image: optimising {megapixels:.1} MP holds about {megabytes} MB while \
+                     encoding and is several times slower"
+                ),
+                _ => format!(
+                    "Large image: limiting the file size of {megapixels:.1} MP holds about \
+                     {megabytes} MB while encoding and is several times slower"
+                ),
             };
             notices.push(Notice {
                 code: LARGE_IMAGE,
-                message: format!(
-                    "Large image: {doing} {:.1} MP holds about {} MB while encoding and is \
-                     several times slower",
-                    pixels as f64 / 1_000_000.0,
-                    bytes.div_ceil(1_000_000)
-                ),
+                message,
                 refuses: false,
                 bytes: Some(bytes),
             });
         }
-        if self.format() == ExportFormat::Webp {
-            let encoding =
-                pixels * FRAME_BYTES + super::webp::webp_held_bytes(width, height, self.optimise);
-            let message = if !super::webp::webp_fits(width, height) {
-                Some(format!(
+        if self.format() == ExportFormat::Webp && !super::webp::webp_fits(width, height) {
+            notices.push(Notice {
+                code: WEBP_TOO_LARGE,
+                message: format!(
                     "WebP is limited to {WEBP_MAX_SIDE} px a side; this output is {width} \u{d7} \
                      {height}"
-                ))
-            } else if encoding > MAX_FRAME_BYTES {
-                Some(format!(
-                    "WebP holds the whole {width} \u{d7} {height} output while it encodes, about \
-                     {} MB, past the {} MiB limit on a frame; choose a smaller size or another \
-                     format",
-                    encoding.div_ceil(1_000_000),
-                    MAX_FRAME_BYTES >> 20
-                ))
-            } else {
-                None
-            };
-            notices.extend(message.map(|message| Notice {
-                code: WEBP_TOO_LARGE,
-                message,
+                ),
                 refuses: true,
                 bytes: None,
-            }));
+            });
         }
         if let FormatSettings::Tiff { bit_depth } = self.format
             && !super::tiff::tiff_fits(width, height, bit_depth)
@@ -730,8 +726,8 @@ impl ExportSettings {
 pub const LARGE_IMAGE: &str = "large-image";
 /// `tiff-too-large`: a TIFF that could pass the format's 4 GiB. It refuses the export.
 pub(crate) use super::tiff::TIFF_TOO_LARGE;
-/// `webp-too-large`: a WebP output side above 16,383 px, or one whose frame and encoder would
-/// pass the evaluated-frame limit. It refuses the export.
+/// `webp-too-large`: a WebP output side above 16,383 px, the format's own limit. It refuses the
+/// export.
 pub(crate) use super::webp::{WEBP_MAX_SIDE, WEBP_TOO_LARGE};
 /// `folder-missing`: the export's folder is not an existing directory. It refuses the export.
 pub const FOLDER_MISSING: &str = "folder-missing";
