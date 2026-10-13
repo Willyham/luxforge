@@ -91,6 +91,15 @@ The vignette study freezes the mask and the amount equation:
 
 One `set-vignette` field patch, `reset-vignette`, labels like `Vignette amount −35` and `Reset Vignette`.
 
+The GPU admits a non-neutral vignette only when its normalized falloff span `r1 - r0` is at
+least `1e-3`. Smaller spans, including Feather 0, use the existing whole-frame reference renderer
+with the vignette layer named by the `no-program` fallback; qualification requests retain that
+limit. This keeps f32 radius and boundary rounding from changing a nearly hard transition into a
+different effect. The frozen f64 mask and existing output tolerance are unchanged. The default
+Feather 50 has a span of 0.5 and stays on the GPU. A neutral GPU-shaped draft remains an exact
+identity regardless of span. Stacks with the unsupported settings incur the reference renderer's
+whole-frame cost; broader GPU admission requires actual shader qualification.
+
 ## Controls and interaction
 
 All three sections render from descriptors with the delivered vocabulary; no new control kind and no desktop change is expected. Every slider is a `number` control of a field-patch action, so it drafts through the core lifecycle, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request.

@@ -148,6 +148,22 @@ impl Delivery {
         state.is_owed()
     }
 
+    /// Deliver a caller's initial root events and wake the platform's wait if they leave work
+    /// owed. The wait may already be indefinite, having checked the state before this call;
+    /// unlike events delivered by its own thread, these cannot rely on the next loop iteration.
+    #[cfg(any(target_os = "linux", windows, test))]
+    pub(crate) fn initial_root(
+        &self,
+        root: u64,
+        path: &Path,
+        events: Vec<WatchEvent>,
+        wake: impl FnOnce(),
+    ) {
+        if self.root(root, path, events) {
+            wake();
+        }
+    }
+
     /// Forget what `root` is owed, when it is no longer watched.
     pub(crate) fn forget(&self, root: u64) {
         self.state().owed.remove(&root);
@@ -311,6 +327,39 @@ mod tests {
         // Once nothing is owed, the root's events are sent as they come.
         assert!(!delivery.root(1, root, vec![changed(1, "/photos/d")]));
         assert_eq!(drain(&receiver), [changed(1, "/photos/d")]);
+    }
+
+    #[test]
+    fn initial_root_delivery_wakes_an_idle_wait_when_the_channel_is_full() {
+        let (delivery, receiver) = delivery(1, Vec::new());
+        let root = Path::new("/photos");
+        delivery.root(1, root, vec![changed(1, "/photos/a")]);
+        let first = vec![
+            WatchEvent::Rescan {
+                root: 2,
+                subtree: root.to_path_buf(),
+                reason: RescanReason::NoReplay,
+            },
+            WatchEvent::CaughtUp {
+                root: 2,
+                cursor: None,
+            },
+        ];
+        let woke = std::cell::Cell::new(false);
+        delivery.initial_root(2, root, first.clone(), || woke.set(true));
+        assert!(
+            woke.get(),
+            "initial delivery must wake a wait that saw nothing owed"
+        );
+        assert_eq!(drain(&receiver), [changed(1, "/photos/a")]);
+        assert!(delivery.retry());
+        assert_eq!(drain(&receiver), first[..1]);
+        assert!(!delivery.retry());
+        assert_eq!(drain(&receiver), first[1..]);
+        // Successful delivery must leave the platform asleep with no timer or queued wake.
+        delivery.initial_root(3, root, vec![changed(3, "/photos/b")], || {
+            panic!("nothing was withheld")
+        });
     }
 
     #[test]

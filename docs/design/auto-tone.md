@@ -73,7 +73,8 @@ The query answers a bounded report (at most 4 KiB):
 - `algorithm` (`auto-tone/1`) and `values`.
 - The sample's dimensions, count and exclusions, and how source clipping was detected (`source_clip_detection`: `jpeg-code-255` or `raw-sensor-white`).
 - The statistics each value came from: the luminance percentiles, the bright and dark band fractions, the clipping fractions and the mean chroma.
-- The fields that stopped at a bound.
+- The clipping floors of the last sweep (`floors`: `highlight` at Whites −60, `shadow` at Blacks +60).
+- The fields that stopped at a bound, and any constraint the final values do not meet (`unmet`).
 - The layers the forward model used and the layers it left out.
 
 `edit.auto-tone` answers the same report as `analysis.auto-tone` beside its mutation result, also on a no-op: the report its values came from, added to the answer after the commit and never stored with the request, so a deduplicated retry, which analyses nothing, carries none. A preset whose Auto step applied answers it the same way. The desktop shows the report's text in the Auto button's tooltip after a run, taken from that answer; it asks no query, so a click analyses and solves once. The query exists so a person or an agent can see why Auto would choose a value without committing.
@@ -121,7 +122,7 @@ The solve runs off the owner and off the tile service, in a pure function in `lu
 
 - `y` is the output's encoded Rec. 709 luminance.
 - `P_q` is a weighted percentile of `y` over the sample.
-- The clipping fractions count non-excluded samples with any output channel at 1 (highlight) or 0 (shadow).
+- The clipping fractions count non-excluded samples with any output channel at 1 (highlight) or every output channel at 0 (shadow). Basic's tone scales a pixel's channels together, so it drives one channel to 0 only with the others: a single channel at 0 is a colour out of gamut, such as turquoise water through the Look, which no Blacks value removes and which lifting Blacks only greys.
 
 **Steps**, in fixed order. Every search runs over the field's own grid, so the committed value meets its constraint exactly:
 
@@ -136,8 +137,9 @@ The solve runs off the owner and off the tile service, in a pure function in `lu
    - The cap answers the over-lift complaint.
 4. **Contrast** `C` within −50..50.
    - `C = 100 · (0.60 − (P_90 − P_10))`, measured with the values so far.
-5. **Whites** `W` within −60..60: the largest integer whose highlight clipping fraction is at most 0.05%. Binary search.
-6. **Blacks** `B` within −60..60: the smallest integer whose shadow clipping fraction is at most 0.05%. Binary search.
+5. **Whites** `W` within −60..60: the largest integer whose highlight clipping fraction is at most 0.05% above its floor, the fraction at Whites −60. Binary search.
+6. **Blacks** `B` within −60..60: the smallest integer whose shadow clipping fraction is at most 0.05% above its floor, the fraction at Blacks +60. Binary search.
+   - **Floors.** Each field is held to the clipping it causes. Clipping that remains at the field's bound that clips least is not its to remove, such as speculars far above white that are not flagged as clipped in the source. Held to the absolute 0.05% instead, a frame with more such samples than that has no acceptable value: the field stops at that bound (Whites −60 dims every other highlight; Blacks +60 greys the shadows and the second sweep then lowers Exposure to hold the median), with no gain.
 7. **Second sweep.** Repeat step 1 with the other tone values fixed, then steps 5 and 6. Exactly two sweeps.
 8. **Vibrance** and **Saturation.** `ĉ` is the mean Oklab chroma of non-excluded, non-near-black output samples at the final tone values.
    - Vibrance is `clamp(60 · (1 − ĉ / c_v), 0, 25)`, with `c_v = 0.07`.
@@ -187,8 +189,8 @@ The constants above are the starting targets. They live in one versioned `AutoTo
   - It is declared in Basic's descriptor as a header action, and it is drawn by the existing sub-group header with actions. There is no Basic-specific widget code.
   - **Shortcut:** Cmd+U / Ctrl+U, Lightroom's, declared as the action's `shortcut` (`Command+U`) in Basic's descriptor; the desktop's key binding and palette hint come from that declaration.
 - **Run:** a click sends `edit.auto-tone` with the expected revision. While the analysis runs the button shows a busy state, and a second click is ignored. The entry then appears in history and the sliders follow it.
+- **Mask target:** while the Basic section edits a mask's layer, it does not show Auto, and the palette does not offer it, as Lightroom's mask panels have no Auto. Cmd+U stays bound there and is refused with its reason in the status bar.
 - **Disabled, with a tooltip saying why:**
-  - on a mask target;
   - for a historical entry;
   - during an open draft or Compare;
   - without a photo.
@@ -243,7 +245,7 @@ The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coord
 4. **Presets.**
    - The preset composite runs Auto after the other steps, refuses the overlapping set at store, skips a degenerate photo and analyses each photo of a batch separately.
    - The import maps `AutoTone` in XMP and `.lrtemplate` with its report.
-5. **Desktop.** A real background rendered journey on the M4 correlates the button, the history row, the slider values, the session state, logs and captures, on generated photos and the supplied RAW fixtures. It covers busy state, the disabled states, Cmd+U, undo, a refusal and the preset create form.
+5. **Desktop.** A real background rendered journey on the M4 correlates the button, the history row, the slider values, the session state, logs and captures, on generated photos and the supplied RAW fixtures. It covers busy state, the disabled states, Auto's absence on a mask, Cmd+U, undo, a refusal and the preset create form.
 6. **Measurement.** Once delivery is complete, release photo-sized measurements on the M4 record click-to-entry latency for 24 MP and 60 MP, warm and cold, on the GPU and the reference, together with sample bytes and solve time.
    - Provisional targets: p95 at or below 250 ms (24 MP) and 400 ms (60 MP) on the GPU, warm.
    - A miss is reported with its figures and does not block delivery.

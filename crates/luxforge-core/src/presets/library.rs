@@ -349,6 +349,7 @@ impl EditorService {
         if let Some(settings) = settings {
             validate_settings(&registry, settings)?;
         }
+        let key = self.catalog_request.clone();
         write(&mut self.connection, |tx| {
             let mut preset = load(tx, &registry, preset_id)?;
             let changed = name.as_ref().is_some_and(|name| *name != preset.name)
@@ -356,10 +357,12 @@ impl EditorService {
                 || settings.is_some_and(|settings| *settings != preset.settings);
             if !changed {
                 // The transaction commits having written nothing.
-                return Ok(PresetUpdate {
+                let result = PresetUpdate {
                     outcome: MutationOutcome::NoOp,
                     preset,
-                });
+                };
+                crate::editor::catalog_requests::record(tx, key.as_ref(), &result)?;
+                return Ok(result);
             }
             if let Some(name) = name {
                 preset.name = name;
@@ -383,23 +386,32 @@ impl EditorService {
                     encode(&Written::of(&preset))?
                 ],
             )?;
-            Ok(PresetUpdate {
+            let result = PresetUpdate {
                 outcome: MutationOutcome::Applied,
                 preset,
-            })
+            };
+            crate::editor::catalog_requests::record(tx, key.as_ref(), &result)?;
+            Ok(result)
         })
     }
 
     /// Remove a preset: `Applied` when it existed and `NoOp` when it is absent. History entries
     /// that applied it keep their settings, because an entry stores what was applied.
     pub(crate) fn delete_preset(&mut self, preset_id: &PresetId) -> Result<MutationOutcome, Error> {
-        let removed = write(&mut self.connection, |tx| {
-            Ok(tx.execute("DELETE FROM presets WHERE id=?1", [preset_id.as_str()])?)
-        })?;
-        Ok(if removed == 0 {
-            MutationOutcome::NoOp
-        } else {
-            MutationOutcome::Applied
+        let key = self.catalog_request.clone();
+        write(&mut self.connection, |tx| {
+            let removed = tx.execute("DELETE FROM presets WHERE id=?1", [preset_id.as_str()])?;
+            let outcome = if removed == 0 {
+                MutationOutcome::NoOp
+            } else {
+                MutationOutcome::Applied
+            };
+            crate::editor::catalog_requests::record(
+                tx,
+                key.as_ref(),
+                &json!({"outcome":outcome,"deleted":outcome == MutationOutcome::Applied}),
+            )?;
+            Ok(outcome)
         })
     }
 
@@ -490,6 +502,7 @@ impl EditorService {
         record: &PresetRecord,
         source_text: Option<&str>,
     ) -> Result<(), Error> {
+        let key = self.catalog_request.clone();
         write(&mut self.connection, |tx| {
             ensure_room(tx)?;
             ensure_unique(tx, &record.group, &record.name, None)?;
@@ -503,6 +516,12 @@ impl EditorService {
                     source_text
                 ],
             )?;
+            let answer = if source_text.is_some() {
+                json!({"report":record.report,"preset":record})
+            } else {
+                json!({"preset":record})
+            };
+            crate::editor::catalog_requests::record(tx, key.as_ref(), &answer)?;
             Ok(())
         })
     }

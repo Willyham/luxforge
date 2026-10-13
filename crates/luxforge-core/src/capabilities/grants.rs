@@ -377,7 +377,15 @@ impl GrantsStore {
 
     /// Record a grant. A live grant of the same scope is returned instead of a duplicate. A matching
     /// denial is cleared either way. The request identity is kept on the grant as its provenance.
+    #[cfg(test)]
     pub(crate) fn grant(&self, request: NewGrant<'_>) -> Result<GrantOutcome, Error> {
+        self.grant_published(request)?.finish()
+    }
+
+    pub(crate) fn grant_published(
+        &self,
+        request: NewGrant<'_>,
+    ) -> Result<crate::atomic_file::Publication<GrantOutcome>, Error> {
         let NewGrant {
             module_id,
             capability,
@@ -385,7 +393,7 @@ impl GrantsStore {
             actor,
             request_id,
         } = request;
-        self.document.transact(|document| {
+        self.document.transact_published(|document| {
             let denials = document.denials.len();
             document
                 .denials
@@ -427,6 +435,7 @@ impl GrantsStore {
     }
 
     /// Record a denial of one exact scope, or refresh the one already recorded.
+    #[cfg(test)]
     pub(crate) fn deny(
         &self,
         module_id: &str,
@@ -434,7 +443,18 @@ impl GrantsStore {
         scope: GrantScope,
         actor: &str,
     ) -> Result<Denial, Error> {
-        self.document.transact(|document| {
+        self.deny_published(module_id, capability, scope, actor)?
+            .finish()
+    }
+
+    pub(crate) fn deny_published(
+        &self,
+        module_id: &str,
+        capability: &str,
+        scope: GrantScope,
+        actor: &str,
+    ) -> Result<crate::atomic_file::Publication<Denial>, Error> {
+        self.document.transact_published(|document| {
             document
                 .denials
                 .retain(|denial| !denial.covers(module_id, capability, &scope));
@@ -453,8 +473,17 @@ impl GrantsStore {
     }
 
     /// Revoke one grant. Revoking a revoked grant changes nothing and returns it with `false`.
+    #[cfg(test)]
     pub(crate) fn revoke(&self, grant_id: &str, reason: &str) -> Result<(Grant, bool), Error> {
-        self.document.transact(|document| {
+        self.revoke_published(grant_id, reason)?.finish()
+    }
+
+    pub(crate) fn revoke_published(
+        &self,
+        grant_id: &str,
+        reason: &str,
+    ) -> Result<crate::atomic_file::Publication<(Grant, bool)>, Error> {
+        self.document.transact_published(|document| {
             let grant = document
                 .grants
                 .iter_mut()
@@ -473,11 +502,20 @@ impl GrantsStore {
 
     /// Revoke every live grant `matches` selects and return them. A file with nothing to revoke is
     /// neither locked nor written, so a settings write on a fresh install creates no grants file.
+    #[cfg(test)]
     pub(crate) fn revoke_matching(
         &self,
         matches: impl Fn(&Grant) -> bool,
         reason: &str,
     ) -> Result<Vec<Grant>, Error> {
+        self.revoke_matching_published(matches, reason)?.finish()
+    }
+
+    pub(crate) fn revoke_matching_published(
+        &self,
+        matches: impl Fn(&Grant) -> bool,
+        reason: &str,
+    ) -> Result<crate::atomic_file::Publication<Vec<Grant>>, Error> {
         let selected = |document: &Document| {
             document
                 .grants
@@ -485,9 +523,9 @@ impl GrantsStore {
                 .any(|grant| grant.is_live() && matches(grant))
         };
         if !selected(&self.load()?) {
-            return Ok(Vec::new());
+            return Ok(crate::atomic_file::Publication::confirmed(Vec::new()));
         }
-        self.document.transact(|document| {
+        self.document.transact_published(|document| {
             let ms = now_ms();
             let mut revoked = Vec::new();
             for grant in &mut document.grants {

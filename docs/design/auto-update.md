@@ -86,8 +86,8 @@ The `luxforge-update` crate is the format's one home: the record, the appcast wr
   "channel": "prerelease",
   "public_key": "<base64 public key of the signing key>",
   "archives": {
-    "macos-arm64": {"file": "luxforge-0.2.0-rc.1-macos-arm64.zip", "length": 5242893, "build": 9, "ed_signature": "<base64>", "minimum_system_version": "14.0", "catalog_format": 1, "signing": "notarized"},
-    "linux-x86_64": {"file": "luxforge-0.2.0-rc.1-linux-x86_64.tar.gz", "length": 5242893, "build": 9, "ed_signature": "<base64>", "catalog_format": 1, "signing": "not-applicable"}
+    "macos-arm64": {"file": "luxforge-0.2.0-rc.1-macos-arm64.zip", "length": 5242893, "build": 9, "ed_signature": "<base64>", "minimum_system_version": "14.0", "catalog_format": 2, "signing": "notarized"},
+    "linux-x86_64": {"file": "luxforge-0.2.0-rc.1-linux-x86_64.tar.gz", "length": 5242893, "build": 9, "ed_signature": "<base64>", "catalog_format": 2, "signing": "not-applicable"}
   }
 }
 ```
@@ -132,6 +132,9 @@ It leaves out, with a note, withdrawn releases and macOS archives that are not n
 - a malformed `luxforge:catalogFormat`;
 - `sparkle:informationalUpdate`.
 
+Skipped-item diagnostics use the original zero-based RSS item positions, including parser refusals
+and the payload updater's missing-catalog-format refusals, and are returned in document order.
+
 `newest_eligible` chooses the highest build above the current one on a followed channel. A channel it does not know is never followed.
 
 ### Publishing and serving the feeds
@@ -166,7 +169,7 @@ A failure in either step fails the job before anything is published.
   - answers `404` for a target with no feed, a feed over 4 MiB or any query string, and `405` with `Allow: GET, HEAD` for another method;
   - reads no request header, cookie or address and sets no cookie;
   - logs nothing but two aggregate counters, `feeds_served` and `feeds_missing`;
-  - reads a feed again only when its file changes, so at most one copy of each target's feed is held in memory.
+  - reads a feed again only when its file changes, with one load at a time per target from opening the file through caching its bytes. Other targets proceed independently. The old cache entry is released before allocating its replacement, the opened file is checked again after reading, and responses share immutable bytes. An active response may still retain its previous publication.
 
   The statistics route's global and per-installation limits do not apply to it; the connection cap and the request timeout do.
 - **The local reference stack** mounts `LUXFORGE_UPDATE_STORE` (default `./update-store`) into its ingress, so the route can be exercised before production exists.
@@ -394,7 +397,7 @@ Otherwise it reports `linux-notify`. It still checks and offers the update, `upd
    - Files keep their permission bits, executable bits included, with set-id and sticky bits, group and other write removed. Directories gain owner access.
    - The extracted `build.json` must name the item's version and build and this payload's target, and the payload's executable must be present and executable (`build-mismatch` otherwise).
 
-   On Linux the filesystem is then synced, so a crash after the swap cannot leave files that never reached the disk. The archive is deleted.
+   On Linux the filesystem is then synced before the update is ready; a failure to open or sync it refuses the update, removes staging and leaves the installed payload untouched. The archive is deleted.
 5. **Install** at the end of the quit path, after the catalog is closed. The staged `build.json` is checked again first.
    - On Linux, `renameat2(RENAME_EXCHANGE)` swaps `Luxforge` and the staging's `Luxforge.new` atomically. It is called through `rustix`, so the crate needs no `unsafe`. The old payload then moves from the staging directory to `Luxforge.previous` beside the new one.
    - Where the filesystem cannot exchange, and on other unix systems, two renames are used instead. The payload moves to `Luxforge.previous` and the new one into its place. If the second rename fails, the first is undone.

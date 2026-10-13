@@ -192,6 +192,51 @@ fn the_menu_opens_the_sheet_which_plans_only_what_it_must_one_at_a_time() {
     finish(editor, catalog);
 }
 
+#[test]
+fn a_closed_export_sheets_late_plan_cannot_answer_the_reopened_sheet() {
+    use crate::state::export_sheet::SheetPlan;
+
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
+    open_sheet(&mut editor);
+    let generation = editor.export.sheet_generation;
+    let settings = editor.export.sheet.as_ref().unwrap().settings.clone();
+    sheet(&mut editor, SheetMessage::Close);
+    editor.document.display_entry = Some(luxforge_core::EntryId::new());
+    open_sheet(&mut editor);
+    let target = editor.export.sheet.as_ref().unwrap().target.clone();
+    assert_ne!(editor.export.sheet_generation, generation);
+    // Even identical settings belong to different sheets and saved entries. Both an answer and
+    // a refusal for the closed one leave the new plan in flight and Export waiting for it.
+    for result in [
+        Ok(SheetPlan::Single(
+            json!({"suggested": "/tmp/old-photo.jpg", "notices": []}),
+        )),
+        Err("old entry refused".into()),
+    ] {
+        let _ = editor.update(Message::Export(ExportMessage::Planned {
+            generation,
+            settings: Box::new(settings.clone()),
+            result,
+        }));
+        let reopened = editor.export.sheet.as_ref().unwrap();
+        assert_eq!(reopened.target, target);
+        assert!(reopened.plan.in_flight);
+        assert!(reopened.plan.answer.is_none());
+        assert!(reopened.plan.error.is_none());
+        assert!(reopened.plan.answered.is_none());
+        assert!(!editor.workspace.export_sheet.as_ref().unwrap().can_export);
+    }
+    // The current sheet's answer still finishes its own plan.
+    let _ = editor.update(Message::Export(ExportMessage::Planned {
+        generation: editor.export.sheet_generation,
+        settings: Box::new(settings),
+        result: Ok(SheetPlan::Single(quiet_plan())),
+    }));
+    assert!(!editor.export.sheet.as_ref().unwrap().plan.in_flight);
+    assert!(editor.export.sheet.as_ref().unwrap().plan.answer.is_some());
+    finish(editor, catalog);
+}
+
 /// A queued export with its first read already applied: the desktop holds a running record at
 /// `progress`.
 fn running_export(progress: f64) -> (Editor, std::path::PathBuf) {

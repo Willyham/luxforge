@@ -51,10 +51,7 @@ pub(crate) use read::{JpegProfiles, ReadFile, from_copy, read, read_with};
 use super::{availability::SYSTEM_ACTOR, journal::Request, locate::Phase};
 use crate::{
     AssetId, EditorService, EditorState, Error, JobId,
-    catalog_types::{
-        CatalogFolderId, DevelopOutcome, DevelopReport, DevelopedPick, FolderValue,
-        LibraryChangeDetail, LibraryItem, MomentId,
-    },
+    catalog_types::{CatalogFolderId, FolderValue, MomentId},
     editor::{library_rows, now_ms},
     jobs::JobControl,
 };
@@ -207,62 +204,6 @@ pub(crate) fn develop_file(
         file: file_read,
         moment: file.moment.clone(),
     })
-}
-
-/// A Develop's report as its request's recorded changes say it, for a retry answered after a
-/// restart ([`journal::parts`](super::journal::parts)): each change, and each file whose photograph
-/// a change created (`developed-asset`) or relinked (`asset-source`), with the pick it cleared
-/// after it; a copy developed in a pick's place is its `used`. A pick linked to a photograph
-/// already in the catalog records no photograph, so it is not listed; nothing failed is either.
-/// Each photograph's `folder_id` is the one `folder_of` answers, the folder it is in now.
-pub(crate) fn recorded_report(
-    parts: &[LibraryChangeDetail],
-    folder_of: impl Fn(&AssetId) -> Result<CatalogFolderId, Error>,
-) -> Result<DevelopReport, Error> {
-    let mut report = DevelopReport::default();
-    for part in parts {
-        report.changes.push(part.change.sequence);
-        let mut pending: Option<DevelopedPick> = None;
-        for row in &part.rows {
-            let located = |key: &str| {
-                row.after
-                    .as_ref()
-                    .and_then(|after| after.get(key))
-                    .and_then(|value| value.as_str())
-                    .map(PathBuf::from)
-            };
-            let developed = match &row.item {
-                LibraryItem::DevelopedAsset { asset_id } => {
-                    located("path").map(|path| (asset_id.clone(), path, DevelopOutcome::Created))
-                }
-                LibraryItem::AssetSource { asset_id } => located("locator")
-                    .map(|path| (asset_id.clone(), path, DevelopOutcome::Relinked)),
-                LibraryItem::Pick { path } if row.after.is_none() => {
-                    if let Some(mut done) = pending.take() {
-                        if done.path != *path {
-                            done.used = Some(std::mem::replace(&mut done.path, path.clone()));
-                        }
-                        report.developed.push(done);
-                    }
-                    None
-                }
-                _ => None,
-            };
-            if let Some((asset_id, path, outcome)) = developed {
-                report.developed.extend(pending.take());
-                let folder_id = folder_of(&asset_id)?;
-                pending = Some(DevelopedPick {
-                    path,
-                    used: None,
-                    asset_id,
-                    outcome,
-                    folder_id,
-                });
-            }
-        }
-        report.developed.extend(pending);
-    }
-    Ok(report)
 }
 
 /// The catalog folder a developed photograph is in now, for its Develop's report.

@@ -120,6 +120,7 @@ fn primitive(steps: Vec<GpuStep>) -> PhotoPrimitive {
         source: None,
         window: None,
         rest: None,
+        rest_under: false,
         overview: None,
         overview_draw: None,
         offset: Vector::new(0.0, 0.0),

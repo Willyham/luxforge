@@ -73,7 +73,11 @@ struct Context {
 std::mutex g_mutex;
 std::string g_last_error;
 int g_log_level = SD_LOG_WARN;
+#ifdef LUXFORGE_CAPTURE_CONDITIONING
+// The qualification probe alone records encoded conditionings for save_condition. Keeping
+// them in the editor would retain every Replace prompt and tensor after its model was unloaded.
 std::map<std::string, SDCondition> g_observed;
+#endif
 lf_sd_progress_cb g_progress = nullptr;
 void* g_progress_user        = nullptr;
 // The context the calling thread is opening or generating with.
@@ -179,10 +183,18 @@ std::string save_condition(const SDCondition& c, const char* path) {
     return "";
 }
 
-std::string load_condition(const char* path, SDCondition& c) {
+// A null output validates the whole file's shape and length without allocating its tensor
+// payloads: generator admission can reject bad conditioning before opening model weights.
+std::string load_condition(const char* path, SDCondition* c) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         return std::string("cannot read ") + path;
+    }
+    in.seekg(0, std::ios::end);
+    const auto file_bytes = in.tellg();
+    in.seekg(0, std::ios::beg);
+    if (!in || file_bytes < 16) {
+        return std::string(path) + ": truncated";
     }
     char magic[8];
     uint32_t version = 0;
@@ -213,23 +225,34 @@ std::string load_condition(const char* path, SDCondition& c) {
             if (!in || dim <= 0 || dim > (1 << 24)) {
                 return std::string(path) + ": bad dimension";
             }
+            // Check before multiplying: eight individually legal dimensions can overflow i64.
+            if (elements > (int64_t(1) << 28) / dim) {
+                return std::string(path) + ": field too large";
+            }
             elements *= dim;
         }
-        if (elements > (int64_t(1) << 28)) {
-            return std::string(path) + ": field too large";
-        }
-        std::vector<float> values(static_cast<size_t>(elements));
-        in.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
-        if (!in) {
+        const auto payload_bytes = static_cast<std::streamoff>(elements * sizeof(float));
+        const auto position = in.tellg();
+        if (!in || position < 0 || payload_bytes > file_bytes - position) {
             return std::string(path) + ": truncated";
         }
-        sd::Tensor<float> tensor(shape, std::move(values));
-        if (name == "c_crossattn") {
-            c.c_crossattn = std::move(tensor);
-        } else if (name == "c_vector") {
-            c.c_vector = std::move(tensor);
-        } else {
+        if (name != "c_crossattn" && name != "c_vector") {
             return std::string(path) + ": unknown field " + name;
+        }
+        if (c == nullptr) {
+            in.seekg(payload_bytes, std::ios::cur);
+        } else {
+            std::vector<float> values(static_cast<size_t>(elements));
+            in.read(reinterpret_cast<char*>(values.data()), payload_bytes);
+            if (!in) {
+                return std::string(path) + ": truncated";
+            }
+            sd::Tensor<float> tensor(shape, std::move(values));
+            if (name == "c_crossattn") {
+                c->c_crossattn = std::move(tensor);
+            } else {
+                c->c_vector = std::move(tensor);
+            }
         }
     }
     if (in.peek() != std::char_traits<char>::eof()) {
@@ -261,8 +284,13 @@ bool luxforge_text_encoder_absent() {
 }
 
 void luxforge_condition_observed(const std::string& text, const SDCondition& condition) {
+#ifdef LUXFORGE_CAPTURE_CONDITIONING
     std::lock_guard<std::mutex> lock(g_mutex);
     g_observed[text] = condition;
+#else
+    (void)text;
+    (void)condition;
+#endif
 }
 
 extern "C" {
@@ -453,6 +481,7 @@ int32_t lf_sd_generate(Context* context, const lf_sd_request* request, uint8_t* 
 
 // Write the conditioning the text encoder last computed for `text` to `path`.
 int32_t lf_sd_condition_save(const char* text, const char* path, char* error, size_t error_len) {
+#ifdef LUXFORGE_CAPTURE_CONDITIONING
     try {
         SDCondition condition;
         {
@@ -474,10 +503,31 @@ int32_t lf_sd_condition_save(const char* text, const char* path, char* error, si
         set_error(error, error_len, e.what());
     }
     return 1;
+#else
+    (void)text;
+    (void)path;
+    set_error(error, error_len, "conditioning capture is disabled outside the qualification probe");
+    return 1;
+#endif
 }
 
 // Supply the conditioning in `path` to `ctx` for `text`, or with a NULL path stop supplying one.
 // Not called while `ctx` generates.
+int32_t lf_sd_condition_validate(const char* path, char* error, size_t error_len) {
+    try {
+        const std::string message = load_condition(path, nullptr);
+        if (message.empty()) {
+            return 0;
+        }
+        set_error(error, error_len, message);
+    } catch (const std::exception& e) {
+        set_error(error, error_len, e.what());
+    } catch (...) {
+        set_error(error, error_len, "unknown exception validating conditioning");
+    }
+    return 1;
+}
+
 int32_t lf_sd_condition_supply(Context* ctx, const char* text, const char* path, char* error, size_t error_len) {
     try {
         if (path == nullptr) {
@@ -485,7 +535,7 @@ int32_t lf_sd_condition_supply(Context* ctx, const char* text, const char* path,
             return 0;
         }
         SDCondition condition;
-        std::string message = load_condition(path, condition);
+        std::string message = load_condition(path, &condition);
         if (!message.empty()) {
             set_error(error, error_len, message);
             return 1;

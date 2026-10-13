@@ -1,0 +1,343 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "v0-1-audit-followup",
+  "title": "Complete the release audit follow-up fixes",
+  "objective": "Close the remaining advised correctness and resource-lifecycle defects while preserving originals and honest native qualification.",
+  "context_summary": "The owner authorized merging the first audit fixes to main and continuing with the remaining advised fixes. Current main contains the audited first batch; the design defines the authorized follow-up and separates absent native inputs from deliverable code.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Implement durable catalog request identity and transactional replay, including no-ops, deletion, batches and interrupted jobs.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "Restart and cache eviction cannot replay a mutation against newer catalog work.",
+        "Changed input is refused, no-op results survive restart, and permanent deletion retains its request result.",
+        "Batch targets/settings are frozen and interrupted admitted work never resolves a new selection.",
+        "Current-format refusal preserves unsupported catalog bytes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core --lib durable_requests"
+        ],
+        "expected_results": [
+          "Restart and cache eviction cannot replay a mutation against newer catalog work.",
+          "Changed input is refused, no-op results survive restart, and permanent deletion retains its request result.",
+          "Batch targets/settings are frozen and interrupted admitted work never resolves a new selection.",
+          "Current-format refusal preserves unsupported catalog bytes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Preserve known source-integrity failures and verify recovery on the library worker.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "Known Changed is not cleared by inode and length alone; repaired bytes can recover after bounded verification.",
+        "Cancellation, changed locators and newer integrity failures cannot be overwritten by stale worker observations."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core --lib availability"
+        ],
+        "expected_results": [
+          "Known Changed is not cleared by inode and length alone; repaired bytes can recover after bounded verification.",
+          "Cancellation, changed locators and newer integrity failures cannot be overwritten by stale worker observations."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Coordinate shared resource writes and permission revocation, with explicit publication and durability outcomes.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "Concurrent owners/processes cannot share writable staging or over-admit quota; waiting cancellation is effective.",
+        "Post-rename failures preserve visible state, required cancellation/events and all referenced artifact bytes.",
+        "Other owners revalidate before sends and affected active/queued work is cancelled without idle polling."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core --lib capabilities"
+        ],
+        "expected_results": [
+          "Concurrent owners/processes cannot share writable staging or over-admit quota; waiting cancellation is effective.",
+          "Post-rename failures preserve visible state, required cancellation/events and all referenced artifact bytes.",
+          "Other owners revalidate before sends and affected active/queued work is cancelled without idle polling."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Correct appcast item diagnostics and ingress rate, cache and retention bounds.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "Diagnostics identify original RSS positions.",
+        "Configured non-divisor rates retain their stated limit and burst capacity.",
+        "One cold feed allocation per target is shared; other targets stay independent.",
+        "Identifier retention is bounded independently of the statistics interval."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-update --lib",
+          "tools/cargo-cached test --manifest-path services/usage-ingest/Cargo.toml"
+        ],
+        "expected_results": [
+          "Diagnostics identify original RSS positions.",
+          "Configured non-divisor rates retain their stated limit and burst capacity.",
+          "One cold feed allocation per target is shared; other targets stay independent.",
+          "Identifier retention is bounded independently of the statistics interval."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Bound request waiting and resource use around blocking operating-system DNS resolution.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "A held resolver does not hold a cancelled/expired request or owner shutdown.",
+        "Admission, workers and abandoned lookups are bounded; saturation and later recovery are tested.",
+        "IP literal and address-class/rebinding protections remain unchanged."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-net --lib transport"
+        ],
+        "expected_results": [
+          "A held resolver does not hold a cancelled/expired request or owner shutdown.",
+          "Admission, workers and abandoned lookups are bounded; saturation and later recovery are tested.",
+          "IP literal and address-class/rebinding protections remain unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Add precise vignette boundary readback coverage without weakening the oracle or tolerance.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "The white 20 by 20 hard-edge case and nearby positive feathers compare actual shader output with the reference.",
+        "Missing hardware remains an explicit skip; no simulation-only rendering change is claimed."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app --bin luxforge gpu_colour_vignette -- --nocapture"
+        ],
+        "expected_results": [
+          "The white 20 by 20 hard-edge case and nearby positive feathers compare actual shader output with the reference.",
+          "Missing hardware remains an explicit skip; no simulation-only rendering change is claimed."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Integrate the follow-up fixes, current documentation and available final checks.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "Changed behaviors pass available focused/lint checks; unrelated baseline failures are retained by name under the repository verification rules, and quick reports its actual outcome.",
+        "The public retry reproduction no longer mutates later work; originals stay unchanged.",
+        "Feature status, user guide, roadmap and audit report distinguish implemented fixes from remaining qualification."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached fmt --all",
+          "tools/cargo-cached xtask check-repository",
+          "tools/cargo-cached xtask verify --tier quick --output NEW"
+        ],
+        "expected_results": [
+          "Changed behaviors pass available focused/lint checks; unrelated baseline failures are retained by name under the repository verification rules, and quick reports its actual outcome.",
+          "The public retry reproduction no longer mutates later work; originals stay unchanged.",
+          "Feature status, user guide, roadmap and audit report distinguish implemented fixes from remaining qualification."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Qualify native rendering, watcher delivery, publication and photo-sized costs on their required hosts.",
+      "status": "ready",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release audit follow-up contract",
+          "target": "docs/design/v0.1-audit-followup.md",
+          "relevance": "Settled behavior, bounds, acceptance and division of responsibility"
+        }
+      ],
+      "acceptance_criteria": [
+        "Native vignette/Contrast readback and relevant UI captures have correlated state and logs.",
+        "Changed Windows watcher delivery and macOS signing extraction run on their target systems.",
+        "Available corpus and timing checks state their measured scope; missing inputs are not passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add the cheapest behavior regression, validate the completed change, and retain the actual result without retrying unrelated failures."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask test --native-watchers",
+          "tools/cargo-cached xtask verify --tier rendered --output NEW"
+        ],
+        "expected_results": [
+          "Native vignette/Contrast readback and relevant UI captures have correlated state and logs.",
+          "Changed Windows watcher delivery and macOS signing extraction run on their target systems.",
+          "Available corpus and timing checks state their measured scope; missing inputs are not passes."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-008"
+      ]
+    }
+  ]
+}

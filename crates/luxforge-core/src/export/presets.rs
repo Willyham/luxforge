@@ -269,14 +269,23 @@ impl ExportPresetStore {
     }
 
     /// Store a new preset of the person's own.
+    #[cfg(test)]
     pub(crate) fn create(
         &self,
         name: &str,
         settings: ExportSettings,
     ) -> Result<ExportPreset, Error> {
+        self.create_published(name, settings)?.finish()
+    }
+
+    pub(crate) fn create_published(
+        &self,
+        name: &str,
+        settings: ExportSettings,
+    ) -> Result<crate::atomic_file::Publication<ExportPreset>, Error> {
         check_name(name)?;
         settings.check()?;
-        self.document()?.transact(|document| {
+        self.document()?.transact_published(|document| {
             if document.presets.len() >= MAX_PRESETS {
                 return Err(Error::resource_limit(format!(
                     "at most {MAX_PRESETS} export presets are kept; delete one first"
@@ -295,12 +304,22 @@ impl ExportPresetStore {
 
     /// Rename a preset of the person's own, replace its settings, or both. A built-in preset is
     /// refused with `validation`, as is an identity no preset has.
+    #[cfg(test)]
     pub(crate) fn update(
         &self,
         preset_id: &str,
         name: Option<&str>,
         settings: Option<ExportSettings>,
     ) -> Result<ExportPreset, Error> {
+        self.update_published(preset_id, name, settings)?.finish()
+    }
+
+    pub(crate) fn update_published(
+        &self,
+        preset_id: &str,
+        name: Option<&str>,
+        settings: Option<ExportSettings>,
+    ) -> Result<crate::atomic_file::Publication<ExportPreset>, Error> {
         refuse_builtin(preset_id, "updated")?;
         if let Some(name) = name {
             check_name(name)?;
@@ -308,7 +327,7 @@ impl ExportPresetStore {
         if let Some(settings) = &settings {
             settings.check()?;
         }
-        self.document()?.transact(|document| {
+        self.document()?.transact_published(|document| {
             let index = document.find(preset_id).ok_or_else(|| unknown(preset_id))?;
             if let Some(name) = name {
                 document.name_free(name, Some(preset_id))?;
@@ -323,9 +342,17 @@ impl ExportPresetStore {
 
     /// Delete a preset of the person's own: `true` when it was there. A built-in preset is refused
     /// with `validation`.
+    #[cfg(test)]
     pub(crate) fn delete(&self, preset_id: &str) -> Result<bool, Error> {
+        self.delete_published(preset_id)?.finish()
+    }
+
+    pub(crate) fn delete_published(
+        &self,
+        preset_id: &str,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         refuse_builtin(preset_id, "deleted")?;
-        self.document()?.transact(|document| {
+        self.document()?.transact_published(|document| {
             Ok(match document.find(preset_id) {
                 Some(index) => {
                     document.presets.remove(index);

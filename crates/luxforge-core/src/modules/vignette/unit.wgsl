@@ -71,6 +71,10 @@ fn lf_vignette_vignette_lift(channel: f32, lift: f32) -> f32 {
 }
 
 fn lf_vignette_vignette(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {
+    // A neutral draft has no effect, even where the mask's boundary is unsupported in f32.
+    if lf_f32(words + 9u) == 0.0 {
+        return rgb;
+    }
     let mask = lf_vignette_vignette_mask(pos, words);
     if mask == 0.0 {
         return rgb;

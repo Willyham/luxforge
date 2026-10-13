@@ -760,9 +760,10 @@ impl DerivedSourceWriter {
     /// is kept, and one that holds anything else is replaced. The manifest is written last the
     /// same way, and one sync of `sources/` then makes every rename durable. Every object is live
     /// from before the writer relies on it until the service that made this writer closes, so no
-    /// collection removes it before the catalog records it. A failure or cancellation at any step
-    /// leaves no manifest, so nothing can name the chunks already written, which a later collection
-    /// removes once they are no longer live. Worker work: about one chunk of scratch, 12 MiB of
+    /// collection removes it before the catalog records it. A failure before manifest publication
+    /// leaves no manifest; a failure syncing the directory after publication retains the manifest
+    /// and its objects with an explicit visible-publication error. Unreferenced objects can be
+    /// collected once they are no longer live. Worker work: about one chunk of scratch, 12 MiB of
     /// samples and their encoding.
     pub(crate) fn write_with(
         &self,
@@ -898,7 +899,12 @@ impl DerivedSourceWriter {
         self.publish(&sha256, bytes, [Step::StageManifest, Step::RenameManifest])?;
         inject(Step::SyncDirectory)
             .and_then(|()| atomic_file::sync_dir(sources))
-            .map_err(|error| file_error("cannot publish derived source", error.kind()))?;
+            .map_err(|error| {
+                let mut error =
+                    atomic_file::durability_error(&sources.join(id.sha256()), error.kind());
+                error.detail = format!("cannot publish derived source: {}", error.detail);
+                error
+            })?;
         Ok((id, bytes.len() as u64))
     }
 
@@ -1648,6 +1654,12 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.kind, ErrorKind::FileAccess, "{step:?}: {error}");
             assert!(error.detail.contains("derived source"), "{error}");
+            if step == Step::SyncDirectory {
+                assert_eq!(error.data.as_deref().unwrap()["published"], true);
+                assert_eq!(error.data.as_deref().unwrap()["durable"], false);
+            } else {
+                assert!(error.data.is_none());
+            }
             assert_eq!(staged(&root), 0, "{step:?} leaves nothing staged");
             let manifest = objects(&root).contains(reference.id.sha256());
             assert_eq!(

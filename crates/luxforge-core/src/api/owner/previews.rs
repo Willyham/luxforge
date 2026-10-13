@@ -690,7 +690,13 @@ pub(in crate::api) fn preview_read(
         debug_assert!(joined, "a task's job is live and shared");
     }
     dispatch(owner);
-    answer(&PreviewAnswer::Queued { job_id, fallback })
+    // A file's other stage is of the same file at the same signature.
+    let fallback_current = fallback.is_some();
+    answer(&PreviewAnswer::Queued {
+        job_id,
+        fallback,
+        fallback_current,
+    })
 }
 
 /// [`want_view_items`] for a view over files.

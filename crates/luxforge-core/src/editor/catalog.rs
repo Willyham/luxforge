@@ -19,7 +19,7 @@ use std::{
 /// ([`MERGE_SCHEMA`]). A catalog is marked by [`CATALOG_APPLICATION_ID`] as well as its format, so
 /// a database without the mark is not taken for one. Every other marker, earlier or later, is
 /// refused by name and left as it is; choose a new catalog path.
-pub const CATALOG_FORMAT: i64 = 1;
+pub const CATALOG_FORMAT: i64 = 2;
 /// SQLite's `application_id` for a Luxforge catalog, `LXFC`.
 pub(crate) const CATALOG_APPLICATION_ID: i64 = 0x4C58_4643;
 pub(super) const ASSET_COLUMNS: &str =
@@ -178,6 +178,7 @@ impl EditorService {
         write(connection, |tx| {
             tx.execute_batch(&format!(
                 "{LIBRARY_SCHEMA}
+                 {request_schema}
                  CREATE TABLE entries (
                     id TEXT PRIMARY KEY,
                     asset_id TEXT NOT NULL REFERENCES assets(id),
@@ -264,7 +265,8 @@ impl EditorService {
                  {DERIVED_SOURCE_SCHEMA}
                  {MERGE_SCHEMA}
                  PRAGMA application_id={CATALOG_APPLICATION_ID};
-                 PRAGMA user_version={CATALOG_FORMAT};"
+                 PRAGMA user_version={CATALOG_FORMAT};",
+                request_schema = super::catalog_requests::SCHEMA
             ))?;
             tx.execute(
                 "INSERT INTO catalog_meta (key, value) VALUES ('catalog_id', ?1)",
@@ -436,6 +438,8 @@ const LIBRARY_SCHEMA: &str = "
         canonical_locator TEXT NOT NULL UNIQUE,
         file_identity TEXT NOT NULL UNIQUE,
         fingerprint TEXT NOT NULL,
+        fingerprint_mismatch INTEGER NOT NULL DEFAULT 0 CHECK(fingerprint_mismatch IN(0,1)),
+        integrity_generation INTEGER NOT NULL DEFAULT 0 CHECK(integrity_generation >= 0),
         byte_len INTEGER NOT NULL,
         width INTEGER NOT NULL,
         height INTEGER NOT NULL,
@@ -964,7 +968,29 @@ impl EditorService {
         &mut self,
         change: impl FnOnce(&Transaction<'_>) -> Result<crate::library::journal::Outcome, Error>,
     ) -> Result<crate::library::journal::Outcome, Error> {
-        let outcome = write(&mut self.connection, change)?;
+        self.library_write_answer(change, |outcome| {
+            serde_json::to_value(outcome.answer())
+                .map_err(|error| Error::internal(error.to_string()))
+        })
+        .map(|(outcome, _)| outcome)
+    }
+
+    pub(crate) fn library_write_answer(
+        &mut self,
+        change: impl FnOnce(&Transaction<'_>) -> Result<crate::library::journal::Outcome, Error>,
+        answer: impl FnOnce(&crate::library::journal::Outcome) -> Result<serde_json::Value, Error>,
+    ) -> Result<(crate::library::journal::Outcome, serde_json::Value), Error> {
+        let key = self.catalog_request.clone();
+        let terminal = self.catalog_terminal_job.clone();
+        let (outcome, response) = write(&mut self.connection, |tx| {
+            let outcome = change(tx)?;
+            let response = answer(&outcome)?;
+            super::catalog_requests::record(tx, key.as_ref(), &response)?;
+            if let Some(job) = terminal {
+                super::catalog_requests::finish(tx, &job, &Ok(response.clone()))?;
+            }
+            Ok((outcome, response))
+        })?;
         for asset_id in outcome.sources() {
             if self.entries.borrow().revision(asset_id).is_some() {
                 let head = head_from(&self.connection, asset_id)?;
@@ -978,7 +1004,7 @@ impl EditorService {
                 self.forget_deleted(asset_id);
             }
         }
-        Ok(outcome)
+        Ok((outcome, response))
     }
 
     /// Empty Removed (`catalog.empty-removed`): at most `limit` removed photographs' records, with
@@ -1001,6 +1027,7 @@ impl EditorService {
     > {
         let live = self.live_artifacts.clone();
         let live_sources = self.live_sources.clone();
+        let key = self.catalog_request.clone();
         let (emptied, keep) = write(&mut self.connection, |tx| {
             let emptied = crate::library::remove::empty(tx, &live, &live_sources, limit)?;
             let keep = if emptied.artifacts.is_empty() && emptied.sources.is_empty() {
@@ -1011,6 +1038,7 @@ impl EditorService {
                     super::derived_source::retained_source_objects(tx)?,
                 ))
             };
+            super::catalog_requests::record(tx, key.as_ref(), &emptied_answer(&emptied))?;
             Ok((emptied, keep))
         })?;
         for asset_id in &emptied.assets {
@@ -1058,6 +1086,22 @@ impl EditorService {
     /// with, so a later change marks it stale. The journal's own reader, one row by its key.
     pub(crate) fn library_sequence(&self) -> Result<crate::catalog_types::LibraryChangeSeq, Error> {
         crate::library::journal::latest(&self.connection)
+    }
+}
+
+pub(crate) fn emptied_answer(
+    emptied: &crate::library::remove::Emptied,
+) -> crate::catalog_types::EmptyRemovedAnswer {
+    crate::catalog_types::EmptyRemovedAnswer {
+        outcome: if emptied.assets.is_empty() {
+            crate::MutationOutcome::NoOp
+        } else {
+            crate::MutationOutcome::Applied
+        },
+        deleted: u32::try_from(emptied.assets.len()).unwrap_or(u32::MAX),
+        merges: u32::try_from(emptied.merges).unwrap_or(u32::MAX),
+        remaining: u32::try_from(emptied.remaining).unwrap_or(u32::MAX),
+        deduplicated: false,
     }
 }
 
@@ -1117,19 +1161,19 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 1, marked as a Luxforge catalog, with every table, index and trigger of the
+    /// An empty database initializes with the current format, marked as a Luxforge catalog, with every table, index and trigger of the
     /// design's storage, the catalog's, auto-collapse's, the derived sources' and the merges'
     /// alike, and makes no index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-1.sqlite");
+        let catalog = temp("current-format.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 1);
-        assert_eq!(CATALOG_FORMAT, 1);
+        assert_eq!(format, CATALOG_FORMAT);
+        assert_eq!(CATALOG_FORMAT, 2);
         let application_id: i64 = connection
             .pragma_query_value(None, "application_id", |row| row.get(0))
             .unwrap();
@@ -1145,6 +1189,7 @@ mod tests {
                 "capture",
                 "catalog_folders",
                 "catalog_meta",
+                "catalog_requests",
                 "collapsed_entries",
                 "collection_members",
                 "collections",
@@ -1187,6 +1232,7 @@ mod tests {
                 "catalog_folder_names",
                 "catalog_folders_by_event",
                 "catalog_folders_by_parent",
+                "catalog_requests_by_job",
                 "collection_members_by_asset",
                 "collection_names",
                 "collections_by_parent",
@@ -1210,6 +1256,9 @@ mod tests {
                 "artifact_refs_are_permanent",
                 "asset_sources_are_immutable",
                 "asset_sources_are_permanent",
+                "catalog_requests_are_permanent",
+                "catalog_requests_identity_immutable",
+                "catalog_requests_results_immutable",
                 "collapsed_entries_are_permanent",
                 "collections_keep_their_kind",
                 "collections_move_into_groups",
@@ -1251,7 +1300,7 @@ mod tests {
     #[test]
     #[slow]
     fn catalog_format_any_other_marker_is_refused_by_name_unchanged() {
-        for marker in [0, 2, 15, 16, CATALOG_FORMAT + 1] {
+        for marker in [0, 1, 15, 16, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();

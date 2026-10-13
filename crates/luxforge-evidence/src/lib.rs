@@ -1711,7 +1711,8 @@ pub enum PaletteStep {
 /// that card's menu; `{"write": {}}` presses Export, capturing once the export ends (or, with
 /// `"background": true`, once the Performance section lists it running when the section is open,
 /// and once the status bar shows its progress bar when it is not); `{"close": true}` presses
-/// Cancel. `{"again": {}}` is Export again and `{"with_preset": {"name": "Web"}}` a menu preset row,
+/// Cancel; `{"scroll_end": true}` scrolls its settings to their end, bringing Save to into view.
+/// `{"again": {}}` is Export again and `{"with_preset": {"name": "Web"}}` a menu preset row,
 /// each captured as `write` is. `{"bar": true}` presses the status bar's export progress,
 /// capturing once the Performance section it opens lists the export running.
 /// `{"progressed": {"ms": 10000}}` asks nothing of the editor and captures once the status bar's
@@ -1732,6 +1733,8 @@ pub enum ExportStep {
     Write(ExportWrite),
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Close,
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    ScrollEnd,
     Again(ExportWrite),
     WithPreset(PresetWrite),
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
@@ -1899,6 +1902,7 @@ impl ExportStep {
             | Self::UpdatePreset
             | Self::Write(_)
             | Self::Close
+            | Self::ScrollEnd
             | Self::Again(_)
             | Self::Bar => Ok(()),
             Self::Preset(name) | Self::SavePreset(name) | Self::DeletePreset(name) => {

@@ -771,6 +771,170 @@ fn a_percentage_views_backdrop_fills_what_its_region_frame_does_not_cover() {
     settle(&pipeline);
 }
 
+/// A picture at rest standing in for the photograph's frame, an earlier stack's, under a gesture's
+/// frames ([`PhotoSurface::gpu_rest_under`]): a plan's output drawn is the photograph, with no
+/// dissolve into the picture at rest over it, and a frame that draws no plan's output — its plan
+/// held behind the frame, or derived from a source the pipeline does not hold, which lets the
+/// slot go — draws the picture at rest, never the photograph's frame.
+#[test]
+#[slow]
+fn a_picture_at_rest_standing_in_is_drawn_wherever_no_plans_output_is() {
+    let test = "a_picture_at_rest_standing_in_is_drawn_wherever_no_plans_output_is";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    if let Err(error) = super::super::rest::RestPasses::new(&device) {
+        panic!("the rest passes: {error}");
+    }
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let source = GpuSource::codes(3, Arc::new(rgba), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    let whole = |version| {
+        GpuBoundary::derived(
+            &source,
+            Derivation::Cut { origin: (0, 0) },
+            WIDTH,
+            HEIGHT,
+            version,
+        )
+        .expect("a boundary")
+    };
+    let view = plan(&whole(7), vec![identity()]);
+    pipeline.compile_now(&device, &tiles[0]);
+    pipeline.compile_now(&device, &view);
+    let standing = |plan: Option<GpuPlan>, under: bool, hold: bool| PhotoPrimitive {
+        source: Some(source.clone()),
+        rest: Some(rest_of(&tiles)),
+        rest_under: under,
+        gpu_options: GpuOptions {
+            hold,
+            tag: plan.as_ref().map(|_| 1),
+            ..GpuOptions::default()
+        },
+        ..primitive(ID, plan)
+    };
+    // The picture at rest, drawn whole with no plan.
+    let mut frames = 0;
+    let rest = loop {
+        let drawn = paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &standing(None, false, false),
+        );
+        frames += 1;
+        if diagnostics(&pipeline, ID).drawn_rest == Some(1) {
+            break drawn;
+        }
+        assert!(frames < 8, "the picture at rest was never drawn whole");
+    };
+    // A gesture's plan drawn over it, at once and alone.
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &standing(Some(view.clone()), true, false),
+    );
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_gpu_boundary, Some(7), "the plan's output");
+    assert_eq!(seen.drawn_rest, None, "not drawn over it");
+    assert_eq!(seen.drawn_rest_dissolve, None, "nor dissolving in over it");
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    // A plan held behind the frame, and one the stage cannot draw: the picture at rest, never the
+    // photograph's frame.
+    let unheld = GpuSource::codes(4, Arc::new(codes(WIDTH, HEIGHT)), WIDTH, HEIGHT)
+        .expect("a source no surface hands");
+    let missing = GpuBoundary::derived(
+        &unheld,
+        Derivation::Cut { origin: (0, 0) },
+        WIDTH,
+        HEIGHT,
+        8,
+    )
+    .expect("a boundary");
+    for (plan, hold, why) in [
+        (view, true, "held"),
+        (plan(&missing, vec![identity()]), false, "source-missing"),
+    ] {
+        let drawn = paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &standing(Some(plan), true, hold),
+        );
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(seen.drawn_rest, Some(1), "{why}: the picture at rest");
+        assert_eq!(seen.drawn_gpu_boundary, None, "{why}");
+        assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu), "{why}");
+        assert_eq!(drawn, rest, "{why}: its codes, not the frame's");
+    }
+    assert_eq!(
+        diagnostics(&pipeline, ID).gpu_fallback,
+        Some(GpuFallback::SourceMissing)
+    );
+    paint(&device, &queue, &mut pipeline, &handing_none());
+    settle(&pipeline);
+}
+
+/// A percentage view whose region's frame is not drawn draws its backdrop, the picture at rest
+/// standing in ([`PhotoSurface::gpu_rest_under`]), in place of its whole frame of the current
+/// content, an earlier stack's, which it draws otherwise.
+#[test]
+fn a_percentage_views_backdrop_standing_in_replaces_its_earlier_frame() {
+    let test = "a_percentage_views_backdrop_standing_in_replaces_its_earlier_frame";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let source = GpuSource::codes(3, Arc::new(rgba), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    pipeline.compile_now(&device, &tiles[0]);
+    let frame = {
+        let pixels: Vec<u8> = std::iter::repeat_n([10u8, 200, 30, 255], (WIDTH * HEIGHT) as usize)
+            .flatten()
+            .collect();
+        Frame::new(Arc::new(pixels), WIDTH, HEIGHT, 1).expect("a whole frame")
+    };
+    let viewed = |under: bool| {
+        let mut viewed = PhotoPrimitive {
+            source: Some(source.clone()),
+            rest: Some(rest_of(&tiles)),
+            rest_under: under,
+            ..primitive(ID, None)
+        };
+        viewed.layers = Vec::new();
+        viewed.viewport = Some(crate::photo_surface::ViewportFrames {
+            full: Some((frame.clone(), 1)),
+            current_content: 1,
+            full_stage: (WIDTH, HEIGHT),
+        });
+        viewed.size = Size::new(WIDTH as f32, HEIGHT as f32);
+        viewed
+    };
+    // Its tiles drawn whole while the view draws its whole frame.
+    let mut frames = 0;
+    loop {
+        paint(&device, &queue, &mut pipeline, &viewed(false));
+        frames += 1;
+        let seen = diagnostics(&pipeline, ID);
+        if seen.gpu_rest.is_some_and(|figures| figures.done) {
+            assert_eq!(seen.drawn_backdrop, None, "the view's own frame");
+            assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
+            break;
+        }
+        assert!(frames < 8, "the backdrop was never drawn whole");
+    }
+    paint(&device, &queue, &mut pipeline, &viewed(true));
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_backdrop, Some(1), "the backdrop stands in");
+    assert_eq!(seen.drawn_full_version, None, "not the earlier frame");
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    paint(&device, &queue, &mut pipeline, &handing_none());
+    settle(&pipeline);
+}
+
 /// The minimap overview (`docs/design/minimap.md`): a picture at rest handed with one reduces its
 /// final tiles to it as well, by the reference's area average, and the surface keeps the version
 /// its want awaits once the last tile is in, drawn alone by an overview primitive; a reference

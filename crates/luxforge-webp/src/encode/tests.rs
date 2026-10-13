@@ -202,6 +202,20 @@ fn progress_rises_to_100_and_false_stops_the_encode() {
 }
 
 #[test]
+fn cancellation_at_the_final_progress_report_stops_the_encode() {
+    let rgba = frame(17, 13);
+    for optimise in [false, true] {
+        let mut seen = Vec::new();
+        let result = encode(17, 13, &rgba, &settings(80, optimise), &mut |percent| {
+            seen.push(percent);
+            percent < 100
+        });
+        assert_eq!(seen.last(), Some(&100));
+        assert_eq!(result, Err(Error::Stopped), "optimise {optimise}");
+    }
+}
+
+#[test]
 fn a_panic_in_progress_is_resumed_after_libwebp_returns() {
     let rgba = frame(64, 64);
     let caught = std::panic::catch_unwind(|| {
