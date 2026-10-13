@@ -37,7 +37,7 @@ impl Kind for Linear {
     fn sample(
         rng: &mut SplitMix64,
         stages: &[(u32, u32)],
-        _: &mut StrokeTable,
+        _: &mut Store,
     ) -> (Value, Falloff) {
         loop {
             let linear = RefLinear {
@@ -59,17 +59,17 @@ impl Kind for Linear {
     }
 
     /// `p0` and `p1` both above the frame, pointing further up: every pixel is behind `p0`.
-    fn nothing(_: &mut StrokeTable) -> Vec<Value> {
+    fn nothing(_: &mut Store) -> Vec<Value> {
         vec![gradient(0.5, -0.4, 0.5, -0.9)]
     }
 
     /// An inverted gradient is the other half-plane, a rectangle of its own
     /// (`mask::tests::an_inverted_component_bounds_the_other_half_plane`).
-    fn inverted_whole(_: &mut StrokeTable) -> Option<(Value, (u32, u32))> {
+    fn inverted_whole(_: &mut Store) -> Option<(Value, (u32, u32))> {
         None
     }
 
-    fn feathered(_: &mut StrokeTable) -> Value {
+    fn feathered(_: &mut Store) -> Value {
         gradient(0.1, 0.1, 0.9, 0.9)
     }
 
@@ -112,7 +112,7 @@ impl Kind for Linear {
         ]
     }
 
-    fn ramps(_: &mut StrokeTable) -> Vec<Ramp> {
+    fn ramps(_: &mut Store) -> Vec<Ramp> {
         let short = gradient(0.5, 0.4, 0.5, 0.45);
         let at = |compiled, asked, payload: &Value, expect| Ramp {
             payload: payload.clone(),

@@ -489,7 +489,6 @@ impl ParameterDescriptor {
         )
     }
 
-    #[cfg(test)]
     pub(crate) fn artifact(name: impl Into<String>) -> Self {
         Self::new(name, ParameterKind::Artifact)
     }

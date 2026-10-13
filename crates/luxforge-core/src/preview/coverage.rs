@@ -179,7 +179,7 @@ fn mask_overlay_for_cached(
         width: transform.content.width,
         height: transform.content.height,
     };
-    let compiled = match CompiledMask::new(mask, stage, &recipe.strokes) {
+    let compiled = match CompiledMask::bound(mask, stage, &recipe.strokes, &recipe.artifacts) {
         Ok(compiled) => compiled,
         Err(error) => return refused(error),
     };
@@ -594,7 +594,7 @@ impl Evaluation {
             width: transform.content.width,
             height: transform.content.height,
         };
-        let compiled = CompiledMask::new(held, stage, &recipe.strokes)?;
+        let compiled = CompiledMask::bound(held, stage, &recipe.strokes, &recipe.artifacts)?;
         let mut hasher = DefaultHasher::new();
         std::fmt::write(
             &mut Sink(&mut hasher),

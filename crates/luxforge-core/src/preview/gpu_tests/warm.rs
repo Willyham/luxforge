@@ -376,3 +376,49 @@ fn the_open_stacks_drags_warm_before_the_first_drags_of_the_rest() {
         all.len()
     );
 }
+
+/// A stack whose mask is a model selection warms the selection's coverage program as it warms every
+/// kind's: the program is part of the links the stack draws, so the list compiles it before the
+/// first frame needs it.
+#[test]
+fn a_model_selection_is_warmed_like_every_kind() {
+    let codes: Vec<u8> = (0..64u32 * 48)
+        .map(|k| if k % 64 > 20 { 255 } else { 0 })
+        .collect();
+    let artifact = std::sync::Arc::new(crate::PreparedArtifact::of_bytes(
+        crate::mask::ALPHA_KIND,
+        Some(64),
+        Some(48),
+        codes.into(),
+    ));
+    let mut mask = Mask::new("Mask 1");
+    mask.components.push(Component::new(
+        "Model 1",
+        ComponentMode::Add,
+        "model",
+        json!({"artifact": artifact.id.as_str(), "class": "sky", "model": "test-model",
+               "model_version": "1", "input_fingerprint": "a".repeat(64),
+               "prefix_hash": "b".repeat(64), "threshold": 50.0, "feather": 100.0}),
+    ));
+    let masked = |effect: &str, payload: Value| Layer {
+        mask: Some(mask.id.clone()),
+        ..Layer::new(effect, payload)
+    };
+    let layers = vec![
+        masked(DETAIL_EFFECT, json!({"sharpening": 40})),
+        masked(BASIC_EFFECT, json!({"exposure": 0.3})),
+    ];
+    let stack = Recipe {
+        masks: vec![mask.clone()],
+        artifacts: [artifact].into_iter().collect(),
+        ..recipe(layers)
+    };
+    let (_, links) = warmed(&stack, &RenderContext::new());
+    assert!(
+        links
+            .iter()
+            .flatten()
+            .any(|key| key.contains("lf_mask_model")),
+        "{links:?}"
+    );
+}

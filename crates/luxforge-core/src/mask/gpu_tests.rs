@@ -68,7 +68,8 @@ fn every_kind_ships_an_enabled_coverage_program_beside_its_field() {
             "lf_mask_radial",
             "lf_mask_brush",
             "lf_mask_luminance_range",
-            "lf_mask_colour_range"
+            "lf_mask_colour_range",
+            "lf_mask_model"
         ]
     );
     for program in MASK_GPU_PROGRAMS {
@@ -278,5 +279,82 @@ fn restated_constants_are_the_cpus_f32_values() {
     assert_eq!(
         wgsl_u32(&range::COLOUR_PROGRAM, "lf_mask_colour_range_samples") as usize,
         range::MAX_SAMPLES
+    );
+}
+
+/// A model selection's payload over `artifact`, with recorded provenance and the two numbers.
+pub(super) fn model_payload(artifact: &crate::ArtifactId, threshold: f64, feather: f64) -> Value {
+    json!({
+        "artifact": artifact.as_str(),
+        "class": "sky",
+        "model": "test-model",
+        "model_version": "1",
+        "input_fingerprint": "a".repeat(64),
+        "prefix_hash": "b".repeat(64),
+        "threshold": threshold,
+        "feather": feather,
+    })
+}
+
+/// A model selection's words are the stage's height, the texel scales and the band, narrowed once,
+/// then the hard edge and the raster's dimensions; its block is the raster packed four codes to a
+/// word, and two compilations share that one block rather than packing it twice.
+#[test]
+fn a_model_selection_describes_its_band_over_its_packed_raster() {
+    use std::sync::Arc;
+    let (w, h) = (5u32, 3u32);
+    let codes: Vec<u8> = (0..15u32).map(|k| (k * 17) as u8).collect();
+    let artifact = Arc::new(crate::PreparedArtifact::of_bytes(
+        super::ALPHA_KIND,
+        Some(w),
+        Some(h),
+        codes.clone().into(),
+    ));
+    let table: crate::ArtifactTable = [artifact.clone()].into_iter().collect();
+    let at = stage(64, 48);
+    let mut blocks = Vec::new();
+    for (threshold, feather, hard) in [
+        (50.0, 100.0, false),
+        (30.0, 0.0, true),
+        (100.0, 60.0, true),
+        (20.0, 35.0, false),
+    ] {
+        let mut mask = Mask::new("Mask 1");
+        mask.components.push(Component::new(
+            "Model 1",
+            ComponentMode::Add,
+            "model",
+            model_payload(&artifact.id, threshold, feather),
+        ));
+        let compiled =
+            CompiledMask::bound(&mask, at, &StrokeTable::default(), &table).expect("a mask");
+        let component = compiled.gpu_components().expect("a program").remove(0);
+        assert!(component.program.well_formed());
+        assert_eq!(component.program.program, &super::model::PROGRAM);
+        let t: f64 = threshold / 100.0;
+        let half = (feather / 100.0) * t.min(1.0 - t);
+        let mut words = narrowed(&[
+            48.0,
+            f64::from(w) * 48.0 / 64.0,
+            f64::from(h),
+            t,
+            t - half,
+            half + half,
+        ]);
+        words.extend([u32::from(hard), w, h]);
+        assert_eq!(component.program.words, words, "{threshold} {feather}");
+        let block = component
+            .program
+            .block
+            .clone()
+            .expect("the packed raster");
+        let unpacked: Vec<u8> = block.iter().flat_map(|word| word.to_le_bytes()).collect();
+        assert_eq!(&unpacked[..codes.len()], &codes[..]);
+        assert!(unpacked[codes.len()..].iter().all(|&code| code == 0));
+        blocks.push(block);
+    }
+    assert!(
+        blocks.windows(2).all(|pair| Arc::ptr_eq(&pair[0], &pair[1])),
+        "every compilation shares the artifact's one block"
     );
 }
