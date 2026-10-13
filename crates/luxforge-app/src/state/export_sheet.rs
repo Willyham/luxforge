@@ -753,6 +753,15 @@ pub(crate) struct ExportSheetModel {
     pub(crate) can_export: bool,
 }
 
+/// Whether a plan's notices refuse the export.
+fn refusals_of(plan: &Value) -> bool {
+    plan["notices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|notice| notice["refuses"] == true)
+}
+
 /// The sheet's model, or none while it is closed.
 pub(crate) fn model(
     sheet: Option<&ExportSheet>,
@@ -930,7 +939,12 @@ pub(crate) fn model(
         refusals.push(format!("Could not plan the export: {error}"));
     }
     let extension = format!(".{}", format.extension());
-    let expected = format!("{stem}{}{extension}", settings.suffix);
+    // The plan names the stem a file is named from — a merge's result its first input's, with the
+    // kind's suffix — and the name it gives before counting past taken ones.
+    let stem = single
+        .and_then(|plan| plan["stem"].as_str())
+        .map_or(stem, str::to_owned);
+    let expected = single.and_then(|plan| plan["name"].as_str());
     let suggested = single
         .and_then(|plan| plan["suggested"].as_str())
         .and_then(|path| Path::new(path).file_name())
@@ -942,21 +956,29 @@ pub(crate) fn model(
             .map(|name| format!("{name}, \u{2026}")),
     };
     let taken = suggested
-        .filter(|name| *name != expected)
-        .map(|name| format!("{expected} exists there; this writes {name}"));
+        .clone()
+        .zip(expected)
+        .filter(|(name, expected)| name != expected)
+        .map(|(name, expected)| format!("{expected} exists there; this writes {name}"));
+    // A plan that refuses nothing and still names no file: the photograph has nothing to name it
+    // after, or every name the rule reads is taken.
+    if let Some(plan) = single.filter(|plan| plan["suggested"].is_null())
+        && !refusals_of(plan)
+    {
+        refusals.push(match expected {
+            Some(expected) => format!(
+                "{expected} and the next names after it are all taken in this folder; choose \
+                 another folder or suffix"
+            ),
+            None => "This photograph has no file name to export under".to_owned(),
+        });
+    }
     let fresh = sheet
         .plan
         .answered
         .as_ref()
         .is_some_and(|answered| plan_key(answered) == plan_key(settings));
-    let refuses = single.is_some_and(|plan| {
-        plan["notices"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|notice| notice["refuses"] == true)
-            || plan["suggested"].is_null()
-    });
+    let refuses = single.is_some_and(|plan| refusals_of(plan) || plan["suggested"].is_null());
     let can_export = sheet.valid().is_some()
         && !sheet.changing
         && fresh
