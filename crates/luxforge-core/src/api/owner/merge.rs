@@ -148,7 +148,7 @@ pub(super) struct MergeLane {
     developer: Arc<dyn Developer>,
     /// How a panorama's frames are read and developed: RAW or JPEG, a lens profile baked.
     frames: Arc<dyn FrameDeveloper>,
-    /// The panorama stitch, while this build has one ([`stitching::production`]).
+    /// The panorama stitch ([`stitching::production`]), or none in a build without one.
     stitcher: Option<Arc<dyn Stitcher>>,
     /// Each kind's limits ([`Limits::of`]).
     limits: BTreeMap<MergeKind, Limits>,
@@ -230,6 +230,15 @@ impl MergeLane {
             providers::provider(MergeKind::Panorama)
                 .ok_or_else(|| providers::missing(MergeKind::Panorama)),
         );
+    }
+
+    /// Remove the panorama stitch, as a build without one would carry: panoramas plan, and are
+    /// `not-ready` to merge or preview.
+    #[cfg(test)]
+    pub(super) fn remove_panorama(&mut self) {
+        self.stitcher = None;
+        self.providers
+            .insert(MergeKind::Panorama, Err(stitching::UNWIRED.to_owned()));
     }
 
     /// The stitch a panorama merges with, or `not-ready` while this build has none.
