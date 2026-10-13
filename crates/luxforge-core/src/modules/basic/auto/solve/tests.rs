@@ -155,36 +155,40 @@ fn by_the_design_through(
             .unwrap_or(0);
         (guarded as f64 - 400.) / 100.
     };
-    // Steps 5 and 6: the largest Whites and the smallest Blacks meeting the clipping fraction;
-    // an unreachable constraint stops at the bound that clips least.
+    // Steps 5 and 6: the largest Whites and the smallest Blacks whose clipping fraction is within
+    // the allowance above what remains at the field's bound that clips least.
     let endpoints = |mut values: AutoToneValues| {
+        let whites = |n: i32| {
+            stats(
+                AutoToneValues {
+                    whites: f64::from(n),
+                    ..values
+                },
+                false,
+            )
+            .highlight_clip
+        };
+        let floor = whites(-60);
         values.whites = (-60..=60)
             .rev()
-            .find(|&n| {
-                stats(
-                    AutoToneValues {
-                        whites: f64::from(n),
-                        ..values
-                    },
-                    false,
-                )
-                .highlight_clip
-                    <= targets.clipping
-            })
-            .map_or(-60., f64::from);
+            .find(|&n| whites(n) <= floor + targets.clipping)
+            .map(f64::from)
+            .unwrap();
+        let blacks = |n: i32| {
+            stats(
+                AutoToneValues {
+                    blacks: f64::from(n),
+                    ..values
+                },
+                false,
+            )
+            .shadow_clip
+        };
+        let floor = blacks(60);
         values.blacks = (-60..=60)
-            .find(|&n| {
-                stats(
-                    AutoToneValues {
-                        blacks: f64::from(n),
-                        ..values
-                    },
-                    false,
-                )
-                .shadow_clip
-                    <= targets.clipping
-            })
-            .map_or(60., f64::from);
+            .find(|&n| blacks(n) <= floor + targets.clipping)
+            .map(f64::from)
+            .unwrap();
         values
     };
     let mut values = AutoToneValues::default();
@@ -305,37 +309,25 @@ fn auto_tone_endpoint_searches_match_exhaustive_constraints_on_neutral_samples()
     let mut values = report.values;
     values.vibrance = 0.;
     values.saturation = 0.;
+    let clipping = |whites: i32, blacks: i32| {
+        let mut candidate = values;
+        (candidate.whites, candidate.blacks) = (f64::from(whites), f64::from(blacks));
+        let stats = statistics(
+            &input,
+            &compile(candidate).unwrap(),
+            false,
+            false,
+            &Cancel::never(),
+        )
+        .unwrap();
+        (stats.highlight_clip, stats.shadow_clip)
+    };
+    let (whites, blacks) = (values.whites as i32, values.blacks as i32);
     let acceptable_white: Vec<i32> = (-60..=60)
-        .filter(|&n| {
-            let mut candidate = values;
-            candidate.whites = f64::from(n);
-            statistics(
-                &input,
-                &compile(candidate).unwrap(),
-                false,
-                false,
-                &Cancel::never(),
-            )
-            .unwrap()
-            .highlight_clip
-                <= targets.clipping
-        })
+        .filter(|&n| clipping(n, blacks).0 <= clipping(-60, blacks).0 + targets.clipping)
         .collect();
     let acceptable_black: Vec<i32> = (-60..=60)
-        .filter(|&n| {
-            let mut candidate = values;
-            candidate.blacks = f64::from(n);
-            statistics(
-                &input,
-                &compile(candidate).unwrap(),
-                false,
-                false,
-                &Cancel::never(),
-            )
-            .unwrap()
-            .shadow_clip
-                <= targets.clipping
-        })
+        .filter(|&n| clipping(whites, n).1 <= clipping(whites, 60).1 + targets.clipping)
         .collect();
     assert_eq!(values.whites, f64::from(*acceptable_white.last().unwrap()));
     assert_eq!(values.blacks, f64::from(*acceptable_black.first().unwrap()));
@@ -388,6 +380,73 @@ fn auto_tone_counts_exclusions_and_never_darkens_a_sky_clipped_in_the_source() {
         unflagged.values.whites < flagged.values.whites,
         "{unflagged:?}"
     );
+}
+
+/// The solve of `input` through Basic alone.
+fn solved(input: &SampleGrid) -> AutoToneReport {
+    solve(input, AutoToneTargets::default(), compile, &Cancel::never()).unwrap()
+}
+
+/// A saturated colour with a channel at zero, such as turquoise water the Look carries out of
+/// gamut, is not black: shadow clipping counts only samples with every channel at 0. Counted as
+/// clipping, 2% of such points left Blacks no acceptable value, so it stopped at +60 and the second
+/// sweep's Exposure fell to hold the median, greying the whole photograph (DSC_2247: Exposure
+/// −2.37, Whites and Blacks +60). Now the frame takes its neutral twin's Whites and Blacks.
+#[test]
+fn auto_tone_blacks_ignore_a_colour_with_a_channel_at_zero() {
+    let frame = |cyan: bool| {
+        sample((0..1024).map(move |i| {
+            let n = 0.01 + i as f32 * 0.3 / 1023.;
+            if i % 50 == 25 {
+                // Mid-tone water: luminance 0.787 · n, red at zero when cyan.
+                if cyan { [0., n, n] } else { [0.787 * n; 3] }
+            } else {
+                [n; 3]
+            }
+        }))
+    };
+    let (report, twin) = (solved(&frame(true)), solved(&frame(false)));
+    assert_eq!(report.bands.shadow_clip, twin.bands.shadow_clip);
+    assert!(report.unmet.is_empty(), "{:?}", report.unmet);
+    assert!(!report.bounded.contains(&"blacks".to_owned()), "{report:?}");
+    let endpoints = |values: AutoToneValues| [values.whites, values.blacks];
+    assert_eq!(endpoints(report.values), endpoints(twin.values));
+    // Encoded per channel, the water's luminance statistic differs slightly from its twin's.
+    assert!(
+        ((report.values.exposure - twin.values.exposure) * 100.)
+            .round()
+            .abs()
+            <= 1.
+    );
+    assert_eq!(report.values, by_the_design(&frame(true)));
+}
+
+/// Whites and Blacks are held to the clipping they cause: what remains at the bound that clips
+/// least is their floor, and the allowance is counted above it. Speculars far above white, which
+/// no Whites value brings under it, once left Whites no acceptable value, so it stopped at −60
+/// and dimmed every other highlight; now the frame solves as it does with them flagged as clipped
+/// in the source.
+#[test]
+fn auto_tone_whites_and_blacks_ignore_clipping_their_bound_leaves() {
+    let speculars = |flagged: bool| {
+        let mut input = sample((0..1024).map(|i| {
+            if i % 100 == 50 {
+                [64.; 3]
+            } else {
+                [0.01 + i as f32 * 0.3 / 1023.; 3]
+            }
+        }));
+        for (index, flag) in input.source_clipped.iter_mut().enumerate() {
+            *flag = flagged && index % 100 == 50;
+        }
+        input
+    };
+    let (report, flagged) = (solved(&speculars(false)), solved(&speculars(true)));
+    assert_eq!(report.floors.highlight, 10. / 1024.);
+    assert_eq!(flagged.floors.highlight, 0.);
+    assert!(report.unmet.is_empty(), "{:?}", report.unmet);
+    assert_eq!(report.values, flagged.values);
+    assert_eq!(report.values, by_the_design(&speculars(false)));
 }
 
 #[test]
