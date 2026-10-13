@@ -623,6 +623,46 @@ impl ModuleRegistry {
         stages
     }
 
+    /// The stage `layers`, a stack's prefix, hand the layer after them at the source's
+    /// `source_width` × `source_height`, folded over their source and geometry layers alone: every
+    /// other stage works in the coordinates of the stage it receives and hands it on, so its
+    /// payload, its mask and any artifact it lists are neither compiled nor needed. A stage
+    /// question about a stored stack, whose artifacts are not bound, answers here. A layer of an
+    /// unknown effect is refused as unavailable, as a compile refuses it. `O(layers)` lookups and
+    /// one payload compile a source or geometry layer.
+    pub(crate) fn geometry_stage(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        layers: &[Layer],
+        strokes: &crate::path::StrokeTable,
+        artifacts: &ArtifactTable,
+    ) -> Result<Stage, Error> {
+        let mut stage = Stage {
+            width: source_width,
+            height: source_height,
+        };
+        for layer in layers {
+            if self.effect_stage(&layer.effect_id).is_some_and(|effect| {
+                !matches!(effect, EffectStage::Source | EffectStage::Geometry)
+            }) {
+                continue;
+            }
+            let module = self
+                .provider(&layer.effect_id)
+                .ok_or_else(|| self.unavailable_in(layers, &layer.effect_id))?;
+            let processing = self.compile_layer(
+                module,
+                layer,
+                crate::CompileStage::exact(stage),
+                artifacts,
+                strokes,
+            )?;
+            stage = Self::output_stage(&processing, stage)?;
+        }
+        Ok(stage)
+    }
+
     /// One layer's processing against the stage it receives: its provider's compile or, for a
     /// layer that references artifacts, the provider's capability compile over the verified bytes
     /// the recipe was bound with. A layer that carries strokes in the store — the Corrections
