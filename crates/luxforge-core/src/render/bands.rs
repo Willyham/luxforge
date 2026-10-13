@@ -46,7 +46,7 @@
 //! a JPEG is always within the camera limits.
 use super::{
     Compiled, Entry, Evaluation, LinearSettings, RenderContext,
-    linear::{Linear, check_resamples, rasterize_area},
+    linear::{Linear, check_resamples, rasterize_area, rasterize_area_wide},
     repair_entry::repair_store,
     spatial::{build_reduction_banded, resolve_globals},
 };
@@ -404,9 +404,17 @@ impl<'a> Banded<'a> {
     /// whose windows at the top of the stage fit the budget, or 64 when not even one row does, in
     /// which case each band is cut into columns. `O(log rows × segments)`, and reads no pixel.
     pub(super) fn rows_for(&self, through: usize, output: u64) -> u32 {
+        self.rows_within(through, output, 4)
+    }
+
+    /// [`Self::rows_for`], with each band held to the evaluated-frame limit at `frame` bytes a
+    /// pixel rather than 4: what a band of the wide terminal, at six bytes a pixel, and its 16-bit
+    /// output beside it, at eight, are held to.
+    pub(super) fn rows_within(&self, through: usize, output: u64, frame: u64) -> u32 {
         let stage = self.compiled.segments[through].stage();
-        let frame_rows = (super::limits::MAX_FRAME_BYTES / (u64::from(stage.width.max(1)) * 4))
-            .clamp(1, u64::from(MAX_BAND_ROWS)) as u32;
+        let frame_rows = (super::limits::MAX_FRAME_BYTES
+            / (u64::from(stage.width.max(1)) * frame.max(1)))
+        .clamp(1, u64::from(MAX_BAND_ROWS)) as u32;
         let most = frame_rows.min(stage.height).max(1);
         let fits = |rows: u32| {
             self.windows(
@@ -530,6 +538,54 @@ impl<'a> Banded<'a> {
             }
         }
         Ok(rgba)
+    }
+
+    /// The output's terminal values over `rect` encoded once at 16 bits, as the whole frame's wide
+    /// terminal holds them there (`Render::wide_frame`): six bytes a pixel, red, green and blue
+    /// codes in native byte order, row by row, piece by piece, each piece's rows written into
+    /// place. `rect` lies inside the output stage and is at most the evaluated-frame limit at six
+    /// bytes a pixel. What a banded 16-bit or resized export reads (`super::bands_output`).
+    pub(crate) fn wide(&self, rect: Region) -> Result<Vec<u8>, Error> {
+        const BYTES: u64 = super::linear::WIDE_TERMINAL_BYTES as u64;
+        let bytes = rect.pixels().saturating_mul(BYTES);
+        if bytes > super::limits::MAX_FRAME_BYTES {
+            return Err(Error::resource_limit(format!(
+                "a band of {}x{} exceeds the {} MiB evaluated-frame limit",
+                rect.width,
+                rect.height,
+                super::limits::MAX_FRAME_BYTES >> 20
+            )));
+        }
+        let last = self.compiled.segments.len() - 1;
+        let mut wide = Vec::new();
+        for piece in self.pieces(last, rect, BYTES)? {
+            let rows = self.with_window(last, piece, |evaluation| {
+                rasterize_area_wide(evaluation, piece, &self.cancel, self.context)
+            })?;
+            if piece == rect {
+                return Ok(rows);
+            }
+            if wide.is_empty() {
+                wide = vec![0_u8; bytes as usize];
+            }
+            let stride = rect.width as usize * BYTES as usize;
+            let width = piece.width as usize * BYTES as usize;
+            for (row, values) in rows.chunks_exact(width).enumerate() {
+                let to = ((piece.y0 - rect.y0) as usize + row) * stride
+                    + (piece.x0 - rect.x0) as usize * BYTES as usize;
+                wide[to..to + width].copy_from_slice(values);
+            }
+        }
+        Ok(wide)
+    }
+
+    /// How many rows each band of the output's wide terminal holds when each pixel of the band
+    /// and what is made of it beside it take `frame` bytes: the most whose windows fit the budget
+    /// with the wide terminal's six bytes a pixel, up to [`MAX_BAND_ROWS`] and the evaluated-frame
+    /// limit at `frame` bytes a pixel.
+    pub(crate) fn wide_band_rows(&self, frame: u64) -> u32 {
+        let last = self.compiled.segments.len() - 1;
+        self.rows_within(last, super::linear::WIDE_TERMINAL_BYTES as u64, frame)
     }
 
     /// The output's own linear values over `rect`, row by row, as `f32`: what the reference tile

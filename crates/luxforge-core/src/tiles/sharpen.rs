@@ -27,7 +27,7 @@
 //!   either side, about `(64 + 2r) × width × 12` bytes, never a second frame. Each band checks the
 //!   cancellation before it starts.
 
-use super::output::Pixels;
+use super::output::{Depth, Pixels};
 use crate::{
     Cancel, Error,
     render::parallel::{RenderPass, pooled},
@@ -298,6 +298,56 @@ struct Row {
     across: Vec<i64>,
 }
 
+impl Row {
+    /// The luma of `line`, a row of opaque RGBA codes, and its blur across by `weights`, `radius`
+    /// taps a side, a tap past either end reading the edge pixel.
+    fn of<T: Code>(line: &[T], weights: &[i64], radius: usize) -> Self {
+        let w = line.len() / 4;
+        let luma: Vec<i64> = line.chunks_exact(4).map(luma).collect();
+        let across = (0..w)
+            .map(|x| {
+                weights
+                    .iter()
+                    .enumerate()
+                    .map(|(k, weight)| {
+                        let at = (x + k).saturating_sub(radius).min(w - 1);
+                        weight * luma[at]
+                    })
+                    .sum()
+            })
+            .collect();
+        Self { luma, across }
+    }
+}
+
+/// Sharpen `line`, row `y` of an output `h` rows high, in place by `kernel`, from `kept`, the rows
+/// of the unsharpened output from row `first` on, which hold every row its kernel reads (`y − r`
+/// to `y + r`, held to the output's edges). The one place a row is sharpened, for the whole frame
+/// ([`sharpen`]) and for an output that arrives in bands ([`SharpenStream`]) alike.
+#[inline]
+fn sharpen_line<T: Code>(
+    line: &mut [T],
+    y: usize,
+    h: usize,
+    (kept, first): (&[Row], usize),
+    kernel: &SharpenKernel,
+) {
+    let radius = kernel.radius() as usize;
+    let own = &kept[y - first].luma;
+    for (x, pixel) in line.chunks_exact_mut(4).enumerate() {
+        let blurred: i64 = kernel
+            .weights
+            .iter()
+            .enumerate()
+            .map(|(k, weight)| {
+                let at = (y + k).saturating_sub(radius).min(h - 1);
+                weight * kept[at - first].across[x]
+            })
+            .sum();
+        apply(pixel, kernel.change(own[x], blurred));
+    }
+}
+
 fn sharpen_codes<T: Code>(
     samples: &mut [T],
     (width, height): (u32, u32),
@@ -325,21 +375,7 @@ fn sharpen_codes<T: Code>(
     let mut kept: VecDeque<Row> = VecDeque::new();
     let mut first = 0usize;
     let read = |y: usize, samples: &[T]| -> Row {
-        let line = &samples[y * w * 4..(y + 1) * w * 4];
-        let luma: Vec<i64> = line.chunks_exact(4).map(luma).collect();
-        let across = (0..w)
-            .map(|x| {
-                weights
-                    .iter()
-                    .enumerate()
-                    .map(|(k, weight)| {
-                        let at = (x + k).saturating_sub(radius).min(w - 1);
-                        weight * luma[at]
-                    })
-                    .sum()
-            })
-            .collect();
-        Row { luma, across }
+        Row::of(&samples[y * w * 4..(y + 1) * w * 4], weights, radius)
     };
     let mut top = 0usize;
     while top < h {
@@ -368,19 +404,7 @@ fn sharpen_codes<T: Code>(
         }
         let kept_rows = kept.make_contiguous();
         let write = |(offset, line): (usize, &mut [T])| {
-            let y = top + offset;
-            let own = &kept_rows[y - first].luma;
-            for (x, pixel) in line.chunks_exact_mut(4).enumerate() {
-                let blurred: i64 = weights
-                    .iter()
-                    .enumerate()
-                    .map(|(k, weight)| {
-                        let at = (y + k).saturating_sub(radius).min(h - 1);
-                        weight * kept_rows[at - first].across[x]
-                    })
-                    .sum();
-                apply(pixel, kernel.change(own[x], blurred));
-            }
+            sharpen_line(line, top + offset, h, (kept_rows, first), kernel);
         };
         let lines = &mut samples[top * w * 4..bottom * w * 4];
         if pool {
@@ -391,6 +415,209 @@ fn sharpen_codes<T: Code>(
         top = bottom;
     }
     Ok(())
+}
+
+/// Output sharpening of an output that arrives in bands from the top, as the banded reference
+/// renders a paged source's (`docs/design/export-settings.md`, "Paged sources"): each band's rows
+/// are sharpened in place once the rows their kernel reads below them have arrived, and handed on
+/// in order. Every row is computed from the unsharpened rows exactly as [`sharpen`] computes the
+/// whole frame's, by the same [`Row`]s and the same line, so the stream is the whole frame
+/// sharpened, code for code, whatever its bands.
+///
+/// It holds the rows received and not yet handed on, at most the newest band and the kernel's
+/// radius of rows before it (an output's last `r` rows wait for the band below them), and the luma
+/// and sums across of [`SHARPEN_BAND_ROWS`] rows and `r` either side, `(64 + 2r) × width × 16`
+/// bytes. Each group of rows checks the cancellation before it starts.
+pub(crate) struct SharpenStream {
+    codes: StreamCodes,
+}
+
+enum StreamCodes {
+    Eight(StreamRows<u8>),
+    Sixteen(StreamRows<u16>),
+}
+
+impl SharpenStream {
+    /// A stream of a `width` × `height` output at `depth`, sharpened by `kernel`.
+    pub(crate) fn new(kernel: SharpenKernel, (width, height): (u32, u32), depth: Depth) -> Self {
+        let (width, height) = (width as usize, height as usize);
+        let codes = match depth {
+            Depth::Eight => StreamCodes::Eight(StreamRows::new(kernel, width, height)),
+            Depth::Sixteen => StreamCodes::Sixteen(StreamRows::new(kernel, width, height)),
+        };
+        Self { codes }
+    }
+
+    /// Take the next band of `rows` rows of the output, and answer the bands now sharpened, in
+    /// order from the top: none, or every row up to the radius's rows above the newest band's
+    /// last, or every row left once the last band arrives. A band of another depth, or rows past
+    /// the output's, is refused as `internal`.
+    pub(crate) fn push(
+        &mut self,
+        rows: u32,
+        pixels: Pixels,
+        cancel: &Cancel,
+    ) -> Result<Vec<(u32, Pixels)>, Error> {
+        match (&mut self.codes, pixels) {
+            (StreamCodes::Eight(stream), Pixels::Eight(codes)) => Ok(stream
+                .push(rows as usize, codes, cancel)?
+                .into_iter()
+                .map(|(rows, codes)| (rows, Pixels::Eight(codes)))
+                .collect()),
+            (StreamCodes::Sixteen(stream), Pixels::Sixteen(codes)) => Ok(stream
+                .push(rows as usize, codes, cancel)?
+                .into_iter()
+                .map(|(rows, codes)| (rows, Pixels::Sixteen(codes)))
+                .collect()),
+            _ => Err(Error::internal(
+                "a band of another depth reached the output sharpening",
+            )),
+        }
+    }
+}
+
+/// [`SharpenStream`] at one depth.
+struct StreamRows<T> {
+    kernel: SharpenKernel,
+    width: usize,
+    height: usize,
+    pool: bool,
+    /// The unsharpened rows' [`Row`]s from row `first` on.
+    kept: VecDeque<Row>,
+    first: usize,
+    /// The rows received and not yet handed on, in buffers `(first row, codes)` in order.
+    held: VecDeque<(usize, Vec<T>)>,
+    /// How many rows have arrived, and how many are sharpened.
+    received: usize,
+    written: usize,
+}
+
+impl<T: Code> StreamRows<T> {
+    fn new(kernel: SharpenKernel, width: usize, height: usize) -> Self {
+        let pool = pooled(RenderPass::Spatial, width as u64 * height as u64);
+        Self {
+            kernel,
+            width,
+            height,
+            pool,
+            kept: VecDeque::new(),
+            first: 0,
+            held: VecDeque::new(),
+            received: 0,
+            written: 0,
+        }
+    }
+
+    fn push(
+        &mut self,
+        rows: usize,
+        codes: Vec<T>,
+        cancel: &Cancel,
+    ) -> Result<Vec<(u32, Vec<T>)>, Error> {
+        let stride = self.width * 4;
+        if codes.len() != rows * stride || self.received + rows > self.height {
+            return Err(Error::internal(format!(
+                "a band of {rows} rows of {} samples does not follow row {} of a {}x{} output",
+                codes.len(),
+                self.received,
+                self.width,
+                self.height
+            )));
+        }
+        if rows > 0 {
+            self.held.push_back((self.received, codes));
+            self.received += rows;
+        }
+        let radius = self.kernel.radius() as usize;
+        // Every row whose kernel's rows below it have arrived.
+        let limit = if self.received == self.height {
+            self.height
+        } else {
+            self.received.saturating_sub(radius)
+        };
+        let Self {
+            kernel,
+            height,
+            pool,
+            kept,
+            first,
+            held,
+            written,
+            ..
+        } = self;
+        let (h, pool) = (*height, *pool);
+        while *written < limit {
+            cancel.check()?;
+            let top = *written;
+            let bottom = (top + SHARPEN_BAND_ROWS as usize).min(limit);
+            // The rows the group reads, `top − r` to `bottom + r`, each read before it is written:
+            // those above were read before the group above was written.
+            let needed = top.saturating_sub(radius);
+            while *first < needed && !kept.is_empty() {
+                kept.pop_front();
+                *first += 1;
+            }
+            if kept.is_empty() {
+                *first = needed;
+            }
+            let have = *first + kept.len();
+            let until = (bottom + radius).min(h);
+            if until > have {
+                let line = |y: usize| -> &[T] {
+                    let (y0, codes) = held
+                        .iter()
+                        .find(|(y0, codes)| (*y0..*y0 + codes.len() / stride).contains(&y))
+                        .expect("a row read before it is handed on");
+                    &codes[(y - y0) * stride..(y - y0 + 1) * stride]
+                };
+                let read = |y: usize| Row::of(line(y), &kernel.weights, radius);
+                let fresh: Vec<Row> = if pool {
+                    (have..until).into_par_iter().map(read).collect()
+                } else {
+                    (have..until).map(read).collect()
+                };
+                kept.extend(fresh);
+            }
+            let kept_rows = kept.make_contiguous();
+            let reads = (&*kept_rows, *first);
+            for (y0, codes) in held.iter_mut() {
+                let (from, to) = (top.max(*y0), bottom.min(*y0 + codes.len() / stride));
+                if from >= to {
+                    continue;
+                }
+                let lines = &mut codes[(from - *y0) * stride..(to - *y0) * stride];
+                let write = |(offset, line): (usize, &mut [T])| {
+                    sharpen_line(line, from + offset, h, reads, kernel);
+                };
+                if pool {
+                    lines.par_chunks_mut(stride).enumerate().for_each(write);
+                } else {
+                    lines.chunks_mut(stride).enumerate().for_each(write);
+                }
+            }
+            *written = bottom;
+        }
+        // Hand on every sharpened row, a buffer split where the rows still waiting begin: what
+        // stays is at most the radius's rows.
+        let mut done = Vec::new();
+        while let Some((y0, codes)) = held.pop_front() {
+            let end = y0 + codes.len() / stride;
+            if end <= limit {
+                done.push(((end - y0) as u32, codes));
+            } else {
+                if y0 < limit {
+                    let mut codes = codes;
+                    let waiting = codes.split_off((limit - y0) * stride);
+                    done.push(((limit - y0) as u32, codes));
+                    held.push_front((limit, waiting));
+                } else {
+                    held.push_front((y0, codes));
+                }
+                break;
+            }
+        }
+        Ok(done)
+    }
 }
 
 #[cfg(test)]

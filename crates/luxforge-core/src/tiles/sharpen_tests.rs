@@ -328,3 +328,79 @@ fn a_cancelled_sharpen_stops_before_its_first_band() {
     assert_eq!(error.kind.code(), "cancelled");
     assert_eq!(values(&output), input);
 }
+
+/// `input` of a `width` × `height` output pushed through a [`SharpenStream`] in bands of the row
+/// counts `cuts` gives in turn, the bands it hands on joined; each handed on in order, every row
+/// but the radius's above the newest band's last at once.
+fn streamed(
+    input: &Pixels,
+    (width, height): (u32, u32),
+    kernel: &SharpenKernel,
+    cuts: &[u32],
+) -> Vec<u32> {
+    let sixteen = input.depth() == Depth::Sixteen;
+    let mut stream = SharpenStream::new(kernel.clone(), (width, height), input.depth());
+    let stride = width as usize * 4;
+    let all = values(input);
+    let (mut y, mut handed, mut out) = (0u32, 0u32, Vec::new());
+    for &cut in cuts.iter().cycle() {
+        if y >= height {
+            break;
+        }
+        let rows = cut.min(height - y);
+        let band = pixels(
+            &all[y as usize * stride..(y + rows) as usize * stride],
+            sixteen,
+        );
+        for (count, ready) in stream.push(rows, band, &Cancel::never()).unwrap() {
+            handed += count;
+            out.extend(values(&ready));
+        }
+        y += rows;
+        let waiting = if y == height {
+            0
+        } else {
+            kernel.radius().min(y)
+        };
+        assert_eq!(handed, y - waiting, "after row {y}");
+    }
+    out
+}
+
+/// A stream of bands of any height — one row, fewer rows than the radius, several groups, an
+/// uneven last — hands on exactly the whole frame sharpened, at 8 and 16 bits, at the narrowest
+/// and widest radius, and on images smaller than the kernel.
+#[test]
+fn a_streamed_output_is_sharpened_exactly_as_the_whole_frame() {
+    let cuts: [&[u32]; 4] = [&[1], &[2, 5, 1], &[7, 64, 3], &[200]];
+    for (width, height, seed) in [(37, 150, 3), (5, 4, 4), (1, 9, 5)] {
+        for sixteen in [false, true] {
+            let max = if sixteen { 65_535 } else { 255 };
+            let input = pixels(&codes(width, height, max, seed), sixteen);
+            for sigma in [0.6, 3.0] {
+                let kernel = SharpenKernel::gaussian(sigma, 170);
+                let mut whole = input.clone();
+                sharpen(&mut whole, (width, height), &kernel, &Cancel::never()).unwrap();
+                for cut in cuts {
+                    assert_eq!(
+                        streamed(&input, (width, height), &kernel, cut),
+                        values(&whole),
+                        "{width}x{height} at {sigma}, sixteen {sixteen}, bands {cut:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_streamed_band_of_another_depth_or_past_the_output_is_refused() {
+    let kernel = SharpenKernel::gaussian(0.6, 70);
+    let mut stream = SharpenStream::new(kernel.clone(), (4, 4), Depth::Eight);
+    let sixteen = pixels(&codes(4, 2, 65_535, 1), true);
+    let error = stream.push(2, sixteen, &Cancel::never()).unwrap_err();
+    assert_eq!(error.kind.code(), "internal");
+    let mut stream = SharpenStream::new(kernel, (4, 4), Depth::Eight);
+    let five = pixels(&codes(4, 5, 255, 1), false);
+    assert!(stream.push(5, five, &Cancel::never()).is_err());
+}

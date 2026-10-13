@@ -87,7 +87,7 @@ impl WideTerminal {
     }
 
     /// Row `y` in linear light, each code decoded through `table`, written over `into`.
-    fn decode_row(&self, y: u32, table: &[f32; 65536], into: &mut Vec<[f32; 3]>) {
+    pub(crate) fn decode_row(&self, y: u32, table: &[f32; 65536], into: &mut Vec<[f32; 3]>) {
         let width = self.width as usize;
         let first = y as usize * width;
         into.clear();
@@ -215,28 +215,12 @@ pub(crate) fn resample(
     match output.depth {
         Depth::Eight => {
             let mut rgba = vec![0u8; Raster::expected_len(output.width, output.height)?];
-            let quantizer = quantizer();
-            resample_into(terminal, (&columns, &rows), &mut rgba, cancel, |sum| {
-                [
-                    quantizer.channel(sum[0]),
-                    quantizer.channel(sum[1]),
-                    quantizer.channel(sum[2]),
-                    u8::MAX,
-                ]
-            })?;
+            resample_into(terminal, (&columns, &rows), &mut rgba, cancel, encode8())?;
             Ok(Pixels::Eight(rgba))
         }
         Depth::Sixteen => {
             let mut rgba = vec![0u16; Raster::expected_len16(output.width, output.height)?];
-            let quantizer = quantizer16();
-            resample_into(terminal, (&columns, &rows), &mut rgba, cancel, |sum| {
-                [
-                    quantizer.channel(sum[0] as f32),
-                    quantizer.channel(sum[1] as f32),
-                    quantizer.channel(sum[2] as f32),
-                    u16::MAX,
-                ]
-            })?;
+            resample_into(terminal, (&columns, &rows), &mut rgba, cancel, encode16())?;
             Ok(Pixels::Sixteen(rgba))
         }
     }
@@ -268,32 +252,15 @@ fn resample_into<T: Copy + Send>(
         let mut across = vec![[0.0f64; 3]; (end - first) as usize * width];
         for (y, resampled) in (first..end).zip(across.chunks_exact_mut(width)) {
             terminal.decode_row(y, table, &mut line);
-            for (value, taps) in resampled.iter_mut().zip(columns) {
-                let read = &line[taps.first as usize..];
-                let mut sum = [0.0f64; 3];
-                for (weight, pixel) in taps.weights.iter().zip(read) {
-                    for channel in 0..3 {
-                        sum[channel] += weight * f64::from(pixel[channel]);
-                    }
-                }
-                *value = sum;
-            }
+            across_row(&line, columns, resampled);
         }
-        // Down each column, every output pixel's sum taken in ascending stage rows.
         let mut sums = vec![[0.0f64; 3]; width];
         for (taps, pixels) in taps.iter().zip(chunk.chunks_exact_mut(width * 4)) {
-            sums.fill([0.0; 3]);
-            for (row, weight) in taps.weights.iter().enumerate() {
-                let at = (taps.first - first) as usize + row;
-                for (sum, value) in sums.iter_mut().zip(&across[at * width..(at + 1) * width]) {
-                    for channel in 0..3 {
-                        sum[channel] += weight * value[channel];
-                    }
-                }
-            }
-            for (pixel, sum) in pixels.chunks_exact_mut(4).zip(&sums) {
-                pixel.copy_from_slice(&encode(*sum));
-            }
+            let row = |y: u32| {
+                let at = (y - first) as usize;
+                &across[at * width..(at + 1) * width]
+            };
+            down_row(taps, row, &mut sums, pixels, &encode);
         }
         Ok(())
     };
@@ -303,6 +270,77 @@ fn resample_into<T: Copy + Send>(
         out.par_chunks_mut(samples).enumerate().try_for_each(band)
     } else {
         out.chunks_mut(samples).enumerate().try_for_each(band)
+    }
+}
+
+/// One stage row, `line`, decoded to linear light, resampled across into `into`, one value an
+/// output column: each the sum of its taps' weighted values in `f64`, in ascending stage columns.
+/// The one place a row is resampled across, for the whole frame's resample and the banded
+/// reference's ([`super::bands_output`]) alike.
+#[inline]
+pub(crate) fn across_row(line: &[[f32; 3]], columns: &[Taps], into: &mut [[f64; 3]]) {
+    for (value, taps) in into.iter_mut().zip(columns) {
+        let read = &line[taps.first as usize..];
+        let mut sum = [0.0f64; 3];
+        for (weight, pixel) in taps.weights.iter().zip(read) {
+            for channel in 0..3 {
+                sum[channel] += weight * f64::from(pixel[channel]);
+            }
+        }
+        *value = sum;
+    }
+}
+
+/// One output row from the rows resampled across: down each column, every output pixel's sum of
+/// `taps`' weighted values in ascending stage rows (`row(y)` answering stage row `y` resampled
+/// across), in `f64` over `sums`, then encoded by `encode` into `pixels`, opaque RGBA. The one
+/// place an output row is summed down, for the whole frame's resample and the banded reference's
+/// alike.
+#[inline]
+pub(crate) fn down_row<'r, T: Copy>(
+    taps: &Taps,
+    row: impl Fn(u32) -> &'r [[f64; 3]],
+    sums: &mut [[f64; 3]],
+    pixels: &mut [T],
+    encode: &impl Fn([f64; 3]) -> [T; 4],
+) {
+    sums.fill([0.0; 3]);
+    for (offset, weight) in taps.weights.iter().enumerate() {
+        for (sum, value) in sums.iter_mut().zip(row(taps.first + offset as u32)) {
+            for channel in 0..3 {
+                sum[channel] += weight * value[channel];
+            }
+        }
+    }
+    for (pixel, sum) in pixels.chunks_exact_mut(4).zip(sums.iter()) {
+        pixel.copy_from_slice(&encode(*sum));
+    }
+}
+
+/// The encoding of one output pixel's linear sum at 8 bits: clamped and quantized once by the
+/// output quantizer, opaque. [`resample`]'s own, shared with the banded reference.
+pub(crate) fn encode8() -> impl Fn([f64; 3]) -> [u8; 4] + Sync {
+    let quantizer = quantizer();
+    move |sum| {
+        [
+            quantizer.channel(sum[0]),
+            quantizer.channel(sum[1]),
+            quantizer.channel(sum[2]),
+            u8::MAX,
+        ]
+    }
+}
+
+/// [`encode8`] at 16 bits, by the 16-bit output quantizer.
+pub(crate) fn encode16() -> impl Fn([f64; 3]) -> [u16; 4] + Sync {
+    let quantizer = quantizer16();
+    move |sum| {
+        [
+            quantizer.channel(sum[0] as f32),
+            quantizer.channel(sum[1] as f32),
+            quantizer.channel(sum[2] as f32),
+            u16::MAX,
+        ]
     }
 }
 
