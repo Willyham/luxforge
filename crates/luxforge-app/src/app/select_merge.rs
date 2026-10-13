@@ -1,9 +1,10 @@
 //! Merges in the Select workspace ([HDR merge design](../../../../docs/design/hdr-merge.md),
-//! "Grid workflow"; the [merge preview](../../../../docs/design/panorama-merge.md#the-merge-preview)):
-//! a bracket's Merge HDR, the same for a selection of frames through the grid's
-//! menu, the merge preview sheet it opens, ⌥-click merging at once with the last settings, the
-//! one pending merge row, the result's stack and its originals, and Remove merge and Put back
-//! merge. Its model is `state/select_merge.rs`; the grid draws the pending row, the badges and the
+//! "Grid workflow"; [panorama merges](../../../../docs/design/panorama-merge.md#grid-workflow) and
+//! the [merge preview](../../../../docs/design/panorama-merge.md#the-merge-preview)): a bracket's
+//! Merge HDR, Merge HDR and Merge panorama for a selection of frames through the grid's menu, the
+//! merge preview sheet each opens, ⌥-click merging at once with the kind's last settings, the
+//! one pending merge row, the result's stack and its originals, a panorama's projection and field
+//! of view on the Info band (`merge.inspect`), and Remove merge and Put back merge. Its model is `state/select_merge.rs`; the grid draws the pending row, the badges and the
 //! notes, and `view/select_merge.rs` the menu, the sheet and the notice.
 //!
 //! The desktop holds no merge logic: every gesture sends the request an API client sends, and
@@ -25,7 +26,8 @@
 //!   options, which continues the preview's work, and with ⌥ held with the plan's identity and the
 //!   last settings. A plan that
 //!   refuses is said in its own words; an exact merge in Removed is offered as Put back merge. A
-//!   merge that starts is remembered: its alignment and deghosting are the next ⌥-click's.
+//!   merge that starts is remembered: an HDR merge's alignment and deghosting, a panorama's
+//!   projection and Boundary Warp, are the next ⌥-click's of that kind.
 //! - **While the job runs** its `job.wait` reader brings each record: the pending row before the
 //!   frames says how far it got and offers Cancel (`job.cancel`, the activity board's Cancel too).
 //!   Its end is the job's: `ready` reads the view again with the result selected and active,
@@ -48,15 +50,16 @@ use crate::app::{
 use crate::state::preferences::PreferenceChange;
 use crate::state::select::{Block, LibraryGesture, MomentAction};
 use crate::state::select_merge::{
-    self as model, CreateFrom, MergeAction, MergeMenu, MergeMenuKind, MergeOptions, MergeRequest,
-    PendingMerge, PreviewSheet, PutBack, Started, sheet::SheetContext,
+    self as model, CreateFrom, KindOffer, MergeAction, MergeMenu, MergeMenuKind, MergeOptions,
+    MergeRequest, PanoramaFacts, PendingMerge, PreviewSheet, PutBack, Started, sheet::SheetContext,
 };
 use iced::{Task, widget::image::Handle};
 use luxforge_core::{
     Cancel, ClientId, ClientSession, OwnerHandle,
     catalog_types::{
-        ItemRef, MergeAnswer, MergeKind, MergePlan, MergePreview, MergePreviewId, MergeState,
-        RowItem, StackExpansion, StackRole, Targets, ViewFilter, ViewSummary,
+        ItemRef, MergeAnswer, MergeInspection, MergeKind, MergePlan, MergePreview,
+        MergePreviewId, MergeState, RowItem, StackExpansion, StackRole, Targets, ViewFilter,
+        ViewSummary,
     },
 };
 use serde_json::{Value, json};
@@ -178,6 +181,16 @@ pub(crate) fn preview_now(
         .get("preview_id")
         .and_then(|id| serde_json::from_value(id.clone()).ok());
     Ok(SheetJob { job_id, preview_id })
+}
+
+/// `merge.inspect` of a panorama for the Info band: its projection and field of view.
+pub(crate) fn inspect_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    params: Value,
+) -> Result<PanoramaFacts, String> {
+    let (inspection, _) = call(owner, client, "merge.inspect", params)?;
+    parse::<MergeInspection>(inspection).map(|inspection| PanoramaFacts::of(&inspection))
 }
 
 /// `merge.preview-close`.
@@ -306,19 +319,31 @@ impl Editor {
             MergeMessage::Disclosure(item) => return self.toggle_stack_at(item),
             MergeMessage::Pending => return self.merge_act(MergeAction::Cancel),
             MergeMessage::Option(held) => self.select.state.merge.option = held,
-            MergeMessage::Planned { serial, result } => {
+            MergeMessage::Planned {
+                serial,
+                kind,
+                result,
+            } => {
                 if serial != self.select.merge_plans {
                     return Task::none();
                 }
                 if let Some(MergeMenu {
-                    kind: MergeMenuKind::Frames { refusal, .. },
+                    kind: MergeMenuKind::Frames { kinds, .. },
                     ..
                 }) = &mut self.select.state.merge.menu
+                    && let Some(offer) = kinds.iter_mut().find(|offer| offer.kind == kind)
                 {
-                    *refusal = match result {
+                    offer.refusal = match result {
                         Ok(plan) => model::plan_refusal(&plan),
                         Err(error) => Some(error),
                     };
+                }
+            }
+            MergeMessage::Inspected { merge_id, result } => {
+                if let Some((inspected, answer)) = &mut self.select.state.merge.inspected
+                    && *inspected == merge_id
+                {
+                    *answer = Some(result);
                 }
             }
             MergeMessage::Opened { serial, answer } => return self.sheet_opened(serial, *answer),
@@ -349,8 +374,8 @@ impl Editor {
             MergeAction::CloseMenu => merge.menu = None,
             MergeAction::Start(kind) => {
                 merge.menu = None;
-                let Some((request, context)) = self.selection_request(kind, self.last_options())
-                else {
+                let last = self.last_options();
+                let Some((request, context)) = self.selection_request(kind, last) else {
                     return Task::none();
                 };
                 return self.merge_or_preview(request, context);
@@ -373,6 +398,33 @@ impl Editor {
                 if let Some(sheet) = &mut merge.sheet {
                     sheet.overlay = shown;
                 }
+            }
+            MergeAction::FrameOutlines(shown) => {
+                if let Some(sheet) = &mut merge.sheet {
+                    sheet.outlines = shown;
+                }
+            }
+            MergeAction::CropCoverage(shown) => {
+                if let Some(sheet) = &mut merge.sheet {
+                    sheet.crop = shown;
+                }
+            }
+            MergeAction::Projection(projection) => {
+                return self.change_options(|options| options.projection = projection);
+            }
+            // The slider draws its amount as it moves, and sends it once it rests.
+            MergeAction::BoundaryWarp(amount) => {
+                if let Some(sheet) = &mut merge.sheet {
+                    let amount = amount.min(luxforge_core::catalog_types::MAX_BOUNDARY_WARP);
+                    if sheet.request.options.boundary_warp != amount {
+                        sheet.request.options.boundary_warp = amount;
+                        sheet.stale = true;
+                    }
+                }
+            }
+            MergeAction::BoundaryWarpReleased => return self.send_stale(),
+            MergeAction::BoundaryWarpReset => {
+                return self.change_options(|options| options.boundary_warp = 0);
             }
             MergeAction::FolderMenu(open) => {
                 if let Some(sheet) = &mut merge.sheet {
@@ -436,13 +488,14 @@ impl Editor {
         Task::none()
     }
 
-    /// The last HDR merge's settings, as the desktop remembers them: what ⌥-click merges with and
-    /// the sheet opens with.
+    /// The last merge's settings of each kind, as the desktop remembers them: what ⌥-click merges
+    /// with and the sheet opens with.
     pub(crate) fn last_options(&self) -> MergeOptions {
+        let applied = self.preferences.applied();
+        let applied = applied.as_ref();
         MergeOptions::last(
-            self.preferences
-                .applied()
-                .and_then(|preferences| preferences.hdr_merge),
+            applied.and_then(|preferences| preferences.hdr_merge),
+            applied.and_then(|preferences| preferences.panorama_merge),
         )
     }
 
@@ -850,7 +903,9 @@ impl Editor {
             return Task::none();
         }
         sheet.merging = true;
-        self.queued_merge()
+        // Settings not sent yet (a Boundary Warp still held) are sent first; the merge waits
+        // for the revision that draws them.
+        self.sheet_next()
     }
 
     /// Start the merge pressed on the sheet once its preview can take it: the preview's identity
@@ -973,27 +1028,43 @@ impl Editor {
                 self.select.merge_picture_wanted = None;
                 merge.pending = Some(PendingMerge::new(job_id.clone(), request.clone()));
                 self.event("select_merge_started", || json!({"job_id": job_id}));
-                tasks.push(self.remember_merge(&request.options));
+                tasks.push(self.remember_merge(request.kind, &request.options));
             }
         }
         self.rebuild_grid();
         Task::batch(tasks)
     }
 
-    /// A merge of `options` started: they are the last settings from now on.
-    fn remember_merge(&mut self, options: &MergeOptions) -> Task<Message> {
-        let now = options.remembered();
-        let remembered = self
-            .preferences
-            .applied()
-            .map(|preferences| preferences.hdr_merge.unwrap_or_default());
-        if remembered == Some(now) {
-            return Task::none();
-        }
-        self.store_preferences(PreferenceChange {
-            hdr_merge: Some(Some(now)),
-            ..PreferenceChange::default()
-        })
+    /// A merge of `kind` with `options` started: they are that kind's last settings from now on.
+    fn remember_merge(&mut self, kind: MergeKind, options: &MergeOptions) -> Task<Message> {
+        let applied = self.preferences.applied();
+        let applied = applied.as_ref();
+        let change = match kind {
+            MergeKind::Hdr => {
+                let now = options.remembered();
+                if applied.map(|preferences| preferences.hdr_merge.unwrap_or_default()) == Some(now)
+                {
+                    return Task::none();
+                }
+                PreferenceChange {
+                    hdr_merge: Some(Some(now)),
+                    ..PreferenceChange::default()
+                }
+            }
+            MergeKind::Panorama => {
+                let now = options.remembered_panorama();
+                if applied.map(|preferences| preferences.panorama_merge.unwrap_or_default())
+                    == Some(now)
+                {
+                    return Task::none();
+                }
+                PreferenceChange {
+                    panorama_merge: Some(Some(now)),
+                    ..PreferenceChange::default()
+                }
+            }
+        };
+        self.store_preferences(change)
     }
 
     /// The running merge's job record: its progress, or its end.
@@ -1196,32 +1267,89 @@ impl Editor {
                 filtered,
             },
             (0 | 1, _) => return Task::none(),
-            // The selection menu's merge group is HDR's, the one kind with a provider.
-            (count, _) => MergeMenuKind::Frames {
-                kind: MergeKind::Hdr,
-                count,
-                refusal: None,
-            },
+            // Each kind whose bounds hold the count: HDR for 2–9 frames, a panorama for 2–32.
+            (count, _) => {
+                let kinds: Vec<KindOffer> = model::offered(count)
+                    .into_iter()
+                    .map(|kind| KindOffer {
+                        kind,
+                        refusal: None,
+                    })
+                    .collect();
+                if kinds.is_empty() {
+                    return Task::none();
+                }
+                MergeMenuKind::Frames { count, kinds }
+            }
         };
-        let frames = match kind {
-            MergeMenuKind::Frames { kind, .. } => Some(kind),
-            MergeMenuKind::Stack { .. } => None,
+        let frames: Vec<MergeKind> = match &kind {
+            MergeMenuKind::Frames { kinds, .. } => kinds.iter().map(|offer| offer.kind).collect(),
+            MergeMenuKind::Stack { .. } => Vec::new(),
         };
         self.select.state.merge.menu = Some(MergeMenu { x, y, kind });
-        let Some(kind) = frames else {
+        if frames.is_empty() {
             return Task::none();
-        };
-        let Some((request, _)) = self.selection_request(kind, MergeOptions::default()) else {
-            return Task::none();
-        };
+        }
+        // Each kind is planned at once, with its defaults: a refusal disables its item.
         self.select.merge_plans += 1;
         let serial = self.select.merge_plans;
-        let params = model::plan_params(request.kind, &request.targets, &request.options);
-        self.select.plan_sent = Some(params.clone());
+        self.select.plan_sent.clear();
+        let mut tasks = Vec::with_capacity(frames.len());
+        for kind in frames {
+            let Some((request, _)) = self.selection_request(kind, MergeOptions::default()) else {
+                return Task::none();
+            };
+            let params = model::plan_params(request.kind, &request.targets, &request.options);
+            self.select.plan_sent.push(params.clone());
+            let (owner, client) = (self.owner.clone(), self.client);
+            tasks.push(owner_task(
+                move || plan_now(&owner, client, params),
+                move |result| {
+                    merge_message(MergeMessage::Planned {
+                        serial,
+                        kind,
+                        result,
+                    })
+                },
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    /// The panorama result the Info panel shows alone, inspected once for its band's projection
+    /// and field of view: `merge.inspect` in an owner task, answered as
+    /// [`MergeMessage::Inspected`]. A result inspected already is not asked again.
+    pub(crate) fn inspect_panorama(&mut self) -> Task<Message> {
+        if !self.select_shown() {
+            return Task::none();
+        }
+        let selection = self.selection();
+        if selection.count != 1 {
+            return Task::none();
+        }
+        let Some(merge_id) = selection
+            .focus()
+            .and_then(|item| self.select.state.rows.row(item))
+            .and_then(|row| model::panorama_leader(row.stack.as_ref()))
+            .cloned()
+        else {
+            return Task::none();
+        };
+        let merge = &mut self.select.state.merge;
+        if merge
+            .inspected
+            .as_ref()
+            .is_some_and(|(inspected, _)| *inspected == merge_id)
+        {
+            return Task::none();
+        }
+        merge.inspected = Some((merge_id.clone(), None));
+        let params = model::inspect_params(&merge_id);
+        self.select.inspect_sent = Some(params.clone());
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || plan_now(&owner, client, params),
-            move |result| merge_message(MergeMessage::Planned { serial, result }),
+            move || inspect_now(&owner, client, params),
+            move |result| merge_message(MergeMessage::Inspected { merge_id, result }),
         )
     }
 
@@ -1236,6 +1364,7 @@ impl Editor {
         Some((
             pending.request.anchor,
             Block::Pending {
+                kind: pending.request.kind,
                 title: pending.title(),
                 detail: pending.detail(),
                 progress: pending.fraction.map(|fraction| fraction as f32),
@@ -1279,11 +1408,20 @@ impl Editor {
                 },
                 "alignment": format!("{:?}", sheet.request.options.alignment),
                 "deghost": format!("{:?}", sheet.request.options.deghost),
+                "panorama": model.panorama.as_ref().map(|panorama| json!({
+                    "projection": panorama.projection,
+                    "resolved": panorama.resolved,
+                    "boundary_warp": panorama.boundary_warp,
+                    "outlines": panorama.outlines,
+                    "crop": panorama.crop,
+                    "reference": panorama.reference,
+                })),
                 "frames": model.frames.iter().map(|frame| json!({
                     "name": frame.name,
                     "detail": frame.detail,
                     "value": frame.value,
                     "reference": frame.reference,
+                    "number": frame.number,
                 })).collect::<Vec<_>>(),
                 "folder": model.folder,
                 "folder_choice": sheet.plan.as_ref().map(|plan| model::folder_choice(&sheet.request.options, plan)),
@@ -1310,6 +1448,7 @@ impl Editor {
             "sent": self.select.merge_sent,
             "stack": self.select.stack_sent,
             "plan": self.select.plan_sent,
+            "inspect": self.select.inspect_sent,
             "record": self.select.merge_record,
             "preview_record": self.select.preview_record,
         })

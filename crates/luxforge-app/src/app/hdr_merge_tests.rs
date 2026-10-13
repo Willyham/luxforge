@@ -416,13 +416,26 @@ fn expand(editor: &mut Editor) -> Value {
     params
 }
 
-/// Run the `merge.plan` the menu or the form has in flight, as its owner task would.
+/// Run every `merge.plan` the menu has in flight, one a kind offered, as its owner task would,
+/// and answer HDR's request.
 fn plan(editor: &mut Editor) -> Value {
-    let params = editor.select.plan_sent.clone().expect("a plan request");
+    plan_all(editor)
+        .into_iter()
+        .find(|params| params["kind"] == "hdr")
+        .expect("an HDR plan request")
+}
+
+/// Run every `merge.plan` the menu has in flight, as its owner task would, and answer them.
+pub(super) fn plan_all(editor: &mut Editor) -> Vec<Value> {
+    let sent = editor.select.plan_sent.clone();
+    assert!(!sent.is_empty(), "a plan request");
     let serial = editor.select.merge_plans;
-    let result = plan_now(&editor.owner, editor.client, params.clone());
-    merge(editor, MergeMessage::Planned { serial, result });
-    params
+    for params in &sent {
+        let kind: MergeKind = serde_json::from_value(params["kind"].clone()).unwrap();
+        let result = plan_now(&editor.owner, editor.client, params.clone());
+        merge(editor, MergeMessage::Planned { serial, kind, result });
+    }
+    sent
 }
 
 /// Shift-click the cell at `item`.
@@ -759,15 +772,15 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .menu
         .clone()
         .expect("the menu");
-    assert_eq!(menu.heading, Some("HDR"));
-    assert_eq!(menu.entries[0].label, "Merge HDR");
+    let hdr = menu.group("HDR").expect("the HDR group");
+    assert_eq!(hdr.entries[0].label, "Merge HDR");
     assert_eq!(
-        menu.entries[0].hint,
+        hdr.entries[0].hint,
         Some("Merge the frames into one HDR photograph in the catalog")
     );
-    assert_eq!(menu.entries.len(), 1, "one merge action: {menu:?}");
-    assert!(menu.entries[0].action.is_none());
-    assert_eq!(menu.entries[0].reason.as_deref(), Some(reason.as_str()));
+    assert_eq!(hdr.entries.len(), 1, "one merge action: {menu:?}");
+    assert!(hdr.entries[0].action.is_none());
+    assert_eq!(hdr.entries[0].reason.as_deref(), Some(reason.as_str()));
     act(&mut editor, MergeAction::CloseMenu);
 
     // The bracket's frames, selected: Merge HDR.
@@ -776,8 +789,9 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     context(&mut editor, 2);
     plan(&mut editor);
     let menu = editor.workspace.select.merge.menu.clone().unwrap();
-    assert!(menu.entries[0].action.is_some(), "{menu:?}");
-    assert_eq!(menu.entries.len(), 1, "one merge action: {menu:?}");
+    let hdr = menu.group("HDR").expect("the HDR group");
+    assert!(hdr.entries[0].action.is_some(), "{menu:?}");
+    assert_eq!(hdr.entries.len(), 1, "one merge action: {menu:?}");
     act(&mut editor, MergeAction::Start(MergeKind::Hdr));
     start(&mut editor);
     let record = follow(&mut editor);
@@ -842,7 +856,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .menu
         .clone()
         .expect("the stack menu");
-    let remove = menu
+    let remove = menu.groups[0]
         .entries
         .iter()
         .find(|entry| entry.label == "Remove merge")
