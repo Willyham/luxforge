@@ -311,12 +311,10 @@ fn prepare(
     if let Some(port) = url.port() {
         host = format!("{host}:{port}");
     }
+    let agent = format!("Luxforge/{}", luxforge_core::APPLICATION_VERSION);
     let fixed = [
         ("host", host.as_str()),
-        (
-            "user-agent",
-            concat!("Luxforge/", env!("CARGO_PKG_VERSION")),
-        ),
+        ("user-agent", agent.as_str()),
         ("accept-encoding", "identity"),
         ("connection", "close"),
     ];

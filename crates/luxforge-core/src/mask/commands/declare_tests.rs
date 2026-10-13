@@ -53,6 +53,11 @@ fn the_declared_family_is_the_designs_method_table() {
             "mask.create-colour-range",
             "mask.add-colour-range",
             "mask.set-colour-range",
+            // And the model selection, whose geometry is an artifact and its provenance beside
+            // two numbers: generated like every declared kind.
+            "mask.create-model",
+            "mask.add-model",
+            "mask.set-model",
             // And the sample methods of the one kind that holds a list of picked colours.
             "mask.add-colour-range-sample",
             "mask.delete-colour-range-sample",
@@ -244,16 +249,26 @@ fn registering_a_kind_is_enough_to_make_it_creatable_addable_and_patchable() {
                 op == GeometryOp::Set,
                 "only a patch method patches"
             );
-            // A generated control has to be usable, not merely present: every geometry parameter
-            // is a number over a finite range, with the display hints a number field needs and a
-            // soft range inside its hard one.
+            // A generated control has to be usable, not merely present: every number parameter is
+            // over a finite range, with the display hints a number field needs and a soft range
+            // inside its hard one. The one kind with other parameters is the model selection,
+            // whose artifact and provenance are set by a task and `mask.set-model`, never by a
+            // field.
             for parameter in &command.action.parameters {
                 if parameter.name == "mode" || parameter.kind.is_identity() {
                     continue;
                 }
                 let where_ = format!("{method} {}", parameter.name);
                 let ParameterKind::Number { min, max } = parameter.kind else {
-                    panic!("{where_} is not a number");
+                    assert_eq!(kind, "model", "{where_} is not a number");
+                    assert!(
+                        matches!(
+                            parameter.kind,
+                            ParameterKind::Artifact | ParameterKind::String { .. }
+                        ),
+                        "{where_}"
+                    );
+                    continue;
                 };
                 assert!(min.is_finite() && max.is_finite() && min < max, "{where_}");
                 assert!(parameter.unit.is_some(), "{where_} declares no unit");
@@ -283,9 +298,9 @@ fn registering_a_kind_is_enough_to_make_it_creatable_addable_and_patchable() {
         }
     }
     assert_eq!(
-        kinds, 4,
-        "linear, radial and the two range selections are the kinds whose geometry is declared \
-         as numbers"
+        kinds, 5,
+        "linear, radial, the two range selections and the model selection are the kinds whose \
+         geometry is declared"
     );
     // And the other side of the same contract: a kind whose geometry is drawn is evaluable
     // without being generated over, so it registers, parses and renders while declaring no
@@ -561,8 +576,9 @@ fn a_generated_number_field_binds_only_a_number_parameter() {
                 .number_style(NumberStyle::Field)
         )]
     );
-    // And every kind registered today is all numbers, so each of its declared parameters has
-    // exactly one field, in declaration order, and nothing else is generated for it.
+    // And every number a registered kind declares has exactly one field, in declaration order,
+    // and nothing else is generated for it: the model selection's artifact and provenance get
+    // none.
     for kind in declared_geometry_kinds() {
         let action = geometry(GeometryOp::Set, kind)
             .expect("every kind generates its patch method")
@@ -581,6 +597,7 @@ fn a_generated_number_field_binds_only_a_number_parameter() {
         let declared: Vec<String> = component_parameters(kind, false)
             .expect("the table's own kind")
             .into_iter()
+            .filter(|parameter| matches!(parameter.kind, ParameterKind::Number { .. }))
             .map(|parameter| parameter.name)
             .collect();
         assert_eq!(fields, declared, "{kind}");

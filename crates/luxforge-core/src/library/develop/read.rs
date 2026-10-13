@@ -74,6 +74,16 @@ pub(crate) struct ReadFile {
     pub kept: Option<ReadContent>,
 }
 
+/// The embedded colour profiles a JPEG may carry, by what reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JpegProfiles {
+    /// The editor's: none, or a standard sRGB matrix/TRC profile ([`crate::profile::check`]).
+    Srgb,
+    /// A merge's: none, or any RGB matrix/TRC profile, which it converts to linear sRGB
+    /// ([`crate::profile::RgbProfile`]).
+    Rgb,
+}
+
 /// Read, fingerprint and interpret the file at `path`, bounded by its kind's limit (JPEG
 /// [`MAX_JPEG_BYTES`], anything else RAW's `MAX_SOURCE_BYTES`), in [`CHUNK`]s, cancellable
 /// between them, keeping what it read when `keep` is set ([`ReadFile::kept`]). A file that is
@@ -82,6 +92,17 @@ pub(crate) struct ReadFile {
 pub(crate) fn read(
     path: &Path,
     keep: bool,
+    control: &JobControl,
+    pause: &dyn Fn(Phase),
+) -> Result<ReadFile, Error> {
+    read_with(path, keep, JpegProfiles::Srgb, control, pause)
+}
+
+/// [`read`], with a JPEG's embedded colour profile held to `profiles`.
+pub(crate) fn read_with(
+    path: &Path,
+    keep: bool,
+    profiles: JpegProfiles,
     control: &JobControl,
     pause: &dyn Fn(Phase),
 ) -> Result<ReadFile, Error> {
@@ -97,7 +118,7 @@ pub(crate) fn read(
         .map(|read| read.header.metadata())
         .unwrap_or_default();
     let (source, stored, orientation, kept) = if bytes.starts_with(&[0xff, 0xd8]) {
-        let (source, stored, orientation) = jpeg(&bytes)?;
+        let (source, stored, orientation) = jpeg(&bytes, profiles)?;
         let kept = keep.then(|| ReadContent::Jpeg(Arc::new(bytes)));
         (source, stored, orientation, kept)
     } else {
@@ -253,10 +274,15 @@ pub(super) fn read_bytes(
 
 /// A JPEG's interpretation from its header alone, checked as a decode checks it before its first
 /// row: its stored size and EXIF orientation.
-fn jpeg(bytes: &[u8]) -> Result<(SourceKind, (u32, u32), u8), Error> {
+fn jpeg(bytes: &[u8], profiles: JpegProfiles) -> Result<(SourceKind, (u32, u32), u8), Error> {
     let decoder = luxforge_jpeg::Decoder::new(bytes, JPEG_LIMITS)?;
     if let Some(profile) = decoder.icc_profile() {
-        crate::profile::check(profile, decoder.components())?;
+        match profiles {
+            JpegProfiles::Srgb => crate::profile::check(profile, decoder.components())?,
+            JpegProfiles::Rgb => {
+                crate::profile::RgbProfile::of(Some(profile), decoder.components())?;
+            }
+        }
     }
     Ok((
         SourceKind::Jpeg,

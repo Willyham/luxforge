@@ -142,6 +142,8 @@ pub enum JobKind {
     BatchExport,
     /// Merging an exposure bracket into one HDR photograph.
     HdrMerge,
+    /// Stitching overlapping frames into one panorama.
+    PanoramaMerge,
     /// Preparing or updating a merge preview's picture.
     MergePreview,
 }
@@ -194,6 +196,7 @@ impl JobKind {
             | Self::BatchSettings
             | Self::BatchExport
             | Self::HdrMerge
+            | Self::PanoramaMerge
             | Self::MergePreview => Family::Catalog,
         }
     }
@@ -219,6 +222,7 @@ impl JobKind {
             | Self::BatchSettings
             | Self::BatchExport
             | Self::HdrMerge
+            | Self::PanoramaMerge
             | Self::MergePreview => None,
         }
     }

@@ -60,6 +60,60 @@ pub struct ComponentReport {
     /// component that references none, which is every component whose geometry is declared as
     /// numbers; the payload itself is still reported unchanged beside it.
     pub strokes: Vec<StrokeReport>,
+    /// What a model selection records and how it stands against the photograph now; absent for
+    /// every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelReport>,
+}
+
+/// A model selection's row: what computed it, when its raster was published, and why it is stale.
+///
+/// `stale` lists each reason in the order [`ModelStale`] declares them, and is empty for a current
+/// selection; it is `None` only when the current input could not be determined, as for a stack that
+/// cannot be evaluated, which says so rather than claiming the selection is current. A stale
+/// selection keeps rendering from its raster; Recompute is the task again and `mask.set-model`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelReport {
+    pub class: String,
+    pub model: String,
+    pub model_version: String,
+    pub artifact: crate::ArtifactId,
+    /// When the raster was published, in milliseconds since the Unix epoch, from the catalog's
+    /// artifact row; `None` when the catalog does not record it.
+    pub computed_ms: Option<i64>,
+    pub stale: Option<Vec<ModelStale>>,
+}
+
+/// One reason a model selection no longer matches what it was computed from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelStale {
+    /// The original's interpretation: another file, or another decode of it.
+    Source,
+    /// The repair stage's output: the development before it or a correction in it.
+    RepairPrefix,
+    /// The module now declares another version of the model that computed it.
+    ModelVersion,
+}
+
+impl ModelStale {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::RepairPrefix => "repair-prefix",
+            Self::ModelVersion => "model-version",
+        }
+    }
+
+    /// What changed, in the words a row says it: `the original changed`.
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Self::Source => "the original changed",
+            Self::RepairPrefix => "the photograph was developed or repaired differently",
+            Self::ModelVersion => "the model was updated",
+        }
+    }
 }
 
 /// One stroke a component references: its content address and, when the recipe's stroke store
@@ -161,6 +215,14 @@ pub(crate) fn listing(
                         .into_iter()
                         .map(|id| StrokeReport::of(id, &recipe.strokes))
                         .collect(),
+                    model: crate::mask::model_selection(component).map(|selection| ModelReport {
+                        class: selection.class,
+                        model: selection.model,
+                        model_version: selection.model_version,
+                        artifact: selection.artifact,
+                        computed_ms: None,
+                        stale: None,
+                    }),
                 })
                 .collect(),
             layers: recipe

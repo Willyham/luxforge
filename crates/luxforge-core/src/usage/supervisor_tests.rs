@@ -10,8 +10,8 @@ use crate::{
     preferences::PreferenceStore,
     usage::{
         Batch, CpuProfile, CpuVendor, DISCLOSURE_VERSION, EventKind, GpuBackend, GpuProfile,
-        GpuType, GpuVendor, Idle, LaunchMode, MemoryBand, MemoryKind, MemoryMib, OsFamily,
-        OsProfile, Percent, ProcessSample, Renderer, Version, decode_batch,
+        GpuType, GpuVendor, Idle, MemoryBand, MemoryKind, MemoryMib, OsFamily, OsProfile, Percent,
+        ProcessSample, Renderer, Version, decode_batch,
         device_profile::{AppleTier, Arch},
         eligibility::{Eligibility, TestReceiver},
         event::{Event, Recorded},
@@ -529,7 +529,9 @@ fn usage_nothing_runs_before_consent_or_in_an_ineligible_launch() {
     // An ineligible launch over a stored opt-in: the launch read turns nothing on.
     for usage in [
         Usage::headless(),
-        Usage::new(Eligibility::production(LaunchMode::Interactive)),
+        Usage::new(Eligibility::Ineligible(
+            crate::usage::Reason::InactiveDestination,
+        )),
     ] {
         let dir = Dir::new("ineligible");
         enable(&eligible(), &dir, "stored");

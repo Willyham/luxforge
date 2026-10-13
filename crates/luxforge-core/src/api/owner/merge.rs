@@ -5,19 +5,22 @@
 //! is `crate::library::merge`.
 //!
 //! - **Kinds.** `merge.plan` and `merge.create` name the [`MergeKind`] they merge, and
-//!   `merge.rerun` may; each kind's options travel under its own name (`hdr`). A kind this build
-//!   registers no provider for (`crate::merge::providers`) is `not-ready` naming that provider,
-//!   answered before the request is parsed ([`kinded`]) so a schema that enumerates only the
-//!   registered kinds does not answer it as `validation`; another kind's options are `validation`.
+//!   `merge.rerun` may; each kind's options travel under its own name (`hdr`, `panorama`). A kind
+//!   this build registers no provider for (`crate::merge::providers`) is `not-ready` naming that
+//!   provider, answered before the request is parsed ([`kinded`]) so a schema that enumerates only
+//!   the registered kinds does not answer it as `validation`; another kind's options are
+//!   `validation`. A panorama merges only while the lane holds a stitch
+//!   (`crate::merge::panorama::stitching`); without one it is `not-ready` at admission.
 //! - **The lane** is a library lane of its own ([`LaneKind::Merge`]) that every kind shares: one
 //!   worker thread, started on the first merge, running one merge while at most [`MERGE_QUEUE`]
 //!   waits; a further request is `resource-limit`, never dropped. Each kind holds its merges to its
 //!   own limits ([`Limits::of`]). A merge job belongs to no client: no selection, view or
 //!   workspace change and no disconnect cancels it, only `job.cancel`.
 //! - **Planning and admission** read only the catalog, the index and one stat an input: the inputs
-//!   in the stack's order (capture order, the request's breaking ties), their header-level
-//!   suitability and exposures, the folder, the estimates, an exact recorded match and the active
-//!   stacks that claim an input. Everything that needs pixels is the job's.
+//!   in capture order (the request's breaking ties), which is an HDR stack's order, their
+//!   header-level suitability and exposures, the folder, the estimates, an exact recorded match and
+//!   the active stacks that claim an input. Everything that needs pixels is the job's; a
+//!   panorama's stack order is the frames' left-to-right order, which registration decides.
 //! - **Publication** is the job's answer, committed on the owner when the job ends: one
 //!   transaction ([`EditorService::publish_merge`](crate::EditorService::publish_merge)) and one
 //!   library change, announced as one event, unless `job.cancel` reached the owner first, when
@@ -54,8 +57,9 @@ use crate::{
         AssetRowId, CaptureTime, CatalogFolderId, EventSpan, FileId, FileSignature, FolderChoice,
         FolderProposal, HdrOptions, HdrParameters, HeaderMetadata, InspectedInput, LocalDay,
         MergeAnswer, MergeEstimates, MergeId, MergeInspection, MergeKind, MergeParameters,
-        MergePlan, MergeProvenance, MergeProvider, MergeRecord, MergeState, PlannedInput,
-        ProviderState, SourceAvailability, Targets, ViewItem, VolumeId,
+        MergePlan, MergeProvenance, MergeProvider, MergeRecord, MergeState, PanoramaOptions,
+        PanoramaParameters, PlannedInput, ProviderState, SourceAvailability, Targets, ViewItem,
+        VolumeId,
         api::{MergeCreate, MergeInspect, MergePlanParams, MergeRerun, MergeTargets},
         jobs::CatalogJob,
         match_key,
@@ -77,6 +81,12 @@ use crate::{
             Refusal, SensorLayout, frame::capture_order, resolve_exposures,
         },
         job::{self, Developer, Hooks, JobInput, JobSpec, Limits, Merged, SharedDevelopment},
+        panorama::{
+            frames::{FrameDeveloper, SharedFrames},
+            job::{PanoramaSpec, focal_prior, spool_bytes},
+            stitching::{self, Stitcher},
+            suitability,
+        },
         providers,
     },
 };
@@ -100,6 +110,9 @@ mod hdr_merge_end_to_end;
 #[cfg(test)]
 #[path = "hdr_merge_job.rs"]
 mod hdr_merge_job;
+#[cfg(test)]
+#[path = "panorama_merge_tests.rs"]
+mod panorama_merge;
 #[cfg(any(test, feature = "test-holds"))]
 pub use frames::SyntheticFrame;
 #[path = "merge_preview.rs"]
@@ -133,6 +146,10 @@ pub(super) struct MergeLane {
     /// Each kind's provider in this build ([`providers::provider`]), or why there is none.
     providers: BTreeMap<MergeKind, Result<MergeProvider, String>>,
     developer: Arc<dyn Developer>,
+    /// How a panorama's frames are read and developed: RAW or JPEG, a lens profile baked.
+    frames: Arc<dyn FrameDeveloper>,
+    /// The panorama stitch ([`stitching::production`]), or none in a build without one.
+    stitcher: Option<Arc<dyn Stitcher>>,
     /// Each kind's limits ([`Limits::of`]).
     limits: BTreeMap<MergeKind, Limits>,
     hooks: Hooks,
@@ -152,12 +169,18 @@ impl MergeLane {
             providers: MergeKind::ALL
                 .into_iter()
                 .map(|kind| {
-                    let provider =
-                        providers::provider(kind).ok_or_else(|| providers::missing(kind));
+                    let provider = match kind {
+                        MergeKind::Panorama if stitching::production().is_none() => {
+                            Err(stitching::UNWIRED.to_owned())
+                        }
+                        _ => providers::provider(kind).ok_or_else(|| providers::missing(kind)),
+                    };
                     (kind, provider)
                 })
                 .collect(),
             developer: Arc::new(SharedDevelopment),
+            frames: Arc::new(SharedFrames),
+            stitcher: stitching::production(),
             limits: MergeKind::ALL
                 .into_iter()
                 .map(|kind| (kind, Limits::of(kind)))
@@ -188,6 +211,41 @@ impl MergeLane {
         provider: Result<MergeProvider, String>,
     ) {
         self.providers.insert(kind, provider);
+    }
+
+    /// Stitch panoramas with `stitcher` and read their frames with `frames`, as a build with its
+    /// panorama stitch does.
+    #[cfg(any(test, feature = "test-holds"))]
+    pub(super) fn set_panorama(
+        &mut self,
+        stitcher: Arc<dyn Stitcher>,
+        frames: Option<Arc<dyn FrameDeveloper>>,
+    ) {
+        self.stitcher = Some(stitcher);
+        if let Some(frames) = frames {
+            self.frames = frames;
+        }
+        self.providers.insert(
+            MergeKind::Panorama,
+            providers::provider(MergeKind::Panorama)
+                .ok_or_else(|| providers::missing(MergeKind::Panorama)),
+        );
+    }
+
+    /// Remove the panorama stitch, as a build without one would carry: panoramas plan, and are
+    /// `not-ready` to merge or preview.
+    #[cfg(test)]
+    pub(super) fn remove_panorama(&mut self) {
+        self.stitcher = None;
+        self.providers
+            .insert(MergeKind::Panorama, Err(stitching::UNWIRED.to_owned()));
+    }
+
+    /// The stitch a panorama merges with, or `not-ready` while this build has none.
+    fn stitcher(&self) -> Result<Arc<dyn Stitcher>, Error> {
+        self.stitcher
+            .clone()
+            .ok_or_else(|| providers::not_ready(MergeKind::Panorama, stitching::UNWIRED))
     }
 
     #[cfg(test)]
@@ -246,12 +304,17 @@ pub(in crate::api) fn kinded(params: &Value) -> Result<(), Error> {
     if providers::provider(kind).is_none() {
         return Err(unregistered(kind));
     }
-    if let MergeKind::Hdr = kind
-        && let Some(options) = params.get("hdr").filter(|options| !options.is_null())
+    if let Some(options) = params
+        .get(kind.as_str())
+        .filter(|options| !options.is_null())
     {
-        HdrOptions::deserialize(options).map_err(|error| {
-            Error::validation(format!("hdr: {error}"))
-                .with_data(json!({"kind": kind, "field": "hdr"}))
+        let parsed = match kind {
+            MergeKind::Hdr => HdrOptions::deserialize(options).map(|_| ()),
+            MergeKind::Panorama => PanoramaOptions::deserialize(options).map(|_| ()),
+        };
+        parsed.map_err(|error| {
+            Error::validation(format!("{}: {error}", kind.as_str()))
+                .with_data(json!({"kind": kind, "field": kind.as_str()}))
         })?;
     }
     Ok(())
@@ -270,17 +333,69 @@ fn unregistered(kind: MergeKind) -> Error {
     providers::not_ready(kind, &providers::missing(kind))
 }
 
-/// The job a merge of `kind` runs as, or `not-ready` while it has no provider.
+/// The job a merge of `kind` runs as.
 fn job_of(kind: MergeKind) -> Result<&'static CatalogJob, Error> {
-    kind.job().ok_or_else(|| unregistered(kind))
+    Ok(kind.job())
 }
 
-/// The options a request of `kind` names: its `hdr` options for an HDR merge. A kind with no
-/// provider is `not-ready`.
-fn hdr_options(kind: MergeKind, options: Option<HdrOptions>) -> Result<HdrOptions, Error> {
-    match kind {
-        MergeKind::Hdr => Ok(options.unwrap_or_default()),
-        MergeKind::Panorama => Err(unregistered(kind)),
+/// A request's options, of its kind.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Options {
+    Hdr(HdrOptions),
+    Panorama(PanoramaOptions),
+}
+
+/// The options a request of `kind` names: its `hdr` or `panorama` options, defaulted when left
+/// out; the other kind's are `validation`, naming the field. A kind with no provider is
+/// `not-ready`.
+pub(super) fn options(
+    kind: MergeKind,
+    hdr: Option<HdrOptions>,
+    panorama: Option<PanoramaOptions>,
+) -> Result<Options, Error> {
+    if providers::provider(kind).is_none() {
+        return Err(unregistered(kind));
+    }
+    let other = match kind {
+        MergeKind::Hdr => panorama.is_some().then_some(MergeKind::Panorama),
+        MergeKind::Panorama => hdr.is_some().then_some(MergeKind::Hdr),
+    };
+    if let Some(other) = other {
+        let field = other.as_str();
+        return Err(Error::validation(format!(
+            "{field} holds {} options, and this is {} merge",
+            other.noun(),
+            article(kind)
+        ))
+        .with_data(json!({"kind": kind, "field": field})));
+    }
+    Ok(match kind {
+        MergeKind::Hdr => Options::Hdr(hdr.unwrap_or_default()),
+        MergeKind::Panorama => Options::Panorama(panorama.unwrap_or_default()),
+    })
+}
+
+impl Options {
+    /// The options as a preview revision answers them: every default named.
+    pub(super) fn resolved(&self) -> crate::catalog_types::MergeOptions {
+        match self {
+            Self::Hdr(options) => crate::catalog_types::MergeOptions::Hdr(HdrOptions {
+                reference: options.reference.clone(),
+                exposure_overrides: options
+                    .exposure_overrides
+                    .clone()
+                    .filter(|overrides| !overrides.is_empty()),
+                alignment: Some(options.alignment.unwrap_or_default()),
+                deghost: Some(options.deghost.unwrap_or_default()),
+            }),
+            Self::Panorama(options) => {
+                crate::catalog_types::MergeOptions::Panorama(PanoramaOptions {
+                    reference: options.reference.clone(),
+                    projection: Some(options.projection.unwrap_or_default()),
+                    boundary_warp: Some(options.boundary_warp.unwrap_or(0)),
+                })
+            }
+        }
     }
 }
 
@@ -372,7 +487,7 @@ fn inputs(
                 ViewItem::Photo(row) => Ok(Item::Row(row)),
                 // A provenance row is an original an active stack already claims.
                 ViewItem::Input(_) => Err(Error::validation(
-                    "a selected original belongs to an HDR stack already; remove that merge first",
+                    "a selected original belongs to a merge's stack already; remove that merge first",
                 )),
             })
             .collect::<Result<_, _>>()?,
@@ -625,6 +740,96 @@ fn parameters(
     })
 }
 
+/// The position among `inputs` of the input at `path`, refused with `validation` when it names
+/// none.
+fn position(inputs: &[Named], path: &Path) -> Result<usize, Error> {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    inputs
+        .iter()
+        .position(|input| input.path == path)
+        .ok_or_else(|| {
+            Error::validation(format!(
+                "{} is not one of the merge's inputs",
+                path.display()
+            ))
+        })
+}
+
+/// The panorama options a request names, in the inputs' positions, each left out the recorded
+/// one's (a rerun's) or the default: the reference by path, the projection and the Boundary
+/// Warp, refused with `validation` past 100.
+fn panorama_parameters(
+    inputs: &[Named],
+    options: &PanoramaOptions,
+    recorded: Option<&PanoramaParameters>,
+) -> Result<PanoramaParameters, Error> {
+    let boundary_warp = options
+        .boundary_warp
+        .or(recorded.map(|recorded| recorded.boundary_warp))
+        .unwrap_or(0);
+    if boundary_warp > crate::catalog_types::MAX_BOUNDARY_WARP {
+        return Err(Error::validation(format!(
+            "boundary_warp is {boundary_warp}; it takes 0 to 100"
+        ))
+        .with_data(json!({"kind": MergeKind::Panorama, "field": "boundary_warp"})));
+    }
+    Ok(PanoramaParameters {
+        projection: options
+            .projection
+            .or(recorded.map(|recorded| recorded.projection))
+            .unwrap_or_default(),
+        boundary_warp,
+        reference: match &options.reference {
+            Some(path) => Some(position(inputs, path)?),
+            None => recorded.and_then(|recorded| recorded.reference),
+        },
+    })
+}
+
+/// The kind-tagged parameters `options` name for `inputs`.
+fn requested(inputs: &[Named], options: &Options) -> Result<MergeParameters, Error> {
+    Ok(match options {
+        Options::Hdr(options) => {
+            MergeParameters::Hdr(parameters(inputs, options, alignment(options))?)
+        }
+        Options::Panorama(options) => {
+            MergeParameters::Panorama(panorama_parameters(inputs, options, None)?)
+        }
+    })
+}
+
+/// The header-level refusal a request answers at once, from its planned frames: an HDR bracket's
+/// exposures that do not resolve, or frames that cannot be a panorama, named by file.
+fn header_check(
+    inputs: &[Named],
+    frames: &[FrameMetadata],
+    parameters: &MergeParameters,
+) -> Result<(), Error> {
+    match parameters {
+        MergeParameters::Hdr(parameters) => {
+            resolve_exposures(frames, &parameters.exposure)?;
+            Ok(())
+        }
+        MergeParameters::Panorama(_) => suitability::check(frames).map_err(|refusal| {
+            refusal.error(
+                &inputs
+                    .iter()
+                    .map(|input| file_name(&input.path))
+                    .collect::<Vec<_>>(),
+            )
+        }),
+    }
+}
+
+/// The reference the request's metadata picks before any pixel is read: HDR's from the headers'
+/// exposures; a panorama's the named one (registration picks it otherwise).
+fn planned_reference(frames: &[FrameMetadata], parameters: &MergeParameters) -> Option<usize> {
+    match parameters {
+        MergeParameters::Hdr(parameters) => header_reference(frames, parameters),
+        MergeParameters::Panorama(parameters) => parameters.reference,
+    }
+}
+
 /// A plan's identity: the SHA-256 of its inputs in the stack's order (path, signature and
 /// photograph) and its kind-tagged options.
 fn plan_identity(inputs: &[Named], parameters: &MergeParameters) -> Result<String, Error> {
@@ -749,29 +954,92 @@ fn merges_root(service: &EditorService) -> Result<PathBuf, Error> {
     Ok(root.join(MERGES))
 }
 
-/// What an HDR merge would take, from the headers' size.
+/// What a merge of `kind` would take, from the headers' size: an HDR result is its reference's
+/// size; a panorama's is estimated ([`panorama_size`]) and provisional.
 fn estimates(
     lane: &MergeLane,
+    kind: MergeKind,
     inputs: &[Named],
     frames: &[FrameMetadata],
     root: &Path,
 ) -> MergeEstimates {
-    let limits = lane.limits(MergeKind::Hdr);
+    let limits = lane.limits(kind);
     let known = frames.first().filter(|frame| frame.width > 0);
     let available = limits.available.or_else(|| {
         root.ancestors()
             .find(|path| path.exists())
             .and_then(|path| luxforge_process::disk::available_bytes(path).ok())
     });
+    let (size, temp_bytes, scale) = match (kind, known) {
+        (MergeKind::Hdr, Some(frame)) => (
+            Some((frame.width, frame.height)),
+            Some(job::temp_bytes(inputs.len(), frame.width, frame.height)),
+            None,
+        ),
+        (MergeKind::Panorama, Some(frame)) => {
+            let header = inputs.first().and_then(|input| input.header.as_ref());
+            let (width, height, scale) = panorama_size(frame, header, inputs.len());
+            (
+                Some((width, height)),
+                Some(
+                    spool_bytes(inputs.len(), frame.width, frame.height)
+                        + crate::merge::panorama::job::result_bytes(width, height),
+                ),
+                (scale < 1.0).then_some(scale),
+            )
+        }
+        (_, None) => (None, None, None),
+    };
     MergeEstimates {
-        width: known.map(|frame| frame.width),
-        height: known.map(|frame| frame.height),
-        temp_bytes: known.map(|frame| job::temp_bytes(inputs.len(), frame.width, frame.height)),
-        source_bytes: known.map(|frame| u64::from(frame.width) * u64::from(frame.height) * 12),
+        width: size.map(|size| size.0),
+        height: size.map(|size| size.1),
+        temp_bytes,
+        source_bytes: size.map(|(width, height)| u64::from(width) * u64::from(height) * 12),
         available_bytes: available,
         temp_ceiling_bytes: limits.temp_ceiling,
         scratch_limit_bytes: limits.scratch,
+        scale,
+        provisional: kind == MergeKind::Panorama,
     }
+}
+
+/// A panorama's size from its frames' headers alone, before registration decides it: `count`
+/// frames of `frame`'s size in one row overlapping by a third, laid on a cylinder of the focal
+/// length their focal length and sensor size give (the 35 mm equivalent, or the focal length
+/// times the camera's crop factor from the lens index, when it is loaded), or edge to edge in
+/// pixels without one; at most 360° around, and scaled to the large-source limits. Answers the
+/// width, height and scale.
+fn panorama_size(
+    frame: &FrameMetadata,
+    header: Option<&HeaderMetadata>,
+    count: usize,
+) -> (u32, u32, f64) {
+    use crate::merge::panorama::stitching::OutputLimits;
+    let (w, h) = (f64::from(frame.width), f64::from(frame.height));
+    let index = crate::modules::lens::index::shared().ok();
+    let focal = header
+        .and_then(|header| focal_prior(header, index.as_deref()))
+        .and_then(|prior| prior.focal_px(frame.width, frame.height));
+    let advance = 2.0 / 3.0;
+    let width = match focal {
+        Some(focal) => {
+            let frame_angle = 2.0 * (w / 2.0 / focal).atan();
+            let angle = (frame_angle * (1.0 + advance * (count as f64 - 1.0)))
+                .min(2.0 * std::f64::consts::PI);
+            focal * angle
+        }
+        None => w * (1.0 + advance * (count as f64 - 1.0)),
+    };
+    let limits = OutputLimits::DERIVED;
+    let pixels = width * h;
+    let scale = (f64::from(limits.max_side) / width.max(h))
+        .min((limits.max_pixels as f64 / pixels).sqrt())
+        .min(1.0);
+    (
+        (width * scale).round().max(1.0) as u32,
+        (h * scale).round().max(1.0) as u32,
+        scale,
+    )
 }
 
 fn alignment(options: &HdrOptions) -> AlignmentOptions {
@@ -785,38 +1053,44 @@ fn alignment(options: &HdrOptions) -> AlignmentOptions {
 
 /// `merge.plan`: see [`MergePlan`]. Reads the catalog, the index and one stat an input; refused
 /// only for a kind with no provider and targets that name no set of known items the kind takes
-/// (HDR: a bracket of 2–9).
+/// (HDR: a bracket of 2–9; panorama: 2–32 frames).
 pub(in crate::api) fn merge_plan(
     owner: &mut Owner,
     call: &Call<'_>,
     params: MergePlanParams,
 ) -> Result<Value, Error> {
     let kind = params.kind;
-    let options = hdr_options(kind, params.hdr)?;
+    let options = options(kind, params.hdr, params.panorama)?;
     let inputs = inputs(owner, call.client, kind, &params.targets)?;
-    let parameters = parameters(&inputs, &options, alignment(&options))?;
+    let tagged = requested(&inputs, &options)?;
     let frames = planned_frames(&inputs);
-    let (suitable, refusal, exposures, needs_fit) =
-        match resolve_exposures(&frames, &parameters.exposure) {
-            Ok(ExposureResolution::Resolved(exposures)) => (true, None, Some(exposures), false),
-            Ok(ExposureResolution::NeedsFit(_)) => (true, None, None, true),
-            Err(refusal) => {
-                let message = refusal.to_string();
-                let mut refusal = refusal.data();
-                if let Some(object) = refusal.as_object_mut() {
-                    object.insert("message".into(), Value::String(message));
-                }
-                (false, Some(refusal), None, false)
+    let typed = |error: Error| {
+        let mut refusal = error.data.as_deref().cloned().unwrap_or(Value::Null);
+        if let Some(object) = refusal.as_object_mut() {
+            object.insert("message".into(), Value::String(error.detail.clone()));
+        }
+        refusal
+    };
+    let (suitable, refusal, exposures, needs_fit) = match &tagged {
+        MergeParameters::Hdr(parameters) => {
+            match resolve_exposures(&frames, &parameters.exposure) {
+                Ok(ExposureResolution::Resolved(exposures)) => (true, None, Some(exposures), false),
+                Ok(ExposureResolution::NeedsFit(_)) => (true, None, None, true),
+                Err(refusal) => (false, Some(typed(refusal.into())), None, false),
             }
-        };
-    let reference = header_reference(&frames, &parameters);
+        }
+        MergeParameters::Panorama(_) => match header_check(&inputs, &frames, &tagged) {
+            Ok(()) => (true, None, None, false),
+            Err(error) => (false, Some(typed(error)), None, false),
+        },
+    };
+    let reference = planned_reference(&frames, &tagged);
     let (folder, suggested_folder) = proposed_folder(
         &owner.service.connection,
         proposal(owner, &inputs, reference)?,
     )?;
     let lane = &owner.catalog.merge;
     let provider = lane.provider_state(kind);
-    let tagged = MergeParameters::Hdr(parameters);
     let existing = match lane.provider(kind) {
         Ok(provider) => match request_key(&inputs, &provider, &tagged)? {
             Some(key) => matching(&owner.service.connection, &key)?,
@@ -853,7 +1127,7 @@ pub(in crate::api) fn merge_plan(
         reference: reference.map(|at| at as u32),
         folder,
         suggested_folder,
-        estimates: estimates(lane, &inputs, &frames, &root),
+        estimates: estimates(lane, kind, &inputs, &frames, &root),
         provider,
         existing,
         claimed,
@@ -871,7 +1145,7 @@ pub(in crate::api) fn merge_create(
     params: MergeCreate,
 ) -> Result<Value, Error> {
     let kind = params.kind;
-    let options = hdr_options(kind, params.hdr.clone())?;
+    let options = options(kind, params.hdr.clone(), params.panorama.clone())?;
     let job = job_of(kind)?;
     let request = Request::new(&call.request.method, &params.mutation);
     if let Some(answered) = retried(owner, call, request)? {
@@ -879,8 +1153,7 @@ pub(in crate::api) fn merge_create(
     }
     let provider = owner.catalog.merge.available_provider(kind)?;
     let inputs = inputs(owner, call.client, kind, &params.targets)?;
-    let parameters = parameters(&inputs, &options, alignment(&options))?;
-    let tagged = MergeParameters::Hdr(parameters.clone());
+    let tagged = requested(&inputs, &options)?;
     if let Some(plan_id) = &params.plan_id
         && *plan_id != plan_identity(&inputs, &tagged)?
     {
@@ -890,7 +1163,7 @@ pub(in crate::api) fn merge_create(
         .with_data(json!({"plan_id": plan_id})));
     }
     let frames = planned_frames(&inputs);
-    resolve_exposures(&frames, &parameters.exposure)?;
+    header_check(&inputs, &frames, &tagged)?;
     let signed = signed(&inputs)?;
     let key = request_key(&inputs, &provider, &tagged)?
         .ok_or_else(|| Error::internal("a signed request has no key"))?;
@@ -937,7 +1210,7 @@ pub(in crate::api) fn merge_create(
             "path": claim.path,
         })));
     }
-    let reference = header_reference(&frames, &parameters);
+    let reference = planned_reference(&frames, &tagged);
     let proposed = proposal(owner, &inputs, reference)?;
     let choice = params.folder.unwrap_or(proposed.choice);
     let folder = Destination::chosen(&owner.service.connection, &choice, proposed.span, now_ms())?;
@@ -949,7 +1222,7 @@ pub(in crate::api) fn merge_create(
             preview_id,
             kind,
             &inputs,
-            &parameters,
+            &tagged,
         )?),
         None => None,
     };
@@ -980,7 +1253,7 @@ pub(in crate::api) fn merge_create(
         Started {
             kind,
             inputs: job_inputs,
-            parameters,
+            parameters: tagged,
             provider,
             folder,
             replaces: None,
@@ -1001,7 +1274,7 @@ pub(in crate::api) fn merge_rerun(
     params: MergeRerun,
 ) -> Result<Value, Error> {
     if let Some(kind) = params.kind {
-        hdr_options(kind, None)?;
+        options(kind, None, None)?;
     }
     let request = Request::new(&call.request.method, &params.mutation);
     if let Some(answered) = retried(owner, call, request)? {
@@ -1019,7 +1292,7 @@ pub(in crate::api) fn merge_rerun(
         ))
         .with_data(json!({"kind": recorded.kind, "requested": kind})));
     }
-    let options = hdr_options(recorded.kind, params.hdr)?;
+    let options = options(recorded.kind, params.hdr, params.panorama)?;
     let provider = rerun_provider(&owner.catalog.merge, &recorded.provenance)?;
     let provenance = &recorded.provenance;
     for input in &provenance.inputs {
@@ -1038,22 +1311,35 @@ pub(in crate::api) fn merge_rerun(
             kind: Some(SourceTag::Raw),
         })
         .collect();
-    let MergeParameters::Hdr(old) = &provenance.parameters;
-    let mut parameters = parameters(
-        &named,
-        &options,
-        AlignmentOptions {
-            alignment: options.alignment.unwrap_or(old.alignment.alignment),
-            deghost: options.deghost.unwrap_or(old.alignment.deghost),
-        },
-    )?;
-    if options.reference.is_none() {
-        parameters.exposure.reference = old.exposure.reference;
-    }
-    if options.exposure_overrides.is_none() {
-        parameters.exposure.overrides = old.exposure.overrides.clone();
-    }
-    parameters.fusion = old.fusion;
+    let parameters = match (&provenance.parameters, &options) {
+        (MergeParameters::Hdr(old), Options::Hdr(options)) => {
+            let mut parameters = parameters(
+                &named,
+                options,
+                AlignmentOptions {
+                    alignment: options.alignment.unwrap_or(old.alignment.alignment),
+                    deghost: options.deghost.unwrap_or(old.alignment.deghost),
+                },
+            )?;
+            if options.reference.is_none() {
+                parameters.exposure.reference = old.exposure.reference;
+            }
+            if options.exposure_overrides.is_none() {
+                parameters.exposure.overrides = old.exposure.overrides.clone();
+            }
+            parameters.fusion = old.fusion;
+            MergeParameters::Hdr(parameters)
+        }
+        (MergeParameters::Panorama(old), Options::Panorama(options)) => {
+            MergeParameters::Panorama(panorama_parameters(&named, options, Some(old))?)
+        }
+        _ => {
+            return Err(Error::incompatible(format!(
+                "merge {} records options of another kind than its own",
+                recorded.merge_id
+            )));
+        }
+    };
     let others: Vec<_> = claims(
         &owner.service.connection,
         named.iter().map(|input| input.path.clone()),
@@ -1087,8 +1373,7 @@ pub(in crate::api) fn merge_rerun(
     };
     // An exact match whose saved source is whole is given to the new result as it is; anything
     // else is merged again.
-    let exact = request_key(&named, &provider, &MergeParameters::Hdr(parameters.clone()))?
-        .as_deref()
+    let exact = request_key(&named, &provider, &parameters)?.as_deref()
         == Some(provenance.match_key()?.as_str());
     let reuse = if exact
         && owner
@@ -1206,6 +1491,17 @@ pub(in crate::api) fn merge_inspect(
         source,
         merged: true,
         exposure_range_ev: recorded.provenance.resolved.exposure_range_ev(),
+        projection: recorded
+            .provenance
+            .resolved
+            .panorama_view()
+            .map(|(projection, _)| projection),
+        field_of_view_deg: recorded
+            .provenance
+            .resolved
+            .panorama_view()
+            .map(|(_, fov)| fov),
+        optics: recorded.provenance.optics_ledger(),
         parameters: recorded.provenance.parameters.clone(),
         provider: owner.catalog.merge.provider_state(recorded.kind),
         rerunnable: rerun.is_ok(),
@@ -1268,7 +1564,7 @@ fn lifecycle(
 struct Started {
     kind: MergeKind,
     inputs: Vec<JobInput>,
-    parameters: HdrParameters,
+    parameters: MergeParameters,
     provider: MergeProvider,
     /// The folder the result is filed by.
     folder: Destination,
@@ -1380,12 +1676,18 @@ fn start(
     fs::create_dir_all(&spool).map_err(|error| {
         crate::atomic_file::file_error("cannot create the merge's folder", error.kind())
     })?;
+    // What the headers say the merge spools: an HDR bracket's spool and result; a panorama's
+    // frames' spool, since registration decides its result's size.
+    let planned = match kind {
+        MergeKind::Hdr => job::temp_bytes(n, width, height),
+        MergeKind::Panorama => spool_bytes(n, width, height),
+    };
     if started.reuse.is_none()
         && started.preview.is_none()
         && width > 0
         && let Err(error) = limits.preflight(
             &spool,
-            job::temp_bytes(n, width, height),
+            planned,
             held.load(std::sync::atomic::Ordering::SeqCst),
         )
     {
@@ -1395,17 +1697,36 @@ fn start(
     write_marker(&spool, kind, request, None)?;
     prune_markers(&root, &lane.live);
     let job_id = JobId::new();
-    let spec = JobSpec {
-        inputs: started.inputs,
-        parameters: started.parameters,
-        provider: started.provider,
-        spool: spool.clone(),
-        writer: owner.service.derived_source_writer(),
-        developer: lane.developer.clone(),
-        limits,
-        hooks: lane.hooks.clone(),
-        held,
+    let reference = planned_reference(
+        &started
+            .inputs
+            .iter()
+            .map(|input| input.planned.clone())
+            .collect::<Vec<_>>(),
+        &started.parameters,
+    )
+    .unwrap_or((n - 1) / 2);
+    let detail = match kind {
+        MergeKind::Hdr => format!(
+            "{} \u{b7} {n} exposures",
+            job::result_name(&started.inputs[reference].path)
+        ),
+        MergeKind::Panorama => format!(
+            "{} \u{b7} {n} photos",
+            job::named_result(&started.inputs[reference].path, kind)
+        ),
     };
+    let spec = Spec::new(
+        lane,
+        started.inputs,
+        started.parameters,
+        started.provider,
+        spool.clone(),
+        owner.service.derived_source_writer(),
+        limits,
+        held,
+        owner.service.auto_lens_profile(),
+    )?;
     let publish = Publish {
         folder: started.folder,
         replaces: started.replaces,
@@ -1419,12 +1740,6 @@ fn start(
     let slot = continuation
         .as_ref()
         .map(|continuation| continuation.slot.clone());
-    let detail = format!(
-        "{} \u{b7} {n} exposures",
-        job::result_name(
-            &spec.inputs[spec.parameters.exposure.reference.unwrap_or((n - 1) / 2)].path
-        )
-    );
     let task = Task {
         job_id: job_id.clone(),
         job: job_kind,
@@ -1438,9 +1753,8 @@ fn start(
                 (Some((provenance, source)), _) => {
                     verified(spec, provenance, source, context.control)
                 }
-                (None, Some(slot)) => preview::take(&slot).and_then(|retained| {
-                    spec.run_prepared(retained.prepared, retained.analysis, context.control)
-                }),
+                (None, Some(slot)) => preview::take(&slot)
+                    .and_then(|retained| spec.run_prepared(retained, context.control)),
                 (None, None) => spec.run(context.control),
             };
             match merged {
@@ -1480,18 +1794,102 @@ fn start(
     }
 }
 
+/// A merge's job of its kind, moved to the worker.
+enum Spec {
+    Hdr(JobSpec),
+    Panorama(PanoramaSpec),
+}
+
+impl Spec {
+    /// The job of `parameters`' kind, with the lane's development, stitch and hooks.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        lane: &MergeLane,
+        inputs: Vec<JobInput>,
+        parameters: MergeParameters,
+        provider: MergeProvider,
+        spool: PathBuf,
+        writer: crate::artifacts::derived_source::DerivedSourceWriter,
+        limits: Limits,
+        held: Arc<std::sync::atomic::AtomicU64>,
+        detect_lens: bool,
+    ) -> Result<Self, Error> {
+        Ok(match parameters {
+            MergeParameters::Hdr(parameters) => Self::Hdr(JobSpec {
+                inputs,
+                parameters,
+                provider,
+                spool,
+                writer,
+                developer: lane.developer.clone(),
+                limits,
+                hooks: lane.hooks.clone(),
+                held,
+            }),
+            MergeParameters::Panorama(parameters) => Self::Panorama(PanoramaSpec {
+                inputs,
+                parameters,
+                provider,
+                spool,
+                writer,
+                frames: lane.frames.clone(),
+                stitcher: lane.stitcher()?,
+                limits,
+                hooks: lane.hooks.clone(),
+                held,
+                detect_lens,
+            }),
+        })
+    }
+
+    fn run(self, control: &JobControl) -> Result<Merged, Error> {
+        match self {
+            Self::Hdr(spec) => spec.run(control),
+            Self::Panorama(spec) => spec.run(control),
+        }
+    }
+
+    /// Merge what a preview of the same kind read.
+    fn run_prepared(
+        self,
+        retained: preview::Retained,
+        control: &JobControl,
+    ) -> Result<Merged, Error> {
+        match (self, retained) {
+            (Self::Hdr(spec), preview::Retained::Hdr { prepared, analysis }) => {
+                spec.run_prepared(prepared, analysis, control)
+            }
+            (Self::Panorama(spec), preview::Retained::Panorama { prepared, analysis }) => {
+                spec.run_prepared(prepared, analysis, control)
+            }
+            _ => Err(Error::internal(
+                "a merge preview of another kind than its merge",
+            )),
+        }
+    }
+
+    /// The inputs and the kind-tagged parameters.
+    fn into_parts(self) -> (Vec<JobInput>, MergeParameters) {
+        match self {
+            Self::Hdr(spec) => (spec.inputs, MergeParameters::Hdr(spec.parameters)),
+            Self::Panorama(spec) => (spec.inputs, MergeParameters::Panorama(spec.parameters)),
+        }
+    }
+}
+
 /// A rerun's exact match: every input read once and its SHA-256 checked against the merge's record,
 /// with no development and no merging; the new result is given the recorded source.
 fn verified(
-    spec: JobSpec,
+    spec: Spec,
     provenance: MergeProvenance,
     source: PublishedSource,
     control: &JobControl,
 ) -> Result<Merged, Error> {
     control.set_phase("reading");
-    let n = spec.inputs.len();
+    let (inputs, parameters) = spec.into_parts();
+    let n = inputs.len();
     let mut volumes: Vec<crate::catalog_types::Volume> = Vec::new();
-    for (at, input) in spec.inputs.iter().enumerate() {
+    for (at, input) in inputs.iter().enumerate() {
         control.checkpoint()?;
         control.set_progress(
             Some(at as f64 / n as f64),
@@ -1527,12 +1925,12 @@ fn verified(
         ..HeaderMetadata::default()
     };
     Ok(Merged {
-        file_name: job::result_name(&reference.path),
+        file_name: job::named_result(&reference.path, provenance.kind),
         header: job::result_header(&header, source.width, source.height),
         place: None,
         volumes,
         provenance: MergeProvenance {
-            parameters: MergeParameters::Hdr(spec.parameters),
+            parameters,
             ..provenance
         },
         source,
@@ -1651,6 +2049,11 @@ fn recorded_answer(
         merged: true,
         inputs: provenance.inputs.len() as u32,
         exposure_range_ev: provenance.resolved.exposure_range_ev(),
+        projection: provenance
+            .resolved
+            .panorama_view()
+            .map(|(projection, _)| projection),
+        field_of_view_deg: provenance.resolved.panorama_view().map(|(_, fov)| fov),
         reused,
         replaced: None,
         change: None,

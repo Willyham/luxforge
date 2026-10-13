@@ -6,7 +6,7 @@ use super::{
 use crate::ErrorKind;
 use crate::{
     AssetId, EntryId, Error, MaskId, ModuleRegistry, Recipe,
-    mask::commands::{MaskCommand, MaskListing, MaskOutcome, MaskTarget},
+    mask::commands::{MaskCommand, MaskListing, MaskOutcome, MaskTarget, ModelStale},
 };
 use serde_json::{Map, Value};
 
@@ -214,11 +214,93 @@ impl EditorService {
         entry_id: &EntryId,
     ) -> Result<MaskListing, Error> {
         let entry = self.entry(asset_id, entry_id)?;
-        Ok(crate::mask::commands::listing(
+        let mut listing = crate::mask::commands::listing(
             entry.id.clone(),
             &entry.snapshot.recipe,
             &self.registry,
+        );
+        let has_model = listing
+            .masks
+            .iter()
+            .flat_map(|mask| &mask.components)
+            .any(|component| component.model.is_some());
+        if !has_model {
+            return Ok(listing);
+        }
+        // What a selection computed now would record: unknown, rather than current, for a stack
+        // that cannot be evaluated.
+        let state = self.state(asset_id)?;
+        let now = self
+            .selection_input(&state.asset, &entry.snapshot.recipe)
+            .ok();
+        for component in listing
+            .masks
+            .iter_mut()
+            .flat_map(|mask| &mut mask.components)
+        {
+            let stored = entry
+                .snapshot
+                .recipe
+                .masks
+                .iter()
+                .flat_map(|mask| &mask.components)
+                .find(|held| held.id == component.id)
+                .and_then(crate::mask::model_selection);
+            let (Some(report), Some(stored)) = (component.model.as_mut(), stored) else {
+                continue;
+            };
+            report.computed_ms = self.artifact_created_ms(&report.artifact)?;
+            report.stale = now.as_ref().map(|(fingerprint, prefix)| {
+                let mut reasons = Vec::new();
+                if &stored.input_fingerprint != fingerprint {
+                    reasons.push(ModelStale::Source);
+                }
+                if &stored.prefix_hash != prefix {
+                    reasons.push(ModelStale::RepairPrefix);
+                }
+                if self
+                    .declared_model_version(&stored.model)
+                    .is_some_and(|version| version != stored.model_version)
+                {
+                    reasons.push(ModelStale::ModelVersion);
+                }
+                reasons
+            });
+        }
+        Ok(listing)
+    }
+
+    /// What a model selection of `recipe`, a stack of `asset`, computed now would record: the
+    /// source identity and the repair stage's output identity
+    /// ([`crate::modules::corrections_selection_prefix`]). What a selection task stores in
+    /// `input_fingerprint` and `prefix_hash`, and what `mask.list` compares them with. Binds the
+    /// stack's artifacts and compiles the prefix before the repair layer; reads no pixel.
+    pub(crate) fn selection_input(
+        &self,
+        asset: &AssetRecord,
+        recipe: &Recipe,
+    ) -> Result<(String, String), Error> {
+        let recipe = self.bound(recipe)?;
+        let top = self.with_stage_context(asset, &recipe, None, |context| {
+            crate::modules::corrections_top_input(context)
+        })?;
+        Ok((
+            top.source.clone(),
+            crate::modules::corrections_selection_prefix(&top),
         ))
+    }
+
+    /// The version a registered module now declares for the model resource `model`, when one
+    /// declares it: what Recompute would run.
+    pub(super) fn declared_model_version(&self, model: &str) -> Option<String> {
+        self.registry
+            .descriptors()
+            .into_iter()
+            .find_map(|descriptor| {
+                descriptor
+                    .resource(model)
+                    .map(|resource| resource.version.clone())
+            })
     }
 }
 

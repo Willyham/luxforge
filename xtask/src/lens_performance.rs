@@ -264,7 +264,7 @@ fn exact(job: &PreviewJob) -> Result<Raster> {
     let evaluation = &job.evaluation;
     Ok(render(
         evaluation.registry(),
-        evaluation.source(),
+        evaluation.source().whole()?,
         evaluation.recipe(),
         RenderOptions::default(),
         evaluation.context(),
@@ -402,6 +402,7 @@ fn measure(
     let domain = match workload.corrected.evaluation.source() {
         PreviewSource::Jpeg(_) => "jpeg-srgb-8bit",
         PreviewSource::Raw { .. } => "raw-planar-linear-float",
+        PreviewSource::Paged(_) => "paged-planar-linear-float",
     };
     let before = workload
         .owner

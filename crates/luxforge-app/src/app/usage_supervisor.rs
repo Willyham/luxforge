@@ -42,7 +42,7 @@ use std::{
 
 /// The release an evidence launch with a test receiver reports, in place of the packaged build's
 /// `<version>+<revision>`.
-pub(crate) const TEST_RELEASE: &str = "0.0.0+000000e71de5";
+pub(crate) use luxforge_core::usage::TEST_RELEASE;
 
 /// The process's supervisor and what feeds it.
 struct Process {

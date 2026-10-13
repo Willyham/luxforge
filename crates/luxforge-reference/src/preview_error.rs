@@ -491,6 +491,27 @@ impl Class {
         }
     }
 
+    /// The limits a paged derived source's overview is held to (`docs/design/gpu-first.md`,
+    /// "Tolerance by output kind"): the stack drawn over its resident level, its spatial
+    /// parameters scaled to the level, against the banded reference of level 0 reduced to the same
+    /// view. Twice the class's own, the recorded default of 2026-10-13 until a corpus run measures
+    /// it: a pointwise stack over a reduced source differs from the reduction of its output where
+    /// a curve bends across the detail the level averages, and a spatial one by its scaled reach.
+    pub const fn overview_limits(self) -> Limits {
+        let Limits {
+            mean,
+            worst_block,
+            p99,
+            mean_delta_l,
+        } = self.limits();
+        Limits {
+            mean: 2.0 * mean,
+            worst_block: 2.0 * worst_block,
+            p99: 2.0 * p99,
+            mean_delta_l: 2.0 * mean_delta_l,
+        }
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
             Self::Pointwise => "pointwise",
@@ -526,7 +547,12 @@ impl Verdict {
 /// `statistics` held to `class`'s limits. A limit is inclusive: a figure equal to it passes. A
 /// figure that is not a number fails.
 pub fn verdict(statistics: &Statistics, class: Class) -> Verdict {
-    let limits = class.limits();
+    verdict_within(statistics, class, class.limits())
+}
+
+/// `statistics` held to `limits`, `class`'s own or its [overview's](Class::overview_limits), as
+/// [`verdict`] holds them.
+pub fn verdict_within(statistics: &Statistics, class: Class, limits: Limits) -> Verdict {
     Verdict {
         class,
         limits,

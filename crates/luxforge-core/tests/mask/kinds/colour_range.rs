@@ -52,7 +52,7 @@ impl Kind for ColourRange {
     // The unsampled component, which selects nothing until a colour is picked: 88 at the seed.
     const RARE: usize = 50;
 
-    fn sample(rng: &mut SplitMix64, _: &[(u32, u32)], _: &mut StrokeTable) -> (Value, Falloff) {
+    fn sample(rng: &mut SplitMix64, _: &[(u32, u32)], _: &mut Store) -> (Value, Falloff) {
         let range = sample_colours(rng);
         let oracle = compile_colour_range(&range);
         (
@@ -65,17 +65,17 @@ impl Kind for ColourRange {
         payload["samples"] == json!([])
     }
 
-    fn nothing(_: &mut StrokeTable) -> Vec<Value> {
+    fn nothing(_: &mut Store) -> Vec<Value> {
         Vec::new()
     }
 
-    fn inverted_whole(_: &mut StrokeTable) -> Option<(Value, (u32, u32))> {
+    fn inverted_whole(_: &mut Store) -> Option<(Value, (u32, u32))> {
         None
     }
 
     /// The synthetic stage's own middle pixel, with a refine low enough that a third of the stage
     /// sits on the falloff around it.
-    fn feathered(_: &mut StrokeTable) -> Value {
+    fn feathered(_: &mut Store) -> Value {
         let source = byte_source();
         let offset = (((HEIGHT / 2) * WIDTH + WIDTH / 2) * 4) as usize;
         let picked: [f64; 3] = std::array::from_fn(|channel| {
@@ -111,7 +111,7 @@ impl Kind for ColourRange {
         ]
     }
 
-    fn ramps(strokes: &mut StrokeTable) -> Vec<Ramp> {
+    fn ramps(strokes: &mut Store) -> Vec<Ramp> {
         value_based_ramps(Self::feathered(strokes))
     }
 }

@@ -113,6 +113,9 @@ pub(crate) struct Surfaces<'a> {
     /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while the GPU
     /// stage is refused.
     pub(crate) gpu_source: Option<&'a luxforge_gpu::GpuSource>,
+    /// A window of a paged source's level 0 the pipeline holds beside it at 100% and above
+    /// ([`crate::app::gpu_paged`]).
+    pub(crate) gpu_window: Option<&'a luxforge_gpu::GpuSource>,
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
     pub(crate) gpu_rest: Option<&'a luxforge_gpu::GpuRest>,

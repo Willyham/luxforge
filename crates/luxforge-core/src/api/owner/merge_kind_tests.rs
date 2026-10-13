@@ -1,7 +1,7 @@
 //! Merge kinds through the real owner (`docs/design/panorama-merge.md`, "Generalizing the merge
-//! boundary"): the schemas list the kinds this build has a provider for, with HDR's options under
-//! `hdr`; a panorama request reaches its handler and is `not-ready` naming the missing provider;
-//! another kind's options, a count outside the kind's bounds and malformed options are
+//! boundary"): the schemas list the kinds this build has a provider for, with each kind's options
+//! under its name; a panorama request in a build without its stitch is planned but `not-ready` to
+//! merge, naming the provider and why; another kind's options, a count outside the kind's bounds and malformed options are
 //! `validation` naming their cause; a rerun's kind must be its merge's; and a merge's answers and
 //! provenance are tagged by its kind.
 use super::*;
@@ -19,7 +19,7 @@ fn declared(schema: &Value, method: &str, name: &str) -> Value {
 }
 
 #[test]
-fn merge_kind_schemas_list_the_registered_kinds_and_hdr_options() {
+fn merge_kind_schemas_list_the_registered_kinds_and_their_options() {
     let bench = Bench::new("kind-schema", 1);
     let schema = bench.ok("schema.list", json!({}));
     for (method, required) in [
@@ -29,7 +29,7 @@ fn merge_kind_schemas_list_the_registered_kinds_and_hdr_options() {
     ] {
         let kind = declared(&schema, method, "kind");
         assert_eq!(kind["kind"], "enum", "{method}: {kind}");
-        assert_eq!(kind["options"], json!(["hdr"]), "{method}");
+        assert_eq!(kind["options"], json!(["hdr", "panorama"]), "{method}");
         assert_eq!(kind["required"], required, "{method}");
         let hdr = declared(&schema, method, "hdr");
         assert_eq!(hdr["kind"], "json", "{method}: {hdr}");
@@ -45,7 +45,22 @@ fn merge_kind_schemas_list_the_registered_kinds_and_hdr_options() {
                 "{method}: {moved} is HDR's, under hdr"
             );
         }
-        assert_eq!(declared(&schema, method, "panorama"), Value::Null);
+        let panorama = declared(&schema, method, "panorama");
+        assert_eq!(panorama["kind"], "json", "{method}: {panorama}");
+        assert_eq!(panorama["required"], false, "{method}");
+        for named in ["reference", "projection", "boundary_warp"] {
+            assert!(
+                panorama["notes"].as_str().unwrap().contains(named),
+                "{method}: panorama names {named}"
+            );
+        }
+    }
+    for method in ["merge.preview", "merge.preview-update"] {
+        for field in ["hdr", "panorama"] {
+            let options = declared(&schema, method, field);
+            assert_eq!(options["kind"], "json", "{method} {field}: {options}");
+            assert_eq!(options["required"], false, "{method} {field}");
+        }
     }
     // A request in the old shape names the field it no longer takes.
     let old = bench.failure(
@@ -65,36 +80,57 @@ fn merge_kind_schemas_list_the_registered_kinds_and_hdr_options() {
 
 #[test]
 #[slow]
-fn merge_kind_panorama_is_not_ready_naming_its_missing_provider() {
+fn merge_kind_panorama_without_its_stitch_plans_but_is_not_ready_to_merge() {
     let bench = Bench::new("kind-panorama", 1);
+    // A build without the panorama stitch.
+    bench.lane(|lane| lane.remove_panorama());
     let targets = json!({"kind": "paths", "paths": bench.paths(0)});
     let first = bench.merged(0, "first");
+    // Planning reads headers alone and names the provider's state.
+    let plan = bench.ok(
+        "merge.plan",
+        json!({"kind": "panorama", "targets": targets}),
+    );
+    assert_eq!(plan["kind"], "panorama", "{plan}");
+    assert_eq!(plan["provider"]["module"], "luxforge.panorama");
+    assert_eq!(plan["provider"]["version"], 1);
+    assert_eq!(plan["provider"]["available"], false);
+    assert_eq!(
+        plan["provider"]["reason"],
+        "this build has no panorama stitch"
+    );
     for (method, params) in [
-        (
-            "merge.plan",
-            json!({"kind": "panorama", "targets": targets}),
-        ),
         (
             "merge.create",
             json!({"kind": "panorama", "targets": targets, "folder": {"kind": "existing", "folder_id": bench.folder},
                    "mutation": envelope("panorama")}),
         ),
         (
-            "merge.rerun",
-            json!({"merge_id": first["merge_id"], "kind": "panorama",
-                   "mutation": envelope("panorama-rerun")}),
+            "merge.preview",
+            json!({"kind": "panorama", "targets": targets}),
         ),
     ] {
         let refused = bench.failure(method, params);
         assert_eq!(refused["code"], "not-ready", "{method}: {refused}");
         assert_eq!(
             refused["message"],
-            "panorama merging is not available: this build has no luxforge.panorama provider",
+            "panorama merging is not available: this build has no panorama stitch",
             "{method}"
         );
         assert_eq!(refused["data"]["kind"], "panorama", "{method}");
         assert_eq!(refused["data"]["provider"], "luxforge.panorama", "{method}");
     }
+    // A rerun's kind is its merge's.
+    let rerun = bench.failure(
+        "merge.rerun",
+        json!({"merge_id": first["merge_id"], "kind": "panorama",
+               "mutation": envelope("panorama-rerun")}),
+    );
+    assert_eq!(rerun["code"], "validation", "{rerun}");
+    assert_eq!(
+        rerun["data"],
+        json!({"kind": "hdr", "requested": "panorama"})
+    );
     // A kind that is none is the enumeration's to refuse.
     let unknown = bench.failure(
         "merge.plan",

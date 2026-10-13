@@ -760,6 +760,8 @@ pub(crate) enum Block {
     /// The merge this desktop is running, or one that ended without its result, as a row of its
     /// own before the frames it merges.
     Pending {
+        /// The merge's kind, whose icon the row shows.
+        kind: luxforge_core::catalog_types::MergeKind,
         title: String,
         detail: String,
         progress: Option<f32>,
@@ -2414,7 +2416,7 @@ pub(crate) fn filter_bar(state: &SelectState) -> FilterBarModel {
         kind,
         group,
         count: match summary {
-            Some(summary) => photographs(summary.count),
+            Some(summary) => view_count(summary),
             None if state.loading => "Reading\u{2026}".to_owned(),
             None => String::new(),
         },
@@ -2495,6 +2497,10 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> InfoModel
     match state.rows.row(item) {
         Some(row) => {
             let mut info = item_info(row, state.summary.as_ref(), state.home.as_deref());
+            if let Some(band) = &mut info.stack {
+                band.detail =
+                    super::select_merge::band_detail(band, state.merge.inspected.as_ref());
+            }
             if matches!(row.item, RowItem::File { .. }) {
                 let picks = title(state).picks;
                 info.pick = Some(PickBand {
@@ -2667,19 +2673,39 @@ fn status_line(state: &SelectState, selection: &SelectionModel) -> String {
             String::new()
         };
     };
+    let (shown, merges) = split_merges(summary);
     if files {
         format!(
-            "Camera previews \u{b7} auto-organized \u{b7} {} in view \u{b7} {} picked",
-            thousands(summary.count),
+            "Camera previews \u{b7} auto-organized \u{b7} {} in view{merges} \u{b7} {} picked",
+            thousands(shown),
             thousands(summary.picked)
         )
     } else {
         format!(
-            "{} in view \u{b7} {} selected",
-            thousands(summary.count),
+            "{} in view{merges} \u{b7} {} selected",
+            thousands(shown),
             thousands(selection.count)
         )
     }
+}
+
+/// A view's count as the filter bar says it: its photographs, with its merge results beside them
+/// rather than among them, "41 photographs · 1 merge".
+fn view_count(summary: &ViewSummary) -> String {
+    let (shown, merges) = split_merges(summary);
+    format!("{}{merges}", photographs(shown))
+}
+
+/// The rows that are not merge results, and " · N merges" for those that are (empty with none):
+/// a result is counted as a merge, not as a photograph of the event.
+fn split_merges(summary: &ViewSummary) -> (u32, String) {
+    let merges = summary.stacks.min(summary.count);
+    let words = match merges {
+        0 => String::new(),
+        1 => " \u{b7} 1 merge".to_owned(),
+        n => format!(" \u{b7} {} merges", thousands(n)),
+    };
+    (summary.count - merges, words)
 }
 
 fn note(state: &SelectState) -> Option<String> {

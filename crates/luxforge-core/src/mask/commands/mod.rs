@@ -58,8 +58,8 @@ pub use declare::{
     all, canvas, canvas_pick, controls, experiment, find, find_query, geometry, sample,
 };
 pub use list::{
-    ComponentReport, MaskListing, MaskReport, MaskedLayer, StrokeColour, StrokeReport,
-    StrokeSettings,
+    ComponentReport, MaskListing, MaskReport, MaskedLayer, ModelReport, ModelStale, StrokeColour,
+    StrokeReport, StrokeSettings,
 };
 pub(crate) use list::{RemovedLayer, listing};
 pub use plan::asks_colour_limit_value;

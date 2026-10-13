@@ -303,15 +303,13 @@ fn the_windows_naming_follows_the_launchs() {
     assert!(!confirmed.started() && !replaced.started() && !refused.started());
 }
 
-/// Only an evidence run given a loopback test receiver shows the usage statistics notice and the
-/// Privacy tab; every other launch is ineligible while the production switch is off, and the test
-/// receiver is never the production destination.
+/// Visible developer builds use the hosted test tenant; hidden and evidence launches still
+/// require explicit test eligibility.
 #[test]
-fn usage_only_an_evidence_run_with_a_test_receiver_is_eligible() {
+fn usage_developer_launches_use_test_and_evidence_still_needs_a_receiver() {
     use luxforge_core::usage::{DESTINATION, Reason, TestReceiver};
     let evidence = Some(std::path::PathBuf::from("/evidence"));
     for config in [
-        Config::default(),
         Config {
             evidence: evidence.clone(),
             ..Config::default()
@@ -320,14 +318,33 @@ fn usage_only_an_evidence_run_with_a_test_receiver_is_eligible() {
             hidden: true,
             ..Config::default()
         },
+    ] {
+        let eligibility = usage_eligibility(&config);
+        assert_eq!(eligibility.reason(), Some(Reason::InactiveDestination));
+        assert!(!host_of(&config).usage_consent.eligibility().is_eligible());
+    }
+    for config in [
+        Config::default(),
         Config {
             developer: true,
             ..Config::default()
         },
     ] {
         let eligibility = usage_eligibility(&config);
-        assert_eq!(eligibility.reason(), Some(Reason::InactiveDestination));
-        assert!(!host_of(&config).usage_consent.eligibility().is_eligible());
+        if config.developer
+            || cfg!(debug_assertions)
+            || luxforge_core::usage::BuildIdentity::current()
+                .release()
+                .is_none()
+        {
+            assert!(eligibility.is_eligible());
+            assert_eq!(
+                eligibility.destination(),
+                luxforge_core::usage::TEST_DESTINATION
+            );
+        } else {
+            assert_eq!(eligibility.reason(), Some(Reason::InactiveDestination));
+        }
     }
     let receiver = "http://127.0.0.1:9/v1/usage/batches";
     let test = Config {

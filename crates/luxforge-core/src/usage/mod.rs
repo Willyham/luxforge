@@ -50,3 +50,7 @@ pub const DISCLOSURE_VERSION: u32 = 1;
 
 /// The only production destination. Tests inject their own receiver.
 pub const DESTINATION: &str = "https://api.luxforge.app/v1/usage/batches";
+/// The only hosted destination for developer and test reporting.
+pub const TEST_DESTINATION: &str = "https://api.luxforge.app/v1/usage/batches?tenant=test";
+/// A valid synthetic release for unrevisioned developer builds and isolated evidence launches.
+pub const TEST_RELEASE: &str = "0.0.0+000000e71de5";

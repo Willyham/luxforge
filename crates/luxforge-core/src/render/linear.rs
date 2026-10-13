@@ -17,7 +17,7 @@ use crate::{
     Cancel, Error, LinearImage, SnapshotId,
     colour::{mat3, srgb},
     modules::{ExactGeometry, Parallelism, Region, Stage},
-    source::{ViewReader, Walk, layout},
+    source::{RENDERED_FRAME, RENDERED_WINDOW, ViewReader, Walk},
 };
 use rayon::prelude::*;
 
@@ -201,10 +201,15 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
 /// exactly. There is no alpha.
 #[derive(Clone, Copy)]
 pub(crate) struct Linear<'a> {
-    source: &'a LinearImage,
+    /// The source's fingerprint, which a rendered frame is stamped with.
+    fingerprint: &'a str,
     /// The source's view resolved once, so a point read does not recompute its layout per pixel
     /// and a row walks it ([`Linear::entry_planes`]).
     reader: ViewReader<'a>,
+    /// The content-stage pixel the reader's first pixel is: `(0, 0)` for a whole source, and the
+    /// window's origin for the window of one the reference's banded mode reads
+    /// ([`Linear::window`]).
+    origin: (u32, u32),
     /// Applied to each source pixel, when the settings carry one.
     white_balance: Option<WhiteBalanceApproximation>,
 }
@@ -213,8 +218,32 @@ impl<'a> Linear<'a> {
     /// `source` under `settings`.
     pub(crate) fn new(source: &'a LinearImage, settings: LinearSettings) -> Result<Self, Error> {
         Ok(Self {
-            source,
+            fingerprint: source.fingerprint(),
             reader: source.reader(),
+            origin: (0, 0),
+            white_balance: settings.white_balance,
+        })
+    }
+
+    /// The window `area` of a source's content stage under `settings`, for the reference's banded
+    /// mode ([`super::bands`]): `planes` are the area's pixels in the identity view, three planes
+    /// of its size, and every pixel the evaluation reads is named in content-stage coordinates and
+    /// read from them. A pixel outside the area is an error, never another pixel.
+    pub(crate) fn window(
+        planes: &'a [f32],
+        area: Region,
+        settings: LinearSettings,
+    ) -> Result<Self, Error> {
+        if planes.len() as u64 != area.pixels() * 3 || area.is_empty() {
+            return Err(Error::internal(
+                "a source window's planes do not hold its rectangle",
+            ));
+        }
+        Ok(Self {
+            // A window is rendered into bands, never into a stamped frame.
+            fingerprint: "",
+            reader: ViewReader::over(planes, area.width, area.height),
+            origin: (area.x0, area.y0),
             white_balance: settings.white_balance,
         })
     }
@@ -243,6 +272,7 @@ impl<'a> Linear<'a> {
         match &evaluation.compiled.segments[index].entry {
             None => Some(EntryPlanes {
                 reader: evaluation.domain.reader,
+                origin: evaluation.domain.origin,
                 white_balance: evaluation.domain.white_balance,
             }),
             Some(Entry::Spatial(_) | Entry::Repair(_)) => {
@@ -250,9 +280,10 @@ impl<'a> Linear<'a> {
                     .frame
                     .as_ref()
                     .filter(|frame| frame.index == index)?;
-                let stage = evaluation.compiled.segments[index - 1].stage();
+                let area = frame.area;
                 Some(EntryPlanes {
-                    reader: ViewReader::over(&frame.planes, stage.width, stage.height),
+                    reader: ViewReader::over(&frame.planes, area.width, area.height),
+                    origin: (area.x0, area.y0),
                     white_balance: None,
                 })
             }
@@ -307,6 +338,8 @@ fn finite_f32(row: &[[f32; 3]], detail: &str) -> Result<(), Error> {
 #[derive(Clone, Copy)]
 pub(super) struct EntryPlanes<'a> {
     reader: ViewReader<'a>,
+    /// The stage pixel the reader's first pixel is: `(0, 0)` but for a window.
+    origin: (u32, u32),
     /// Applied to each source pixel read, in `f64`, when the settings carry one; a frame's
     /// values are read as they are.
     white_balance: Option<WhiteBalanceApproximation>,
@@ -320,7 +353,8 @@ impl EntryPlanes<'_> {
             return None;
         }
         let (across, down) = geometry.unmap_steps();
-        let at = geometry.unmap(block.x0, block.y0);
+        let (x, y) = geometry.unmap(block.x0, block.y0);
+        let at = (x.checked_sub(self.origin.0)?, y.checked_sub(self.origin.1)?);
         self.reader
             .walk(at, across, down, block.width, block.height)
     }
@@ -383,11 +417,15 @@ impl PixelDomain for Linear<'_> {
     /// immutable after that, so a source row reads them unchecked too.
     #[inline(always)]
     fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
-        let pixel = self.reader.pixel(x, y).ok_or_else(|| {
-            Error::validation(format!(
-                "linear source coordinate ({x}, {y}) is outside the view"
-            ))
-        })?;
+        // A coordinate before a window's origin wraps past its far edge, which the reader refuses.
+        let pixel = self
+            .reader
+            .pixel(x.wrapping_sub(self.origin.0), y.wrapping_sub(self.origin.1))
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "linear source coordinate ({x}, {y}) is outside the view"
+                ))
+            })?;
         self.adjust_source_pixel(pixel.map(f64::from))
     }
 
@@ -599,9 +637,17 @@ impl PixelDomain for Linear<'_> {
         terminal_pixel(pixel)
     }
 
-    /// The RAW planar limit applies to this float frame exactly as it does to the source's.
+    /// The rendered-frame limit ([`RENDERED_FRAME`]) bounds this float frame, the camera limits.
     fn spatial_frame(stage: Stage, _: bool) -> Result<Vec<f32>, Error> {
-        let (values, _) = layout(stage.width, stage.height)?;
+        let (values, _) = RENDERED_FRAME.layout(stage.width, stage.height)?;
+        Ok(vec![0.0_f32; values])
+    }
+
+    /// The rendered-window limit ([`RENDERED_WINDOW`]) bounds a float frame of a window or of a
+    /// whole stage: the camera limits but for its side, which may be as wide as a paged source's
+    /// stage.
+    fn area_frame(area: Region, _: bool) -> Result<Vec<f32>, Error> {
+        let (values, _) = RENDERED_WINDOW.layout(area.width, area.height)?;
         Ok(vec![0.0_f32; values])
     }
 
@@ -682,12 +728,13 @@ pub(super) fn rasterize(
     let mut frame = super::zeroed_frame(output_len(stage.width, stage.height)?);
     let index = evaluation.compiled.segments.len() - 1;
     let segment = &evaluation.compiled.segments[index];
-    let source = evaluation.domain.source;
+    let fingerprint = evaluation.domain.fingerprint;
     segment_pass(
         &LinearRows {
             evaluation,
             index,
             segment,
+            area: Region::whole(segment.stage()),
             planes: Linear::entry_planes(evaluation, index),
             output: LinearOutput::Terminal(srgb::quantizer()),
             #[cfg(test)]
@@ -695,6 +742,7 @@ pub(super) fn rasterize(
         },
         segment,
         super::frame_mut(&mut frame),
+        Region::whole(segment.stage()),
         0..stage.height as usize,
         cancel,
         context.scratch(),
@@ -703,7 +751,7 @@ pub(super) fn rasterize(
         width: stage.width,
         height: stage.height,
         rgba: frame,
-        source_fingerprint: source.fingerprint().to_owned(),
+        source_fingerprint: fingerprint.to_owned(),
         snapshot_id,
     })
 }
@@ -727,6 +775,7 @@ pub(super) fn rasterize_wide(
             evaluation,
             index,
             segment,
+            area: Region::whole(segment.stage()),
             planes: Linear::entry_planes(evaluation, index),
             output: LinearOutput::Wide(srgb::quantizer16()),
             #[cfg(test)]
@@ -734,7 +783,94 @@ pub(super) fn rasterize_wide(
         },
         segment,
         &mut frame,
+        Region::whole(segment.stage()),
         0..stage.height as usize,
+        cancel,
+        context.scratch(),
+    )?;
+    Ok(frame)
+}
+
+/// The terminal bytes of `area` of the output stage of a windowed evaluation
+/// ([`Evaluation::windowed`]), row by row, RGBA: the reference's banded mode's half of
+/// [`rasterize`], whose pass it is over the area's rows alone, with every pixel the byte
+/// [`rasterize`] writes there. `area` is at most [`crate::render::limits::MAX_FRAME_BYTES`] of
+/// bytes, the evaluated-frame limit a band is held to.
+pub(super) fn rasterize_area(
+    evaluation: &Evaluation<'_, Linear<'_>>,
+    area: Region,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    rasterize_area_as(
+        evaluation,
+        area,
+        LinearOutput::Terminal(srgb::quantizer()),
+        cancel,
+        context,
+    )
+}
+
+/// [`rasterize_area`] with the terminal encoded once at 16 bits instead of 8, as
+/// [`rasterize_wide`] encodes the whole frame: [`WIDE_TERMINAL_BYTES`] a pixel, every value the one
+/// [`rasterize_wide`] writes there, so a banded 16-bit or resized export reads the whole frame's
+/// wide terminal band by band.
+pub(super) fn rasterize_area_wide(
+    evaluation: &Evaluation<'_, Linear<'_>>,
+    area: Region,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    rasterize_area_as(
+        evaluation,
+        area,
+        LinearOutput::Wide(srgb::quantizer16()),
+        cancel,
+        context,
+    )
+}
+
+/// The last segment's pass over `area` of a windowed evaluation, each pixel written as `output`.
+fn rasterize_area_as(
+    evaluation: &Evaluation<'_, Linear<'_>>,
+    area: Region,
+    output: LinearOutput,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    let stage = evaluation.stage();
+    if area.is_empty() || area.x1() > stage.width || area.y1() > stage.height {
+        return Err(Error::internal(
+            "a band's rectangle lies outside its output stage",
+        ));
+    }
+    let bytes = area.pixels().saturating_mul(output.bytes() as u64);
+    if bytes > crate::render::limits::MAX_FRAME_BYTES {
+        return Err(Error::resource_limit(format!(
+            "a band of {}x{} exceeds the {} MiB evaluated-frame limit",
+            area.width,
+            area.height,
+            crate::render::limits::MAX_FRAME_BYTES >> 20
+        )));
+    }
+    let mut frame = vec![0_u8; bytes as usize];
+    let index = evaluation.compiled.segments.len() - 1;
+    let segment = &evaluation.compiled.segments[index];
+    segment_pass(
+        &LinearRows {
+            evaluation,
+            index,
+            segment,
+            area,
+            planes: Linear::entry_planes(evaluation, index),
+            output,
+            #[cfg(test)]
+            context,
+        },
+        segment,
+        &mut frame,
+        area,
+        0..area.height as usize,
         cancel,
         context.scratch(),
     )?;
@@ -758,6 +894,9 @@ pub(super) struct LinearRows<'e, 'x, 's> {
     evaluation: &'e Evaluation<'x, Linear<'s>>,
     index: usize,
     segment: &'e Segment,
+    /// The rectangle of the segment's output stage the pass writes: the whole stage, or a window
+    /// of it in the reference's banded mode ([`rasterize_area`]). The chunk holds its rows.
+    area: Region,
     /// The planes the segment's entry is read from by rows, when it is the source or a spatial
     /// frame the evaluation holds ([`Linear::entry_planes`]).
     planes: Option<EntryPlanes<'e>>,
@@ -882,13 +1021,14 @@ impl LinearRows<'_, '_, '_> {
         y0: u32,
         chunk: &mut [u8],
     ) -> Result<(), Error> {
-        let width = self.segment.width as usize;
+        let width = self.area.width as usize;
         let pixel_bytes = self.output.bytes();
         let rows = chunk.len() / (width * pixel_bytes);
+        let x0 = self.area.x0;
         let block = Region {
-            x0: 0,
+            x0,
             y0,
-            width: self.segment.width,
+            width: self.area.width,
             height: rows as u32,
         };
         if let Some(planes) = &self.planes
@@ -904,11 +1044,11 @@ impl LinearRows<'_, '_, '_> {
                     .iter_mut()
                     .enumerate()
                 {
-                    *value = self.entry(x as u32, y)?.map(|value| value as f32);
+                    *value = self.entry(x0 + x as u32, y)?.map(|value| value as f32);
                 }
             } else {
                 for (x, rgba) in bytes.chunks_exact_mut(pixel_bytes).enumerate() {
-                    self.output.write(rgba, self.entry(x as u32, y)?)?;
+                    self.output.write(rgba, self.entry(x0 + x as u32, y)?)?;
                 }
             }
         }
@@ -987,7 +1127,7 @@ impl LinearRows<'_, '_, '_> {
         y0: u32,
         chunk: &mut [u8],
     ) -> Result<(), Error> {
-        let width = self.segment.width;
+        let (first, width) = (self.area.x0, self.area.width);
         let rows = (chunk.len() / (width as usize * self.output.bytes())) as u32;
         let stage = self.evaluation.compiled.segments[self.index - 1].stage();
         let outside = || Error::render("a resample tap was outside its stage");
@@ -996,9 +1136,9 @@ impl LinearRows<'_, '_, '_> {
             block,
             row,
         } = scratch;
-        for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
+        for x0 in (first..first + width).step_by(TAP_BLOCK_COLUMNS as usize) {
             self.evaluation.checkpoint()?;
-            let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
+            let columns = (first + width - x0).min(TAP_BLOCK_COLUMNS);
             // The block's rectangle of the resample's output: the segment's exact geometry maps the
             // block onto one.
             let window = self.segment.geometry.unmap_region(Region {
@@ -1032,7 +1172,7 @@ impl LinearRows<'_, '_, '_> {
                                 .pixel_in(self.index - 1, x, y)?
                                 .ok_or_else(outside),
                         })?;
-                    let offset = ((y - y0) * width + x) as usize;
+                    let offset = ((y - y0) * width + (x - first)) as usize;
                     self.put(values, chunk, offset, pixel)?;
                 }
             }
@@ -1082,14 +1222,20 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
         rows: std::ops::Range<usize>,
         snapshot: &mut [MaskedInput],
     ) -> Result<(), Error> {
-        let width = self.segment.width as usize;
+        let width = self.area.width as usize;
         // The same coordinates the byte path hands its units, so a position-dependent unit makes
         // a linear sample and a linear frame agree pixel for pixel.
         for (offset, row) in scratch.rows[rows.start * width..rows.end * width]
             .chunks_mut(width)
             .enumerate()
         {
-            apply_units(run, y0 + (rows.start + offset) as u32, 0, row, snapshot)?;
+            apply_units(
+                run,
+                y0 + (rows.start + offset) as u32,
+                self.area.x0,
+                row,
+                snapshot,
+            )?;
         }
         Ok(())
     }
@@ -1162,6 +1308,7 @@ pub(super) fn boundary_pass(
             evaluation,
             index,
             segment,
+            area: Region::whole(segment.stage()),
             planes: Linear::entry_planes(evaluation, index),
             output: LinearOutput::Boundary,
             #[cfg(test)]
@@ -1169,6 +1316,7 @@ pub(super) fn boundary_pass(
         },
         segment,
         &mut texels,
+        Region::whole(segment.stage()),
         0..segment.height as usize,
         cancel,
         context.scratch(),
@@ -1619,6 +1767,7 @@ mod tests {
                     planes,
                     output,
                     context: &context,
+                    area: crate::modules::Region::whole(segment.stage()),
                 };
                 let (walked, pulled) = (rows(planes), rows(None));
                 let row_bytes = segment.width as usize * output.bytes();
@@ -1957,11 +2106,11 @@ mod tests {
     #[test]
     fn raw_planar_bound_is_separate_from_terminal_rgba_bound() {
         // This checks admission arithmetic only; LinearImage is not allocated.
-        assert!(layout(16_000, 8_000).is_ok());
+        assert!(RENDERED_FRAME.layout(16_000, 8_000).is_ok());
         assert!(output_len(16_000, 6_250).is_ok());
         assert!(output_len(16_000, 8_000).is_ok());
         assert!(output_len(16_000, 8_001).is_err());
-        assert!(layout(16_384, 16_384).is_err());
+        assert!(RENDERED_FRAME.layout(16_384, 16_384).is_err());
     }
 
     /// A colour-stage layer reaches the linear path too: the Basic module's units run on the

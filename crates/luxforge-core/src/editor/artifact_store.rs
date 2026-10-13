@@ -17,16 +17,42 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{borrow::Cow, collections::HashSet, io, path::Path, sync::Arc};
 
-/// Every artifact a stack references, each once, in the order its layers first list them.
+/// Every artifact a stack references, each once: the ones its layers list, in the order they first
+/// list them, then the ones its masks' components bind (a model selection's raster), in mask and
+/// component order. A mask's artifact is referenced whether or not a layer draws the mask yet, so
+/// admission checks it, the entry's references record it and retention keeps it exactly as a
+/// layer's.
 pub(super) fn referenced(recipe: &Recipe) -> Vec<ArtifactId> {
     let mut seen = HashSet::new();
     recipe
         .layers
         .iter()
-        .flat_map(|layer| &layer.artifacts)
-        .filter(|id| seen.insert(*id))
-        .cloned()
+        .flat_map(|layer| layer.artifacts.iter().cloned())
+        .chain(crate::mask::mask_artifacts(&recipe.masks))
+        .filter(|id| seen.insert(id.clone()))
         .collect()
+}
+
+/// Every mask component that binds an artifact, checked against the artifact's recorded row by
+/// its kind: a model selection references a `mask-alpha` raster of its declared size, refused
+/// naming the artifact and the component. Lookups only; reads no artifact.
+fn check_mask_artifacts(connection: &Connection, recipe: &Recipe) -> Result<(), Error> {
+    for component in recipe.masks.iter().flat_map(|mask| &mask.components) {
+        let Some(id) = crate::mask::component_artifact(component) else {
+            continue;
+        };
+        let (bytes, meta) = artifact_row(connection, &id)?
+            .ok_or_else(|| Error::validation(format!("unknown artifact {id}")))?;
+        crate::mask::check_component_artifact(
+            component,
+            &id,
+            &meta.kind,
+            meta.width,
+            meta.height,
+            bytes,
+        )?;
+    }
+    Ok(())
 }
 
 /// The object file of one recorded artifact, by stat alone: a missing file is
@@ -97,6 +123,7 @@ pub(super) fn recorded_artifacts(
             .ok_or_else(|| Error::validation(format!("unknown artifact {id}")))?;
         object_signature(root, id, bytes)?;
     }
+    check_mask_artifacts(connection, recipe)?;
     Ok(ids)
 }
 
@@ -277,8 +304,9 @@ impl EditorService {
         let held = recipe
             .layers
             .iter()
-            .flat_map(|layer| &layer.artifacts)
-            .all(|id| recipe.artifacts.get(id).is_some());
+            .flat_map(|layer| layer.artifacts.iter().cloned())
+            .chain(crate::mask::mask_artifacts(&recipe.masks))
+            .all(|id| recipe.artifacts.get(&id).is_some());
         if held {
             return Ok(Cow::Borrowed(recipe));
         }
@@ -395,7 +423,12 @@ impl EditorService {
             return Err(Error::resource_limit(format!(
                 "the stack binds {} artifacts of {total} bytes, more than the {PREPARED_ARTIFACT_ENTRIES} artifacts or {PREPARED_ARTIFACT_BYTES} bytes that can be held ready",
                 rows.len()
-            )));
+            ))
+            .with_data(json!({
+                "limit": "artifacts",
+                "artifact_bytes": total,
+                "budget": PREPARED_ARTIFACT_BYTES,
+            })));
         }
         self.check_root()?;
         let mut cache = self.prepared_artifacts.borrow_mut();
@@ -440,6 +473,19 @@ impl EditorService {
             ))),
             RootState::Foreign(detail) => Err(Error::incompatible(detail)),
         }
+    }
+
+    /// When the catalog recorded artifact `id` as published, if it records the artifact. One
+    /// lookup.
+    pub(super) fn artifact_created_ms(&self, id: &ArtifactId) -> Result<Option<i64>, Error> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT created_ms FROM artifacts WHERE id=?1",
+                [id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?)
     }
 
     /// `artifact.status`: the root, what its manifest says, and how many artifacts are referenced,

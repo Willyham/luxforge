@@ -454,6 +454,52 @@ pub fn reduce(rgba: &[u8], width: u32, height: u32, cancel: &Cancel) -> Result<R
     reduce_with_threshold(rgba, width, height, luxforge_raw::PARALLEL_PIXELS, cancel)
 }
 
+/// [`reduce`] of a `width` × `height` output that arrives in full-width bands from the top, each
+/// its row count and its RGBA rows: the reference's banded render of a paged source
+/// (`crate::render::bands`). Each band is counted as [`reduce`] counts a frame and the bins are
+/// added, so the report is the one [`reduce`] makes of the bands put together, without them ever
+/// being together. Bands that do not cover the output exactly are refused. An error of a band's
+/// own ends the reduction with it.
+pub(crate) fn reduce_bands<B: AsRef<[u8]>>(
+    width: u32,
+    height: u32,
+    bands: impl IntoIterator<Item = Result<(u32, B), Error>>,
+    cancel: &Cancel,
+) -> Result<Report, Error> {
+    cancel.check()?;
+    let mut bins = Bins::zero();
+    let mut rows = 0_u32;
+    for band in bands {
+        let (count, rgba) = band?;
+        let rgba = rgba.as_ref();
+        let expected = u64::from(width) * u64::from(count) * 4;
+        if count == 0
+            || rows.checked_add(count).is_none_or(|end| end > height)
+            || rgba.len() as u64 != expected
+        {
+            return Err(Error::validation(format!(
+                "a band of {count} rows ({} bytes) does not continue a {width}x{height} output \
+                 at row {rows}",
+                rgba.len()
+            )));
+        }
+        let pixels = u64::from(width) * u64::from(count);
+        let band = if pixels >= luxforge_raw::PARALLEL_PIXELS {
+            reduce_parallel(rgba, cancel)?
+        } else {
+            reduce_serial(rgba, cancel)?
+        };
+        bins.merge_in_place(&band);
+        rows += count;
+    }
+    if rows != height {
+        return Err(Error::validation(format!(
+            "bands of {rows} rows do not cover a {width}x{height} output"
+        )));
+    }
+    Ok(bins.into_report(width, height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,6 +20,7 @@ mod hdr;
 mod look;
 mod mask;
 mod mixer;
+mod panorama;
 mod presence;
 mod range;
 mod repair;

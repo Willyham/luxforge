@@ -118,14 +118,14 @@ fn plan(width: u32, height: u32, bounds: (u32, u32)) -> ProxyPlan {
 fn jpeg_of(source: &PreviewSource) -> &SourceImage {
     match source {
         PreviewSource::Jpeg(image) => image,
-        PreviewSource::Raw { .. } => panic!("a JPEG proxy stays a JPEG source"),
+        _ => panic!("a JPEG proxy stays a JPEG source"),
     }
 }
 
 fn raw_of(source: &PreviewSource) -> &LinearImage {
     match source {
         PreviewSource::Raw { image, .. } => image,
-        PreviewSource::Jpeg(_) => panic!("a RAW proxy stays a RAW source"),
+        _ => panic!("a RAW proxy stays a RAW source"),
     }
 }
 
@@ -1214,6 +1214,7 @@ fn a_proxy_is_the_same_bytes_at_any_band_size() {
             PreviewSource::Raw { image, .. } => {
                 image.planes().iter().map(|value| value.to_bits()).collect()
             }
+            PreviewSource::Paged(_) => unreachable!("no paged source here"),
         }
     };
     for (pooled, source) in [false, true]

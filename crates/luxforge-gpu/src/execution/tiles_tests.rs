@@ -253,6 +253,114 @@ fn a_window_of_the_source_cuts_what_the_whole_source_cuts() {
     eprintln!("{test}: {:?}", runner.figures());
 }
 
+/// A paged source's level 0 read a window at a time ([`SourceReader`]): reads the held window
+/// alone, and the run cuts from it bit for bit what a source holding every plane cuts; a window
+/// filled with its own planes ([`GpuSource::filled`]) cuts the same; and a read that fails uploads
+/// nothing, so the run names the source missing.
+#[test]
+fn paged_source_render_windows_read_a_window_at_a_time_cut_what_the_whole_source_cuts() {
+    struct Reader {
+        planes: Arc<Vec<f32>>,
+        width: u32,
+        height: u32,
+        reads: std::sync::Mutex<Vec<[u32; 4]>>,
+        fail: bool,
+    }
+    impl crate::SourceReader for Reader {
+        fn read(&self, rect: [u32; 4]) -> Option<Arc<dyn AsRef<[f32]> + Send + Sync>> {
+            self.reads.lock().unwrap().push(rect);
+            if self.fail {
+                return None;
+            }
+            let [x, y, width, height] = rect;
+            let plane = (self.width * self.height) as usize;
+            let mut window = Vec::with_capacity((width * height * 3) as usize);
+            for channel in 0..3 {
+                for row in y..y + height {
+                    let at = channel * plane + (row * self.width + x) as usize;
+                    window.extend_from_slice(&self.planes[at..at + width as usize]);
+                }
+            }
+            Some(Arc::new(window))
+        }
+    }
+    let test = "paged_source_render_windows_read_a_window_at_a_time_cut_what_the_whole_source_cuts";
+    let Some(mut runner) = runner(test) else {
+        return;
+    };
+    let (width, height) = (300u32, 200u32);
+    let plane = (width * height) as usize;
+    let mut planes = vec![0f32; 3 * plane];
+    for (index, value) in planes.iter_mut().enumerate() {
+        let (channel, at) = (index / plane, (index % plane) as u32);
+        *value = (channel as f32 + 1.0) * 0.001 * (at % width) as f32
+            + 0.0007 * (at / width) as f32
+            - 0.3;
+    }
+    let planes = Arc::new(planes);
+    let whole = GpuSource::planes(
+        5,
+        Arc::clone(&planes),
+        (width, height),
+        [0, 0, width, height],
+        1,
+    )
+    .expect("whole planes");
+    let reader = Arc::new(Reader {
+        planes: Arc::clone(&planes),
+        width,
+        height,
+        reads: std::sync::Mutex::new(Vec::new()),
+        fail: false,
+    });
+    let paged = GpuSource::reading(5, (width, height), reader.clone()).expect("a stage");
+    let rect = [150u32, 90, 120, 80];
+    let origin = (160u32, 100u32);
+    let plan = cut_plan(&whole, origin, (SIDE, SIDE), 5);
+    let expected = run_linear(&mut runner, &plan, &whole, [0, 0, width, height]);
+    let read = run_linear(&mut runner, &plan, &paged, rect);
+    assert_eq!(bits(&read), bits(&expected), "read a window at a time");
+    assert_eq!(
+        *reader.reads.lock().unwrap(),
+        vec![rect],
+        "the window alone, once"
+    );
+    assert_eq!(window_held(&runner), u64::from(rect[2] * rect[3] * 12));
+    let filled = {
+        let held = GpuSource::paged(5, (width, height))
+            .expect("a stage")
+            .window(rect)
+            .expect("inside");
+        let planes = crate::SourceReader::read(&*reader, rect).expect("read");
+        let planes: Vec<f32> = (*planes).as_ref().to_vec();
+        held.filled(Arc::new(planes)).expect("its own planes")
+    };
+    let from_filled = run_linear(&mut runner, &plan, &filled, rect);
+    assert_eq!(
+        bits(&from_filled),
+        bits(&expected),
+        "a window filled with its planes"
+    );
+
+    let failing = GpuSource::reading(
+        6,
+        (width, height),
+        Arc::new(Reader {
+            planes,
+            width,
+            height,
+            reads: std::sync::Mutex::new(Vec::new()),
+            fail: true,
+        }),
+    )
+    .expect("a stage");
+    let plan = cut_plan(&failing, origin, (SIDE, SIDE), 6);
+    match runner.run(&plan, &failing, rect, TileEnd::Linear) {
+        Err(TileFailure::Plan(GpuFallback::SourceMissing)) => {}
+        other => panic!("a failed read uploads nothing: {other:?}"),
+    }
+}
+
 /// A run whose charge passes [`GPU_TILE_BUDGET`] is refused with what it asked for, having created
 /// and compiled nothing — no window held, no sequence compiled, nothing ever charged — and the
 /// charge is the run's every texture and buffer: a whole 8192-pixel JPEG's window of codes, its
