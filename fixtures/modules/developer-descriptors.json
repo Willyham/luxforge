@@ -718,6 +718,34 @@
           }
         ],
         "title": "Candidates proof"
+      },
+      {
+        "actions": [],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": false,
+        "controls": [],
+        "developer": true,
+        "effects": [],
+        "hint": "A fixed model-selection raster for the model mask kind",
+        "id": "luxforge.selections",
+        "layout": "stacked",
+        "queries": [],
+        "reset": null,
+        "tasks": [
+          {
+            "asset": true,
+            "id": "publish-proof-selection",
+            "notes": "Publishes the checked-in 96 × 64 alpha raster as a mask-alpha artifact, whose identity is always artifact-d808f41015876053c0122c8e78285f9a56389199669be0479850efe5e37b1f3f; mask.create-model and mask.add-model bind it. Answers {artifact, width, height}.",
+            "parameters": [],
+            "profile": false,
+            "title": "Publish proof selection",
+            "uses": []
+          }
+        ],
+        "title": "Selections proof"
       }
     ]
   },
@@ -1208,6 +1236,17 @@
             "unit": null
           }
         ],
+        "required": [
+          "mutation",
+          "asset_id"
+        ]
+      },
+      "task.publish-proof-selection": {
+        "mutates": true,
+        "mutation": "request",
+        "notes": "Publishes the checked-in 96 × 64 alpha raster as a mask-alpha artifact, whose identity is always artifact-d808f41015876053c0122c8e78285f9a56389199669be0479850efe5e37b1f3f; mask.create-model and mask.add-model bind it. Answers {artifact, width, height}. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "optional": {},
+        "parameters": [],
         "required": [
           "mutation",
           "asset_id"

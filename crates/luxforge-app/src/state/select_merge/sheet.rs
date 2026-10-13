@@ -1,21 +1,24 @@
 //! The merge preview sheet ([design](../../../../../docs/design/panorama-merge.md#the-merge-preview);
-//! the board `docs/design/merges/hdr-preview.png`), as plain data: what the sheet holds between
-//! the owner's answers, and what it draws from them.
+//! the boards `docs/design/merges/hdr-preview.png`, `panorama-preview.png` and
+//! `panorama-warp.png`), as plain data: what the sheet holds between the owner's answers, and what
+//! it draws from them.
 //!
-//! The sheet opens on Merge HDR, with Cancel and Merge as its buttons. It shows the
-//! frames the plan resolved, the picture the newest `merge-preview` revision drew, with the
-//! deghost overlay drawn from the revision's own overlay data, the settings, the folder and the
-//! output. While the preview reads and aligns, the picture area says the job's progress, and the
-//! settings and the merge buttons stay live. A refusal, from the plan or the preview, replaces the
-//! picture and disables Merge; the sheet stays open.
+//! The sheet opens on Merge HDR or Merge panorama, with Cancel and Merge as its buttons. It shows
+//! the frames the plan resolved, the picture the newest `merge-preview` revision drew, with the
+//! overlays drawn from the revision's own overlay data (HDR's deghost regions; a panorama's crop
+//! and coverage and its frame outlines), the kind's settings, the folder and the output. While the
+//! preview reads and aligns, the picture area says the job's progress, and the settings and the
+//! merge buttons stay live. A refusal, from the plan or the preview, replaces the picture and
+//! disables Merge; the sheet stays open.
 use super::{
-    FolderPick, MergeAction, MergeRequest, Toggle, ev_words, plan_refusal, refusal_message, words,
+    FolderPick, MergeAction, MergeRequest, Toggle, ev_words, field_words, plan_refusal,
+    projection_name, refusal_message, words,
 };
 /// A frame's file, as the sheet's thumbnails name it.
 pub(crate) use luxforge_core::catalog_types::FileId;
 use luxforge_core::catalog_types::{
-    CatalogFolderId, FolderChoice, MergePlan, MergePreview, MergePreviewDiagnostics,
-    MergePreviewId, MergePreviewOverlays,
+    CatalogFolderId, FolderChoice, MergeKind, MergePlan, MergePreview, MergePreviewDiagnostics,
+    MergePreviewId, MergePreviewOverlays, PanoramaPreviewDiagnostics, PanoramaProjection,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -27,8 +30,14 @@ pub(crate) const EV_STEP: f64 = 1.0 / 3.0;
 pub(crate) const DISPLAY_NOTE: &str = "Display preview, not the saved pixels";
 
 /// The sheet's footer: how to merge without it.
-pub(crate) const LAST_SETTINGS_HINT: &str =
-    "\u{2325}-click Merge HDR to merge with the last settings, without this preview";
+pub(crate) const LAST_SETTINGS_HINT: &str = "\u{2325}-click Merge HDR or Merge panorama to merge with the last settings, without this preview";
+
+/// What Boundary Warp does.
+pub(crate) const WARP_HINT: &str = "Bends the edges to fill the frame instead of cropping them.";
+
+/// How a panorama's frames are numbered and how one becomes the reference.
+pub(crate) const FRAMES_HINT: &str =
+    "Numbered left to right, the stack\u{2019}s order. Click a frame to make it the reference.";
 
 /// What the frames' exposures are and how to correct them.
 pub(crate) const EXPOSURE_HINT: &str =
@@ -76,6 +85,10 @@ pub(crate) struct PreviewSheet {
     pub(crate) refusal: Option<String>,
     /// Show deghost overlay: drawn by this client from the revision's data, sending nothing.
     pub(crate) overlay: bool,
+    /// A panorama's Frame outlines and Crop and coverage: drawn by this client from the
+    /// revision's data, sending nothing. Both are shown when the sheet opens.
+    pub(crate) outlines: bool,
+    pub(crate) crop: bool,
     /// The settings changed while no preview could take them: sent once one can.
     pub(crate) stale: bool,
     /// The newest owner task asked for the sheet; an answer to any other is dropped.
@@ -107,6 +120,8 @@ impl PreviewSheet {
             preview: None,
             refusal: None,
             overlay: false,
+            outlines: true,
+            crop: true,
             stale: false,
             serial: 0,
             asking: false,
@@ -188,6 +203,42 @@ impl PreviewSheet {
             .map(|exposure| exposure.offset_ev)
     }
 
+    /// The newest revision's panorama diagnostics, when it drew a panorama.
+    pub(crate) fn panorama(&self) -> Option<&PanoramaPreviewDiagnostics> {
+        match self
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.diagnostics.as_ref())
+        {
+            Some(MergePreviewDiagnostics::Panorama(diagnostics)) => Some(diagnostics),
+            _ => None,
+        }
+    }
+
+    /// A panorama's frames as the sheet lists them: by the plan's position, in the stack's order
+    /// once a revision has registered them (each with its number, from 1), else in the plan's
+    /// order, unnumbered.
+    fn panorama_order(&self) -> Vec<(usize, Option<u32>)> {
+        let Some(plan) = self.plan.as_ref() else {
+            return Vec::new();
+        };
+        if let Some(diagnostics) = self.panorama() {
+            let order: Vec<(usize, Option<u32>)> = diagnostics
+                .frames
+                .iter()
+                .enumerate()
+                .filter_map(|(place, path)| {
+                    let at = plan.inputs.iter().position(|input| input.path == *path)?;
+                    Some((at, Some(place as u32 + 1)))
+                })
+                .collect();
+            if order.len() == plan.inputs.len() {
+                return order;
+            }
+        }
+        (0..plan.inputs.len()).map(|at| (at, None)).collect()
+    }
+
     /// The reference's position in the stack: the person's choice, else the newest revision's,
     /// else the plan's.
     fn reference(&self) -> Option<usize> {
@@ -195,12 +246,20 @@ impl PreviewSheet {
         if let Some(path) = &self.request.options.reference {
             return plan.inputs.iter().position(|input| input.path == *path);
         }
-        if let Some(MergePreviewDiagnostics::Hdr(diagnostics)) = self
+        match self
             .preview
             .as_ref()
             .and_then(|preview| preview.diagnostics.as_ref())
         {
-            return Some(diagnostics.reference as usize);
+            Some(MergePreviewDiagnostics::Hdr(diagnostics)) => {
+                return Some(diagnostics.reference as usize);
+            }
+            // A panorama's is in the stack's order: its path names it in the plan.
+            Some(MergePreviewDiagnostics::Panorama(diagnostics)) => {
+                let path = diagnostics.frames.get(diagnostics.reference as usize)?;
+                return plan.inputs.iter().position(|input| input.path == *path);
+            }
+            None => {}
         }
         plan.reference.map(|reference| reference as usize)
     }
@@ -227,6 +286,8 @@ pub(crate) enum Picture {
         width: u32,
         height: u32,
         regions: Vec<Region>,
+        /// A panorama's crop and coverage and its frame outlines, as far as each is shown.
+        stitch: Option<StitchOverlay>,
         /// A newer revision is being drawn: its job's words.
         updating: Option<String>,
     },
@@ -256,6 +317,18 @@ pub(crate) struct Region {
     pub(crate) fallback: bool,
 }
 
+/// A panorama's overlays over its picture, in the picture's pixels: the covered region and the
+/// crop the result keeps (while Crop and coverage is shown), and each frame's outline with its
+/// number in the stack's order (while Frame outlines is).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StitchOverlay {
+    pub(crate) covered: Vec<Vec<[f32; 2]>>,
+    /// `[x, y, width, height]`: everything outside it is dimmed.
+    pub(crate) crop: Option<[f32; 4]>,
+    /// Each frame's number, from 1, and its closed outline.
+    pub(crate) frames: Vec<(u32, Vec<[f32; 2]>)>,
+}
+
 /// One frame of the sheet.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FrameRow {
@@ -271,6 +344,36 @@ pub(crate) struct FrameRow {
     pub(crate) offset: Option<f64>,
     pub(crate) overridden: bool,
     pub(crate) reference: bool,
+    /// A panorama frame's number in the stack's order, from 1, once registration has placed it.
+    pub(crate) number: Option<u32>,
+}
+
+/// Boundary Warp's largest amount, the slider's end.
+pub(crate) const WARP_MAX: u8 = luxforge_core::catalog_types::MAX_BOUNDARY_WARP;
+
+/// The projection segment at `index` chosen, Auto first.
+pub(crate) fn projection_at(index: usize) -> MergeAction {
+    let all = PanoramaProjection::ALL;
+    MergeAction::Projection(all[index.min(all.len() - 1)])
+}
+
+/// A panorama's settings as the sheet draws them.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PanoramaSettings {
+    pub(crate) projection: PanoramaProjection,
+    /// The projection's segments, Auto first, and the chosen one's place among them.
+    pub(crate) projections: [&'static str; 4],
+    pub(crate) projection_at: usize,
+    /// Under the projection while it is Auto and a revision resolved it: "Auto chose
+    /// Cylindrical for a 164° × 41° field."
+    pub(crate) resolved: Option<String>,
+    pub(crate) boundary_warp: u8,
+    pub(crate) outlines: bool,
+    pub(crate) crop: bool,
+    /// "Reference: 4 · DSC_4104.NEF", once the reference is known.
+    pub(crate) reference: Option<String>,
+    /// The overlay legend's frame chip: "Frames 1–7".
+    pub(crate) frames_legend: String,
 }
 
 /// The sheet as drawn.
@@ -289,9 +392,12 @@ pub(crate) struct SheetModel {
     pub(crate) frames: Vec<FrameRow>,
     /// The frames are not planned yet.
     pub(crate) reading: bool,
+    pub(crate) kind: MergeKind,
     pub(crate) alignment: Toggle,
     pub(crate) deghost: Toggle,
     pub(crate) overlay: bool,
+    /// A panorama's settings, in place of HDR's.
+    pub(crate) panorama: Option<PanoramaSettings>,
     pub(crate) folder: String,
     /// "catalog folder", "new place", "new folder".
     pub(crate) folder_note: Option<&'static str>,
@@ -339,35 +445,43 @@ pub(crate) fn model(sheet: &PreviewSheet, busy: Option<&str>) -> SheetModel {
     .join(" \u{b7} ");
 
     let reference = sheet.reference();
-    let frames = plan.map_or_else(Vec::new, |plan| {
-        plan.inputs
-            .iter()
-            .enumerate()
-            .map(|(at, input)| {
-                let overridden = options.override_of(&input.path);
-                let offset = overridden.or_else(|| sheet.resolved(at));
-                let ev = offset.map_or_else(
-                    || "EV from the pixels".to_owned(),
-                    |offset| {
-                        ev_words(offset).map_or_else(|| format!("{offset:+.2} EV"), str::to_owned)
-                    },
-                );
-                let detail = match input.frame.exposure.shutter_s.filter(|time| *time > 0.0) {
-                    Some(time) => format!("{ev} \u{b7} {}", shutter_words(time)),
-                    None => ev,
-                };
-                FrameRow {
-                    path: input.path.clone(),
-                    file_id: input.file_id,
-                    name: input.file_name.clone(),
-                    detail,
-                    value: overridden.map_or_else(|| "Auto".to_owned(), thirds_words),
-                    offset,
-                    overridden: overridden.is_some(),
-                    reference: reference == Some(at),
-                }
-            })
-            .collect()
+    let frames = if kind == MergeKind::Panorama {
+        panorama_frames(sheet, reference)
+    } else {
+        hdr_frames(sheet, reference)
+    };
+    let panorama = (kind == MergeKind::Panorama).then(|| {
+        let reference_words = reference
+            .and_then(|at| plan?.inputs.get(at))
+            .and_then(|input| frames.iter().find(|frame| frame.path == input.path))
+            .map(|row| match row.number {
+                Some(number) => format!("Reference: {number} \u{b7} {}", row.name),
+                None => format!("Reference: {}", row.name),
+            });
+        let resolved = (options.projection == PanoramaProjection::Auto)
+            .then(|| sheet.panorama())
+            .flatten()
+            .map(|diagnostics| {
+                format!(
+                    "Auto chose {} for a {} field.",
+                    projection_name(diagnostics.projection),
+                    field_words(diagnostics.field_of_view_deg)
+                )
+            });
+        PanoramaSettings {
+            projection: options.projection,
+            projections: PanoramaProjection::ALL.map(projection_name),
+            projection_at: PanoramaProjection::ALL
+                .iter()
+                .position(|projection| *projection == options.projection)
+                .unwrap_or(0),
+            resolved,
+            boundary_warp: options.boundary_warp,
+            outlines: sheet.outlines,
+            crop: sheet.crop,
+            reference: reference_words,
+            frames_legend: format!("Frames 1\u{2013}{count}"),
+        }
     });
 
     let (picture, status, status_refused, note) = picture(sheet);
@@ -430,9 +544,11 @@ pub(crate) fn model(sheet: &PreviewSheet, busy: Option<&str>) -> SheetModel {
         note,
         frames,
         reading: plan.is_none() && sheet.refusal.is_none(),
+        kind,
         alignment: options.alignment,
         deghost: options.deghost,
         overlay: sheet.overlay,
+        panorama,
         folder,
         folder_note,
         folder_choices,
@@ -440,6 +556,68 @@ pub(crate) fn model(sheet: &PreviewSheet, busy: Option<&str>) -> SheetModel {
         enabled: sheet.refusal.is_none() && reason.is_none(),
         reason,
     }
+}
+
+/// HDR's frames, in the stack's order: each with its EV and shutter and its exposure stepper.
+fn hdr_frames(sheet: &PreviewSheet, reference: Option<usize>) -> Vec<FrameRow> {
+    let options = &sheet.request.options;
+    sheet.plan.as_ref().map_or_else(Vec::new, |plan| {
+        plan.inputs
+            .iter()
+            .enumerate()
+            .map(|(at, input)| {
+                let overridden = options.override_of(&input.path);
+                let offset = overridden.or_else(|| sheet.resolved(at));
+                let ev = offset.map_or_else(
+                    || "EV from the pixels".to_owned(),
+                    |offset| {
+                        ev_words(offset).map_or_else(|| format!("{offset:+.2} EV"), str::to_owned)
+                    },
+                );
+                let detail = match input.frame.exposure.shutter_s.filter(|time| *time > 0.0) {
+                    Some(time) => format!("{ev} \u{b7} {}", shutter_words(time)),
+                    None => ev,
+                };
+                FrameRow {
+                    path: input.path.clone(),
+                    file_id: input.file_id,
+                    name: input.file_name.clone(),
+                    detail,
+                    value: overridden.map_or_else(|| "Auto".to_owned(), thirds_words),
+                    offset,
+                    overridden: overridden.is_some(),
+                    reference: reference == Some(at),
+                    number: None,
+                }
+            })
+            .collect()
+    })
+}
+
+/// A panorama's frames, in the stack's order once registered, each numbered; a click on one makes
+/// it the reference.
+fn panorama_frames(sheet: &PreviewSheet, reference: Option<usize>) -> Vec<FrameRow> {
+    let Some(plan) = sheet.plan.as_ref() else {
+        return Vec::new();
+    };
+    sheet
+        .panorama_order()
+        .into_iter()
+        .filter_map(|(at, number)| {
+            let input = plan.inputs.get(at)?;
+            Some(FrameRow {
+                path: input.path.clone(),
+                file_id: input.file_id,
+                name: input.file_name.clone(),
+                detail: String::new(),
+                value: String::new(),
+                offset: None,
+                overridden: false,
+                reference: reference == Some(at),
+                number,
+            })
+        })
+        .collect()
 }
 
 /// The picture area and the status line under it.
@@ -472,6 +650,7 @@ fn picture(sheet: &PreviewSheet) -> (Picture, String, bool, Option<&'static str>
             } else {
                 Vec::new()
             };
+            let stitch = stitch_overlay(sheet, overlays.as_ref());
             let status = match diagnostics {
                 Some(MergePreviewDiagnostics::Hdr(diagnostics)) => {
                     let alignment = match (diagnostics.alignment, diagnostics.max_residual_px) {
@@ -486,6 +665,13 @@ fn picture(sheet: &PreviewSheet) -> (Picture, String, bool, Option<&'static str>
                         crate::state::select::thousands(diagnostics.proxy_side)
                     )
                 }
+                Some(MergePreviewDiagnostics::Panorama(diagnostics)) => format!(
+                    "Preview from {}-pixel frames \u{b7} {}, {} \u{b7} {}",
+                    crate::state::select::thousands(diagnostics.proxy_side),
+                    projection_name(diagnostics.projection),
+                    field_words(diagnostics.field_of_view_deg),
+                    crop_words(diagnostics.crop_loss)
+                ),
                 None => "Preview".to_owned(),
             };
             (
@@ -494,6 +680,7 @@ fn picture(sheet: &PreviewSheet) -> (Picture, String, bool, Option<&'static str>
                     width: *width,
                     height: *height,
                     regions,
+                    stitch,
                     updating: sheet.job.is_some().then(job_words),
                 },
                 status,
@@ -511,6 +698,49 @@ fn picture(sheet: &PreviewSheet) -> (Picture, String, bool, Option<&'static str>
             None,
         ),
     }
+}
+
+/// "Crop loses 9% at the edges": the fraction of the covered region the crop drops.
+pub(crate) fn crop_words(loss: f64) -> String {
+    let percent = (loss * 100.0).clamp(0.0, 100.0);
+    if percent > 0.0 && percent < 0.5 {
+        "Crop loses under 1% at the edges".to_owned()
+    } else {
+        format!("Crop loses {}% at the edges", percent.round() as u32)
+    }
+}
+
+/// A panorama's overlays from a revision's data, as far as the sheet shows them.
+fn stitch_overlay(
+    sheet: &PreviewSheet,
+    overlays: Option<&MergePreviewOverlays>,
+) -> Option<StitchOverlay> {
+    let Some(MergePreviewOverlays::Panorama(overlays)) = overlays else {
+        return None;
+    };
+    let points = |outline: &Vec<[f64; 2]>| -> Vec<[f32; 2]> {
+        outline
+            .iter()
+            .map(|[x, y]| [*x as f32, *y as f32])
+            .collect()
+    };
+    Some(StitchOverlay {
+        covered: if sheet.crop {
+            overlays.covered.iter().map(points).collect()
+        } else {
+            Vec::new()
+        },
+        crop: sheet.crop.then(|| overlays.crop.map(|value| value as f32)),
+        frames: if sheet.outlines {
+            overlays
+                .frames
+                .iter()
+                .map(|frame| (frame.frame + 1, points(&frame.outline)))
+                .collect()
+        } else {
+            Vec::new()
+        },
+    })
 }
 
 /// The deghost overlay's regions from a revision's overlay data.
@@ -566,6 +796,19 @@ fn output_words(sheet: &PreviewSheet) -> Option<String> {
             (estimates.width?, estimates.height?, estimates.source_bytes)
         }
     };
+    if sheet.request.kind == MergeKind::Panorama {
+        // "38,400 × 8,900 · 342 MP · 4.1 GB", as the boards write a panorama's.
+        let thousands = crate::state::select::thousands;
+        let megapixels = (f64::from(width) * f64::from(height) / 1e6).round() as u64;
+        let mut parts = vec![
+            format!("{} \u{d7} {}", thousands(width), thousands(height)),
+            format!("{megapixels} MP"),
+        ];
+        if let Some(bytes) = bytes {
+            parts.push(size_words(bytes));
+        }
+        return Some(parts.join(" \u{b7} "));
+    }
     let mut parts = vec![format!("{width} \u{d7} {height}")];
     if let Some(MergePreviewDiagnostics::Hdr(diagnostics)) =
         preview.and_then(|preview| preview.diagnostics.as_ref())

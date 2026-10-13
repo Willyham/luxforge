@@ -6,8 +6,9 @@
 //! decision is the owner's: the plan says whether the frames merge and why not, the preview job
 //! draws the merge and finds its refusals, the merge job says how far it has got and how it ended,
 //! and a view's rows say which result leads which originals. Every word that names a kind comes
-//! from the request's, the plan's, the claim's or the row's `kind` ([`words`]); a bracket's header
-//! and the selection menu's merge group are HDR's, the only kind with a provider.
+//! from the request's, the plan's, the claim's or the row's `kind` ([`words`]). A bracket's header
+//! is HDR's alone; the selection menu offers each kind whose input bounds hold the selection's
+//! count (HDR 2–9, panorama 2–32), each planned as the menu opens.
 pub(crate) mod sheet;
 #[cfg(test)]
 mod tests;
@@ -15,11 +16,12 @@ mod tests;
 use luxforge_core::{
     AssetId, MutationRequest,
     catalog_types::{
-        CatalogFolderId, FolderChoice, MergeAnswer, MergeId, MergeKind, MergePlan, MergePreviewId,
-        RowStack, StackExpansion, StackRole, Targets, ViewSource,
+        CatalogFolderId, FolderChoice, MAX_BOUNDARY_WARP, MergeAnswer, MergeId, MergeInspection,
+        MergeKind, MergePlan, MergePreviewId, PanoramaProjection, RowStack, StackExpansion,
+        StackRole, Targets, ViewSource,
     },
     merge::hdr::{AlignmentMode, DeghostMode},
-    preferences::HdrMergePreference,
+    preferences::{HdrMergePreference, PanoramaMergePreference},
 };
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::LazyLock};
@@ -49,6 +51,16 @@ pub(crate) struct KindWords {
     pub(crate) action: &'static str,
     /// The merge action's hint in the selection's menu.
     pub(crate) hint: &'static str,
+    /// The kind's icon: on a result's badge, its originals' notes and the pending row.
+    pub(crate) icon: KindIcon,
+}
+
+/// A merge kind's icon, which the view draws: a bracket for HDR, a wide frame with curved top and
+/// bottom for a panorama.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KindIcon {
+    Bracket,
+    Panorama,
 }
 
 const HDR_WORDS: KindWords = KindWords {
@@ -61,6 +73,7 @@ const HDR_WORDS: KindWords = KindWords {
     original: "Original",
     action: "Merge HDR",
     hint: "Merge the frames into one HDR photograph in the catalog",
+    icon: KindIcon::Bracket,
 };
 
 const PANORAMA_WORDS: KindWords = KindWords {
@@ -72,7 +85,8 @@ const PANORAMA_WORDS: KindWords = KindWords {
     frames: "photos",
     original: "Frame",
     action: "Merge panorama",
-    hint: "Merge the photos into one panorama in the catalog",
+    hint: "Merge the frames into one panorama in the catalog",
+    icon: KindIcon::Panorama,
 };
 
 /// The words Select names `kind` with.
@@ -143,7 +157,9 @@ pub(crate) enum FolderPick {
 }
 
 /// What a merge is asked with beside its frames; every field left alone is the core's default,
-/// sent as nothing.
+/// sent as nothing. HDR's fields are alignment, deghosting and the exposure overrides; a
+/// panorama's the projection and Boundary Warp; both kinds name a reference and a folder. A
+/// request sends only its own kind's.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct MergeOptions {
     pub(crate) alignment: Toggle,
@@ -152,22 +168,41 @@ pub(crate) struct MergeOptions {
     pub(crate) reference: Option<PathBuf>,
     /// Each frame's EV offset the person set, by path.
     pub(crate) overrides: Vec<(PathBuf, f64)>,
+    /// A panorama's projection: Auto, which registration resolves, or the person's choice.
+    pub(crate) projection: PanoramaProjection,
+    /// A panorama's Boundary Warp, 0 to 100.
+    pub(crate) boundary_warp: u8,
     pub(crate) folder: FolderPick,
 }
 
 impl MergeOptions {
-    /// The options of the person's last HDR merge, remembered: its alignment and deghosting, or
-    /// the defaults when none is remembered. The folder comes from each merge's plan.
-    pub(crate) fn last(remembered: Option<HdrMergePreference>) -> Self {
-        let remembered = remembered.unwrap_or_default();
+    /// The options of the person's last merge of each kind, remembered: HDR's alignment and
+    /// deghosting, a panorama's projection and Boundary Warp, or the defaults when none is
+    /// remembered. The folder and the reference come from each merge's plan and frames.
+    pub(crate) fn last(
+        hdr: Option<HdrMergePreference>,
+        panorama: Option<PanoramaMergePreference>,
+    ) -> Self {
+        let hdr = hdr.unwrap_or_default();
+        let panorama = panorama.unwrap_or_default();
         Self {
-            alignment: Toggle::alignment(remembered.alignment),
-            deghost: Toggle::deghost(remembered.deghost),
+            alignment: Toggle::alignment(hdr.alignment),
+            deghost: Toggle::deghost(hdr.deghost),
+            projection: panorama.projection,
+            boundary_warp: panorama.boundary_warp.min(MAX_BOUNDARY_WARP),
             ..Self::default()
         }
     }
 
-    /// What the desktop remembers of these options once a merge of them starts.
+    /// What the desktop remembers of a panorama merge of these options once it starts.
+    pub(crate) fn remembered_panorama(&self) -> PanoramaMergePreference {
+        PanoramaMergePreference {
+            projection: self.projection,
+            boundary_warp: self.boundary_warp,
+        }
+    }
+
+    /// What the desktop remembers of an HDR merge of these options once it starts.
     pub(crate) fn remembered(&self) -> HdrMergePreference {
         HdrMergePreference {
             alignment: match self.alignment {
@@ -197,12 +232,24 @@ impl MergeOptions {
         }
     }
 
-    /// The kind's options object (`hdr`) as an agent writes it: every choice the person made,
-    /// and nothing for a default. The same object goes to `merge.preview`, every
+    /// The options object of `kind` (`hdr`, `panorama`) as an agent writes it: every choice the
+    /// person made, and nothing for a default. The same object goes to `merge.preview`, every
     /// `merge.preview-update` (whole, as the preview's options from then on) and `merge.create`,
     /// so a merge from a preview names exactly the options its newest revision drew.
-    pub(crate) fn wire(&self) -> serde_json::Map<String, Value> {
+    pub(crate) fn wire(&self, kind: MergeKind) -> serde_json::Map<String, Value> {
         let mut chosen = serde_json::Map::new();
+        if kind == MergeKind::Panorama {
+            if let Some(reference) = &self.reference {
+                chosen.insert("reference".into(), json!(reference));
+            }
+            if self.projection != PanoramaProjection::Auto {
+                chosen.insert("projection".into(), json!(self.projection.as_str()));
+            }
+            if self.boundary_warp != 0 {
+                chosen.insert("boundary_warp".into(), json!(self.boundary_warp));
+            }
+            return chosen;
+        }
         if self.alignment != Toggle::Auto {
             chosen.insert("alignment".into(), json!(self.alignment.wire()));
         }
@@ -250,9 +297,10 @@ pub(crate) fn plan_params(kind: MergeKind, targets: &Targets, options: &MergeOpt
     params
 }
 
-/// The options the person changed, under the kind's own field (`hdr`): none is sent as nothing.
+/// The options the person changed, under the kind's own field (`hdr`, `panorama`): none is sent
+/// as nothing.
 fn add_options(params: &mut Value, kind: MergeKind, options: &MergeOptions) {
-    let chosen = options.wire();
+    let chosen = options.wire(kind);
     if !chosen.is_empty() {
         params[kind.as_str()] = Value::Object(chosen);
     }
@@ -329,13 +377,18 @@ pub(crate) fn preview_update_params(
     options: &MergeOptions,
 ) -> Value {
     let mut params = json!({"preview_id": preview_id});
-    params[kind.as_str()] = Value::Object(options.wire());
+    params[kind.as_str()] = Value::Object(options.wire(kind));
     params
 }
 
 /// `merge.preview-close`'s parameters.
 pub(crate) fn preview_close_params(preview_id: &MergePreviewId) -> Value {
     json!({"preview_id": preview_id})
+}
+
+/// `merge.inspect`'s parameters for one merge.
+pub(crate) fn inspect_params(merge: &MergeId) -> Value {
+    json!({"merge_id": merge})
 }
 
 /// `merge.remove`'s or `merge.restore`'s parameters for one merge.
@@ -509,15 +562,27 @@ pub(crate) struct MergeMenu {
     pub(crate) kind: MergeMenuKind,
 }
 
+/// One kind the selection menu offers for the frames selected, and once its plan answers, why
+/// they cannot merge as it, in the core's words.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct KindOffer {
+    pub(crate) kind: MergeKind,
+    pub(crate) refusal: Option<String>,
+}
+
+/// The kinds a selection of `count` frames is offered: each whose input bounds hold the count,
+/// HDR first.
+pub(crate) fn offered(count: u32) -> Vec<MergeKind> {
+    MergeKind::ALL
+        .into_iter()
+        .filter(|kind| kind.inputs().contains(&(count as usize)))
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MergeMenuKind {
-    /// `count` frames selected for a merge of `kind`, and once their plan answers, why they
-    /// cannot merge, in the core's words.
-    Frames {
-        kind: MergeKind,
-        count: u32,
-        refusal: Option<String>,
-    },
+    /// `count` frames selected, and the kinds offered for them, each planned.
+    Frames { count: u32, kinds: Vec<KindOffer> },
     /// A result leading its stack of `size` originals, as its row says.
     Stack {
         merge_id: MergeId,
@@ -541,6 +606,58 @@ pub(crate) struct SelectMerge {
     /// ⌥ is held: the menu's items drop their ellipsis, and a press on a merge action merges at
     /// once with the last settings rather than opening the preview.
     pub(crate) option: bool,
+    /// `merge.inspect` of the panorama result the Info panel shows: its merge, and once answered
+    /// its resolved projection and field of view, or why they could not be read.
+    pub(crate) inspected: Option<(MergeId, Option<Result<PanoramaFacts, String>>)>,
+}
+
+/// What `merge.inspect` says of a panorama the Info band shows beside its words: its resolved
+/// projection and field of view, and the result's size.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PanoramaFacts {
+    pub(crate) projection: Option<PanoramaProjection>,
+    pub(crate) field_of_view_deg: Option<[f64; 2]>,
+}
+
+impl PanoramaFacts {
+    pub(crate) fn of(inspection: &MergeInspection) -> Self {
+        Self {
+            projection: inspection.projection,
+            field_of_view_deg: inspection.field_of_view_deg,
+        }
+    }
+
+    /// "Cylindrical · 164° × 41°".
+    pub(crate) fn words(&self) -> Option<String> {
+        let parts: Vec<String> = [
+            self.projection
+                .map(|projection| projection_name(projection).to_owned()),
+            self.field_of_view_deg.map(field_words),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
+    }
+}
+
+/// A projection as the sheet and the Info band name it.
+pub(crate) const fn projection_name(projection: PanoramaProjection) -> &'static str {
+    match projection {
+        PanoramaProjection::Auto => "Auto",
+        PanoramaProjection::Perspective => "Perspective",
+        PanoramaProjection::Cylindrical => "Cylindrical",
+        PanoramaProjection::Spherical => "Spherical",
+    }
+}
+
+/// A field of view, horizontal by vertical, to the degree: "164° × 41°".
+pub(crate) fn field_words([horizontal, vertical]: [f64; 2]) -> String {
+    format!(
+        "{}\u{b0} \u{d7} {}\u{b0}",
+        horizontal.round() as i64,
+        vertical.round() as i64
+    )
 }
 
 impl SelectMerge {
@@ -571,8 +688,8 @@ pub(crate) const BUSY: &str = "A merge is running: wait for it or cancel it";
 /// A merge gesture of the menu, the header, the sheet, the pending row or the Info panel.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MergeAction {
-    /// The selection's Merge HDR of a kind: the preview, or with ⌥ held a merge at once with the
-    /// last settings.
+    /// The selection's Merge HDR or Merge panorama: the kind's preview, or with ⌥ held a merge at
+    /// once with the kind's last settings.
     Start(MergeKind),
     /// The sheet's Merge, with its options.
     SheetMerge,
@@ -588,6 +705,17 @@ pub(crate) enum MergeAction {
     },
     /// Show deghost overlay.
     Overlay(bool),
+    /// A panorama's projection.
+    Projection(PanoramaProjection),
+    /// A panorama's Boundary Warp, as the slider moves: drawn at once, sent once it rests.
+    BoundaryWarp(u8),
+    /// The Boundary Warp slider let go: its amount sent.
+    BoundaryWarpReleased,
+    /// Boundary Warp put back to 0, and sent.
+    BoundaryWarpReset,
+    /// A panorama's overlay switches: Frame outlines, Crop and coverage.
+    FrameOutlines(bool),
+    CropCoverage(bool),
     FolderMenu(bool),
     Folder(FolderPick),
     /// The pending row's Cancel, or Dismiss once it failed.
@@ -611,13 +739,29 @@ pub(crate) struct MenuEntryModel {
     pub(crate) reason: Option<String>,
 }
 
+/// One group of the merge menu: a kind's name over its entries ("HDR", "Panorama") for a
+/// selection's merges, none for a result's stack actions.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MenuGroup {
+    pub(crate) heading: Option<&'static str>,
+    pub(crate) entries: Vec<MenuEntryModel>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MenuModel {
     pub(crate) x: f32,
     pub(crate) y: f32,
-    /// The group's name over its entries ("HDR"), for a selection's merges.
-    pub(crate) heading: Option<&'static str>,
-    pub(crate) entries: Vec<MenuEntryModel>,
+    pub(crate) groups: Vec<MenuGroup>,
+}
+
+impl MenuModel {
+    /// The group headed `heading`.
+    #[cfg(test)]
+    pub(crate) fn group(&self, heading: &str) -> Option<&MenuGroup> {
+        self.groups
+            .iter()
+            .find(|group| group.heading == Some(heading))
+    }
 }
 
 /// The notice offering Put back merge for a merge found in Removed.
@@ -650,23 +794,28 @@ pub(crate) fn derive(merge: &SelectMerge) -> MergeModel {
     // A merge already starting or running: one at a time from this desktop.
     let busy = merge.busy();
     let menu = merge.menu.as_ref().map(|menu| {
-        let mut heading = None;
-        let entries = match &menu.kind {
-            MergeMenuKind::Frames { kind, refusal, .. } => {
-                heading = Some(words(*kind).title);
-                let reason = if busy {
-                    Some(BUSY.to_owned())
-                } else {
-                    refusal.clone()
-                };
-                let mut item = entry(
-                    merge_item(*kind, merge.option),
-                    reason.is_none().then_some(MergeAction::Start(*kind)),
-                );
-                item.hint = Some(words(*kind).hint);
-                item.reason = reason;
-                vec![item]
-            }
+        let groups = match &menu.kind {
+            MergeMenuKind::Frames { kinds, .. } => kinds
+                .iter()
+                .map(|offer| {
+                    let kind = offer.kind;
+                    let reason = if busy {
+                        Some(BUSY.to_owned())
+                    } else {
+                        offer.refusal.clone()
+                    };
+                    let mut item = entry(
+                        merge_item(kind, merge.option),
+                        reason.is_none().then_some(MergeAction::Start(kind)),
+                    );
+                    item.hint = Some(words(kind).hint);
+                    item.reason = reason;
+                    MenuGroup {
+                        heading: Some(words(kind).title),
+                        entries: vec![item],
+                    }
+                })
+                .collect(),
             MergeMenuKind::Stack {
                 merge_id,
                 size,
@@ -702,14 +851,16 @@ pub(crate) fn derive(merge: &SelectMerge) -> MergeModel {
                     "Remove merge",
                     Some(MergeAction::Remove(merge_id.clone())),
                 ));
-                entries
+                vec![MenuGroup {
+                    heading: None,
+                    entries,
+                }]
             }
         };
         MenuModel {
             x: menu.x,
             y: menu.y,
-            heading,
-            entries,
+            groups,
         }
     });
     let sheet = merge
@@ -789,15 +940,42 @@ pub(crate) fn stack_note<'r>(stack: &RowStack, reason: Option<&'r str>) -> Optio
     }
 }
 
-/// What a grid cell draws for its row's stack: a leader's badge, an original's note and its EV
-/// offset.
+/// "Frame k of N" for every place k of a stack of N up to the most frames a panorama takes,
+/// made once: `FRAME_WORDS[N][k - 1]`.
+static FRAME_WORDS: LazyLock<Vec<Vec<String>>> = LazyLock::new(|| {
+    (0..=*MergeKind::Panorama.inputs().end())
+        .map(|size| {
+            (1..=size)
+                .map(|place| format!("{} {place} of {size}", words(MergeKind::Panorama).original))
+                .collect()
+        })
+        .collect()
+});
+
+/// An original's footer: its EV offset in an HDR stack ("−2 EV"), its place in a panorama's
+/// ("Frame 2 of 7").
+fn footer_words(stack: &RowStack) -> Option<&'static str> {
+    match stack.kind {
+        MergeKind::Hdr => stack.offset_ev.and_then(ev_words),
+        MergeKind::Panorama => FRAME_WORDS
+            .get(stack.size as usize)?
+            .get(stack.ordinal? as usize)
+            .map(String::as_str),
+    }
+}
+
+/// What a grid cell draws for its row's stack: a leader's badge, an original's note and footer,
+/// and the kind's icon on both.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct StackCell<'r> {
     /// A leader's badge words, long and short, and whether its originals are shown.
     pub(crate) badge: Option<(&'static str, &'static str, bool)>,
     pub(crate) note: Option<&'r str>,
-    /// An original's EV offset from the reference, in words.
+    /// An original's footer: its EV offset from the reference in an HDR stack, its place in a
+    /// panorama's ("Frame 2 of 7").
     pub(crate) exposure: Option<&'static str>,
+    /// The stack's kind's icon, for the badge and the note.
+    pub(crate) icon: Option<KindIcon>,
 }
 
 /// The cell words of a row with `stack`, whose reason is `reason`.
@@ -812,9 +990,9 @@ pub(crate) fn stack_cell<'r>(stack: Option<&RowStack>, reason: Option<&'r str>) 
         }),
         note: stack_note(stack, reason),
         exposure: (stack.role == StackRole::Original)
-            .then_some(stack.offset_ev)
-            .flatten()
-            .and_then(ev_words),
+            .then(|| footer_words(stack))
+            .flatten(),
+        icon: Some(words(stack.kind).icon),
     }
 }
 
@@ -822,8 +1000,12 @@ pub(crate) fn stack_cell<'r>(stack: Option<&RowStack>, reason: Option<&'r str>) 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StackBand {
     pub(crate) merge_id: MergeId,
+    pub(crate) kind: MergeKind,
     /// "HDR · 3 exposures", or for an original "Original 2 of 3 · −2 EV".
     pub(crate) title: String,
+    /// Under a panorama result's title: its resolved projection and field of view
+    /// ("Cylindrical · 164° × 41°"), as `merge.inspect` answers them.
+    pub(crate) detail: Option<String>,
     pub(crate) note: Option<String>,
     pub(crate) leader: bool,
     /// Whether the stack's originals are shown: always, for an original.
@@ -865,7 +1047,9 @@ pub(crate) fn stack_band(stack: &RowStack, reason: Option<&str>) -> StackBand {
     let expanded = !leader || expanded(stack);
     StackBand {
         merge_id: stack.merge_id.clone(),
+        kind: stack.kind,
         title,
+        detail: None,
         note,
         leader,
         expanded,
@@ -882,4 +1066,27 @@ fn expanded(stack: &RowStack) -> bool {
     stack
         .expansion
         .is_some_and(|expansion| expansion != StackExpansion::Collapsed)
+}
+
+/// The panorama result the Info panel shows alone, whose projection and field of view its band
+/// reads with `merge.inspect`: the leader of a panorama stack.
+pub(crate) fn panorama_leader(stack: Option<&RowStack>) -> Option<&MergeId> {
+    stack
+        .filter(|stack| stack.kind == MergeKind::Panorama && stack.role == StackRole::Leader)
+        .map(|stack| &stack.merge_id)
+}
+
+/// The band's detail for `band` from what `merge.inspect` answered for its merge.
+pub(crate) fn band_detail(
+    band: &StackBand,
+    inspected: Option<&(MergeId, Option<Result<PanoramaFacts, String>>)>,
+) -> Option<String> {
+    if band.kind != MergeKind::Panorama || !band.leader {
+        return None;
+    }
+    match inspected {
+        Some((merge_id, Some(Ok(facts)))) if *merge_id == band.merge_id => facts.words(),
+        Some((merge_id, Some(Err(error)))) if *merge_id == band.merge_id => Some(error.clone()),
+        _ => Some("Reading the merge\u{2026}".to_owned()),
+    }
 }

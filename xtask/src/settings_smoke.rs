@@ -862,10 +862,10 @@ fn usage_statistics(launch: &Checked, checks: &mut Checks) -> Result {
             && drawn["notice"]
                 == json!({
                     "title": "Help improve Luxforge?",
-                    "body": "Luxforge can send usage events to api.luxforge.app for debugging \
+                    "body": format!("Luxforge can send usage events to {USAGE_RECEIVER} for debugging \
                              and analytics. They never include your name, contact details, IP \
-                             address, photos, filenames or photo metadata. You can change this \
-                             in Settings \u{203a} Privacy.",
+                             address, photos, filenames or photo metadata. These reports are test data. \
+                             You can change this in Settings \u{203a} Privacy."),
                     "buttons": ["Share statistics", "No thanks"],
                 })
             && drawn["stored"]["prompt_shown"] == true

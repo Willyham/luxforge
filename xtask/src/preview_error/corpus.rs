@@ -7,10 +7,12 @@
 //! A generated JPEG names its file under `fixtures/generated/` and the SHA-256 `cargo xtask
 //! generate-fixtures` writes it with. A RAW source names its id in the private RAW manifest
 //! (`--manifest FILE`, read through the one reader, [`raw::manifest`]) and repeats that entry's
-//! SHA-256, so a manifest that has moved on is noticed. A synthetic derived source — an HDR
-//! merge's result, stored as a derived photograph by the harness (`docs/design/hdr-merge.md`) —
-//! has no file: it names its generator, [`luxforge_testkit::derived::planes`], and records the
-//! SHA-256 of the planes it makes at its dimensions, which every host can check. A source with no hash carries a `gap` that says why, never a made-up hash. A recipe is
+//! SHA-256, so a manifest that has moved on is noticed. A synthetic derived source — an HDR or
+//! panorama merge's result, stored as a derived photograph by the harness
+//! (`docs/design/hdr-merge.md`, `docs/design/panorama-merge.md`), paged when it is past the camera
+//! limits — has no file: it names its generator, [`luxforge_testkit::derived::planes`], and records
+//! the SHA-256 of the planes it makes at its dimensions, which every host can check, streamed a row
+//! at a time. A source with no hash carries a `gap` that says why, never a made-up hash. A recipe is
 //! a list of evidence-script steps over the sources it names, in a class that says which limits it
 //! is held to.
 //!
@@ -49,7 +51,7 @@ const DEVELOPER_DESCRIPTORS: &str = "fixtures/modules/developer-descriptors.json
 pub const VIEWS: [&str; 4] = ["fit", "33%", "50%", "100%"];
 
 /// The sources the design names; the corpus must hold each.
-const REQUIRED_SOURCES: [&str; 8] = [
+const REQUIRED_SOURCES: [&str; 9] = [
     "jpeg-24mp",
     "jpeg-60mp",
     "zone-plate",
@@ -58,6 +60,7 @@ const REQUIRED_SOURCES: [&str; 8] = [
     "raw-x100vi",
     "raw-air2s",
     "derived-merge",
+    "derived-paged",
 ];
 
 /// What a synthetic derived source's `generator` names: the one generator of its planes.
@@ -66,7 +69,7 @@ const DERIVED_GENERATOR: &str = "luxforge_testkit::derived::planes";
 /// Every recipe family and the class its limits come from: pointwise for the colour units, masks,
 /// the vignette and geometry under a colour edit, spatial for Presence, Detail, Clone, Heal and the
 /// frozen patch.
-const FAMILIES: [(&str, Class); 18] = [
+const FAMILIES: [(&str, Class); 19] = [
     ("basic", Class::Pointwise),
     ("tone-curve", Class::Pointwise),
     ("mixer", Class::Pointwise),
@@ -78,6 +81,7 @@ const FAMILIES: [(&str, Class); 18] = [
     ("mask-luminance-range", Class::Pointwise),
     ("mask-colour-range", Class::Pointwise),
     ("mask-composed", Class::Pointwise),
+    ("mask-model", Class::Pointwise),
     ("crop", Class::Pointwise),
     ("lens-perspective", Class::Pointwise),
     ("presence", Class::Spatial),
@@ -90,7 +94,7 @@ const FAMILIES: [(&str, Class); 18] = [
 /// The families the design lists, which the corpus must hold at least one recipe of. The component
 /// algebra's `mask-composed` and the four colour recipes together, `colour-stack`, are recipes the
 /// corpus adds beyond them.
-const REQUIRED_FAMILIES: [&str; 16] = [
+const REQUIRED_FAMILIES: [&str; 17] = [
     "basic",
     "tone-curve",
     "mixer",
@@ -100,6 +104,7 @@ const REQUIRED_FAMILIES: [&str; 16] = [
     "mask-brush",
     "mask-luminance-range",
     "mask-colour-range",
+    "mask-model",
     "crop",
     "lens-perspective",
     "presence",
@@ -462,8 +467,9 @@ impl Corpus {
                         }
                         Kind::SyntheticDerived => {
                             let [width, height] = source.dimensions;
-                            Ok(Found::Planes(luxforge_testkit::derived::sha256(
-                                &luxforge_testkit::derived::planes(width, height),
+                            // Streamed a row at a time: a paged source's planes are never held whole.
+                            Ok(Found::Planes(luxforge_testkit::derived::sha256_streamed(
+                                width, height,
                             )))
                         }
                         Kind::Raw => match &manifest {
@@ -993,12 +999,8 @@ mod tests {
             );
         }
         // Only the developer recipes say so.
-        assert!(
-            corpus
-                .recipes
-                .iter()
-                .all(|recipe| recipe.developer == (recipe.family == "repair-patch"))
-        );
+        assert!(corpus.recipes.iter().all(|recipe| recipe.developer
+            == matches!(recipe.family.as_str(), "repair-patch" | "mask-model")));
         let id = patches[0].id.clone();
         assert!(
             refused(|c| {
@@ -1200,9 +1202,9 @@ mod tests {
         let report = corpus.resolve(&root.join(GENERATED), None).unwrap();
         assert_eq!(
             report["counts"],
-            json!({"verified": 1, "gap": 0, "unresolved": 8}),
+            json!({"verified": 2, "gap": 0, "unresolved": 8}),
             "five generated files and three RAWs are not checked here; the synthetic derived \
-             source is made and checked on every host"
+             sources are made and checked on every host"
         );
         let error = run(root, Args(vec![])).unwrap_err();
         assert!(

@@ -170,7 +170,7 @@ impl Unsupported {
         // The process starts on the sheet: its log begins as the editor's does, and the editor
         // logs its own startup when Start a new catalog hands it the window.
         sheet.event("startup", || {
-            json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"test_cameras":luxforge_core::test_cameras_admitted(),"mode":"unsupported-catalog"})
+            json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":luxforge_core::APPLICATION_VERSION,"debug_assertions":cfg!(debug_assertions),"test_cameras":luxforge_core::test_cameras_admitted(),"mode":"unsupported-catalog"})
         });
         sheet.event("unsupported_catalog", || {
             json!({
@@ -202,7 +202,7 @@ impl Unsupported {
         if self.log.diagnostics.is_none() && !self.log.verbose {
             return;
         }
-        let value = json!({"event":name,"run_id":self.log.run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"request_id":0,"generation":0,"detail":detail()});
+        let value = json!({"event":name,"run_id":self.log.run_id,"build_version":luxforge_core::APPLICATION_VERSION,"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"request_id":0,"generation":0,"detail":detail()});
         if let Some(log) = &self.log.diagnostics {
             log.event(value);
         } else {

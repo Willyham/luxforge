@@ -83,6 +83,7 @@ pub(super) fn gpu_source(version: u64, source: &PreviewSource) -> GpuSource {
                 orientation,
             )
         }
+        PreviewSource::Paged(paged) => GpuSource::paged(version, paged.dimensions()),
     }
     .expect("a GPU source")
 }
@@ -430,7 +431,7 @@ fn case(
     let context = RenderContext::new();
     let exact = render(
         registry,
-        &source,
+        source.whole().expect("a test's source is never paged"),
         recipe,
         RenderOptions::exact(&Cancel::never()),
         &context,
@@ -970,7 +971,7 @@ fn a_far_source_repair_wider_than_a_texture_meets_the_spatial_limits_in_tiles() 
             let stack = recipe(layers, Vec::new());
             let reference = render(
                 &registry,
-                &source,
+                source.whole().expect("a test's source is never paged"),
                 &stack,
                 RenderOptions::exact(&Cancel::never()),
                 &RenderContext::new(),

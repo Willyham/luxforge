@@ -646,11 +646,13 @@ fn stage_key(recipe: &Recipe, layer: usize, request: GpuPlanRequest) -> Result<S
 /// The request a plan's lights are planned for: `request` from the source over the whole content
 /// stage at full scale, drafted, qualifying and on the path as it is.
 pub(super) fn light_request(request: GpuPlanRequest) -> GpuPlanRequest {
+    // Over the source as the GPU holds it: the full content stage, or a paged source's resident
+    // level, a reduced stage of it.
     GpuPlanRequest {
         boundary: 0,
-        stage: request.full,
+        stage: request.held.unwrap_or(request.full),
         full: request.full,
-        proxy: false,
+        proxy: request.held.is_some(),
         source: true,
         ..request
     }

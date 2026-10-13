@@ -105,7 +105,7 @@ impl Editor {
             && self.gpu.at_rest_drawable()
             && self
                 .gpu
-                .rest_versions(&job.evaluation.source().identity())
+                .rest_versions(&super::gpu_preview::held_identity(job.evaluation.source()))
                 .is_some()
             && (self.gpu_draws_over(job) || self.gpu_opens_warm(job))
             && self.gpu.refused_content != Some(content)
@@ -181,7 +181,10 @@ impl Editor {
             }
             self.gpu.counts = None;
             self.gpu.want_rest_counts(false);
-        } else if let Some(versions) = self.gpu.rest_versions(&job.evaluation.source().identity()) {
+        } else if let Some(versions) = self
+            .gpu
+            .rest_versions(&super::gpu_preview::held_identity(job.evaluation.source()))
+        {
             self.gpu.counts = Some(CountsTarget {
                 identity: job.identity.clone(),
                 generation,

@@ -102,7 +102,7 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
 }
 
 /// Whether this launch may collect usage statistics once someone opts in: explicit test
-/// eligibility with an evidence run's loopback receiver, or production's, which the core decides
+/// eligibility with an evidence run's receiver, or build routing, which the core decides
 /// from the launch mode, the build and its activation switch. Eligibility is never consent.
 pub(super) fn usage_eligibility(config: &Config) -> luxforge_core::usage::Eligibility {
     use luxforge_core::usage::{Eligibility, LaunchMode};
@@ -421,7 +421,7 @@ impl Editor {
             let detail = super::relaunch::run(after);
             if let Some(log) = log {
                 if let Some((run_id, started, request)) = line {
-                    log.event(json!({"event":"after_close","run_id":run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"request_id":request,"generation":request,"detail":detail}));
+                    log.event(json!({"event":"after_close","run_id":run_id,"build_version":luxforge_core::APPLICATION_VERSION,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"request_id":request,"generation":request,"detail":detail}));
                 }
                 log.finish();
             }

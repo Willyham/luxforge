@@ -191,8 +191,9 @@ impl CpuProxy {
         // approximate both come from it, so what is reported and what is drawn cannot disagree.
         // Whether a mask draws a feature the proxy's pixel grid can resolve is a fact about that
         // grid, so it is read at exactly the dimensions this frame is rendered against.
-        let rendered = exact
-            .render_proxy(source.input(), stage, cancel, evaluation.context())
+        let rendered = source
+            .whole()
+            .and_then(|input| exact.render_proxy(input, stage, cancel, evaluation.context()))
             .and_then(|proxy| Ok((proxy.frame(snapshot_id)?, proxy.approximation())));
         match rendered {
             Err(error) => ProxyPhase::Declined(error.detail),

@@ -28,22 +28,24 @@ use super::{
         Call, ClientId, Owner,
         library::{JobContext, LibraryLane, Task},
     },
-    Named, alignment, hdr_options, inputs, parameters, planned_frames, signed,
+    Named, header_check, inputs, options, planned_frames, requested, signed,
 };
 use crate::{
     Error, JobId, PREVIEWS_DIR,
     api::methods::value,
     artifacts::{RootState, root_state},
     catalog_types::{
-        HdrOptions, HdrParameters, MergeKind, MergeOptions, MergePreview, MergePreviewDiagnostics,
-        MergePreviewId, MergePreviewOverlays,
+        MergeKind, MergeOptions, MergeParameters, MergePreview, MergePreviewId,
         api::{MergePreviewClose, MergePreviewParams, MergePreviewUpdate},
         jobs::MERGE_PREVIEW,
     },
     jobs::JobKind,
     merge::{
-        hdr::resolve_exposures,
-        job::{self, Analysis, JobInput, JobSpec, Prepared},
+        job::{self, Analysis, JobInput, Prepared},
+        panorama::{
+            job::{PanoramaAnalysis, PanoramaPrepared, spool_bytes},
+            preview::PanoramaUpdate,
+        },
         preview::{self, Drawn, Pictures},
     },
 };
@@ -69,12 +71,18 @@ const PREVIEWS: &str = "merge-previews";
 /// The folder in the preview cache holding the previews' pictures.
 const PICTURES: &str = "merges";
 
-/// A preview's bracket once read, and its latest alignment: what the jobs continuing it read when
-/// they run.
+/// A preview's frames once read, and its latest alignment or registration: what the jobs
+/// continuing it read when they run, of its kind.
 #[derive(Clone)]
-pub(super) struct Retained {
-    pub prepared: Arc<Prepared>,
-    pub analysis: Option<Arc<Analysis>>,
+pub(super) enum Retained {
+    Hdr {
+        prepared: Arc<Prepared>,
+        analysis: Option<Arc<Analysis>>,
+    },
+    Panorama {
+        prepared: Arc<PanoramaPrepared>,
+        analysis: Option<Arc<PanoramaAnalysis>>,
+    },
 }
 
 /// Where a session's bracket is kept for the jobs that continue it.
@@ -95,7 +103,7 @@ struct Session {
     inputs: Vec<JobInput>,
     /// The latest revision asked for, its options as resolved and its parameters.
     revision: u32,
-    parameters: HdrParameters,
+    parameters: MergeParameters,
     answered: Option<Answered>,
     slot: Slot,
     /// Reading refused the bracket: there are no frames to draw or merge.
@@ -207,32 +215,19 @@ fn not_open(preview_id: &MergePreviewId) -> Error {
     .with_data(json!({"preview_id": preview_id}))
 }
 
-/// `options` as a revision answers them: alignment and deghosting named, no empty overrides.
-fn resolved(options: &HdrOptions) -> HdrOptions {
-    HdrOptions {
-        reference: options.reference.clone(),
-        exposure_overrides: options
-            .exposure_overrides
-            .clone()
-            .filter(|overrides| !overrides.is_empty()),
-        alignment: Some(options.alignment.unwrap_or_default()),
-        deghost: Some(options.deghost.unwrap_or_default()),
-    }
-}
-
 /// A revision's answer.
 fn answer(
     preview_id: &MergePreviewId,
     revision: u32,
     kind: MergeKind,
-    options: HdrOptions,
+    options: MergeOptions,
     drawn: Drawn,
 ) -> MergePreview {
     let mut answer = MergePreview {
         preview_id: preview_id.clone(),
         revision,
         kind,
-        options: MergeOptions::Hdr(options),
+        options,
         path: None,
         width: 0,
         height: 0,
@@ -246,8 +241,8 @@ fn answer(
             answer.path = Some(picture.path);
             answer.width = picture.width;
             answer.height = picture.height;
-            answer.diagnostics = Some(MergePreviewDiagnostics::Hdr(picture.diagnostics));
-            answer.overlays = Some(MergePreviewOverlays::Hdr(picture.overlays));
+            answer.diagnostics = Some(picture.diagnostics);
+            answer.overlays = Some(picture.overlays);
             answer.output = Some(picture.output);
         }
         Drawn::Refused(refusal) => answer.refusal = Some(refusal),
@@ -412,13 +407,12 @@ pub(in crate::api) fn merge_preview(
     params: MergePreviewParams,
 ) -> Result<Value, Error> {
     let kind = params.kind;
-    let options = hdr_options(kind, params.hdr)?;
+    let options = options(kind, params.hdr, params.panorama)?;
     let provider = owner.catalog.merge.available_provider(kind)?;
     let named = inputs(owner, call.client, kind, &params.targets)?;
-    let parameters = parameters(&named, &options, alignment(&options))?;
-    let tagged = crate::catalog_types::MergeParameters::Hdr(parameters.clone());
+    let parameters = requested(&named, &options)?;
     if let Some(plan_id) = &params.plan_id
-        && *plan_id != super::plan_identity(&named, &tagged)?
+        && *plan_id != super::plan_identity(&named, &parameters)?
     {
         return Err(Error::conflict(
             "the inputs or options are no longer what merge.plan planned; plan them again",
@@ -426,7 +420,7 @@ pub(in crate::api) fn merge_preview(
         .with_data(json!({"plan_id": plan_id})));
     }
     let frames = planned_frames(&named);
-    resolve_exposures(&frames, &parameters.exposure)?;
+    header_check(&named, &frames, &parameters)?;
     let signatures = signed(&named)?;
     // One open preview a client.
     let previous: Vec<MergePreviewId> = owner
@@ -458,11 +452,11 @@ pub(in crate::api) fn merge_preview(
     let held = lane.previews.held.clone();
     let n = named.len();
     if let Some(frame) = frames.first().filter(|frame| frame.width > 0) {
-        limits.preflight(
-            &root,
-            job::temp_bytes(n, frame.width, frame.height),
-            held.load(Ordering::SeqCst),
-        )?;
+        let planned = match kind {
+            MergeKind::Hdr => job::temp_bytes(n, frame.width, frame.height),
+            MergeKind::Panorama => spool_bytes(n, frame.width, frame.height),
+        };
+        limits.preflight(&root, planned, held.load(Ordering::SeqCst))?;
     }
     let preview_id = MergePreviewId::new();
     let folder = root.join(preview_id.as_str());
@@ -473,7 +467,7 @@ pub(in crate::api) fn merge_preview(
     let job_inputs: Vec<JobInput> = named
         .iter()
         .zip(signatures)
-        .zip(frames)
+        .zip(frames.iter().cloned())
         .map(|((input, signature), planned)| JobInput {
             path: input.path.clone(),
             signature,
@@ -482,31 +476,38 @@ pub(in crate::api) fn merge_preview(
             planned,
         })
         .collect();
-    let spec = JobSpec {
-        inputs: job_inputs.clone(),
-        parameters: parameters.clone(),
+    let spec = super::Spec::new(
+        lane,
+        job_inputs.clone(),
+        parameters.clone(),
         provider,
-        spool: folder.clone(),
-        writer: owner.service.derived_source_writer(),
-        developer: lane.developer.clone(),
+        folder.clone(),
+        owner.service.derived_source_writer(),
         limits,
-        hooks: lane.hooks.clone(),
         held,
-    };
+        owner.service.auto_lens_profile(),
+    )?;
     let slot: Slot = Arc::new(Mutex::new(None));
     let kept = lane.previews.kept();
     if let Ok(mut kept) = kept.lock() {
         kept.insert(preview_id.to_string());
     }
-    let detail = format!(
-        "{} \u{b7} {n} exposures",
-        job::result_name(&named[parameters.exposure.reference.unwrap_or((n - 1) / 2)].path)
-    );
+    let reference = super::planned_reference(&frames, &parameters).unwrap_or((n - 1) / 2);
+    let detail = match kind {
+        MergeKind::Hdr => format!(
+            "{} \u{b7} {n} exposures",
+            job::result_name(&named[reference].path)
+        ),
+        MergeKind::Panorama => format!(
+            "{} \u{b7} {n} photos",
+            job::named_result(&named[reference].path, kind)
+        ),
+    };
     let job_id = JobId::new();
     let task = {
         let slot = slot.clone();
         let preview_id = preview_id.clone();
-        let options = resolved(&options);
+        let options = options.resolved();
         let pictures = pictures.clone();
         Task {
             job_id: job_id.clone(),
@@ -517,23 +518,13 @@ pub(in crate::api) fn merge_preview(
             work: Box::new(move |context: &JobContext<'_>| {
                 job::sweep_orphans(&merges, Path::new(""));
                 sweep(&root, &pictures_folder, &kept);
-                match spec.preview(&pictures, 1, context.control) {
-                    Ok(previewed) => {
-                        let bytes = previewed
-                            .prepared
-                            .as_ref()
-                            .map(|prepared| prepared.temp_bytes);
-                        if let (Some(prepared), Ok(mut slot)) = (&previewed.prepared, slot.lock()) {
-                            *slot = Some(Retained {
-                                prepared: prepared.clone(),
-                                analysis: previewed.analysis.clone(),
-                            });
+                match first_revision(spec, &pictures, context.control) {
+                    Ok((retained, bytes, drawn)) => {
+                        if let (Some(retained), Ok(mut slot)) = (retained, slot.lock()) {
+                            *slot = Some(retained);
                         }
-                        // The bracket stays with the slot alone: the owner's half holds none.
+                        // The frames stay with the slot alone: the owner's half holds none.
                         drop(slot);
-                        let drawn = previewed.drawn;
-                        drop(previewed.prepared);
-                        drop(previewed.analysis);
                         Box::new(move |owner: &mut Owner| {
                             prepared(owner, &preview_id, kind, options, bytes, drawn)
                         })
@@ -577,13 +568,48 @@ pub(in crate::api) fn merge_preview(
     value(started)
 }
 
+/// A preview's first job of its kind: the frames it read and kept (none when reading refused
+/// them), the bytes they spool and the first revision.
+fn first_revision(
+    spec: super::Spec,
+    pictures: &Pictures,
+    control: &crate::jobs::JobControl,
+) -> Result<(Option<Retained>, Option<u64>, Drawn), Error> {
+    Ok(match spec {
+        super::Spec::Hdr(spec) => {
+            let previewed = spec.preview(pictures, 1, control)?;
+            let bytes = previewed
+                .prepared
+                .as_ref()
+                .map(|prepared| prepared.temp_bytes);
+            let retained = previewed.prepared.map(|prepared| Retained::Hdr {
+                prepared,
+                analysis: previewed.analysis,
+            });
+            (retained, bytes, previewed.drawn)
+        }
+        super::Spec::Panorama(spec) => {
+            let previewed = spec.preview(pictures, 1, control)?;
+            let bytes = previewed
+                .prepared
+                .as_ref()
+                .map(|prepared| prepared.temp_bytes);
+            let retained = previewed.prepared.map(|prepared| Retained::Panorama {
+                prepared,
+                analysis: previewed.analysis,
+            });
+            (retained, bytes, previewed.drawn)
+        }
+    })
+}
+
 /// The owner's half of a preview's first job: the session ready (its spool counted against the
 /// ceiling) or refused, and the first revision answered.
 fn prepared(
     owner: &mut Owner,
     preview_id: &MergePreviewId,
     kind: MergeKind,
-    options: HdrOptions,
+    options: MergeOptions,
     bytes: Option<u64>,
     drawn: Drawn,
 ) -> Result<Value, Error> {
@@ -633,15 +659,15 @@ pub(in crate::api) fn merge_preview_update(
                 .with_data(json!({"preview_id": preview_id})),
         );
     }
-    let options = hdr_options(session.kind, Some(params.hdr))?;
-    let parameters = parameters(&session.named, &options, alignment(&options))?;
+    let options = options(session.kind, params.hdr, params.panorama)?;
+    let parameters = requested(&session.named, &options)?;
     // The header-level refusals merge.create would answer at once, from the planned frames.
     let frames: Vec<_> = session
         .inputs
         .iter()
         .map(|input| input.planned.clone())
         .collect();
-    resolve_exposures(&frames, &parameters.exposure)?;
+    header_check(&session.named, &frames, &parameters)?;
     let stale = session.update.clone();
     if let Some(stale) = stale {
         cancel(owner, &stale);
@@ -654,6 +680,10 @@ pub(in crate::api) fn merge_preview_update(
         .map_or(MergeKind::Hdr, |session| session.kind);
     let limits = lane.limits(kind);
     let hooks = lane.hooks.clone();
+    let stitcher = match kind {
+        MergeKind::Panorama => Some(lane.stitcher()?),
+        MergeKind::Hdr => None,
+    };
     let session = lane
         .previews
         .open
@@ -663,7 +693,7 @@ pub(in crate::api) fn merge_preview_update(
     session.parameters = parameters.clone();
     session.last_used = Instant::now();
     let revision = session.revision;
-    let options = resolved(&options);
+    let options = options.resolved();
     if session.unread {
         // Reading refused the bracket: there are no frames to draw, and every revision answers
         // that refusal.
@@ -697,6 +727,7 @@ pub(in crate::api) fn merge_preview_update(
     let update = Update {
         prepared_from: slot,
         parameters,
+        stitcher,
         limits,
         hooks,
         pictures: session.pictures.clone(),
@@ -741,11 +772,12 @@ pub(in crate::api) fn merge_preview_update(
     value(started)
 }
 
-/// What an update job is given: the session's slot, read when it runs, the new options and where
-/// its picture goes.
+/// What an update job is given: the session's slot, read when it runs, the new options, a
+/// panorama's stitch and where its picture goes.
 struct Update {
     prepared_from: Slot,
-    parameters: HdrParameters,
+    parameters: MergeParameters,
+    stitcher: Option<Arc<dyn crate::merge::panorama::stitching::Stitcher>>,
     limits: job::Limits,
     hooks: job::Hooks,
     pictures: Pictures,
@@ -753,10 +785,8 @@ struct Update {
 }
 
 impl Update {
-    fn run(
-        self,
-        control: &crate::jobs::JobControl,
-    ) -> Result<(Option<Arc<Analysis>>, Drawn), Error> {
+    /// Draw the revision, answering the analysis the session keeps for it.
+    fn run(self, control: &crate::jobs::JobControl) -> Result<(Analysed, Drawn), Error> {
         let retained = self
             .prepared_from
             .lock()
@@ -765,17 +795,50 @@ impl Update {
             .ok_or_else(|| {
                 Error::conflict("the merge preview ended without frames to draw; open another")
             })?;
-        preview::Update {
-            prepared: retained.prepared,
-            previous: retained.analysis,
-            parameters: self.parameters,
-            limits: self.limits,
-            hooks: self.hooks,
-            pictures: self.pictures,
-            revision: self.revision,
+        match (retained, self.parameters, self.stitcher) {
+            (Retained::Hdr { prepared, analysis }, MergeParameters::Hdr(parameters), _) => {
+                let (analysis, drawn) = preview::Update {
+                    prepared,
+                    previous: analysis,
+                    parameters,
+                    limits: self.limits,
+                    hooks: self.hooks,
+                    pictures: self.pictures,
+                    revision: self.revision,
+                }
+                .run(control)?;
+                Ok((Analysed::Hdr(analysis), drawn))
+            }
+            (
+                Retained::Panorama { prepared, analysis },
+                MergeParameters::Panorama(parameters),
+                Some(stitcher),
+            ) => {
+                let (analysis, drawn) = PanoramaUpdate {
+                    prepared,
+                    previous: analysis,
+                    parameters,
+                    stitcher,
+                    limits: self.limits,
+                    hooks: self.hooks,
+                    pictures: self.pictures,
+                    revision: self.revision,
+                }
+                .run(control)?;
+                Ok((Analysed::Panorama(analysis), drawn))
+            }
+            _ => Err(Error::internal(
+                "a merge preview's update of another kind than its frames",
+            )),
         }
-        .run(control)
     }
+}
+
+/// What an update leaves for its session to keep: the revision's alignment or registration, of
+/// the preview's kind; none when the revision was refused.
+enum Analysed {
+    Hdr(Option<Arc<Analysis>>),
+    Panorama(Option<Arc<PanoramaAnalysis>>),
 }
 
 /// The owner's half of an update: the session's latest alignment and answer, unless a newer
@@ -785,8 +848,8 @@ fn updated(
     preview_id: &MergePreviewId,
     job_id: &JobId,
     revision: u32,
-    options: HdrOptions,
-    analysis: Option<Arc<Analysis>>,
+    options: MergeOptions,
+    analysis: Analysed,
     drawn: Drawn,
 ) -> Result<Value, Error> {
     let session = owner
@@ -808,7 +871,13 @@ fn updated(
     if let Ok(mut retained) = session.slot.lock()
         && let Some(retained) = retained.as_mut()
     {
-        retained.analysis = analysis;
+        match (retained, analysis) {
+            (Retained::Hdr { analysis: kept, .. }, Analysed::Hdr(analysis)) => *kept = analysis,
+            (Retained::Panorama { analysis: kept, .. }, Analysed::Panorama(analysis)) => {
+                *kept = analysis;
+            }
+            _ => {}
+        }
     }
     session.answered = Some(Answered {
         revision,
@@ -859,7 +928,7 @@ pub(super) fn continuation(
     preview_id: &MergePreviewId,
     kind: MergeKind,
     named: &[Named],
-    parameters: &HdrParameters,
+    parameters: &MergeParameters,
 ) -> Result<Continuation, Error> {
     let session = owner
         .catalog

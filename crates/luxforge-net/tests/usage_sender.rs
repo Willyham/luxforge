@@ -283,3 +283,29 @@ fn usage_quitting_shuts_a_stalled_uploads_socket_without_waiting() {
     assert!(host.collector.session().is_none());
     stall.open();
 }
+
+/// Both hosted refusals fit the body cap and drive the same clamped rate-limit policy.
+#[test]
+fn usage_hosted_worker_and_waf_429s_use_the_rate_limit_cooldown() {
+    for (name, retry, body, content_type) in [
+        ("worker", "60", "too many requests", "text/plain"),
+        ("waf", "10", "error code: 1015", "text/plain; charset=UTF-8"),
+    ] {
+        assert!(body.len() as u64 <= sender::MAX_RESPONSE_BYTES);
+        let server = TestServer::http(move |_: &Request, out: &mut dyn Write| {
+            respond(
+                out,
+                "429 Too Many Requests",
+                &format!("Retry-After: {retry}\r\nContent-Type: {content_type}\r\n"),
+                body.as_bytes(),
+            );
+        })
+        .unwrap();
+        let host = Host::new(name, &server.url(PATH));
+        host.first_attempt();
+        let counts = host.usage.diagnostics();
+        assert_eq!(counts.delivery, Delivery::Cooldown(Cooldown::RateLimited));
+        assert_eq!((counts.attempts, counts.accepted), (1, 0));
+        assert_eq!(server.requests()[0].header("accept"), None);
+    }
+}

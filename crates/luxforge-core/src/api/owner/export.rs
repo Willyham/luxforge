@@ -45,8 +45,9 @@ use crate::{
         webp::{self, WebpOptions},
     },
     jobs::{JobControl, JobKind, NewJob, Work},
+    render::{bands::Banded, bands_output::output_bands},
     tiles::{
-        BandStream, PixelRows, Pixels, TileService, TileStatus,
+        BandStream, OutputSpec, PixelRows, Pixels, TileService, TileStatus,
         output::{OutputFrame, reference_output_phased},
     },
 };
@@ -503,28 +504,29 @@ impl Route {
     }
 
     /// Each phase's share of the whole export's progress, in the order [`Phase`] lists them, for
-    /// an export rendered on the GPU or by the reference, resampled to a smaller output or not:
-    /// what each phase costs, roughly, measured on the M4 (`docs/design/export-settings.md`,
-    /// progress). A GPU export's render runs inside a streamed format's `encoding` and a held
-    /// format's `rendering`; the reference renders first and resamples after. An optimised JPEG's
-    /// passes outweigh its rows; a size limit's attempts are almost the whole of a held export.
-    /// Writing a file is the last 5%.
-    fn weights(&self, gpu: bool, resampled: bool) -> [u32; Phase::COUNT] {
-        let rendering = match (gpu, self) {
+    /// an export whose output arrives `in_bands` (the GPU's stream, or the reference's banded mode
+    /// on a paged source) or is rendered whole by the reference, resampled to a smaller output or
+    /// not: what each phase costs, roughly, measured on the M4 (`docs/design/export-settings.md`,
+    /// progress). A banded render runs inside a streamed format's `encoding` and a held format's
+    /// `rendering`, resampling included; the whole-frame reference renders first and resamples
+    /// after. An optimised JPEG's passes outweigh its rows; a size limit's attempts are almost the
+    /// whole of a held export. Writing a file is the last 5%.
+    fn weights(&self, in_bands: bool, resampled: bool) -> [u32; Phase::COUNT] {
+        let rendering = match (in_bands, self) {
             (true, Self::Streamed(_)) => 0,
             (true, Self::Held(_)) => 20,
             (false, _) => 30,
         };
-        let resampling = if !gpu && resampled { 10 } else { 0 };
+        let resampling = if !in_bands && resampled { 10 } else { 0 };
         let (encoding, optimising, limiting) = match self {
             Self::Streamed(Streaming::Jpeg(options)) if options.optimise => {
-                if gpu {
+                if in_bands {
                     (30, 65, 0)
                 } else {
                     (15, 40, 0)
                 }
             }
-            Self::Streamed(_) => (if gpu { 95 } else { 55 }, 0, 0),
+            Self::Streamed(_) => (if in_bands { 95 } else { 55 }, 0, 0),
             Self::Held(Held::Jpeg { .. } | Held::Webp { limit: Some(_), .. }) => (0, 0, 70),
             Self::Held(Held::Webp { limit: None, .. }) => (70, 0, 0),
         };
@@ -740,7 +742,9 @@ pub(super) fn write(
     // asked for it or the host has no GPU provider, whose only renderer it is; the GPU otherwise,
     // unless the service says why it cannot.
     let gpu = !reference && tiles.status() != TileStatus::Reference(None);
-    let mut report = Report::new(phase, progress, route.weights(gpu, resampled));
+    // A paged source has no whole frame: the reference renders it in bands, as the GPU streams it.
+    let paged = evaluation.source().paged().is_some();
+    let mut report = Report::new(phase, progress, route.weights(gpu || paged, resampled));
     report.enter(Phase::Rendering)?;
     let reason = if reference {
         Some(RendererReason::Requested)
@@ -750,7 +754,7 @@ pub(super) fn write(
         let streamed = match tiles.stream(&evaluation, output, control.render_cancel()) {
             Ok(stream) => streamed(stream, &route, destination, &encoding, &mut report)?,
             Err(fallback) => {
-                report.restart(route.weights(false, resampled));
+                report.restart(route.weights(paged, resampled));
                 Streamed::Refused(RendererReason::from(&fallback))
             }
         };
@@ -772,12 +776,23 @@ pub(super) fn write(
             Streamed::Refused(reason) => Some(reason),
             // Rendered again from nothing by the reference, which begins with its own render.
             Streamed::Stopped(reason) => {
-                report.restart(route.weights(false, resampled));
+                report.restart(route.weights(paged, resampled));
                 report.enter(Phase::Rendering)?;
                 Some(reason)
             }
         }
     };
+    if paged {
+        return banded(
+            evaluation,
+            output,
+            &route,
+            reason,
+            destination,
+            &encoding,
+            &mut report,
+        );
+    }
     let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
     // The reference's output, from the compilation the plan made, inside the evaluated-frame
     // limit; a full-size 8-bit output is the render's own frame, which the encoder reads in place.
@@ -793,6 +808,53 @@ pub(super) fn write(
     let encoded = encode_frame(&frame, &route, destination, &encoding, &mut report)?;
     drop(frame);
     finish(destination, encoded, size, &encoding, renderer, &mut report)
+}
+
+/// A paged source's export by the reference (`docs/design/panorama-merge.md`, "The reference on
+/// paged sources"), when the export asked for it, the host has no GPU provider or the GPU's stream
+/// said why it could not draw it (`reason`, as for a whole frame): the output in full-width bands
+/// from windows of the source's level 0 ([`Banded`]), after a first pass over the stages a
+/// whole-stage statistic or a repair reads. A streamed format encodes each band as it is rendered,
+/// so neither the source nor the output is ever held whole; a held format assembles its output
+/// frame from the bands, as it does from the GPU's. Phases, progress, cancellation and the staged
+/// file behave as they do for a whole frame's export.
+#[allow(clippy::too_many_arguments)]
+fn banded(
+    evaluation: crate::Evaluation,
+    output: OutputSpec,
+    route: &Route,
+    reason: Option<RendererReason>,
+    destination: &Destination,
+    encoding: &Encoding<'_>,
+    report: &mut Report<'_>,
+) -> Result<Written, Error> {
+    let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
+    let cancel = encoding.control.render_cancel();
+    let paged = evaluation
+        .source()
+        .paged()
+        .ok_or_else(|| Error::internal("a banded export of a source that is not paged"))?;
+    let banded = Banded::new(
+        paged.source().as_ref(),
+        evaluation.compiled()?,
+        evaluation.context(),
+        cancel,
+    )?;
+    let size = (output.width, output.height);
+    let bands = output_bands(&banded, output, cancel)?;
+    let encoded = match route {
+        Route::Streamed(how) => {
+            let staged = encode_streamed(bands, size, how, destination, encoding, report)?;
+            (Encoded::Staged(staged), encoding.settings.quality())
+        }
+        Route::Held(held) => {
+            let frame = assemble(bands, size, encoding, report)?;
+            encode_held(&frame, size, held, encoding, report)?
+        }
+    };
+    drop(banded);
+    drop(evaluation);
+    finish(destination, encoded, size, encoding, renderer, report)
 }
 
 /// The rows of an output, borrowed as an encoder reads them: a GPU band's own pixels, or the
@@ -1008,7 +1070,12 @@ fn streamed(
                 .map(|band| band.map(|band| (band.rows, band.pixels)));
             encode_streamed(bands, size, how, destination, encoding, report).map(Ok)
         }
-        Route::Held(_) => assemble(&mut stream, size, encoding, report).map(Err),
+        Route::Held(_) => {
+            let bands = stream
+                .by_ref()
+                .map(|band| band.map(|band| (band.rows, band.pixels)));
+            assemble(bands, size, encoding, report).map(Err)
+        }
     };
     match result {
         Ok(Ok(staged)) => Ok(Streamed::Staged(staged, stream.answered().into())),
@@ -1023,12 +1090,12 @@ fn streamed(
     }
 }
 
-/// A held format's 8-bit `size` frame from `stream`'s bands, allocated once at its size. It has no
-/// cap (owner, 2026-10-08 and 2026-10-13): `export.plan` reports the memory in advance and warns
-/// above 24 MP, and an allocation the host cannot make is refused as `resource-limit`, never an
-/// abort.
+/// A held format's 8-bit `size` frame from `bands` of its output, the GPU's or the banded
+/// reference's, allocated once at its size. It has no cap (owner, 2026-10-08 and 2026-10-13):
+/// `export.plan` reports the memory in advance and warns above 24 MP, and an allocation the host
+/// cannot make is refused as `resource-limit`, never an abort.
 fn assemble(
-    stream: &mut BandStream,
+    bands: impl Iterator<Item = Result<(u32, Pixels), Error>>,
     (width, height): (u32, u32),
     encoding: &Encoding<'_>,
     report: &mut Report<'_>,
@@ -1045,10 +1112,15 @@ fn assemble(
             length.div_ceil(1_000_000)
         ))
     })?;
-    for band in stream.by_ref() {
-        let band = band?;
+    for band in bands {
+        let (_, pixels) = band?;
         encoding.cancel()?;
-        frame.extend_from_slice(band.rgba8()?);
+        let Pixels::Eight(rgba) = pixels else {
+            return Err(Error::internal(
+                "a 16-bit band reached a reader of 8-bit codes",
+            ));
+        };
+        frame.extend_from_slice(&rgba);
         report.at(Phase::Rendering, frame.len() as f64 / length.max(1) as f64);
     }
     Ok(frame)

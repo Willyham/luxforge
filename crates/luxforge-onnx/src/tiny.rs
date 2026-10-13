@@ -53,6 +53,8 @@ impl Message {
 pub(crate) enum Side {
     Fixed(u64),
     Named(&'static str),
+    /// Only the Core ML tests, on macOS, declare an unnamed free dimension.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Unnamed,
 }
 

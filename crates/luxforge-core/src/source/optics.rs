@@ -87,6 +87,10 @@ impl super::PreparedSource {
                 identity: OpticalIdentity::from(source.capture.as_ref()),
                 ledger: SourceOptics::derived_ledger(),
             },
+            Self::Paged(source) => SourceOptics {
+                identity: OpticalIdentity::from(source.capture.as_ref()),
+                ledger: SourceOptics::derived_ledger(),
+            },
         }
     }
 }

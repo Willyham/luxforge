@@ -1252,7 +1252,44 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         {"select": {"merge_preview": {"overlay": true}}},
         {"select": {"merge_preview": "merge"}},
         {"select": {"merge_preview": "cancel"}},
+        {"select": {"merge_menu": 3}},
+        {"select": {"merge_choose": {"kind": "panorama"}}},
+        {"select": {"merge_choose": {"kind": "hdr", "last_settings": true}}},
+        {"select": {"merge_preview": {"boundary_warp": 60}}},
+        {"select": {"merge_preview": {"frame_outlines": true}}},
+        {"select": {"merge_preview": {"crop_coverage": false}}},
     ]));
+    assert_eq!(steps[27], Step::Select(SelectStep::MergeMenu(3)));
+    assert_eq!(
+        steps[28],
+        Step::Select(SelectStep::MergeChoose {
+            kind: MergeChoice::Panorama,
+            last_settings: false,
+        })
+    );
+    assert_eq!(
+        steps[29],
+        Step::Select(SelectStep::MergeChoose {
+            kind: MergeChoice::Hdr,
+            last_settings: true,
+        })
+    );
+    assert_eq!(
+        steps[30],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::BoundaryWarp(60)))
+    );
+    assert_eq!(
+        steps[31],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::FrameOutlines(
+            true
+        )))
+    );
+    assert_eq!(
+        steps[32],
+        Step::Select(SelectStep::MergePreview(MergePreviewStep::CropCoverage(
+            false
+        )))
+    );
     assert_eq!(
         steps[19],
         Step::Select(SelectStep::Merge {
@@ -1345,6 +1382,14 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
     refused(
         json!([{"select": {"switch": "library"}}]),
         "unknown variant",
+    );
+    refused(
+        json!([{"select": {"merge_preview": {"boundary_warp": 101}}}]),
+        "boundary_warp takes an integer from 0 to 100",
+    );
+    refused(
+        json!([{"select": {"merge_choose": {"kind": "focus"}}}]),
+        "unknown variant `focus`",
     );
 }
 

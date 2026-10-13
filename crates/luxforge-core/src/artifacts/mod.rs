@@ -27,8 +27,9 @@ pub(crate) mod testing;
 use crate::{Error, editor::SourceSignature, modules::valid_identity};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{
+    any::Any,
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 
 const PREFIX: &str = "artifact-";
@@ -196,6 +197,10 @@ pub struct PreparedArtifact {
     pub colour: Option<String>,
     /// Bytes whose SHA-256 the host checked against `id`.
     pub bytes: Arc<[u8]>,
+    /// What one reader derived from the bytes once, kept as long as they are: a model selection's
+    /// non-zero rectangle and GPU block. Computed on first use by the reader that needs it, so an
+    /// artifact nobody derives from holds nothing more.
+    derived: OnceLock<Arc<dyn Any + Send + Sync>>,
 }
 
 impl PreparedArtifact {
@@ -207,6 +212,45 @@ impl PreparedArtifact {
             height: meta.height,
             colour: meta.colour.clone(),
             bytes,
+            derived: OnceLock::new(),
+        }
+    }
+
+    /// Bytes and their metadata, under the identity their own SHA-256 gives: what a test or a
+    /// qualification fixture binds without a catalog. Hashes the bytes; `O(bytes)`.
+    pub fn of_bytes(
+        kind: impl Into<String>,
+        width: Option<u32>,
+        height: Option<u32>,
+        bytes: Arc<[u8]>,
+    ) -> Self {
+        use sha2::{Digest, Sha256};
+        let id = ArtifactId::for_hash(&format!("{:x}", Sha256::digest(&bytes)))
+            .expect("a SHA-256 is an artifact identity");
+        Self {
+            id,
+            kind: kind.into(),
+            width,
+            height,
+            colour: None,
+            bytes,
+            derived: OnceLock::new(),
+        }
+    }
+
+    /// What `make` derives from these bytes, made once and kept with them. A reader asking for
+    /// another type than the one kept gets its value made afresh and not kept: one artifact has one
+    /// reader kind.
+    pub(crate) fn derived<T: Any + Send + Sync>(&self, make: impl FnOnce(&Self) -> T) -> Arc<T> {
+        let mut make = Some(make);
+        let held = self.derived.get_or_init(|| {
+            let make = make.take().expect("made once");
+            let value: Arc<T> = Arc::new(make(self));
+            value
+        });
+        match held.clone().downcast::<T>() {
+            Ok(value) => value,
+            Err(_) => Arc::new(make.take().expect("not made for the value kept")(self)),
         }
     }
 }

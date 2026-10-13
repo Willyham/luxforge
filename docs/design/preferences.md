@@ -35,6 +35,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `window` | `{width, height, x, y}` in the system's points, or `null` | `null`: 1440 × 900, placed by the system | remembered | next launch |
 | `export_last` | `{settings, preset_id}`, or `null` | `null`: the sheet opens on Web | remembered | next export |
 | `hdr_merge` | `{alignment, deghost}`, each `auto` or `off`, or `null` | `null`: both Auto | remembered | next ⌥-click merge |
+| `panorama_merge` | `{projection, boundary_warp}`: `auto`, `perspective`, `cylindrical` or `spherical`, and 0–100; or `null` | `null`: Auto and 0 | remembered | next ⌥-click merge |
 
 ### Protected usage statistics record
 
@@ -107,6 +108,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
   - **Events.** The event log records `window_fitted` and `window_moved_to_main_display`.
 - **Remembered export.** After an export the person started from the Export sheet, the Export menu or the palette succeeds, the desktop stores its settings and the preset they came from unchanged, or `null`. The sheet opens on them and Export again repeats them ([export settings](export-settings.md#the-export-sheet)). An API client's export stores nothing.
 - **Remembered HDR merge.** When a merge this desktop asked for starts, the desktop stores its alignment and deghosting as `hdr_merge`, if they differ from what is stored. ⌥-click on Merge HDR merges with them, and the [merge preview](panorama-merge.md#the-merge-preview) opens with them; with nothing stored, both are Auto. The folder, the reference and exposure overrides belong to one bracket and are not remembered.
+- **Remembered panorama merge.** Likewise, a panorama merge this desktop asked for stores its projection and Boundary Warp as `panorama_merge`; ⌥-click on Merge panorama and a newly opened panorama preview start from them, else from Auto and 0. The reference and the folder are not remembered.
 
 ## Desktop writes
 

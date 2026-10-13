@@ -50,6 +50,7 @@ mod lens_smoke;
 mod lensfun_import;
 mod look_smoke;
 mod loupe_smoke;
+mod lr_align;
 mod mask_acceptance;
 mod mask_brush_smoke;
 mod mask_combine_smoke;
@@ -62,6 +63,7 @@ mod mixer_smoke;
 mod move_to_applications_smoke;
 mod no_gpu_render_smoke;
 mod package;
+mod panorama_merge_smoke;
 mod performance_smoke;
 mod presence_mixer_vignette_acceptance;
 mod presence_smoke;
@@ -252,14 +254,7 @@ fn main_result() -> Result {
                     bin
                 };
                 let launch = launch::Background::new(&bin)?;
-                ensure(
-                    Command::new(&launch.executable)
-                        .current_dir(&root)
-                        .args(a.0)
-                        .status()?
-                        .success(),
-                    "Application failed",
-                )?;
+                ensure(launch.status(&root, &a.0)?.success(), "Application failed")?;
                 return Ok(());
             }
             let mut cmd = cargo_command();
@@ -913,6 +908,7 @@ fn main_result() -> Result {
         "preview-error" => preview_error::run(a)?,
         "preview-corpus" => preview_error::corpus::run(&root, a)?,
         "grade-align" => grade_align::run(&root, a)?,
+        "lr-align" => lr_align::run(&root, a)?,
         "gpu-qualification" => {
             let options = gpu_qualification::Options::parse(&root, &mut a)?;
             a.done()?;

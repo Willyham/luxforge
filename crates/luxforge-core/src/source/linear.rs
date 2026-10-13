@@ -5,44 +5,108 @@ use super::{PlaneLease, PlanesHeld, Retention};
 use crate::Error;
 use std::sync::Arc;
 
-const MAX_PIXELS: u64 = luxforge_raw::MAX_PIXELS as u64;
 const MAX_SOURCE_BYTES: u64 = luxforge_raw::MAX_RGB_BYTES as u64;
 
+/// The declared bounds of one class of planar float RGB image: its side, its pixels and the bytes
+/// of its three binary32 planes. Each class says what it bounds; one shape refuses dimensions past
+/// any of them with `resource-limit`, naming the class (`docs/design/panorama-merge.md`, "Large
+/// derived sources").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlaneLimits {
+    /// What a refusal calls an image of this class.
+    pub(crate) name: &'static str,
+    pub(crate) max_side: u32,
+    pub(crate) max_pixels: u64,
+    pub(crate) max_bytes: u64,
+}
+
+/// A camera original's development, and so every whole [`LinearImage`] allocation: 16,384 pixels a
+/// side, 128 megapixels and 1.5 GiB of planes (`luxforge_raw`'s limits).
+pub(crate) const CAMERA_SOURCE: PlaneLimits = PlaneLimits {
+    name: "linear source",
+    max_side: luxforge_raw::MAX_SIDE,
+    max_pixels: luxforge_raw::MAX_PIXELS as u64,
+    max_bytes: MAX_SOURCE_BYTES,
+};
+
+/// A derived source prepared whole into one allocation, as an HDR result always is: the camera
+/// limits, since it is held as one.
+pub(crate) const RESIDENT_DERIVED_SOURCE: PlaneLimits = PlaneLimits {
+    name: "resident derived source",
+    ..CAMERA_SOURCE
+};
+
+/// A derived source past [`RESIDENT_DERIVED_SOURCE`], stored and read in pages and never allocated
+/// whole: 65,000 pixels a side, inside JPEG's 65,535, and 512 megapixels, 6 GiB of planes.
+pub(crate) const PAGED_DERIVED_SOURCE: PlaneLimits = PlaneLimits {
+    name: "paged derived source",
+    max_side: 65_000,
+    max_pixels: 512_000_000,
+    max_bytes: 6 * 1024 * 1024 * 1024,
+};
+
+/// A rendered frame or stage the renderer allocates whole, such as a spatial operation's float
+/// frame: the camera limits.
+pub(crate) const RENDERED_FRAME: PlaneLimits = PlaneLimits {
+    name: "linear frame",
+    ..CAMERA_SOURCE
+};
+
+/// A window of a stage the reference's banded mode allocates whole, such as its spatial frame of a
+/// band of a paged source: the camera limits but for the side, which may be as wide as a paged
+/// derived source's (`docs/design/panorama-merge.md`, "The reference on paged sources").
+pub(crate) const RENDERED_WINDOW: PlaneLimits = PlaneLimits {
+    name: "linear window",
+    max_side: PAGED_DERIVED_SOURCE.max_side,
+    ..CAMERA_SOURCE
+};
+
+impl PlaneLimits {
+    /// Whether a `width` × `height` image lies within these limits; a refusal names the bound.
+    pub(crate) fn check(self, width: u32, height: u32) -> Result<u64, Error> {
+        let name = self.name;
+        if width == 0 || height == 0 {
+            return Err(Error::validation(format!(
+                "{name} dimensions must be nonzero"
+            )));
+        }
+        if width > self.max_side || height > self.max_side {
+            return Err(Error::resource_limit(format!(
+                "{name} side exceeds {} pixels",
+                self.max_side
+            )));
+        }
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels > self.max_pixels {
+            return Err(Error::resource_limit(format!(
+                "{name} exceeds {} megapixels",
+                self.max_pixels / 1_000_000
+            )));
+        }
+        if pixels * 3 * 4 > self.max_bytes {
+            return Err(Error::resource_limit(format!(
+                "{name} exceeds {} MiB of planes",
+                self.max_bytes / (1024 * 1024)
+            )));
+        }
+        Ok(pixels)
+    }
+
+    /// The value count of three planes of a `width` × `height` image of this class and the length
+    /// of one plane, both addressable.
+    pub(crate) fn layout(self, width: u32, height: u32) -> Result<(usize, usize), Error> {
+        let pixels = self.check(width, height)?;
+        let values = usize::try_from(pixels * 3)
+            .map_err(|_| Error::resource_limit(format!("{} is not addressable", self.name)))?;
+        Ok((values, values / 3))
+    }
+}
+
 /// The value count of three planes of a `width` × `height` linear source and the length of one
-/// plane, refused past the RAW planar limit: the one bound a source and a spatial frame share.
+/// plane, refused past the camera limits ([`CAMERA_SOURCE`]): the bound of every whole
+/// [`LinearImage`] allocation.
 pub(crate) fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
-    if width == 0 || height == 0 {
-        return Err(Error::validation(
-            "linear source dimensions must be nonzero",
-        ));
-    }
-    if width > luxforge_raw::MAX_SIDE || height > luxforge_raw::MAX_SIDE {
-        return Err(Error::resource_limit(
-            "linear source side exceeds 16384 pixels",
-        ));
-    }
-    let pixels = u64::from(width)
-        .checked_mul(u64::from(height))
-        .ok_or_else(|| Error::resource_limit("linear source dimensions overflow"))?;
-    if pixels > MAX_PIXELS {
-        return Err(Error::resource_limit(
-            "linear source exceeds 128 megapixels",
-        ));
-    }
-    let values = pixels
-        .checked_mul(3)
-        .ok_or_else(|| Error::resource_limit("linear source plane length overflow"))?;
-    let bytes = values
-        .checked_mul(u64::from(std::mem::size_of::<f32>() as u32))
-        .ok_or_else(|| Error::resource_limit("linear source byte length overflow"))?;
-    if bytes > MAX_SOURCE_BYTES {
-        return Err(Error::resource_limit("linear RGB source exceeds 1.5 GiB"));
-    }
-    let values = usize::try_from(values)
-        .map_err(|_| Error::resource_limit("linear source is not addressable"))?;
-    let plane_len = usize::try_from(pixels)
-        .map_err(|_| Error::resource_limit("linear source plane is not addressable"))?;
-    Ok((values, plane_len))
+    CAMERA_SOURCE.layout(width, height)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,8 +378,10 @@ impl LinearImage {
     /// Make the source worker's memory gate wait for these planes: every view and clone taken
     /// from now on shares the hold, and the gate opens when the last of them drops. Called once,
     /// before the development is shared.
+    /// The lease is charged these planes' bytes ([`Self::plane_bytes`]).
     pub(crate) fn hold(&mut self, lease: PlaneLease) {
         debug_assert_eq!(Arc::strong_count(&self.planes), 1, "hold before sharing");
+        lease.charge(self.plane_bytes());
         self.held = PlanesHeld::new(lease);
     }
 

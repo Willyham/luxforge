@@ -185,9 +185,15 @@ A bracket of RAW frames from one camera ([design](design/hdr-merge.md)) can beco
 
 The result is a new photograph named after its reference frame with "HDR", its highlights and shadows kept beyond what one frame holds, so Develop's Exposure, Highlights and Shadows can bring them back. It carries an **HDR** badge with its number of exposures and its originals collapse beneath it: press the badge or `S` to show them, each with its exposure, and pick any of them as usual. Its pixels are saved with the catalog, so it opens, edits and exports even when the original files are offline; the originals are never changed. **Remove merge** (or `Delete`) moves the result to Removed and shows the originals again; `Cmd+Z` undoes a merge or its removal, keeping the result's edits, and nothing is merged twice. Merging a bracket that was merged before with the same options selects that result, or offers **Put back merge** when it is in Removed. A merged bracket counts as decided under **Moments without a pick**; the result itself is never picked, and Develop N counts only file picks.
 
+#### Merging panoramas
+
+Overlapping frames taken by turning one camera can become one panorama ([design](design/panorama-merge.md)). Select 2–32 frames, all RAW or all JPEG, from one camera at one focal length, right-click and choose **Merge panorama…** under **Panorama**; when a frame does not suit, the item is disabled and its tooltip says why. There is no panorama header: panoramas are never grouped for you. The merge preview opens first: the whole stitch drawn from small proxies of the frames, with **Frame outlines** numbering each frame in order and **Crop and coverage** dimming what the crop drops ("Crop loses 9% at the edges"). Choose the **Projection** (Auto, which says what it chose, Perspective, Cylindrical or Spherical), **Boundary Warp** (0–100: at 0 the result is cropped to the largest clean rectangle; higher amounts bend the edges outwards to fill it instead, keeping more of the picture), and the reference frame, by clicking it in the strip. A change redraws the preview without reading the frames again. **Merge** merges with those settings, reusing the preview's work, and **Cancel** (or Escape) merges nothing. Hold ⌥ while choosing Merge panorama to merge at once with your last panorama's projection and Boundary Warp. Exposure may differ between frames, as automatic exposure changes it; frames more than 3 EV apart, or two frames of the same view, are refused as a bracket, to be merged as HDR instead. A row, "Merging panorama · 7 photos", shows the merge's progress ("Reading 2 of 7", "Stitching") with Cancel; a frame that shares no detail with the others is named in the failure.
+
+The result is a new photograph named after its reference frame with "Panorama", in the catalog folder Develop would file that frame in. It carries a **Panorama** badge with its number of photos and its originals collapse beneath it, each reading "Frame k of N" from left to right; the Info panel shows the projection and field of view. Its exposure and colour are matched across the frames and its seams avoid cutting moving subjects. A panorama may be up to 65,000 pixels wide and 512 megapixels; past that it is scaled down to fit. A large one opens in Develop like any photograph: below 100% you edit an overview of it, and the histogram says it counts the overview; at 100% the full-resolution pixels are read as you move. Export writes the full size. Removing, undoing, putting back and rerunning work as for HDR merges, and the originals are never changed.
+
 #### Not in Select yet
 
-Panorama stitching and merging JPEG brackets.
+Merging JPEG brackets, HDR panoramas, and detecting panoramas automatically.
 
 Previews in Missing originals' rows, dragging photographs onto a folder (Move to… does it), moving a collection into another group and changing a smart collection's search (`collection.move` and `collection.update-smart` over the API), Locate original… when an export is refused, and narrowing the Metadata browser to photographs with no date, place, lens or known camera, which it lists with their counts but cannot select.
 
@@ -236,17 +242,35 @@ It checks each file against its pin first and stops on one that differs, clones 
 
 Flags are yours, outside any catalog, in the application configuration directory beside the Performance preference. Any client reads and changes them with `flags.list` and `flags.set {flag, value}` (`null` resets), and an open Settings sheet follows another client's change. Developer mode, **Luminance and colour range masks** (`masks.range-selections`) and **Generative fill** (`ai.generative`, off by default; off, Luxforge shows nothing of generative fill: no Remove in the Corrections band, no AI editing section and none of its models in Settings › Models) are the product flags today; developer mode also lists two proof flags, Proof choice and Proof number, which change nothing.
 
-### Optional usage statistics
+### Optional usage and performance statistics
 
-Luxforge can share [usage and performance statistics](design/usage-statistics.md) if you agree, but production reporting is not switched on in any build yet: its destination, `api.luxforge.app`, has no ingestion service, so an ordinary launch shows no notice and no Privacy tab and sends nothing. What follows is how the feature works where it is enabled, which today is only an automated evidence run given a local test receiver (`--usage-test-receiver`).
+Visible developer builds (debug builds, builds without an embedded clean revision, or Developer mode)
+can send optional statistics to `https://api.luxforge.app/v1/usage/batches?tenant=test`. These are test
+data and production dashboards exclude them. The startup notice names that destination; sharing
+starts only after you agree. **No thanks**, Escape or closing the notice leaves sharing off. The
+notice is asked once per retained configuration. Settings › Privacy lets you change the choice at any
+time, with the same disclosure and a collapsed **What is sent** list.
 
-Sharing starts off. The first time Luxforge opens with a configuration that has made no choice, a small notice asks **Help improve Luxforge?**, with **Share statistics** and **No thanks**; Escape or closing it is No thanks. It asks once per configuration and never again, whatever you answered. **Settings › Privacy** has the **Share usage and performance statistics** switch, the same short disclosure and a collapsed **What is sent** list; turning the switch on or off applies at once.
+Reports contain timed usage events and approved app/OS/CPU/GPU/memory details, linked by random
+installation/session IDs and a keyed image ID. They exclude your name, contact details, IP address,
+photos, filenames, metadata and editing values. Sharing off stops collection, cancels delivery and
+removes the installation ID; turning it on again creates new IDs. Unrevisioned developer builds
+report `0.0.0+000000e71de5`; builds with an embedded clean revision report their version and revision.
 
-While sharing is on, Luxforge records which features and tools you use and when, how many images are added and exported, how long operations and previews take, process performance samples and approved app/OS/CPU/GPU/memory details, and sends them in the background about every ten minutes. A random installation ID, a per-launch session ID and, in Develop, an image ID let a session's or an image's activity be followed in order. The image ID is a keyed hash that cannot be matched to the file without a key that never leaves the computer. Reports never include names, contact details, IP addresses, photos, filenames, photo metadata or editing values. Delivery is best effort: nothing is kept on disk, nothing waits for the network, and quitting discards anything unsent. Turning sharing off stops recording, cancels an upload in flight, clears unsent data and removes the local installation ID and image key; turning it on again creates fresh ones, so image IDs change too.
+Ordinary revisioned release builds remain disabled pending Will's production activation decision;
+they show no notice or Privacy tab and never send to the test tenant. Hidden, background, headless,
+test and evidence launches remain suppressed, except isolated evidence explicitly given a test receiver.
 
-What the notice promises about the receiving end (no IP address recorded anywhere, reports deleted 90 days after they arrive) can only be kept by a deployed service, which is why reporting stays off until one exists and has passed its [deployment checklist](../services/usage-statistics/DEPLOYMENT.md). The open-source reference backend in `services/usage-statistics/` keeps them and has been checked against the desktop on one machine; no live service has been. Whatever is collected describes the sessions of people who chose to share, with gaps, and each session's last minutes are never sent, so the numbers are estimates, not counts of people or computers.
+The hosted backend keeps raw batches in R2 for 90 days and sampled Analytics Engine points for
+Cloudflare's three months. Exact histories come from R2; weighted analytics are estimates. Neither
+store keeps IP addresses or request headers; the edge uses a transient IP-based WAF rate limit.
+Delivery is best effort and loses each session's last minutes. Session/installation counts are not
+counts of people or computers. The [deployment checklist](../services/usage-statistics/DEPLOYMENT.md)
+separates live test checks from production activation.
 
-Agents and scripts read the choice and delivery counts with `usage.read`, and can turn sharing off with `usage.set {"enabled": false}`, for example `luxforge-ctl call usage.set --params '{"enabled": false}'` against the running desktop. Turning it on needs permission authority, which the desktop's notice and Privacy switch have and `luxforge-ctl` does not.
+Agents and scripts can read the choice with `usage.read` and disable sharing with
+`usage.set {"enabled": false}`. Enabling it requires permission authority, available to the desktop
+notice and Privacy switch, but not `luxforge-ctl`.
 
 ### Updates
 

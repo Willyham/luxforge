@@ -463,7 +463,10 @@ fn reference_ticks(
             let started = Instant::now();
             let frame = luxforge_core::render(
                 evaluation.registry(),
-                evaluation.source(),
+                evaluation
+                    .source()
+                    .whole()
+                    .map_err(|error| error.to_string())?,
                 evaluation.recipe(),
                 RenderOptions::exact(&Cancel::never()),
                 evaluation.context(),
@@ -506,7 +509,10 @@ fn measure(
     let started = Instant::now();
     let exact = luxforge_core::render(
         evaluation.registry(),
-        evaluation.source(),
+        evaluation
+            .source()
+            .whole()
+            .map_err(|error| error.to_string())?,
         evaluation.recipe(),
         RenderOptions::exact(&Cancel::never()),
         evaluation.context(),

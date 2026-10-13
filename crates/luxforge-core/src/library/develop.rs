@@ -46,7 +46,7 @@ pub(crate) use filing::{Destination, file_one, made_from};
 )]
 pub(crate) use frames::{Frames, frames};
 pub(crate) use plan::{Plan, PlannedFile, destinations, plan};
-pub(crate) use read::{ReadFile, from_copy, read};
+pub(crate) use read::{JpegProfiles, ReadFile, from_copy, read, read_with};
 
 use super::{availability::SYSTEM_ACTOR, journal::Request, locate::Phase};
 use crate::{

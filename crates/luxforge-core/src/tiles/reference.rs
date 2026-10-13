@@ -340,7 +340,7 @@ impl<'a> ReferenceSession<'a> {
                 let wide = evaluation.compiled()?.prefix_spatial_input_wide(&before);
                 let size = before.stage();
                 let render = Render::compiled(
-                    evaluation.source().input(),
+                    evaluation.source().whole()?,
                     before,
                     RenderOptions::exact(self.cancel),
                     evaluation.context(),

@@ -67,7 +67,9 @@ fn scalable(registry: &ModuleRegistry, recipe: &Recipe) -> bool {
 }
 
 /// The reduced stage `recipe`, over a `source`-sized source whose full-resolution output stage is
-/// `output`, is drawn at within `bounds` ([`ReducedStage`]): `None` when the output fits the bounds
+/// `output`, is drawn at within `bounds` ([`ReducedStage`]), every payload in source pixels resolved
+/// against `exact`, the full-resolution content stage: the source's own, or level 0 for a paged
+/// source's resident level, which the plan then reduces further: `None` when the output fits the bounds
 /// at its own size, or a layer does not scale, where the stage is drawn at its own size. The stack
 /// is compiled once against the reduced stage, its masks taking the thin-feature supersample, and
 /// the window is the part of the reduced stage the whole output reads through every boundary
@@ -78,6 +80,7 @@ pub(crate) fn reduced_stage(
     registry: &ModuleRegistry,
     recipe: &Recipe,
     source: (u32, u32),
+    exact: (u32, u32),
     output: Stage,
     bounds: ProxyBounds,
 ) -> Result<Option<ReducedStage>, Error> {
@@ -90,8 +93,8 @@ pub(crate) fn reduced_stage(
     let compiled = registry.compile_sampled(
         plan.width,
         plan.height,
-        source.0,
-        source.1,
+        exact.0,
+        exact.1,
         recipe,
         MaskSampling::ThinFeature,
     )?;
@@ -154,5 +157,5 @@ pub fn gpu_fit_plan(
             MaskSampling::Point,
         )?
         .stage();
-    Ok(reduced_stage(registry, recipe, source, output, bounds)?.map(|stage| stage.plan))
+    Ok(reduced_stage(registry, recipe, source, source, output, bounds)?.map(|stage| stage.plan))
 }

@@ -1,9 +1,10 @@
-//! HDR merges in the Select workspace, carried inside the Select workspace's message as
+//! Merges in the Select workspace, carried inside the Select workspace's message as
 //! [`SelectMessage::Merge`](super::select::SelectMessage::Merge).
 use crate::app::select_merge::{OpenAnswer, SheetJob, StartAnswer};
+use crate::state::select_merge::PanoramaFacts;
 use crate::state::select_merge::{MergeAction, MergeRequest};
 use iced::widget::image::Handle;
-use luxforge_core::catalog_types::MergePlan;
+use luxforge_core::catalog_types::{MergeId, MergeKind, MergePlan};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -21,10 +22,16 @@ pub(crate) enum MergeMessage {
     /// ⌥ pressed or let go: a merge action merges at once with the last settings while it is
     /// held.
     Option(bool),
-    /// `merge.plan` answered for the menu numbered `serial`.
+    /// `merge.plan` of `kind` answered for the menu numbered `serial`.
     Planned {
         serial: u64,
+        kind: MergeKind,
         result: Result<Box<MergePlan>, String>,
+    },
+    /// `merge.inspect` answered for the panorama result the Info panel shows.
+    Inspected {
+        merge_id: MergeId,
+        result: Result<PanoramaFacts, String>,
     },
     /// The preview sheet's plan and `merge.preview` answered, for the sheet's task `serial`.
     Opened {

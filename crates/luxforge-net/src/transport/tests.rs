@@ -433,7 +433,7 @@ fn loopback_http_get_streams_a_content_length_body() {
         "GET /v1/status?verbose=1 HTTP/1.1\r\nhost: {}\r\nuser-agent: Luxforge/{}\r\n\
          accept-encoding: identity\r\nconnection: close\r\n\r\n",
         server.address(),
-        env!("CARGO_PKG_VERSION")
+        luxforge_core::APPLICATION_VERSION
     );
     assert_eq!(seen, &expected);
 }

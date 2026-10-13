@@ -1,9 +1,10 @@
-//! Usage statistics from the real desktop into the local reference backend: the client's own
+//! Usage statistics from the real desktop through a loopback ingress: the client's own
 //! batches go through the reference stack's ingress, Vector and ClickHouse. The stack is not
 //! started here: `services/usage-statistics/test.sh --client` brings it up, runs this scenario with
 //! `LUXFORGE_USAGE_INGRESS` naming the ingress it published on loopback, and then checks what was
 //! stored, the dashboards and every hop's logs against `receiver.json`. Outside every `verify`
-//! tier, so nothing ordinary depends on Docker.
+//! tier, so nothing ordinary depends on Docker. The live profile uses the backend repo's relay
+//! to the hosted test tenant, expecting acceptance within its limit instead of a forced 429.
 //!
 //! Each launch's test receiver is a relay in this process that forwards every request, byte for
 //! byte, to the ingress and returns the ingress's reply byte for byte, recording both. Once it
@@ -54,7 +55,40 @@ const WRONG_ROUTE: &str = "/v1/usage/batch";
 const RECEIVED: &str = "receiver.json";
 const SHARED: &str = "shared/host/config";
 const EXPORT: &str = "usage-backend-export.jpg";
-const TEST_RELEASE: &str = "0.0.0+000000e71de5";
+const TEST_RELEASE: &str = luxforge_core::usage::TEST_RELEASE;
+/// Select hosted expectations without forcing its 10 batches/minute limiter.
+const PROFILE_VAR: &str = "LUXFORGE_USAGE_BACKEND_PROFILE";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Profile {
+    Reference,
+    Live,
+}
+
+impl Profile {
+    fn read() -> Result<Self> {
+        match std::env::var(PROFILE_VAR).as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("reference") => Ok(Self::Reference),
+            Ok("live") => Ok(Self::Live),
+            _ => Err(format!("{PROFILE_VAR} must be reference or live").into()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Live => "live",
+        }
+    }
+
+    fn from_record(value: &Value) -> Result<Self> {
+        match value.as_str() {
+            Some("reference") => Ok(Self::Reference),
+            Some("live") => Ok(Self::Live),
+            _ => Err("The recorded backend profile is invalid".into()),
+        }
+    }
+}
 /// Past the ten-minute flush and the minute between attempts.
 const FLUSH_S: u64 = 660;
 /// The minute between attempts: a window already due goes as soon as this has passed.
@@ -81,7 +115,7 @@ const CLIENT_HEADERS: [&str; 6] = [
     "content-type",
 ];
 
-pub const NOTE: &str = "Run by `services/usage-statistics/test.sh --client`, which starts the reference stack with a per-installation limit of one batch per 5 seconds and sets LUXFORGE_USAGE_INGRESS to its loopback ingress; this scenario alone checks only the client's side. Each launch's `--usage-test-receiver` is a relay in the xtask process that forwards each request byte for byte to the ingress and returns its reply byte for byte, except that it withholds the reply to `work`'s second batch after the ingress accepted it. `again` reads `work`'s configuration from `shared/host/config` with `--evidence-config`. `receiver.json` holds every request, the ingress's status and what the relay returned.";
+pub const NOTE: &str = "Run by `services/usage-statistics/test.sh --client`, which starts the reference stack with a per-installation limit of one batch per 5 seconds and sets LUXFORGE_USAGE_INGRESS to its loopback ingress. For the hosted test tenant, start the backend repo's npm run relay and set LUXFORGE_USAGE_BACKEND_PROFILE=live and LUXFORGE_USAGE_INGRESS=http://127.0.0.1:8788; this profile expects acceptance within 10 batches/minute instead of the reference 429. This scenario alone checks only the client's side. Each launch's `--usage-test-receiver` is a relay in the xtask process that forwards each request byte for byte to the ingress and returns its reply byte for byte, except that it withholds the reply to `work`'s second batch after the ingress accepted it. `again` reads `work`'s configuration from `shared/host/config` with `--evidence-config`. `receiver.json` holds every request, the ingress's status and what the relay returned.";
 
 fn open_step() -> script::Step {
     script::Step::Open {
@@ -151,6 +185,10 @@ pub fn work_plan(_: &[PathBuf]) -> Plan {
 }
 
 pub fn again_plan(_: &[PathBuf]) -> Plan {
+    again_plan_for(Profile::Reference)
+}
+
+fn again_plan_for(profile: Profile) -> Plan {
     Plan::new(vec![
         Step::opened("opened"),
         Step::new("notice", UsageStep::Notice).commits(0),
@@ -163,20 +201,36 @@ pub fn again_plan(_: &[PathBuf]) -> Plan {
         // Within the limiter's interval: the ingress refuses this one with 429.
         Step::new("fit", script::Step::key("f")).commits(0),
         Step::new("flush-limited", UsageStep::Advance(ATTEMPT_S)).commits(0),
-        Step::new("limited", attempts(2)).commits(0),
+        Step::new(
+            "limited",
+            if profile == Profile::Live {
+                accepted(2)
+            } else {
+                attempts(2)
+            },
+        )
+        .commits(0),
         Step::new("zoom", script::Step::key("1")).commits(0),
         Step::new("early", UsageStep::Advance(EARLY_S)).commits(0),
         Step::new("held", read_now()).commits(0),
         Step::new("refill", refill()).commits(0),
         Step::new("late", UsageStep::Advance(LATE_S)).commits(0),
-        Step::new("resumed", accepted(2)).commits(0),
+        Step::new(
+            "resumed",
+            accepted(if profile == Profile::Live { 3 } else { 2 }),
+        )
+        .commits(0),
         Step::new("privacy", script::Step::settings_tab("privacy")).commits(0),
         Step::new("off", UsageStep::Share(false)).commits(0),
         Step::new("on", UsageStep::Share(true)).commits(0),
         Step::new("closed", script::Step::key(script::KEY_ESCAPE)).commits(0),
         Step::new("basic-rotated", slider(0.8)).commits(1),
         Step::new("flush-rotated", UsageStep::Advance(FLUSH_S)).commits(0),
-        Step::new("rotated", accepted(3)).commits(0),
+        Step::new(
+            "rotated",
+            accepted(if profile == Profile::Live { 4 } else { 3 }),
+        )
+        .commits(0),
     ])
 }
 
@@ -213,8 +267,8 @@ fn launch_of(
     launch
 }
 
-/// The ingress `LUXFORGE_USAGE_INGRESS` names: plain HTTP on a loopback address only, so this
-/// scenario can reach nothing but a local stack.
+/// The ingress `LUXFORGE_USAGE_INGRESS` names: plain HTTP on loopback only. The desktop reaches
+/// a local ingress or the backend repo's explicit test-tenant relay.
 fn ingress() -> Result<SocketAddr> {
     let value = std::env::var(INGRESS_VAR).map_err(|_| {
         format!(
@@ -238,6 +292,12 @@ fn ingress() -> Result<SocketAddr> {
 }
 
 pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
+    let profile = if run.replaying() {
+        Profile::from_record(&read_json(&run.out().join("result.json"))?["backend_profile"])?
+    } else {
+        Profile::read()?
+    };
+    run.record("backend_profile", json!(profile.name()));
     let relay = if run.replaying() {
         None
     } else {
@@ -273,7 +333,7 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         }
 
         phase(AGAIN);
-        let plan = again_plan(&sources);
+        let plan = again_plan_for(profile);
         let launch = launch_of(scenario, AGAIN, &plan, &sources, &route).evidence_config(&shared);
         let dir = run.launch(launch)?.dir;
         let again = plan.check(&dir)?;
@@ -557,6 +617,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         }
     }
 
+    let profile = Profile::from_record(run.recorded_value("backend_profile"))?;
     let received = read_json(&out.join(RECEIVED))?;
     let requests = received["requests"]
         .as_array()
@@ -577,7 +638,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 (WORK, 202, "reply"),
                 (WORK, 202, "withheld"),
                 (AGAIN, 202, "reply"),
-                (AGAIN, 429, "reply"),
+                (
+                    AGAIN,
+                    if profile == Profile::Live { 202 } else { 429 },
+                    "reply",
+                ),
                 (AGAIN, 202, "reply"),
                 (AGAIN, 202, "reply"),
                 (REJECTED, 404, "reply"),
@@ -735,27 +800,37 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         image_of(a0).as_deref() == Some(image_a.as_str()),
         "The same photograph has another image ID in the same installation's next launch",
     )?;
-    let retry_after: u64 = requests[3]["ingress"]["headers"]
-        .as_array()
-        .and_then(|headers| {
-            headers
-                .iter()
-                .find(|header| header[0] == "retry-after")
-                .and_then(|header| header[1].as_str()?.parse().ok())
-        })
-        .ok_or("The ingress's 429 carries no numeric Retry-After")?;
-    ensure(
-        (1..=ID_INTERVAL_S).contains(&retry_after),
-        format!(
-            "The ingress's Retry-After is {retry_after} s, not within its {ID_INTERVAL_S} s interval: was the stack started with that per-installation limit?"
-        ),
-    )?;
+    let retry_after = if profile == Profile::Reference {
+        let seconds: u64 = requests[3]["ingress"]["headers"]
+            .as_array()
+            .and_then(|headers| {
+                headers
+                    .iter()
+                    .find(|header| header[0] == "retry-after")
+                    .and_then(|header| header[1].as_str()?.parse().ok())
+            })
+            .ok_or("The ingress's 429 carries no numeric Retry-After")?;
+        ensure(
+            (1..=ID_INTERVAL_S).contains(&seconds),
+            format!(
+                "The reference ingress's Retry-After is {seconds} s, not within {ID_INTERVAL_S} s"
+            ),
+        )?;
+        Some(seconds)
+    } else {
+        None
+    };
     let limited = again.at("limited")?;
     let held = again.at("held")?;
     let resumed = again.at("resumed")?;
     ensure(
         diagnostics(limited)["attempts"] == 2
-            && delivery(limited) == ("cooldown".into(), "rate-limited".into()),
+            && delivery(limited)
+                == if profile == Profile::Live {
+                    ("ready".into(), "".into())
+                } else {
+                    ("cooldown".into(), "rate-limited".into())
+                },
         format!(
             "The 429 did not rate-limit the client: {}",
             diagnostics(limited)
@@ -763,7 +838,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     ensure(
         diagnostics(held)["attempts"] == 2
-            && delivery(held) == ("cooldown".into(), "rate-limited".into()),
+            && delivery(held)
+                == if profile == Profile::Live {
+                    ("ready".into(), "".into())
+                } else {
+                    ("cooldown".into(), "rate-limited".into())
+                },
         format!(
             "The client sent again within ten minutes of the 429: {}",
             diagnostics(held)
@@ -826,12 +906,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     checks.note(
         held,
-        "the ingress's 429 honoured: nothing sent within ten minutes",
+        if profile == Profile::Live {
+            "the live ingress accepted within its limit; the next window is not due yet"
+        } else {
+            "the ingress's 429 honoured: nothing sent within ten minutes"
+        },
         json!({"retry_after_s": retry_after, "diagnostics": diagnostics(held)}),
     );
     checks.note(
         resumed,
-        "the next window accepted after ten minutes, short of the failure cooldown; the refused batch a gap",
+        if profile == Profile::Live { "the next live window accepted without rate limiting" } else { "the next window accepted after ten minutes, short of the failure cooldown; the refused batch a gap" },
         json!({"diagnostics": diagnostics(resumed)}),
     );
     checks.note(
@@ -869,7 +953,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     checks.write(
         &out,
         SCENARIO,
-        json!({"relay": received["base"], "test_release": TEST_RELEASE,
+        json!({"relay": received["base"], "backend_profile": profile.name(), "test_release": TEST_RELEASE,
                "retry_after_s": retry_after}),
     )
 }

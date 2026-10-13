@@ -130,7 +130,17 @@ fn independent_closure(service: &EditorService) -> BTreeSet<String> {
         let manifest = interpretation.source_id.as_str()["source-".len()..].to_owned();
         let text = fs::read(source_object_path(service.artifact_root(), &manifest)).unwrap();
         let value: Value = serde_json::from_slice(&text).unwrap();
-        for chunk in value["chunks"].as_array().unwrap() {
+        // A resident manifest lists one grid; a paged one lists every level's.
+        let grids: Vec<&Value> = match value.get("levels") {
+            Some(levels) => levels
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| &level["chunks"])
+                .collect(),
+            None => vec![&value["chunks"]],
+        };
+        for chunk in grids.into_iter().flat_map(|grid| grid.as_array().unwrap()) {
             closure.insert(chunk["sha256"].as_str().unwrap().to_owned());
         }
         closure.insert(manifest);
@@ -585,6 +595,95 @@ fn a_damaged_source_fails_its_reads_by_name_and_is_kept() {
     assert_eq!(error.unwrap().kind, ErrorKind::Incompatible);
     assert_eq!(fs::read_to_string(&manifest).unwrap(), foreign);
     assert_eq!(stored(&service), closure);
+    drop(service);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+/// A paged source is recorded with every level's chunks, retained with all of them by every
+/// collection while a photograph holds it, and released with all of them when emptying Removed
+/// deletes its last photograph in a later session; the owner stats only its manifest and hashes
+/// nothing, and a resident source beside it is untouched throughout.
+#[test]
+fn paged_source_is_retained_with_every_level_until_emptying_removed_releases_it() {
+    let directory = directory("paged-retention");
+    let (catalog_path, mut service, _) = catalog(&directory);
+    let writer = service.derived_source_writer();
+    let (width, height) = (16_390, 5);
+    let paged_values = planes(width, height, 3, false);
+    let paged = write(&writer, width, height, &paged_values);
+    assert_eq!(
+        paged.chunks.len(),
+        17 + 9 + 5 + 3,
+        "every level's chunks are the source's"
+    );
+    let resident_values = planes(1100, 4, 4, false);
+    let resident = write(&writer, 1100, 4, &resident_values);
+    let paged_asset = publish(&mut service, &paged);
+    let resident_asset = publish(&mut service, &resident);
+    // A new session: nothing is live from its writers, so only references retain.
+    drop(service);
+    let mut service = EditorService::open(&catalog_path).unwrap();
+    assert_eq!(
+        service
+            .connection
+            .query_row(
+                "SELECT chunk_count FROM derived_sources WHERE id=?1",
+                [paged.id.as_str()],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        34
+    );
+    payload_work::take();
+    let read = service.derived_source_read(&paged_asset).unwrap();
+    service.plan_collection().unwrap();
+    assert_eq!(payload_work::take(), 0, "the owner read and hashed nothing");
+    // A missing chunk past the overview is for its readers to name, not the owner's stat.
+    let chunk = source_object_path(service.artifact_root(), &paged.chunks[20].sha256);
+    let kept = fs::read(&chunk).unwrap();
+    fs::remove_file(&chunk).unwrap();
+    assert_eq!(
+        service.derived_source_read(&paged_asset).unwrap().id,
+        read.id
+    );
+    fs::write(&chunk, &kept).unwrap();
+
+    let closure = independent_closure(&service);
+    let paged_objects: BTreeSet<String> = std::iter::once(paged.id.sha256().to_owned())
+        .chain(paged.chunks.iter().map(|chunk| chunk.sha256.clone()))
+        .collect();
+    assert!(paged_objects.is_subset(&closure));
+    let collected = collect(&mut service);
+    assert_eq!((collected.source_rows, collected.source_objects), (0, 0));
+    assert_eq!(stored(&service), closure);
+
+    service
+        .connection
+        .execute(
+            "UPDATE assets SET removed_ms = 1000 WHERE id = ?1",
+            [paged_asset.as_str()],
+        )
+        .unwrap();
+    let collected = collect(&mut service);
+    assert_eq!(
+        (collected.source_rows, collected.source_objects),
+        (0, 0),
+        "a removed photograph still holds its source"
+    );
+    let (emptied, collection) = service.empty_removed(10).unwrap();
+    assert_eq!(emptied.assets, std::slice::from_ref(&paged_asset));
+    assert_eq!(emptied.sources, std::slice::from_ref(&paged.id));
+    let collected = collect_files(&collection.unwrap(), &never()).unwrap();
+    assert_eq!(
+        (collected.source_rows, collected.source_objects),
+        (1, paged_objects.len())
+    );
+    assert_eq!(stored(&service), independent_closure(&service));
+    assert!(stored(&service).is_disjoint(&paged_objects));
+    assert!(same_bits(
+        &read_back(&service, &resident_asset),
+        &resident_values
+    ));
     drop(service);
     fs::remove_dir_all(directory).unwrap();
 }

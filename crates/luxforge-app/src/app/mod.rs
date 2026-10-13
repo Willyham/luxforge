@@ -70,6 +70,7 @@ mod gpu_light_tests;
 mod gpu_mask_tests;
 #[cfg(test)]
 mod gpu_notice_tests;
+pub(crate) mod gpu_paged;
 #[cfg(test)]
 mod gpu_presence_tests;
 pub(crate) mod gpu_preview;
@@ -101,6 +102,8 @@ mod gpu_white_balance_tests;
 mod gpu_window_tests;
 pub(crate) mod minimap;
 pub(crate) mod overview;
+#[cfg(test)]
+mod paged_source_render_tests;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
 pub(crate) mod copy_settings;
 pub(crate) mod corrections;
@@ -148,6 +151,8 @@ mod overlay_tests;
 mod palette;
 #[cfg(test)]
 mod palette_tests;
+#[cfg(test)]
+mod panorama_merge_tests;
 pub(crate) mod performance;
 mod pointer;
 #[cfg(test)]
@@ -841,7 +846,7 @@ impl Editor {
         editor.apply_display_preferences();
         editor.event(
             "startup",
-            || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"test_cameras":luxforge_core::test_cameras_admitted(),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
+            || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":luxforge_core::APPLICATION_VERSION,"debug_assertions":cfg!(debug_assertions),"test_cameras":luxforge_core::test_cameras_admitted(),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));
@@ -930,7 +935,7 @@ impl Editor {
         if self.log.diagnostics.is_none() && !self.log.verbose {
             return;
         }
-        let value = json!({"event":name.to_string(),"run_id":self.log.run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"request_id":self.activity.requested,"generation":self.activity.requested,"detail":detail()});
+        let value = json!({"event":name.to_string(),"run_id":self.log.run_id,"build_version":luxforge_core::APPLICATION_VERSION,"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"request_id":self.activity.requested,"generation":self.activity.requested,"detail":detail()});
         if let Some(log) = &self.log.diagnostics {
             log.event(value);
         } else if self.log.verbose {
@@ -1367,6 +1372,7 @@ impl Editor {
         }
         surfaces.gpu_warm = self.gpu.warm();
         surfaces.gpu_source = self.gpu_source_handed();
+        surfaces.gpu_window = self.gpu_window_handed();
         surfaces.gpu_rest = self.gpu_rest_handed();
         surfaces.stage_rest = self
             .gpu_stage_handed()
@@ -1405,6 +1411,7 @@ impl Editor {
                 surfaces.gpu = surfaces.compare_gpu;
                 surfaces.gpu_change = surfaces.compare_change;
                 surfaces.gpu_source = surfaces.compare_source;
+                surfaces.gpu_window = None;
                 surfaces.gpu_rest = surfaces.compare_rest;
                 surfaces.gpu_counts = None;
                 surfaces.gpu_hold = false;

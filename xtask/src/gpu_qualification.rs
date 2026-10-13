@@ -52,7 +52,7 @@ use crate::{
     *,
 };
 use luxforge_reference::{
-    preview_error::{Class, Limits, Statistics, verdict},
+    preview_error::{Class, Limits, Statistics, verdict_within},
     tolerance::{self, Kind},
 };
 use std::process::Stdio;
@@ -497,20 +497,25 @@ fn figures(s: &Statistics) -> [f64; 4] {
     [s.mean, s.worst_block, s.p99, s.mean_delta_l]
 }
 
-/// The limits of `class`, in [`STATISTICS`]' order, ΔL\* as the bound on its magnitude.
-fn limits(class: Class) -> [f64; 4] {
+/// `limits` in [`STATISTICS`]' order, ΔL\* as the bound on its magnitude.
+fn ordered(limits: Limits) -> [f64; 4] {
     let Limits {
         mean,
         worst_block,
         p99,
         mean_delta_l,
-    } = class.limits();
+    } = limits;
     [mean, worst_block, p99, mean_delta_l]
 }
 
 /// The statistics of `s` past `class`'s limits, by name.
 fn exceeded(s: &Statistics, class: Class) -> Vec<&'static str> {
-    let verdict = verdict(s, class);
+    exceeded_within(s, class, class.limits())
+}
+
+/// The statistics of `s` past `limits`, by name.
+fn exceeded_within(s: &Statistics, class: Class, limits: Limits) -> Vec<&'static str> {
+    let verdict = verdict_within(s, class, limits);
     [
         verdict.mean,
         verdict.worst_block,
@@ -586,8 +591,19 @@ struct Judged {
 impl Judged {
     /// `s`, `cell`'s figures, held to `class`'s limits: the statistics it passes.
     fn add(&mut self, s: &Statistics, cell: &str, class: Class) -> Vec<&'static str> {
+        self.add_within(s, cell, class, class.limits())
+    }
+
+    /// [`Self::add`] held to `limits`: a paged source's overview's.
+    fn add_within(
+        &mut self,
+        s: &Statistics,
+        cell: &str,
+        class: Class,
+        limits: Limits,
+    ) -> Vec<&'static str> {
         self.figures.add(s, cell);
-        let past = exceeded(s, class);
+        let past = exceeded_within(s, class, limits);
         if past.is_empty() {
             self.within += 1;
         } else {
@@ -813,6 +829,14 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                     "emd_codes": tolerance::HISTOGRAM_EMD_CODES,
                     "clipping_share_of_output_pixels": tolerance::HISTOGRAM_FRACTION,
                 }),
+                Kind::PictureAtRest => json!({
+                    "pointwise": limits_value(Class::Pointwise),
+                    "spatial": limits_value(Class::Spatial),
+                    "overview": {
+                        "pointwise": limits_of(Class::Pointwise.overview_limits()),
+                        "spatial": limits_of(Class::Spatial.overview_limits()),
+                    },
+                }),
                 _ => json!({
                     "pointwise": limits_value(Class::Pointwise),
                     "spatial": limits_value(Class::Spatial),
@@ -1014,7 +1038,14 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                                 tally.renderers.push(renderer.to_owned());
                             }
                             let figures = statistics(&rest["against_reference"]);
-                            let past = tally.at_rest.add(&figures, cell, class);
+                            // A paged source's overview, below 100%, is held to its overview
+                            // limits against the banded reference reduced the same way.
+                            let held = if measured["overview"] == true {
+                                class.overview_limits()
+                            } else {
+                                class.limits()
+                            };
+                            let past = tally.at_rest.add_within(&figures, cell, class, held);
                             if !past.is_empty() {
                                 missed.push(json!({
                                     "kind": Kind::PictureAtRest.name(),
@@ -1024,7 +1055,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                                     "against": "the reference",
                                     "exceeded": past,
                                     "statistics": rest["against_reference"],
-                                    "limits": limits_value(class),
+                                    "limits": limits_of(held),
                                     "at_rest": rest["against_reference"],
                                     "frames": measured["frames"],
                                 }));
@@ -1262,7 +1293,11 @@ fn names(value: &Value) -> Option<String> {
 }
 
 fn limits_value(class: Class) -> Value {
-    let [mean, worst_block, p99, mean_delta_l] = limits(class);
+    limits_of(class.limits())
+}
+
+fn limits_of(limits: Limits) -> Value {
+    let [mean, worst_block, p99, mean_delta_l] = ordered(limits);
     json!({"mean": mean, "worst_block": worst_block, "p99": p99, "mean_delta_l_abs": mean_delta_l})
 }
 
@@ -1888,6 +1923,29 @@ mod tests {
         let report = judge(Some(&cells(vec![drawn])), 1, &options());
         assert_eq!(report["status"], "passed");
         assert_eq!(rows(&report, Kind::PictureAtRest)[0]["verdict"], "passed");
+    }
+
+    /// A paged source's overview below 100% is held to its class's overview limits; its view at
+    /// 100%, level 0 itself, to the class's own.
+    #[test]
+    fn a_paged_sources_overview_is_held_to_the_overview_limits() {
+        let mut paged = pair("i--derived-paged", "pointwise", within(), within());
+        paged["views"]["fit"]["overview"] = json!(true);
+        paged["views"]["fit"]["at_rest"]["against_reference"] = stats(0.9, 1.5, 3.0, 0.4);
+        let report = judge(Some(&cells(vec![paged.clone()])), 1, &options());
+        assert_eq!(report["status"], "passed", "{report}");
+        paged["views"]["fit"]["at_rest"]["against_reference"] = stats(1.1, 1.5, 3.0, 0.4);
+        let report = judge(Some(&cells(vec![paged.clone()])), 1, &options());
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["missed"][0]["exceeded"], json!(["mean"]));
+        assert_eq!(report["missed"][0]["limits"]["mean"], json!(1.0));
+        paged["views"]["fit"]["at_rest"]["against_reference"] = within();
+        paged["views"]["100%"]["at_rest"]["against_reference"] = stats(0.9, 0.5, 1.0, 0.0);
+        let report = judge(Some(&cells(vec![paged])), 1, &options());
+        assert_eq!(
+            report["status"], "failed",
+            "level 0 at 100% has no overview limits"
+        );
     }
 
     #[test]

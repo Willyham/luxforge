@@ -3,18 +3,18 @@
   "plan_id": "lightroom-alignment",
   "title": "Lightroom alignment",
   "objective": "Make every supported slider do about what the same value does in Lightroom Classic: measure each setting's response from rendered outputs, calibrate the importers' conversions in the meantime, realign each control's response by editing area, and change an algorithm only where a dimension still differs past the threshold.",
-  "context_summary": "Planned from docs/design/lightroom-alignment.md, the contract every task follows; the owner decided every question on 2026-10-06 and did not authorize implementation, so nothing here starts until authorized. Lightroom is driven by generated XMP and one manual import and export per round by the owner; agents cannot run Lightroom. Only rendered outputs are compared by new alignment work: it introduces no Adobe code, SDK source, binary or data. The existing RAW importer and white-coordinate table are for separate review (owner, 2026-10-07). Response changes run by editing area (Basic and the Tone curve, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance); each raises its module's format marker so earlier recipes are refused. Behaviour changes follow only past the threshold (median ΔE2000 above 2 at ±25 and beyond, or a difference in kind). Decisions: docs/decisions.md. The whole-frame reference renderer supplies deterministic study buffers; rendering orchestration lives in xtask, never in the independent luxforge-reference crate. The RAW white-balance round includes calibrated preset import (owner, 2026-10-07). Commands and test filters for lr-align are deliverables, not existing commands.",
+  "context_summary": "Planned from docs/design/lightroom-alignment.md, the contract every task follows; the owner decided every question on 2026-10-06 and authorized TASK-001, the generator, on 2026-10-13; the later tasks await authorization. Lightroom is driven by generated XMP and one manual import and export per round by the owner; agents cannot run Lightroom. Only rendered outputs are compared by new alignment work: it introduces no Adobe code, SDK source, binary or data. The existing RAW importer and white-coordinate table are for separate review (owner, 2026-10-07). Response changes run by editing area (Basic and the Tone curve, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance); each raises its module's format marker so earlier recipes are refused. Behaviour changes follow only past the threshold (median ΔE2000 above 2 at ±25 and beyond, or a difference in kind). Decisions: docs/decisions.md. The whole-frame reference renderer supplies deterministic study buffers; rendering orchestration lives in xtask, never in the independent luxforge-reference crate. The RAW white-balance round includes calibrated preset import (owner, 2026-10-07). lr-align generate and the lr_align test filter exist; lr-align measure and validate are deliverables, not existing commands.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Build the rig's generator: the synthetic JPEG targets (grey wedge, Oklab patch grid, edge and zone-plate chart, flat field, geometric grids), the corpus selection, and cargo xtask lr-align generate, which writes a round folder of copies with each variant's settings as XMP and a manifest.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Only the round's own copies carry XMP: embedded in a JPEG copy, a sidecar beside a RAW copy. Originals and the corpus are never written.",
-        "Every variant's XMP must read back through Luxforge's own preset reader to the manifest's settings.",
-        "Round 1 is single settings across each range; round 2 the interacting pairs the design names. Supplied and corpus RAW files come from their manifests; none enter the repository.",
-        "The lr-align command and lr_align test filter are proposed deliverables of this task; they do not exist yet."
+        "Only the round's own copies carry XMP: embedded in a JPEG copy, a sidecar beside a RAW copy. Originals and the corpus are never written. A DNG is left out and listed, because Lightroom reads a DNG's settings from inside the file.",
+        "Every variant's XMP must read back through Luxforge's own preset reader to the manifest's settings: value transfers on their controls at the written numbers, and settings the importer does not map (Detail, crop, perspective, lens profile, gradient corrections) reported unsupported with their written text; a RAW white-balance pair beyond Luxforge's range is recorded as the importer's refusal.",
+        "Round 1 is single settings across each range; round 2 the interacting pairs the design names. Supplied and corpus RAW files come from their manifests; none enter the repository. Colour grading is measured by the delivered grade-align round, not here.",
+        "The owner authorized this task on 2026-10-13. Delivered as cargo xtask lr-align generate (xtask/src/lr_align/) with the lr_align tests; round instructions are written into each round folder and summarized in the design's Running a round."
       ],
       "context_links": [
         {
@@ -22,7 +22,7 @@
           "label": "Lightroom alignment design",
           "target": "docs/design/lightroom-alignment.md",
           "relevance": "The rig, targets and rounds.",
-          "locator": "The rig"
+          "locator": "Running a round"
         },
         {
           "kind": "file",

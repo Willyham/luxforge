@@ -16,7 +16,7 @@ use crate::{
         StageContext, StageQuestions, check_parameters, check_target, not_applicable,
         take_parameters,
     },
-    render::{Compiled, Render, RenderOptions, RenderSource},
+    render::{Compiled, Render, RenderOptions},
     source::PreparedSource,
 };
 use serde_json::{Map, Value, json};
@@ -1128,6 +1128,14 @@ impl HostStage<'_> {
             PreparedSource::Derived(derived) => {
                 return Ok((&derived.linear, LinearSettings::default()));
             }
+            PreparedSource::Paged(paged) => {
+                return Err(
+                    crate::artifacts::derived_source::paged_source::no_whole_frame(
+                        "sampling",
+                        paged.source.id(),
+                    ),
+                );
+            }
             PreparedSource::Jpeg(_) => {
                 return Err(Error::incompatible("JPEG source has no linear image"));
             }
@@ -1144,6 +1152,25 @@ impl HostStage<'_> {
             .as_ref()
             .ok_or_else(|| Error::preparation_required("RAW development required"))?;
         Ok((linear, settings))
+    }
+
+    /// The source a pixel read of this stage evaluates: the decoded JPEG, the developed or derived
+    /// planes ([`Self::linear`]), or a paged source, which the tile service reads through windows
+    /// of level 0 and the reference refuses by name.
+    fn preview_source(&self) -> Result<crate::PreviewSource, Error> {
+        Ok(match self.source()? {
+            PreparedSource::Jpeg(image) => crate::PreviewSource::Jpeg(image.clone()),
+            PreparedSource::Paged(paged) => {
+                crate::PreviewSource::Paged(crate::PagedPreview::new(paged.source.clone()))
+            }
+            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
+                let (image, settings) = self.linear()?;
+                crate::PreviewSource::Raw {
+                    image: image.clone(),
+                    settings,
+                }
+            }
+        })
     }
 
     /// The prefix before `index`, compiled once for this stage context and cloned from
@@ -1332,24 +1359,11 @@ impl StageQuestions for HostStage<'_> {
     /// `O(layers)` once rather than once per point, and nothing is rasterized either way.
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         let compiled = self.compiled_prefix(index)?;
-        let source = match self.source()? {
-            PreparedSource::Jpeg(image) => RenderSource::Byte(image),
-            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
-                let (image, settings) = self.linear()?;
-                RenderSource::Linear { image, settings }
-            }
-        };
-        let preview = match source {
-            RenderSource::Byte(image) => crate::PreviewSource::Jpeg(image.clone()),
-            RenderSource::Linear { image, settings } => crate::PreviewSource::Raw {
-                image: image.clone(),
-                settings,
-            },
-        };
+        let preview = self.preview_source()?;
         if let Some(answer) = self.service.deferred_read(
             self.asset,
             self.recipe,
-            preview,
+            preview.clone(),
             None,
             self.input_wide(&compiled)?,
             super::pixels::PixelRead::Point { index, x, y },
@@ -1360,6 +1374,9 @@ impl StageQuestions for HostStage<'_> {
             };
         }
         refuse_on_owner()?;
+        // A paged source has no whole frame for the reference to sample: its samples are the tile
+        // service's, read through windows of level 0.
+        let source = preview.whole()?;
         let context = self.service.render_context();
         if compiled.evaluates_spatial() {
             let wide = self.input_wide(&compiled)?;
@@ -1382,16 +1399,7 @@ impl StageQuestions for HostStage<'_> {
 
     fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         let compiled = self.compiled_prefix(index)?;
-        let preview = match self.source()? {
-            PreparedSource::Jpeg(image) => crate::PreviewSource::Jpeg(image.clone()),
-            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
-                let (image, settings) = self.linear()?;
-                crate::PreviewSource::Raw {
-                    image: image.clone(),
-                    settings,
-                }
-            }
-        };
+        let preview = self.preview_source()?;
         if let Some(answer) = self.service.deferred_read(
             self.asset,
             self.recipe,
@@ -1408,7 +1416,7 @@ impl StageQuestions for HostStage<'_> {
         refuse_on_owner()?;
         let wide = self.input_wide(&compiled)?;
         crate::render::prefix_pixels(
-            preview.input(),
+            preview.whole()?,
             compiled,
             self.service.render_context(),
             &crate::Cancel::never(),
@@ -1422,9 +1430,9 @@ impl StageQuestions for HostStage<'_> {
     fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         match self.source()? {
             PreparedSource::Raw(raw) => crate::source::neutral_at(raw, x, y),
-            PreparedSource::Jpeg(_) | PreparedSource::Derived(_) => Err(Error::validation(
-                "RAW neutral picker requires a RAW original",
-            )),
+            PreparedSource::Jpeg(_) | PreparedSource::Derived(_) | PreparedSource::Paged(_) => Err(
+                Error::validation("RAW neutral picker requires a RAW original"),
+            ),
         }
     }
 }
@@ -1537,6 +1545,7 @@ pub fn operations_limit(operations: crate::EffectOperations) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RenderSource;
     use crate::editor::{
         MutationOutcome,
         test_support::{
@@ -2904,7 +2913,7 @@ mod tests {
         let index = 1;
         let image = match service.verified_prepared(&state.asset, &recipe).unwrap() {
             PreparedSource::Jpeg(image) => image,
-            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
+            PreparedSource::Raw(_) | PreparedSource::Derived(_) | PreparedSource::Paged(_) => {
                 panic!("the JPEG fixture prepares a JPEG source")
             }
         };
