@@ -1047,7 +1047,9 @@ fn export_sheet_steps_round_trip_and_refuse_unknown_choices() {
         {"export":{"preset":"Print"}},
         {"export":{"edit":{"format":"webp","size":"long_edge","long_edge":"3000",
             "quality":70,"optimise":false,"limit":true,"limit_kb":"400","folder":"evidence",
-            "suffix":"-x","metadata":"no_location","print_size":true,"density":"240"}}},
+            "suffix":"-x","metadata":"no_location","print_size":true,"density":"240",
+            "sharpen":"matte","sharpen_amount":"high"}}},
+        {"export":{"edit":{"sharpen":"none"}}},
         {"export":{"save_preset":"Mine"}},
         {"export":{"update_preset":true}},
         {"export":{"delete_preset":"Mine"}},
@@ -1061,7 +1063,7 @@ fn export_sheet_steps_round_trip_and_refuse_unknown_choices() {
     ]));
     assert_eq!(steps[0], Step::export_sheet());
     assert_eq!(steps[2], Step::export_preset("Print"));
-    assert_eq!(steps[7], Step::export_write());
+    assert_eq!(steps[8], Step::export_write());
     for (script, expected) in [
         (
             json!({"export":{"edit":{"format":"png"}}}),
@@ -1072,8 +1074,12 @@ fn export_sheet_steps_round_trip_and_refuse_unknown_choices() {
             "bit_depth takes 8 or 16",
         ),
         (
-            json!({"export":{"edit":{"sharpen":"screen"}}}),
-            "unknown field `sharpen`",
+            json!({"export":{"edit":{"sharpen":"canvas"}}}),
+            "sharpen takes one of",
+        ),
+        (
+            json!({"export":{"edit":{"sharpen_amount":"extreme"}}}),
+            "sharpen_amount takes one of",
         ),
         (json!({"export":{"preset":" "}}), "export preset name"),
         (json!({"export":{"close":false}}), "takes true"),

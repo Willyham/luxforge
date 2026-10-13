@@ -65,6 +65,10 @@ pub(crate) enum SheetMessage {
     Limit(bool),
     BitDepth(Depth),
     Metadata(MetadataLevel),
+    /// Sharpen's medium, or `None` for no output sharpening.
+    Sharpen(Option<luxforge_core::SharpenMedium>),
+    /// Sharpen's amount.
+    SharpenAmount(luxforge_core::SharpenAmount),
     /// Set print size, or remove it.
     Density(bool),
     /// Original's folder.
