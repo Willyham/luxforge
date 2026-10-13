@@ -6,6 +6,10 @@
 //! Save to —
 //! and the footer's summary, Update "Name"…, Save as preset…, Cancel and Export. Everything it
 //! draws is [`ExportSheetModel`]; it holds nothing of its own.
+//!
+//! Every row fits the sheet's width, whatever it holds: a row of controls wraps its later controls
+//! onto a further line when they do not fit, and a name or folder that is too long ends in an
+//! ellipsis rather than running past the sheet's edge.
 use crate::{
     app::message::{
         Message,
@@ -24,14 +28,14 @@ use luxforge_ui::{
     ButtonSize, ButtonTone, Element, MenuEntry, MenuItem, RailDecoration, SegmentedModel,
     SliderModel, ToggleModel, Token, Tone, ValueEdit, boxed_input, caption, error_caption,
     inline_notice, label, menu_list, popover, section_label, segmented, slider, switch,
-    text_button, theme, title,
+    text_button, theme, title, truncated_text,
 };
 
 /// The sheet's size, from the boards.
 const WIDTH: f32 = 580.0;
 const HEIGHT: f32 = 640.0;
-/// The leading column the rows' labels sit in.
-const LABEL_WIDTH: f32 = 92.0;
+/// The leading column the rows' labels sit in: the widest label, Metadata, and a gap after it.
+const LABEL_WIDTH: f32 = 80.0;
 /// A preset card's width and height, and the `+` card's width.
 const CARD_WIDTH: f32 = 116.0;
 const CARD_HEIGHT: f32 = 70.0;
@@ -40,6 +44,11 @@ const ADD_WIDTH: f32 = 40.0;
 const NUMBER_WIDTH: f32 = 64.0;
 const SUFFIX_WIDTH: f32 = 72.0;
 const NAME_WIDTH: f32 = 180.0;
+
+/// The settings' scrollable, which an evidence script scrolls to bring Save to into view.
+pub(crate) fn scroll_id() -> iced::widget::Id {
+    iced::widget::Id::new("export-sheet")
+}
 
 fn sheet_message(message: SheetMessage) -> Message {
     Message::Export(ExportMessage::Sheet(message))
@@ -88,6 +97,8 @@ pub(crate) fn export_sheet(model: Option<&ExportSheetModel>) -> Option<Element<'
             ]
             .spacing(theme::SPACING * 1.5)
             .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(theme::SPACING)
             .into(),
         ));
     }
@@ -171,6 +182,7 @@ pub(crate) fn export_sheet(model: Option<&ExportSheetModel>) -> Option<Element<'
         !model.refusals.is_empty() || model.invalid.is_some() || model.preset_error.is_some();
 
     let body = scrollable(container(rows).padding([theme::SPACING * 1.5, theme::SPACING * 2.0]))
+        .id(scroll_id())
         .height(Length::Fill);
     let mut parts = column![header, rule(), body, rule()];
     if noticed {
@@ -242,6 +254,8 @@ fn sharpen_row(model: &SharpenModel) -> Element<'_, Message> {
         ]
         .spacing(theme::SPACING * 1.5)
         .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(theme::SPACING)
     ]
     .spacing(theme::SPACING);
     if let Some(changed) = &model.changed {
@@ -407,6 +421,8 @@ fn format_row(model: &ExportSheetModel) -> Element<'_, Message> {
         ]
         .spacing(theme::SPACING * 1.5)
         .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(theme::SPACING)
         .into(),
     )
 }
@@ -451,7 +467,11 @@ fn size_row(model: &ExportSheetModel) -> Element<'_, Message> {
             .push(number_field(height, Field::Height, model))
             .push(caption("px"));
     }
-    let mut column = column![controls, label(model.readout.clone())].spacing(theme::SPACING);
+    let mut column = column![
+        controls.wrap().vertical_spacing(theme::SPACING),
+        label(model.readout.clone())
+    ]
+    .spacing(theme::SPACING);
     if model.density.is_none() {
         column = column.push(text_button(
             "Set print size",
@@ -478,6 +498,8 @@ fn optimise<'a>(on: bool, hint: String) -> Element<'a, Message> {
     ]
     .spacing(theme::SPACING)
     .align_y(Alignment::Center)
+    .wrap()
+    .vertical_spacing(theme::SPACING)
     .into()
 }
 
@@ -545,7 +567,9 @@ fn quality_rows<'a>(quality: &QualityModel, model: &'a ExportSheetModel) -> Elem
                 ),
             ]
             .spacing(theme::SPACING)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(theme::SPACING),
         );
     }
     let mut limit = row![
@@ -566,7 +590,7 @@ fn quality_rows<'a>(quality: &QualityModel, model: &'a ExportSheetModel) -> Elem
             .push(number_field(&quality.limit_text, Field::LimitKb, model))
             .push(caption("KB"));
     }
-    rows = rows.push(limit);
+    rows = rows.push(limit.wrap().vertical_spacing(theme::SPACING));
     if let Some(caption_text) = &quality.limit_caption {
         rows = rows.push(caption(caption_text.clone()));
     }
@@ -589,20 +613,17 @@ fn save_to(model: &ExportSheetModel) -> Element<'_, Message> {
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
     if let Some(path) = &model.folder_path {
-        folder = folder.push(
-            container(
-                text(short_path(path))
-                    .size(theme::SIZE_CONTROL)
-                    .style(theme::ink(if model.folder == 1 {
-                        Token::Text
-                    } else {
-                        Token::TextTertiary
-                    }))
-                    .wrapping(text::Wrapping::None),
-            )
-            .width(Length::Fill)
-            .clip(true),
-        );
+        // The folder takes the room Choose… leaves and ends in an ellipsis when it needs more.
+        folder = folder.push(truncated_text(
+            short_path(path),
+            theme::SIZE_CONTROL,
+            theme::FONT,
+            if model.folder == 1 {
+                Token::Text
+            } else {
+                Token::TextTertiary
+            },
+        ));
     } else {
         folder = folder.push(Space::new().width(Length::Fill));
     }
@@ -617,11 +638,15 @@ fn save_to(model: &ExportSheetModel) -> Element<'_, Message> {
         .as_ref()
         .is_some_and(|(field, _)| *field == Field::Suffix);
     let suffix = model.suffix.clone();
-    let mut name = row![
-        text(model.stem.clone())
-            .size(theme::SIZE_CONTROL)
-            .style(theme::ink(Token::TextSecondary))
-            .wrapping(text::Wrapping::None),
+    // The suffix and the extension follow the stem, or move onto the next line when the stem leaves
+    // them no room; a stem wider than the whole row ends in an ellipsis.
+    let name = row![
+        truncated_text(
+            model.stem.clone(),
+            theme::SIZE_CONTROL,
+            theme::FONT,
+            Token::TextSecondary,
+        ),
         boxed_input(
             "suffix",
             &model.suffix,
@@ -632,14 +657,26 @@ fn save_to(model: &ExportSheetModel) -> Element<'_, Message> {
             sheet_message(SheetMessage::Text(Field::Suffix, suffix)),
         ),
         caption(model.extension.clone()),
-        Space::new().width(Length::Fill),
     ]
     .spacing(theme::SPACING)
-    .align_y(Alignment::Center);
-    if let Some(written) = &model.name {
-        name = name.push(caption(written.clone()));
-    }
+    .align_y(Alignment::Center)
+    .wrap()
+    .vertical_spacing(theme::SPACING);
     let mut rows = column![folder, name].spacing(theme::SPACING);
+    // The name that will be written, on its own line under the parts it is made of.
+    if let Some(written) = &model.name {
+        rows = rows.push(
+            truncated_text(
+                written.clone(),
+                theme::SIZE_CAPTION,
+                theme::FONT,
+                Token::TextTertiary,
+            )
+            .line_height(text::LineHeight::Absolute(
+                theme::CAPTION_LINE_HEIGHT.into(),
+            )),
+        );
+    }
     if let Some(taken) = &model.taken {
         rows = rows.push(caption(taken.clone()));
     }

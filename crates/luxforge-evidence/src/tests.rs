@@ -1060,6 +1060,7 @@ fn export_sheet_steps_round_trip_and_refuse_unknown_choices() {
         {"export":{"with_preset":{"name":"Web"}}},
         {"export":{"bar":true}},
         {"export":{"edit":{"folder":{"path":"/tmp/out"}}}},
+        {"export":{"scroll_end":true}},
     ]));
     assert_eq!(steps[0], Step::export_sheet());
     assert_eq!(steps[2], Step::export_preset("Print"));
