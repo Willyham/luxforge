@@ -499,7 +499,7 @@
     {
       "id": "TASK-007",
       "description": "Add output sharpening (Screen, Matte, Glossy by Low, Standard, High) after resizing, with a CPU reference, a GPU final sweep, the declared spatial limit, the sheet row and preset values.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
@@ -558,7 +558,7 @@
     {
       "id": "TASK-008",
       "description": "Qualify the new export kinds on the full corpus, measure export cost once on the M4, and publish final documentation.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-007"
       ],
