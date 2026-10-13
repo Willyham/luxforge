@@ -10,8 +10,7 @@ use crate::{
         MenuModel, MergeAction, PutBackModel, SheetModel, StackBand, Toggle,
         sheet::{
             EXPOSURE_HINT, FRAMES_HINT, FileId, FrameRow, LAST_SETTINGS_HINT, OVERLAY_HINT,
-            PanoramaSettings, Picture, Region, StitchOverlay, Tint, WARP_HINT, fit, hatch,
-            stepped,
+            PanoramaSettings, Picture, Region, StitchOverlay, Tint, WARP_HINT, fit, hatch, stepped,
         },
     },
 };
@@ -592,8 +591,8 @@ fn panorama_settings<'a>(
                 .on_toggle(|shown| act(MergeAction::CropCoverage(shown))),
         )
         .push(rule());
-    let mut heading = row![section_label("Frames"), Space::new().width(Length::Fill)]
-        .align_y(Alignment::Center);
+    let mut heading =
+        row![section_label("Frames"), Space::new().width(Length::Fill)].align_y(Alignment::Center);
     if let Some(reference) = &settings.reference {
         heading = heading.push(caption(reference.clone()));
     }
@@ -645,13 +644,18 @@ fn strip_frame<'a>(frame: &'a FrameRow, thumbnail: Option<&'a Handle>) -> Elemen
             },
             ..container::Style::default()
         });
-    let number = text(frame.number.map(|number| number.to_string()).unwrap_or_default())
-        .size(theme::SIZE_CAPTION)
-        .style(theme::ink(if reference {
-            Token::Accent
-        } else {
-            Token::TextSecondary
-        }));
+    let number = text(
+        frame
+            .number
+            .map(|number| number.to_string())
+            .unwrap_or_default(),
+    )
+    .size(theme::SIZE_CAPTION)
+    .style(theme::ink(if reference {
+        Token::Accent
+    } else {
+        Token::TextSecondary
+    }));
     let content = column![framed, number]
         .spacing(2.0)
         .align_x(Alignment::Center);
@@ -896,7 +900,9 @@ impl canvas::Program<Message, luxforge_ui::Theme> for StitchCanvas<'_> {
             }
             frame.stroke(
                 &polygon(outline),
-                canvas::Stroke::default().with_color(OUTLINE).with_width(1.0),
+                canvas::Stroke::default()
+                    .with_color(OUTLINE)
+                    .with_width(1.0),
             );
             // The number sits in a circle a fifth of the way down the frame, at its centre.
             let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
@@ -904,15 +910,14 @@ impl canvas::Program<Message, luxforge_ui::Theme> for StitchCanvas<'_> {
                 low = [low[0].min(*x), low[1].min(*y)];
                 high = [high[0].max(*x), high[1].max(*y)];
             }
-            let centre = at([
-                (low[0] + high[0]) / 2.0,
-                low[1] + (high[1] - low[1]) * 0.2,
-            ]);
+            let centre = at([(low[0] + high[0]) / 2.0, low[1] + (high[1] - low[1]) * 0.2]);
             let circle = canvas::Path::circle(centre, NUMBER_RADIUS);
             frame.fill(&circle, LABEL_SURFACE);
             frame.stroke(
                 &circle,
-                canvas::Stroke::default().with_color(OUTLINE).with_width(1.2),
+                canvas::Stroke::default()
+                    .with_color(OUTLINE)
+                    .with_width(1.2),
             );
             frame.fill_text(canvas::Text {
                 content: number.to_string(),

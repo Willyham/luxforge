@@ -2498,7 +2498,8 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> InfoModel
         Some(row) => {
             let mut info = item_info(row, state.summary.as_ref(), state.home.as_deref());
             if let Some(band) = &mut info.stack {
-                band.detail = super::select_merge::band_detail(band, state.merge.inspected.as_ref());
+                band.detail =
+                    super::select_merge::band_detail(band, state.merge.inspected.as_ref());
             }
             if matches!(row.item, RowItem::File { .. }) {
                 let picks = title(state).picks;
