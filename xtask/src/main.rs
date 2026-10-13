@@ -41,6 +41,7 @@ mod hdr_merge_measure;
 mod hdr_merge_smoke;
 mod hdr_merge_view_smoke;
 mod histogram_smoke;
+mod icon;
 mod information_smoke;
 mod inspect_dng;
 mod launch;
@@ -423,6 +424,10 @@ fn main_result() -> Result {
             let out = absolute(&root, &a.path("--output")?);
             a.done()?;
             lens_qualification::run(&manifest, &edges, &out)?;
+        }
+        "icon" => {
+            a.done()?;
+            icon::generate(&root)?;
         }
         "lensfun-import" => {
             let source = absolute(&root, &a.path("--source")?);
