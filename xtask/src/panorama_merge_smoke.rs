@@ -9,28 +9,29 @@
 //! 6000 × 4000 frames 26° apart with a 40° field, which stitch past the resident limits (about
 //! 150 MP, so its result is a paged source). It makes a new catalog with `Frames` indexed.
 //!
-//! **What the editor cannot do yet runs through the core's API beforehand**, as the documented
-//! requests the desktop will send ([`PENDING`] lists each step and the task it waits on):
-//!
-//! - the Row's merge as the panorama sheet sends it (`merge.plan`, `merge.preview`,
-//!   `merge.preview-update` with Boundary Warp [`WARP`], then `merge.create` with the preview), and
-//!   the Wide's as ⌥-click sends it (`merge.plan` and `merge.create` at once with the last
-//!   settings), each job's progress read as it runs (`panorama-merge-expected.json`);
-//! - after the first launch, the Wide result's JPEG export, through the banded reference
-//!   (`panorama-merge-export.json`).
+//! **The merges run through the core's API beforehand** until Select's panorama sheet is built,
+//! as the documented requests the desktop will send ([`PENDING`] lists each step and the task it
+//! waits on): the Row's as the panorama sheet sends them (`merge.plan`, `merge.preview`,
+//! `merge.preview-update` with Boundary Warp [`WARP`], then `merge.create` with the preview), and
+//! the Wide's as ⌥-click sends them (`merge.plan` and `merge.create` at once with the last
+//! settings), each job's progress read as it runs (`panorama-merge-expected.json`).
 //!
 //! The first launch, in [`first_plan`] order: `G`; the Row's folder, one collapsed panorama tile;
 //! `S` expanding its originals; an original clicked, its Info band "Frame k of 4"; the result's
 //! catalog folder, the result clicked and opened in Develop from its saved source; Fit, 100% and
 //! the bottom-right corner, Fit again; a linear mask and Exposure through it; `merge.inspect`; back
 //! to Select, the result clicked and Remove merge (`⌫`), `Cmd+Z`, `Shift+Cmd+Z` and `Cmd+Z`; then
-//! the Wide's folder, one collapsed tile of ten.
+//! the Wide's folder, one collapsed tile of ten with its preview drawn; the paged result opened in
+//! Develop from its catalog folder, at Fit counting its overview, at 100% in its bottom-right
+//! corner from a window of level 0, Fit again, the same mask and Exposure through it, and Develop's
+//! export of it, above 128 MP, on the GPU.
 //!
-//! The catalog the first launch left is read (`panorama-merge-after-first.json`), the Wide result
-//! exported, `Frames` renamed so no frame can be read, and the second launch, in [`second_plan`]
-//! order, opens the Row result from its catalog folder in Develop with its masked edit and inspects
-//! it. The folder is named back, the catalog read again (`panorama-merge-after.json`) and every
-//! frame's hash checked. The run then fails naming the [`PENDING`] steps until there are none.
+//! The catalog the first launch left is read (`panorama-merge-after-first.json`), `Frames` renamed
+//! so no frame can be read, and the second launch, in [`second_plan`] order, opens the Row result
+//! from its catalog folder in Develop with its masked edit and inspects it, then opens the Wide
+//! result with its own. The folder is named back, the catalog read again
+//! (`panorama-merge-after.json`) and every frame's hash checked. The run then fails naming the
+//! [`PENDING`] steps until there are none.
 use crate::{
     generate_catalog,
     hdr_merge_smoke::{ask, with_owner},
@@ -40,7 +41,8 @@ use crate::{
 };
 use luxforge_core::{BASIC_EFFECT, ClientId, EditorService, OwnerHandle};
 use luxforge_evidence::{
-    self as script, CatalogStep, DevelopStep, LibraryKey, SelectStep, ViewStep,
+    self as script, CatalogStep, DevelopStep, ExportFile, ExportStep, LibraryKey, SelectStep,
+    ViewStep,
 };
 use luxforge_reference::{
     panorama::{Lens, Pose, Scene, apply, row},
@@ -59,17 +61,15 @@ pub const NOTE: &str = "The run first writes two rows of JPEG frames of one synt
     `merge.preview-update` with Boundary Warp 60, `merge.create` with the preview) and the Wide as \
     ⌥-click does (`merge.plan` and `merge.create` with Boundary Warp 60), reading each job's \
     progress (`panorama-merge-expected.json`). The first launch opens that catalog with \
-    `--catalog`; the run then reads the catalog it left (`panorama-merge-after-first.json`), \
-    exports the Wide result through the core (`panorama-merge-export.json`, the file under \
-    `exports/`), renames `Frames` to `Frames offline`, and the second launch reopens the same \
-    catalog; the folder is named back and the catalog read again (`panorama-merge-after.json`).";
+    `--catalog` and exports the Wide result into its evidence directory (`wide-panorama.jpg`); the \
+    run then reads the catalog it left (`panorama-merge-after-first.json`), renames `Frames` to \
+    `Frames offline`, and the second launch reopens the same catalog; the folder is named back and \
+    the catalog read again (`panorama-merge-after.json`).";
 /// Where the run writes its frames and catalog.
 pub const GENERATED: &str = "generated";
 pub const EXPECTED: &str = "panorama-merge-expected.json";
 pub const AFTER_FIRST: &str = "panorama-merge-after-first.json";
-pub const EXPORTED: &str = "panorama-merge-export.json";
 pub const AFTER: &str = "panorama-merge-after.json";
-const EXPORTS: &str = "exports";
 const EXPORT_FILE: &str = "wide-panorama.jpg";
 const FRAMES: &str = "Frames";
 const OFFLINE: &str = "Frames offline";
@@ -122,9 +122,11 @@ const QUALITY: u8 = 95;
 const WARP: u8 = 60;
 /// The largest source a resident derived source may hold: past it a result is paged.
 const RESIDENT_PIXELS: u64 = 128_000_000;
-/// How long the setup waits for a preview, a merge and the export. The xtask is a dev build.
+/// How long the setup waits for a preview and a merge: the xtask is a dev build. And how long the
+/// first launch may take, developing and exporting the paged result.
 const PREVIEW_DEADLINE: Duration = Duration::from_secs(600);
 const MERGE_DEADLINE: Duration = Duration::from_secs(1800);
+const FIRST_LAUNCH_DEADLINE: Duration = Duration::from_secs(1200);
 /// The linear mask's ends in content coordinates, coverage 0 above `y0` and 1 below `y1`, and the
 /// Exposure through it.
 const GRADIENT: [f64; 4] = [0.5, 0.3, 0.5, 0.7];
@@ -143,25 +145,6 @@ const UNTOUCHED: f64 = 2.0;
 /// and edit at the same size by the same renderer.
 const REOPEN_TOLERANCE: f64 = 3.0;
 
-/// What a step of item 5 waits on before the editor can take it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Awaits {
-    /// GPU editing, previews and export of paged sources.
-    Task005,
-    /// Select's Merge panorama… item, its preview sheet, ⌥-click, the pending row and the
-    /// panorama words.
-    Task010,
-}
-
-impl Awaits {
-    pub fn task(self) -> &'static str {
-        match self {
-            Self::Task005 => "TASK-005",
-            Self::Task010 => "TASK-010",
-        }
-    }
-}
-
 /// A step of item 5 the editor cannot take on this base: where it goes in a launch's plan, the
 /// gesture as a proposed script step, and what its frame must show. The setup or the runner drives
 /// its documented requests meanwhile, where a frame would otherwise have nothing to show.
@@ -169,7 +152,8 @@ impl Awaits {
 pub struct Pending {
     /// The plan step it goes after, in the launch named first: `first/row` is after `row`.
     pub after: &'static str,
-    pub awaits: Awaits,
+    /// The task whose delivery it waits on.
+    pub awaits: &'static str,
     /// The proposed script steps, as JSON; a gesture with no script step yet proposes one.
     pub gesture: &'static str,
     pub expects: &'static str,
@@ -181,137 +165,95 @@ pub struct Pending {
 pub const PENDING: &[Pending] = &[
     Pending {
         after: "first/select",
-        awaits: Awaits::Task010,
+        awaits: "TASK-010",
         gesture: r#"[{"select":{"folder":"<Frames/Row>"}},{"select":{"click":{"position":0}}},{"select":{"click":{"position":3,"shift":true}}},{"select":{"choose":{"menu":"selection","item":"Merge panorama…"}}}]"#,
         expects: "the Row's four frames selected and the selection menu's Merge panorama… opening the sheet \"Merge panorama · 4 photos\", captured once revision 1 is drawn; sent exactly merge.plan then merge.preview as the setup's Row `sent` records them; the setup's Row merge then moves here",
     },
     Pending {
         after: "first/previewing",
-        awaits: Awaits::Task010,
+        awaits: "TASK-010",
         gesture: r#"{"select":{"merge_preview":{"boundary_warp":60}}}"#,
         expects: "merge.preview-update {preview_id, panorama: {boundary_warp: 60}} sent; a newer revision drawn, its crop losing no more and its output no smaller than revision 1's",
     },
     Pending {
         after: "first/warped",
-        awaits: Awaits::Task010,
+        awaits: "TASK-010",
         gesture: r#"[{"select":{"merge_preview":{"crop_overlay":true}}},{"select":{"merge_preview":{"frame_outlines":true}}}]"#,
         expects: "the crop and coverage overlay and the frame outlines on, drawn from the revision's overlays: the crop rectangle, the dimmed coverage with \"Crop loses N% at the edges\", and frames numbered 1 to 4",
     },
     Pending {
         after: "first/overlaid",
-        awaits: Awaits::Task010,
+        awaits: "TASK-010",
         gesture: r#"[{"select":{"merge_preview":"merge"}},{"select":"merged"}]"#,
         expects: "merge.create {kind: panorama, preview_id, panorama: {boundary_warp: 60}, folder: the plan's proposal} sent; the pending row \"Merging panorama · 4 photos\" with its stage words, bar and Cancel; then one collapsed tile, selected, with Select still shown; each Select frame's owner_merge_jobs lists merge.panorama jobs too",
     },
     Pending {
         after: "first/expanded",
-        awaits: Awaits::Task010,
+        awaits: "TASK-010",
         gesture: "none: the expanded frame's cells",
         expects: "each original's cell footer reads \"Frame k of 4\" in the stack's order (today's cell words carry only HDR's EV offsets)",
     },
     Pending {
         after: "first/clicked",
-        awaits: Awaits::Task010,
+        awaits: "TASK-010",
         gesture: r#"{"select":{"click":{"position":0}}}"#,
         expects: "the result's Info band \"Panorama · 4 photos\" with its resolved projection and field of view",
     },
     Pending {
         after: "first/undone",
-        awaits: Awaits::Task010,
+        awaits: "TASK-010",
         gesture: r#"[{"select":{"folder":"<Frames/Wide>"}},{"select":{"click":{"position":0}}},{"select":{"click":{"position":9,"shift":true}}},{"select":{"choose":{"menu":"selection","item":"Merge panorama"}}},{"select":"merged"}]"#,
         expects: "⌥-click: merge.create {kind: panorama, plan_id, panorama: {boundary_warp: 60}} sent at once with no sheet, the last settings; the pending row \"Merging panorama · 10 photos\" showing \"Reading k of 10\" and \"Stitching k of n\"; then one collapsed tile of ten; the setup's Wide merge then moves here",
     },
-    Pending {
-        after: "first/wide",
-        awaits: Awaits::Task005,
-        gesture: "none: the Wide frame's tile",
-        expects: "the paged result's tile preview rendered from its resident level",
-    },
-    Pending {
-        after: "first/wide",
-        awaits: Awaits::Task005,
-        gesture: r#"[{"catalog":{"source":"<the Wide result's folder path>"}},{"select":{"click":{"position":"<its position>"}}},{"develop":"active"},{"zoom":"fit"}]"#,
-        expects: "the paged result in Develop at Fit from its saved source, drawn from its overview level, the Info histogram saying it counts the overview",
-    },
-    Pending {
-        after: "first/wide_fit",
-        awaits: Awaits::Task005,
-        gesture: r#"[{"zoom":100},{"pan":{"x":1.0,"y":1.0}},{"zoom":"fit"}]"#,
-        expects: "100% in the bottom-right corner drawn from a level-0 window, no blank or uncovered draw",
-    },
-    Pending {
-        after: "first/wide_corner",
-        awaits: Awaits::Task005,
-        gesture: r#"[{"api":{"method":"mask.create-linear","params":{"x0":0.5,"y0":0.3,"x1":0.5,"y1":0.7}}},{"api":{"method":"edit.set-basic","params":{"mask":{"name":"Mask 1"},"exposure":1.0}}}]"#,
-        expects: "a linear mask and Exposure through it on the paged result: the covered side lifted, the other unchanged",
-    },
-    Pending {
-        after: "first/wide_masked",
-        awaits: Awaits::Task005,
-        gesture: r#"{"export":{"file":{"name":"wide-panorama.jpg"}}}"#,
-        expects: "Develop's export of the paged result written above 128 MP by the GPU's streamed level-0 windows (renderer gpu); it replaces the runner's reference export",
-    },
-    Pending {
-        after: "second/inspected",
-        awaits: Awaits::Task005,
-        gesture: r#"[{"key":"g"},{"catalog":{"source":"<the Wide result's folder path>"}},{"select":{"click":{"position":"<its position>"}}},{"develop":"active"}]"#,
-        expects: "with the frames moved away, the Wide result opens at Fit with its masked edit",
-    },
 ];
 
-/// The first launch's frames: the Row's stack, Develop at Fit, 100% in a corner and with a mask,
-/// removal and its undo, and the Wide's tile.
-pub fn first_plan(expected: &Value) -> Result<Plan> {
-    let row = &expected["sets"][ROW.name];
-    let text = |value: &Value, what: &str| -> Result<String> {
-        value
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| format!("The expected answers name no {what}").into())
-    };
-    let row_folder = text(&row["folder"], "Row folder")?;
-    let wide_folder = text(&expected["sets"][WIDE.name]["folder"], "Wide folder")?;
-    let place = text(&row["place"]["path"], "catalog folder for the Row result")?;
-    let position = row["place"]["position"]
+/// Where a set's result is filed, as the sources panel nests its folder and its place there.
+fn filed(places: &Value, set: &Set, whose: &str) -> Result<(String, u32)> {
+    let place = &places[set.name];
+    let path = place["path"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| format!("{whose} name no catalog folder for the {} result", set.name))?;
+    let position = place["position"]
         .as_u64()
-        .ok_or("The expected answers place no Row result")? as u32;
-    let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
-    let key = |name: &str, key: &str| Step::new(name, script::Step::key(key));
-    let click = |name: &str, position| {
-        select(
-            name,
-            SelectStep::Click {
-                position,
-                shift: false,
-                command: false,
-            },
-        )
-    };
-    Ok(Plan::new(vec![
-        Step::opened("opened"),
-        key("select", "g"),
-        // TASK-010: the sheet's gestures and the merge go here (`PENDING`).
-        select("row", SelectStep::Folder(row_folder.clone())),
-        key("expanded", "s"),
-        click("original", 2),
-        click("clicked", 0),
+        .and_then(|position| u32::try_from(position).ok())
+        .ok_or_else(|| format!("{whose} place no {} result", set.name))?;
+    Ok((path.to_owned(), position))
+}
+
+fn click(name: &str, position: u32) -> Step {
+    Step::new(
+        name,
+        script::Step::Select(SelectStep::Click {
+            position,
+            shift: false,
+            command: false,
+        }),
+    )
+}
+
+/// The result clicked in its catalog folder and opened in Develop; at Fit, at 100% in its
+/// bottom-right corner and at Fit again; then a linear mask and one stop of Exposure through it.
+/// Each step's name begins with `prefix`.
+fn developed(prefix: &str, path: String, position: u32) -> Vec<Step> {
+    let name = |step: &str| format!("{prefix}{step}");
+    vec![
         Step::new(
-            "place",
-            script::Step::Catalog(CatalogStep::Source(place.clone())),
+            name("place"),
+            script::Step::Catalog(CatalogStep::Source(path)),
         ),
-        click("result", position),
-        Step::new("develop", script::Step::Develop(DevelopStep::Active)),
-        Step::new("fit", ViewStep::Fit).commits(0).fit(),
-        Step::new("percent", ViewStep::Percent(100.0))
+        click(&name("result"), position),
+        Step::new(name("develop"), script::Step::Develop(DevelopStep::Active)),
+        Step::new(name("fit"), ViewStep::Fit).commits(0).fit(),
+        Step::new(name("percent"), ViewStep::Percent(100.0))
             .commits(0)
             .percent(100.0),
-        Step::new("corner", script::Step::Pan { x: 1.0, y: 1.0 })
+        Step::new(name("corner"), script::Step::Pan { x: 1.0, y: 1.0 })
             .commits(0)
             .percent(100.0),
-        Step::new("refit", ViewStep::Fit).commits(0).fit(),
+        Step::new(name("refit"), ViewStep::Fit).commits(0).fit(),
         Step::new(
-            "masked",
+            name("masked"),
             script::Step::call(
                 "mask.create-linear",
                 json!({"x0": GRADIENT[0], "y0": GRADIENT[1], "x1": GRADIENT[2], "y1": GRADIENT[3]}),
@@ -320,7 +262,7 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
         .commits(1)
         .masks(1),
         Step::new(
-            "lifted",
+            name("lifted"),
             script::Step::call(
                 "edit.set-basic",
                 json!({"mask": {"name": "Mask 1"}, "exposure": EXPOSURE}),
@@ -330,54 +272,104 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
         .label(MASKED_LABEL)
         .payload(BASIC_EFFECT, json!({ "exposure": EXPOSURE }))
         .fit(),
+    ]
+}
+
+/// A result opened in Develop as the first launch left it: its masked edit, at Fit.
+fn reopened(name: &str) -> Step {
+    Step::new(name, script::Step::Develop(DevelopStep::Active))
+        .payload(BASIC_EFFECT, json!({ "exposure": EXPOSURE }))
+        .masks(1)
+        .fit()
+}
+
+/// The first launch's frames: the Row's stack, its result in Develop at Fit, at 100% in a corner
+/// and through a mask, its removal and undo; then the Wide's tile, its paged result in Develop the
+/// same way, and Develop's export of it.
+pub fn first_plan(expected: &Value) -> Result<Plan> {
+    let sets = &expected["sets"];
+    let folder = |set: &Set| -> Result<String> {
+        sets[set.name]["folder"]
+            .as_str()
+            .filter(|folder| !folder.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("The expected answers name no {} folder", set.name).into())
+    };
+    let places = json!({ ROW.name: sets[ROW.name]["place"], WIDE.name: sets[WIDE.name]["place"] });
+    let (row_path, row_position) = filed(&places, &ROW, "The expected answers")?;
+    let (wide_path, wide_position) = filed(&places, &WIDE, "The expected answers")?;
+    let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
+    let key = |name: &str, key: &str| Step::new(name, script::Step::key(key));
+    let mut steps = vec![
+        Step::opened("opened"),
+        key("select", "g"),
+        // TASK-010: the sheet's gestures and the merge go here (`PENDING`).
+        select("row", SelectStep::Folder(folder(&ROW)?)),
+        key("expanded", "s"),
+        click("original", 2),
+        click("clicked", 0),
+    ];
+    steps.extend(developed("", row_path, row_position));
+    steps.extend([
         Step::new("inspected", script::Step::call("merge.inspect", json!({}))),
         key("back", "g"),
-        select("again", SelectStep::Folder(row_folder)),
+        select("again", SelectStep::Folder(folder(&ROW)?)),
         click("chosen", 0),
         Step::new("removed", script::Step::Catalog(CatalogStep::DeleteKey)),
         select("restored", SelectStep::Library(LibraryKey::Undo)),
         select("redone", SelectStep::Library(LibraryKey::Redo)),
         select("undone", SelectStep::Library(LibraryKey::Undo)),
         // TASK-010: the Wide's ⌥-click merge goes here (`PENDING`).
-        select("wide", SelectStep::Folder(wide_folder)),
-        // TASK-005: the Wide result in Develop and its export go here (`PENDING`).
-    ]))
+        select("wide", SelectStep::Folder(folder(&WIDE)?)),
+    ]);
+    steps.extend(developed("wide_", wide_path, wide_position));
+    steps.push(
+        Step::new(
+            "wide_exported",
+            ExportStep::File(ExportFile {
+                name: EXPORT_FILE.into(),
+                keep_metadata: false,
+                reference: false,
+                background: false,
+            }),
+        )
+        .commits(0),
+    );
+    Ok(Plan::new(steps))
 }
 
 /// The second launch's frames, over the catalog the first left with the frames moved away: the
-/// Row result's catalog folder, the result opened in Develop with its masked edit, and its merge
-/// inspected.
+/// Row result's catalog folder, the result opened in Develop with its masked edit and its merge
+/// inspected; then the Wide result opened with its own.
 pub fn second_plan(after: &Value) -> Result<Plan> {
-    let row = &after["places"][ROW.name];
-    let folder = row["path"]
-        .as_str()
-        .filter(|path| !path.is_empty())
-        .ok_or("The first launch's catalog names no folder for the Row result")?;
-    let position = row["position"]
-        .as_u64()
-        .ok_or("The first launch's catalog places no Row result")?;
-    Ok(Plan::new(vec![
+    let places = &after["places"];
+    let whose = "The first launch's catalog";
+    let (row_path, row_position) = filed(places, &ROW, whose)?;
+    let (wide_path, wide_position) = filed(places, &WIDE, whose)?;
+    let mut steps = vec![
         Step::opened("opened"),
         Step::new("select", script::Step::key("g")),
         Step::new(
             "place",
-            script::Step::Catalog(CatalogStep::Source(folder.to_owned())),
+            script::Step::Catalog(CatalogStep::Source(row_path.clone())),
         ),
-        Step::new(
-            "result",
-            script::Step::Select(SelectStep::Click {
-                position: position as u32,
-                shift: false,
-                command: false,
-            }),
-        ),
-        Step::new("reopened", script::Step::Develop(DevelopStep::Active))
-            .payload(BASIC_EFFECT, json!({ "exposure": EXPOSURE }))
-            .masks(1)
-            .fit(),
+        click("result", row_position),
+        reopened("reopened"),
         Step::new("inspected", script::Step::call("merge.inspect", json!({}))),
-        // TASK-005: the Wide result reopened at Fit goes here (`PENDING`).
-    ]))
+        Step::new("back", script::Step::key("g")),
+    ];
+    // Select shows the Row result's folder again; the Wide's is pressed only when it is another.
+    if wide_path != row_path {
+        steps.push(Step::new(
+            "wide_place",
+            script::Step::Catalog(CatalogStep::Source(wide_path)),
+        ));
+    }
+    steps.extend([
+        click("wide_result", wide_position),
+        reopened("wide_reopened"),
+    ]);
+    Ok(Plan::new(steps))
 }
 
 // The frames.
@@ -677,29 +669,6 @@ fn make(generated: &Path) -> Result<(Value, Vec<PathBuf>)> {
     ))
 }
 
-/// The Wide result exported through the core into `destination`: its source prepared, then
-/// `export.jpeg`, which renders a paged source through the banded reference; with the file's own
-/// header size.
-fn export(catalog: &Path, result: &Value, destination: &Path) -> Result<Value> {
-    with_owner(catalog, |owner, client| {
-        let prepared = ask(owner, client, "source.prepare", json!({"asset_id": result}))?;
-        if !prepared["job_id"].is_null() {
-            follow(owner, client, &prepared["job_id"], PREVIEW_DEADLINE)?;
-        }
-        let answer = ask(
-            owner,
-            client,
-            "export.jpeg",
-            json!({"asset_id": result, "destination": destination,
-                "mutation": mutation("setup-export")}),
-        )?;
-        let job = follow(owner, client, &answer["job_id"], MERGE_DEADLINE)?;
-        let (width, height) = image::image_dimensions(destination)?;
-        Ok(json!({"answer": answer, "job": job,
-            "file": {"width": width, "height": height, "bytes": fs::metadata(destination)?.len()}}))
-    })
-}
-
 /// What the catalog says of both results and the run's changes, over an owner of the runner's
 /// own: each merge inspected, the Row result's history, where each is filed, and the library
 /// journal.
@@ -743,14 +712,13 @@ fn after(catalog: &Path, results: &[(&str, Value)]) -> Result<Value> {
 }
 
 /// Make the frames, the catalog and the merges (a replay reads the recorded answers), launch the
-/// editor over them, read the catalog it left, export the Wide result, take the frames offline,
-/// launch it again, and check every frame.
+/// editor over them, read the catalog it left, take the frames offline, launch it again, and check
+/// every frame.
 pub fn run(mut run: Run, scenario: &'static Scenario, _: Vec<PathBuf>) -> Result {
     let generated = run.out().join(GENERATED);
     let catalog = generated.join(generate_catalog::CATALOG);
     let expected_file = run.out().join(EXPECTED);
     let first_file = run.out().join(AFTER_FIRST);
-    let export_file = run.out().join(EXPORTED);
     let after_file = run.out().join(AFTER);
     if let Some(note) = scenario.note {
         run.note(note);
@@ -776,7 +744,8 @@ pub fn run(mut run: Run, scenario: &'static Scenario, _: Vec<PathBuf>) -> Result
         let launched = run.launch(window(
             Launch::named("first")
                 .catalog(&catalog)
-                .script("first-script.json", first.script()),
+                .script("first-script.json", first.script())
+                .deadline(FIRST_LAUNCH_DEADLINE),
         ))?;
         let first_checked = first.check(&launched.dir)?;
         let results = [ROW.name, WIDE.name].map(|name| {
@@ -787,10 +756,6 @@ pub fn run(mut run: Run, scenario: &'static Scenario, _: Vec<PathBuf>) -> Result
         });
         if !run.replaying() {
             write_json(&first_file, &after(&catalog, &results)?)?;
-            let exports = run.out().join(EXPORTS);
-            fs::create_dir_all(&exports)?;
-            let exported = export(&catalog, &results[1].1, &exports.join(EXPORT_FILE))?;
-            write_json(&export_file, &exported)?;
         }
         let after_first = read_json(&recorded(run, &first_file))?;
         let second = second_plan(&after_first)?;
@@ -1033,19 +998,94 @@ fn check_setup(expected: &Value, checks: &mut Checks, first: &Checked) -> Result
     Ok(())
 }
 
+/// A result opened in Develop from its saved source and its frames named `prefix…` by
+/// [`developed`]: drawn at Fit, at 100% in its corner and at Fit again, and one stop through its
+/// mask lifting the covered side only. Answers the lifted frame's covered patch.
+fn check_developed(
+    checks: &mut Checks,
+    launch: &Checked,
+    prefix: &str,
+    answer: &Value,
+) -> Result<f64> {
+    let at = |step: &str| launch.at(&format!("{prefix}{step}"));
+    let opened = at("develop")?;
+    ensure(
+        develop(opened)["document"]["asset_id"] == answer["result_asset_id"]
+            && develop(opened)["document"]["source"] == "derived"
+            && develop(opened)["document"]["title"] == answer["file_name"]
+            && select(opened)["shown"] == "develop",
+        format!(
+            "{prefix}develop: Develop shows {}",
+            develop(opened)["document"]
+        ),
+    )?;
+    for step in ["fit", "corner", "refit"] {
+        let frame = at(step)?;
+        frame.photo()?;
+        checks.note(
+            frame,
+            &format!("{prefix}{step}: the result drawn"),
+            json!({"view": frame.state()["surface"]["view"],
+                "drawing_path": frame.state()["surface"]["gpu"]["drawing_path"],
+                "histogram": {"overview": frame.state()["histogram"]["overview"],
+                    "tooltips": frame.state()["histogram"]["tooltips"]}}),
+        );
+    }
+    let (refit, lifted) = (at("refit")?, at("lifted")?);
+    let covered = patch(lifted, COVERED)?;
+    checks.compare(
+        lifted,
+        &format!("{prefix}lifted: one stop through the mask lifts its covered side"),
+        covered,
+        patch(refit, COVERED)?,
+        Tolerance::Above(LIFT),
+    )?;
+    checks.compare(
+        lifted,
+        &format!("{prefix}lifted: the mask leaves its uncovered side"),
+        patch(lifted, UNCOVERED)?,
+        patch(refit, UNCOVERED)?,
+        Tolerance::Within(UNTOUCHED),
+    )?;
+    Ok(covered)
+}
+
+/// A result reopened in Develop with its frames moved away: from its saved source, its covered
+/// patch where the first launch's edit left it.
+fn check_reopened(
+    checks: &mut Checks,
+    frame: &Frame,
+    name: &str,
+    answer: &Value,
+    lifted: f64,
+) -> Result {
+    ensure(
+        develop(frame)["document"]["asset_id"] == answer["result_asset_id"]
+            && develop(frame)["document"]["title"] == answer["file_name"],
+        format!("{name}: Develop shows {}", develop(frame)["document"]),
+    )?;
+    checks.compare(
+        frame,
+        &format!("{name}: the covered side, frames offline, against the edited one"),
+        patch(frame, COVERED)?,
+        lifted,
+        Tolerance::Within(REOPEN_TOLERANCE),
+    )
+}
+
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let [first, second] = launches else {
         return Err(format!("panorama-merge has two launches, not {}", launches.len()).into());
     };
     let expected = read_json(&recorded(run, &run.out().join(EXPECTED)))?;
     let after_first = read_json(&recorded(run, &run.out().join(AFTER_FIRST)))?;
-    let exported = read_json(&recorded(run, &run.out().join(EXPORTED)))?;
     let after = read_json(&recorded(run, &run.out().join(AFTER)))?;
     let mut checks = Checks::new();
     check_setup(&expected, &mut checks, first)?;
     let row_answer = &expected["sets"][ROW.name]["result"];
     let row_result = row_answer["result_asset_id"].clone();
-    let wide_result = expected["sets"][WIDE.name]["result"]["result_asset_id"].clone();
+    let wide_answer = &expected["sets"][WIDE.name]["result"];
+    let wide_result = wide_answer["result_asset_id"].clone();
 
     // The Row's folder: one collapsed panorama tile.
     collapsed_leader(first.at("row")?, "row", &ROW, &row_result)?;
@@ -1081,39 +1121,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
 
     // Develop: the result from its saved source, at Fit, at 100% in its far corner, and edited
-    // through a linear mask.
-    let opened = first.at("develop")?;
+    // through a linear mask; a resident source, whose histogram counts the photograph itself.
+    let row_lifted = check_developed(&mut checks, first, "", row_answer)?;
+    let histogram = &first.at("fit")?.state()["histogram"];
     ensure(
-        develop(opened)["document"]["asset_id"] == row_result
-            && develop(opened)["document"]["source"] == "derived"
-            && develop(opened)["document"]["title"] == row_answer["file_name"]
-            && select(opened)["shown"] == "develop",
-        format!("develop: Develop shows {}", develop(opened)["document"]),
-    )?;
-    for name in ["fit", "corner", "refit"] {
-        let frame = first.at(name)?;
-        frame.photo()?;
-        checks.note(
-            frame,
-            "the result drawn",
-            json!({"view": frame.state()["surface"]["view"],
-                "gpu": frame.state()["surface"]["gpu"]["drawing_path"]}),
-        );
-    }
-    let (refit, lifted) = (first.at("refit")?, first.at("lifted")?);
-    checks.compare(
-        lifted,
-        "lifted: one stop through the mask lifts its covered side",
-        patch(lifted, COVERED)?,
-        patch(refit, COVERED)?,
-        Tolerance::Above(LIFT),
-    )?;
-    checks.compare(
-        lifted,
-        "lifted: the mask leaves its uncovered side",
-        patch(lifted, UNCOVERED)?,
-        patch(refit, UNCOVERED)?,
-        Tolerance::Within(UNTOUCHED),
+        histogram["overview"].is_null(),
+        format!("fit: the Row's histogram is {histogram}"),
     )?;
     let inspected = &first.at("inspected")?["step"]["result"];
     ensure(
@@ -1163,12 +1176,52 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )?;
     }
 
-    // The Wide's folder: one collapsed tile of ten.
-    collapsed_leader(first.at("wide")?, "wide", &WIDE, &wide_result)?;
+    // The Wide's folder: one collapsed tile of ten, its preview rendered from its resident level.
+    let wide = first.at("wide")?;
+    collapsed_leader(wide, "wide", &WIDE, &wide_result)?;
+    let previews = &select(wide)["previews"];
+    ensure(
+        previews["visible"].as_u64() > Some(0)
+            && previews["visible_held"] == previews["visible"]
+            && previews["failed"] == 0
+            && previews["refused"] == 0,
+        format!("wide: the tile's previews are {previews}"),
+    )?;
+
+    // The paged result in Develop: at Fit its histogram counts the overview; at 100% in its
+    // corner the surface holds a window of level 0; then the mask and its export.
+    let wide_lifted = check_developed(&mut checks, first, "wide_", wide_answer)?;
+    let histogram = &first.at("wide_fit")?.state()["histogram"];
+    ensure(
+        histogram["overview"]
+            .as_array()
+            .is_some_and(|size| size.len() == 2),
+        format!("wide_fit: the histogram is {histogram}"),
+    )?;
+    let events = crate::scenario::events(&first.evidence.join("events.jsonl"))?;
+    let windows: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["event"] == "gpu_window")
+        .map(|event| &event["detail"])
+        .collect();
+    ensure(
+        windows.iter().any(|window| window["held"] == true),
+        format!("wide_corner: no window of level 0 was held: {windows:?}"),
+    )?;
+    let exported = first.at("wide_exported")?;
+    let export = &exported["step"]["export"];
+    let (width, height) = image::image_dimensions(first.evidence.join(EXPORT_FILE))?;
+    ensure(
+        export["record"]["status"] == "ready"
+            && export["record"]["result"]["renderer"]["record"] == "gpu"
+            && u64::from(width) * u64::from(height) > RESIDENT_PIXELS,
+        format!("wide_exported: a {width} × {height} file from {export}"),
+    )?;
     checks.note(
-        first.at("wide")?,
-        "wide: the paged result's tile",
-        json!({"stacks": stacks(first.at("wide")?)}),
+        exported,
+        "wide_exported: Develop's export of the paged result",
+        json!({"width": width, "height": height, "export": export,
+            "windows": windows.len()}),
     );
 
     // The catalog the first launch left: both merges active and nothing merged again.
@@ -1196,32 +1249,20 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("The Row result's history holds {}", after_first["history"]),
     )?;
 
-    // The Wide result exported past the resident limits, through the reference until the GPU
-    // streams paged sources.
-    let file = &exported["file"];
-    let pixels = file["width"].as_u64().unwrap_or(0) * file["height"].as_u64().unwrap_or(0);
-    let renderer = &exported["job"]["record"]["result"]["renderer"];
-    ensure(
-        pixels > RESIDENT_PIXELS
-            && file["width"] == exported["answer"]["width"]
-            && file["height"] == exported["answer"]["height"]
-            && (renderer.is_null() || renderer["record"] == "reference"),
-        format!("The Wide export wrote {file} by {renderer}"),
+    // Reopened with the frames moved away: each result from its saved source with its edit.
+    check_reopened(
+        &mut checks,
+        second.at("reopened")?,
+        "reopened",
+        row_answer,
+        row_lifted,
     )?;
-
-    // Reopened with the frames moved away: the Row result from its saved source with its edit.
-    let reopened = second.at("reopened")?;
-    ensure(
-        develop(reopened)["document"]["asset_id"] == row_result
-            && develop(reopened)["document"]["title"] == row_answer["file_name"],
-        format!("reopened: Develop shows {}", develop(reopened)["document"]),
-    )?;
-    checks.compare(
-        reopened,
-        "reopened: the covered side, frames offline, against the edited one",
-        patch(reopened, COVERED)?,
-        patch(lifted, COVERED)?,
-        Tolerance::Within(REOPEN_TOLERANCE),
+    check_reopened(
+        &mut checks,
+        second.at("wide_reopened")?,
+        "wide_reopened",
+        wide_answer,
+        wide_lifted,
     )?;
     let offline = &second.at("inspected")?["step"]["result"];
     ensure(
@@ -1245,25 +1286,22 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     checks.write(
         &first.evidence,
         SCENARIO,
-        json!({"row": row_result, "wide": wide_result, "export": exported["file"],
+        json!({"row": row_result, "wide": wide_result,
             "tolerance": {"lift": LIFT, "untouched": UNTOUCHED, "reopen": REOPEN_TOLERANCE},
             "pending": pending()}),
     )?;
     match PENDING {
         [] => Ok(()),
         _ => Err(format!(
-            "panorama-merge passed every step this build can take; {} steps of item 5 wait: {}",
+            "panorama-merge passed every step this build can take; {} steps of item 5 wait on {}: \
+             after {}",
             PENDING.len(),
-            [Awaits::Task010, Awaits::Task005]
-                .map(|awaits| {
-                    let steps: Vec<&str> = PENDING
-                        .iter()
-                        .filter(|pending| pending.awaits == awaits)
-                        .map(|pending| pending.after)
-                        .collect();
-                    format!("{} after {}", awaits.task(), steps.join(", "))
-                })
-                .join("; ")
+            PENDING[0].awaits,
+            PENDING
+                .iter()
+                .map(|pending| pending.after)
+                .collect::<Vec<_>>()
+                .join(", ")
         )
         .into()),
     }
@@ -1274,7 +1312,7 @@ fn pending() -> Value {
     PENDING
         .iter()
         .map(|pending| {
-            json!({"after": pending.after, "awaits": pending.awaits.task(),
+            json!({"after": pending.after, "awaits": pending.awaits,
                 "gesture": pending.gesture, "expects": pending.expects})
         })
         .collect()
@@ -1285,11 +1323,17 @@ mod tests {
     use super::*;
     use luxforge_test_macros::slow;
 
+    fn places() -> Value {
+        json!({
+            ROW.name: {"path": "2026 \u{203a} 13 Oct", "position": 0},
+            WIDE.name: {"path": "2026 \u{203a} 13 Oct", "position": 1},
+        })
+    }
+
     fn expected() -> Value {
         json!({"sets": {
-            ROW.name: {"folder": "/tmp/Frames/Row",
-                "place": {"path": "2026 \u{203a} 13 Oct", "position": 0}},
-            WIDE.name: {"folder": "/tmp/Frames/Wide"},
+            ROW.name: {"folder": "/tmp/Frames/Row", "place": places()[ROW.name]},
+            WIDE.name: {"folder": "/tmp/Frames/Wide", "place": places()[WIDE.name]},
         }})
     }
 
@@ -1298,13 +1342,16 @@ mod tests {
         let first = first_plan(&expected()).unwrap();
         first.validate().unwrap();
         assert!(first.scripted());
-        assert_eq!(first.len(), 24);
-        let second = second_plan(
-            &json!({"places": {ROW.name: {"path": "2026 \u{203a} 13 Oct", "position": 1}}}),
-        )
-        .unwrap();
+        assert_eq!(first.len(), 34);
+        let second = second_plan(&json!({ "places": places() })).unwrap();
         second.validate().unwrap();
-        assert_eq!(second.len(), 6);
+        assert_eq!(second.len(), 9);
+        // A Wide result filed in another folder has that folder pressed first.
+        let mut apart = places();
+        apart[WIDE.name]["path"] = json!("2026 \u{203a} Elsewhere");
+        let second = second_plan(&json!({ "places": apart })).unwrap();
+        second.validate().unwrap();
+        assert!(second.index("wide_place").is_some());
         // Registered, opening nothing a checkout lacks, so `verify --tier rendered` runs it.
         let row = crate::smoke::find(SCENARIO).unwrap();
         assert!(row.rendered() && !row.takes_source());
@@ -1313,19 +1360,9 @@ mod tests {
     #[test]
     fn every_pending_step_names_its_place_task_and_gesture() {
         let first = first_plan(&expected()).unwrap();
-        let second = second_plan(
-            &json!({"places": {ROW.name: {"path": "2026 \u{203a} 13 Oct", "position": 1}}}),
-        )
-        .unwrap();
+        let second = second_plan(&json!({ "places": places() })).unwrap();
         // Steps a pending row adds are named by the row before them.
-        let added = [
-            "previewing",
-            "warped",
-            "overlaid",
-            "wide_fit",
-            "wide_corner",
-            "wide_masked",
-        ];
+        let added = ["previewing", "warped", "overlaid"];
         for pending in PENDING {
             let (launch, step) = pending.after.split_once('/').unwrap();
             let plan = match launch {
@@ -1343,16 +1380,7 @@ mod tests {
                 serde_json::from_str::<Value>(pending.gesture).unwrap();
             }
         }
-        assert!(
-            PENDING
-                .iter()
-                .any(|pending| pending.awaits == Awaits::Task010)
-        );
-        assert!(
-            PENDING
-                .iter()
-                .any(|pending| pending.awaits == Awaits::Task005)
-        );
+        assert!(PENDING.iter().all(|pending| pending.awaits == "TASK-010"));
     }
 
     #[test]

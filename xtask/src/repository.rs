@@ -1146,6 +1146,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "xtask/src/usage_measure.rs",
             // `hdr-merge-measure`'s scoped pool writing a photo-sized frame's bands.
             "xtask/src/hdr_merge_measure/mod.rs",
+            // `panorama-merge`'s scoped pool recording a generated frame's bands of rows.
+            "xtask/src/panorama_merge_smoke.rs",
         ],
         mode: Match::Whole,
         tests: false,
