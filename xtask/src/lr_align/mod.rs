@@ -21,6 +21,7 @@
 //! parent must; RAW originals are only read, verified by their SHA-256 before and after, and a
 //! failed run removes the folder it created.
 mod measure;
+mod photographs;
 mod photos;
 mod readback;
 mod report;
