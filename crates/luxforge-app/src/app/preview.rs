@@ -1100,7 +1100,7 @@ impl Editor {
                                 self.owner.clone(),
                                 self.client,
                                 state.asset.id.clone(),
-                                Some(entry),
+                                entry,
                             );
                         }
                     }

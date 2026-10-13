@@ -663,6 +663,8 @@ impl CatalogSelection {
     /// stored catalog whose folder is missing, as with an unplugged drive, selects the default and
     /// is kept as [`Self::missing`]; a folder without a catalog is still selected, since the
     /// desktop creates one there. `None` when nothing names a catalog and there is no default.
+    /// Only a missing parent selects the default. An inaccessible or non-directory parent keeps
+    /// the stored path, so opening the selected catalog reports its actual error.
     /// Selecting creates nothing.
     pub fn select(
         explicit: Option<PathBuf>,
@@ -676,8 +678,16 @@ impl CatalogSelection {
             });
         }
         let (path, missing) = match stored {
-            Some(stored) if stored.parent().is_some_and(Path::is_dir) => (stored, None),
-            Some(stored) => (default?, Some(stored)),
+            Some(stored)
+                if stored.parent().is_some_and(|parent| {
+                    parent
+                        .metadata()
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                }) =>
+            {
+                (default?, Some(stored))
+            }
+            Some(stored) => (stored, None),
             None => (default?, None),
         };
         Some(Self { path, missing })
@@ -1281,6 +1291,29 @@ mod tests {
         assert_eq!(select(None, None).unwrap().path, default);
         // Nowhere to keep the default and nothing naming a catalog.
         assert_eq!(CatalogSelection::select(None, None, None), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_non_directory_catalog_parent_keeps_the_stored_path_for_the_opening_error() {
+        let root = luxforge_testbase::paths::temp_dir("catalog-parent-is-file");
+        let parent = root.join("Photos");
+        std::fs::write(&parent, b"keep this file").unwrap();
+        let stored = parent.join(CATALOG_FILE);
+        let default = root.join("default").join(CATALOG_FILE);
+        assert_eq!(
+            CatalogSelection::select(None, Some(default.clone()), Some(stored.clone())),
+            Some(CatalogSelection {
+                path: stored,
+                missing: None
+            }),
+            "a non-directory parent is an opening failure, not a missing drive"
+        );
+        assert!(
+            !default.parent().unwrap().exists(),
+            "selection creates no default catalog"
+        );
+        assert_eq!(std::fs::read(&parent).unwrap(), b"keep this file");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

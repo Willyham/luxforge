@@ -21,6 +21,7 @@ pub(crate) enum ExportMessage {
     Sheet(SheetMessage),
     /// The sheet's plan for `settings` answered.
     Planned {
+        generation: u64,
         settings: Box<ExportSettings>,
         result: Result<SheetPlan, String>,
     },

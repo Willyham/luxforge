@@ -68,8 +68,8 @@ pub fn encode(
         },
     )?;
     let file = assemble(&bitstream, settings.icc, settings.exif)?;
-    if last < 100 {
-        progress(100);
+    if last < 100 && !progress(100) {
+        return Err(Error::Stopped);
     }
     Ok(file)
 }

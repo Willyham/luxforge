@@ -11,11 +11,12 @@
 //! changes nothing and emits no event. The same `request_id` with a different input is a
 //! `conflict`. An asset's edits and history are deduplicated by the catalog, durably and in the same
 //! write as the change, because a retry after a restart must be answered rather than refused as
-//! stale. Every method here is safe to run again after a restart: it is a no-op, joins the work
-//! already done, fails visibly on the uniqueness it would break, or, for a settings write, which
-//! sets values rather than changing them, conflicts on the revision it was made against; a draft
-//! does not outlive the owner, so a commit's retry after a restart is refused as naming no draft.
-//! So the table lives with the owner, holds only successful answers, and is bounded.
+//! stale. This bounded owner table is not a durable request log: its guarantees end on
+//! eviction or restart. Asset mutations have durable matching separately, and recorded library
+//! changes have journal matching, but catalog-only no-op navigation and permanent deletion can
+//! run again on a cache miss. Those methods need durable catalog-level request results before
+//! clients can safely retry them across this boundary. A draft does not outlive the owner, so a
+//! commit's retry after a restart is refused as naming no draft.
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{Error, Mutation, MutationRequest, capabilities::redact::redacted};
@@ -27,7 +28,7 @@ use std::collections::VecDeque;
 /// The most answers the table keeps; the oldest is forgotten first.
 const REQUESTS: usize = 256;
 /// The most bytes of answers the table keeps. An answer larger than this is not kept, so its retry
-/// runs again, which every method here allows.
+/// runs again unless its handler supplies separate durable matching.
 const REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 /// One request's identity: its scope, its envelope's `request_id` and a hash of its input.

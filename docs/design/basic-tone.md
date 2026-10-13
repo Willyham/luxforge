@@ -60,6 +60,20 @@ Because the endpoints are fixed, flattening the midtones steepens the ends: at `
 
 The magnitude response is quadratic near zero (`sigma ≈ 1 + alpha^2 / 48`), so small settings are gentle on both sides: `±10` moves no grey code of an 8-bit wedge (its largest move is about a third of a code), while `-50` and `+50` take a 256-code grey wedge's output-code standard deviation from `73.9` to `69.9` and `78.8`, and `-100` and `+100` to `65.7` and `88.9` (`negative_contrast_narrows_a_grey_step_wedge_and_positive_contrast_widens_it`).
 
+For `alpha < 0.1`, the reference and production unit evaluate the same normalized logistic as
+`S(x) = 0.5 + (x - 0.5) * tanhc(alpha * (x - 0.5) / 2) / tanhc(alpha / 4)`, with
+`tanhc(z) = tanh(z) / z` and `tanhc(0) = 1`; the negative reflection uses
+`kappa = tanhc(alpha / 4)`. This avoids subtracting almost equal logistic values when a legal
+fractional setting or preset Amount approaches zero, including subnormal settings. It retains
+the response to extended inputs whose `alpha * x` is appreciable, and fixes 0 and 1 exactly.
+The GPU carries the same branch and coefficients. Its `f32` helper uses the even Taylor series
+through `z^4` below `|z| = 0.01` and the saturated value `1 / |z|` from `|z| = 10`, avoiding
+overflow in the backend's `tanh`; the existing formula handles larger `alpha` without changing
+its arithmetic. The independent [high-precision cases](../../fixtures/basic/contrast-small-cases.json)
+evaluate the original logistic equation at 430-digit precision, including extended inputs and
+both signs down to the smallest positive `f64`. Native GPU qualification of this small-Contrast
+branch remains outstanding.
+
 **Why the sign is not the exponent's sign.** Negating `alpha` was tried and does not flatten anything: `g` at `-alpha` is `1 - g` at `alpha`, and the endpoint normalization cancels that reflection exactly, so `-c` rendered `+c`'s S-curve and `-100` visibly increased contrast as `+100` does.
 
 **Why reflect with `kappa`, not invert `S`.** The functional inverse `S^-1` would undo `+c` exactly, but `S` maps the whole real line onto a bounded interval (about `(-0.052, 1.052)` at `100`), so `S^-1` is undefined for extended-domain inputs outside it, and it needs a logarithm per pixel. The reflection reuses the same logistic and its single `exp`, is defined and smooth on the whole real line, and `kappa = 1 / sigma` makes the midtone slope at `-c` the reciprocal of `+c`'s.

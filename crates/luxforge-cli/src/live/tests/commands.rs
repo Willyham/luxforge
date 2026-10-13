@@ -571,6 +571,47 @@ fn luxforge_ctl_commands_batch_sends_each_line_over_one_connection_and_carries_o
 }
 
 #[test]
+fn luxforge_ctl_commands_batch_stops_after_an_input_read_error() {
+    struct BrokenInput(usize);
+    impl std::io::Read for BrokenInput {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            // A second read ends the test rather than hanging on the old retry loop.
+            if self.0 > 1 {
+                return Ok(0);
+            }
+            Err(std::io::Error::other("input failed"))
+        }
+    }
+    let endpoint = session(|_| panic!("no command should follow failed input"));
+    let mut input = BrokenInput(0);
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let status = run(
+        ["--catalog", endpoint.catalog.to_str().unwrap(), "batch"]
+            .into_iter()
+            .map(OsString::from),
+        &mut input,
+        &mut stdout,
+        &mut stderr,
+        None,
+    );
+    assert_eq!(input.0, 1, "a failed input must not be retried forever");
+    assert_eq!(status, EXIT_USAGE);
+    assert!(stderr.is_empty());
+    let output = String::from_utf8(stdout).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    let line: Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(line["error"]["code"], USAGE);
+    assert!(
+        line["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("input failed")
+    );
+    assert_eq!(methods(&endpoint.requests()), ["schema.list"]);
+}
+
+#[test]
 fn luxforge_ctl_commands_batch_waits_warns_bounds_its_lines_and_stops_on_a_lost_connection() {
     let ready = json!({"job_id": "job-1", "status": "ready"});
     let endpoint = job_session("source.prepare", "clients", ready.clone());

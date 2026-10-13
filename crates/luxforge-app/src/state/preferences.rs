@@ -163,6 +163,9 @@ pub(crate) struct PreferenceWriter {
     waiting: Option<PreferenceChange>,
     /// Why the last read or write failed, until the next one succeeds.
     pub(crate) error: Option<String>,
+    /// A mask-colour write failed after its session colour changed: the next successful read
+    /// reconciles the session even when the stored preference has not changed.
+    pub(crate) restore_mask_colour: bool,
     /// The window asked to close while a write was outstanding; it closes once the last lands.
     pub(crate) closing: bool,
     /// The catalog this launch opened and why, which the Catalog row shows beside the stored

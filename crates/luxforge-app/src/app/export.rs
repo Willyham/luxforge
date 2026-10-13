@@ -145,6 +145,8 @@ pub(crate) struct Exporting {
     pub(crate) run: Option<ExportRun>,
     pub(crate) held: Option<HeldStale>,
     pub(crate) sheet: Option<ExportSheet>,
+    /// Each opening gets its own identity: a closed sheet's late plan cannot answer its successor.
+    pub(crate) sheet_generation: u64,
     /// `export.presets.list` as last answered: built-in first, then the person's by name.
     pub(crate) presets: Option<Vec<ExportPreset>>,
     /// The last presets read failed.
@@ -220,7 +222,11 @@ impl Editor {
             }
             ExportMessage::OpenSheet { reference } => self.open_export_sheet(reference),
             ExportMessage::Sheet(message) => self.sheet_update(message),
-            ExportMessage::Planned { settings, result } => self.sheet_planned(*settings, result),
+            ExportMessage::Planned {
+                generation,
+                settings,
+                result,
+            } => self.sheet_planned(generation, *settings, result),
             ExportMessage::Again => self.export_again(),
             ExportMessage::WithPreset(preset_id) => self.export_with_preset(&preset_id),
             ExportMessage::Sent { choice, result } => self.export_sent(choice, result),
@@ -365,6 +371,7 @@ impl Editor {
             "export_sheet_opened",
             || json!({"batch": target.batch(), "reference": reference, "preset_id": preset_id}),
         );
+        self.export.sheet_generation += 1;
         self.export.sheet = Some(ExportSheet::new(target, reference, settings, preset_id));
         self.plan_sheet()
     }
@@ -534,6 +541,7 @@ impl Editor {
     /// Ask for the sheet's plan of its settings now: `export.plan` of the entry, or of each
     /// photograph a batch names whose row the desktop holds.
     fn plan_sheet(&mut self) -> Task<Message> {
+        let generation = self.export.sheet_generation;
         let Some(sheet) = self.export.sheet.as_mut() else {
             return Task::none();
         };
@@ -555,6 +563,7 @@ impl Editor {
             move || sheet_plan_now(&owner, client, &target, &sent),
             move |result| {
                 Message::Export(ExportMessage::Planned {
+                    generation,
                     settings: Box::new(settings),
                     result,
                 })
@@ -564,9 +573,13 @@ impl Editor {
 
     fn sheet_planned(
         &mut self,
+        generation: u64,
         settings: ExportSettings,
         result: Result<SheetPlan, String>,
     ) -> Task<Message> {
+        if generation != self.export.sheet_generation {
+            return Task::none();
+        }
         let Some(sheet) = self.export.sheet.as_mut() else {
             return Task::none();
         };
@@ -704,6 +717,7 @@ impl Editor {
             };
             let result = sheet_plan_now(&self.owner, self.client, &sheet.target, &settings);
             let _ = self.update(Message::Export(ExportMessage::Planned {
+                generation: self.export.sheet_generation,
                 settings: Box::new(settings),
                 result,
             }));

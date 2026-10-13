@@ -291,6 +291,26 @@ fn an_update_is_staged_installed_and_its_previous_payload_removed_after_launch()
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn a_failed_filesystem_sync_refuses_the_update_and_preserves_the_installed_payload() {
+    let installation = installed("0.1.0", 1);
+    let archive = testing::release_archive("0.2.0", 2, TARGET);
+    let (fetch, item) = served(&archive, 2, &testing::test_key());
+    let before = fs::read(installation.payload.executable()).unwrap();
+    SYNC_FAILURE.with(|failure| failure.set(Some(std::io::ErrorKind::Other)));
+
+    let error = prepare(&installation, &fetch, &item).unwrap_err();
+
+    assert!(matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::Other));
+    assert_eq!(names(&installation.parent), vec!["Luxforge"]);
+    assert_eq!(fs::read(installation.payload.executable()).unwrap(), before);
+    assert_eq!(
+        BuildInfo::read(installation.payload.dir()).unwrap().build,
+        1
+    );
+}
+
+#[test]
 fn an_install_replaces_an_earlier_previous_payload_and_refuses_a_changed_stage() {
     let installation = installed("0.1.0", 1);
     testing::install_payload(&installation.payload.previous(), "0.0.9", 0, TARGET);

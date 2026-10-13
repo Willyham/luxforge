@@ -209,6 +209,8 @@ The [merge preview](panorama-merge.md#the-merge-preview)'s commands are built in
 
 ## Bounds, recovery and regeneration
 
+A durable retry of `merge.rerun` identifies the newly published result by its stack's transition from undone to active. The old stack removed by that publication is retained history and is never returned as the rerun's result.
+
 Process 2–9 RAW inputs within current RAW admission limits. Retain no N full-resolution developed frames together. Prepare/develop one input at a time, reuse a compatible verified cache entry without a whole-frame clone, and spool aligned working chunks as required. Full fusion reads bounded chunks across inputs with at most 256 MiB explicitly accounted scratch plus one admitted source/development allocation; if the chosen backend needs more, tile/spool or refuse before allocation. Bound feature counts, pyramids, response-fit samples, chunk fan-out, file handles and cancellation latency. A provisional 16 GiB per-job temporary-disk ceiling covers nine maximum-size float inputs plus the result; preflight it and treat it as an engineering limit, not a measured process-memory claim. Cleanup only job-owned temporary paths.
 
 Never block the UI or catalog owner on decode, registration, hashing, encoding, fsync or fusion. A background merge must permit editing a different photograph and ordinary browse/command service work. Avoid a plane-gate deadlock in which merging holds a development while waiting for another; spill/release before acquiring the next source, and account contention with the active editor's prepared source. Do not claim a total memory bound from only the scratch or GPU budgets.

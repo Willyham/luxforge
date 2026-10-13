@@ -414,7 +414,25 @@ pub(crate) fn published_by(
         .rows
         .iter()
         .find_map(|row| match &row.item {
-            LibraryItem::MergeStack { merge_id } => Some(merge_id.clone()),
+            // A rerun records the old stack's removal before the new stack's publication.
+            // Identify the publication by its transition, rather than choosing the first stack:
+            // only the newly published merge starts undone and becomes active.
+            LibraryItem::MergeStack { merge_id }
+                if row
+                    .before
+                    .as_ref()
+                    .and_then(|value| value.get("state"))
+                    .and_then(Value::as_str)
+                    == Some(MergeState::Undone.as_str())
+                    && row
+                        .after
+                        .as_ref()
+                        .and_then(|value| value.get("state"))
+                        .and_then(Value::as_str)
+                        == Some(MergeState::Active.as_str()) =>
+            {
+                Some(merge_id.clone())
+            }
             _ => None,
         })
         .ok_or_else(|| {

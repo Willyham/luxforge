@@ -2,8 +2,10 @@
 //! documents, a resource's `installed.json` and the artifact manifest (`capabilities::document`),
 //! and the derived-artifact objects (`artifacts::store`). Bytes go to a temporary file that is
 //! synced, then renamed over the target, and the directory is synced so the rename itself is
-//! durable; a failure at any point leaves the previous file. Writers that share a file serialize on
-//! an OS advisory lock beside it, and a read is bounded. [`flush`] is the one call in the core that
+//! durable. A failure before rename leaves the previous file; a directory-sync failure after
+//! rename leaves the replacement visible with durability unconfirmed. The current error does not
+//! distinguish these outcomes. Writers that share a file serialize on an OS advisory lock beside
+//! it, and a read is bounded. [`flush`] is the one call in the core that
 //! makes written bytes durable, for these writes and for the resource and export writers.
 use crate::Error;
 use std::{
@@ -98,7 +100,8 @@ pub(crate) fn publish(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// Replace `path` with `bytes` through `<path>.tmp` beside it: [`stage`], then [`publish`]. A
-/// failure removes the temporary file and leaves the previous one.
+/// failure removes any remaining temporary file. Before rename the previous target is intact;
+/// after rename a directory-sync error leaves the replacement visible.
 pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
