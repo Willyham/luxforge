@@ -968,7 +968,10 @@ impl Editor {
             None => outcome::Presented::Photo,
         };
         self.outcome(Outcome::Presented(presented));
-        if self.activity.pending {
+        // Pixels reused while a file imports are the photograph before it, kept on screen for
+        // bounds the open changed (its filmstrip goes until its folder is read): the import's
+        // request ends with its own photograph's frame.
+        if self.activity.pending && self.activity.importing.is_none() {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
@@ -2455,6 +2458,33 @@ mod reduction_tests {
             held.upgrade().is_none() && editor.presentation.reduction_job.is_none(),
             "no plan is retained behind the GPU's picture at rest"
         );
+        finish(editor, catalog);
+    }
+
+    /// Pixels the photograph on screen reuses while a file imports, for bounds the open changed,
+    /// never end the import's request; once the import has answered, a reuse ends a request as
+    /// before.
+    #[test]
+    fn reused_pixels_during_an_import_leave_its_request_pending() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+        let displayed = editor.activity.displayed;
+        let _ = editor.open(std::path::PathBuf::from("another.jpg"));
+        assert!(editor.activity.pending);
+        editor.presentation.reused = Some(job(&editor).identity.clone());
+        editor.settle_reused_pixels();
+        assert!(editor.presentation.reused.is_none(), "the reuse settled");
+        assert!(
+            editor.activity.pending,
+            "the import's request is still open"
+        );
+        assert_eq!(editor.activity.displayed, displayed);
+        assert_eq!(editor.activity.phase, "loading");
+        // Answered, the import no longer holds the request.
+        editor.activity.importing = None;
+        editor.presentation.reused = Some(job(&editor).identity.clone());
+        editor.settle_reused_pixels();
+        assert!(!editor.activity.pending);
+        assert_eq!(editor.activity.displayed, editor.activity.requested);
         finish(editor, catalog);
     }
 
