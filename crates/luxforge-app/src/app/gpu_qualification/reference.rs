@@ -64,6 +64,8 @@
 //! limit — the picture at rest, and the motion frame where the owner gates it
 //! (`LUXFORGE_GPU_QUALIFICATION_MOTION=rest` or `reference`) — or for every cell with
 //! `LUXFORGE_GPU_QUALIFICATION_FRAMES=all`.
+mod paged;
+
 use super::{CorpusSource, EMPTY_MASK, Opened, corpus_sources, fit_bounds, headless, write_png};
 use crate::app::gpu_tiles::GpuTiles;
 use crate::app::{
@@ -584,6 +586,19 @@ fn measure(
         PreviewRequest::new(opened.client, opened.asset.clone()),
     )?;
     let evaluation = job.evaluation;
+    // A paged source has no whole frame: its reference is the banded one.
+    if evaluation.source().paged().is_some() {
+        return paged::measure(
+            (qualifier, exporters),
+            surface,
+            settings,
+            class,
+            &opened,
+            &evaluation,
+            cell,
+            record,
+        );
+    }
     let exact = luxforge_core::render(
         evaluation.registry(),
         evaluation
