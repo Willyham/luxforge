@@ -64,10 +64,6 @@ use super::BoundaryTexture;
 use super::histogram::{
     Counts, HistogramError, HistogramReadback, HistogramRect, HistogramReduction,
 };
-use super::overview::{
-    OVERVIEW_GPU_BYTES, OVERVIEW_SIDE, OverviewError, OverviewPixels, OverviewReadback,
-    RestOverview, padded_row, unpadded,
-};
 use super::{
     AxisCoverage, BoundaryFormat, Charged, GpuFallback, GpuPlan, GpuStep, Held, OUTPUT_FORMAT,
     SAMPLED_FORMAT, answered, buffer_capacity, staged::StageHolder, storage_buffer, tail::encoding,
@@ -105,11 +101,6 @@ pub struct GpuRest {
     /// The reduction of the tiles to the view's size, which is the picture drawn; `None` draws
     /// the tiles for their counts alone, and nothing on screen.
     pub reduction: Option<RestReduction>,
-    /// The reduction of the same tiles to the whole-stage overview, within [`OVERVIEW_SIDE`] a
-    /// side, read back once its last tile is in ([`super::overview`]); `None` for none. It is
-    /// independent of [`Self::reduction`] and of the counts: an overview that cannot be made
-    /// leaves both as they are.
-    pub overview: Option<RestReduction>,
     /// The same picture in staged sweeps, drawn in place of the tiles above where its stage
     /// textures fit the budget; `None` draws the tiles, chained.
     pub stages: Option<RestStages>,
@@ -244,11 +235,6 @@ impl GpuRest {
 }
 
 impl RestReduction {
-    /// A valid reduction ([`Self::valid`]) to an overview's size, within [`OVERVIEW_SIDE`] a side.
-    fn valid_overview(&self) -> bool {
-        self.valid() && self.view.0 <= OVERVIEW_SIDE && self.view.1 <= OVERVIEW_SIDE
-    }
-
     /// A view within the bounds, and coverage tables of the view's size.
     fn valid(&self) -> bool {
         let axis = |coverage: &AxisCoverage, size: u32| {
@@ -428,11 +414,6 @@ pub struct RestFigures {
     pub gpu_tiles: u32,
     pub gpu_us: u64,
     pub gpu_max_us: u64,
-    /// The overview its tiles are reduced to beside the picture ([`GpuRest::overview`]), its size,
-    /// and what its parts are charged, the staging copy it is read back through excluded; `None`
-    /// and zero for none, or one that could not be made.
-    pub overview: Option<(u32, u32)>,
-    pub overview_bytes: u64,
 }
 
 /// The histogram and clipping counts of a picture at rest's tiles, or of a gesture's frame, as
@@ -742,11 +723,6 @@ pub struct RestSlot {
     reduce: Option<Reduce>,
     /// The bytes of the reduction's parts, charged.
     bytes: u64,
-    /// The reduction to the overview, its parts' charge, and its readback, which a slot whose
-    /// overview could not be made settles at once; all `None` and zero for no overview.
-    overview: Option<Reduce>,
-    overview_bytes: u64,
-    overview_read: Option<(OverviewReadback, (u32, u32))>,
     /// The rest output holds every tile's reduction, quantized, and the counts are read back.
     done: bool,
     /// The last frame found the next tile waiting for its sequence, its source or a retirement.
@@ -799,27 +775,12 @@ impl RestSlot {
             fallback: self.fallback,
             counts_only: self.reduce.is_none(),
             sweeps: self.sweeps,
-            overview: self.overview_read.as_ref().map(|(_, size)| *size),
-            overview_bytes: self.overview_bytes,
         }
     }
 
     /// Its version, and its counts as they stand.
     pub fn counts(&self) -> (u64, RestCounts) {
         (self.version, self.counts.clone())
-    }
-
-    /// Its version, and its overview as it stands, for a picture at rest handed one.
-    pub fn overview(&self) -> Option<(u64, RestOverview)> {
-        let (readback, size) = self.overview_read.clone()?;
-        Some((
-            self.version,
-            RestOverview {
-                readback,
-                fell_back: self.fallback.is_some(),
-                size,
-            },
-        ))
     }
 
     /// Whether tiles remain to draw, which the widget asks the next frame for.
@@ -947,36 +908,6 @@ impl Reduce {
     }
 }
 
-/// What a reduction's parts take: its accumulator, its coverage tables, its passes' parameters,
-/// and in all, with its output and that output's placement uniform.
-struct ReductionBytes {
-    sums: u64,
-    tables: u64,
-    params: u64,
-    total: u64,
-}
-
-/// What a reduction's parts for `reduction` are charged, before anything is created.
-fn reduction_bytes(
-    device: &wgpu::Device,
-    reduction: &RestReduction,
-) -> Result<ReductionBytes, GpuFallback> {
-    let (width, height) = reduction.view;
-    let words = 2 * (reduction.view.0 as usize + reduction.view.1 as usize + 1)
-        + reduction.across.weights.len()
-        + reduction.down.weights.len();
-    let sums = buffer_capacity(device, u64::from(width) * u64::from(height) * 16)?;
-    let tables = buffer_capacity(device, (words.max(1) * 4) as u64)?;
-    let params = (PARAMS * 4) as u64;
-    let output = u64::from(width) * u64::from(height) * 4;
-    Ok(ReductionBytes {
-        sums,
-        tables,
-        params,
-        total: sums + tables + params + output + UNIFORM_SIZE as u64,
-    })
-}
-
 fn le_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
@@ -1041,22 +972,15 @@ impl Executor {
         if !slot.pending() {
             return;
         }
-        // The passes the picture's reduction and the overview's share. Without them the picture
-        // falls back; an overview alone is let go, the counts kept.
-        let passes = if slot.reduce.is_none() && slot.overview.is_none() {
-            None
-        } else {
-            match self.gpu.rest_passes(device) {
+        let passes = match &slot.reduce {
+            None => None,
+            Some(_) => match self.gpu.rest_passes(device) {
                 Some(Ok(passes)) => Some(Arc::clone(passes)),
-                _ if slot.reduce.is_some() => {
+                _ => {
                     slot.fallback = Some(GpuFallback::PipelineFailed);
                     return;
                 }
-                _ => {
-                    self.drop_overview(slot, OverviewError::Pipeline);
-                    None
-                }
-            }
+            },
         };
         let started = std::time::Instant::now();
         self.draw_rest(
@@ -1235,18 +1159,6 @@ impl Executor {
                 }
                 reduce.tile_drawn(device, &mut encoder, passes, &texture, &plan);
             }
-            // The same codes into the overview's accumulator, beside the picture's.
-            if let (Some(overview), Some(passes)) = (&slot.overview, passes) {
-                queue.write_buffer(
-                    &overview.parts.params.buffer,
-                    0,
-                    &le_bytes(&overview.params(rect)),
-                );
-                if first {
-                    encoder.clear_buffer(&overview.parts.sums.buffer, 0, None);
-                }
-                overview.tile_drawn(device, &mut encoder, passes, &texture, &plan);
-            }
             // The tile's own codes, at the output's first texels, past its halo: counted into the
             // whole stage's counts, which its first tile clears.
             if let (RestCounts::Counting, Some(histogram)) =
@@ -1282,15 +1194,6 @@ impl Executor {
         if let (Some(reduce), Some(passes)) = (&mut slot.reduce, passes) {
             reduce.quantize(device, queue, passes);
             reduce.parts.output.version = slot.version;
-        }
-        // The overview quantized and read back, once; its parts are let go then, the pixels being
-        // on their way to the desktop.
-        if let (Some(overview), Some(passes)) = (&slot.overview, passes) {
-            overview.quantize(device, queue, passes);
-            if let Some((readback, _)) = &slot.overview_read {
-                self.read_overview(device, queue, overview, readback);
-            }
-            self.release_overview(slot);
         }
         if let (RestCounts::Counting, Some(histogram)) = (&slot.counts, histogram) {
             let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1458,144 +1361,10 @@ impl Executor {
         if let Some(reducer) = slot.reducer.take() {
             self.retire_reducer(reducer);
         }
-        self.release_overview(&mut slot);
         let RestSlot { reduce, bytes, .. } = *slot;
         if let Some(reduce) = reduce {
             self.retire_preview(Held::Rest(Box::new(reduce.parts)), bytes);
         }
-    }
-
-    /// Retire `slot`'s overview's parts, if it still holds them, through the retirement worker.
-    fn release_overview(&self, slot: &mut RestSlot) {
-        if let Some(overview) = slot.overview.take() {
-            self.retire_preview(
-                Held::Rest(Box::new(overview.parts)),
-                std::mem::take(&mut slot.overview_bytes),
-            );
-        }
-    }
-
-    /// Let `slot`'s overview go, unmade, for `why`: its parts retire and its readback says why.
-    fn drop_overview(&self, slot: &mut RestSlot, why: OverviewError) {
-        self.release_overview(slot);
-        if let Some((readback, _)) = &slot.overview_read {
-            readback.settle(Err(why));
-        }
-    }
-
-    /// The overview's parts for `rest`, and what they are charged, with its readback: none for a
-    /// picture at rest with no overview; parts of none, the readback settled with why, for one past
-    /// [`OVERVIEW_GPU_BYTES`] with its staging copy, past the budget, or not an overview's.
-    #[allow(clippy::type_complexity)]
-    fn allocate_overview(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        rest: &GpuRest,
-    ) -> (Option<Reduce>, u64, Option<(OverviewReadback, (u32, u32))>) {
-        let Some(reduction) = &rest.overview else {
-            return (None, 0, None);
-        };
-        let readback = OverviewReadback::new(Arc::clone(&self.figures.preview.lost));
-        let read = Some((readback.clone(), reduction.view));
-        if !reduction.valid_overview() {
-            readback.settle(Err(OverviewError::Invalid));
-            return (None, 0, read);
-        }
-        let staging = u64::from(padded_row(reduction.view.0)) * u64::from(reduction.view.1);
-        let fits = reduction_bytes(device, reduction)
-            .is_ok_and(|bytes| bytes.total + staging <= OVERVIEW_GPU_BYTES);
-        if !fits {
-            readback.settle(Err(OverviewError::Budget));
-            return (None, 0, read);
-        }
-        match self.allocate_reduction(device, queue, reduction) {
-            Ok((reduce, bytes)) => (Some(reduce), bytes, read),
-            Err(_) => {
-                readback.settle(Err(OverviewError::Budget));
-                (None, 0, read)
-            }
-        }
-    }
-
-    /// Copy `overview`'s output, quantized, into a staging buffer charged while it lives, mapped on
-    /// submit: the mapping's callback settles `readback` with its pixels, out of their row padding,
-    /// and wakes the desktop. A budget that cannot hold the copy, or a lost device, settles it
-    /// with why. Nothing waits.
-    fn read_overview(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        overview: &Reduce,
-        readback: &OverviewReadback,
-    ) {
-        let (width, height) = overview.view;
-        if self
-            .figures
-            .preview
-            .lost
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            readback.settle(Err(OverviewError::DeviceLost));
-            return;
-        }
-        let bytes = u64::from(padded_row(width)) * u64::from(height);
-        if self.figures.preview.charge(bytes).is_err() {
-            readback.settle(Err(OverviewError::Budget));
-            return;
-        }
-        let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("luxforge.gpu_rest.overview_staging"),
-            size: bytes,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("luxforge.gpu_rest.overview_encoder"),
-        });
-        encoder.copy_texture_to_buffer(
-            overview.parts.output.tiles[0].texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row(width)),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let mapped = staging.clone();
-        let settled = readback.clone();
-        let wake = self.figures.wake_callback;
-        encoder.map_buffer_on_submit(&staging, wgpu::MapMode::Read, .., move |result| {
-            // On whichever thread polls the device or submits next: the rows copied out, then
-            // unmapped.
-            let answer = match result {
-                Ok(()) => {
-                    let bytes = mapped.slice(..).get_mapped_range();
-                    let rgba = unpadded(&bytes, width, height);
-                    drop(bytes);
-                    mapped.unmap();
-                    Ok(OverviewPixels {
-                        width,
-                        height,
-                        rgba,
-                    })
-                }
-                Err(_) => Err(OverviewError::ReadbackFailed),
-            };
-            settled.settle(answer);
-            // After the pixels are stored, so no wake reaches the desktop before them.
-            wake();
-        });
-        queue.submit([encoder.finish()]);
-        // After the submission, so the worker's work-done callback is registered after the mapping.
-        self.retire_preview(Held::Buffer(staging), bytes);
     }
 
     /// A picture at rest's slot for `rest`, with its reduction's parts where it has one, charged
@@ -1694,9 +1463,6 @@ impl Executor {
                 }
             }
         };
-        // The overview's parts last, after everything the picture itself needs: an overview the
-        // budget cannot hold is let go, never the picture.
-        let (overview, overview_bytes, overview_read) = self.allocate_overview(device, queue, rest);
         Ok(RestSlot {
             version: rest.version,
             tiles,
@@ -1712,9 +1478,6 @@ impl Executor {
             tile: Box::new(self.new_surface()),
             reduce,
             bytes,
-            overview,
-            overview_bytes,
-            overview_read,
             done: false,
             waiting: false,
             prepare_us: 0,
@@ -1735,12 +1498,11 @@ impl Executor {
     ) -> Result<(Reduce, u64), GpuFallback> {
         let (width, height) = reduction.view;
         let (words, starts) = reduction.tables();
-        let ReductionBytes {
-            sums: sums_bytes,
-            tables: table_bytes,
-            params: params_bytes,
-            total: bytes,
-        } = reduction_bytes(device, reduction)?;
+        let sums_bytes = buffer_capacity(device, u64::from(width) * u64::from(height) * 16)?;
+        let table_bytes = buffer_capacity(device, (words.len().max(1) * 4) as u64)?;
+        let params_bytes = (PARAMS * 4) as u64;
+        let output_bytes = u64::from(width) * u64::from(height) * 4;
+        let bytes = sums_bytes + table_bytes + params_bytes + output_bytes + UNIFORM_SIZE as u64;
         self.figures.preview.charge(bytes)?;
         let sums = Charged {
             buffer: storage_buffer(device, "luxforge.gpu_rest.sums", sums_bytes),

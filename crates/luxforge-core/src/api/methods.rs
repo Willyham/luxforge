@@ -877,7 +877,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "view.set",
         ViewSet,
         view_set,
-        "per-client view state, zoom and pan; changes no recipe, history, draft or preview generation, and no other client's view; returns the session"
+        "session view state; returns the session"
     ),
     service!(
         "workspace.set",
@@ -2127,19 +2127,11 @@ host_params! {
     }
 }
 
-/// What `view.set`'s pan means, as its schema states it: the scroll offset of a percentage view.
-const PAN_NOTES: &str = "scroll offset of a percentage view: how far the zoomed stage's top-left \
-    corner lies left of (pan_x) or above (pan_y) the canvas's top-left, in the desktop's logical \
-    layout pixels, a stage pixel being zoom/100 divided by the display's physical pixels per \
-    logical pixel; 0 shows the stage's left or top edge; the desktop clamps it to how far the \
-    zoomed stage overhangs the canvas and centres an axis that fits; unused at Fit; default \
-    unchanged";
-
 host_params! {
     pub(super) struct ViewSet {
         zoom: Option<Zoom> = json("{mode: fit} or {mode: percent, value: 10..1600}"),
-        pan_x: Option<f32> = number(f32::MIN as f64, f32::MAX as f64).notes(PAN_NOTES),
-        pan_y: Option<f32> = number(f32::MIN as f64, f32::MAX as f64).notes(PAN_NOTES),
+        pan_x: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
+        pan_y: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
     }
 }
 
@@ -4196,101 +4188,6 @@ mod tests {
         assert_eq!(refreshed["draft"], drafted["draft"]);
         assert_ne!(refreshed["entry_id"], drafted["entry_id"]);
         assert_ne!(refreshed["mapping_sha256"], drafted["mapping_sha256"]);
-        drop(service);
-        std::fs::remove_file(catalog).unwrap();
-    }
-
-    /// `view.set`'s schema says what its pan is, and a pan is view state alone: the same request
-    /// gives the same view, another client's session keeps its own, and nothing about the photograph
-    /// — its history, its revision, its preview generation — moves.
-    #[test]
-    fn view_set_pan_is_described_and_changes_only_the_callers_view() {
-        let catalog =
-            std::env::temp_dir().join(format!("luxforge-view-pan-{}.sqlite", uuid::Uuid::new_v4()));
-        let mut service = EditorService::open(&catalog).unwrap();
-        let asset = service.import(&fixture()).unwrap().asset.id;
-        let mut session = ClientSession::default();
-        let mut other = ClientSession::default();
-        let schema = ok(&mut service, &mut session, "schema.list", json!({}));
-        let listed = &schema["methods"]["view.set"];
-        assert_eq!(listed["mutates"], json!(false));
-        for field in ["pan_x", "pan_y"] {
-            let described = listed["optional"][field]
-                .as_str()
-                .expect("the pan's description");
-            for says in [
-                "logical layout pixels",
-                "top-left",
-                "zoom/100",
-                "clamps",
-                "centres",
-            ] {
-                assert!(described.contains(says), "{field}: {described}");
-            }
-        }
-        let history = service.history(&asset, None, 10).unwrap();
-        let before = ok(
-            &mut service,
-            &mut session,
-            "asset.state",
-            json!({"asset_id": asset}),
-        );
-        let generation = session.preview.generation;
-        let request =
-            json!({"zoom": {"mode": "percent", "value": 250.0}, "pan_x": 1234.5, "pan_y": 67.25});
-        let first = ok(&mut service, &mut session, "view.set", request.clone());
-        let view = crate::ViewState {
-            zoom: Zoom::Percent { value: 250.0 },
-            pan_x: 1234.5,
-            pan_y: 67.25,
-        };
-        assert_eq!(session.preview.view, view);
-        assert_eq!(
-            first["preview"]["view"],
-            serde_json::to_value(&view).unwrap()
-        );
-        // The same request again is the same view; a pan alone keeps the zoom.
-        let again = ok(&mut service, &mut session, "view.set", request);
-        assert_eq!(again["preview"]["view"], first["preview"]["view"]);
-        ok(
-            &mut service,
-            &mut session,
-            "view.set",
-            json!({"pan_x": 10.0}),
-        );
-        assert_eq!(
-            session.preview.view,
-            crate::ViewState {
-                pan_x: 10.0,
-                ..view.clone()
-            }
-        );
-        // Another client's view is its own, and its own request is answered from it alone.
-        assert_eq!(other.preview.view, crate::ViewState::default());
-        let theirs = ok(&mut service, &mut other, "view.set", json!({"pan_y": 5.0}));
-        assert_eq!(theirs["preview"]["view"]["zoom"], json!({"mode": "fit"}));
-        assert_eq!(session.preview.view.pan_y, 67.25);
-        // Nothing about the photograph moved.
-        assert_eq!(session.preview.generation, generation);
-        assert_eq!(service.history(&asset, None, 10).unwrap(), history);
-        assert_eq!(
-            ok(
-                &mut service,
-                &mut session,
-                "asset.state",
-                json!({"asset_id": asset})
-            ),
-            before
-        );
-        // A pan that is not a number is refused and leaves the view as it was.
-        let refused = call(
-            &mut service,
-            &mut session,
-            "view.set",
-            json!({"pan_x": "left"}),
-        );
-        assert!(refused.error.is_some());
-        assert_eq!(session.preview.view.pan_x, 10.0);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

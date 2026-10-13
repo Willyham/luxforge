@@ -505,19 +505,6 @@ pub(crate) fn reduce_raster(
     plan: ProxyPlan,
     cancel: &Cancel,
 ) -> Result<Raster, Error> {
-    reduce_raster_in(raster, plan, cancel, BAND_BYTES, true)
-}
-
-/// [`reduce_raster`] with bands of about `band_bytes` of intermediate, on the caller's thread alone
-/// unless `pooled` lets a large reduction use the shared Rayon pool: the same bytes either way,
-/// since a band boundary changes no sum ([`BoxDownscale`]).
-pub(crate) fn reduce_raster_in(
-    raster: &Raster,
-    plan: ProxyPlan,
-    cancel: &Cancel,
-    band_bytes: usize,
-    pooled: bool,
-) -> Result<Raster, Error> {
     check_plan(plan, raster.width, raster.height)?;
     if plan.window.is_some()
         || u64::from(plan.width) * u64::from(plan.height) > ProxyBounds::MAX_PIXELS
@@ -534,7 +521,7 @@ pub(crate) fn reduce_raster_in(
         orientation: 1,
         capture: Default::default(),
     };
-    let reduced = downscale_jpeg_in(&source, plan, cancel, band_bytes, pooled)?;
+    let reduced = downscale_jpeg(&source, plan, cancel, BAND_BYTES)?;
     Ok(Raster {
         width: reduced.width,
         height: reduced.height,
@@ -756,18 +743,6 @@ pub(crate) fn downscale_jpeg(
     cancel: &Cancel,
     band_bytes: usize,
 ) -> Result<SourceImage, Error> {
-    downscale_jpeg_in(source, plan, cancel, band_bytes, true)
-}
-
-/// [`downscale_jpeg`], its bands on the shared Rayon pool past the proxy pass's threshold only
-/// where `pooled` allows it: a serial build holds one band's intermediate, whatever its size.
-fn downscale_jpeg_in(
-    source: &SourceImage,
-    plan: ProxyPlan,
-    cancel: &Cancel,
-    band_bytes: usize,
-    pooled: bool,
-) -> Result<SourceImage, Error> {
     let (width, height) = plan.source_dimensions();
     let source_len = Raster::expected_len(source.width, source.height)?;
     if source.rgba.len() != source_len {
@@ -787,8 +762,7 @@ fn downscale_jpeg_in(
             decode_pixel_in(table, [bytes[at], bytes[at + 1], bytes[at + 2]])
         }
     };
-    let mut downscale = BoxDownscale::new(source.width, source.height, plan, band_bytes)?;
-    downscale.parallel &= pooled;
+    let downscale = BoxDownscale::new(source.width, source.height, plan, band_bytes)?;
     let mut frame = zeroed_frame(output_len);
     {
         let output = frame_mut(&mut frame);

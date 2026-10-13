@@ -48,29 +48,6 @@ impl CanvasView {
         })
     }
 
-    /// A percentage zoom as the viewport shows it: [`Self::percent`]'s scale, with the stage placed
-    /// where the scrollable puts it in a viewport of `available` logical pixels scrolled by `pan`
-    /// ([`scrolled_origin`] on each axis). Stage pixels then map to viewport-local logical pixels,
-    /// which is what a pinch's anchor and the minimap's rectangle read. `None` for a degenerate
-    /// zoom, display scale or stage.
-    pub(crate) fn scrolled(
-        value: f32,
-        scale_factor: f32,
-        stage: (f64, f64),
-        available: Size,
-        pan: (f32, f32),
-    ) -> Option<Self> {
-        if !(stage.0.is_finite() && stage.1.is_finite() && stage.0 > 0.0 && stage.1 > 0.0) {
-            return None;
-        }
-        let mut view = Self::percent(value, scale_factor)?;
-        view.origin = Vector::new(
-            scrolled_origin(stage.0 as f32 * view.scale, available.width, pan.0),
-            scrolled_origin(stage.1 as f32 * view.scale, available.height, pan.1),
-        );
-        Some(view)
-    }
-
     /// Canvas-local logical pixels to stage pixels.
     pub(crate) fn stage_point(self, point: Point) -> (f64, f64) {
         (
@@ -100,14 +77,6 @@ impl CanvasView {
     pub(crate) fn tolerance(self, radius: f32) -> f64 {
         f64::from(radius / self.scale)
     }
-}
-
-/// Where content `content` logical pixels long starts along one axis of a scrollable viewport
-/// `available` long whose offset is `offset`: centred where it fits, as the photo surface's
-/// scrollable centres it, and otherwise moved back by the offset, which the scrollable holds
-/// between zero and how far the content overhangs the viewport.
-pub(crate) fn scrolled_origin(content: f32, available: f32, offset: f32) -> f32 {
-    (available - content).max(0.0) / 2.0 - offset.clamp(0.0, (content - available).max(0.0))
 }
 
 #[cfg(test)]

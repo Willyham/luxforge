@@ -19,7 +19,7 @@ use crate::{
     },
     view::{
         Surfaces,
-        canvas_view::{CanvasView, scrolled_origin},
+        canvas_view::CanvasView,
         corrections_canvas::CorrectionsCanvas,
         crop_canvas::{CropCanvas, Mode},
         mask_canvas::{MaskCanvas, Placement},
@@ -1256,10 +1256,14 @@ pub(crate) fn drawn_photo(
             if !(size.width > 0.0 && size.height > 0.0) {
                 return None;
             }
+            let axis = |start: f32, available: f32, content: f32, offset: f32| {
+                start + ((available - content).max(0.0) / 2.0)
+                    - offset.clamp(0.0, (content - available).max(0.0))
+            };
             Some(Rectangle::new(
                 Point::new(
-                    canvas.x + scrolled_origin(size.width, canvas.width, pan.0),
-                    canvas.y + scrolled_origin(size.height, canvas.height, pan.1),
+                    axis(canvas.x, canvas.width, size.width, pan.0),
+                    axis(canvas.y, canvas.height, size.height, pan.1),
                 ),
                 size,
             ))

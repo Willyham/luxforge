@@ -3,12 +3,12 @@
   "plan_id": "minimap",
   "title": "Develop minimap at 200% and above",
   "objective": "Deliver a bounded whole-image overview with a visible-region rectangle and owner-chosen click/drag navigation at percentage zoom >=200, through existing view.set state, with native rendered evidence and declared-tolerance GPU correctness.",
-  "context_summary": "The owner requested the plan and authorized implementation on 2026-10-13. The inclusive 200% threshold is explicit. The owner chose click-to-jump and dragging the viewport rectangle. Lower-right placement and other layout/engineering defaults are proposed recommendations the implementation follows as recorded. Routine sizes, styling and code organization are delegated within the design contract. No external inputs block working delivery: use generated 24 MP/60 MP images and current supplied RAW fixtures; missing native Windows/Linux evidence stays unrun. Geometry/API projection and overview rendering are independent outputs consumed by integration. Re-review against current main and use the roadmap high-tier model minimum. No implementation approval, owner-review or research task is inserted.",
+  "context_summary": "The owner requested a plan, not implementation. The inclusive 200% threshold is explicit. The owner chose click-to-jump and dragging the viewport rectangle. Lower-right placement and other layout/engineering defaults remain proposed recommendations; implementation awaits a separate instruction. Routine sizes, styling and code organization are delegated within the design contract. No external inputs block working delivery: use generated 24 MP/60 MP images and current supplied RAW fixtures; missing native Windows/Linux evidence stays unrun. Geometry/API projection and overview rendering are independent outputs consumed by integration. Re-review against current main and use the roadmap high-tier model minimum. No implementation approval, owner-review or research task is inserted.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Define shared minimap placement, viewport projection and pan conversion using the existing view command.",
-      "status": "completed",
+      "status": "ready",
       "dependencies": [],
       "extra_context": [
         "Deliver pure geometry/model helpers consumed by TASK-003; do not build the widget or change authoritative recipe state.",
@@ -78,11 +78,11 @@
     {
       "id": "TASK-002",
       "description": "Provide a bounded, identity-keyed whole-stage overview from the existing GPU tile sweep and reference fallback.",
-      "status": "in_progress",
+      "status": "ready",
       "dependencies": [],
       "extra_context": [
         "Deliver the overview result/lifecycle and narrow surface presentation seam consumed by TASK-003. No second source residency, GPU device or full-photo texture.",
-        "High-zoom RestTiles are already reduced to the <=2048 backdrop (REST_BACKDROP_BOUNDS), which is not the overview: add a distinct <=256 overview reduction beside it in the same sweep while preserving the full-detail main region, the backdrop and histogram counts. Reuse final chained/staged tile work, light sweeps, output encoding and existing cancellation/visibility wakes.",
+        "High-zoom RestTiles currently have no reduction: add a distinct overview output while preserving the full-detail main region and histogram counts. Reuse final chained/staged tile work, light sweeps, output encoding and existing cancellation/visibility wakes.",
         "For a first eligible view without an overview, one existing bounded sweep is permitted if the histogram sweep already completed; ordinary pan/zoom with valid content must reuse the overview.",
         "Crop draft uses the rotated input-stage box; Compare uses fixed After, held Before its matching Original and uncropped hold its own geometry. Reference overview reduction borrows the already-required frame on a worker.",
         "Cap raster dimensions at 256x256 physical pixels, total new GPU allocations at 4 MiB inside the existing preview budget and total CPU buffers/scratch at 1 MiB. Account replacement/retirement before allocation.",

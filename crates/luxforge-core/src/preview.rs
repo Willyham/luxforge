@@ -44,18 +44,6 @@ pub enum Zoom {
     Percent { value: f32 },
 }
 
-/// The least percentage zoom whose view shows the whole-stage overview, Develop's minimap
-/// (`docs/design/minimap.md`): inclusive, read from the stored value rather than its rounded text.
-pub const OVERVIEW_PERCENT: f32 = 200.0;
-
-impl Zoom {
-    /// Whether this view shows the overview: a stored percentage of at least [`OVERVIEW_PERCENT`].
-    /// Fit never does, even where it enlarges a small photograph past that percentage.
-    pub fn shows_overview(&self) -> bool {
-        matches!(self, Self::Percent { value } if *value >= OVERVIEW_PERCENT)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewState {

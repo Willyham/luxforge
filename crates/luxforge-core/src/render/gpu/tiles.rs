@@ -844,7 +844,6 @@ mod tests {
                         &evaluation,
                         bounds,
                         super::super::RestSizing::Side(side),
-                        false,
                     )
                     .unwrap()
                     .expect("tiles at bounds smaller than the stage")
