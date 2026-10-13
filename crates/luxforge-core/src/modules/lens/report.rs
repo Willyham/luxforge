@@ -153,7 +153,7 @@ fn build(facts: &Facts<'_>, limit: usize) -> (String, String) {
             "Lens database",
             format!("{} ({})", pinned::RELEASE, pinned::COMMIT),
         ),
-        ("Luxforge", env!("CARGO_PKG_VERSION").to_owned()),
+        ("Luxforge", crate::APPLICATION_VERSION.to_owned()),
     ];
     let mut body = String::from(
         "Luxforge found no compatible lens profile for this photo. Please add support for this \

@@ -15,6 +15,7 @@ pub mod onnxruntime;
 pub mod policy;
 pub mod release;
 pub mod release_artifacts;
+pub mod release_candidate;
 pub mod release_tag;
 #[path = "../../src/repository.rs"]
 pub mod repository;

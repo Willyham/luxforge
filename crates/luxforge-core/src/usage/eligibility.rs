@@ -72,12 +72,11 @@ pub struct BuildIdentity {
 }
 
 impl BuildIdentity {
-    /// This executable's identity: the release tag's version a tag build compiled in
-    /// (`LUXFORGE_RELEASE_VERSION`, as `luxforge-cli` reports it), otherwise the workspace version,
-    /// and [`SOURCE_REVISION_ENV`] as it was when the core was compiled.
+    /// This executable's identity: [`crate::APPLICATION_VERSION`], as every executable's
+    /// `--version` reports it, and [`SOURCE_REVISION_ENV`] as it was when the core was compiled.
     pub fn current() -> Self {
         Self::new(
-            option_env!("LUXFORGE_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+            crate::APPLICATION_VERSION,
             option_env!("LUXFORGE_SOURCE_REVISION"),
         )
     }
