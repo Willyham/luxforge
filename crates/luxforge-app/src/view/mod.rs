@@ -24,6 +24,7 @@ pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
+pub(crate) mod minimap;
 pub(crate) mod move_to_applications;
 pub(crate) mod palette;
 pub(crate) mod query_choice;

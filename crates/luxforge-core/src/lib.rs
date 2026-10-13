@@ -165,9 +165,9 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
-    PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
-    PreviewSource, Queued, ViewState, Zoom,
+    MaskCoverageTarget, MaskOverlayOutcome, OVERVIEW_PERCENT, PREVIEW_PROGRESS_QUIET, PhaseOutcome,
+    PreviewIntent, PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult,
+    PreviewSession, PreviewSource, Queued, ViewState, Zoom,
 };
 pub use proxy::{ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage};
 pub use render::gpu::{
@@ -189,8 +189,9 @@ pub use render::gpu::{
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
-    MappingDescriptor, MappingShape, Raster, Render, RenderContext, RenderOptions, RenderSource,
-    Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render, stage_transform,
+    MappingDescriptor, MappingShape, OVERVIEW_BAND_BYTES, OVERVIEW_BOUNDS, OVERVIEW_CPU_BYTES,
+    Raster, Render, RenderContext, RenderOptions, RenderSource, Sample, ScratchBudget, StageSize,
+    WhiteBalanceApproximation, overview_size, reduce_overview, render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 
@@ -253,7 +254,7 @@ pub mod qualification {
         bounds: crate::ProxyBounds,
         sizing: crate::render::gpu::RestSizing,
     ) -> Result<Box<crate::RestTiles>, String> {
-        match crate::render::gpu::plan_rest_tiles(evaluation, bounds, sizing) {
+        match crate::render::gpu::plan_rest_tiles(evaluation, bounds, sizing, false) {
             Ok(Some(Ok(tiles))) => Ok(tiles),
             Ok(Some(Err(reason))) => Err(reason.to_string()),
             Ok(None) => Err("the bounds draw the output stage at its own size".into()),

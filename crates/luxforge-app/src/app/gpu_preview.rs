@@ -214,6 +214,8 @@ impl RestVariants {
                 stages: picture.stages.clone(),
                 light_sweeps: Arc::clone(&picture.light_sweeps),
                 reduction: None,
+                // The overview is the tiles', whichever variant draws them.
+                overview: picture.overview.clone(),
             },
             None => picture.clone(),
         };
@@ -228,6 +230,9 @@ struct HeldRest {
     conversion: Conversion<RestVariants>,
     /// This content's counts are wanted, independently from whether its picture is handed.
     wanted: bool,
+    /// The content the tiles show, where they are reduced to the minimap's overview too
+    /// ([`super::overview`]); `None` for tiles with no overview.
+    overview: Option<super::overview::OverviewKey>,
 }
 
 /// One settled resource's handoff. Crop, retained Compare content and warming remain independent.
@@ -251,6 +256,7 @@ fn same_tiles(held: &luxforge_core::RestTiles, new: &luxforge_core::RestTiles) -
         light_sweeps,
         output,
         reduction: _,
+        overview: _,
         source,
         format,
     } = new;
@@ -446,6 +452,14 @@ fn rest_over(
                 view: reduction.view,
                 across: axis(reduction.across.clone()),
                 down: axis(reduction.down.clone()),
+            }),
+        overview: tiles
+            .overview
+            .as_ref()
+            .map(|overview| luxforge_gpu::RestReduction {
+                view: overview.view,
+                across: axis(overview.across.clone()),
+                down: axis(overview.down.clone()),
             }),
     })
 }
@@ -681,7 +695,9 @@ pub(crate) fn rest_attribution(figures: &luxforge_gpu::RestFigures) -> Value {
         "retirement_waits": figures.retirement_waits,
         "gpu_tiles_reported": figures.gpu_tiles,
         "gpu_span_ms": figures.gpu_us as f64 / 1000.0,
-        "gpu_span_max_ms": figures.gpu_max_us as f64 / 1000.0})
+        "gpu_span_max_ms": figures.gpu_max_us as f64 / 1000.0,
+        "overview": figures.overview.map(|(width, height)| [width, height]),
+        "overview_bytes": figures.overview_bytes})
 }
 
 /// The evidence of a boundary derived from the source, for a drag or, `resident`, a committed
@@ -1114,6 +1130,10 @@ pub(crate) struct GpuPreviews {
     /// test compiles.
     #[cfg(test)]
     pub(crate) programs_warm: Option<bool>,
+    /// The overview a test reports the surface read back, by its picture at rest's version, which
+    /// no test draws.
+    #[cfg(test)]
+    pub(crate) overview_read: Option<(u64, luxforge_gpu::OverviewOutcome)>,
 }
 
 /// What a tick, or a displayed entry's job, asks the owner to plan its GPU picture for, with its
@@ -1425,6 +1445,23 @@ impl GpuPreviews {
             .as_ref()
             .filter(|held| held.tiles.source == *source && held.conversion.refusal().is_none())
             .map(|held| [held.versions.picture, held.versions.counts])
+    }
+
+    /// The content whose overview the held picture at rest handed under `version` — its picture's
+    /// or its counts' variant's — is reduced to: what a readback of that version shows.
+    pub(crate) fn overview_key_of(&self, version: u64) -> Option<super::overview::OverviewKey> {
+        self.rest
+            .as_ref()
+            .filter(|held| held.versions.picture == version || held.versions.counts == version)
+            .and_then(|held| held.overview.clone())
+    }
+
+    /// Whether the held picture at rest is reduced to `key`'s overview and the surface can run it:
+    /// the GPU makes that overview, and the reference need not.
+    pub(crate) fn makes_overview(&self, key: &super::overview::OverviewKey) -> bool {
+        self.rest.as_ref().is_some_and(|held| {
+            held.overview.as_ref() == Some(key) && held.conversion.refusal().is_none()
+        })
     }
 
     /// Mark the held picture at rest's counts as wanted, or no longer: the surfaces are handed its
@@ -2279,10 +2316,14 @@ impl Editor {
     /// draw. Nothing while the GPU stage is refused. At 100% and above (`region`), tiles held that
     /// differ only in their reduction — the same stack's picture at rest Fit reduced — are kept:
     /// their reduction serves as the backdrop of the view's region, with no tile drawn again.
+    /// Tiles reduced to the minimap's overview of `overview`, the content they show, replace held
+    /// tiles that are not, unless that overview is held already: the one bounded sweep a first
+    /// view at 200% asks for (`docs/design/minimap.md`).
     pub(crate) fn gpu_rest_from(
         &mut self,
         tiles: Option<Box<luxforge_core::RestTiles>>,
         region: bool,
+        overview: Option<super::overview::OverviewKey>,
     ) {
         if self.gpu_preview_allowed().is_err() {
             self.gpu.rest = None;
@@ -2298,9 +2339,16 @@ impl Editor {
             }
             return;
         };
+        let overview = overview.filter(|_| tiles.overview.is_some());
+        let overview_held = overview
+            .as_ref()
+            .is_none_or(|key| self.overviews.settled(key));
         if self.gpu.rest.as_ref().is_some_and(|held| {
             held.tiles == tiles
-                || (region && held.tiles.reduction.is_some() && same_tiles(&held.tiles, &tiles))
+                || (region
+                    && held.tiles.reduction.is_some()
+                    && same_tiles(&held.tiles, &tiles)
+                    && (held.tiles.overview.is_some() || overview_held))
         }) {
             return;
         }
@@ -2313,6 +2361,7 @@ impl Editor {
             },
             conversion: Conversion::Pending,
             wanted: false,
+            overview,
         });
         self.gpu_convert_rest();
     }
@@ -2522,12 +2571,17 @@ impl Editor {
         if moving {
             return None;
         }
+        // Tiles whose overview the minimap still waits for are drawn for it, with their counts.
+        let overview_wanted = held
+            .overview
+            .as_ref()
+            .is_some_and(|key| !self.overviews.settled(key));
         if ready.picture.reduction.is_some()
             && !region
             && super::gpu_settle::clip_flags(&self.session.workspace).is_none()
         {
             Some(RestPresentation::Picture(&ready.picture))
-        } else if held.wanted {
+        } else if held.wanted || overview_wanted {
             Some(RestPresentation::Counts(&ready.counts))
         } else {
             None

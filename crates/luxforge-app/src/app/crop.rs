@@ -212,6 +212,24 @@ impl Editor {
         self.core_gesture()?.crop()
     }
 
+    /// The crop draft's exact input stage, the reference's frame of `asset`'s `entry` truncated to
+    /// its first `layers`, when the draft holds it: what the minimap's overview of the stage is
+    /// reduced from at a percentage zoom, with no render of its own. The pixels are shared.
+    pub(crate) fn crop_exact_stage(
+        &self,
+        asset: &luxforge_core::AssetId,
+        entry: &luxforge_core::EntryId,
+        layers: usize,
+    ) -> Option<luxforge_core::Raster> {
+        let crop = self.crop_gesture()?;
+        let planned = crop.frames.planned.as_ref()?;
+        (planned.asset_id == *asset
+            && planned.entry_id == *entry
+            && crop.frame.layer_index == layers)
+            .then(|| crop.frames.exact.clone())
+            .flatten()
+    }
+
     fn crop_gesture_mut(&mut self) -> Option<&mut CropGesture> {
         match &mut self.core_gesture_mut()?.kind {
             Kind::Crop(crop) => Some(crop),
