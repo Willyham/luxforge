@@ -23,6 +23,22 @@ fn initial_open_keeps_its_prequeue_clock_and_normal_generation() {
     assert_eq!(editor.activity.requested, 1);
     assert_eq!(editor.open_generation.load(Ordering::Acquire), 1);
     assert!(editor.activity.pending && editor.busy);
+    assert_eq!(editor.activity.importing, Some(1));
+    finish(editor, catalog);
+}
+
+/// The import's answer, whatever it is, ends the import: the request is then ended by what that
+/// answer brings to the screen.
+#[test]
+fn an_import_answered_is_no_longer_importing() {
+    let (mut editor, catalog) = boot();
+    let _ = editor.open(PathBuf::from("missing-photo.jpg"));
+    assert_eq!(editor.activity.importing, Some(1));
+    let _ = editor.update(Message::Sync(SyncMessage::ImportRefreshed(
+        1,
+        Err("read-error: missing source".into()),
+    )));
+    assert_eq!(editor.activity.importing, None);
     finish(editor, catalog);
 }
 

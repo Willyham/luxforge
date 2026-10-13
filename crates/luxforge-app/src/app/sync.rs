@@ -98,6 +98,7 @@ impl Editor {
                 if self.open_generation.load(Ordering::Acquire) != generation {
                     return Task::none();
                 }
+                self.activity.importing = None;
                 // The poll that brought a preset change made while no photograph was open listed
                 // the library then; list it again beside the photo all the same, so the section
                 // a newly opened photograph shows is the library as it stands.
@@ -306,6 +307,7 @@ impl Editor {
     pub(crate) fn begin_request(&mut self) {
         self.activity.requested += 1;
         self.activity.pending = true;
+        self.activity.importing = None;
         self.activity.phase = "loading";
         self.activity.error_code = None;
         self.activity.request_started = Instant::now();
@@ -333,6 +335,7 @@ impl Editor {
             self.activity.request_started = queued.started;
         }
         let generation = self.activity.requested;
+        self.activity.importing = Some(generation);
         // A file opened leaves the Develop folder for its own, once it answers.
         self.develop_file_opening(generation);
         self.open_generation.store(generation, Ordering::Release);
