@@ -2939,6 +2939,12 @@ impl Editor {
             .with_overview(luxforge_core::OVERVIEW_BOUNDS);
         self.overviews.swept();
         self.gpu_rest_from(Some(tiles), true);
+        // The same content's tiles, drawn again under new versions: its counts still to come are
+        // theirs, since the tiles they were wanted under are drawn no more.
+        if let Some(held) = self.gpu.rest.as_ref() {
+            let versions = [held.versions.picture, held.versions.counts];
+            self.gpu_counts_reswept(content, versions);
+        }
         match self.gpu.rest.as_mut() {
             Some(held) if held.overview == Some(version) => {
                 held.content = content;

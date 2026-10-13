@@ -23,6 +23,7 @@ fn initial_open_keeps_its_prequeue_clock_and_normal_generation() {
     assert_eq!(editor.activity.requested, 1);
     assert_eq!(editor.open_generation.load(Ordering::Acquire), 1);
     assert!(editor.activity.pending && editor.busy);
+    assert_eq!(editor.activity.importing, Some(1));
     finish(editor, catalog);
 }
 
@@ -54,6 +55,43 @@ fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
     assert_eq!(editor.document.display_entry, displayed);
     assert_eq!(editor.presentation.preview_generation, preview_generation);
     assert_eq!(editor.session, session);
+    finish(editor, catalog);
+}
+
+#[test]
+fn a_frame_of_the_photograph_on_screen_does_not_end_an_open_still_in_flight() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+    let _ = editor.open(PathBuf::from("invalid.jpg"));
+    let generation = editor.activity.requested;
+    assert!(editor.activity.pending && editor.busy);
+    // Before the import answers, a refit of the canvas the open resized reuses the pixels of the
+    // photograph still on screen.
+    let state = editor.document.state.as_ref().expect("an open asset");
+    editor.presentation.reused = Some(luxforge_core::analysis::AnalysisIdentity {
+        asset_id: state.asset.id.clone(),
+        source_fingerprint: state.asset.fingerprint.clone(),
+        entry_id: state.current_entry.id.clone(),
+        snapshot_id: state.current_entry.snapshot.id.clone(),
+        recipe_hash: "hash".into(),
+        draft: None,
+        width: 4,
+        height: 4,
+        domain: luxforge_core::analysis::AnalysisDomain,
+    });
+    editor.settle_reused_pixels();
+    assert!(
+        editor.activity.pending,
+        "the open ended on another photograph's frame"
+    );
+    assert_eq!(editor.activity.phase, "loading");
+    // The import's refusal is then the open's outcome.
+    let _ = editor.update(Message::Sync(SyncMessage::ImportRefreshed(
+        generation,
+        Err("invalid-input: not an image".into()),
+    )));
+    assert!(!editor.activity.pending && !editor.busy);
+    assert_eq!(editor.activity.phase, "error");
+    assert_eq!(editor.activity.error_code.as_deref(), Some("invalid-input"));
     finish(editor, catalog);
 }
 

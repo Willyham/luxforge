@@ -281,6 +281,9 @@ pub(crate) struct Activity {
     pub(crate) displayed: u64,
     /// An open request is in progress until its image is on screen or it fails.
     pub(crate) pending: bool,
+    /// The file import in flight, by its request's generation, until the owner answers it. Until
+    /// then the photograph on screen is the one before it, and its frames never end the request.
+    pub(crate) importing: Option<u64>,
     pub(crate) phase: &'static str,
     pub(crate) error_code: Option<String>,
     pub(crate) source_dimensions: Option<(u32, u32)>,
@@ -311,6 +314,7 @@ impl Activity {
             requested: 0,
             displayed: 0,
             pending: false,
+            importing: None,
             phase: "empty",
             error_code: None,
             source_dimensions: None,
