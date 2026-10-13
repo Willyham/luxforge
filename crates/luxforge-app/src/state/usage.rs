@@ -17,6 +17,23 @@ pub(crate) const NOTICE_TITLE: &str = "Help improve Luxforge?";
 pub(crate) const DISCLOSURE: &str = "Luxforge can send usage events to api.luxforge.app for \
      debugging and analytics. They never include your name, contact details, IP address, photos, \
      filenames or photo metadata.";
+/// The same privacy disclosure, naming this launch's test destination when applicable.
+fn disclosure(usage: &Usage) -> String {
+    match usage
+        .read
+        .as_ref()
+        .and_then(|read| read.destination.as_deref())
+    {
+        Some(destination) if destination != luxforge_core::usage::DESTINATION => {
+            format!(
+                "{} These reports are test data.",
+                DISCLOSURE.replace("api.luxforge.app", destination)
+            )
+        }
+        _ => DISCLOSURE.to_owned(),
+    }
+}
+
 /// Where the notice says the choice can be changed.
 pub(crate) const NOTICE_SETTINGS: &str = "You can change this in Settings \u{203a} Privacy.";
 /// The notice's two neutral actions, in order. Neither is preselected.
@@ -49,7 +66,10 @@ pub(crate) const IDENTIFIERS: [(&str, &str); 3] = [
 
 /// The device fields a report carries ([design](../../../../docs/design/usage-statistics.md#privacy-device-context-and-the-event-registry)).
 pub(crate) const DEVICE: [(&str, &str); 7] = [
-    ("Release", "Luxforge's version and source revision."),
+    (
+        "Release",
+        "Luxforge's version and source revision, or a synthetic release for an unrevisioned developer build.",
+    ),
     (
         "Operating system",
         "Its family and numeric version; on Linux, the distribution family and kernel version.",
@@ -129,7 +149,7 @@ pub(crate) struct UsageRead {
     pub(crate) effective: bool,
     /// The disclosure version the core asks agreement to.
     pub(crate) disclosure_version: u32,
-    /// Where an eligible launch sends: the production origin, or a test launch's loopback
+    /// Where an eligible launch sends: the production URL, hosted test tenant or loopback
     /// receiver. Recorded so evidence shows which.
     #[serde(default)]
     pub(crate) destination: Option<String>,
@@ -285,7 +305,7 @@ pub(crate) struct UsageNotice {
 pub(crate) fn notice(usage: &Usage) -> Option<UsageNotice> {
     (usage.eligible && usage.prompt == Prompt::Shown).then(|| UsageNotice {
         title: NOTICE_TITLE,
-        body: format!("{DISCLOSURE} {NOTICE_SETTINGS}"),
+        body: format!("{} {NOTICE_SETTINGS}", disclosure(usage)),
         actions: [SHARE, DECLINE],
     })
 }
@@ -293,6 +313,8 @@ pub(crate) fn notice(usage: &Usage) -> Option<UsageNotice> {
 /// The Privacy tab as the sheet draws it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PrivacyModel {
+    /// The disclosure names this launch's destination.
+    pub(crate) disclosure: String,
     /// The switch: the effective state, turned off at once by an opt-out and on only once one is
     /// saved.
     pub(crate) on: bool,
@@ -329,6 +351,7 @@ pub(crate) fn privacy(usage: &Usage) -> PrivacyModel {
             .map(|reason| format!("Could not read the usage statistics setting: {reason}"))
     });
     PrivacyModel {
+        disclosure: disclosure(usage),
         on,
         saving: usage.writing.is_some(),
         loading: read.is_none() && usage.read_error.is_none(),
@@ -372,6 +395,25 @@ mod tests {
             reason: reason.map(str::to_owned),
             diagnostics: None,
         }
+    }
+
+    #[test]
+    fn usage_both_disclosures_name_the_test_destination() {
+        let destination = luxforge_core::usage::TEST_DESTINATION;
+        let mut read = read(false, false, Some("choice"));
+        read.destination = Some(destination.into());
+        let usage = Usage {
+            eligible: true,
+            prompt: Prompt::Shown,
+            read: Some(read),
+            ..Usage::default()
+        };
+        let notice = notice(&usage).unwrap();
+        let privacy = privacy(&usage);
+        assert!(notice.body.contains(destination));
+        assert!(notice.body.contains("These reports are test data."));
+        assert!(notice.body.starts_with(&privacy.disclosure));
+        assert!(privacy.disclosure.contains("They never include your name"));
     }
 
     #[test]

@@ -253,14 +253,7 @@ fn main_result() -> Result {
                     bin
                 };
                 let launch = launch::Background::new(&bin)?;
-                ensure(
-                    Command::new(&launch.executable)
-                        .current_dir(&root)
-                        .args(a.0)
-                        .status()?
-                        .success(),
-                    "Application failed",
-                )?;
+                ensure(launch.status(&root, &a.0)?.success(), "Application failed")?;
                 return Ok(());
             }
             let mut cmd = cargo_command();
