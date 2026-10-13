@@ -2,7 +2,8 @@
 //! panel over the dimmed workspace with the Settings sheet's scrim and stacking. From top to
 //! bottom: the preset cards, then one row per setting with its label in the leading column —
 //! Format, Bit depth (TIFF), Size with its readout, Print size while a density is set, Quality with
-//! Optimise, Chroma and Limit file size (JPEG and WebP) or Compress (TIFF), Metadata and Save to —
+//! Optimise, Chroma and Limit file size (JPEG and WebP) or Compress (TIFF), Sharpen, Metadata and
+//! Save to —
 //! and the footer's summary, Update "Name"…, Save as preset…, Cancel and Export. Everything it
 //! draws is [`ExportSheetModel`]; it holds nothing of its own.
 use crate::{
@@ -12,7 +13,7 @@ use crate::{
     },
     state::export_sheet::{
         CardModel, Chroma, Depth, ExportFormat, ExportSheetModel, Field, Fit, MetadataLevel,
-        NamingTarget, QualityModel,
+        NamingTarget, QualityModel, SHARPEN_MEDIA, SharpenAmount, SharpenModel,
     },
 };
 use iced::{
@@ -128,6 +129,7 @@ pub(crate) fn export_sheet(model: Option<&ExportSheetModel>) -> Option<Element<'
             rows = rows.push(inline_notice(Tone::Warning, notice.clone()));
         }
     }
+    rows = rows.push(rule()).push(sharpen_row(&model.sharpen));
     rows = rows.push(rule()).push(setting(
         "Metadata",
         column![
@@ -203,6 +205,58 @@ pub(crate) fn export_sheet(model: Option<&ExportSheetModel>) -> Option<Element<'
         ])
         .into(),
     )
+}
+
+/// Sharpen: None, Screen, Matte or Glossy, then Low, Standard or High, the amount disabled while
+/// Sharpen is None; under them, how it was changed from the selected preset's.
+fn sharpen_row(model: &SharpenModel) -> Element<'_, Message> {
+    let mut controls = column![
+        row![
+            segmented(
+                &SegmentedModel {
+                    options: vec![
+                        "None".into(),
+                        "Screen".into(),
+                        "Matte".into(),
+                        "Glossy".into(),
+                    ],
+                    selected: model.medium,
+                    enabled: true,
+                },
+                |index| sheet_message(SheetMessage::Sharpen(
+                    index
+                        .checked_sub(1)
+                        .and_then(|index| SHARPEN_MEDIA.get(index).copied())
+                )),
+            ),
+            segmented(
+                &SegmentedModel {
+                    options: vec!["Low".into(), "Standard".into(), "High".into()],
+                    selected: model.amount,
+                    enabled: model.amount_enabled,
+                },
+                |index| sheet_message(SheetMessage::SharpenAmount(
+                    SharpenAmount::ALL[index.min(SharpenAmount::ALL.len() - 1)]
+                )),
+            ),
+        ]
+        .spacing(theme::SPACING * 1.5)
+        .align_y(Alignment::Center)
+    ]
+    .spacing(theme::SPACING);
+    if let Some(changed) = &model.changed {
+        controls = controls.push(
+            row![
+                text("\u{2022}").style(theme::ink(Token::Accent)),
+                text(changed.clone())
+                    .size(theme::SIZE_CONTROL)
+                    .style(theme::ink(Token::Accent)),
+            ]
+            .spacing(theme::SPACING / 2.0)
+            .align_y(Alignment::Center),
+        );
+    }
+    setting("Sharpen", controls.into())
 }
 
 fn rule<'a>() -> Element<'a, Message> {

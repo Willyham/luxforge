@@ -11,7 +11,9 @@
 use luxforge_core::{
     AssetId, EntryId, ExportFolder, ExportPreset, ExportSettings, FormatSettings, OutputSize,
 };
-pub(crate) use luxforge_core::{Chroma, ExportFormat, MetadataLevel, tiles::Depth};
+pub(crate) use luxforge_core::{
+    Chroma, ExportFormat, MetadataLevel, Sharpen, SharpenAmount, SharpenMedium, tiles::Depth,
+};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -151,13 +153,14 @@ impl Texts {
 }
 
 /// The format-specific choices the sheet keeps while another format is chosen, so choosing a
-/// format back restores them.
+/// format back restores them, and Sharpen's amount, kept while Sharpen is None.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Kept {
     quality: u8,
     chroma: Chroma,
     limit_bytes: Option<u64>,
     bit_depth: Depth,
+    sharpen_amount: SharpenAmount,
 }
 
 impl Kept {
@@ -170,6 +173,9 @@ impl Kept {
                 FormatSettings::Tiff { bit_depth } => bit_depth,
                 _ => Depth::Sixteen,
             },
+            sharpen_amount: settings
+                .sharpen
+                .map_or(SharpenAmount::Standard, |sharpen| sharpen.amount),
         }
     }
 
@@ -447,6 +453,22 @@ impl ExportSheet {
         self.settings.metadata = metadata;
     }
 
+    /// Sharpen's medium, at the amount last chosen; `None` sharpens nothing.
+    pub(crate) fn set_sharpen(&mut self, medium: Option<SharpenMedium>) {
+        self.settings.sharpen = medium.map(|medium| Sharpen {
+            medium,
+            amount: self.kept.sharpen_amount,
+        });
+    }
+
+    /// Sharpen's amount: kept for when a medium is chosen while Sharpen is None.
+    pub(crate) fn set_sharpen_amount(&mut self, amount: SharpenAmount) {
+        self.kept.sharpen_amount = amount;
+        if let Some(sharpen) = &mut self.settings.sharpen {
+            sharpen.amount = amount;
+        }
+    }
+
     /// Set print size, or remove it.
     pub(crate) fn set_density(&mut self, on: bool) {
         self.settings.pixels_per_inch =
@@ -569,8 +591,8 @@ impl ExportSheet {
 }
 
 /// The settings with everything `export.plan` does not depend on made equal: the quality, which
-/// changes no output size, name, estimate or notice, and the metadata level. Two settings with the
-/// same key are planned the same.
+/// changes no output size, name, estimate or notice, the metadata level and output sharpening. Two
+/// settings with the same key are planned the same.
 pub(crate) fn plan_key(settings: &ExportSettings) -> ExportSettings {
     let mut key = settings.clone();
     match &mut key.format {
@@ -578,6 +600,7 @@ pub(crate) fn plan_key(settings: &ExportSettings) -> ExportSettings {
         FormatSettings::Tiff { .. } => {}
     }
     key.metadata = MetadataLevel::None;
+    key.sharpen = None;
     key
 }
 
@@ -642,6 +665,44 @@ pub(crate) struct QualityModel {
     pub(crate) limit_caption: Option<String>,
 }
 
+/// The Sharpen row: None, Screen, Matte or Glossy, then Low, Standard or High.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SharpenModel {
+    /// 0 is None, then Screen, Matte and Glossy.
+    pub(crate) medium: usize,
+    /// 0 is Low, then Standard and High: the amount chosen, kept while Sharpen is None.
+    pub(crate) amount: usize,
+    /// The amount applies: a medium is chosen.
+    pub(crate) amount_enabled: bool,
+    /// `Changed from Print (Glossy, Standard)` once it differs from the selected preset's.
+    pub(crate) changed: Option<String>,
+}
+
+/// The media in the row's order after None.
+pub(crate) const SHARPEN_MEDIA: [SharpenMedium; 3] = [
+    SharpenMedium::Screen,
+    SharpenMedium::Matte,
+    SharpenMedium::Glossy,
+];
+
+/// A medium's or an amount's label.
+pub(crate) fn sharpen_label(sharpen: Option<Sharpen>) -> String {
+    let Some(sharpen) = sharpen else {
+        return "None".to_owned();
+    };
+    let medium = match sharpen.medium {
+        SharpenMedium::Screen => "Screen",
+        SharpenMedium::Matte => "Matte",
+        SharpenMedium::Glossy => "Glossy",
+    };
+    let amount = match sharpen.amount {
+        SharpenAmount::Low => "Low",
+        SharpenAmount::Standard => "Standard",
+        SharpenAmount::High => "High",
+    };
+    format!("{medium}, {amount}")
+}
+
 /// The whole sheet as the view draws it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ExportSheetModel {
@@ -665,6 +726,7 @@ pub(crate) struct ExportSheetModel {
     pub(crate) compress: Option<bool>,
     /// The amber large-image notice under Quality, exactly when the plan carries it.
     pub(crate) large_image: Option<String>,
+    pub(crate) sharpen: SharpenModel,
     pub(crate) metadata: usize,
     pub(crate) metadata_caption: String,
     /// 0 is Original's folder, 1 Chosen folder.
@@ -945,6 +1007,29 @@ pub(crate) fn model(
         quality,
         compress: (format == ExportFormat::Tiff).then_some(settings.optimise),
         large_image,
+        sharpen: SharpenModel {
+            medium: settings.sharpen.map_or(0, |sharpen| {
+                1 + SHARPEN_MEDIA
+                    .iter()
+                    .position(|medium| *medium == sharpen.medium)
+                    .unwrap_or(0)
+            }),
+            amount: SharpenAmount::ALL
+                .iter()
+                .position(|amount| *amount == sheet.kept.sharpen_amount)
+                .unwrap_or(1),
+            amount_enabled: settings.sharpen.is_some(),
+            changed: sheet
+                .preset(listed)
+                .filter(|preset| preset.settings.sharpen != settings.sharpen)
+                .map(|preset| {
+                    format!(
+                        "Changed from {} ({})",
+                        preset.name,
+                        sharpen_label(preset.settings.sharpen)
+                    )
+                }),
+        },
         metadata: MetadataLevel::ALL
             .iter()
             .position(|level| *level == settings.metadata)

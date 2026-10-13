@@ -15,7 +15,10 @@ fn web() -> ExportPreset {
             },
             size: OutputSize::LongEdge { pixels: 2048 },
             optimise: true,
-            sharpen: None,
+            sharpen: Some(Sharpen {
+                medium: SharpenMedium::Screen,
+                amount: SharpenAmount::Standard,
+            }),
             metadata: MetadataLevel::Copyright,
             pixels_per_inch: None,
             folder: ExportFolder::Original,
@@ -360,4 +363,63 @@ fn a_card_names_its_format_size_and_density() {
         card_detail(&settings),
         "TIFF \u{b7} 16-bit \u{b7} full \u{b7} 300 ppi"
     );
+}
+
+#[test]
+fn the_sharpen_row_chooses_a_medium_and_amount_and_marks_a_change_from_the_preset() {
+    let presets = [web()];
+    let mut sheet = answered(sheet(), plan(json!([]), json!("/p/DSC_0042-web.jpg")));
+    let shown = model(Some(&sheet), Some(&presets), None).unwrap().sharpen;
+    assert_eq!(
+        shown,
+        SharpenModel {
+            medium: 1,
+            amount: 1,
+            amount_enabled: true,
+            changed: None,
+        },
+        "Web sharpens for the screen at Standard"
+    );
+    // Matte, then High: the card and the row are marked, and no plan is asked for.
+    sheet.set_sharpen(Some(SharpenMedium::Matte));
+    sheet.set_sharpen_amount(SharpenAmount::High);
+    assert_eq!(
+        sheet.settings.sharpen,
+        Some(Sharpen {
+            medium: SharpenMedium::Matte,
+            amount: SharpenAmount::High,
+        })
+    );
+    assert!(sheet.changed(&presets));
+    assert!(sheet.wants_plan().is_none(), "sharpening changes no plan");
+    let shown = model(Some(&sheet), Some(&presets), None).unwrap();
+    assert_eq!(
+        shown.sharpen.changed.as_deref(),
+        Some("Changed from Web (Screen, Standard)")
+    );
+    assert_eq!((shown.sharpen.medium, shown.sharpen.amount), (2, 2));
+    assert!(shown.cards[0].changed);
+    // None disables the amount and keeps it for the next medium.
+    sheet.set_sharpen(None);
+    let shown = model(Some(&sheet), Some(&presets), None).unwrap().sharpen;
+    assert_eq!(
+        (shown.medium, shown.amount, shown.amount_enabled),
+        (0, 2, false)
+    );
+    sheet.set_sharpen_amount(SharpenAmount::Low);
+    assert_eq!(sheet.settings.sharpen, None);
+    sheet.set_sharpen(Some(SharpenMedium::Glossy));
+    assert_eq!(
+        sheet.settings.sharpen,
+        Some(Sharpen {
+            medium: SharpenMedium::Glossy,
+            amount: SharpenAmount::Low,
+        })
+    );
+    // Back to the preset's own: nothing is marked.
+    sheet.set_sharpen(Some(SharpenMedium::Screen));
+    sheet.set_sharpen_amount(SharpenAmount::Standard);
+    assert!(!sheet.changed(&presets));
+    let shown = model(Some(&sheet), Some(&presets), None).unwrap().sharpen;
+    assert_eq!(shown.changed, None);
 }

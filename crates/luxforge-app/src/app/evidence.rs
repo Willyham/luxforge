@@ -783,6 +783,18 @@ fn edit_messages(edit: &luxforge_evidence::SheetEdit, dir: &std::path::Path) -> 
             Depth::Sixteen
         }));
     }
+    if let Some(medium) = &edit.sharpen {
+        messages.push(SheetMessage::Sharpen(luxforge_core::SharpenMedium::parse(
+            medium,
+        )));
+    }
+    if let Some(amount) = edit
+        .sharpen_amount
+        .as_deref()
+        .and_then(luxforge_core::SharpenAmount::parse)
+    {
+        messages.push(SheetMessage::SharpenAmount(amount));
+    }
     if let Some(level) = &edit.metadata {
         let level = MetadataLevel::ALL
             .into_iter()

@@ -431,6 +431,8 @@ impl Editor {
             SheetMessage::Limit(on) => sheet.set_limit(on),
             SheetMessage::BitDepth(depth) => sheet.set_bit_depth(depth),
             SheetMessage::Metadata(level) => sheet.set_metadata(level),
+            SheetMessage::Sharpen(medium) => sheet.set_sharpen(medium),
+            SheetMessage::SharpenAmount(amount) => sheet.set_sharpen_amount(amount),
             SheetMessage::Density(on) => sheet.set_density(on),
             SheetMessage::OriginalFolder => sheet.set_original_folder(),
             SheetMessage::ChosenFolder { choose } => match (&sheet.chosen_folder, choose) {
@@ -782,13 +784,9 @@ impl Editor {
         })
     }
 
-    /// The settings the desktop sends for these: with no density set, on macOS this window's own
-    /// ([`screen_pixels_per_inch`]).
-    pub(crate) fn desktop_settings(&self, mut settings: ExportSettings) -> ExportSettings {
-        if settings.pixels_per_inch.is_none() {
-            settings.pixels_per_inch = screen_pixels_per_inch(self.view_state.system_scale_factor);
-        }
-        settings
+    /// The settings the desktop sends for these ([`settings_from_window`]).
+    pub(crate) fn desktop_settings(&self, settings: ExportSettings) -> ExportSettings {
+        settings_from_window(settings, self.view_state.system_scale_factor)
     }
 
     /// Export again (`Shift+Cmd+E`): the last export's settings, folder and suffix, at once,
@@ -1198,6 +1196,10 @@ impl Editor {
                     "name": model.name, "taken": model.taken, "summary": model.summary,
                     "update": model.update, "can_export": model.can_export,
                     "export_label": model.export_label, "invalid": model.invalid.as_ref().map(|(_, reason)| reason),
+                    "sharpen": {
+                        "medium": model.sharpen.medium, "amount": model.sharpen.amount,
+                        "amount_enabled": model.sharpen.amount_enabled, "changed": model.sharpen.changed,
+                    },
                 })),
             })),
             "running": self.export.run.as_ref().map(|run| json!({
@@ -1263,6 +1265,22 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// The settings an export from a window at `system_scale_factor` sends: with no density set, on
+/// macOS the window's own ([`screen_pixels_per_inch`]), unless they sharpen for paper, whose
+/// radius follows the density: those send none, and sharpen for 300 ppi.
+pub(crate) fn settings_from_window(
+    mut settings: ExportSettings,
+    system_scale_factor: f32,
+) -> ExportSettings {
+    let for_paper = settings
+        .sharpen
+        .is_some_and(|sharpen| sharpen.medium.print());
+    if settings.pixels_per_inch.is_none() && !for_paper {
+        settings.pixels_per_inch = screen_pixels_per_inch(system_scale_factor);
+    }
+    settings
 }
 
 /// The density an export from this window names when its settings set none. On macOS, 72 pixels
@@ -1624,6 +1642,35 @@ mod tests {
         assert_eq!(screen_pixels_per_inch(1.5), expected(108));
         assert_eq!(screen_pixels_per_inch(f32::NAN), None);
         assert_eq!(screen_pixels_per_inch(0.0), None);
+    }
+
+    #[test]
+    fn paper_sharpening_without_a_density_sends_none_and_the_screen_the_windows() {
+        let with = |medium: Option<luxforge_core::SharpenMedium>| ExportSettings {
+            sharpen: medium.map(|medium| luxforge_core::Sharpen {
+                medium,
+                amount: luxforge_core::SharpenAmount::Standard,
+            }),
+            pixels_per_inch: None,
+            ..ExportSettings::baseline(luxforge_core::MetadataLevel::None)
+        };
+        let screen = cfg!(target_os = "macos").then_some(144);
+        for (medium, sent) in [
+            (None, screen),
+            (Some(luxforge_core::SharpenMedium::Screen), screen),
+            (Some(luxforge_core::SharpenMedium::Matte), None),
+            (Some(luxforge_core::SharpenMedium::Glossy), None),
+        ] {
+            assert_eq!(
+                settings_from_window(with(medium), 2.0).pixels_per_inch,
+                sent,
+                "{medium:?}"
+            );
+        }
+        // A density set is kept, whatever the medium.
+        let mut set = with(Some(luxforge_core::SharpenMedium::Glossy));
+        set.pixels_per_inch = Some(240);
+        assert_eq!(settings_from_window(set, 2.0).pixels_per_inch, Some(240));
     }
 
     #[test]

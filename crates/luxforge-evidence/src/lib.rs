@@ -1813,6 +1813,12 @@ pub struct SheetEdit {
     /// 8 or 16.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bit_depth: Option<u8>,
+    /// Sharpen: `none`, `screen`, `matte` or `glossy`, then its amount, `low`, `standard` or
+    /// `high`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharpen: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharpen_amount: Option<String>,
     /// `none`, `copyright`, `no_location` or `all`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
@@ -1833,6 +1839,16 @@ impl SheetEdit {
         one_of(&self.format, "format", &["jpeg", "webp", "tiff"])?;
         one_of(&self.size, "size", &["full", "long_edge", "within"])?;
         one_of(&self.chroma, "chroma", &["full", "half"])?;
+        one_of(
+            &self.sharpen,
+            "sharpen",
+            &["none", "screen", "matte", "glossy"],
+        )?;
+        one_of(
+            &self.sharpen_amount,
+            "sharpen_amount",
+            &["low", "standard", "high"],
+        )?;
         one_of(
             &self.metadata,
             "metadata",
