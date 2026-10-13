@@ -330,7 +330,7 @@ fn privacy(model: Option<&PrivacyModel>) -> Element<'_, Message> {
     let Some(privacy) = model else {
         return content.into();
     };
-    let mut text = column![label(statistics::SWITCH), caption(statistics::DISCLOSURE)]
+    let mut text = column![label(statistics::SWITCH), caption(&privacy.disclosure)]
         .spacing(theme::ROW_SPACING)
         .width(Length::Fill);
     if privacy.loading {

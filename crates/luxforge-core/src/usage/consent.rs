@@ -269,10 +269,11 @@ pub struct UsageState {
     pub effective: bool,
     /// The disclosure this build describes, which an enable must name.
     pub disclosure_version: u32,
-    /// Where an eligible launch sends: the production destination, or a test host's loopback
+    /// Where an eligible launch sends: the production destination, hosted test tenant or test
     /// receiver.
     pub destination: String,
-    /// The release a batch reports, `<version>+<12 hex>`, or `null` for an unrevisioned build.
+    /// The release a batch reports, `<version>+<12 hex>` (synthetic for unrevisioned developer
+    /// builds), or `null` when unavailable.
     pub release: Option<String>,
     /// The stored installation ID while the stored choice is on.
     pub installation_id: Option<InstallationId>,

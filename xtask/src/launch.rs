@@ -377,6 +377,19 @@ fn lsappinfo(args: &[&str]) -> Result<String> {
 }
 
 impl Background {
+    /// Run an ad hoc background developer check with the same hidden-window arguments as the
+    /// recorded harness launches. The caller keeps this bundle alive until the child exits.
+    pub fn status(
+        &self,
+        root: &Path,
+        args: &[OsString],
+    ) -> std::io::Result<std::process::ExitStatus> {
+        Command::new(&self.executable)
+            .current_dir(root)
+            .args(editor_args(args))
+            .status()
+    }
+
     pub fn new(binary: &Path) -> Result<Self> {
         #[cfg(target_os = "macos")]
         {

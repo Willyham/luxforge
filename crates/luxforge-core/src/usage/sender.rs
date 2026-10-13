@@ -10,7 +10,7 @@
 //! otherwise takes the cooldown. Any `3xx` (a refused redirect included), any other status and a
 //! request the transport refuses suspend sending until the next launch, without touching consent.
 use super::{
-    DESTINATION,
+    DESTINATION, TEST_DESTINATION,
     eligibility::Eligibility,
     registry::{MAX_BODY_BYTES, MAX_EVENTS},
 };
@@ -171,12 +171,23 @@ pub fn cooldown(failures: u32) -> Duration {
 
 /// The one request every batch of this launch is sent as, without its body: `POST` to the
 /// production destination or the test receiver, `Content-Type: application/json` and nothing else.
-/// No query string, cookie, authorization or ID is in the URL or a header. `None` for an
+/// Only the hosted test tenant has a query string (`tenant=test`); no cookie, authorization or
+/// ID is in the URL or a header. `None` for an
 /// ineligible launch, which sends nothing.
 pub fn request(eligibility: &Eligibility) -> Result<Option<TransportRequest>, Error> {
     let endpoint = match eligibility {
         Eligibility::Production { .. } => parse_endpoint(DESTINATION, &[EndpointClass::Remote])?,
-        Eligibility::Test(receiver) => parse_endpoint(receiver.url(), &[EndpointClass::Loopback])?,
+        Eligibility::Developer { .. } => {
+            parse_endpoint(TEST_DESTINATION, &[EndpointClass::Remote])?
+        }
+        Eligibility::Test(receiver) => parse_endpoint(
+            receiver.url(),
+            if receiver.url() == TEST_DESTINATION {
+                &[EndpointClass::Remote]
+            } else {
+                &[EndpointClass::Loopback]
+            },
+        )?,
         Eligibility::Ineligible(_) => return Ok(None),
     };
     Ok(Some(TransportRequest {
@@ -190,7 +201,7 @@ pub fn request(eligibility: &Eligibility) -> Result<Option<TransportRequest>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usage::{LaunchMode, TestReceiver};
+    use crate::usage::TestReceiver;
     use url::Url;
 
     fn answer(status: u16, headers: &[(&str, &str)]) -> Result<TransportResponse, Error> {
@@ -258,6 +269,9 @@ mod tests {
     #[test]
     fn usage_retry_after_is_clamped_and_malformed_values_take_the_cooldown() {
         let after = |value: &str| verdict(&answer(429, &[("retry-after", value)]));
+        for hosted in ["10", "60"] {
+            assert_eq!(after(hosted), Verdict::RetryAfter(RETRY_AFTER_MIN));
+        }
         assert_eq!(
             after("1"),
             Verdict::RetryAfter(RETRY_AFTER_MIN),
@@ -321,10 +335,23 @@ mod tests {
         assert_eq!(production.endpoint.url.as_str(), DESTINATION);
         assert_eq!(production.endpoint.class, EndpointClass::Remote);
         assert_eq!(production.endpoint.url.query(), None);
+        for eligibility in [
+            Eligibility::Developer {
+                release: crate::usage::TEST_RELEASE.into(),
+            },
+            Eligibility::test(TestReceiver::loopback(TEST_DESTINATION).unwrap()),
+        ] {
+            let hosted = request(&eligibility).unwrap().unwrap();
+            assert_eq!(hosted.endpoint.url.as_str(), TEST_DESTINATION);
+            assert_eq!(hosted.endpoint.class, EndpointClass::Remote);
+            assert_eq!(hosted.headers, production.headers);
+        }
         assert!(
-            request(&Eligibility::production(LaunchMode::Interactive))
-                .unwrap()
-                .is_none(),
+            request(&Eligibility::Ineligible(
+                crate::usage::Reason::InactiveDestination
+            ))
+            .unwrap()
+            .is_none(),
             "with the activation switch off nothing is sent"
         );
     }
