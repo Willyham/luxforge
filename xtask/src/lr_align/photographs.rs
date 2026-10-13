@@ -7,13 +7,14 @@
 //! round folder is written. A development is the service's: As Shot at import, a custom white
 //! balance through `set-raw` and its preparation, or the detected lens profile through
 //! `select-lens-profile`. Each is kept for the run, so the renders that share it run in parallel
-//! over one set of planes; the service itself is used by one caller at a time.
+//! over one set of planes; white balances are kept only a few at a time, which bounds the run's
+//! memory; the service itself is used by one caller at a time.
 use crate::*;
 use luxforge_core::{
     AssetId, EditorService, EntryId, LENS_EFFECT, Layer, LinearImage, Mutation, PreviewSource,
     Recipe,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// How a photograph is developed for one render.
@@ -63,7 +64,12 @@ pub struct Photo {
     pub lens: Option<String>,
     service: Mutex<Service>,
     developed: Mutex<HashMap<String, Arc<Developed>>>,
+    /// The white-balance developments kept, oldest first.
+    kept: Mutex<VecDeque<String>>,
 }
+
+/// How many white-balance developments of one photograph are kept at once.
+const KEPT_WHITE_BALANCES: usize = 2;
 
 fn layers_of(recipe: &Recipe, keep: impl Fn(&Layer) -> bool) -> Recipe {
     let mut base = recipe.clone();
@@ -177,6 +183,7 @@ impl Photo {
             lens,
             service: Mutex::new(service),
             developed: Mutex::new(developed),
+            kept: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -217,10 +224,18 @@ impl Photo {
             image,
             base: layers_of(&recipe, |_| false),
         });
-        self.developed
-            .lock()
-            .map_err(|_| "a poisoned cache")?
-            .insert(key, done.clone());
+        let mut developed = self.developed.lock().map_err(|_| "a poisoned cache")?;
+        developed.insert(key.clone(), done.clone());
+        // A photograph's planes are hundreds of megabytes and a sweep uses each white balance once
+        // a photograph, so only the latest few are kept beside As Shot and the lens profile; a
+        // render still holding an evicted one keeps it until it finishes.
+        let mut kept = self.kept.lock().map_err(|_| "a poisoned cache")?;
+        kept.push_back(key);
+        while kept.len() > KEPT_WHITE_BALANCES {
+            if let Some(oldest) = kept.pop_front() {
+                developed.remove(&oldest);
+            }
+        }
         Ok(done)
     }
 
