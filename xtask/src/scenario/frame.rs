@@ -82,6 +82,18 @@ pub fn columns(frame: &Value) -> Result<Option<[u32; 2]>> {
     }
 }
 
+/// The canvas region a frame records (`canvas_rect`): `[left, top, right, bottom]` physical pixels,
+/// right and bottom exclusive, between the panels, the bars and the filmstrip.
+pub fn canvas(frame: &Value) -> Result<[u32; 4]> {
+    serde_json::from_value(frame["canvas_rect"].clone()).map_err(|_| {
+        format!(
+            "The frame records no canvas rectangle: {}",
+            frame["canvas_rect"]
+        )
+        .into()
+    })
+}
+
 /// The wheel a frame's state records drawing for the hue parameter `hue`, if it draws one.
 pub fn drawn_wheel<'a>(state: &'a Value, hue: &str) -> Option<&'a Value> {
     state["control_ui"]["wheels"]
@@ -178,6 +190,11 @@ impl Frame {
     /// The photo surface's physical x range, as [`columns`] reads it.
     pub fn columns(&self) -> Result<Option<[u32; 2]>> {
         columns(&self.record)
+    }
+
+    /// [`canvas`] of this frame.
+    pub fn canvas(&self) -> Result<[u32; 4]> {
+        canvas(&self.record)
     }
 
     /// The committed revision the frame shows.
