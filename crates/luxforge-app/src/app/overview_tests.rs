@@ -289,3 +289,81 @@ fn the_gpus_overview_is_taken_up_by_its_version_and_reused_across_pans() {
     assert_eq!(editor.overviews.figures.gpu_built, 1);
     finish(editor, catalog);
 }
+
+/// An overview the GPU's budget cannot hold is refused alone: the minimap says why, the tiles are
+/// no longer drawn for it, and where the reference's frame of the same content is held it is
+/// reduced in its place, once.
+#[test]
+fn an_overview_the_gpu_refuses_falls_back_to_the_reference_frame_held() {
+    let catalog = catalog("gpu-refused");
+    let (mut editor, asset, _) = real_photo(&catalog);
+    deliver_until(&mut editor, "the open's reference frame", |editor| {
+        editor.presentation.exact.is_some() && !editor.presentation.queue.is_busy()
+    });
+    editor.renderer.stage = Some(luxforge_gpu::GpuStageState::Available);
+    editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
+    let _ = editor.zoom_changed(&Zoom::Fit);
+    let crate::app::gpu_preview::GpuAsk::Region(rect, magnification, _) = editor.gpu_ask() else {
+        panic!("a region at 200%");
+    };
+    let job = crate::app::tasks::ready_preview_job(
+        &editor.owner,
+        luxforge_core::PreviewRequest::new(editor.client, asset)
+            .entry(editor.displayed_entry())
+            .analyse()
+            .gpu_region(rect, magnification),
+    )
+    .expect("the view's job");
+    let key = crate::app::preview::overview_key(&job).expect("a committed stack's key");
+    let epoch = editor.view_plan.epoch;
+    let _ = editor.update(Message::Preview(PreviewMessage::ViewLoaded {
+        epoch,
+        result: Ok(Box::new(job)),
+    }));
+    assert!(editor.gpu.makes_overview(&key));
+    assert!(editor.overviews.reducing.is_none(), "the GPU makes it");
+    deliver_until(
+        &mut editor,
+        "tiles reduced to the overview handed",
+        |editor| {
+            editor
+                .gpu_counts_handed()
+                .or(editor.gpu_rest_handed())
+                .is_some_and(|rest| rest.overview.is_some())
+        },
+    );
+    let version = editor
+        .gpu_counts_handed()
+        .or(editor.gpu_rest_handed())
+        .unwrap()
+        .version;
+    editor.gpu.overview_read = Some((
+        version,
+        luxforge_gpu::OverviewOutcome::Failed(luxforge_gpu::OverviewError::Budget),
+    ));
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert_eq!(
+        editor.overview_view(),
+        OverviewView::Unavailable("budget-exceeded")
+    );
+    assert!(
+        editor
+            .gpu_counts_handed()
+            .is_none_or(|rest| rest.overview.is_none() || editor.gpu.counts.is_some()),
+        "no tiles drawn again for an overview refused"
+    );
+    let reducing = editor.overviews.reducing.as_ref().expect("the reference's");
+    assert_eq!(reducing.key, key);
+    let frame = editor.presentation.exact.as_ref().unwrap().raster.clone();
+    let reduced = luxforge_core::reduce_overview(&frame, &Cancel::new()).unwrap();
+    editor.reference_overview_reduced(ReferenceOverview {
+        key: key.clone(),
+        result: Ok(reduced),
+    });
+    assert!(
+        matches!(editor.overview_view(), OverviewView::Ready(held) if held.renderer == Renderer::Reference)
+    );
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert_eq!(editor.overviews.figures.reference_started, 1);
+    finish(editor, catalog);
+}
