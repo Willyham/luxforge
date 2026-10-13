@@ -380,6 +380,21 @@ pub mod qualification {
             self.banded.bands()
         }
 
+        /// An export's `output` in bands from the top, as the reference export of a paged source
+        /// encodes them (`docs/design/export-settings.md`, "Paged sources"): each band its row
+        /// count and its pixels at the output's depth, resized and sharpened as the output asks,
+        /// every code the whole-frame reference's.
+        pub fn output<'b>(
+            &'b self,
+            output: crate::tiles::OutputSpec,
+            cancel: &'b crate::Cancel,
+        ) -> Result<
+            impl Iterator<Item = Result<(u32, crate::tiles::Pixels), crate::Error>> + 'b,
+            crate::Error,
+        > {
+            crate::render::bands_output::output_bands(&self.banded, output, cancel)
+        }
+
         /// The output reduced to fit `bounds` by the linear-light area average the reference frame
         /// is reduced by at a view smaller than the stage, band by band: what the GPU's overview of
         /// the source is held to. `None` when the output already fits.

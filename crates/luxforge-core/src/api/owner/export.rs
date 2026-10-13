@@ -14,7 +14,10 @@
 //! no GPU provider (`luxforge-json`), and when the provider says why it cannot, at once or
 //! part-way, in which case the export starts again from nothing: GPU and reference pixels are never
 //! mixed in one file. A written file's result names the renderer that rendered it, and why the
-//! reference did.
+//! reference did. A paged derived source has no whole frame: its reference is the banded mode
+//! ([`banded`]), which renders every output the settings ask for band by band, each band the
+//! whole-frame reference's rows, so neither the stage nor the output is held whole except where a
+//! held format holds its output frame.
 //!
 //! Each format is encoded as its encoder allows ([`Route`]): a JPEG without a size limit, optimised
 //! or not, and a TIFF at 8 or 16 bits, are encoded as the bands arrive, so no frame is held (an

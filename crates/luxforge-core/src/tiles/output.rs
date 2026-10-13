@@ -221,7 +221,25 @@ pub(crate) fn reference_output_phased(
     cancel: &crate::Cancel,
     resampling: &mut dyn FnMut() -> Result<(), crate::Error>,
 ) -> Result<OutputFrame, crate::Error> {
-    let render = evaluation.exact(cancel)?;
+    render_output(
+        evaluation.exact(cancel)?,
+        output,
+        snapshot_id,
+        cancel,
+        resampling,
+    )
+}
+
+/// [`reference_output_phased`] of an exact `render` of the whole frame: the one place the
+/// whole-frame reference's export output is made, which the banded reference's output of a paged
+/// source is held to exactly (`render::bands_output`).
+pub(crate) fn render_output(
+    render: crate::Render<'_>,
+    output: OutputSpec,
+    snapshot_id: crate::SnapshotId,
+    cancel: &crate::Cancel,
+    resampling: &mut dyn FnMut() -> Result<(), crate::Error>,
+) -> Result<OutputFrame, crate::Error> {
     let (width, height) = render.stage();
     output.check(width, height)?;
     let full = output.is_full(width, height);
