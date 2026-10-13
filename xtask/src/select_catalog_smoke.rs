@@ -37,7 +37,9 @@ use crate::{
     *,
 };
 use luxforge_core::{ClientId, OwnerHandle};
-use luxforge_evidence::{self as script, CatalogStep, FacetColumn, LibraryKey, SelectStep};
+use luxforge_evidence::{
+    self as script, CatalogStep, FacetColumn, LibraryKey, SelectStep, SheetEdit, SheetFolder,
+};
 
 /// The catalog folder the run develops real photographs into.
 pub const FOLDER: &str = "Real photographs";
@@ -357,7 +359,15 @@ pub fn steps(expected: &Value) -> Result<Vec<Step>> {
             "Applied {PRESET} to 5 photographs \u{b7} 5 without some settings"
         )),
         catalog("catalog-preset-report", CatalogStep::Report),
-        catalog("catalog-exported", CatalogStep::ExportInto(export))
+        catalog("catalog-export-sheet", CatalogStep::Export),
+        Step::new(
+            "catalog-export-folder",
+            script::Step::export_edit(SheetEdit {
+                folder: Some(SheetFolder::Path(export)),
+                ..SheetEdit::default()
+            }),
+        ),
+        Step::new("catalog-exported", script::Step::export_write())
             .status_starts("Exported 5 photographs to "),
         // Sending back: an edited photograph's Send back is refused with the core's reason; an
         // unedited one is right-clicked and sent back from its menu.
@@ -415,7 +425,7 @@ fn catalog_block(frame: &Frame) -> &Value {
 
 /// The batch request a frame's gesture sent: `method` with `params`, apart from the request
 /// identity, as an agent writes it, with the desktop's actor, and the job the owner answered.
-fn batch_sent(frame: &Frame, name: &str, method: &str, params: Value) -> Result<Value> {
+pub(crate) fn batch_sent(frame: &Frame, name: &str, method: &str, params: Value) -> Result<Value> {
     let sent = &catalog_block(frame)["batch_request"];
     let request_id = &sent["params"]["mutation"]["request_id"];
     ensure(
@@ -437,7 +447,7 @@ fn batch_sent(frame: &Frame, name: &str, method: &str, params: Value) -> Result<
 
 /// A frame's batch: it ended, the desktop's report is exactly the `result` of the `job.read`
 /// record it read for the job it started, and the band and the status bar say its sentence.
-fn batch_ended(frame: &Frame, name: &str, kind: &str) -> Result<Value> {
+pub(crate) fn batch_ended(frame: &Frame, name: &str, kind: &str) -> Result<Value> {
     let block = catalog_block(frame);
     let batch = &block["batch"];
     let record = &block["batch_record"];
@@ -792,15 +802,41 @@ pub fn verify(
         json!({"sheet": sheet}),
     );
 
-    // The five exported into the run's scratch folder: the files written are the report's.
-    let frame = launch.at("catalog-exported")?;
+    // Export 5… opened the Export sheet in batch mode over the five, its settings the last
+    // export's or the Web preset's, and Choose… set the run's scratch folder.
+    let frame = launch.at("catalog-export-sheet")?;
+    let sheet = &frame["state"]["export"]["sheet"];
+    ensure(
+        sheet["batch"] == true
+            && sheet["model"]["title"] == "Export 5 photos"
+            && sheet["model"]["export_label"] == "Export 5"
+            && sheet["plan"]["planned"] == 5,
+        format!("catalog-export-sheet: the sheet is {sheet}"),
+    )?;
+    let frame = launch.at("catalog-export-folder")?;
     let export = &expected["export"]["path"];
+    let settings = frame["state"]["export"]["sheet"]["settings"].clone();
+    ensure(
+        settings["folder"] == json!({"path": export}),
+        format!(
+            "catalog-export-folder: the sheet saves to {}",
+            settings["folder"]
+        ),
+    )?;
+    checks.note(
+        frame,
+        "Export 5… opened the Export sheet over the selection, its folder chosen",
+        json!({"sheet": frame["state"]["export"]["sheet"]["model"]}),
+    );
+
+    // The five exported into the run's scratch folder with the sheet's settings, as an agent
+    // writes batch.export: the files written are the report's.
+    let frame = launch.at("catalog-exported")?;
     let sent = batch_sent(
         frame,
         "catalog-exported",
         "batch.export",
-        json!({"targets": {"kind": "selection"},
-               "settings": crate::export_smoke::export_settings(Path::new(export.as_str().unwrap_or_default()))}),
+        json!({"targets": {"kind": "selection"}, "settings": settings}),
     )?;
     let exported = batch_ended(frame, "catalog-exported", "batch-export")?;
     // Each file written names its renderer, as a single export's result does.
