@@ -2051,6 +2051,16 @@ impl Worker {
         };
         let budget = self.stream_budget();
         let stage = (first.output.width, first.output.height);
+        // A resampled stream holds its whole output stage in `Rgba32Float`. One past the budget,
+        // as a paged derived source's level 0 above about 114 MP is, is the reference's
+        // (`tiles-budget`) before the runner plans anything for it.
+        let stage_bytes = u64::from(stage.0) * u64::from(stage.1) * 16;
+        if !stream.output.is_exact_frame(stage.0, stage.1) && stage_bytes > budget {
+            return Err(TileFallback::Budget {
+                requested: stage_bytes,
+                budget,
+            });
+        }
         let (resampling, held) = match self.resampling(stream.output, stage)? {
             Some((resampling, held, largest)) => {
                 if held + largest > budget {
