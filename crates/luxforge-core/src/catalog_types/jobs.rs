@@ -104,6 +104,15 @@ pub const HDR_MERGE: CatalogJob = CatalogJob {
     label: "Merging HDR",
 };
 
+/// Stitching overlapping frames into one panorama (`merge.create` and `merge.rerun` of kind
+/// `panorama`), on the merge lane it shares with HDR merges.
+pub const PANORAMA_MERGE: CatalogJob = CatalogJob {
+    kind: JobKind::PanoramaMerge,
+    job_kind: "panorama-merge",
+    activity: "merge.panorama",
+    label: "Merging panorama",
+};
+
 /// Preparing a merge's preview (`merge.preview`: reading and aligning on the merge lane, then
 /// drawing) or drawing it again from its retained proxies (`merge.preview-update`).
 pub const MERGE_PREVIEW: CatalogJob = CatalogJob {
@@ -114,7 +123,7 @@ pub const MERGE_PREVIEW: CatalogJob = CatalogJob {
 };
 
 /// Every catalog job kind.
-pub const CATALOG_JOBS: [CatalogJob; 12] = [
+pub const CATALOG_JOBS: [CatalogJob; 13] = [
     INDEX_REFRESH,
     PREVIEW_EXTRACT,
     PREVIEW_REGION,
@@ -126,6 +135,7 @@ pub const CATALOG_JOBS: [CatalogJob; 12] = [
     BATCH_SETTINGS,
     BATCH_EXPORT,
     HDR_MERGE,
+    PANORAMA_MERGE,
     MERGE_PREVIEW,
 ];
 

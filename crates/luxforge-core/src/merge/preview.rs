@@ -24,7 +24,10 @@
 use crate::{
     Error, ErrorKind,
     atomic_file::file_error,
-    catalog_types::{HdrParameters, HdrPreviewDiagnostics, HdrPreviewOverlays, MergeOutput},
+    catalog_types::{
+        HdrParameters, HdrPreviewDiagnostics, HdrPreviewOverlays, MergeOutput,
+        MergePreviewDiagnostics, MergePreviewOverlays,
+    },
     jobs::JobControl,
     merge::{
         hdr::{
@@ -62,13 +65,13 @@ pub(crate) enum Drawn {
     Refused(Value),
 }
 
-/// A drawn revision: its JPEG, size, diagnostics, overlay and output estimate.
+/// A drawn revision: its JPEG, size, diagnostics, overlays and output estimate, of its kind.
 pub(crate) struct Picture {
     pub path: PathBuf,
     pub width: u32,
     pub height: u32,
-    pub diagnostics: HdrPreviewDiagnostics,
-    pub overlays: HdrPreviewOverlays,
+    pub diagnostics: MergePreviewDiagnostics,
+    pub overlays: MergePreviewOverlays,
     pub output: MergeOutput,
 }
 
@@ -96,7 +99,7 @@ impl Pictures {
     /// Write `revision`'s picture through a temporary file and a rename, so a reader sees the
     /// whole file or none, and remove every other picture of this preview. Never flushed: a
     /// picture is disposable.
-    fn write(&self, revision: u32, jpeg: &[u8]) -> Result<PathBuf, Error> {
+    pub(crate) fn write(&self, revision: u32, jpeg: &[u8]) -> Result<PathBuf, Error> {
         let path = self.path(revision);
         fs::create_dir_all(&self.folder)
             .map_err(|error| file_error(self.folder.display(), error.kind()))?;
@@ -354,7 +357,7 @@ pub(crate) fn draw(
         path,
         width: picture.width as u32,
         height: picture.height as u32,
-        diagnostics: HdrPreviewDiagnostics {
+        diagnostics: MergePreviewDiagnostics::Hdr(HdrPreviewDiagnostics {
             proxy_side: preview_proxy_side(width, height),
             alignment: analysis.parameters.alignment.alignment,
             max_residual_px: max_residual_px(&analysis.registration),
@@ -368,8 +371,8 @@ pub(crate) fn draw(
                 .map(|input| input.offset_ev)
                 .collect(),
             reference: analysis.exposures.reference as u32,
-        },
-        overlays: HdrPreviewOverlays { motion },
+        }),
+        overlays: MergePreviewOverlays::Hdr(HdrPreviewOverlays { motion }),
         output: MergeOutput {
             width: cover.width,
             height: cover.height,

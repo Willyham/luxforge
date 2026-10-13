@@ -54,6 +54,7 @@ const BLOCKING_JOBS: &[JobKind] = &[
     JobKind::Export,
     JobKind::BatchExport,
     JobKind::HdrMerge,
+    JobKind::PanoramaMerge,
     JobKind::DevelopPicks,
     JobKind::BatchSettings,
     JobKind::Install,

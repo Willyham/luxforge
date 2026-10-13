@@ -206,7 +206,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `merge.preview-close` | Exempt (internal) | Ends a preview session (Cancel on the sheet); nothing was made. |
 | `merge.preview-update` | Exempt (read) | Draws the open preview again for a setting change, each step of a stepper one request; the setting is recorded with the merge it is used for. |
 | `merge.remove` | `interaction` merge-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
-| `merge.rerun` | `interaction` `hdr-merge` | When an HDR merge's rerun is accepted, as `merge.create`; a panorama merge is exempt. The job's terminal outcome records no `operation.end` (open). |
+| `merge.rerun` | `interaction` `hdr-merge` | When an HDR merge's rerun is accepted, as `merge.create`; a panorama merge is exempt, including a rerun that names no kind, by its merge's recorded kind. The job's terminal outcome records no `operation.end` (open). |
 | `merge.restore` | `interaction` merge-restore | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `module.list` | Exempt (read) | Discovery. |
 | `module.permission.deny` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
