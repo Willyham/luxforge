@@ -43,8 +43,8 @@ use luxforge_core::{
     tiles::{OutputSharpen, Pixels, sharpen},
 };
 use luxforge_evidence::{
-    self as script, CatalogStep, ExportStep, ExportWrite, SelectStep, SelectWorkspace, SheetEdit,
-    SheetFolder,
+    self as script, CatalogStep, ExportProgressed, ExportStep, ExportWrite, SelectStep,
+    SelectWorkspace, SheetEdit, SheetFolder,
 };
 use luxforge_reference::preview_error::{self, Class, Rgb8};
 
@@ -63,8 +63,8 @@ const PAIR: &str = "pair";
 const MINE: &str = "Mine";
 /// What the batch adds to each original's name.
 const BATCH_SUFFIX: &str = "-batch";
-/// How long the frame after the export starts waits, so its progress can rise.
-const PROGRESS_WAIT_MS: u64 = 700;
+/// The longest the frame after the export starts waits for its progress to rise.
+const PROGRESS_WAIT_MS: u64 = script::MAX_WAIT_MS;
 /// How long the frame after the cancel waits for the job to end.
 const CANCEL_WAIT_MS: u64 = 1500;
 /// Methods no sheet gesture may ask the owner for: an asset's state, its history, a preview, a
@@ -321,7 +321,12 @@ fn plan(sources: &[PathBuf]) -> Plan {
             "exporting",
             ExportStep::Write(ExportWrite { background: true }),
         ),
-        Step::new("progressing", script::Step::wait(PROGRESS_WAIT_MS)).commits(0),
+        export(
+            "progressing",
+            ExportStep::Progressed(ExportProgressed {
+                ms: PROGRESS_WAIT_MS,
+            }),
+        ),
         export("performance", ExportStep::Bar),
         Step::new("cancelled", script::Step::PerformanceCancel { row: 0 }).commits(0),
         Step::new("cancel-ended", script::Step::wait(CANCEL_WAIT_MS))

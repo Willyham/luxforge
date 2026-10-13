@@ -24,6 +24,52 @@ fn failed_request_records_the_api_refusal_and_captures_its_state() {
     finish(editor, catalog);
 }
 
+/// An export `progressed` step captures once the status bar's export progress rises above where it
+/// stood when the step began, however long the export takes to get there, and fails with no
+/// export running.
+#[test]
+fn an_export_progressed_step_captures_once_the_progress_rises() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(
+        r#"[{"export":{"progressed":{"ms":10000}}},{"export":{"progressed":{"ms":10000}}}]"#,
+    );
+    let record = |editor: &Editor| {
+        crate::app::testing::evidence(editor)
+            .current
+            .clone()
+            .expect("a step record")
+    };
+    let _ = editor.next_step();
+    assert_eq!(record(&editor)["status"], json!("failed"));
+
+    editor.workspace.long_work.export = Some(crate::state::long_work::BusiestJob {
+        job_id: "job-1".into(),
+        label: "Rendering 60mp-web.jpg".into(),
+        fraction: Some(0.0),
+        jobs: 1,
+    });
+    let _ = editor.next_step();
+    // The failed step's frame is the one pending until the capture this test has no renderer for.
+    if let Some(evidence) = &mut editor.evidence {
+        evidence.capture_pending = false;
+    }
+    editor.wait_elapsed();
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(
+        evidence.export_progress.is_some() && !evidence.capture_pending,
+        "the progress has not risen"
+    );
+    if let Some(bar) = &mut editor.workspace.long_work.export {
+        bar.fraction = Some(0.21);
+    }
+    editor.wait_elapsed();
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(evidence.export_progress.is_none() && evidence.capture_pending);
+    let progressed = &record(&editor)["export_progressed"];
+    assert_eq!(progressed["finished"], json!(true));
+    assert_eq!(progressed["from"], json!(0.0));
+    finish(editor, catalog);
+}
+
 /// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame,
 /// nor a refit at Fit where the GPU would draw a picture at rest: there is none to refit.
 #[test]

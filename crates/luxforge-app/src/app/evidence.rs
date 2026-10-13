@@ -150,6 +150,8 @@ pub(crate) struct Evidence {
     pub(crate) usage_await: Option<usage::UsageAwaiting>,
     /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) warm_wait: Option<WarmWait>,
+    /// A running export `progressed` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) export_progress: Option<ExportProgressWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
     /// when the run finishes.
     pub(crate) agent: Option<ClientId>,
@@ -203,6 +205,15 @@ pub(crate) struct Recorded {
 pub(crate) struct WarmWait {
     started: Instant,
     quiet_until: Instant,
+    deadline: Instant,
+}
+
+/// A running export `progressed` step: the status bar's export progress when it began, and the
+/// latest it may end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExportProgressWait {
+    started: Instant,
+    from: f32,
     deadline: Instant,
 }
 
@@ -260,6 +271,7 @@ impl Evidence {
             wait_until: None,
             usage_await: None,
             warm_wait: None,
+            export_progress: None,
             agent: None,
             agent_wait: None,
             agent_host: None,
@@ -1638,7 +1650,10 @@ impl Editor {
             .as_ref()
             .is_some_and(|sheet| sheet.target.batch());
         if !sheet_step
-            && !matches!(step, ExportStep::Sheet(_) | ExportStep::Bar)
+            && !matches!(
+                step,
+                ExportStep::Sheet(_) | ExportStep::Bar | ExportStep::Progressed(_)
+            )
             && let Some(reason) = self.export_refusal()
         {
             return self.fail_step(reason);
@@ -1771,6 +1786,21 @@ impl Editor {
                 self.await_export(background);
                 let task = self.update(Message::Export(ExportMessage::Again));
                 self.export_started(task)
+            }
+            ExportStep::Progressed(progressed) => {
+                let Some(bar) = &self.workspace.long_work.export else {
+                    return self.fail_step("the status bar shows no export progress");
+                };
+                let from = bar.fraction.unwrap_or_default();
+                if let Some(evidence) = &mut self.evidence {
+                    let started = Instant::now();
+                    evidence.export_progress = Some(ExportProgressWait {
+                        started,
+                        from,
+                        deadline: started + Duration::from_millis(progressed.ms),
+                    });
+                }
+                Task::none()
             }
             ExportStep::Bar => {
                 if self.workspace.long_work.export.is_none() {
@@ -4044,9 +4074,44 @@ impl Editor {
         self.capture_next_frame();
     }
 
+    /// Called by every evidence tick: an export `progressed` step captures its frame once the
+    /// status bar's export progress stands above where it stood when the step began, or at its
+    /// deadline. An export that ended meanwhile ends the wait too, its bar gone.
+    fn export_progress_elapsed(&mut self) {
+        let Some(wait) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.export_progress)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let fraction = self
+            .workspace
+            .long_work
+            .export
+            .as_ref()
+            .map(|bar| bar.fraction.unwrap_or_default());
+        let rose = fraction.is_some_and(|fraction| fraction > wait.from);
+        if fraction.is_some() && !rose && now < wait.deadline {
+            return;
+        }
+        if let Some(evidence) = &mut self.evidence {
+            evidence.export_progress = None;
+        }
+        self.note_step(json!({"export_progressed": {
+            "from": wait.from,
+            "to": fraction,
+            "finished": rose,
+            "waited_ms": now.duration_since(wait.started).as_secs_f64() * 1000.0,
+        }}));
+        self.capture_next_frame();
+    }
+
     /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
     pub(crate) fn wait_elapsed(&mut self) {
         self.warm_wait_elapsed();
+        self.export_progress_elapsed();
         let due = self.evidence.as_ref().is_some_and(|evidence| {
             evidence
                 .wait_until
@@ -6857,6 +6922,7 @@ mod tests {
             wait_until: None,
             usage_await: None,
             warm_wait: None,
+            export_progress: None,
             agent: None,
             agent_wait: None,
             agent_host: None,
