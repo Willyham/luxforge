@@ -16,6 +16,7 @@ pub mod policy;
 pub mod release;
 pub mod release_artifacts;
 pub mod release_candidate;
+pub mod release_elf;
 pub mod release_source;
 pub mod release_tag;
 pub mod release_verify;

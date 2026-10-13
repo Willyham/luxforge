@@ -718,6 +718,22 @@ fn a_desktop_entry_pointing_at_the_payload_is_refreshed_and_others_are_left() {
             quoted.executable().display()
         )
     );
+    // A path holding characters the specification reserves, as the install helper writes it:
+    // quoted, with `"`, `` ` `` and `$` escaped for the quoting rule and again for the string
+    // escape rule, and `%` doubled. The refresh reads and writes it the same way.
+    let reserved = installation.parent.join("Ünï \"q\" $HOME `x` 100%");
+    let reserved_exe = testing::install_payload(&reserved.join("Luxforge"), "0.1.0", 1, TARGET);
+    let reserved = Payload::locate(&reserved_exe).unwrap();
+    let exec = format!(
+        r#"Exec="{}/Ünï \\"q\\" \\$HOME \\`x\\` 100%%/Luxforge/luxforge""#,
+        installation.parent.display()
+    );
+    fs::write(&entry, format!("[Desktop Entry]\n{exec}\n")).unwrap();
+    assert!(refresh_desktop_entry(&entry, reserved.dir(), &reserved.executable(), &build).unwrap());
+    assert_eq!(
+        fs::read_to_string(&entry).unwrap(),
+        format!("[Desktop Entry]\n{exec}\nX-Luxforge-Version=0.2.0\nX-Luxforge-Build=2\n")
+    );
     // An entry for another installation, or none at all, is left alone.
     let elsewhere = "[Desktop Entry]\nExec=/opt/luxforge/luxforge %F\n";
     fs::write(&entry, elsewhere).unwrap();

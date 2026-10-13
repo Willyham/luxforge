@@ -634,7 +634,7 @@
     {
       "id": "TASK-010",
       "description": "Build the relocatable Linux x86-64 release tarball with CLI helpers and user-level desktop integration.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
@@ -643,7 +643,8 @@
         "Package Luxforge/luxforge, luxforge-json, luxforge-ctl, adjacent runtime resources, icon/desktop-entry template, notices/licence/help and build identity in luxforge-0.1.0-linux-x86_64.tar.gz. Reuse existing collectors and resource lookup; source/distribution review is a final gate, not a packaging prerequisite.",
         "Extraction/direct launch works without the checkout or source build tools. Provide explicit user-level desktop-entry/icon install/removal with paths quoted safely, including spaces/non-ASCII; no root, automatic PATH edit or vendor graphics driver bundling.",
         "Document needed shared libraries, Vulkan driver and XDG portal/file-chooser backend. Unsupported secrets remain not-ready rather than plaintext. AppImage/Flatpak/Snap/package repositories, Linux ARM64 and Windows are outside initial scope.",
-        "Use ordinary correctness/resource-preservation checks during implementation; native Wayland/X11 hardware qualification follows in TASK-011. Keep existing development tarballs labelled development."
+        "Use ordinary correctness/resource-preservation checks during implementation; native Wayland/X11 hardware qualification follows in TASK-011. Keep existing development tarballs labelled development.",
+        "Implemented: Luxforge/desktop-integration.sh install|uninstall (packaging/linux/, POSIX sh) writes luxforge.desktop and the hicolor icon into the user's data home with a quoted Exec/TryExec, refuses control characters, backslashes, % and non-UTF-8 paths and foreign entries, and removes only its own files; the payload carries desktop/luxforge.desktop.in and desktop/icons/hicolor from the committed packaging/icon PNGs and SVG (checked before compiling with the helper and template), INSTALL.txt with runtime requirements and data locations, and build.json/target.json elf_imports from readelf, refusing glibc above 2.39 or an undocumented linked library; the updater reads and writes the same Exec encoding and the Linux window's app ID is luxforge. A Linux container on the owner's Mac (aarch64 Ubuntu 24.04, dash, desktop-file-validate, GLib launch) is functional evidence only. Remaining: a hosted Ubuntu 24.04 x86-64 tag build whose recorded elf_imports pass, and the extracted-archive launch/install/uninstall check on native Linux, which TASK-011 covers."
       ],
       "context_links": [
         {
@@ -690,7 +691,9 @@
           "Build and run narrow functional smoke/CLI checks on baseline Linux; document actual prerequisites and retain original/data hashes."
         ],
         "commands": [
-          "tools/cargo-cached test -p xtask package::tests"
+          "tools/cargo-cached test -p xtask --bin xtask release_linux",
+          "tools/cargo-cached test -p xtask-cli --lib release_elf",
+          "tools/cargo-cached test -p luxforge-update --lib desktop_entry"
         ],
         "expected_results": [
           "Functional container/hosted packaging checks are labelled accurately, with no native Linux GPU/support claim until TASK-011 passes."
