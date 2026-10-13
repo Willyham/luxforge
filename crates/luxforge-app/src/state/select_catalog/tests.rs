@@ -1062,7 +1062,13 @@ fn catalog_browse_removal_and_batch_requests_are_what_an_agent_writes() {
         json!({"targets": {"kind": "selection"}, "preset_id": preset, "mutation": envelope})
     );
     assert_eq!(
-        batch_export_params(Path::new("/Users/me/Exports"), &m),
+        batch_export_params(
+            &luxforge_core::ExportSettings {
+                folder: luxforge_core::ExportFolder::Path("/Users/me/Exports".into()),
+                ..export_settings()
+            },
+            &m
+        ),
         json!({"targets": {"kind": "selection"}, "settings": {
             "format": "jpeg", "size": {"fit": "full"}, "quality": 90, "optimise": false,
             "chroma": "444", "limit_bytes": null, "sharpen": null, "metadata": "none",
@@ -1285,13 +1291,7 @@ fn catalog_browse_the_develop_band_applies_presets_exports_and_reports() {
             quality: Some(90),
         })
         .into();
-    state.catalog.batch = Some(batch(
-        BatchKind::Export {
-            folder: "/x".into(),
-        },
-        3,
-        Some(BatchEnd::Done(exported)),
-    ));
+    state.catalog.batch = Some(batch(export_kind(), 3, Some(BatchEnd::Done(exported))));
     let sheet = derive(&state, &selection, "").sheet.unwrap();
     assert_eq!(sheet.title, "Exported 2 of 3 photographs");
     assert_eq!(sheet.sections[0].heading, "Written \u{b7} 2");
@@ -1308,9 +1308,7 @@ fn catalog_browse_the_develop_band_applies_presets_exports_and_reports() {
         Some("Exported 2 photographs to /x \u{b7} 1 left out")
     );
     let none = batch(
-        BatchKind::Export {
-            folder: "/x".into(),
-        },
+        export_kind(),
         1,
         Some(BatchEnd::Done(report(
             &[],
@@ -1538,13 +1536,7 @@ fn catalog_batch_export_report_offers_export_anyway_for_exactly_its_stale_photog
             ]))
             .unwrap(),
         });
-    state.catalog.batch = Some(batch(
-        BatchKind::Export {
-            folder: "/x".into(),
-        },
-        3,
-        Some(BatchEnd::Done(exported)),
-    ));
+    state.catalog.batch = Some(batch(export_kind(), 3, Some(BatchEnd::Done(exported))));
     state.catalog.report = true;
     let sheet = derive(&state, &selection, "").sheet.unwrap();
     assert_eq!(
@@ -1565,13 +1557,13 @@ fn catalog_batch_export_report_offers_export_anyway_for_exactly_its_stale_photog
         request_id: "r".into(),
         actor: "luxforge-desktop".into(),
     };
-    let (folder, params, names) = export_anyway_params(&state.catalog, &m).unwrap();
-    assert_eq!(folder, PathBuf::from("/x"));
+    let (kind, params, names) = export_anyway_params(&state.catalog, &m).unwrap();
+    assert_eq!(kind, export_kind());
     assert_eq!(
         params,
         json!({
             "targets": {"kind": "assets", "asset_ids": [asset(1)]},
-            "settings": batch_settings(Path::new("/x")),
+            "settings": export_settings(),
             "acknowledge_stale": [{"asset_id": asset(1), "entry_id": entry,
                                    "operations": ["correction-3", "correction-5"]}],
             "mutation": {"request_id": "r", "actor": "luxforge-desktop"},
@@ -1583,9 +1575,7 @@ fn catalog_batch_export_report_offers_export_anyway_for_exactly_its_stale_photog
     );
     // Nothing stale left out, or a batch that was not an export: no Export anyway.
     state.catalog.batch = Some(batch(
-        BatchKind::Export {
-            folder: "/x".into(),
-        },
+        export_kind(),
         2,
         Some(BatchEnd::Done(report(
             &[0],
@@ -1595,4 +1585,21 @@ fn catalog_batch_export_report_offers_export_anyway_for_exactly_its_stale_photog
     ));
     assert_eq!(derive(&state, &selection, "").sheet.unwrap().anyway, None);
     assert!(export_anyway_params(&state.catalog, &m).is_none());
+}
+
+/// The settings the batch export tests write with: a full-size JPEG into `/x`, each file named
+/// `<stem>-edited.jpg`.
+fn export_settings() -> luxforge_core::ExportSettings {
+    luxforge_core::ExportSettings {
+        folder: luxforge_core::ExportFolder::Path("/x".into()),
+        suffix: "-edited".into(),
+        ..luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)
+    }
+}
+
+fn export_kind() -> BatchKind {
+    BatchKind::Export {
+        settings: Box::new(export_settings()),
+        preset_id: None,
+    }
 }

@@ -3071,6 +3071,18 @@ pub(crate) mod call_latency {
         entry.over_50ms += u64::from(ms > 50.0);
     }
 
+    /// How many calls each method has had, which an export's evidence records to show the
+    /// requests its gestures made.
+    pub(crate) fn counts() -> Value {
+        let calls = CALLS.lock().unwrap_or_else(PoisonError::into_inner);
+        Value::Object(
+            calls
+                .iter()
+                .map(|(method, calls)| (method.clone(), json!(calls.count)))
+                .collect(),
+        )
+    }
+
     /// Each method's count, mean, longest and calls over 50 ms.
     pub(crate) fn report() -> Value {
         let calls = CALLS.lock().unwrap_or_else(PoisonError::into_inner);

@@ -12,9 +12,10 @@ use luxforge_ui::{
     Icon, ProgressSheetModel, StatusJobModel, WorkProgress, progress_sheet, status_job,
 };
 
-/// The status bar's busiest job, which opens the Performance section; none while nothing runs.
+/// The status bar's busiest job, which opens the Performance section: this window's export while
+/// its progress shows, otherwise the busiest catalog job; none while nothing runs.
 pub(crate) fn busiest(model: &LongWorkModel) -> Option<Element<'_, Message>> {
-    let job = model.busiest.as_ref()?;
+    let job = model.export.as_ref().or(model.busiest.as_ref())?;
     Some(status_job(
         &StatusJobModel {
             label: job.label.clone(),

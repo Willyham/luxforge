@@ -89,15 +89,23 @@ pub(crate) enum Outcome<'a> {
     /// theme's `theme.import` answered, or why it was not imported. A [`Self::ThemesAnswered`]
     /// follows.
     ThemeFolderImported(&'a Value),
+    /// The Export sheet's plan answered and no newer change waits for one.
+    SheetPlanned,
+    /// An export preset change answered and the presets were listed again.
+    ExportPresetChanged,
     /// `export.plan` answered for the export in progress.
     ExportPlanned(&'a Value),
     /// `export.write` queued the export in progress.
     ExportQueued(&'a Value),
+    /// A read of the running export: its progress, and whether the status bar shows it.
+    ExportProgress,
     /// The export ended — written, failed or cancelled — or its request was refused: the job's
-    /// last record when one was read, and the reason when it failed.
+    /// last record when one was read, the reason when it failed, and whether its progress bar
+    /// showed in the status bar.
     ExportEnded {
         record: Option<&'a Value>,
         failure: Option<&'a str>,
+        bar: bool,
     },
     /// Nothing the Select workspace asked the owner for is in flight: the events, the view, its
     /// facets, the rows near the screen and a staleness check have all answered.
@@ -173,8 +181,11 @@ impl Outcome<'_> {
             Self::ThemeDrawn => "theme_drawn",
             Self::ThemesAnswered { .. } => "themes_answered",
             Self::ThemeFolderImported(_) => "theme_folder_imported",
+            Self::SheetPlanned => "sheet_planned",
+            Self::ExportPresetChanged => "export_preset_changed",
             Self::ExportPlanned(_) => "export_planned",
             Self::ExportQueued(_) => "export_queued",
+            Self::ExportProgress => "export_progress",
             Self::ExportEnded { .. } => "export_ended",
             Self::SelectSettled => "select_settled",
             Self::LongWorkShown => "long_work_shown",

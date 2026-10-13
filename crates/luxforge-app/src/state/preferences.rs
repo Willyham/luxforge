@@ -245,6 +245,17 @@ impl PreferenceWriter {
             .or_else(|| self.stored.as_ref().map(|stored| stored.theme.as_str()))
     }
 
+    /// The last export [`Self::applied`] holds, without cloning the rest, as
+    /// [`Self::applied_theme`] reads the theme.
+    pub(crate) fn applied_export_last(&self) -> Option<&ExportLast> {
+        self.waiting
+            .iter()
+            .chain(&self.writing)
+            .find_map(|change| change.export_last.as_ref())
+            .or_else(|| self.stored.as_ref().map(|stored| &stored.export_last))?
+            .as_deref()
+    }
+
     /// A change to the field named `field` has not been answered yet.
     pub(crate) fn saving(&self, field: &str) -> bool {
         self.writing

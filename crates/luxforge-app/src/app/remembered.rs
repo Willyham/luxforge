@@ -14,7 +14,7 @@ use crate::{
 };
 use iced::Task;
 use luxforge_core::{
-    ClientSession, ExportSettings, WorkspaceState,
+    ClientSession, WorkspaceState,
     preferences::{BrushPreference, ExportLast, WorkspacePreference},
 };
 use serde_json::json;
@@ -137,20 +137,12 @@ impl Editor {
         })
     }
 
-    /// An export whose destination the person chose in the save dialog succeeded: store the
-    /// settings it was written with as the last export, whose folder `export.plan` then suggests
-    /// for the next export. `settings` is `None` for a destination given any other way, which
-    /// stores nothing; the desktop chooses no preset, so none is named.
-    pub(super) fn remember_export_last(
-        &mut self,
-        settings: Option<ExportSettings>,
-    ) -> Task<Message> {
-        let Some(settings) = settings else {
+    /// An export the person started from the sheet, the menu or the palette succeeded: store its
+    /// settings and the preset it was, while unchanged, as the last export, which the sheet opens
+    /// on next and Export again repeats. `None` (an evidence file) stores nothing.
+    pub(crate) fn remember_export_last(&mut self, last: Option<ExportLast>) -> Task<Message> {
+        let Some(last) = last else {
             return Task::none();
-        };
-        let last = ExportLast {
-            settings,
-            preset_id: None,
         };
         match self.preferences.applied() {
             Some(preferences) if preferences.export_last.as_deref() != Some(&last) => self
