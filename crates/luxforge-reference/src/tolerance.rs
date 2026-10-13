@@ -35,6 +35,9 @@ pub enum Kind {
     ExportResized,
     /// An export at its output stage's size, encoded at 16 bits.
     Export16,
+    /// An export resized as [`Kind::ExportResized`] is, then output-sharpened for Matte paper at
+    /// High and 300 ppi, the strongest and widest kernel at that density.
+    ExportSharpened,
     /// The high-zoom minimap's settled overview: the whole output stage reduced to at most
     /// 256 × 256 pixels.
     Overview,
@@ -42,7 +45,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in the order a report lists them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::PictureAtRest,
         Self::PictureInMotion,
         Self::Histogram,
@@ -50,6 +53,7 @@ impl Kind {
         Self::Export,
         Self::ExportResized,
         Self::Export16,
+        Self::ExportSharpened,
         Self::Overview,
     ];
 
@@ -62,13 +66,27 @@ impl Kind {
             Self::Export => "export",
             Self::ExportResized => "export-resized",
             Self::Export16 => "export-16bit",
+            Self::ExportSharpened => "export-sharpened",
             Self::Overview => "overview",
         }
     }
 
     /// Whether the kind is an export, of any size or depth.
     pub const fn export(self) -> bool {
-        matches!(self, Self::Export | Self::ExportResized | Self::Export16)
+        matches!(
+            self,
+            Self::Export | Self::ExportResized | Self::Export16 | Self::ExportSharpened
+        )
+    }
+
+    /// The class whose limits a stack of `class` is held to for this kind: the spatial class for
+    /// a sharpened export, whatever the stack, since output sharpening is itself a spatial
+    /// operation; the stack's own class otherwise.
+    pub const fn judged_class(self, class: Class) -> Class {
+        match self {
+            Self::ExportSharpened => Class::Spatial,
+            _ => class,
+        }
     }
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -109,6 +127,10 @@ impl Kind {
                 "The reference export at 16 bits: the stack's exact whole frame's terminal values \
                  encoded once at 16 bits"
             }
+            Self::ExportSharpened => {
+                "The reference export at the same size, sharpened: the resized reference export's \
+                 8-bit codes sharpened by the core's reference unsharp mask of their luma"
+            }
             Self::Overview => {
                 "The reference frame reduced to the overview's size, at most 256 × 256: the \
                  stack's exact whole frame reduced by an area-weighted box average of its linear \
@@ -139,6 +161,10 @@ impl Kind {
             Self::Export16 => {
                 "The display limit of the recipe's class over every pixel of the export, ΔE00 \
                  from the 16-bit values; the same bytes from two runs on one machine and driver"
+            }
+            Self::ExportSharpened => {
+                "The spatial class's display limit over every pixel of the export, whatever the \
+                 recipe's class; the same bytes from two runs on one machine and driver"
             }
         }
     }
@@ -756,7 +782,23 @@ mod tests {
         let pictures: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.picture()).collect();
         assert_eq!(pictures, [Kind::PictureAtRest, Kind::PictureInMotion]);
         let exports: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.export()).collect();
-        assert_eq!(exports, [Kind::Export, Kind::ExportResized, Kind::Export16]);
+        assert_eq!(
+            exports,
+            [
+                Kind::Export,
+                Kind::ExportResized,
+                Kind::Export16,
+                Kind::ExportSharpened
+            ]
+        );
+        assert_eq!(
+            Kind::ExportSharpened.judged_class(Class::Pointwise),
+            Class::Spatial
+        );
+        assert_eq!(
+            Kind::Export.judged_class(Class::Pointwise),
+            Class::Pointwise
+        );
         assert_eq!(Kind::parse("export-16bit"), Some(Kind::Export16));
     }
 

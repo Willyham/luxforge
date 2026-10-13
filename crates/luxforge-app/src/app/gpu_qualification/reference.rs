@@ -714,7 +714,7 @@ fn measure(
                 eprintln!("{cell}: sample: {measured}");
                 measured
             }
-            Kind::Export | Kind::ExportResized | Kind::Export16 => {
+            Kind::Export | Kind::ExportResized | Kind::Export16 | Kind::ExportSharpened => {
                 let output = export_output(*kind, stage);
                 let drawn = match exporters {
                     Some(exporters) => exported(exporters, &evaluation, output),
@@ -736,7 +736,7 @@ fn measure(
                         .rows(),
                     ),
                 };
-                let measured = export_kind(&expected, output, drawn, class)?;
+                let measured = export_kind(&expected, output, drawn, kind.judged_class(class))?;
                 eprintln!("{cell}: {}: {measured}", kind.name());
                 measured
             }
@@ -1338,9 +1338,20 @@ fn compare16(candidate: &[u16], reference: &[u16], size: (u32, u32)) -> Result<S
 /// The output an export kind streams of a `stage` output stage: the stage itself at 8 bits for
 /// [`Kind::Export`] and at 16 bits for [`Kind::Export16`]; for [`Kind::ExportResized`], at 8 bits,
 /// its long edge 2048 pixels, or half the stage's for a stage of 4096 or less, both sides scaled by
-/// that one factor and rounded, at least one pixel.
+/// that one factor and rounded, at least one pixel; for [`Kind::ExportSharpened`], that resized
+/// output sharpened for Matte paper at High and 300 ppi.
 fn export_output(kind: Kind, stage: (u32, u32)) -> OutputSpec {
     match kind {
+        Kind::ExportSharpened => OutputSpec {
+            sharpen: Some(luxforge_core::tiles::OutputSharpen::new(
+                luxforge_core::Sharpen {
+                    medium: luxforge_core::SharpenMedium::Matte,
+                    amount: luxforge_core::SharpenAmount::High,
+                },
+                Some(300),
+            )),
+            ..export_output(Kind::ExportResized, stage)
+        },
         Kind::ExportResized => {
             let long = stage.0.max(stage.1);
             let target = (long / 2).clamp(1, 2048);
@@ -2287,6 +2298,15 @@ fn an_export_kinds_output_is_its_stage_resized_or_widened() {
         export_output(Kind::Export16, (97, 61)).depth,
         Depth::Sixteen
     );
+    let sharpened = export_output(Kind::ExportSharpened, (6000, 4000));
+    assert_eq!(
+        (sharpened.width, sharpened.height, sharpened.depth),
+        (2048, 1365, Depth::Eight)
+    );
+    assert_eq!(
+        sharpened.sharpen.map(|sharpen| sharpen.pixels_per_inch),
+        Some(300)
+    );
 }
 
 /// The GPU's export of a stack streamed through two workers on this host's adapter, as the export
@@ -2327,7 +2347,12 @@ fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
         None,
     );
     let stage = (frame.width, frame.height);
-    for kind in [Kind::Export, Kind::ExportResized, Kind::Export16] {
+    for kind in [
+        Kind::Export,
+        Kind::ExportResized,
+        Kind::Export16,
+        Kind::ExportSharpened,
+    ] {
         let output = export_output(kind, stage);
         let Exported::Drawn {
             codes,
