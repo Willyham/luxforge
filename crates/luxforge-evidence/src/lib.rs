@@ -1714,6 +1714,8 @@ pub enum PaletteStep {
 /// Cancel. `{"again": {}}` is Export again and `{"with_preset": {"name": "Web"}}` a menu preset row,
 /// each captured as `write` is. `{"bar": true}` presses the status bar's export progress,
 /// capturing once the Performance section it opens lists the export running.
+/// `{"progressed": {"ms": 10000}}` asks nothing of the editor and captures once the status bar's
+/// export progress stands above where it stood when the step started, or at `ms`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportStep {
@@ -1734,6 +1736,15 @@ pub enum ExportStep {
     WithPreset(PresetWrite),
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Bar,
+    Progressed(ExportProgressed),
+}
+
+/// Wait for a running export's progress to rise.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportProgressed {
+    /// The longest the step waits, from its start.
+    pub ms: u64,
 }
 
 /// Open the Export sheet.
@@ -1894,6 +1905,15 @@ impl ExportStep {
                 text(name, "export preset name")
             }
             Self::WithPreset(write) => text(&write.name, "export preset name"),
+            Self::Progressed(progressed) => {
+                if (1..=MAX_WAIT_MS).contains(&progressed.ms) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "export progressed ms takes an integer from 1 to {MAX_WAIT_MS}"
+                    ))
+                }
+            }
             Self::Edit(edit) => edit.validate(),
             Self::File(file) => {
                 text(&file.name, "export file name")?;

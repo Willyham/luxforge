@@ -867,7 +867,8 @@ fn check_developed(
     )?;
     for step in ["fit", "corner", "refit"] {
         let frame = at(step)?;
-        frame.photo()?;
+        // At 100% in its corner the photograph runs past the canvas: what is on screen is drawn.
+        frame.visible_photo()?;
         checks.note(
             frame,
             &format!("{prefix}{step}: the result drawn"),
@@ -1465,6 +1466,17 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .map(|name| developing.evidence.join(name))
         .unwrap_or_default();
     let (web_width, web_height) = image::image_dimensions(&file)?;
+    // A panorama has no original: its file is named after its first frame, with `-pano`.
+    let named = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    ensure(
+        named.starts_with(&format!("{}_", WIDE.prefix))
+            && named.ends_with("-pano-web.jpg")
+            && !named.contains(char::is_whitespace),
+        format!("wide_web_written: the file is named {named}, not <first frame>-pano-web.jpg"),
+    )?;
     ensure(
         export["record"]["status"] == "ready"
             && result["renderer"]["record"] == "reference"

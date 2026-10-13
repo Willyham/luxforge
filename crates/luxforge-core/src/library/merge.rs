@@ -763,6 +763,39 @@ pub(crate) fn merge_of(connection: &Connection, asset: &AssetId) -> Result<Optio
     merge.map(MergeId::parse).transpose()
 }
 
+/// The file stem an export of `asset`, a merge's result, is named from: its stack's first input's
+/// stem with the kind's suffix, `-hdr` or `-pano`, as `LXF_0005-pano`; `None` when `asset` is no
+/// merge's result or its first input has no UTF-8 stem. A result has no original of its own.
+pub(crate) fn export_stem(
+    connection: &Connection,
+    asset: &AssetId,
+) -> Result<Option<String>, Error> {
+    let kind: Option<String> = connection
+        .prepare_cached("SELECT kind FROM merges WHERE result_asset_id = ?1")?
+        .query_row([asset.as_str()], |row| row.get(0))
+        .optional()?;
+    let Some(kind) = kind.as_deref().and_then(MergeKind::parse) else {
+        return Ok(None);
+    };
+    let first: Option<String> = connection
+        .prepare_cached(
+            "SELECT i.path FROM merge_inputs i JOIN merges m ON m.id = i.merge_id
+             WHERE m.result_asset_id = ?1 ORDER BY i.ordinal LIMIT 1",
+        )?
+        .query_row([asset.as_str()], |row| row.get(0))
+        .optional()?;
+    let suffix = match kind {
+        MergeKind::Hdr => "-hdr",
+        MergeKind::Panorama => "-pano",
+    };
+    Ok(first.and_then(|path| {
+        Path::new(&path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|stem| format!("{stem}{suffix}"))
+    }))
+}
+
 /// A value as the journal stores it.
 fn value(item: impl serde::Serialize) -> Result<Value, Error> {
     serde_json::to_value(item)

@@ -150,6 +150,8 @@ pub(crate) struct Evidence {
     pub(crate) usage_await: Option<usage::UsageAwaiting>,
     /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) warm_wait: Option<WarmWait>,
+    /// A running export `progressed` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) export_progress: Option<ExportProgressWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
     /// when the run finishes.
     pub(crate) agent: Option<ClientId>,
@@ -203,6 +205,15 @@ pub(crate) struct Recorded {
 pub(crate) struct WarmWait {
     started: Instant,
     quiet_until: Instant,
+    deadline: Instant,
+}
+
+/// A running export `progressed` step: the status bar's export progress when it began, and the
+/// latest it may end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExportProgressWait {
+    started: Instant,
+    from: f32,
     deadline: Instant,
 }
 
@@ -260,6 +271,7 @@ impl Evidence {
             wait_until: None,
             usage_await: None,
             warm_wait: None,
+            export_progress: None,
             agent: None,
             agent_wait: None,
             agent_host: None,
@@ -341,6 +353,20 @@ pub(crate) struct CaptureSync {
     /// arriving during the asynchronous screenshot invalidates that request just as a newer photo
     /// does.
     pub(crate) clipping_version: Option<u64>,
+    /// The layout the canvas had when readback was requested: the state panel, the tools panel and
+    /// the filmstrip. A file's open hides the strip until its folder is read, so the strip can come
+    /// back during the screenshot; the frame read back would then sit in another canvas than the
+    /// one recorded beside it, and is retaken.
+    pub(crate) layout: Option<CaptureLayout>,
+}
+
+/// What the canvas a frame is drawn in depends on besides the window: which side panels are open
+/// and whether Develop's filmstrip sits under the canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CaptureLayout {
+    pub(crate) state_panel: bool,
+    pub(crate) tools_panel: bool,
+    pub(crate) filmstrip: bool,
 }
 
 impl Default for CaptureSync {
@@ -351,6 +377,7 @@ impl Default for CaptureSync {
             drawn: Arc::new(AtomicU64::new(u64::MAX)),
             state: None,
             clipping_version: None,
+            layout: None,
         }
     }
 }
@@ -821,6 +848,15 @@ fn edit_messages(edit: &luxforge_evidence::SheetEdit, dir: &std::path::Path) -> 
 }
 
 impl Editor {
+    /// The layout the canvas is drawn in now, as a capture records it.
+    pub(super) fn capture_layout(&self) -> CaptureLayout {
+        CaptureLayout {
+            state_panel: self.workspace.title.state_panel_open,
+            tools_panel: self.workspace.title.tools_panel_open,
+            filmstrip: self.filmstrip_shown(),
+        }
+    }
+
     /// A scripted screenshot waits for the intended photograph's actual GPU draw. The capture
     /// sync marker proves the widget tree is current; this checks the texture when its write was
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
@@ -1190,7 +1226,9 @@ impl Editor {
                 self.follow_timing();
                 let recorded = (self.snapshot(), self.activity.requested, self.drawn_photo());
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
+                let layout = self.capture_layout();
                 if let Some(evidence) = &mut self.evidence {
+                    evidence.sync.layout = Some(layout);
                     evidence.sync.state = Some((
                         recorded.0,
                         recorded.1,
@@ -1225,11 +1263,13 @@ impl Editor {
                     || self.evidence.as_ref().is_some_and(|evidence| {
                         evidence.sync.clipping_version
                             != self.overlay_surface().map(luxforge_ui::Frame::version)
+                            || evidence.sync.layout != Some(self.capture_layout())
                     });
                 if stale {
                     if let Some(evidence) = &mut self.evidence {
                         evidence.sync.state = None;
                         evidence.sync.clipping_version = None;
+                        evidence.sync.layout = None;
                         evidence.saving = false;
                         evidence.capture_pending = true;
                     }
@@ -1238,6 +1278,7 @@ impl Editor {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.capture_overlay = false;
                     evidence.sync.clipping_version = None;
+                    evidence.sync.layout = None;
                 }
                 self.event(
                     "frame_captured",
@@ -1259,11 +1300,13 @@ impl Editor {
                     });
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
-                // The photo surface spans the window minus padding, the sidebar and their spacing.
-                let (state_panel, tools_panel) = (
-                    self.workspace.title.state_panel_open,
-                    self.workspace.title.tools_panel_open,
-                );
+                // The photo surface spans the window minus padding, the sidebar and their spacing,
+                // laid out as it was when the screenshot was asked for and still is.
+                let CaptureLayout {
+                    state_panel,
+                    tools_panel,
+                    filmstrip,
+                } = self.capture_layout();
                 let columns =
                     crate::layout::surface_columns(logical_width, scale, state_panel, tools_panel);
                 let canvas = crate::layout::canvas_rect(
@@ -1271,7 +1314,7 @@ impl Editor {
                     scale,
                     state_panel,
                     tools_panel,
-                    self.filmstrip_shown(),
+                    filmstrip,
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);
@@ -1607,7 +1650,10 @@ impl Editor {
             .as_ref()
             .is_some_and(|sheet| sheet.target.batch());
         if !sheet_step
-            && !matches!(step, ExportStep::Sheet(_) | ExportStep::Bar)
+            && !matches!(
+                step,
+                ExportStep::Sheet(_) | ExportStep::Bar | ExportStep::Progressed(_)
+            )
             && let Some(reason) = self.export_refusal()
         {
             return self.fail_step(reason);
@@ -1740,6 +1786,21 @@ impl Editor {
                 self.await_export(background);
                 let task = self.update(Message::Export(ExportMessage::Again));
                 self.export_started(task)
+            }
+            ExportStep::Progressed(progressed) => {
+                let Some(bar) = &self.workspace.long_work.export else {
+                    return self.fail_step("the status bar shows no export progress");
+                };
+                let from = bar.fraction.unwrap_or_default();
+                if let Some(evidence) = &mut self.evidence {
+                    let started = Instant::now();
+                    evidence.export_progress = Some(ExportProgressWait {
+                        started,
+                        from,
+                        deadline: started + Duration::from_millis(progressed.ms),
+                    });
+                }
+                Task::none()
             }
             ExportStep::Bar => {
                 if self.workspace.long_work.export.is_none() {
@@ -4013,9 +4074,44 @@ impl Editor {
         self.capture_next_frame();
     }
 
+    /// Called by every evidence tick: an export `progressed` step captures its frame once the
+    /// status bar's export progress stands above where it stood when the step began, or at its
+    /// deadline. An export that ended meanwhile ends the wait too, its bar gone.
+    fn export_progress_elapsed(&mut self) {
+        let Some(wait) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.export_progress)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let fraction = self
+            .workspace
+            .long_work
+            .export
+            .as_ref()
+            .map(|bar| bar.fraction.unwrap_or_default());
+        let rose = fraction.is_some_and(|fraction| fraction > wait.from);
+        if fraction.is_some() && !rose && now < wait.deadline {
+            return;
+        }
+        if let Some(evidence) = &mut self.evidence {
+            evidence.export_progress = None;
+        }
+        self.note_step(json!({"export_progressed": {
+            "from": wait.from,
+            "to": fraction,
+            "finished": rose,
+            "waited_ms": now.duration_since(wait.started).as_secs_f64() * 1000.0,
+        }}));
+        self.capture_next_frame();
+    }
+
     /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
     pub(crate) fn wait_elapsed(&mut self) {
         self.warm_wait_elapsed();
+        self.export_progress_elapsed();
         let due = self.evidence.as_ref().is_some_and(|evidence| {
             evidence
                 .wait_until
@@ -6826,6 +6922,7 @@ mod tests {
             wait_until: None,
             usage_await: None,
             warm_wait: None,
+            export_progress: None,
             agent: None,
             agent_wait: None,
             agent_host: None,
