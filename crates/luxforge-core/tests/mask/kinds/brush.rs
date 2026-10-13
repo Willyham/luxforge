@@ -64,11 +64,7 @@ impl Kind for Brush {
     const ALONE_PARTIAL: usize = 3500;
 
     /// One to four random strokes, each adding or erasing, the way the painted component holds them.
-    fn sample(
-        rng: &mut SplitMix64,
-        _: &[(u32, u32)],
-        strokes: &mut Store,
-    ) -> (Value, Falloff) {
+    fn sample(rng: &mut SplitMix64, _: &[(u32, u32)], strokes: &mut Store) -> (Value, Falloff) {
         let count = 1 + rng.next_usize(4);
         let held: Vec<Stroke> = (0..count)
             .map(|_| {

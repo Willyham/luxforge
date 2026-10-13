@@ -343,18 +343,16 @@ fn a_model_selection_describes_its_band_over_its_packed_raster() {
         ]);
         words.extend([u32::from(hard), w, h]);
         assert_eq!(component.program.words, words, "{threshold} {feather}");
-        let block = component
-            .program
-            .block
-            .clone()
-            .expect("the packed raster");
+        let block = component.program.block.clone().expect("the packed raster");
         let unpacked: Vec<u8> = block.iter().flat_map(|word| word.to_le_bytes()).collect();
         assert_eq!(&unpacked[..codes.len()], &codes[..]);
         assert!(unpacked[codes.len()..].iter().all(|&code| code == 0));
         blocks.push(block);
     }
     assert!(
-        blocks.windows(2).all(|pair| Arc::ptr_eq(&pair[0], &pair[1])),
+        blocks
+            .windows(2)
+            .all(|pair| Arc::ptr_eq(&pair[0], &pair[1])),
         "every compilation shares the artifact's one block"
     );
 }

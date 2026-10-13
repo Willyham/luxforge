@@ -214,8 +214,11 @@ impl EditorService {
         entry_id: &EntryId,
     ) -> Result<MaskListing, Error> {
         let entry = self.entry(asset_id, entry_id)?;
-        let mut listing =
-            crate::mask::commands::listing(entry.id.clone(), &entry.snapshot.recipe, &self.registry);
+        let mut listing = crate::mask::commands::listing(
+            entry.id.clone(),
+            &entry.snapshot.recipe,
+            &self.registry,
+        );
         let has_model = listing
             .masks
             .iter()
@@ -290,11 +293,14 @@ impl EditorService {
     /// The version a registered module now declares for the model resource `model`, when one
     /// declares it: what Recompute would run.
     pub(super) fn declared_model_version(&self, model: &str) -> Option<String> {
-        self.registry.descriptors().into_iter().find_map(|descriptor| {
-            descriptor
-                .resource(model)
-                .map(|resource| resource.version.clone())
-        })
+        self.registry
+            .descriptors()
+            .into_iter()
+            .find_map(|descriptor| {
+                descriptor
+                    .resource(model)
+                    .map(|resource| resource.version.clone())
+            })
     }
 }
 

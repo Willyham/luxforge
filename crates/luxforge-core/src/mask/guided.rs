@@ -272,7 +272,9 @@ pub fn upsample(
     prior.check("prior")?;
     guide.check("guide")?;
     if params.radius == 0 {
-        return Err(Error::validation("the guided filter's radius must be positive"));
+        return Err(Error::validation(
+            "the guided filter's radius must be positive",
+        ));
     }
     if !(params.eps.is_finite() && params.eps > 0.0) {
         return Err(Error::validation(
@@ -337,7 +339,6 @@ pub fn upsample(
     let scp = weighted_sums(&|_, p| weight(p) * p)?;
     let mut scii = weighted_sums(&|i, p| (weight(p) * i) * i)?;
     let mut scip = weighted_sums(&|i, p| (weight(p) * i) * p)?;
-    drop(weighted_sums);
     drop(low_p);
     // a and b take the places of the two second moments.
     for k in 0..n {
@@ -424,7 +425,10 @@ mod tests {
         let error = upsample(
             plane(2, 2, &prior),
             plane(4, 4, &guide),
-            Params { radius: 0, ..params },
+            Params {
+                radius: 0,
+                ..params
+            },
             &never,
         )
         .unwrap_err();

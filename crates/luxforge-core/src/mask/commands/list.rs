@@ -215,15 +215,13 @@ pub(crate) fn listing(
                         .into_iter()
                         .map(|id| StrokeReport::of(id, &recipe.strokes))
                         .collect(),
-                    model: crate::mask::model_selection(component).map(|selection| {
-                        ModelReport {
-                            class: selection.class,
-                            model: selection.model,
-                            model_version: selection.model_version,
-                            artifact: selection.artifact,
-                            computed_ms: None,
-                            stale: None,
-                        }
+                    model: crate::mask::model_selection(component).map(|selection| ModelReport {
+                        class: selection.class,
+                        model: selection.model,
+                        model_version: selection.model_version,
+                        artifact: selection.artifact,
+                        computed_ms: None,
+                        stale: None,
                     }),
                 })
                 .collect(),
