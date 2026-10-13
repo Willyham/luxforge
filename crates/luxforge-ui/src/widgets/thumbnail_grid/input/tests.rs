@@ -428,6 +428,7 @@ fn each_header_button_publishes_its_action() {
 #[test]
 fn a_pending_row_s_button_publishes_its_row() {
     let row = PendingRow {
+        icon: crate::Icon::Bracket,
         title: "Merging HDR · 3 exposures".into(),
         detail: "Reading 1 of 3".into(),
         progress: Some(0.1),
@@ -468,6 +469,7 @@ fn a_stack_badge_publishes_its_item() {
     );
     let grid = thumbnail_grid(&layout, 0.0, |grid| CellView {
         stack: (grid.item == 1).then_some(CellStack {
+            icon: crate::Icon::Bracket,
             label: "HDR · 3 exposures",
             short: "HDR · 3",
             expanded: false,
@@ -481,6 +483,7 @@ fn a_stack_badge_publishes_its_item() {
     let cell = layout.cell(1).rect;
     let view = CellView {
         stack: Some(CellStack {
+            icon: crate::Icon::Bracket,
             label: "HDR · 3 exposures",
             short: "HDR · 3",
             expanded: false,
