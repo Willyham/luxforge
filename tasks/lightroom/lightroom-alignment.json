@@ -194,7 +194,8 @@
         "TASK-003"
       ],
       "extra_context": [
-        "Same owner round-trip as round 1."
+        "Same owner round-trip as round 1.",
+        "The owner decided on 2026-10-13 (A9) to run round 2 in one Lightroom session with the corpus photographs before any control changes. lr-align measure measures pairs (identity and through both calibrated maps) and lr-align generate --families writes the round 1 photograph families (and the fixed masks and straighten) as their own round folder; both session folders were generated on 2026-10-13 from the five corpus photographs, which develop in Luxforge. The owner's import and export remain."
       ],
       "context_links": [
         {

@@ -474,6 +474,9 @@ Decided the same day ([design](design/lightroom-alignment.md#decided)):
 - **The base rendering is measured and subtracted** (A5); the Standard look stands.
 - **A realigned module refuses recipes of the earlier scale** (A6) through its raised format marker; edited photographs need a new catalog.
 - **Validation on the owner's real edits** runs locally, figures only, with consent asked each run (A7).
+- **Sliders are realigned, not only imports mapped, and on photographs and pairs as well as targets** (A9, owner, 2026-10-13): the corpus photographs and round 2's pairs are measured in one Lightroom session before any control changes.
+- **A range shortfall extends the control** (A10, owner, 2026-10-13): where Lightroom's extreme does more than Luxforge's whole range, the internal range grows so ±100 reaches it, where the algorithm stays stable; what cannot be extended is reported.
+- **The importers' calibrated maps are the bridge** (A11, owner, 2026-10-13), each row becoming the identity, and removed, when its slider is realigned. Old edits on a realigned module are refused (A6), confirmed the same day.
 - **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
 
 The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, TASK-002, measurement and fitting, TASK-003, recording round 1, and TASK-004, the calibrated mapping rows for preset import, with the generator's fixes and the measurement of photographs, on 2026-10-13; whether TASK-005 onward are authorized remains open.

@@ -729,6 +729,12 @@ fn open_subjects(
             photograph["sha256"].as_str().unwrap_or_default(),
             &catalogs.join(&id),
         )?;
+        println!(
+            "photograph {id}: developed {} x {}, lens profile {}",
+            photo.width,
+            photo.height,
+            photo.lens.as_deref().unwrap_or("none eligible")
+        );
         subjects.insert(
             id.clone(),
             Subject {
@@ -2163,6 +2169,9 @@ enum Method<'f> {
     WhiteBalance(Vec<String>),
     /// The detected lens profile on the photographs, a conversion at the identity.
     Lens(Vec<String>),
+    /// Two settings together (round 2), checked at the identity and through both settings'
+    /// calibrated maps.
+    Pair(Vec<String>),
     Unmeasured(String),
 }
 
@@ -2195,6 +2204,17 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
         ));
     }
     let on_photographs = subjects.iter().all(|s| photographs.contains(s));
+    if family["luxforge"]
+        .as_array()
+        .is_some_and(|controls| controls.len() == 2)
+        && family["labels"].as_array().is_some_and(|labels| {
+            labels
+                .iter()
+                .all(|l| l.as_str().is_some_and(|l| l.contains('_')))
+        })
+    {
+        return Ok(Method::Pair(subjects));
+    }
     match id.as_str() {
         "white-balance" => return Ok(Method::WhiteBalance(subjects)),
         "lens-profile" => return Ok(Method::Lens(subjects)),
@@ -2543,6 +2563,210 @@ fn lens(ctx: &Context, subjects: Vec<String>) -> Result<Outcome> {
     };
     Ok(Outcome {
         entry: json!({"family": "lens-profile", "area": "geometry", "kind": "conversion", "unit": "median ΔE2000", "worst_residual": worst, "candidate": candidate, "reasons": reasons, "points": points, "page": "pages/lens-profile.md"}),
+        page,
+    })
+}
+
+/// One setting of a pair at Lightroom's `value` through its calibrated map: the converted value,
+/// or at a range shortfall the end of Luxforge's range it falls short at, flagged; the value
+/// itself for a setting with no map.
+fn calibrated_or_end(setting: &str, value: f64, range: (f64, f64)) -> (f64, bool) {
+    match luxforge_core::lightroom_calibration(setting, value) {
+        Some(Ok(converted)) => (converted, false),
+        Some(Err(_)) => (if value < 0.0 { range.0 } else { range.1 }, true),
+        None => (value, false),
+    }
+}
+
+/// Two settings together (round 2): each pair rendered at the identity and through both settings'
+/// calibrated maps, judged against Lightroom's pair by the same carried CIEDE2000 as a single
+/// setting, so a pair whose maps no longer hold together shows a residual its settings alone do
+/// not (`docs/design/lightroom-alignment.md`, "Fitting the translation").
+fn pair(ctx: &Context, family: &Value, subjects: Vec<String>) -> Result<Outcome> {
+    let id = family["id"].as_str().unwrap_or_default().to_owned();
+    let area = family["area"].as_str().unwrap_or_default().to_owned();
+    let controls: Vec<(String, &'static str, String)> = family["luxforge"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some((
+                entry["lightroom"].as_str()?.to_owned(),
+                effect_of(entry["action"].as_str()?)?,
+                entry["field"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    ensure(
+        controls.len() == 2,
+        format!("{id}: a pair names two Luxforge controls"),
+    )?;
+    let labels: Vec<(String, [f64; 2])> = family["labels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|label| {
+            let label = label.as_str()?;
+            let (a, b) = label.split_once('_')?;
+            Some((label.to_owned(), [number_of(a)?, number_of(b)?]))
+        })
+        .collect();
+    let sampling = |s: &str| {
+        if ctx.subject(s).photo().is_some() {
+            Sampling::Normalized(PHOTO_COLUMNS)
+        } else {
+            sampling_of(&area, s)
+        }
+    };
+    let first = subjects[0].clone();
+    let view = view_of(&id, &first);
+    let fields = |values: [f64; 2]| -> Vec<Field> {
+        controls
+            .iter()
+            .zip(values)
+            .map(|((_, effect, field), value)| (*effect, field.clone(), json!(value)))
+            .collect()
+    };
+    // Per label: the values each setting renders at through its map, and which fell short.
+    let calibrated: Vec<([f64; 2], [bool; 2])> = labels
+        .iter()
+        .map(|(_, values)| {
+            let converted = [0, 1].map(|i| {
+                let (_, effect, field) = &controls[i];
+                let (_, range, _) = luxforge_scale(effect, field);
+                calibrated_or_end(&controls[i].0, values[i], range)
+            });
+            (
+                [converted[0].0, converted[1].0],
+                [converted[0].1, converted[1].1],
+            )
+        })
+        .collect();
+    let mut jobs = Vec::new();
+    let mut reads = Vec::new();
+    for s in &subjects {
+        let job = |recipe: Recipe, view: Option<View>| Job {
+            subject: s.clone(),
+            recipe,
+            sampling: sampling(s),
+            view,
+            development: Development::AsShot,
+        };
+        jobs.push(job(empty(), None));
+        reads.push(Read {
+            subject: s.clone(),
+            id: format!("{s}__{NEUTRAL}"),
+            sampling: sampling(s),
+            view: None,
+        });
+        for ((label, values), (converted, _)) in labels.iter().zip(&calibrated) {
+            let shown = (*s == first).then_some(view);
+            jobs.push(job(
+                recipe(&ctx.registry, &fields(*values), Vec::new(), Vec::new()),
+                shown,
+            ));
+            jobs.push(job(
+                recipe(&ctx.registry, &fields(*converted), Vec::new(), Vec::new()),
+                shown,
+            ));
+            reads.push(Read {
+                subject: s.clone(),
+                id: format!("{s}__{id}__{label}"),
+                sampling: sampling(s),
+                view: shown,
+            });
+        }
+    }
+    let lux = ctx.renders(&jobs)?;
+    let lr = ctx.exports(&reads)?;
+    let per_lux = 1 + 2 * labels.len();
+    let per_lr = 1 + labels.len();
+    let mut page = format!(
+        "# {id}\n\nLightroom `{}` with `{}` on {}: each pair against Luxforge at the identity and through both settings' calibrated maps (round 1's, as preset import converts them; a value past a map's range shortfall renders at the end of Luxforge's range, marked). Residuals are median CIEDE2000 of the carried responses over the samples Lightroom's pair moves. CPU reference renderer (study 16-bit output).\n\n| pair | Luxforge values through the maps | identity residual | calibrated residual |\n|---|---|---|---|\n",
+        controls[0].0,
+        controls[1].0,
+        subjects.join(", ")
+    );
+    let mut points = Vec::new();
+    let mut sheet = Vec::new();
+    let mut worst: f64 = 0.0;
+    let mut missing = Vec::new();
+    for (li, ((label, values), (converted, short))) in labels.iter().zip(&calibrated).enumerate() {
+        let mut neutral = Vec::new();
+        let mut reached = Vec::new();
+        let mut identity = Vec::new();
+        let mut through = Vec::new();
+        let mut complete = true;
+        for (si, s) in subjects.iter().enumerate() {
+            let (Some((rn, _)), Some((rv, _))) = (&lr[si * per_lr], &lr[si * per_lr + 1 + li])
+            else {
+                complete = false;
+                missing.push(format!("{s}__{id}__{label}"));
+                continue;
+            };
+            let ln = &lux[si * per_lux];
+            neutral.extend(labs(&ln.samples));
+            for ((n, r), a) in ln.samples.iter().zip(&rn.samples).zip(&rv.samples) {
+                reached.push(la::lab(la::carried(*n, *r, *a)));
+            }
+            identity.extend(labs(&lux[si * per_lux + 1 + 2 * li].samples));
+            through.extend(labs(&lux[si * per_lux + 2 + 2 * li].samples));
+            if si == 0 {
+                sheet.push((
+                    label.clone(),
+                    vec![
+                        lux[si * per_lux + 1 + 2 * li].thumb.clone(),
+                        lux[si * per_lux + 2 + 2 * li].thumb.clone(),
+                        rv.thumb.clone(),
+                    ],
+                ));
+            }
+        }
+        if !complete {
+            continue;
+        }
+        let target = Target::new(&neutral, reached);
+        let (at_identity, at_maps) = (target.distance(&identity), target.distance(&through));
+        let far = values.iter().zip(&controls).any(|(v, (setting, _, _))| {
+            let range = lightroom_range(setting);
+            v.abs() >= THRESHOLD_SHARE * (range.1 - range.0)
+        });
+        if far {
+            worst = worst.max(at_maps);
+        }
+        let marks = |i: usize| if short[i] { " (short)" } else { "" };
+        page += &format!(
+            "| {label} | {}{}, {}{} | {} | {} |\n",
+            number(Some(converted[0])),
+            marks(0),
+            number(Some(converted[1])),
+            marks(1),
+            number(Some(at_identity)),
+            number(Some(at_maps)),
+        );
+        points.push(json!({
+            "label": label, "lightroom": values, "luxforge": converted, "shortfall": short,
+            "identity_residual": at_identity, "residual": at_maps,
+        }));
+    }
+    report::contact_sheet(
+        &ctx.out.join("sheets").join(format!("{id}.png")),
+        &["Luxforge (identity)", "Luxforge calibrated", "Lightroom"],
+        &sheet,
+    )?;
+    page += &format!(
+        "\n## Contact sheet\n\nColumns: Luxforge at the identity, Luxforge through both maps, Lightroom; labels in `../sheets/{id}.txt`.\n\n![sheet](../sheets/{id}.png)\n"
+    );
+    let candidate = worst > BEHAVIOUR_RESIDUAL;
+    let reasons: Vec<String> = if candidate {
+        vec![format!(
+            "median ΔE2000 through both maps up to {worst:.2} at values a threshold distance or more from the defaults"
+        )]
+    } else {
+        Vec::new()
+    };
+    Ok(Outcome {
+        entry: json!({"family": id, "area": area, "kind": "pair", "unit": "median ΔE2000", "worst_residual": worst, "candidate": candidate, "reasons": reasons, "points": points, "missing_exports": missing, "page": format!("pages/{id}.md")}),
         page,
     })
 }
@@ -3349,6 +3573,7 @@ fn measure(
             Method::Mask(radial) => vec![mask(&ctx, &id, radial)?],
             Method::WhiteBalance(subjects) => white_balance(&ctx, subjects)?,
             Method::Lens(subjects) => vec![lens(&ctx, subjects)?],
+            Method::Pair(subjects) => vec![pair(&ctx, family, subjects)?],
             Method::Unmeasured(why) => {
                 entries.push(
                     json!({"family": id, "area": family["area"], "kind": "unmeasured", "why": why}),
@@ -3930,5 +4155,104 @@ mod tests {
         assert_eq!(family("lens-profile")["points"][0]["profile"], Value::Null);
         assert!(out.join("catalogs/synthetic").is_dir());
         assert_eq!(fs::read(&original).unwrap(), bytes);
+    }
+
+    /// A round 2 pair on the patch grid whose "exports" are Luxforge's own renders at the
+    /// identity: the pair measures no residual at the identity, and its calibrated renders follow
+    /// both settings' frozen maps.
+    #[test]
+    #[slow]
+    fn a_pair_of_its_own_renders_measures_no_residual_at_the_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let round = directory.path().join("round");
+        let families: Vec<rounds::Family> = rounds::round_two()
+            .into_iter()
+            .filter(|f| f.id == "vibrance+saturation")
+            .map(|mut f| {
+                f.steps
+                    .retain(|step| matches!(step.label.as_str(), "-50_+50" | "+50_+100"));
+                f
+            })
+            .collect();
+        generate(
+            &Plan {
+                round: 2,
+                families,
+                photos: Vec::new(),
+                excluded: Vec::new(),
+            },
+            &round,
+        )
+        .unwrap();
+        let exports = round.join("exports");
+        fs::create_dir(&exports).unwrap();
+        let manifest = read_json(&round.join("manifest.json")).unwrap();
+        let ctx = Context {
+            manifest: &manifest,
+            exports: exports.clone(),
+            out: directory.path().join("unused"),
+            registry: ModuleRegistry::developer(),
+            render: RenderContext::new(),
+            subjects: open_subjects(&manifest, &round, None).unwrap(),
+            variants: HashMap::new(),
+            ledger: Mutex::new(Ledger::default()),
+            maps: Mutex::new(HashMap::new()),
+        };
+        let write = |id: &str, recipe: &Recipe| {
+            let Kind::Target { source, .. } = &ctx.subject("patches").kind else {
+                panic!("a target")
+            };
+            let study = render(
+                &ctx.registry,
+                source,
+                recipe,
+                RenderOptions::default(),
+                &ctx.render,
+            )
+            .unwrap()
+            .study_frame16()
+            .unwrap();
+            let xmp = "<x crs:ProcessVersion=\"11.0\"/>";
+            fs::write(
+                exports.join(format!("{id}.tif")),
+                crate::tiff::write(study.width, study.height, &study.rgb, Some(xmp)),
+            )
+            .unwrap();
+        };
+        write("patches__neutral", &empty());
+        for (label, vibrance, saturation) in [("-50_+50", -50.0, 50.0), ("+50_+100", 50.0, 100.0)] {
+            let fields = [
+                (BASIC_EFFECT, "vibrance".to_owned(), json!(vibrance)),
+                (BASIC_EFFECT, "saturation".to_owned(), json!(saturation)),
+            ];
+            write(
+                &format!("patches__vibrance+saturation__{label}"),
+                &recipe(&ctx.registry, &fields, Vec::new(), Vec::new()),
+            );
+        }
+        drop(ctx);
+        let out = directory.path().join("measured");
+        measure(2, &round, &exports, &out, None).unwrap();
+        let report = read_json(&out.join("lr-align.json")).unwrap();
+        let family = &report["families"][0];
+        assert_eq!(family["kind"], "pair", "{family}");
+        let points = family["points"].as_array().unwrap();
+        assert_eq!(points.len(), 2);
+        for point in points {
+            assert!(
+                point["identity_residual"].as_f64().unwrap() < 1e-3,
+                "{point}"
+            );
+            let [vibrance, saturation] = [0, 1].map(|i| point["lightroom"][i].as_f64().unwrap());
+            let expected = [
+                luxforge_core::lightroom_calibration("Vibrance", vibrance)
+                    .unwrap()
+                    .unwrap(),
+                luxforge_core::lightroom_calibration("Saturation", saturation)
+                    .unwrap()
+                    .unwrap(),
+            ];
+            assert_eq!(point["luxforge"], json!(expected), "{point}");
+        }
     }
 }

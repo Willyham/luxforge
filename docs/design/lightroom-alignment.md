@@ -67,7 +67,7 @@ A Lightroom Classic plugin (Lua, through its SDK) could apply settings and expor
 
 ## Running a round
 
-`cargo xtask lr-align generate --round 1 --output NEW` writes round 1 on the synthetic targets alone; `--corpus CACHE` adds the corpus selection from the [corpus tool's](sample-corpus.md) local cache, and `--manifest RAW_MANIFEST` adds the owner's supplied files from a RAW manifest. Round 2 is `--round 2`. The output must not exist and its parent must; the command writes only inside it, reads RAW originals and checks their SHA-256 before and after, and removes the folder if it fails. The same build, round and inputs write the same bytes.
+`cargo xtask lr-align generate --round 1 --output NEW` writes round 1 on the synthetic targets alone; `--corpus CACHE` adds the corpus selection from the [corpus tool's](sample-corpus.md) local cache, and `--manifest RAW_MANIFEST` adds the owner's supplied files from a RAW manifest. Round 2 is `--round 2`. `--families ID,...` writes only those families, every variant of each with its subjects' neutral variants, for a session that adds or re-exports part of a round; it is measured as its own round folder. The output must not exist and its parent must; the command writes only inside it, reads RAW originals and checks their SHA-256 before and after, and removes the folder if it fails. The same build, round and inputs write the same bytes.
 
 The round folder holds:
 
@@ -110,6 +110,7 @@ Recorded choices, delegated to the implementer:
 | Photographs | Each photograph imported into a scratch catalog in the evidence directory from the round's own copy beside its neutral variant, its SHA-256 checked before and after, and developed by the editor service (As Shot, a custom white balance through `set-raw`, or the detected lens profile); a family's settings render over that development's RAW layer. Cells laid out in normalized coordinates (240 across), so the two editors' frames match by picture area whatever their own default crops; coarser grids (step 25, 20 on 0..100, 0.5 EV); the measures are each editor's band energy at three scales over its own neutral and a tone locality, the spread of `ΔL*` among cells of one lightness |
 | RAW white balance | Two sweeps on Luxforge's own scale: Kelvin (2000..12000 in 500s) at Lightroom's tint 0, and tint (−100..100 in 20s) at Lightroom's 5500 K, each holding the other at what the importer converts Lightroom's 5500 K and tint 0 to; every value its own development. No calibrated row: the RAW white-balance round (TASK-010) calibrates the conversion |
 | Lens profile | Luxforge's detected profile, distortion only, against Lightroom's, a conversion at the identity per photograph; a photograph with no eligible profile is reported so |
+| Pairs (round 2) | Each pair rendered at the identity and through both settings' calibrated maps (preset import's), a value past a map's shortfall at the end of Luxforge's range, marked; judged by the same carried CIEDE2000 as a single setting |
 | Masks and the Tone curve | No value to fit: each is a conversion at the identity, judged by its residual; a mask is also rendered at the stops its export shows, so its falloff is compared apart from its strength |
 
 ## Round 1
@@ -213,6 +214,9 @@ The owner, on 2026-10-06: Lightroom is not a rendering target, but its controls 
 | A6 | Existing photographs under a B or C change | Refused by the raised payload format marker, as every format change is; a new catalog | Re-rendering old values at the new scale; a one-off conversion |
 | A7 | Real-edit validation | On the owner's catalog, locally, figures only, with consent asked each run | Standing consent; synthetic and corpus images only |
 | A8 | When a setting needs C | After its B change, a median ΔE2000 above 2 at Lightroom values of ±25 and beyond, or a difference in kind; the change targets the dimension that differs | Owner review of every setting without a threshold; a threshold of 1 |
+| A9 | What realignment rests on (owner, 2026-10-13) | Sliders are realigned (B), not only imports mapped; before any control changes, the corpus photographs and round 2's pairs are measured in one Lightroom session, so B rests on targets, real photographs and combinations | Realigning Basic, or every determined setting, from round 1's targets alone |
+| A10 | A range shortfall under B (owner, 2026-10-13) | Where Lightroom's extreme does more than Luxforge's whole range, the control's internal range is extended so ±100 reaches it, where the algorithm stays stable (checked per setting); a shortfall that cannot be extended is reported | Capping at today's strongest value (a flat end of the slider); deciding per setting |
+| A11 | The importers meanwhile (owner, 2026-10-13) | The calibrated maps stay the importers' bridge; a setting's row becomes the identity, and is removed, when its slider is realigned | Reverting imports to value transfer until then |
 
 ## References
 
