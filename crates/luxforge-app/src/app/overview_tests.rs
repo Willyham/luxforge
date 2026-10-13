@@ -224,7 +224,7 @@ fn the_gpus_overview_is_taken_up_by_its_version_and_reused_across_pans() {
                 .gpu_region(rect, magnification),
         )
         .expect("the view's job");
-        let key = OverviewKey::of(&job).expect("a committed stack's key");
+        let key = crate::app::preview::overview_key(&job).expect("a committed stack's key");
         let source = job.evaluation.source().identity();
         let epoch = editor.view_plan.epoch;
         let _ = editor.update(Message::Preview(PreviewMessage::ViewLoaded {
