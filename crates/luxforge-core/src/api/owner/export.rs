@@ -1022,16 +1022,28 @@ fn streamed(
     }
 }
 
-/// A held format's 8-bit `size` frame from `stream`'s bands, allocated once at its size within the
-/// evaluated-frame limit.
+/// A held format's 8-bit `size` frame from `stream`'s bands, allocated once at its size. It has no
+/// cap (owner, 2026-10-08 and 2026-10-13): `export.plan` reports the memory in advance and warns
+/// above 24 MP, and an allocation the host cannot make is refused as `resource-limit`, never an
+/// abort.
 fn assemble(
     stream: &mut BandStream,
     (width, height): (u32, u32),
     encoding: &Encoding<'_>,
     report: &mut Report<'_>,
 ) -> Result<Vec<u8>, Error> {
-    let length = crate::Raster::expected_len(width, height)?;
-    let mut frame = Vec::with_capacity(length);
+    let length = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| Error::resource_limit("the export's frame is not addressable"))?;
+    let mut frame = Vec::new();
+    frame.try_reserve_exact(length).map_err(|_| {
+        Error::resource_limit(format!(
+            "the export's {width} \u{d7} {height} frame, {} MB, could not be allocated",
+            length.div_ceil(1_000_000)
+        ))
+    })?;
     for band in stream.by_ref() {
         let band = band?;
         encoding.cancel()?;
