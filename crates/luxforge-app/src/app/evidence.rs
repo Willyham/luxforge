@@ -1596,6 +1596,7 @@ impl Editor {
                 | ExportStep::DeletePreset(_)
                 | ExportStep::Write(_)
                 | ExportStep::Close
+                | ExportStep::ScrollEnd
         );
         if sheet_step && self.export.sheet.is_none() {
             return self.fail_step("the Export sheet is not open");
@@ -1735,6 +1736,13 @@ impl Editor {
                 let task = self.update(sheet(SheetMessage::Close));
                 self.capture_next_frame();
                 task
+            }
+            ExportStep::ScrollEnd => {
+                self.capture_next_frame();
+                iced::widget::operation::snap_to(
+                    crate::view::export_sheet::scroll_id(),
+                    iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+                )
             }
             ExportStep::Again(_) => {
                 self.await_export(background);
