@@ -902,8 +902,8 @@ impl Editor {
             return false;
         }
         // The GPU's picture at rest of the content on screen holds the view at full detail, once
-        // the surface has evaluated it.
-        if self.gpu_holds_view(wanted)
+        // the surface has evaluated it: of a content it presents, or of a paged source's window.
+        if (self.gpu_holds_view(wanted) || self.gpu_window_holds_view(wanted))
             && self.gpu_rest_plan().is_some_and(|(plan, _)| {
                 luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
                     .gpu_ready_boundary
@@ -1265,20 +1265,35 @@ impl Editor {
     /// 100% and above, holds `wanted`.
     fn gpu_holds_view(&self, wanted: Region) -> bool {
         self.presentation.gpu_presented == Some(self.presentation.content_serial)
-            && self.gpu_rest_plan().is_some_and(|(plan, _)| {
-                plan.region.is_some_and(|region| {
-                    let [x0, y0, x1, y1] = region.rect;
-                    contains_region(
-                        Region {
-                            x0,
-                            y0,
-                            width: x1 - x0,
-                            height: y1 - y0,
-                        },
-                        wanted,
-                    )
-                })
+            && self.gpu_rest_region_holds(wanted)
+    }
+
+    /// Whether a paged source's view plan at rest, cut from the window of level 0 the surface
+    /// holds, is of the content on screen and holds `wanted`. The reference's frame of a paged
+    /// source is its overview alone, never level 0, so at 100% and above that region is the
+    /// photograph's only full-detail picture, whichever renderer presented the content.
+    fn gpu_window_holds_view(&self, wanted: Region) -> bool {
+        self.gpu_window_handed().is_some()
+            && self.presentation.presented_content == self.presentation.content_serial
+            && self.gpu_rest_region_holds(wanted)
+    }
+
+    /// Whether the view plan at rest is a region's, at 100% and above, that holds `wanted`.
+    fn gpu_rest_region_holds(&self, wanted: Region) -> bool {
+        self.gpu_rest_plan().is_some_and(|(plan, _)| {
+            plan.region.is_some_and(|region| {
+                let [x0, y0, x1, y1] = region.rect;
+                contains_region(
+                    Region {
+                        x0,
+                        y0,
+                        width: x1 - x0,
+                        height: y1 - y0,
+                    },
+                    wanted,
+                )
             })
+        })
     }
 
     /// The physical pixels the photo area can show a frame in, when the view means a display-size
