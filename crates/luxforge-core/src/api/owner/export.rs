@@ -25,6 +25,7 @@ use crate::{
         publish::{self, Destination, Staged},
     },
     jobs::{JobControl, JobKind, NewJob, Work},
+    render::bands::Banded,
     tiles::{BandStream, TileService, TileStatus},
 };
 use serde_json::{Value, json};
@@ -377,6 +378,10 @@ pub(super) fn write(
             Err(fallback) => Some(RendererReason::from(&fallback)),
         }
     };
+    // A paged source has no whole frame: the reference renders it in bands.
+    if evaluation.source().paged().is_some() {
+        return banded(evaluation, reason, destination, &encoding, phase, encoded);
+    }
     let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
     // The frame is the render's own exact frame, from the compilation the plan made, inside the
     // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
@@ -400,6 +405,53 @@ pub(super) fn write(
     drop(frame);
     phase(WRITING)?;
     written(destination, staged, size, &encoding, renderer)
+}
+
+/// A paged source's export by the reference (`docs/design/panorama-merge.md`, "The reference on
+/// paged sources"), when the export asked for it, the host has no GPU provider or the GPU's stream
+/// said why it could not draw it (`reason`, as for a whole frame): the output stage in full-width
+/// bands from windows of the source's level 0 ([`Banded`]), after a first pass over the stages a
+/// whole-stage statistic or a repair reads, the encoder taking each band as it is rendered, so
+/// neither the source nor the output is ever held whole. Phases, progress, cancellation and the
+/// staged file behave as they do for a whole frame's export.
+fn banded(
+    evaluation: crate::Evaluation,
+    reason: Option<RendererReason>,
+    destination: &Destination,
+    encoding: &Encoding<'_>,
+    phase: &dyn Fn(&'static str) -> Result<(), Error>,
+    encoded: &mut dyn FnMut(f64),
+) -> Result<Written, Error> {
+    let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
+    let control = encoding.control;
+    let paged = evaluation
+        .source()
+        .paged()
+        .ok_or_else(|| Error::internal("a banded export of a source that is not paged"))?;
+    let banded = Banded::new(
+        paged.source().as_ref(),
+        evaluation.compiled()?,
+        evaluation.context(),
+        control.render_cancel(),
+    )?;
+    let stage = banded.stage();
+    let size = (stage.width, stage.height);
+    let mut staged = destination.stage()?;
+    phase(ENCODING)?;
+    let exif = encoding.exif(size);
+    encode_jpeg_rows(
+        &mut staged,
+        size,
+        banded.bands(),
+        exif.as_deref(),
+        encoding.pixels_per_inch,
+        encoded,
+        &|| control.checkpoint(),
+    )?;
+    drop(banded);
+    drop(evaluation);
+    phase(WRITING)?;
+    written(destination, staged, size, encoding, renderer)
 }
 
 /// What every encode of one export shares: its control, the original's metadata and its options.

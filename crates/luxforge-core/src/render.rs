@@ -17,6 +17,7 @@
 //! - [`mod@locate`]: the public locate and transform types.
 //! - [`context`] and [`parallel`]: the render context's budgets and the one parallel gate.
 
+pub(crate) mod bands;
 mod boundary;
 mod byte;
 mod colour_runs;
@@ -43,6 +44,8 @@ pub(crate) mod testing;
 mod view;
 mod window;
 
+#[cfg(test)]
+mod bands_tests;
 #[cfg(test)]
 mod boundary_tests;
 #[cfg(test)]

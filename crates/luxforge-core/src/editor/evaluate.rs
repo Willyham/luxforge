@@ -490,6 +490,16 @@ impl EditorService {
         let needs = stack.needs();
         let prepared =
             self.needing(needs, self.verified_prepared(&stack.asset, needs.developed))?;
+        self.read_prepared(stack, prepared)
+    }
+
+    /// [`Self::read`] of a source already verified.
+    fn read_prepared(
+        &self,
+        stack: Stack,
+        prepared: PreparedSource,
+    ) -> Result<(Evaluation, Arc<CaptureMetadata>), Error> {
+        let needs = stack.needs();
         let capture = prepared.capture().clone();
         let source = self.needing(
             needs,

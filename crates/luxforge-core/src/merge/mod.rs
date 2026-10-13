@@ -4,6 +4,9 @@
 //!   suitability validation, exposure or coordinate resolution and pixel equations
 //!   (`docs/design/hdr-merge.md`). Nothing there reads a file, touches the catalog or schedules
 //!   work.
+//! - [`panorama`] is the panorama provider's library: frame development, bounded analysis
+//!   proxies, features, matching and registration under a rotating camera
+//!   (`docs/design/panorama-merge.md`).
 //! - `job` is the merge lane's worker job, which composes those functions with the shared verified
 //!   source development, bounded spooling and durable derived storage; the command service
 //!   (`crate::api` `merge.*`) starts it and the owner publishes what it answers.

@@ -149,6 +149,20 @@ pub(crate) trait PixelDomain: Sync {
     /// An empty spatial frame of `stage`, inside the domain's frame limit.
     fn spatial_frame(stage: Stage, wide: bool) -> Result<Self::SpatialFrame, Error>;
 
+    /// An empty spatial frame of `area` of a stage, the whole stage or the window of it the
+    /// reference's banded mode materializes ([`Evaluation::windowed`]): laid out as a frame of a
+    /// stage of the area's size, inside the domain's window limit. A domain without a banded mode
+    /// holds it to its frame limit.
+    fn area_frame(area: Region, wide: bool) -> Result<Self::SpatialFrame, Error> {
+        Self::spatial_frame(
+            Stage {
+                width: area.width,
+                height: area.height,
+            },
+            wide,
+        )
+    }
+
     /// One tile's output, from the rectangle `region` its last unit wrote, with each of the tile's
     /// rows in the layout the frame holds it in, computed in the parallel phase. `values` is
     /// borrowed from the slot the tile ran in, whose next tile writes over it, so the output
@@ -224,6 +238,9 @@ pub(crate) enum SpatialMode {
 pub(super) struct SpatialFrame<F> {
     pub(super) index: usize,
     pub(super) planes: Arc<F>,
+    /// The rectangle of the segment's input stage the frame holds: the whole stage, or the window
+    /// a banded evaluation materializes ([`Evaluation::windowed`]).
+    pub(super) area: Region,
 }
 
 /// One compiled recipe bound to its source in one domain: the stage it produces and point queries
@@ -244,6 +261,9 @@ pub(crate) struct Evaluation<'a, D: PixelDomain> {
     /// How each spatial segment is cut into tiles: [`Tiling::Halo`] everywhere but in the tests
     /// that prove the result does not depend on it.
     tiling: Tiling,
+    /// Per segment, the window of its input stage a banded evaluation materializes for a spatial
+    /// or repair entry ([`Self::windowed`]); empty, every frame whole, everywhere else.
+    areas: Vec<Option<Region>>,
     cancel: Cancel,
     context: &'a RenderContext,
 }
@@ -273,6 +293,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             #[cfg(test)]
             built: Vec::new(),
             tiling,
+            areas: Vec::new(),
             cancel: cancel.clone(),
             context,
         };
@@ -318,6 +339,44 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         evaluation.materialized(through)
     }
 
+    /// `compiled` evaluated in `domain` over a window of its stages, for the reference's banded mode
+    /// (`super::bands`): the frame of each spatial or repair segment before `through` materialized
+    /// over the window `areas` names for it alone, in order, each reading the window of the stage
+    /// before it its own reads need. `domain` holds the window of the source the first segment
+    /// reads. Every pixel inside those windows is the whole frame's: a spatial tile's value does
+    /// not depend on the rectangle it is cut to, the estimates a spatial operation reads are handed
+    /// to it ([`SpatialEntry::globals`]) and a repair reads the working set its first pass held
+    /// (`RepairEntry::held`). A read outside a window is an error, never another pixel.
+    pub(crate) fn windowed(
+        domain: D,
+        compiled: Cow<'a, Compiled>,
+        areas: Vec<Option<Region>>,
+        through: usize,
+        cancel: &Cancel,
+        context: &'a RenderContext,
+    ) -> Result<Self, Error> {
+        let mut evaluation = Self::new(
+            domain,
+            compiled,
+            Tiling::Halo,
+            SpatialMode::Point,
+            cancel,
+            context,
+        )?;
+        evaluation.areas = areas;
+        evaluation.materialized(through)
+    }
+
+    /// The window of segment `index`'s input stage its frame holds: the whole stage, unless a
+    /// banded evaluation names a window for it.
+    fn frame_area(&self, index: usize) -> Region {
+        self.areas
+            .get(index)
+            .copied()
+            .flatten()
+            .unwrap_or_else(|| Region::whole(self.spatial_stage(index)))
+    }
+
     /// This evaluation with the frames of its spatial segments before segment `through`
     /// materialized, in order, because a later spatial operation pulls its input through the
     /// earlier one, and each frame replacing the one before it once it exists.
@@ -331,6 +390,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 continue;
             };
             let planes = Arc::new(frame);
+            let area = self.frame_area(index);
             #[cfg(test)]
             {
                 // This frame and every earlier one still alive.
@@ -342,7 +402,11 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 self.built.push((Arc::downgrade(&planes), alive));
             }
             // Releases the frame before it: every later pull stops at this one.
-            self.frame = Some(SpatialFrame { index, planes });
+            self.frame = Some(SpatialFrame {
+                index,
+                planes,
+                area,
+            });
         }
         Ok(self)
     }
@@ -504,12 +568,22 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         y: u32,
     ) -> Result<D::Pixel, Error> {
         match &self.frame {
-            Some(frame) if frame.index == index => Ok(D::frame_pixel(
-                &frame.planes,
-                self.spatial_stage(index),
-                x,
-                y,
-            )),
+            Some(frame) if frame.index == index && frame.area.contains(x, y) => {
+                let area = frame.area;
+                Ok(D::frame_pixel(
+                    &frame.planes,
+                    Stage {
+                        width: area.width,
+                        height: area.height,
+                    },
+                    x - area.x0,
+                    y - area.y0,
+                ))
+            }
+            Some(frame) if frame.index == index => Err(Error::internal(format!(
+                "pixel ({x}, {y}) of segment {index} lies outside the window of its stage the \
+                 evaluation materialized"
+            ))),
             _ => Err(Error::internal(format!(
                 "segment {index} is entered through a spatial operation whose frame this \
                  evaluation did not materialize"
@@ -529,6 +603,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             &self.domain,
             entry,
             self.spatial_stage(index),
+            self.frame_area(index),
             self.tiling,
             cancel,
             self.context,
@@ -549,6 +624,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             &self.domain,
             entry,
             self.spatial_stage(index),
+            self.frame_area(index),
             cancel,
             self.context,
             self.widths[index].input,
@@ -557,7 +633,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// The stage spatial segment `index` reads, which is the stage it writes.
-    fn spatial_stage(&self, index: usize) -> Stage {
+    pub(super) fn spatial_stage(&self, index: usize) -> Stage {
         self.compiled.segments[index - 1].stage()
     }
 
@@ -625,7 +701,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     ///
     /// This is how the stage a spatial entry reads is read everywhere: a tile's input, in a frame
     /// and in a point query, and the reduction its global estimates are prepared from.
-    fn fill_rows(
+    pub(super) fn fill_rows(
         &self,
         index: usize,
         region: Region,
@@ -830,8 +906,11 @@ impl SpatialEntry {
     }
 }
 
-/// One spatial entry's output over its whole `stage`, written tile by tile into the domain's frame:
-/// the one place either driver materializes a spatial operation. `fill` reads one rectangle of the
+/// One spatial entry's output over `area` of its `stage`, the whole stage but in the reference's
+/// banded mode, written tile by tile into the domain's frame of the area: the one place either
+/// driver materializes a spatial operation. A window of the stage is evaluated from the estimates
+/// the entry was handed, which the banded mode's first pass prepares from the whole stage; a window
+/// whose entry would reduce its own is refused, since a window is not the stage it reduces. `fill` reads one rectangle of the
 /// stage it reads into three planes, for every tile and for the reduction its global estimates
 /// ([`SpatialEntry::globals`]) are prepared from.
 ///
@@ -846,6 +925,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     _domain: &D,
     entry: &SpatialEntry,
     stage: Stage,
+    area: Region,
     tiling: Tiling,
     cancel: &Cancel,
     context: &RenderContext,
@@ -853,13 +933,31 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
 ) -> Result<D::SpatialFrame, Error> {
     let operation = &entry.operation;
-    let plan = SpatialPlan::new(operation, stage, tiling)?;
+    let whole = area == Region::whole(stage);
+    let plan = SpatialPlan::new(operation, stage, tiling)?.within(area);
+    if !whole
+        && entry.globals.is_none()
+        && operation
+            .units()
+            .iter()
+            .any(|unit| unit.estimate_key().is_some())
+    {
+        return Err(Error::internal(
+            "a window of a spatial stage was asked for without the estimates of its whole stage",
+        ));
+    }
     let globals = entry.globals(context, || {
         build_reduction_cancellable(stage, cancel, |region, planes| {
             fill(region, planes, Parallelism::Serial)
         })
     })?;
-    let mut frame = D::spatial_frame(stage, wide)?;
+    // A frame over a window is bounded as one; so is a frame over the whole stage, which in the
+    // banded mode may be as wide as a paged source's stage.
+    let mut frame = D::area_frame(area, wide)?;
+    let held = Stage {
+        width: area.width,
+        height: area.height,
+    };
     #[cfg(test)]
     context.note_spatial_frame();
     run_tiles(
@@ -880,7 +978,12 @@ pub(super) fn spatial_entry<D: PixelDomain>(
             Ok(D::tile_output(region, values, tile, parallelism, wide))
         },
         |tile, output| {
-            D::write_tile(&mut frame, stage, tile, output);
+            let at = Region {
+                x0: tile.x0 - area.x0,
+                y0: tile.y0 - area.y0,
+                ..tile
+            };
+            D::write_tile(&mut frame, held, at, output);
             Ok(())
         },
     )?;
@@ -949,9 +1052,12 @@ fn colour_load<'a>(runs: impl Iterator<Item = ColorRun<'a>>) -> (usize, bool) {
     })
 }
 
-/// One segment's output, `frame`, written in bounded row chunks: each chunk is loaded, then the
-/// segment's colour runs are applied to it in order, and it is stored. Colour runs reach only the
-/// rows in `band`; a resample that follows reads no other.
+/// One segment's output over `area` of its stage, `frame`, written in bounded row chunks: each
+/// chunk is loaded, then the segment's colour runs are applied to it in order, and it is stored.
+/// `area` is the whole stage but in the reference's banded mode, whose rows hold that window
+/// (`super::linear::LinearRows`); a chunk's rows are named to `rows` by the stage's own row index.
+/// Colour runs reach only the rows in `band`, counted from the area's first; a resample that
+/// follows reads no other.
 ///
 /// The chunks run on the shared Rayon pool when the segment's geometry, a resample its rows
 /// evaluate, its colour runs or its heavy colour runs reach their own threshold
@@ -968,11 +1074,12 @@ pub(super) fn segment_pass<R: SegmentRows>(
     rows: &R,
     segment: &Segment,
     frame: &mut [R::Sample],
+    area: Region,
     band: Range<usize>,
     cancel: &Cancel,
     budget: &ScratchBudget,
 ) -> Result<(), Error> {
-    let width = segment.width as usize;
+    let width = area.width as usize;
     if frame.is_empty() || width == 0 {
         return Ok(());
     }
@@ -988,7 +1095,7 @@ pub(super) fn segment_pass<R: SegmentRows>(
     // that segment per output pixel, so those units count with the segment's own, over every row.
     let parallel = {
         use super::parallel::{RenderPass, pooled, resample_pass};
-        let whole = segment.width as u64 * segment.height as u64;
+        let whole = area.pixels();
         let pulled = rows.pulled();
         let (own, _) = colour_load(runs.iter().copied());
         let (before, before_masked) =
@@ -1002,13 +1109,13 @@ pub(super) fn segment_pass<R: SegmentRows>(
         let coloured = if before > 0 {
             whole
         } else {
-            segment.width as u64 * (band.end - band.start) as u64
+            u64::from(area.width) * (band.end - band.start) as u64
         };
         pooled(RenderPass::Transform, whole)
             || pulled.is_some_and(|(entry, _)| pooled(resample_pass(&entry.resample), whole))
             || colour.is_some_and(|pass| pooled(pass, coloured))
     };
-    let chunk_rows = color_chunk_rows(segment.width);
+    let chunk_rows = color_chunk_rows(area.width);
     let chunk_bytes = chunk_rows * width * rows.samples_per_pixel();
     let process = |scratch: &mut (R::Scratch, Vec<MaskedInput>),
                    index: usize,
@@ -1039,10 +1146,11 @@ pub(super) fn segment_pass<R: SegmentRows>(
         } else {
             &mut unused
         };
-        rows.load(scratch, y0 as u32, chunk)?;
+        let first = area.y0 + y0 as u32;
+        rows.load(scratch, first, chunk)?;
         if colours {
             for run in &runs {
-                rows.run(scratch, chunk, run, y0 as u32, coloured.clone(), snapshot)?;
+                rows.run(scratch, chunk, run, first, coloured.clone(), snapshot)?;
             }
         }
         rows.store(scratch, chunk)
