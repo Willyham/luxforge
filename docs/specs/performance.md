@@ -2216,7 +2216,7 @@ HSL holds red hue 20/21 (alternating to make every commit real) and blue saturat
 The graded workload keeps those HSL values and adds Shadows hue 210/saturation 30,
 Highlights hue 45/saturation 20 and Global luminance 5. Commits use `edit.set-mixer`;
 whole-frame rendering uses the CPU reference; each centre-point `render.sample` equals that
-frame's byte; each serial `export.jpeg` completes and its temporary output is removed.
+frame's byte; each serial `export.write` completes and its temporary output is removed.
 The headless owner has no GPU tile service, so sample and export figures below are reference
 fallback costs, not native GPU sample/export throughput. Every table cell is p50 / p95 over 30
 observations; RSS is sampled between operations, not peak memory.
@@ -3397,7 +3397,7 @@ frame owner, and no additional savings are assigned to it.
 
 ### JPEG export
 
-Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cache, driven over its line-delimited JSON by a throwaway script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.jpeg` to `export.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. No RAW export needed a preparation: the committed edit had already developed the entry's settings. The `image` column is the first build, which encoded with the `image` crate, at one-minute load 3.9 to 5.2; the libjpeg-turbo column is the current build, which encodes through `mozjpeg`, at one-minute load 2.8 after waiting for the host to settle (5- and 15-minute loads 10.8 and 13.7 from other sessions). The two runs were not back to back, so the comparison is indicative; the encoder alone, measured back to back, is 48 against 111 ms at 24 MP and 121 against 274 ms at 60 MP ([export design](../design/export.md#decisions)).
+Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cache, driven over its line-delimited JSON by a throwaway script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.write` to `job.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. No RAW export needed a preparation: the committed edit had already developed the entry's settings. The `image` column is the first build, which encoded with the `image` crate, at one-minute load 3.9 to 5.2; the libjpeg-turbo column is the current build, which encodes through `mozjpeg`, at one-minute load 2.8 after waiting for the host to settle (5- and 15-minute loads 10.8 and 13.7 from other sessions). The two runs were not back to back, so the comparison is indicative; the encoder alone, measured back to back, is 48 against 111 ms at 24 MP and 121 against 274 ms at 60 MP ([export design](../design/export.md#decisions)).
 
 | Source | Export wall p50 / max of 5, libjpeg-turbo (ms) | Same, `image` (ms) | Output, libjpeg-turbo | Dimensions |
 | --- | ---: | ---: | ---: | --- |
@@ -4709,7 +4709,7 @@ Each case's 30-input drag through `editor-latency`, the GPU preview on and, for 
 
 - **Against the 16 ms p95 target.** Met with the GPU preview on at Fit at 24 MP and 60 MP (p95 8.8 to 9.5 ms over two runs each), at 100% (9.4) and 200% (8.6), by each X100VI Presence drag and the Basic drag under Presence (8.6 to 9.5), and by every position of the brush stroke (8.5). Each GPU frame is drawn at the first redraw after its input. With the preview off the same drags' p95 is 18.0 and 25.8 ms at 24 MP, 10.1 and 16.9 ms at 60 MP, 11.9 at 100% and 47.2 on the X100VI's Texture; drawn, the CPU frames reach the screen one to two frames after the GPU's (p50 17.5 to 25.7 ms against 8.3 at Fit).
 - **Against the earlier records.** The CPU path's hand-off was 18.1/24.8 ms p50/p95 at 24 MP and 17.2/28.9 at 60 MP on an earlier build; the same build's GPU-off runs now hand off at 9.5 to 17.2 / 18.0 to 25.8 and 9.1 / 10.1 to 16.9, varying by a frame between runs. The GPU frames, measured to their draw, are 8.3/9.3 to 9.5 at 24 MP and 8.3 to 8.4/8.8 to 8.9 at 60 MP, stable across runs.
-- **With an exact render holding the pool.** Five `export.jpeg` jobs of the committed stack are queued just before the drag; the lane renders each exactly on the shared pool, then encodes and writes it, one at a time, and an input sent inside the lane's busy window is contended. At 60 MP all 30 inputs of the GPU run were contended: p50/p95/p99 8.4/18.7/22.9 ms, its GPU frames 8.4/16.8/22.9. **The 16 ms target is missed under contention**, by a frame: the interface thread that draws the GPU frame competes with the exports' renders for cores, so some frames wait one redraw more. The 32 ms acceptable limit is met. With the preview off, 15 of its 30 inputs were contended: 18.1/265.4 ms p50/p95 over those, 17.5/211.5/265.4 over the run, the order of the earlier core measurement of a proxy beside exact renders, 207.2/214.7 ms, which was no desktop gesture. At 24 MP the five exports end within about a second, contending the first 8 inputs: the GPU run's p95 is 46.0 ms over all 30 and 39.0 over its 7 contended GPU frames, **missing both 16 and 32 ms**; its uncontended GPU frames also reached 46.0. The 24 MP run with the preview off could not be bounded: its exports each ran under the activity board's 250 ms record and had ended before the read, so the 60 MP run is the contended baseline.
+- **With an exact render holding the pool.** Five `export.write` jobs of the committed stack are queued just before the drag; the lane renders each exactly on the shared pool, then encodes and writes it, one at a time, and an input sent inside the lane's busy window is contended. At 60 MP all 30 inputs of the GPU run were contended: p50/p95/p99 8.4/18.7/22.9 ms, its GPU frames 8.4/16.8/22.9. **The 16 ms target is missed under contention**, by a frame: the interface thread that draws the GPU frame competes with the exports' renders for cores, so some frames wait one redraw more. The 32 ms acceptable limit is met. With the preview off, 15 of its 30 inputs were contended: 18.1/265.4 ms p50/p95 over those, 17.5/211.5/265.4 over the run, the order of the earlier core measurement of a proxy beside exact renders, 207.2/214.7 ms, which was no desktop gesture. At 24 MP the five exports end within about a second, contending the first 8 inputs: the GPU run's p95 is 46.0 ms over all 30 and 39.0 over its 7 contended GPU frames, **missing both 16 and 32 ms**; its uncontended GPU frames also reached 46.0. The 24 MP run with the preview off could not be bounded: its exports each ran under the activity board's 250 ms record and had ended before the read, so the 60 MP run is the contended baseline.
 - **The brush stroke.** 400 positions, one every 24 ms, on one brush mask and its masked Basic layer: 399 drawn on the GPU, every position on screen with the first frame that carried it, 7.1/8.5/9.2 ms from its own input, the press 10.6 ms from the first position to its frame, none superseded.
 
 ### Memory
@@ -4954,7 +4954,7 @@ The same drag stack, `--mode commit`, from the release to the GPU's counts adopt
 
 ### Export at 24 and 60 MP
 
-`export.jpeg` through the desktop's evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, of a trivial stack (Basic exposure +0.3) and then the heavy one (the three-segment stack without the lens: Detail, Presence's three fields, a radial's masked Presence). The wall time is the activity board's `duration_ms` for the export job, which it keeps only for work of 250 ms or more; a shorter export is timed from the step to its end as the desktop's 100 ms job reader sees it, an upper bound. Every GPU export named `renderer` `{record: "gpu"}` and every reference one `{record: "reference", reason: "requested"}`. Executable `3f08f163`; each source run twice, the second, quoted, at a lower load.
+`export.write` through the desktop's evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, of a trivial stack (Basic exposure +0.3) and then the heavy one (the three-segment stack without the lens: Detail, Presence's three fields, a radial's masked Presence). The wall time is the activity board's `duration_ms` for the export job, which it keeps only for work of 250 ms or more; a shorter export is timed from the step to its end as the desktop's 100 ms job reader sees it, an upper bound. Every GPU export named `renderer` `{record: "gpu"}` and every reference one `{record: "reference", reason: "requested"}`. Executable `3f08f163`; each source run twice, the second, quoted, at a lower load.
 
 | Source | Stack | Load | GPU: median, range (5) | Reference: median, range (5) | GPU tiles an export | Tile worker's peak |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -5104,7 +5104,7 @@ Both tiers (grid 512 px, large 2048 px) of the corpus's Z 6 and Air 2S under a B
 
 ### Export
 
-`export.jpeg` through the evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, after a `gpu_warmed` step; the step is timed from its request to its end, which the desktop now reads through `job.wait`, so it is no longer the 100 ms job reader's upper bound. Beside it, the activity board's `duration_ms` for exports of 250 ms or more. Every GPU export named `{record: "gpu"}`, every reference export `{record: "reference", reason: "requested"}`. Executable `04e72e5e`.
+`export.write` through the evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, after a `gpu_warmed` step; the step is timed from its request to its end, which the desktop now reads through `job.wait`, so it is no longer the 100 ms job reader's upper bound. Beside it, the activity board's `duration_ms` for exports of 250 ms or more. Every GPU export named `{record: "gpu"}`, every reference export `{record: "reference", reason: "requested"}`. Executable `04e72e5e`.
 
 | Source and stack | Before: GPU / reference | GPU: median, range (5) | Reference: median, range (5) | Load | GPU tiles an export; tile worker's peak |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -5544,7 +5544,7 @@ Every producer is well inside 10 µs at p95, the contended row included.
 | `pick.develop` of one file (3 runs each) | 8.70 / 9.05 · 8.60 / 8.68 | 8.57 / 8.61 · 8.69 / 9.06 |
 | `source.prepare` (3 each) | 25.9 / 27.4 · 25.9 / 25.9 | 59.2 / 62.2 · 57.4 / 57.5 |
 | `edit.set-basic` commit (90 each) | 5.06 / 5.65 · 5.05 / 5.25 | 5.10 / 5.29 · 5.01 / 5.29 |
-| `export.jpeg` (9 each) | 64.2 / 85.2 · 63.8 / 84.7 | 143.9 / 160.1 · 143.7 / 159.6 |
+| `export.write` (9 each) | 64.2 / 85.2 · 63.8 / 84.7 | 143.9 / 160.1 · 143.7 / 159.6 |
 
 Opted in and opted out are the same within the runs' spread: the owner's producers record committed counts and categories and nothing image-sized.
 
@@ -5687,7 +5687,7 @@ The offline Clone/Heal workflow's native qualification ([Corrections](../design/
 | Z6 NEF, 4024 × 6048 | 0.067 / 1.57 / 1.58 / 0.000 | 0.043 / 0.99 / 1.30 / 0.000 |
 | X100VI RAF, 7728 × 5152 | 0.001 / 0.39 / 0.00 / 0.000 | 0.004 / 0.51 / 0.00 / 0.000 |
 
-The run's own owner, with no GPU, exported the warped entry through `export.plan`, `batch.export` and `export.jpeg`, each read with `job.read`: the batch and single files are the same bytes, their pixels are the desktop's reference export's exactly, and the desktop's GPU export is within the same limits of them. The Air 2S's worst block, 2.26 of 2.5, is the closest any export comes to a limit.
+The run's own owner, with no GPU, exported the warped entry through `export.plan`, `batch.export` and `export.write`, each read with `job.read`: the batch and single files are the same bytes, their pixels are the desktop's reference export's exactly, and the desktop's GPU export is within the same limits of them. The Air 2S's worst block, 2.26 of 2.5, is the closest any export comes to a limit.
 
 ### Timing
 
@@ -5739,7 +5739,7 @@ At 24 MP × 9 (load 12.5 to 45) cancellation took at most 5, 120, 133 and 63 ms.
 | `library.undo` / `library.redo` of the merge's creation, after reopening, p50 / max ms | 4.8 to 5.3 / 9.0 · 4.9 to 5.0 / 11.1 | 5.0 to 8.9 / 9.8 · 5.0 to 5.2 / 13.4 |
 | `source.prepare` of the result: its chunks read and verified into one frame | 215 to 220 ms | 518 to 737 ms |
 | The footprint that preparation adds: the frame | 282 MiB | 688 to 691 MiB |
-| `export.jpeg` of the result, reference renderer | 101 to 110 ms | 206 to 210 ms |
+| `export.write` of the result, reference renderer | 101 to 110 ms | 206 to 210 ms |
 
 Each reopen merged copies of the bracket and undid and redid the merge in its own process. It then moved the copies away and reopened the catalog in a new process: `merge.inspect` reported every input missing and the source available. Through undo, redo, preparation and export no HDR merge began, progressed or ended on the activity board, and the objects under `sources/` and the merges' working folders were unchanged. With the inputs gone, nothing could read one.
 
@@ -5748,7 +5748,7 @@ Each reopen merged copies of the bracket and undid and redid the merge in its ow
 | `browse.rows` of 200 over a view of 1,000 JPEGs | 0.7 / 0.7 · 0.6 / 0.7 | 0.6 / 0.8 · 0.7 / 2.2 (max 9.4) |
 | `render.sample` of a prepared 24 MP JPEG | 0.0 / 0.5 · 0.0 / 0.1 | 0.1 / 0.5 · 0.1 / 0.7 (max 11.1) |
 | `edit.set-basic` commit | 4.8 / 8.1 · 4.9 / 7.0 | 5.5 / 10.7 · 5.5 / 10.2 (max 92.0) |
-| `export.jpeg` of it | 103.6 / 105.2 · 96.3 / 119.6 | 110.2 / 110.2 · 110.1 / 218.0 (max 308) |
+| `export.write` of it | 103.6 / 105.2 · 96.3 / 119.6 | 110.2 / 110.2 · 110.1 / 218.0 (max 308) |
 | The merge they ran beside, against warm alone (p50) | 2,316 against 2,175 | 74,126 against 52,085 |
 
 There were 10 idle samples of each operation. Beside a merge there were 23 of each at 24 MP and about 500 at 60 MP (load up to 12.3 at its end), counting only those that ended while the merge still ran, so a 60 MP export ran beside it back to back throughout. At 24 MP × 9 and 60 MP × 3, browse, sample and commit beside a merge were no slower than idle at p95. Editing beside a merge keeps its own times; the merge takes longer.

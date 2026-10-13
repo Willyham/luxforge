@@ -1,6 +1,6 @@
 # Export settings
 
-Status: **in progress; the owner authorized implementation on 2026-10-12**. The owner asked for more comprehensive export with settings, JPEG, WebP and a lossless hand-off format, and optimised output by default for the web with a separate print setting. The owner's choices of 2026-10-07 are under [decisions](#decisions). The other defaults are recommendations recorded under [proposals](#proposals-with-recorded-defaults). [Tasks](../../tasks/rendering/export-settings.json) hold the implementation work. `export.write` and `batch.export` write every setting below except output sharpening; the desktop's sheet, menu and batch, output sharpening and corpus qualification remain. This design extends the [JPEG export](export.md) and keeps its freeze, render, publish and never-replace rules unchanged.
+Status: **in progress; the owner authorized implementation on 2026-10-12**. The owner asked for more comprehensive export with settings, JPEG, WebP and a lossless hand-off format, and optimised output by default for the web with a separate print setting. The owner's choices of 2026-10-07 are under [decisions](#decisions). The other defaults are recommendations recorded under [proposals](#proposals-with-recorded-defaults). [Tasks](../../tasks/rendering/export-settings.json) hold the implementation work. `export.write` and `batch.export` write every setting below except output sharpening, and the desktop's sheet, menu, palette entries and Select's batch export are delivered over them, with their rendered journey (`cargo xtask smoke --scenario export`, and `select` for the batch). Output sharpening, corpus qualification and the measurements remain. This design extends the [JPEG export](export.md) and keeps its freeze, render, publish and never-replace rules unchanged.
 
 Boards: [Web preset](export-settings/web.png), [Print preset, changed](export-settings/print.png), [many photographs from Select](export-settings/batch.png) and [components and states](export-settings/components.png). The standalone pages are under [export-settings/html](export-settings/html/index.html).
 
@@ -12,14 +12,14 @@ Boards: [Web preset](export-settings/web.png), [Print preset, changed](export-se
 
 `Cmd+E`, the Export menu's **Export…** and the palette open the **Export sheet**. It is a modal panel over the dimmed workspace, using the same scrim and stacking as the Settings sheet. It exports the displayed entry under the existing rules: the current entry, a history preview, or the fixed After entry while Compare is open, and never a draft. From top to bottom it has:
 
-1. **Preset cards.** Web, Print and Master are built in. The person's own presets follow, then **+**, which saves the current settings as a new preset. The sheet opens on the last settings exported with. The first time, it opens on Web. Changing any setting marks the selected card *Changed from preset*. It never saves the change silently: the footer offers **Update "Name"…** for the person's own preset or **Save as preset…**, and Export uses the changed settings once. A built-in preset cannot be updated, renamed or deleted; **Duplicate** makes an editable copy. Right-clicking one of the person's presets offers Update with current settings, Rename…, Duplicate and Delete.
+1. **Preset cards.** Web, Print and Master are built in. The person's own presets follow, then **+**, which saves the current settings as a new preset. The sheet opens on the last settings exported with. The first time, it opens on Web. A preset holds its folder and suffix too, so changing any setting, the folder included, marks the selected card *Changed from preset*. It never saves the change silently: the footer offers **Update "Name"…** for the person's own preset or **Save as preset…**, and Export uses the changed settings once. A built-in preset cannot be updated, renamed or deleted; **Duplicate** makes an editable copy. Right-clicking one of the person's presets offers Update with current settings, Rename…, Duplicate and Delete.
 2. **Format.** JPEG, WebP or TIFF. The rows below show only the controls that apply to that format.
 3. **Size.** Full size, Long edge *N* px or Fit within *W* × *H* px. A readout below gives the exact output pixels, megapixels and the scale against the output stage. An export is never enlarged: a photograph already within the bound keeps its size, and the readout says so.
-4. **Print size** (shown when a density is set). The pixels per inch written to the file, and the physical size at that density in inches and centimetres. It changes no pixels.
+4. **Print size** (shown when a density is set; **Set print size** under the size readout adds one, and **Remove** takes it away). The pixels per inch written to the file, and the physical size at that density in inches and centimetres. It changes no pixels.
 5. **Quality** (JPEG and WebP). A 1–100 slider, then:
    - **Optimise file size.** The format's slower, smaller encoding at the same quality (see [encoding](#encoding)).
    - **Chroma** (JPEG only). Full (4:4:4) or Half (4:2:0).
-   - **Limit file size to** *N* KB. Chooses the highest quality, at most the slider's, whose file fits the limit. The slider is disabled while the limit is on.
+   - **Limit file size to** *N* KB, a switch and the kilobytes. Chooses the highest quality, at most the slider's, whose file fits the limit. The slider is disabled while the limit is on.
 6. **Bit depth** (TIFF). 16-bit or 8-bit. For TIFF, **Optimise file size** means lossless compression.
 7. **Sharpen.** None, Screen, Matte or Glossy, with Low, Standard or High. This row arrives with [output sharpening](#output-sharpening), the second delivery. The first delivery leaves it out of the sheet entirely rather than showing a placeholder.
 8. **Metadata.** None, Copyright, All but location or All (see [metadata](#metadata)).
@@ -34,21 +34,21 @@ Optimisation and file-size limits have no memory cap (owner, 2026-10-08): they u
 - **Warning.** When an optimised JPEG's output exceeds **24 MP**, or a size limit applies to an output above 24 MP, the sheet shows an amber notice under Quality. For example: *Large image: optimising 60.2 MP holds about 720 MB while encoding and is several times slower. Turn Optimise off to write it as it renders.* The memory figure comes from `export.plan`'s estimate. In batch mode the notice counts the photographs over the threshold and gives the largest estimate. The notice warns; it never blocks or asks for confirmation. Export again and Export with preset show no sheet, so their progress bar is the warning.
 - **Progress bar.** Every export reports determinate progress over its phases, rounded to whole percent: rendering, resampling, each encoding pass of an optimised JPEG (through libjpeg's progress monitor), each attempt of a limit search, and writing. The status bar shows a bar with the phase and percent, for example *Optimising DSC_0042-print.jpg · 64%*, as soon as the plan carries the large-image notice, and otherwise once an export has run for one second, so quick exports never flash a bar. Clicking it opens the Performance section, where the export's row has **Cancel**, as every long job does.
 
-The sheet is a client of the API; it holds no export rules of its own. Its readout, suggested name and notices come from `export.plan`. The sheet asks for a plan when the format, size, density, folder or suffix change, never at the quality slider's rate, with at most one plan in flight and the newest change pending.
+The sheet is a client of the API; it holds no export rules of its own. Its readout, suggested name and notices come from `export.plan`. The sheet asks for a plan when a setting the plan depends on changes: the format, size, density, folder or suffix, and Optimise, chroma, the size limit and bit depth, which change its estimate and notices. Quality and metadata never ask for one, so the slider plans nothing. At most one plan is in flight, with the newest change pending, and Export is enabled only once the plan for the settings shown has answered and refuses nothing.
 
 ### The Export menu and shortcuts
 
 The title bar's Export button opens a menu:
 
 - **Export…** (`Cmd+E`) opens the sheet.
-- **Export again as *Preset*** (`Shift+Cmd+E`) exports at once with the last export's settings, folder and suffix, counting the name up if it is taken. It is disabled until something has been exported.
+- **Export again as *Preset*** (`Shift+Cmd+E`) exports at once with the last export's settings, folder and suffix, counting the name up if it is taken; it reads *Export again with the last settings* when they were changed from their preset. It is disabled until something has been exported from the sheet, the menu or the palette: only a successful export started there is remembered.
 - **Export with preset** lists every preset. Choosing one exports at once with that preset's own settings and folder.
 
 The command palette lists the same entries, one per preset (*Export with preset: Print*), and keeps **Export reference render…**, which opens the sheet and sends `reference: true`. This replaces the two-item menu and the Keep metadata shortcut: metadata is now a setting.
 
 ### Many photographs
 
-The Select workspace's **Export N…** opens the same sheet, titled *Export 5 photos* and listing how many are RAW and how many JPEG. One set of settings applies to every photograph. Long edge and Fit within describe each photograph's own bound. With Original's folder, each file is written beside its own original. The name rule is the photograph's stem plus the suffix and the extension, counting up per folder exactly as a single export does. A photograph the settings cannot be applied to is reported as left out, with its reason, never skipped silently: for example, WebP over 16,383 px a side, or an original that is missing. Progress, Cancel and the report are the batch's existing ones in the Performance section and the batch sheet.
+The Select workspace's **Export N…** opens the same sheet, titled *Export 5 photos* and listing how many are RAW and how many JPEG. One set of settings applies to every photograph. Long edge and Fit within describe each photograph's own bound. With Original's folder, each file is written beside its own original. The name rule is the photograph's stem plus the suffix and the extension, counting up per folder exactly as a single export does. A photograph the settings cannot be applied to is reported as left out, with its reason, never skipped silently: for example, WebP over 16,383 px a side, or an original that is missing. Progress, Cancel and the report are the batch's existing ones in the Performance section and the batch sheet. The batch sheet plans every selected photograph for each change it plans, in one request off the update loop, so before Export it says how many are over the warning threshold and which it will leave out, with the first reason (*1 photo will be left out: WebP holds the whole 10000 × 6000 output…*). Export stays enabled while at least one photograph can be written.
 
 ### Built-in presets
 
@@ -128,14 +128,14 @@ Each output is a `gpu-qualification` export kind on the corpus: `export-resized`
 
 ## Metadata
 
-The levels select from the existing [supported fields](export.md#keep-metadata); nothing else is added or round-tripped:
+The levels select from the existing [supported fields](export.md#supported-metadata); nothing else is added or round-tripped:
 
 | Level | Fields |
 | --- | --- |
-| None | No EXIF, IPTC or XMP: only the format's header and the ICC profile, as today without Keep metadata |
+| None | No EXIF, IPTC or XMP: only the format's header and the ICC profile |
 | Copyright | Artist, Copyright |
 | All but location | Every supported field except the GPS group |
-| All | Every supported field, today's Keep metadata |
+| All | Every supported field |
 
 Any level other than None also writes the structural fields the export defines (Orientation 1, ColorSpace sRGB, the output's pixel dimensions and `Software`), as today. JPEG carries them in its APP1 segment, WebP in its EXIF chunk, and TIFF in IFD 0 plus its Exif and GPS IFDs.
 
@@ -154,7 +154,7 @@ Any level other than None also writes the structural fields the export defines (
 
 The person's presets live in a JSON document of their own, `export-presets.json`, beside `preferences.json` in the host's configuration directory, outside every catalog. Every value in it is checked, and an unreadable or unsupported document is kept and refused by name rather than rewritten. The last export's settings and preset id are a remembered preference, `export_last`, with no Settings row. It is stored only after an export the person started from the sheet, the menu or the palette succeeds. It replaces the remembered `export_folder`, whose role a chosen folder now plays. It is `{settings, preset_id}` through `preferences.read` and `preferences.set`, `preset_id` being `null` or the preset the settings came from unchanged. Without a configuration directory, `export.presets.list` answers the built-in presets and every change is refused `not_ready`. `schema.list` describes `ExportSettings` once, as `export_settings`, and every method above refers to it.
 
-`export.write` and `batch.export` write every value above except `sharpen`, which is refused by name as not yet available until output sharpening lands. The desktop still sends today's full-size JPEG settings from its save-dialog export and Select's Export… until the sheet arrives.
+`export.write` and `batch.export` write every value above except `sharpen`, which is refused by name as not yet available until output sharpening lands.
 
 ### Progress
 
