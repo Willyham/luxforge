@@ -637,6 +637,14 @@ impl PixelDomain for Linear<'_> {
         terminal_pixel(pixel)
     }
 
+    /// Refused when not finite, as [`Self::terminal`] is; headroom above 1 takes the top code.
+    fn terminal16(pixel: [f64; 3]) -> Result<[u16; 3], Error> {
+        if !pixel.iter().all(|value| value.is_finite()) {
+            return Err(Error::render(NON_FINITE_TERMINAL));
+        }
+        Ok(srgb::quantizer16().pixel(pixel.map(|value| value as f32)))
+    }
+
     /// The rendered-frame limit ([`RENDERED_FRAME`]) bounds this float frame, the camera limits.
     fn spatial_frame(stage: Stage, _: bool) -> Result<Vec<f32>, Error> {
         let (values, _) = RENDERED_FRAME.layout(stage.width, stage.height)?;

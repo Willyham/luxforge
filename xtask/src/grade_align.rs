@@ -607,9 +607,14 @@ fn lightroom_means(folder: &Path, id: &str) -> Result<Option<Vec<[f64; 3]>>> {
         .extension()
         .is_some_and(|extension| extension == "tif" || extension == "tiff");
     let (width, height, pixels) = if is_tiff {
-        let tiff =
-            read_tiff(&fs::read(&path)?).map_err(|error| format!("{}: {error}", path.display()))?;
-        (tiff.width, tiff.height, tiff.encoded)
+        let tiff = crate::tiff::read(&fs::read(&path)?)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let encoded: Vec<[f64; 3]> = tiff
+            .rgb
+            .chunks_exact(3)
+            .map(|pixel| [0, 1, 2].map(|c| f64::from(pixel[c]) / 65535.0))
+            .collect();
+        (tiff.width, tiff.height, encoded)
     } else {
         let decoded = image::open(&path)?.to_rgb32f();
         let pixels = decoded
@@ -622,132 +627,6 @@ fn lightroom_means(folder: &Path, id: &str) -> Result<Option<Vec<[f64; 3]>>> {
     Ok(Some(patch_means(|x, y| {
         pixels[(y * width + x) as usize].map(srgb::decode_encoded)
     })))
-}
-
-/// An uncompressed baseline RGB TIFF's pixels, as encoded values in `[0, 1]`.
-#[derive(Debug)]
-struct Tiff {
-    width: u32,
-    height: u32,
-    encoded: Vec<[f64; 3]>,
-}
-
-/// Read an uncompressed (compression 1), chunky (planar configuration 1), 8- or 16-bit RGB TIFF
-/// of either byte order: what Lightroom writes with compression None. Anything else is refused by
-/// name rather than decoded approximately; the reader holds at most one image of its own size.
-fn read_tiff(bytes: &[u8]) -> std::result::Result<Tiff, String> {
-    let little = match bytes.get(..4) {
-        Some([0x49, 0x49, 42, 0]) => true,
-        Some([0x4d, 0x4d, 0, 42]) => false,
-        _ => return Err("not a classic TIFF".into()),
-    };
-    let u16_at = |at: usize| -> std::result::Result<u32, String> {
-        let pair: [u8; 2] = bytes
-            .get(at..at + 2)
-            .and_then(|b| b.try_into().ok())
-            .ok_or("truncated")?;
-        Ok(u32::from(if little {
-            u16::from_le_bytes(pair)
-        } else {
-            u16::from_be_bytes(pair)
-        }))
-    };
-    let u32_at = |at: usize| -> std::result::Result<u32, String> {
-        let quad: [u8; 4] = bytes
-            .get(at..at + 4)
-            .and_then(|b| b.try_into().ok())
-            .ok_or("truncated")?;
-        Ok(if little {
-            u32::from_le_bytes(quad)
-        } else {
-            u32::from_be_bytes(quad)
-        })
-    };
-    let directory = u32_at(4)? as usize;
-    let entries = u16_at(directory)? as usize;
-    let mut tags = std::collections::HashMap::new();
-    for entry in 0..entries {
-        let at = directory + 2 + entry * 12;
-        let (tag, kind, count) = (u16_at(at)?, u16_at(at + 2)?, u32_at(at + 4)? as usize);
-        let size = match kind {
-            3 => 2,
-            4 => 4,
-            _ => 1,
-        };
-        let values_at = if size * count <= 4 {
-            at + 8
-        } else {
-            u32_at(at + 8)? as usize
-        };
-        let values: Vec<u32> = (0..count.min(1 << 20))
-            .map(|i| match kind {
-                3 => u16_at(values_at + 2 * i),
-                4 => u32_at(values_at + 4 * i),
-                _ => Ok(u32::from(*bytes.get(values_at + i).unwrap_or(&0))),
-            })
-            .collect::<std::result::Result<_, _>>()?;
-        tags.insert(tag, values);
-    }
-    let one = |tag: u32, default: Option<u32>| -> std::result::Result<u32, String> {
-        tags.get(&tag)
-            .and_then(|values| values.first().copied())
-            .or(default)
-            .ok_or(format!("TIFF tag {tag} is missing"))
-    };
-    let (width, height) = (one(256, None)?, one(257, None)?);
-    if one(259, Some(1))? != 1 {
-        return Err("compressed TIFF: export with compression None".into());
-    }
-    if one(284, Some(1))? != 1 {
-        return Err("planar TIFF: only chunky RGB is read".into());
-    }
-    if one(277, None)? < 3 || one(262, None)? != 2 {
-        return Err("not an RGB TIFF".into());
-    }
-    let samples = one(277, None)? as usize;
-    let bits = one(258, None)?;
-    if bits != 8 && bits != 16 {
-        return Err(format!("{bits}-bit TIFF: only 8 and 16 bits are read"));
-    }
-    let bytes_per = (bits / 8) as usize;
-    let offsets = tags.get(&273).ok_or("no strip offsets")?;
-    let counts = tags.get(&279).ok_or("no strip byte counts")?;
-    let mut data = Vec::with_capacity(width as usize * height as usize * samples * bytes_per);
-    for (offset, count) in offsets.iter().zip(counts) {
-        let strip = bytes
-            .get(*offset as usize..(*offset + *count) as usize)
-            .ok_or("a strip lies outside the file")?;
-        data.extend_from_slice(strip);
-    }
-    let pixel_bytes = samples * bytes_per;
-    if data.len() < width as usize * height as usize * pixel_bytes {
-        return Err("the strips hold fewer pixels than the image".into());
-    }
-    let encoded = data
-        .chunks_exact(pixel_bytes)
-        .take(width as usize * height as usize)
-        .map(|pixel| {
-            std::array::from_fn(|channel| {
-                let at = channel * bytes_per;
-                if bytes_per == 1 {
-                    f64::from(pixel[at]) / 255.0
-                } else {
-                    let pair = [pixel[at], pixel[at + 1]];
-                    let value = if little {
-                        u16::from_le_bytes(pair)
-                    } else {
-                        u16::from_be_bytes(pair)
-                    };
-                    f64::from(value) / 65535.0
-                }
-            })
-        })
-        .collect();
-    Ok(Tiff {
-        width,
-        height,
-        encoded,
-    })
 }
 
 fn responses(neutral: &[[f64; 3]], adjusted: &[[f64; 3]]) -> Vec<Response> {
@@ -963,53 +842,6 @@ mod tests {
                 assert!(read.report.refused.is_empty());
             }
         }
-    }
-
-    /// A 16-bit big-endian uncompressed RGB TIFF reads back exactly; a compressed one is refused.
-    #[test]
-    fn an_uncompressed_tiff_reads_and_a_compressed_one_is_refused() {
-        let (width, height) = (2u32, 1u32);
-        let pixels: [[u16; 3]; 2] = [[0, 32768, 65535], [100, 200, 300]];
-        let mut data = Vec::new();
-        for pixel in pixels {
-            for value in pixel {
-                data.extend_from_slice(&value.to_be_bytes());
-            }
-        }
-        let tiff = |compression: u16| {
-            let mut bytes = vec![0x4d, 0x4d, 0, 42, 0, 0, 0, 8];
-            let entries: [(u16, u16, u32, u32); 9] = [
-                (256, 3, 1, u32::from(width as u16) << 16),
-                (257, 3, 1, u32::from(height as u16) << 16),
-                (258, 3, 1, 16 << 16),
-                (259, 3, 1, u32::from(compression) << 16),
-                (262, 3, 1, 2 << 16),
-                (273, 4, 1, 8 + 2 + 9 * 12 + 4),
-                (277, 3, 1, 3 << 16),
-                (279, 4, 1, data.len() as u32),
-                (284, 3, 1, 1 << 16),
-            ];
-            bytes.extend_from_slice(&(entries.len() as u16).to_be_bytes());
-            for (tag, kind, count, value) in entries {
-                bytes.extend_from_slice(&tag.to_be_bytes());
-                bytes.extend_from_slice(&kind.to_be_bytes());
-                bytes.extend_from_slice(&count.to_be_bytes());
-                bytes.extend_from_slice(&value.to_be_bytes());
-            }
-            bytes.extend_from_slice(&[0; 4]);
-            bytes.extend_from_slice(&data);
-            bytes
-        };
-        let read = read_tiff(&tiff(1)).unwrap();
-        assert_eq!((read.width, read.height), (2, 1));
-        assert_eq!(read.encoded[0], [0.0, 32768.0 / 65535.0, 1.0]);
-        assert_eq!(read.encoded[1][2], 300.0 / 65535.0);
-        assert!(
-            read_tiff(&tiff(8))
-                .unwrap_err()
-                .contains("compression None")
-        );
-        assert!(read_tiff(b"not a tiff").is_err());
     }
 
     /// The XMP segment sits right after SOI and the file still decodes to the target.

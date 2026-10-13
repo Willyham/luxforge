@@ -1,10 +1,10 @@
 //! The independent f64 references the core's tests and xtask's acceptance check production
 //! against: the sRGB transfer function in [`srgb`], exposure here, and one module per study
 //! (colour, the Tone curve, the DNG corrections, HDR exposure merges and their alignment, panorama
-//! scenes and their rotating cameras, the RAW look, mask and its guided upsampler, mixer, the
-//! mixer's grading, Presence, the preview error measure, range, the Clone and Heal repairs, tone,
-//! vignette, white balance), and the declared tolerance of each output kind
-//! against the reference renderer in [`tolerance`].
+//! scenes and their rotating cameras, the RAW look, the Lightroom alignment rounds' measures and
+//! fits, mask and its guided upsampler, mixer, the mixer's grading, Presence, the preview error
+//! measure, range, the Clone and Heal repairs, tone, vignette, white balance), and the declared
+//! tolerance of each output kind against the reference renderer in [`tolerance`].
 //!
 //! Every reference is written directly from its study's formulas — the standard sRGB transfer
 //! function ([`srgb`] carries its constants) and each design's numerical contract — not by
@@ -30,6 +30,7 @@ pub mod guided;
 pub mod hdr;
 pub mod hdr_align;
 pub mod look;
+pub mod lr_align;
 pub mod mask;
 pub mod mixer;
 pub mod panorama;

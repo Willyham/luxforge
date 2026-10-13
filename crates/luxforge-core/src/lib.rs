@@ -195,7 +195,8 @@ pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
     MappingDescriptor, MappingShape, Raster, Render, RenderContext, RenderOptions, RenderSource,
-    Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render, stage_transform,
+    Sample, ScratchBudget, StageSize, StudyFrame, WhiteBalanceApproximation, render,
+    stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 
