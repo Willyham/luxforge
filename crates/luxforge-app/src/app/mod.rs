@@ -148,6 +148,8 @@ mod overlay_tests;
 mod palette;
 #[cfg(test)]
 mod palette_tests;
+#[cfg(test)]
+mod panorama_merge_tests;
 pub(crate) mod performance;
 mod pointer;
 #[cfg(test)]

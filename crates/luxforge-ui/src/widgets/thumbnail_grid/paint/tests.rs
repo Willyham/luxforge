@@ -1081,12 +1081,14 @@ fn a_panorama_stack_draws_its_own_icon() {
         .ops
         .iter()
         .filter_map(|(_, op)| match op {
-            Op::Icon { icon, .. } if matches!(icon, Icon::Panorama | Icon::Bracket) => {
-                Some(*icon)
-            }
+            Op::Icon { icon, .. } if matches!(icon, Icon::Panorama | Icon::Bracket) => Some(*icon),
             _ => None,
         })
         .collect();
-    assert_eq!(icons, [Icon::Panorama; 3], "the row, the badge and the note");
+    assert_eq!(
+        icons,
+        [Icon::Panorama; 3],
+        "the row, the badge and the note"
+    );
     assert!(recorder.texts().contains(&"Panorama · 7 photos"));
 }

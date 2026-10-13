@@ -453,7 +453,11 @@ fn merge_preview_menu_offers_each_kind_and_option_drops_the_ellipsis() {
     let headings: Vec<_> = menu.groups.iter().map(|group| group.heading).collect();
     assert_eq!(headings, [Some("HDR"), Some("Panorama")]);
     let hdr = menu.group("HDR").unwrap();
-    let labels: Vec<_> = hdr.entries.iter().map(|entry| entry.label.as_str()).collect();
+    let labels: Vec<_> = hdr
+        .entries
+        .iter()
+        .map(|entry| entry.label.as_str())
+        .collect();
     assert_eq!(labels, ["Merge HDR\u{2026}"]);
     assert_eq!(
         hdr.entries[0].hint,
@@ -819,7 +823,12 @@ fn panorama_revision(revision: u32) -> MergePreview {
         )),
         overlays: Some(MergePreviewOverlays::Panorama(
             luxforge_core::catalog_types::PanoramaPreviewOverlays {
-                covered: vec![vec![[0.0, 0.0], [1024.0, 0.0], [1024.0, 237.0], [0.0, 237.0]]],
+                covered: vec![vec![
+                    [0.0, 0.0],
+                    [1024.0, 0.0],
+                    [1024.0, 237.0],
+                    [0.0, 237.0],
+                ]],
                 crop: [20.0, 12.0, 984.0, 210.0],
                 frames: (0..7)
                     .map(|frame| luxforge_core::catalog_types::PanoramaFrameOutline {
@@ -880,12 +889,7 @@ fn panorama_merge_requests_send_only_what_was_chosen() {
             "panorama": {"reference": "/cards/DSC_4104.NEF", "projection": "spherical", "boundary_warp": 40},
         })
     );
-    let create = create_params(
-        &request,
-        CreateFrom::Preview(&id),
-        None,
-        &mutation(),
-    );
+    let create = create_params(&request, CreateFrom::Preview(&id), None, &mutation());
     assert_eq!(create["kind"], "panorama");
     assert_eq!(create["preview_id"], json!(id));
     assert!(create.get("hdr").is_none() && create.get("plan_id").is_none());
@@ -928,7 +932,11 @@ fn panorama_merge_sheet_draws_the_stitch_its_frames_and_overlays() {
     // Planned: the frames in the plan's order, unnumbered, the plan's reference named.
     sheet.planned(panorama_plan());
     let model = sheet::model(&sheet, None);
-    let names: Vec<_> = model.frames.iter().map(|frame| frame.name.as_str()).collect();
+    let names: Vec<_> = model
+        .frames
+        .iter()
+        .map(|frame| frame.name.as_str())
+        .collect();
     assert_eq!(names[0], "DSC_4101.NEF");
     assert!(model.frames.iter().all(|frame| frame.number.is_none()));
     assert_eq!(
@@ -954,7 +962,11 @@ fn panorama_merge_sheet_draws_the_stitch_its_frames_and_overlays() {
         .collect();
     assert_eq!(numbered[0], (1, "DSC_4107.NEF"));
     assert_eq!(numbered[1], (2, "DSC_4101.NEF"));
-    let reference: Vec<_> = model.frames.iter().filter(|frame| frame.reference).collect();
+    let reference: Vec<_> = model
+        .frames
+        .iter()
+        .filter(|frame| frame.reference)
+        .collect();
     assert_eq!(reference.len(), 1);
     assert_eq!(reference[0].name, "DSC_4103.NEF");
     let settings = model.panorama.clone().unwrap();
