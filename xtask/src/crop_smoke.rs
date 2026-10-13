@@ -11,7 +11,7 @@ use crate::{
     *,
 };
 use luxforge_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
-use luxforge_evidence::{self as script, DraftStep, ViewStep};
+use luxforge_evidence::{self as script, DevelopStep, DraftStep, ViewStep};
 
 /// The fixture both scenarios open, and therefore the crop layer's input stage.
 const STAGE: (u32, u32) = (480, 320);
@@ -154,9 +154,18 @@ pub fn plan(_: &[PathBuf]) -> Plan {
 /// dragged on its rail to 2.4°, so the section shows a straightened draft. After Apply the idle
 /// section reads the committed square, and pressing 16:9 there opens a draft on it with that
 /// ratio; Cancel returns to the idle section with nothing committed.
+///
+/// The opened photograph's folder is Develop's, so its filmstrip shows under the canvas once that
+/// folder is read. On the canvas it leaves at this window the stage's top edge at Fit sits under
+/// the draft bar's ratio row, which covers the neutral draft's top handle (the deviation
+/// `docs/design/develop-workspace.md` records), so the strip is collapsed once it is read, before
+/// any draft.
 pub fn draft_plan(_: &[PathBuf]) -> Plan {
+    let develop = |name: &str, step: DevelopStep| uncommitted(name, script::Step::Develop(step));
     Plan::new(vec![
         Step::opened("opened"),
+        develop("folder-read", DevelopStep::Settle),
+        develop("strip-collapsed", DevelopStep::Strip),
         uncommitted(
             "basic-collapsed",
             script::Step::section(BASIC_MODULE, false),
@@ -319,15 +328,19 @@ fn shows_draft(frame: &Frame) -> Result<Value> {
 
     let image = frame.image()?;
     let (width, height) = image.dimensions();
-    let [surface_left, surface_right] = frame.columns()?.unwrap_or([0, width]);
+    // The canvas alone: a filmstrip under it draws the fixture's colours in its thumbnails.
+    let [canvas_left, canvas_top, canvas_right, canvas_bottom] = frame.canvas()?;
     ensure(
-        surface_left < surface_right && surface_right <= width,
-        "Invalid surface columns",
+        canvas_left < canvas_right
+            && canvas_right <= width
+            && canvas_top < canvas_bottom
+            && canvas_bottom <= height,
+        "Invalid canvas rectangle",
     )?;
     // Only the crop rectangle is drawn at full opacity, so the fixture's own colours bound it.
     let mut bounds: Option<[u32; 4]> = None;
-    for y in 0..height {
-        for x in surface_left..surface_right {
+    for y in canvas_top..canvas_bottom {
+        for x in canvas_left..canvas_right {
             if fixture_colour(image.get_pixel(x, y).0) {
                 bounds = Some(match bounds {
                     None => [x, y, x, y],
@@ -1037,7 +1050,7 @@ mod tests {
         image::RgbImage::from_pixel(480, 320, image::Rgb(COLORS[0]))
             .save(&path)
             .unwrap();
-        let frame = json!({"state":{"crop":{"drafting":true,"input_stage_loaded":true,"paused":false,"conflicted":false,"angle":0.0,"input_stage":[480,320],"rect":[0.0,0.0,480.0,320.0]},"stack":{"revision":1}},"surface_columns":[0,480]});
+        let frame = json!({"state":{"crop":{"drafting":true,"input_stage_loaded":true,"paused":false,"conflicted":false,"angle":0.0,"input_stage":[480,320],"rect":[0.0,0.0,480.0,320.0]},"stack":{"revision":1}},"canvas_rect":[0,0,480,320]});
         let frame = Frame::unchecked(frame, &path);
         assert!(
             shows_draft(&frame)
