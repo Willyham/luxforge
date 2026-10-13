@@ -768,6 +768,8 @@ mod tests {
                 "mask.set-luminance-range.high_feather",
                 "mask.set-luminance-range.low",
                 "mask.set-luminance-range.low_feather",
+                "mask.set-model.feather",
+                "mask.set-model.threshold",
                 "mask.set-radial.angle",
                 "mask.set-radial.feather",
                 "mask.set-radial.radius_x",
