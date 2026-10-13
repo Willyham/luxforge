@@ -421,7 +421,7 @@ impl Editor {
             let detail = super::relaunch::run(after);
             if let Some(log) = log {
                 if let Some((run_id, started, request)) = line {
-                    log.event(json!({"event":"after_close","run_id":run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"request_id":request,"generation":request,"detail":detail}));
+                    log.event(json!({"event":"after_close","run_id":run_id,"build_version":luxforge_core::APPLICATION_VERSION,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"request_id":request,"generation":request,"detail":detail}));
                 }
                 log.finish();
             }

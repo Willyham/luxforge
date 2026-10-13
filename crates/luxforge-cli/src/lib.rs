@@ -8,14 +8,30 @@ mod paths;
 
 pub use paths::Paths;
 
-/// The release tag supplies the application version at compile time. Ordinary builds use the
-/// workspace version. Cargo tracks this environment macro when deciding whether to rebuild.
-pub const VERSION: &str = match option_env!("LUXFORGE_RELEASE_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
-};
+/// The application version every executable's `--version` reports,
+/// [`luxforge_core::APPLICATION_VERSION`]: the release tag's normalized version in a tag build,
+/// otherwise the workspace version.
+pub const VERSION: &str = luxforge_core::APPLICATION_VERSION;
 
 /// A standalone version request has no catalog, network, Keychain or desktop side effects.
 pub fn version_requested(mut args: impl Iterator<Item = std::ffi::OsString>) -> bool {
     args.next().as_deref() == Some(std::ffi::OsStr::new("--version")) && args.next().is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_a_lone_version_flag_is_a_version_request() {
+        let requested = |args: &[&str]| super::version_requested(args.iter().map(Into::into));
+        assert!(requested(&["--version"]));
+        for args in [
+            &[][..],
+            &["--version", "--catalog"],
+            &["--catalog", "--version"],
+            &["-V"],
+            &["version"],
+        ] {
+            assert!(!requested(args), "{args:?}");
+        }
+    }
 }

@@ -292,13 +292,19 @@ pub fn run(root: &Path, args: &mut Args) -> Result {
         {
             hashes.insert((*name).to_owned(), json!(hash(&path)?));
         }
-        record["signed_executables"] = json!(hashes);
+        // The final hashes, measured from the signed and stapled app; signing rewrote every
+        // executable, so they differ from the hashes recorded before it.
+        record["executables"]["final"] = json!(hashes);
+        xtask_cli::release_candidate::check_record(&record, &tag, release_build::TARGETS[0].0)?;
         write_json(&out.join("target.json"), &record)?;
         Ok(())
     })();
     let _ = fs::remove_file(out.join("notarization-upload.zip"));
     if let Err(error) = outcome {
         record["signing"] = json!({"status":"failed"});
+        if let Some(executables) = record["executables"].as_object_mut() {
+            executables.remove("final");
+        }
         write_json(&out.join("target.json"), &record)?;
         return Err(error);
     }

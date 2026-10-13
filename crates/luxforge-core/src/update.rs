@@ -32,12 +32,8 @@ pub mod testing;
 /// with.
 pub const CATALOG_FORMAT: i64 = crate::editor::CATALOG_FORMAT;
 
-/// This build's version: the release tag's version a tag build compiled in
-/// (`LUXFORGE_RELEASE_VERSION`), otherwise the workspace version.
-pub const CURRENT_VERSION: &str = match option_env!("LUXFORGE_RELEASE_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
-};
+/// This build's version, [`crate::APPLICATION_VERSION`].
+pub const CURRENT_VERSION: &str = crate::APPLICATION_VERSION;
 
 /// The longest a version string may be, in `update.skip` and in what a port reports.
 pub const MAX_VERSION_LEN: usize = 64;

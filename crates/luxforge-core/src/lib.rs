@@ -70,6 +70,15 @@ pub mod update;
 /// Optional usage and performance statistics: consent, typed events and bounded delivery.
 pub mod usage;
 
+/// The application's version, which every executable, log, report and request states: the
+/// normalized release-tag version a tag build compiles in (`LUXFORGE_RELEASE_VERSION`), otherwise
+/// the workspace version. Format markers such as [`CATALOG_FORMAT`] change only with their own
+/// shapes, never with this version.
+pub const APPLICATION_VERSION: &str = match option_env!("LUXFORGE_RELEASE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
 // and this crate's integration tests name through the crate root, and every type a public item's
 pub use activity::ActivitySnapshot;
