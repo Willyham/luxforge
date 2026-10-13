@@ -187,16 +187,45 @@ fn curves() -> Vec<(&'static str, Vec<[u32; 2]>)> {
     ]
 }
 
-/// A crop box for a straighten of `angle` degrees: centred, as large as keeps the box rotated by
-/// `angle` about its centre inside a 3:2 frame on either axis, rounded to the six decimals the XMP
-/// holds.
+/// The grid target's size, which a straighten's crop is computed against.
+const GRID: (f64, f64) = (1500.0, 1000.0);
+
+/// The crop a straighten of `angle` degrees writes, as `[top, left, bottom, right]`: the largest
+/// centred rectangle of the frame's own 3:2 aspect, turned by `angle` (clockwise with y down)
+/// about the frame's centre, that stays inside the frame. Round 1's exports showed how Lightroom
+/// reads the four values: `(CropLeft, CropTop)` and `(CropRight, CropBottom)` are the turned
+/// rectangle's opposite corners in the unturned frame's normalized coordinates, so a box written
+/// as an axis-aligned square is a different rectangle for each sign of the angle, and one that
+/// leaves the frame is shrunk. Rounded to the six decimals the XMP holds, from a rectangle a
+/// ten-thousandth smaller, so the rounding cannot carry a corner out of the frame.
 pub fn straighten_box(angle: f64) -> [f64; 4] {
-    let (sin, cos) = angle.to_radians().abs().sin_cos();
-    let scale = 1.0 / (cos + 1.5 * sin);
+    let (width, height) = GRID;
+    let aspect = width / height;
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let (s, c) = (sin.abs(), cos.abs());
+    // Half the rectangle's extent along each frame axis is (w cos + h sin) / 2 and
+    // (w sin + h cos) / 2, with h = w / aspect.
+    let w = (width / (c + s / aspect)).min(height / (s + c / aspect)) * (1.0 - 1e-4);
+    let h = w / aspect;
+    // From the centre to the far corner along the rectangle's own axes, turned by `angle`.
+    let (dx, dy) = ((w * cos - h * sin) / 2.0, (w * sin + h * cos) / 2.0);
     let six = |value: f64| (value * 1e6).round() / 1e6;
-    let low = six(0.5 - scale / 2.0);
-    let high = six(0.5 + scale / 2.0);
-    [low, low, high, high]
+    [
+        six((height / 2.0 - dy) / height),
+        six((width / 2.0 - dx) / width),
+        six((height / 2.0 + dy) / height),
+        six((width / 2.0 + dx) / width),
+    ]
+}
+
+/// The output size Lightroom gives a straighten of `angle` with the crop `[top, left, bottom,
+/// right]`, read as its opposite corners: the turned rectangle's width and height in pixels.
+#[cfg(test)]
+pub fn straighten_size(angle: f64, [top, left, bottom, right]: [f64; 4]) -> (f64, f64) {
+    let (width, height) = GRID;
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let (dx, dy) = ((right - left) * width, (bottom - top) * height);
+    (dx * cos + dy * sin, -dx * sin + dy * cos)
 }
 
 fn crop(top: f64, left: f64, bottom: f64, right: f64, angle: f64) -> Vec<(&'static str, Field)> {

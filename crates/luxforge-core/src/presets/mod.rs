@@ -7,6 +7,7 @@
 //! document is text work, not frame work. The library, the API methods and the desktop build on
 //! it; `docs/design/presets.md` is the contract.
 mod amount;
+mod calibration;
 mod document;
 mod groups;
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod library_tests;
 mod tests;
 
 pub use amount::{settings_at_amount, settings_can_preview};
+pub use calibration::lightroom_calibration;
 pub use groups::{
     GroupOnKind, GroupState, KindSkip, SettingsAnalysis, SettingsGroup, SettingsGroups,
     SettingsPhoto, settings_groups,

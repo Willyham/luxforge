@@ -50,13 +50,24 @@ fn lightroom_perspective_keys_are_unsupported_as_different_model() {
     }
 }
 
+/// A mapped setting's report entry. `applied` is the value transfer's number; for a setting the
+/// Lightroom alignment has calibrated, the entry is that number through the frozen map, naming the
+/// calibrated rule.
 fn mapped(setting: &str, value: &str, action: &str, field: &str, applied: Value) -> MappedSetting {
+    let (applied, rule) = match (calibration::calibration(setting), applied.as_f64()) {
+        (Some(map), Some(number)) => (
+            Value::from(map.convert(number).expect("a calibrated value")),
+            Some(calibration::rule()),
+        ),
+        _ => (applied, None),
+    };
     MappedSetting {
         setting: setting.into(),
         value: value.into(),
         action: action.into(),
         field: Some(field.into()),
         applied,
+        rule,
     }
 }
 
@@ -76,8 +87,34 @@ fn because(setting: &str, value: &str, reason: &str) -> ReportedSetting {
     }
 }
 
-fn object(value: Value) -> Map<String, Value> {
+/// Expected `set-mixer` fields, each calibrated number through its frozen map as [`object`] does.
+fn mixer_object(fields: Value) -> Map<String, Value> {
+    object(json!({"set-mixer": fields}))["set-mixer"]
+        .as_object()
+        .expect("the mixer's fields")
+        .clone()
+}
+
+/// An object as written, for an expectation no Lightroom calibration touches.
+fn plain(value: Value) -> Map<String, Value> {
     value.as_object().expect("an object").clone()
+}
+
+/// An expected settings set: each value-transfer number on a field the Lightroom alignment has
+/// calibrated is the number through its frozen map, as the importer writes it.
+fn object(value: Value) -> Map<String, Value> {
+    let mut settings = value.as_object().expect("an object").clone();
+    for map in calibration::Calibration::all() {
+        if let Some(number) = settings
+            .get_mut(&map.action)
+            .and_then(|fields| fields.get_mut(&map.field))
+            .filter(|number| number.is_number())
+        {
+            let written = number.as_f64().expect("a number");
+            *number = Value::from(map.convert(written).expect("a calibrated value"));
+        }
+    }
+    settings
 }
 
 fn expect_error(result: Result<ImportedPreset, Error>, kind: ErrorKind, detail: &str) {
@@ -438,6 +475,10 @@ fn an_earlier_process_preset_refuses_every_mapped_value_and_so_maps_nothing() {
     );
 }
 
+/// The reason a calibrated value at a range shortfall is refused with.
+const SHORTFALL: &str =
+    "beyond Luxforge's range through the Lightroom alignment calibration (round 1)";
+
 #[test]
 fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
     let preset = parse_preset(OUT_OF_RANGE, Some("bright.xmp"), &registry()).unwrap();
@@ -445,11 +486,12 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
     assert_eq!(preset.group, None);
     // Lightroom's absolute pair converts through the white it names, together; Custom is then
     // neutral, since the values it names are mapped. The relative temperature is Basic's.
+    // Contrast −100 lies in range but at its calibration's shortfall: refused, not clamped.
     let [kelvin, tint] = crate::lightroom_to_luxforge(5500.0, 10.0).unwrap();
     assert_eq!(
         preset.settings,
         object(json!({
-            "set-basic": {"contrast": -100, "saturation": 100, "shadows": 20, "temperature": 15},
+            "set-basic": {"saturation": 100, "shadows": 20, "temperature": 15},
             "set-raw": {"temperature": kelvin, "tint": tint}
         }))
     );
@@ -459,7 +501,6 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
             format: "lightroom-xmp".into(),
             process_version: Some("15.4".into()),
             mapped: vec![
-                mapped("Contrast2012", "-100", "set-basic", "contrast", json!(-100)),
                 mapped(
                     "IncrementalTemperature",
                     "+15",
@@ -486,6 +527,7 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
                     "-100.5",
                     "outside Luxforge's range -100..100"
                 ),
+                because("Contrast2012", "-100", SHORTFALL),
                 because("Exposure2012", "+6.0", "outside Luxforge's range -5..5"),
                 because(
                     "PostCropVignetteMidpoint",
@@ -1563,7 +1605,7 @@ fn curve_refine_saturation_is_unsupported_unless_100() {
 #[test]
 fn a_luxforge_document_maps_every_field_one_to_one_and_is_what_export_writes() {
     let preset = parse_preset(SOFT_FILM, Some("ignored.lfpreset"), &registry()).unwrap();
-    let settings = object(json!({
+    let settings = plain(json!({
         "set-basic": {"contrast": 12, "exposure": 0.35, "temperature": 0, "tint": 0},
         "set-mixer": {"blue-saturation": -20},
         "set-vignette": {"amount": -18, "feather": 50, "midpoint": 50, "roundness": 0}
@@ -1762,7 +1804,7 @@ fn validate_settings_accepts_presettable_fields_and_refuses_everything_else() {
             "parameter settings must give action set-basic an object of fields",
         ),
     ] {
-        let error = validate_settings(&registry, &object(settings.clone())).unwrap_err();
+        let error = validate_settings(&registry, &plain(settings.clone())).unwrap_err();
         assert_eq!(error.kind, kind, "{settings}: {error}");
         assert!(error.detail.contains(detail), "{settings}: {error}");
     }
@@ -1778,7 +1820,7 @@ fn validate_settings_accepts_presettable_fields_and_refuses_everything_else() {
     let wide: Map<String, Value> = (0..65)
         .map(|index| (format!("f{index}"), json!(0)))
         .collect();
-    let error = validate_settings(&registry, &object(json!({"set-basic": wide}))).unwrap_err();
+    let error = validate_settings(&registry, &plain(json!({"set-basic": wide}))).unwrap_err();
     assert!(
         error
             .detail
@@ -2077,11 +2119,13 @@ fn origins_and_reports_serialize_to_the_record_shapes() {
     assert_eq!(value["process_version"], "15.4");
     assert_eq!(
         value["mapped"][0],
-        json!({"setting": "Contrast2012", "value": "-100", "action": "set-basic",
-               "field": "contrast", "applied": -100})
+        json!({"setting": "IncrementalTemperature", "value": "+15", "action": "set-basic",
+               "field": "temperature",
+               "applied": calibration::calibration("IncrementalTemperature").unwrap().convert(15.0).unwrap(),
+               "rule": "calibrated by the Lightroom alignment, round 1"})
     );
     assert_eq!(
-        value["refused"][3],
+        value["refused"][4],
         json!({"setting": "Vibrance", "value": "lots", "reason": "not a number"})
     );
     assert_eq!(
@@ -2095,7 +2139,7 @@ fn origins_and_reports_serialize_to_the_record_shapes() {
     );
     assert_eq!(
         serde_json::to_value(report.counts()).unwrap(),
-        json!({"mapped": 6, "neutral": 1, "unsupported": 0, "refused": 4})
+        json!({"mapped": 5, "neutral": 1, "unsupported": 0, "refused": 5})
     );
 }
 
@@ -2306,7 +2350,7 @@ fn a_color_grading_document_transfers_every_grading_setting() {
     let preset = parse_preset(COLOR_GRADE, Some("color-grade.xmp"), &registry()).unwrap();
     assert_eq!(
         mixer_fields(&preset),
-        object(json!({
+        mixer_object(json!({
             "orange-hue": -6,
             "grade-shadows-hue": 195, "grade-shadows-saturation": 28,
             "grade-highlights-hue": 42, "grade-highlights-saturation": 35,
@@ -2352,7 +2396,7 @@ fn a_partial_color_grading_document_is_a_patch_of_its_own_fields() {
 #[test]
 fn a_legacy_split_toning_document_becomes_full_blending_split_toning() {
     let preset = parse_preset(SPLIT_TONING, None, &registry()).unwrap();
-    let mut expected = object(json!({
+    let mut expected = mixer_object(json!({
         "blue-saturation": -10, "grade-shadows-hue": 220, "grade-shadows-saturation": 25,
         "grade-highlights-hue": 50, "grade-highlights-saturation": 30, "grade-balance": 20
     }));
@@ -2405,7 +2449,7 @@ fn a_legacy_split_toning_document_becomes_full_blending_split_toning() {
     );
 
     let template = parse_preset(SPLIT_TONING_TEMPLATE, None, &registry()).unwrap();
-    let mut expected = object(json!({
+    let mut expected = mixer_object(json!({
         "red-hue": 5, "grade-shadows-hue": 210, "grade-shadows-saturation": 18,
         "grade-highlights-hue": 55, "grade-highlights-saturation": 22, "grade-balance": -30
     }));

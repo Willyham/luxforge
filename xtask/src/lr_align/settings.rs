@@ -26,12 +26,17 @@ pub enum Field {
     Correction(Correction),
 }
 
-/// A local correction: one gradient component at full strength, with its local Exposure.
+/// A local correction: one gradient component at full strength, with its local Exposure in stops.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Correction {
     pub mask: Mask,
     pub exposure: f64,
 }
+
+/// The stops one unit of `LocalExposure2012` applies. Round 1 measured it from the exports: the
+/// written local −1 applied about −5.2 stops where the effect is full, as Lightroom's own global
+/// Exposure −4 does on the same grey, so the local value is written as stops over four.
+pub const LOCAL_EXPOSURE_STOPS: f64 = 4.0;
 
 /// A gradient component, in Lightroom's normalized image coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -422,7 +427,7 @@ fn correction_xml(name: &str, correction: &Correction) -> String {
          crs:LocalExposure2012=\"{}\">\n       <crs:CorrectionMasks>\n        <rdf:Seq>\n         \
          <rdf:li {component}/>\n        </rdf:Seq>\n       </crs:CorrectionMasks>\n      \
          </rdf:Description>\n     </rdf:li>\n    </rdf:Seq>\n   </crs:{name}>",
-        six(correction.exposure)
+        six(correction.exposure / LOCAL_EXPOSURE_STOPS)
     )
 }
 
@@ -447,7 +452,7 @@ pub fn corrections(xmp: &str) -> Result<Vec<Correction>, String> {
             && node.tag_name().name() == "Description"
             && node.attribute((CRS, "What")) == Some("Correction")
     }) {
-        let exposure = number(correction, "LocalExposure2012")?;
+        let exposure = number(correction, "LocalExposure2012")? * LOCAL_EXPOSURE_STOPS;
         let component = correction
             .descendants()
             .find(|node| {

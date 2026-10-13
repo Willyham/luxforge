@@ -1634,6 +1634,38 @@ fn finish(
         }
     }
     let candidate = !reasons.is_empty();
+    // The importers' calibrated row (level A): a determined, increasing map of a setting the
+    // importer transfers by value, fitted with nothing else held away from neutral, every knot
+    // measured or interpolated; a Lightroom value at or past a shortfall is refused, never clamped.
+    let transfers = matches!(
+        readback::counterpart(&spec.setting),
+        Some((_, _, readback::How::Transfer))
+    );
+    let calibration = (colour
+        && !undetermined
+        && fit.direction == la::Direction::Increasing
+        && spec.base.is_empty()
+        && transfers
+        && fit.knots.iter().all(|k| k.luxforge.is_some()))
+    .then(|| {
+        let round4 = |v: f64| (v * 1e4).round() / 1e4;
+        let (action, field, _) = readback::counterpart(&spec.setting).expect("a transfer");
+        let below = rows
+            .iter()
+            .filter(|r| r.point.shortfall && r.value < spec.lr_default)
+            .map(|r| r.value)
+            .fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.max(b))));
+        let above = rows
+            .iter()
+            .filter(|r| r.point.shortfall && r.value > spec.lr_default)
+            .map(|r| r.value)
+            .fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.min(b))));
+        json!({
+            "setting": spec.setting, "action": action, "field": field,
+            "knots": fit.knots.iter().map(|k| [round4(k.lightroom), round4(k.luxforge.expect("every knot"))]).collect::<Vec<_>>(),
+            "refused_at_or_below": below, "refused_at_or_above": above,
+        })
+    });
     let shortfalls: Vec<String> = rows
         .iter()
         .filter(|r| r.point.shortfall)
@@ -1727,6 +1759,7 @@ fn finish(
         "luxforge": spec.luxforge, "subjects": spec.subjects, "unit": unit,
         "direction": if undetermined { "undetermined".to_string() } else { format!("{:?}", fit.direction) },
         "held": spec.base,
+        "calibration": calibration,
         "worst_residual": worst_residual, "worst_identity_residual": worst_identity,
         "candidate": candidate, "reasons": reasons, "shortfalls": shortfalls,
         "missing_exports": missing,
@@ -2924,6 +2957,25 @@ fn measure(
         "families": entries,
     });
     write_json(&out.join("lr-align.json"), &report_json)?;
+    // The calibrated rows, one per setting, the first family measuring it (the 2400 × 1600 chart
+    // before its 6000 × 4000 twin): what the presets' frozen calibration table is copied from.
+    let mut maps: Vec<Value> = Vec::new();
+    for entry in report_json["families"].as_array().into_iter().flatten() {
+        let calibration = &entry["calibration"];
+        if calibration.is_object() && !maps.iter().any(|m| m["setting"] == calibration["setting"]) {
+            let mut map = calibration.clone();
+            map["family"] = entry["family"].clone();
+            maps.push(map);
+        }
+    }
+    write_json(
+        &out.join("maps.json"),
+        &json!({
+            "format": "luxforge.lightroom-calibration", "version": 1, "round": round,
+            "basis": "cargo xtask lr-align measure: Lightroom Classic exports of the round's synthetic targets against Luxforge's CPU reference renderer; each map the knots of the setting's monotone fit",
+            "maps": maps,
+        }),
+    )?;
     fs::write(out.join("summary.md"), summary(&report_json))?;
     println!("wrote {}", out.display());
     Ok(())

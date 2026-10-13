@@ -98,7 +98,19 @@ fn every_variant_of_both_rounds_reads_back() {
                             panic!("round {round} {} {}: {error}", family.id, step.label)
                         });
                     for (name, field) in &step.fields {
-                        if let Some((action, target, How::Transfer)) = counterpart(name) {
+                        // A value at its calibration's shortfall is refused, not transferred.
+                        let refused = match field {
+                            Field::Number { value, .. } => {
+                                matches!(
+                                    luxforge_core::lightroom_calibration(name, *value),
+                                    Some(Err(_))
+                                )
+                            }
+                            _ => false,
+                        };
+                        if let Some((action, target, How::Transfer)) = counterpart(name)
+                            && !refused
+                        {
                             assert!(
                                 read.settings[action].get(target).is_some(),
                                 "{name} on {action}.{target}"
@@ -270,18 +282,33 @@ fn numbers_and_labels_are_written_as_lightroom_writes_them() {
     assert_eq!(rounds::label(0.8), "+0.8");
     assert_eq!(rounds::label(100.0), "+100");
     assert_eq!(rounds::label(0.0), "0");
-    // A straightened crop stays inside the frame however its box is rotated, and holds exactly the
-    // six decimals the XMP writes.
-    for angle in [-10.0, -1.0, 2.0, 10.0] {
-        let [top, left, bottom, right] = rounds::straighten_box(angle);
-        assert_eq!(top, left);
-        assert!(top > 0.0 && bottom < 1.0 && (top + bottom - 1.0).abs() < 1e-6);
-        assert_eq!(right, bottom);
-        assert_eq!(
-            settings::number_text(top, false, 6).parse::<f64>().unwrap(),
-            top
+    // A straightened crop is the largest centred 3:2 rectangle that stays inside the frame at
+    // either sign of the angle, and holds exactly the six decimals the XMP writes.
+    for angle in [-10.0, -5.0, -1.0, 1.0, 2.0, 10.0] {
+        let crop = rounds::straighten_box(angle);
+        let (width, height) = rounds::straighten_size(angle, crop);
+        assert!(
+            (width / height - 1.5).abs() < 1e-4,
+            "{angle}: {width} x {height}"
         );
+        let mirrored = rounds::straighten_size(-angle, rounds::straighten_box(-angle));
+        assert!((mirrored.0 - width).abs() < 0.01 && (mirrored.1 - height).abs() < 0.01);
+        for value in crop {
+            assert!(value > 0.0 && value < 1.0);
+            assert_eq!(
+                settings::number_text(value, false, 6)
+                    .parse::<f64>()
+                    .unwrap(),
+                value
+            );
+        }
     }
+    // Lightroom's reading reproduces round 1's exports: its recorded crop for −10° and +10° gave
+    // 897 × 857 and 1326 × 582 pixels.
+    let (w, h) = rounds::straighten_size(-10.0, [0.155819, 0.155819, 0.844181, 0.844181]);
+    assert_eq!((w.round(), h.round()), (897.0, 857.0));
+    let (w, h) = rounds::straighten_size(10.0, [0.098484, 0.098484, 0.901516, 0.901516]);
+    assert_eq!((w.round(), h.round()), (1326.0, 582.0));
 }
 
 /// Each target's pixels, frozen by their SHA-256: the generator is exact, and a change to a target
@@ -607,16 +634,36 @@ fn a_round_is_deterministic_and_reads_back_from_its_files() {
             "{}",
             variant["id"]
         );
-        assert!(read.report.refused.is_empty());
+        // What the reader refuses is exactly what the manifest records as refused: a calibrated
+        // value at its calibration's shortfall.
+        let refused: Vec<&str> = read
+            .report
+            .refused
+            .iter()
+            .map(|r| r.setting.as_str())
+            .collect();
+        let recorded: Vec<&str> = variant["refused"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["setting"].as_str())
+            .collect();
+        assert_eq!(refused, recorded, "{}", variant["id"]);
     }
-    let exposure = variants
-        .iter()
-        .find(|variant| variant["id"] == "wedge__exposure__-5")
-        .unwrap();
-    assert_eq!(exposure["settings"], json!({"Exposure2012": "-5.00"}));
+    // Exposure −5 lies at its calibration's shortfall, so the reader refuses it; −3 lands where
+    // the frozen calibration puts it.
+    let exposure = |id: &str| variants.iter().find(|variant| variant["id"] == id).unwrap();
     assert_eq!(
-        exposure["luxforge"],
-        json!({"set-basic": {"exposure": -5.0}})
+        exposure("wedge__exposure__-5")["settings"],
+        json!({"Exposure2012": "-5.00"})
+    );
+    assert_eq!(exposure("wedge__exposure__-5")["luxforge"], json!({}));
+    let converted = luxforge_core::lightroom_calibration("Exposure2012", -3.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        exposure("wedge__exposure__-3")["luxforge"],
+        json!({"set-basic": {"exposure": converted}})
     );
     let mask = variants
         .iter()
