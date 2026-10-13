@@ -32,9 +32,55 @@
 //! Deflate TIFF at 300 ppi, a lossy WebP with its ICC and EXIF chunks.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
+    smoke::Scenario,
     *,
 };
 use luxforge_evidence as script;
+
+mod sheet;
+
+/// What the run is, for its `result.json`.
+pub const NOTE: &str = "Two runs, each with its own `result.json`: `menu/` over the orientation fixture (the exports the menu and the palette start, the GPU's against the reference's, and the API's presets), and `sheet/` over the generated 24 MP and 60 MP JPEGs (`cargo xtask generate-fixtures --output fixtures/generated`) and the RAW `--source` names, when one is given: the Export sheet's presets, changes, Export again, the taken name, the refused WebP, the warned export's bar and its cancel from Performance, and a batch with one photograph left out. Without `--source` the RAW's frames are pending.";
+
+/// The scenario's own run: the menu launch, then the sheet's, each in its own directory. The RAW,
+/// when `--source` names one, is what the sources hold in place of the fixture.
+pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
+    run.note(NOTE);
+    let fixture = run.root().join(FIXTURE);
+    let raw = sources.into_iter().find(|source| *source != fixture);
+    run.record(
+        "raw",
+        raw.as_ref()
+            .map_or(json!("pending: no --source RAW was given"), |raw| {
+                json!(
+                    raw.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                )
+            }),
+    );
+    let mut failures = Vec::new();
+    let menu = run
+        .child("menu")
+        .and_then(|child| crate::smoke::launch_all(child, scenario, vec![fixture]));
+    run.record_launches(&run.out().join("menu"), json!({"fixture": FIXTURE}))?;
+    if let Err(error) = menu {
+        failures.push(format!("menu: {error}"));
+    }
+    let journey = run.child("sheet").and_then(|child| sheet::run(child, raw));
+    run.record_launches(
+        &run.out().join("sheet"),
+        json!({"fixtures": [sheet::LARGE, sheet::PHOTO]}),
+    )?;
+    if let Err(error) = journey {
+        failures.push(format!("sheet: {error}"));
+    }
+    let outcome: Result = if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; ").into())
+    };
+    run.finish(outcome, |_| Ok(()))
+}
 
 /// Today's export settings for a run's own API export into `folder`: a full-size quality-90 JPEG
 /// at 4:4:4 with no metadata, each batch file named `<stem>-edited.jpg`, as the desktop's
@@ -430,8 +476,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ensure(read.icc, format!("{file} embeds no ICC profile"))?;
         let status = frame.status()?;
         let prefix = format!("Exported {file} \u{b7} {width} \u{d7} {height} \u{b7} ");
+        let quality = format!(" \u{b7} quality {}", result["quality"]);
         ensure(
-            status.starts_with(&prefix) && (status.ends_with(" MB") || status.ends_with(" KB")),
+            status.starts_with(&prefix) && status.ends_with(&quality),
             format!("The {step} status reads {status:?}"),
         )?;
         if keep {
