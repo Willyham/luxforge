@@ -250,6 +250,21 @@ impl Editor {
         }
     }
 
+    /// The held picture at rest of `content` was swept again, with the minimap overview, under
+    /// `versions`: counts still wanted of that content are the new tiles', as the earlier tiles
+    /// are handed no more and their counts never come.
+    pub(crate) fn gpu_counts_reswept(&mut self, content: Option<u64>, versions: [u64; 2]) {
+        if let Some(target) = self
+            .gpu
+            .counts
+            .as_mut()
+            .filter(|target| Some(target.content) == content)
+        {
+            target.versions = versions;
+            self.gpu.want_rest_counts(true);
+        }
+    }
+
     /// Whether a draft is open whose newest revision the counts plotted are not an exact report of:
     /// a GPU tick's frame in motion, or the report of a frame before it. The plot is then marked
     /// updating, as the counts during motion are.
