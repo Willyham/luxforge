@@ -152,19 +152,31 @@ pub(crate) fn export_sheet(model: Option<&ExportSheetModel>) -> Option<Element<'
         .into(),
     ));
     rows = rows.push(rule()).push(save_to(model));
+
+    // What holds Export back, or what a batch leaves out, sits above the footer outside the
+    // scrolled settings, so it is never scrolled out of view or hidden behind the footer.
+    let mut notices = column![].spacing(theme::SPACING);
     for refusal in &model.refusals {
-        rows = rows.push(inline_notice(Tone::Warning, refusal.clone()));
+        notices = notices.push(inline_notice(Tone::Warning, refusal.clone()));
     }
     if let Some((_, reason)) = &model.invalid {
-        rows = rows.push(error_caption(format!("Must be {reason}")));
+        notices = notices.push(error_caption(format!("Must be {reason}")));
     }
     if let Some(error) = &model.preset_error {
-        rows = rows.push(error_caption(format!("Preset not saved: {error}")));
+        notices = notices.push(error_caption(format!("Preset not saved: {error}")));
     }
+    let noticed =
+        !model.refusals.is_empty() || model.invalid.is_some() || model.preset_error.is_some();
 
     let body = scrollable(container(rows).padding([theme::SPACING * 1.5, theme::SPACING * 2.0]))
         .height(Length::Fill);
-    let sheet = container(column![header, rule(), body, rule(), footer(model)])
+    let mut parts = column![header, rule(), body, rule()];
+    if noticed {
+        parts = parts
+            .push(container(notices).padding([theme::SPACING, theme::SPACING * 2.0]))
+            .push(rule());
+    }
+    let sheet = container(parts.push(footer(model)))
         .width(Length::Fill)
         .height(Length::Fill)
         .max_width(WIDTH)
