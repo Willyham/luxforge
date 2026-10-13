@@ -225,6 +225,8 @@ fn main_result() -> Result {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "release-gate" => xtask_cli::release_verify::run_gate(&mut a)?,
+        "release-verify" => xtask_cli::release_verify::run_verify(&mut a)?,
         "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
         "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
