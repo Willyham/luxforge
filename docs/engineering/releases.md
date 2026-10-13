@@ -28,13 +28,13 @@ Open GitHub **Actions → Release builds** for logs and the public pre-release u
 
 - `luxforge-VERSION-macos-arm64.dmg`, the macOS download: a disk image holding `Luxforge.app` and an `Applications` link. Open it and drag Luxforge to Applications. The app holds the editor, both CLIs under `Contents/Helpers`, Lensfun resources, notices and help.
 - `luxforge-VERSION-macos-arm64.zip`, the same `Luxforge.app`, kept as the update archive.
-- `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices and help.
+- `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices, help (`README.txt` and the Linux `INSTALL.txt`), the icon and `desktop-integration.sh`, which adds or removes a user-level launcher entry ([Linux payload](../design/release-v0.1.md#deliverables)). Its `build.json` and `target.json` record each executable's ELF imports.
 - `release.json`, per-platform build records and `SHA256SUMS` for the final files.
 - `luxforge-VERSION-updates.json`, the signed update record, once [automatic updates](#automatic-updates) are switched on. It is not listed in `SHA256SUMS` or `release.json`.
 
 The macOS app embeds Sparkle 2.10.0's `Sparkle.framework` for its updater. `release-build` downloads the official archive once into `target/sparkle/2.10.0/`, refuses it unless its length (16,319,840 bytes) and SHA-256 are the pinned ones (`xtask/src/sparkle.rs`), and copies the framework into `Luxforge.app/Contents/Frameworks/` without its XPC services; no Sparkle binary is committed. The app's `Info.plist` names the macOS feed, the committed public key (none while `release/update.json` has none), daily automatic checks and verification of an archive before it is extracted. Signing signs Sparkle's `Autoupdate`, `Updater.app` and the framework before the helpers and the app.
 
-The Linux build uses Ubuntu 24.04/glibc 2.39. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
+The Linux build uses Ubuntu 24.04/glibc 2.39 and fails if an executable requires a newer glibc symbol version or links a library the packaged help does not name. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. The build takes the icon from `packaging/icon/luxforge-256.png`, and the 512-pixel and SVG icons beside it when present. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
 
 ## One-time hosted macOS signing setup
 
@@ -130,4 +130,4 @@ The output must be new. On macOS it holds the ZIP and the disk image, both label
 
 ## Qualification status
 
-A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a complete corresponding-source/licence review. Those gates, the application icon/desktop integration and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.
+A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a complete corresponding-source/licence review. Those gates, the application icon and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.

@@ -74,6 +74,7 @@ mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
 mod release_build;
+mod release_linux;
 mod release_sign;
 mod resolve_missing_smoke;
 mod scenario;
