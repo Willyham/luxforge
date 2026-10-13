@@ -21,7 +21,7 @@ A stack the host cannot evaluate — an unavailable provider, a refused payload,
 
 - The destination is an absolute path whose extension matches the settings' format (`.jpg` or `.jpeg` for JPEG), in either case, whose parent is an existing directory.
 - Anything already at the destination path is refused with `conflict`: a file, a directory, a symlink (dangling or not) or a hard link to an original. Because nothing that exists is ever replaced, no path can reach an original or its alias. The check is repeated by the publish step itself, which never replaces, so a file that appears between the request and the write is refused too.
-- `export.plan` suggests `<source stem><suffix>.<extension>` in the settings' folder, for example `<source stem>-web.jpg` beside the original, or `-web-2.jpg`, `-web-3.jpg` and so on when that name is taken, reading at most 64 names; past that it suggests no name rather than guessing.
+- `export.plan` suggests `<source stem><suffix>.<extension>` (a merge result's stem is its first input's with `-hdr` or `-pano`, and a suggested name has no spaces) in the settings' folder, for example `<source stem>-web.jpg` beside the original, or `-web-2.jpg`, `-web-3.jpg` and so on when that name is taken, reading at most 64 names; past that it suggests no name rather than guessing.
 
 ## Supported metadata
 

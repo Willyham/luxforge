@@ -1288,6 +1288,27 @@ impl Executor {
         if slot.next < slot.tiles.len() {
             return;
         }
+        // The counts' staging copy the budget holds only once what the tiles released has retired
+        // waits a frame for the retirement, as a tile does: refused now, the picture at rest would
+        // lose counts its own budget holds.
+        let preview = &self.figures.preview;
+        if matches!(slot.counts, RestCounts::Counting)
+            && histogram.is_some()
+            && preview
+                .in_use()
+                .saturating_add(super::histogram::COUNT_BYTES)
+                > preview.budget()
+            && self
+                .figures
+                .retirement_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+        {
+            slot.waiting = true;
+            slot.retirement_waits += 1;
+            return;
+        }
+        slot.waiting = false;
         // The last tile is in: quantize the accumulator into the rest output, read the counts back
         // and let the tile slot go, which nothing draws again.
         if let (Some(reduce), Some(passes)) = (&mut slot.reduce, passes) {

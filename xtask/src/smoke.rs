@@ -488,15 +488,20 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: minify::SCENARIO,
-        about: "Before/After at Fit over the generated zone plate: After's exact raster drawn below its size shows no replica rings, and its mip levels are in the photo slots",
+        about: "Before/After at Fit over the generated zone plate on the reference renderer: the photograph's and After's exact raster drawn below its size shows no replica rings, and its mip levels are in the photo slots until the comparison ends",
         launches: &[LaunchSpec {
             plan: minify::plan,
+            no_gpu_render: true,
             ..APP
         }],
         verify: minify::verify,
         source: Source::Fixtures(&[minify::FIXTURE]),
         window: Some(PANELLED),
-        note: None,
+        note: Some(
+            "The launch passes `--no-gpu-render`: only the reference renderer draws a photograph \
+             at Fit from its exact raster in every run. Where the GPU draws the picture at rest, \
+             Compare's After at Fit is the GPU's picture at the view's size.",
+        ),
         own: None,
     },
     Scenario {

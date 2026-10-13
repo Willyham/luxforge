@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Luxforge application icon: light through a six-blade aperture. Original project art, GPL-3.0-or-later. -->
+<!-- The PNG and ICNS beside this file are generated from it: see README.md in this directory. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#363b48"/>
+      <stop offset="1" stop-color="#16181e"/>
+    </linearGradient>
+    <linearGradient id="barrel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c9ced8"/>
+      <stop offset="1" stop-color="#5d6371"/>
+    </linearGradient>
+    <radialGradient id="light" cx="512" cy="512" r="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fffdf3"/>
+      <stop offset="0.55" stop-color="#ffe9a8"/>
+      <stop offset="1" stop-color="#ffc35a"/>
+    </radialGradient>
+    <!-- One blade: from a vertex of the opening along its edge to the barrel, a 60-degree arc,
+         and back along the next edge's extension. The other five are rotations of it. -->
+    <path id="blade" d="M 614.2 453.0 L 800.0 560.3 A 292 292 0 0 1 614.2 785.5 L 614.2 571.0 Z"/>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#body)"/>
+  <circle cx="512" cy="512" r="318" fill="url(#barrel)"/>
+  <circle cx="512" cy="512" r="300" fill="#111318"/>
+  <g stroke="#111318" stroke-width="12" stroke-linejoin="round">
+    <use xlink:href="#blade" href="#blade" fill="#e4672a"/>
+    <use xlink:href="#blade" href="#blade" fill="#d24f24" transform="rotate(60 512 512)"/>
+    <use xlink:href="#blade" href="#blade" fill="#e4672a" transform="rotate(120 512 512)"/>
+    <use xlink:href="#blade" href="#blade" fill="#f08a30" transform="rotate(180 512 512)"/>
+    <use xlink:href="#blade" href="#blade" fill="#f6a93a" transform="rotate(240 512 512)"/>
+    <use xlink:href="#blade" href="#blade" fill="#f08a30" transform="rotate(300 512 512)"/>
+  </g>
+  <polygon points="512.0 400.0 609.0 456.0 609.0 568.0 512.0 624.0 415.0 568.0 415.0 456.0" fill="url(#light)"/>
+</svg>
