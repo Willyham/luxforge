@@ -41,11 +41,9 @@ use crate::{
     jobs::JobControl,
     library::develop::{JpegProfiles, read_with},
     merge::{
-        hdr::{
-            AnalysisProxy, ColourProxy, ColourProxyBuilder, FrameRect, ProxyBuilder,
-            SensorClipModel, SensorLevel,
-        },
+        hdr::{ColourProxy, ColourProxyBuilder, FrameRect, SensorClipModel, SensorLevel},
         job::{Accounting, Developed, Development, SPOOL_PIXEL, develop_read},
+        panorama::{PanoramaProxy, ProxyBuilder, ProxyRows},
     },
     modules::{
         Mapping, RadialModel, Stage, WarpStep,
@@ -316,16 +314,17 @@ pub(crate) struct FrameOptions<'a> {
     /// The factor bringing the frame's samples to the reference's brightness, `2^−offset_ev`
     /// ([`crate::merge::hdr::ResolvedExposure::scale`]); exactly 1 leaves them exact.
     pub exposure_scale: f64,
-    /// Build the merge preview's [`ColourProxy`] beside the analysis proxy.
+    /// Build the merge preview's [`ColourProxy`] beside the registration proxy.
     pub colour: bool,
 }
 
-/// What spooling one frame leaves: its proxies, the bytes written and its clipping count.
+/// What spooling one frame leaves: its registration proxy ([`PanoramaProxy`], unusable where a
+/// box holds a clipped sample), its colour proxy, the bytes written and its clipping count.
 #[derive(Debug)]
 pub(crate) struct SpooledFrame {
     pub width: u32,
     pub height: u32,
-    pub proxy: AnalysisProxy,
+    pub proxy: PanoramaProxy,
     /// With [`FrameOptions::colour`].
     pub colour: Option<ColourProxy>,
     /// The bytes written to the spool file: [`SPOOL_PIXEL`] a pixel.
@@ -390,6 +389,7 @@ fn write_spool(
 ) -> Result<SpooledFrame, Error> {
     let (width, height) = pixels.dimensions();
     let mut builder = ProxyBuilder::new(width, height)?;
+    let cancel = control.render_cancel();
     let mut colour = options
         .colour
         .then(|| ColourProxyBuilder::new(width, height))
@@ -402,6 +402,7 @@ fn write_spool(
         vec![0.0_f32; w * rows],
     ];
     let mut levels = vec![SensorLevel(0); w * rows];
+    let mut flags = vec![false; w * rows];
     let mut bytes = Vec::with_capacity(w * rows * SPOOL_PIXEL as usize);
     let mut file = File::create(path).map_err(|error| spool_error(error.kind()))?;
     let mut written = 0_u64;
@@ -452,7 +453,8 @@ fn write_spool(
                 bytes.extend_from_slice(&plane[i].to_le_bytes());
             }
             bytes.extend_from_slice(&levels[i].0.to_le_bytes());
-            clipped += u64::from(levels[i].is_clipped());
+            flags[i] = levels[i].is_clipped();
+            clipped += u64::from(flags[i]);
         }
         let rect = FrameRect {
             width: w,
@@ -461,7 +463,16 @@ fn write_spool(
             rgb: [&planes[0], &planes[1], &planes[2]],
             levels: &levels,
         };
-        builder.push_rows(&rect)?;
+        builder.push_rows(
+            &ProxyRows {
+                width: w,
+                height: band,
+                stride: w,
+                rgb: rect.rgb,
+                clipped: Some(&flags),
+            },
+            cancel,
+        )?;
         if let Some(colour) = &mut colour {
             colour.push_rows(&rect)?;
         }
