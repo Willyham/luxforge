@@ -598,3 +598,374 @@ pub fn corners_in(lens: &Lens, a: &Pose, b: &Pose) -> [Option<(f64, f64)>; 4] {
     lens.corners()
         .map(|corner| lens.world_project(a, lens.world_ray(b, corner)))
 }
+
+// ------------------------------------------------------------------------------------------------
+// The stitched panorama (`docs/design/panorama-merge.md`, "Projection and output size" and
+// "Boundary Warp and the crop"): where every output pixel of a stitch looks, which frames record
+// it, the largest covered rectangle, and what a perfect stitch shows there.
+// ------------------------------------------------------------------------------------------------
+
+/// Boundary samples an edge of each frame for a stitch's extent: points `t = k/256` along each
+/// edge, clockwise from the top-left corner, as the design's contract states.
+pub const STITCH_EDGE_SAMPLES: usize = 256;
+/// Added to an extent in pixels before flooring it to a size, as the contract states (`ε`).
+pub const STITCH_SLACK: f64 = 1e-6;
+
+/// The plane point `(u, v)` of a direction under `projection` (see [`Projection`]), or `None`
+/// where it has none: behind the rectilinear plane, or at the cylinder's poles.
+pub fn plane_point(projection: Projection, direction: Vec3) -> Option<(f64, f64)> {
+    let d = normalize(direction);
+    match projection {
+        Projection::Rectilinear => (d[2] > 1e-9).then(|| (d[0] / d[2], d[1] / d[2])),
+        Projection::Cylindrical => {
+            let rho = (d[0] * d[0] + d[2] * d[2]).sqrt();
+            (rho > 1e-12).then(|| (d[0].atan2(d[2]), d[1] / rho))
+        }
+        Projection::Equirectangular => Some((d[0].atan2(d[2]), d[1].clamp(-1.0, 1.0).asin())),
+    }
+}
+
+/// The unit direction of plane point `(u, v)` under `projection`.
+pub fn plane_direction(projection: Projection, u: f64, v: f64) -> Vec3 {
+    match projection {
+        Projection::Rectilinear => normalize([u, v, 1.0]),
+        Projection::Cylindrical => normalize([u.sin(), v, u.cos()]),
+        Projection::Equirectangular => [v.cos() * u.sin(), v.sin(), v.cos() * u.cos()],
+    }
+}
+
+/// `a` into `(−π, π]`.
+fn principal(a: f64) -> f64 {
+    let t = std::f64::consts::TAU;
+    let mut a = a - t * (a / t).round();
+    if a <= -std::f64::consts::PI {
+        a += t;
+    }
+    if a > std::f64::consts::PI {
+        a -= t;
+    }
+    a
+}
+
+/// Full scale: plane units to output pixels such that the reference frame's centre pixel maps to
+/// at most one output pixel either way, from central differences of the plane point by the
+/// reference's pixel.
+pub fn stitch_full_scale(projection: Projection, lens: &Lens, reference: &Pose) -> f64 {
+    let (cx, cy) = lens.centre();
+    let h = 1e-3;
+    let at = |x: f64, y: f64| plane_point(projection, lens.world_ray(reference, (x, y))).unwrap();
+    let (u0, v0) = at(cx, cy);
+    let delta = |(u, v): (f64, f64)| (principal(u - u0), v - v0);
+    let (ax, ay) = delta(at(cx + h, cy));
+    let (bx, by) = delta(at(cx - h, cy));
+    let (cx2, cy2) = delta(at(cx, cy + h));
+    let (dx, dy) = delta(at(cx, cy - h));
+    let j = [
+        [(ax - bx) / (2.0 * h), (cx2 - dx) / (2.0 * h)],
+        [(ay - by) / (2.0 * h), (cy2 - dy) / (2.0 * h)],
+    ];
+    // σ_max from the eigenvalues of JᵀJ.
+    let a = j[0][0] * j[0][0] + j[1][0] * j[1][0];
+    let b = j[0][0] * j[0][1] + j[1][0] * j[1][1];
+    let c = j[0][1] * j[0][1] + j[1][1] * j[1][1];
+    let largest = (a + c) / 2.0 + (((a - c) / 2.0).powi(2) + b * b).sqrt();
+    1.0 / largest.sqrt()
+}
+
+/// A stitch's output frame: output pixel `(x, y)` of its bounding rectangle is the plane point
+/// `(u0 + x/scale, v0 + y/scale)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StitchLayout {
+    pub projection: Projection,
+    /// Output pixels per plane unit.
+    pub scale: f64,
+    pub u0: f64,
+    pub v0: f64,
+    pub width: usize,
+    pub height: usize,
+    /// The yaws cover the full circle and the rectangle's ends meet.
+    pub wrap: bool,
+}
+
+impl StitchLayout {
+    /// The world direction output point `(x, y)` shows.
+    pub fn direction(&self, x: f64, y: f64) -> Vec3 {
+        plane_direction(
+            self.projection,
+            self.u0 + x / self.scale,
+            self.v0 + y / self.scale,
+        )
+    }
+}
+
+/// A frame's boundary pixels for a stitch's extent: see [`STITCH_EDGE_SAMPLES`].
+fn edge_pixels(lens: &Lens) -> Vec<(f64, f64)> {
+    let (w, h) = ((lens.width - 1) as f64, (lens.height - 1) as f64);
+    let n = STITCH_EDGE_SAMPLES;
+    let mut out = Vec::new();
+    for k in 0..n {
+        out.push((w * k as f64 / n as f64, 0.0));
+    }
+    for k in 0..n {
+        out.push((w, h * k as f64 / n as f64));
+    }
+    for k in 0..n {
+        out.push((w * (1.0 - k as f64 / n as f64), h));
+    }
+    for k in 0..n {
+        out.push((0.0, h * (1.0 - k as f64 / n as f64)));
+    }
+    out
+}
+
+/// Where world direction `d` records in a frame at `pose`, refusing directions past barrel
+/// distortion's fold (ideal radius `R/√(3|k|)`), where the radial model turns back.
+pub fn stitch_frame_position(lens: &Lens, pose: &Pose, d: Vec3) -> Option<(f64, f64)> {
+    let camera = apply(&pose.world_to_camera(), normalize(d));
+    if camera[2] <= 1e-9 {
+        return None;
+    }
+    let (ix, iy) = (
+        lens.focal_px * camera[0] / camera[2],
+        lens.focal_px * camera[1] / camera[2],
+    );
+    if lens.radial < 0.0 && 3.0 * -lens.radial * (ix * ix + iy * iy) >= lens.radial_scale().powi(2)
+    {
+        return None;
+    }
+    let (cx, cy) = lens.centre();
+    Some(lens.distort((cx + ix, cy + iy)))
+}
+
+/// Whether a frame records `d` within its pixel centres.
+pub fn stitch_records(lens: &Lens, pose: &Pose, d: Vec3) -> bool {
+    stitch_frame_position(lens, pose, d).is_some_and(|(x, y)| {
+        x >= 0.0 && y >= 0.0 && x <= (lens.width - 1) as f64 && y <= (lens.height - 1) as f64
+    })
+}
+
+/// The bounding rectangle of frames at `poses` under `projection`, at `factor` times full scale
+/// (the reference frame `reference`'s), as the design's "The bounding rectangle" states.
+pub fn stitch_layout(
+    projection: Projection,
+    lens: &Lens,
+    poses: &[Pose],
+    reference: usize,
+    factor: f64,
+) -> StitchLayout {
+    let tau = std::f64::consts::TAU;
+    let pi = std::f64::consts::PI;
+    let scale = stitch_full_scale(projection, lens, &poses[reference]) * factor;
+    let edges = edge_pixels(lens);
+    let mut v_range = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut u_range = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut intervals: Vec<(f64, f64)> = Vec::new();
+    let mut whole_circle = false;
+    for pose in poses {
+        let rays: Vec<Vec3> = edges.iter().map(|&p| lens.world_ray(pose, p)).collect();
+        for d in &rays {
+            if let Some((u, v)) = plane_point(projection, *d) {
+                v_range = (v_range.0.min(v), v_range.1.max(v));
+                u_range = (u_range.0.min(u), u_range.1.max(u));
+            }
+        }
+        let up = stitch_records(lens, pose, [0.0, -1.0, 0.0]);
+        let down = stitch_records(lens, pose, [0.0, 1.0, 0.0]);
+        if projection == Projection::Equirectangular {
+            if up {
+                v_range.0 = v_range.0.min(-pi / 2.0);
+            }
+            if down {
+                v_range.1 = v_range.1.max(pi / 2.0);
+            }
+        }
+        if up || down {
+            whole_circle = true;
+            continue;
+        }
+        let axis = pose.axis();
+        let centre = axis[0].atan2(axis[2]);
+        let offsets: Vec<f64> = rays
+            .iter()
+            .map(|d| principal(d[0].atan2(d[2]) - centre))
+            .collect();
+        let lo = offsets.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = offsets.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        intervals.push((centre + lo, centre + hi));
+    }
+    if projection == Projection::Rectilinear {
+        return StitchLayout {
+            projection,
+            scale,
+            u0: u_range.0,
+            v0: v_range.0,
+            width: (scale * (u_range.1 - u_range.0) + STITCH_SLACK).floor() as usize + 1,
+            height: (scale * (v_range.1 - v_range.0) + STITCH_SLACK).floor() as usize + 1,
+            wrap: false,
+        };
+    }
+    // The uncovered arcs of the circle, from the intervals' starts in [−π, π).
+    let mut pieces: Vec<(f64, f64)> = Vec::new();
+    for &(lo, hi) in &intervals {
+        if hi - lo >= tau {
+            whole_circle = true;
+        }
+        let mut a = principal(lo);
+        if a == pi {
+            a = -pi;
+        }
+        let b = a + (hi - lo);
+        if b <= pi {
+            pieces.push((a, b));
+        } else {
+            pieces.push((a, pi));
+            pieces.push((-pi, b - tau));
+        }
+    }
+    pieces.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)));
+    let mut widest: Option<(f64, f64)> = None; // (width, centre)
+    if !whole_circle && !pieces.is_empty() {
+        let mut reach = pieces[0].1;
+        for &(a, b) in &pieces[1..] {
+            if a > reach {
+                let width = a - reach;
+                if widest.is_none_or(|(w, _)| width > w) {
+                    widest = Some((width, (a + reach) / 2.0));
+                }
+            }
+            reach = reach.max(b);
+        }
+        let around = pieces[0].0 + tau - reach;
+        if around > 0.0 && widest.is_none_or(|(w, _)| around >= w) {
+            // The arc across ±π wins ties with earlier arcs only when strictly wider: keep the
+            // production's rule, which starts from the arc across ±π.
+            widest = Some((around, (reach + pieces[0].0 + tau) / 2.0));
+        }
+    }
+    match widest {
+        None => StitchLayout {
+            projection,
+            scale,
+            u0: -pi,
+            v0: v_range.0,
+            width: (tau * scale + STITCH_SLACK).floor() as usize,
+            height: (scale * (v_range.1 - v_range.0) + STITCH_SLACK).floor() as usize + 1,
+            wrap: true,
+        },
+        Some((_, gap)) => {
+            let gap = principal(gap);
+            let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &(lo, hi) in &intervals {
+                let mut shift = 0.0;
+                while lo + shift > gap {
+                    shift -= tau;
+                }
+                while lo + shift <= gap - tau {
+                    shift += tau;
+                }
+                u0 = u0.min(lo + shift);
+                u1 = u1.max(hi + shift);
+            }
+            StitchLayout {
+                projection,
+                scale,
+                u0,
+                v0: v_range.0,
+                width: (scale * (u1 - u0) + STITCH_SLACK).floor() as usize + 1,
+                height: (scale * (v_range.1 - v_range.0) + STITCH_SLACK).floor() as usize + 1,
+                wrap: false,
+            }
+        }
+    }
+}
+
+/// Which cells of side `cell` over the layout's bounding rectangle are covered: every one of
+/// their four outermost pixels (within the rectangle) recorded by some frame. Row-major, with the
+/// grid's width and height.
+pub fn stitch_coverage(
+    layout: &StitchLayout,
+    lens: &Lens,
+    poses: &[Pose],
+    cell: usize,
+) -> (usize, usize, Vec<bool>) {
+    let (gw, gh) = (layout.width.div_ceil(cell), layout.height.div_ceil(cell));
+    let mut covered = vec![false; gw * gh];
+    for j in 0..gh {
+        for i in 0..gw {
+            let xs = [i * cell, (i * cell + cell - 1).min(layout.width - 1)];
+            let ys = [j * cell, (j * cell + cell - 1).min(layout.height - 1)];
+            covered[j * gw + i] = ys.iter().all(|&y| {
+                xs.iter().all(|&x| {
+                    let d = layout.direction(x as f64, y as f64);
+                    poses.iter().any(|pose| stitch_records(lens, pose, d))
+                })
+            });
+        }
+    }
+    (gw, gh, covered)
+}
+
+/// The largest rectangle of `true` cells: the largest area, then the smallest top row, bottom row
+/// and left column. `(x, y, width, height)`, all zero when none. By every pair of rows.
+pub fn largest_covered_rectangle(
+    cells: &[bool],
+    width: usize,
+    height: usize,
+) -> (usize, usize, usize, usize) {
+    let mut best = (0, (0, 0, 0, 0));
+    for top in 0..height {
+        let mut open = vec![true; width];
+        for bottom in top..height {
+            for (x, o) in open.iter_mut().enumerate() {
+                *o &= cells[bottom * width + x];
+            }
+            let rows = bottom - top + 1;
+            let mut x = 0;
+            while x < width {
+                if !open[x] {
+                    x += 1;
+                    continue;
+                }
+                let start = x;
+                while x < width && open[x] {
+                    x += 1;
+                }
+                let area = (x - start) * rows;
+                if area > best.0 {
+                    best = (area, (start, top, x - start, rows));
+                }
+            }
+        }
+    }
+    best.1
+}
+
+/// What a perfect stitch shows over `rect` (`x, y, width, height` of the layout's bounding
+/// rectangle): the scene, with `subject` over it, along each pixel's direction, times `gain`.
+pub fn render_stitch(
+    scene: &Scene,
+    layout: &StitchLayout,
+    rect: (usize, usize, usize, usize),
+    subject: Option<&Subject>,
+    gain: [f64; 3],
+) -> Frame {
+    let (x0, y0, w, h) = rect;
+    let mut rgb = [vec![0.0; w * h], vec![0.0; w * h], vec![0.0; w * h]];
+    for y in 0..h {
+        for x in 0..w {
+            let d = layout.direction((x0 + x) as f64, (y0 + y) as f64);
+            let mut value = scene.radiance(d);
+            if let Some(subject) = subject {
+                value = subject.over(d, value);
+            }
+            for c in 0..3 {
+                rgb[c][y * w + x] = value[c] * gain[c];
+            }
+        }
+    }
+    Frame {
+        width: w,
+        height: h,
+        rgb,
+    }
+}
