@@ -5481,6 +5481,7 @@ dependencies = [
  "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-update",
+ "lzma-rust2",
  "percent-encoding",
  "regex",
  "roxmltree",

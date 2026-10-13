@@ -260,7 +260,13 @@ pub(crate) fn lens_resources(root: &Path, destination: &Path) -> Result {
 }
 
 pub fn inventory(root: &Path, out: &Path) -> Result {
-    let target = host(root)?;
+    inventory_for(root, out, &host(root)?)
+}
+
+/// [`inventory`] for `target`'s dependency graph rather than the host's, as the source archive
+/// collects the notices of each shipping target.
+pub(crate) fn inventory_for(root: &Path, out: &Path, target: &str) -> Result {
+    let target = target.to_owned();
     let data: Value = serde_json::from_str(&output(
         root,
         "cargo",

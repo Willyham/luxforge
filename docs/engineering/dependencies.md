@@ -27,7 +27,11 @@ The ttf-parser exception was re-reviewed on 2026-09-29:
 
 ## Review status
 
-License and source checks pass (BSL-1.0 in `clipboard-win` and `error-code` is GPL-compatible). `cargo xtask inventory` records resolved packages and copies top-level license files; it is not a notice audit. Before any distribution: inspect embedded fonts and assets, native linking and license-file declarations, assemble corresponding source and sanitize local manifest paths from dependency metadata. The manual license, native and asset review is deferred by the owner and remains incomplete.
+License and source checks pass (BSL-1.0 in `clipboard-win` and `error-code` is GPL-compatible). `cargo xtask inventory` records resolved packages and copies top-level license files; it is not a notice audit. `cargo xtask release-source` assembles the corresponding source archive ([source archive](releases.md#the-source-archive)), with each shipping target's inventory and notices; it refuses an archive that names the paths of the machine that made it. Before any distribution: inspect embedded fonts and assets, native linking and license-file declarations against that archive. The manual license, native and asset review is deferred by the owner and remains incomplete.
+
+## Source archive tooling
+
+`release-source` decompresses the pinned prebuilt ONNX Runtime archives with `lzma-rust2` 0.15.8 (Apache-2.0), with only its `std` and `optimization` features, the version and features `ort-sys`'s build script already builds it with, so it adds no package to the lockfile. Only `xtask` names it; no shipped executable links it.
 
 ## Usage statistics ingress
 
