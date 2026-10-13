@@ -127,7 +127,7 @@ pub struct FrameMetadata {
 }
 
 impl FrameMetadata {
-    fn is_raw(&self) -> bool {
+    pub(crate) fn is_raw(&self) -> bool {
         matches!(self.recording, Recording::Raw { .. })
     }
 }
@@ -425,7 +425,7 @@ pub(crate) fn capture_order(frames: &[FrameMetadata]) -> Vec<usize> {
     order
 }
 
-fn same_option(a: Option<f64>, b: Option<f64>, same: impl Fn(f64, f64) -> bool) -> bool {
+pub(crate) fn same_option(a: Option<f64>, b: Option<f64>, same: impl Fn(f64, f64) -> bool) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => same(a, b),
         (None, None) => true,
@@ -439,14 +439,14 @@ fn same_relative(tolerance: f64) -> impl Fn(f64, f64) -> bool {
 
 /// Whether `focal` is the same focal length as the first input's `first`: within
 /// [`FOCAL_TOLERANCE_MM`] or [`FOCAL_TOLERANCE_RELATIVE`] of it, whichever is more.
-fn same_focal(focal: f64, first: f64) -> bool {
+pub(crate) fn same_focal(focal: f64, first: f64) -> bool {
     (focal - first).abs() <= FOCAL_TOLERANCE_MM.max(FOCAL_TOLERANCE_RELATIVE * first.abs())
 }
 
 /// Whether two inputs of different recordings are one exposure: one body, one recorded instant
 /// and the same shutter, aperture, ISO and bias. Without a recorded instant this cannot be told,
 /// and such frames are not called duplicates.
-fn same_exposure(a: &FrameMetadata, b: &FrameMetadata) -> bool {
+pub(crate) fn same_exposure(a: &FrameMetadata, b: &FrameMetadata) -> bool {
     let (ea, eb) = (&a.exposure, &b.exposure);
     a.make == b.make
         && a.model == b.model

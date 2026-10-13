@@ -76,8 +76,8 @@ pub(crate) fn host_feature(method: &str, params: &Value) -> Option<(Feature, Emi
         "export.jpeg" => (F::Export, OnSuccess),
         "batch.export" => (F::ExportBatch, OnSuccess),
         // A panorama merge is an explicit exemption until the owner approves a panorama-merge
-        // event; it is never counted as hdr-merge. A rerun that names no kind reruns the merge's
-        // own, and this build reruns only HDR merges.
+        // event; it is never counted as hdr-merge. A rerun that names no kind reruns its merge's
+        // own, which `Owner::usage_answered` reads from the catalog.
         "merge.create" | "merge.rerun" if params["kind"] == "panorama" => return None,
         "merge.create" | "merge.rerun" => (F::HdrMerge, OnSuccess),
         "pick.develop" => (F::DevelopPicks, OnSuccess),
@@ -115,11 +115,35 @@ impl Owner {
         if emit == Emit::OnChange && !changed {
             return;
         }
+        // A rerun that names no kind is of its merge's kind: a panorama's is exempt, as a
+        // panorama's merge.create is.
+        if method == "merge.rerun"
+            && params["kind"].is_null()
+            && self.merge_kind(params["merge_id"].as_str()) != Some("hdr".to_owned())
+        {
+            return;
+        }
         let usage = &self.service.usage;
         let image = params["asset_id"]
             .as_str()
             .and_then(|asset| usage.open_image(generation, asset));
         usage.record(generation, EventKind::Interaction { feature, image });
+    }
+
+    /// The recorded kind of the merge `merge_id` names: one indexed read, while collection is on.
+    fn merge_kind(&self, merge_id: Option<&str>) -> Option<String> {
+        use rusqlite::OptionalExtension;
+        let merge_id = merge_id?;
+        self.service
+            .connection
+            .prepare_cached("SELECT kind FROM merges WHERE id = ?1")
+            .and_then(|mut statement| {
+                statement
+                    .query_row([merge_id], |row| row.get::<_, String>(0))
+                    .optional()
+            })
+            .ok()
+            .flatten()
     }
 
     /// A client adopted `state`'s photograph as its open one: its image ID, computed now from the
