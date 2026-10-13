@@ -57,9 +57,8 @@ use iced::{Task, widget::image::Handle};
 use luxforge_core::{
     Cancel, ClientId, ClientSession, OwnerHandle,
     catalog_types::{
-        ItemRef, MergeAnswer, MergeInspection, MergeKind, MergePlan, MergePreview,
-        MergePreviewId, MergeState, RowItem, StackExpansion, StackRole, Targets, ViewFilter,
-        ViewSummary,
+        ItemRef, MergeAnswer, MergeInspection, MergeKind, MergePlan, MergePreview, MergePreviewId,
+        MergeState, RowItem, StackExpansion, StackRole, Targets, ViewFilter, ViewSummary,
     },
 };
 use serde_json::{Value, json};

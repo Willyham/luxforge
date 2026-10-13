@@ -1,9 +1,9 @@
 //! Merges in the Select workspace, carried inside the Select workspace's message as
 //! [`SelectMessage::Merge`](super::select::SelectMessage::Merge).
 use crate::app::select_merge::{OpenAnswer, SheetJob, StartAnswer};
+use crate::state::select_merge::PanoramaFacts;
 use crate::state::select_merge::{MergeAction, MergeRequest};
 use iced::widget::image::Handle;
-use crate::state::select_merge::PanoramaFacts;
 use luxforge_core::catalog_types::{MergeId, MergeKind, MergePlan};
 use serde_json::Value;
 use std::path::PathBuf;

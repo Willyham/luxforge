@@ -623,7 +623,8 @@ impl PanoramaFacts {
     /// "Cylindrical · 164° × 41°".
     pub(crate) fn words(&self) -> Option<String> {
         let parts: Vec<String> = [
-            self.projection.map(|projection| projection_name(projection).to_owned()),
+            self.projection
+                .map(|projection| projection_name(projection).to_owned()),
             self.field_of_view_deg.map(field_words),
         ]
         .into_iter()
@@ -938,12 +939,7 @@ static FRAME_WORDS: LazyLock<Vec<Vec<String>>> = LazyLock::new(|| {
     (0..=*MergeKind::Panorama.inputs().end())
         .map(|size| {
             (1..=size)
-                .map(|place| {
-                    format!(
-                        "{} {place} of {size}",
-                        words(MergeKind::Panorama).original
-                    )
-                })
+                .map(|place| format!("{} {place} of {size}", words(MergeKind::Panorama).original))
                 .collect()
         })
         .collect()
