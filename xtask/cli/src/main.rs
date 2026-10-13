@@ -19,6 +19,7 @@ const FULL_COMMANDS: &[&str] = &[
     "raw-authentic",
     "lens-qualification",
     "lensfun-import",
+    "icon",
     "inventory",
     "package",
     "release-build",

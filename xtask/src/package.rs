@@ -237,7 +237,9 @@ fn bundled_data_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
-const LENS_FILES: &[&str] = &[
+/// The bundled Lensfun resource's directory, relative to the repository root.
+pub(crate) const LENS_DIRECTORY: &str = "crates/luxforge-core/data/lensfun";
+pub(crate) const LENS_FILES: &[&str] = &[
     "index.json",
     "provenance.json",
     "LICENSE-CC-BY-SA-3.0.txt",
@@ -247,7 +249,7 @@ const LENS_FILES: &[&str] = &[
 pub(crate) fn lens_resources(root: &Path, destination: &Path) -> Result {
     fs::create_dir_all(destination)?;
     for name in LENS_FILES {
-        let source = root.join("crates/luxforge-core/data/lensfun").join(name);
+        let source = root.join(LENS_DIRECTORY).join(name);
         ensure(
             source.is_file(),
             format!("Missing bundled Lensfun resource: {}", source.display()),
@@ -537,10 +539,11 @@ pub fn package(root: &Path, out: &Path) -> Result {
         fs::create_dir_all(app.join("MacOS"))?;
         fs::copy(&binary, app.join("MacOS/luxforge"))?;
         lens_resources(root, &app.join("Resources/lensfun"))?;
+        crate::icon::copy_icns(root, &app.join("Resources").join(crate::icon::ICNS))?;
         fs::write(
             app.join("Info.plist"),
             format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{}</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
+                r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>luxforge</string><key>CFBundleShortVersionString</key><string>{}</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
                 env!("CARGO_PKG_VERSION")
             ),
         )?;
