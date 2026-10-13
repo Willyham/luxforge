@@ -311,6 +311,14 @@ impl Editor {
         self.activity.request_started = Instant::now();
     }
 
+    /// The open request in progress has had its answer adopted and waits for its picture, so a
+    /// frame presented or failed now is its outcome. While its answer is still in flight the
+    /// frame is of the photograph already on screen — a refit of the canvas the open resized, say
+    /// — and ends nothing: an open that then fails is still recorded as failed.
+    pub(crate) fn request_awaits_picture(&self) -> bool {
+        self.activity.pending && !self.busy
+    }
+
     /// Import a file through the same API call the Open button uses, tracked as one open request.
     pub(super) fn open(&mut self, path: PathBuf) -> Task<Message> {
         self.open_queued(path, None)
