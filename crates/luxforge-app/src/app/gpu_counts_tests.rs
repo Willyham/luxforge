@@ -187,6 +187,69 @@ fn a_commit_the_gpu_draws_renders_no_cpu_frame_and_its_tiles_counts_are_its_repo
     finish(editor, catalog);
 }
 
+/// A commit the GPU presents, its counts still to come when the view reaches a zoom that shows the
+/// minimap: the overview sweep draws the held picture at rest again, under new versions. The counts
+/// still to come are the swept tiles', so its report is adopted and nothing (a capture among them)
+/// waits on counts of tiles handed no more.
+#[test]
+fn counts_still_to_come_are_the_overview_sweeps_tiles() {
+    let (mut editor, catalog) = opened_on_the_gpu("counts-sweep");
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.gpu.counts.is_some()
+    });
+    luxforge_testkit::client::call(
+        &editor.owner,
+        editor.client,
+        "view.set",
+        serde_json::json!({"zoom": {"mode": "percent", "value": 400.0}}),
+    )
+    .expect("the zoom");
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 400.0 };
+    let _ = editor.zoom_changed(&luxforge_core::Zoom::Fit);
+    deliver_until(
+        &mut editor,
+        "the minimap's sweep of the held tiles",
+        |editor| {
+            let sweep = editor.overviews.sweep_version();
+            sweep.is_some() && editor.gpu_rest_held_overview() == Some(sweep)
+        },
+    );
+    let target = editor.gpu.counts.clone().expect("its counts wanted");
+    assert!(editor.gpu_counts_pending());
+    let handed = editor.surfaces();
+    let tiles = handed
+        .gpu_rest
+        .or(handed.gpu_counts)
+        .expect("the swept tiles handed");
+    assert!(
+        target.versions.contains(&tiles.version),
+        "the counts wanted are the swept tiles': {:?} against {}",
+        target.versions,
+        tiles.version
+    );
+    let size = (target.identity.width, target.identity.height);
+    editor.gpu.counts_report = Some(SurfaceCounts {
+        rest: Some((
+            tiles.version,
+            luxforge_gpu::CountsOutcome::Ready(Box::new(uniform(128, size))),
+        )),
+        tick: None,
+    });
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(!editor.gpu_counts_pending(), "its report adopted");
+    assert_eq!(
+        editor
+            .presentation
+            .analysis
+            .as_ref()
+            .map(|analysis| analysis.source),
+        Some(AnalysisSource::Gpu)
+    );
+    editor.gpu.counts_report = None;
+    finish(editor, catalog);
+}
+
 /// Counts the surface could not take refuse the content the GPU presented: it is asked for again,
 /// and the reference renders it, with its own report, and the GPU presents it no more.
 #[test]

@@ -26,7 +26,8 @@ pub struct BundleInfo<'a> {
     pub extra: &'a str,
 }
 
-/// The release bundle's `Info.plist`, with Sparkle's settings
+/// The release bundle's `Info.plist`, naming the icon `Contents/Resources/luxforge.icns`, with
+/// Sparkle's settings
 /// (`docs/design/auto-update.md#macos-sparkle`): the feed and key, automatic checks once a day
 /// (which also suppresses Sparkle's permission prompt), and an archive verified before it is
 /// extracted. The feed itself is not required to be signed (`SURequireSignedFeed` is absent): the
@@ -42,13 +43,110 @@ pub fn info_plist(info: &BundleInfo) -> String {
         format!("<key>SUPublicEDKey</key><string>{}</string>", escape(key))
     });
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{}</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{}</string><key>CFBundleVersion</key><string>{}</string><key>LSMinimumSystemVersion</key><string>{MACOS_MINIMUM_SYSTEM_VERSION}</string><key>NSHighResolutionCapable</key><true/><key>SUFeedURL</key><string>{}</string>{key}<key>SUEnableAutomaticChecks</key><true/><key>SUScheduledCheckInterval</key><integer>86400</integer><key>SUVerifyUpdateBeforeExtraction</key><true/>{}</dict></plist>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{}</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>luxforge</string><key>CFBundleShortVersionString</key><string>{}</string><key>CFBundleVersion</key><string>{}</string><key>LSMinimumSystemVersion</key><string>{MACOS_MINIMUM_SYSTEM_VERSION}</string><key>NSHighResolutionCapable</key><true/><key>SUFeedURL</key><string>{}</string>{key}<key>SUEnableAutomaticChecks</key><true/><key>SUScheduledCheckInterval</key><integer>86400</integer><key>SUVerifyUpdateBeforeExtraction</key><true/>{}</dict></plist>"#,
         escape(info.identifier),
         escape(info.version),
         escape(info.build),
         escape(info.feed_url),
         info.extra,
     )
+}
+
+/// The checkout files a build copies into its payload, checked before anything is compiled, so a
+/// missing one fails at once rather than after the build.
+pub fn check_resources(root: &Path, target: &str) -> Result {
+    let mut required = vec![root.join("LICENSE")];
+    required.extend(
+        package::LENS_FILES
+            .iter()
+            .map(|name| root.join(package::LENS_DIRECTORY).join(name)),
+    );
+    if target == TARGETS[0].0 {
+        required.push(root.join(icon::DIRECTORY).join(icon::ICNS));
+    } else {
+        required.extend(release_linux::inputs(root));
+    }
+    for path in required {
+        ensure(
+            path.is_file(),
+            format!("Missing release resource: {}", path.display()),
+        )?;
+    }
+    Ok(())
+}
+
+/// The deployment target a thin 64-bit Mach-O states as `(major, minor, patch)`: its
+/// `LC_BUILD_VERSION` (macOS platform) or `LC_VERSION_MIN_MACOSX` minimum OS. `bytes` needs only
+/// the header and load commands.
+pub fn macho_minimum_os(bytes: &[u8]) -> Result<(u32, u32, u32)> {
+    let word = |at: usize| -> Result<u32> {
+        let field = bytes
+            .get(at..at + 4)
+            .ok_or("Truncated Mach-O load commands")?;
+        Ok(u32::from_le_bytes(field.try_into()?))
+    };
+    ensure(
+        word(0)? == 0xfeed_facf,
+        "Not a thin 64-bit little-endian Mach-O executable",
+    )?;
+    let mut at = 32;
+    let mut found = None;
+    for _ in 0..word(16)? {
+        let (command, size) = (word(at)?, word(at + 4)? as usize);
+        ensure(size >= 8, "Malformed Mach-O load command")?;
+        let version = match command {
+            // LC_BUILD_VERSION, whose platform 1 is macOS.
+            0x32 if word(at + 8)? == 1 => Some(word(at + 12)?),
+            0x32 => return Err("The Mach-O is not built for macOS".into()),
+            // LC_VERSION_MIN_MACOSX.
+            0x24 => Some(word(at + 8)?),
+            _ => None,
+        };
+        if let Some(version) = version {
+            ensure(found.is_none(), "The Mach-O states two deployment targets")?;
+            found = Some((version >> 16, (version >> 8) & 0xff, version & 0xff));
+        }
+        at += size;
+    }
+    found.ok_or_else(|| "The Mach-O states no deployment target".into())
+}
+
+/// `path`'s Mach-O deployment target, refusing one later than [`MACOS_MINIMUM_SYSTEM_VERSION`].
+/// It states what the executable asks of the OS; it is not evidence that it runs there.
+pub fn check_deployment_target(path: &Path) -> Result<String> {
+    use std::io::Read as _;
+    let mut file = fs::File::open(path)?;
+    let mut bytes = vec![0; 32];
+    file.read_exact(&mut bytes)?;
+    let commands = u32::from_le_bytes(bytes[20..24].try_into()?) as usize;
+    ensure(
+        commands <= 1 << 20,
+        "Implausibly large Mach-O load commands",
+    )?;
+    bytes.resize(32 + commands, 0);
+    file.read_exact(&mut bytes[32..])?;
+    let (major, minor, patch) = macho_minimum_os(&bytes)?;
+    let mut floor = MACOS_MINIMUM_SYSTEM_VERSION
+        .split('.')
+        .map(str::parse::<u32>);
+    let floor = (
+        floor.next().ok_or("Floor")??,
+        floor.next().unwrap_or(Ok(0))?,
+        floor.next().unwrap_or(Ok(0))?,
+    );
+    let stated = if patch == 0 {
+        format!("{major}.{minor}")
+    } else {
+        format!("{major}.{minor}.{patch}")
+    };
+    ensure(
+        (major, minor, patch) <= floor,
+        format!(
+            "{} requires macOS {stated}, later than the bundle's {MACOS_MINIMUM_SYSTEM_VERSION}",
+            path.display()
+        ),
+    )?;
+    Ok(stated)
 }
 
 pub fn executable_paths(out: &Path, target: &str) -> Vec<PathBuf> {
@@ -157,6 +255,7 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
         dirty,
         lock_sha256: lock,
     } = release_candidate::check_source(root, out, &tag, &target, allow_dirty)?;
+    check_resources(root, &target)?;
     let toolchain = release_candidate::toolchain(root, allow_dirty)?;
     let environment = release_candidate::build_environment(root, &target)?;
     // A clean tag build embeds its revision, so its usage statistics release is
@@ -218,6 +317,7 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
     fs::create_dir_all(&resource_root)?;
     let binaries = executable_paths(out, &target);
     let mut executable_hashes = serde_json::Map::new();
+    let mut deployment_targets = serde_json::Map::new();
     for (name, destination) in EXECUTABLES.iter().zip(&binaries) {
         fs::copy(binary(root)?.with_file_name(name), destination)?;
         let version = output(root, destination, &["--version"])?;
@@ -226,8 +326,15 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
             format!("Packaged {name} has the wrong version"),
         )?;
         executable_hashes.insert((*name).to_owned(), json!(hash(destination)?));
+        if sparkle.is_some() {
+            let stated = check_deployment_target(destination)?;
+            deployment_targets.insert((*name).to_owned(), json!(stated));
+        }
     }
     package::lens_resources(root, &resource_root.join("lensfun"))?;
+    if sparkle.is_some() {
+        icon::copy_icns(root, &resource_root.join(icon::ICNS))?;
+    }
     fs::copy(root.join("LICENSE"), resource_root.join("LICENSE"))?;
     package::inventory(root, &resource_root.join("notices"))?;
     fs::write(
@@ -242,6 +349,7 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
     let mut metadata = json!({"schema_version":release_candidate::SCHEMA_VERSION,"tag":tag.tag,"version":tag.version,"build_number":number,"catalog_format":luxforge_core::CATALOG_FORMAT,"revision":revision,"target":target,"platform":platform(&target)?,"profile":"release","working_tree_dirty":dirty,"usage_release":luxforge_core::usage::BuildIdentity::new(&tag.version,embedded).release(),"rehearsal":allow_dirty,"lock_sha256":lock,"toolchain":toolchain,"build_environment":environment,"executables":release_candidate::executables(&target,executable_hashes),"release_ready":false});
     if target == TARGETS[0].0 {
         metadata["minimum_system_version"] = json!(MACOS_MINIMUM_SYSTEM_VERSION);
+        metadata["deployment_targets"] = json!(deployment_targets);
     }
     if target == TARGETS[1].0 {
         let named: Vec<_> = EXECUTABLES
@@ -307,6 +415,7 @@ mod tests {
         for pair in [
             "<key>CFBundleShortVersionString</key><string>0.2.0</string>",
             "<key>CFBundleVersion</key><string>42</string>",
+            "<key>CFBundleIconFile</key><string>luxforge</string>",
             "<key>SUFeedURL</key><string>https://api.luxforge.app/v1/updates/macos-arm64/appcast.xml?a&amp;b</string>",
             "<key>SUPublicEDKey</key><string>rg7plRI+lkAvslNaVkA284ovU8kr7pm2xW1/AQL86Cs=</string>",
             "<key>SUEnableAutomaticChecks</key><true/>",
@@ -330,22 +439,194 @@ mod tests {
     }
 
     #[test]
+    fn a_build_refuses_missing_resources_before_compiling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("checkout wïth spaces");
+        let missing = |target| {
+            check_resources(&root, target)
+                .err()
+                .map(|error| error.to_string())
+        };
+        let lens = root.join(package::LENS_DIRECTORY);
+        fs::create_dir_all(&lens).unwrap();
+        fs::create_dir_all(root.join(icon::DIRECTORY)).unwrap();
+        assert!(missing(TARGETS[1].0).unwrap().contains("LICENSE"));
+        fs::write(root.join("LICENSE"), b"GPL").unwrap();
+        for name in package::LENS_FILES {
+            assert!(missing(TARGETS[1].0).unwrap().contains(name), "{name}");
+            fs::write(lens.join(name), b"{}").unwrap();
+        }
+        // Only the Linux payload needs the desktop integration and the PNG and SVG icons.
+        for input in release_linux::inputs(&root) {
+            let name = input.file_name().unwrap().to_str().unwrap().to_owned();
+            assert!(missing(TARGETS[1].0).unwrap().contains(&name), "{name}");
+            fs::create_dir_all(input.parent().unwrap()).unwrap();
+            fs::write(&input, b"input").unwrap();
+        }
+        assert_eq!(missing(TARGETS[1].0), None);
+        // Only the macOS bundle needs the ICNS.
+        assert!(missing(TARGETS[0].0).unwrap().contains(icon::ICNS));
+        fs::write(root.join(icon::DIRECTORY).join(icon::ICNS), b"icns").unwrap();
+        assert_eq!(missing(TARGETS[0].0), None);
+        // The checkout's own resources are complete.
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        for (target, _) in TARGETS {
+            check_resources(checkout, target).unwrap();
+        }
+    }
+
+    /// A 64-bit Mach-O header with `commands`, each `(command, payload words)`.
+    fn macho(commands: &[(u32, &[u32])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (command, words) in commands {
+            body.extend(command.to_le_bytes());
+            body.extend((8 + 4 * words.len() as u32).to_le_bytes());
+            for word in *words {
+                body.extend(word.to_le_bytes());
+            }
+        }
+        let mut bytes = Vec::new();
+        for word in [
+            0xfeed_facf,
+            0x0100_000c,
+            0,
+            2,
+            commands.len() as u32,
+            body.len() as u32,
+            0,
+            0,
+        ] {
+            bytes.extend(u32::to_le_bytes(word));
+        }
+        bytes.extend(body);
+        bytes
+    }
+
+    #[test]
+    fn the_deployment_target_is_read_from_the_mach_o() {
+        // LC_BUILD_VERSION: platform, minos, sdk, tool count; after an unrelated LC_UUID.
+        let build = |platform, minos| {
+            macho(&[
+                (0x1b, &[0, 0, 0, 0]),
+                (0x32, &[platform, minos, 0x000f_0500, 0]),
+            ])
+        };
+        assert_eq!(
+            macho_minimum_os(&build(1, 0x000e_0000)).unwrap(),
+            (14, 0, 0)
+        );
+        assert_eq!(
+            macho_minimum_os(&build(1, 0x000f_0201)).unwrap(),
+            (15, 2, 1)
+        );
+        assert!(macho_minimum_os(&build(2, 0x000e_0000)).is_err());
+        // LC_VERSION_MIN_MACOSX: version, sdk.
+        let legacy = macho(&[(0x24, &[0x000a_0f00, 0])]);
+        assert_eq!(macho_minimum_os(&legacy).unwrap(), (10, 15, 0));
+        assert!(macho_minimum_os(&macho(&[(0x1b, &[0, 0, 0, 0])])).is_err());
+        // A universal binary and other files are refused.
+        assert!(macho_minimum_os(&0xcafe_babe_u32.to_be_bytes()).is_err());
+        assert!(macho_minimum_os(b"\x7fELF\x02\x01\x01\0").is_err());
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lüxforge");
+        fs::write(&path, build(1, 0x000e_0000)).unwrap();
+        assert_eq!(check_deployment_target(&path).unwrap(), "14.0");
+        fs::write(&path, build(1, 0x000e_0200)).unwrap();
+        let error = check_deployment_target(&path).unwrap_err().to_string();
+        assert!(error.contains("requires macOS 14.2"), "{error}");
+        // A binary the workspace links on macOS asks for the bundle's floor.
+        if cfg!(target_os = "macos") {
+            let exe = std::env::current_exe().unwrap();
+            assert_eq!(
+                check_deployment_target(&exe).unwrap(),
+                MACOS_MINIMUM_SYSTEM_VERSION
+            );
+        }
+    }
+
+    /// The macOS ZIP, written and extracted in folders with spaces and non-ASCII names, keeps the
+    /// executables' modes, the bundle metadata, the icon and the framework's links.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_archive_preserves_modes_and_bundle_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("candidate wïth spaces");
+        let contents = out.join("Luxforge.app/Contents");
+        for directory in [
+            "MacOS",
+            "Helpers",
+            "Resources",
+            "Frameworks/Sparkle.framework",
+        ] {
+            fs::create_dir_all(contents.join(directory)).unwrap();
+        }
+        let tag = ReleaseTag::parse("v0.1").unwrap();
+        let plist = info_plist(&BundleInfo {
+            identifier: "org.luxforge.app",
+            version: &tag.bundle_version,
+            build: "7",
+            feed_url: "https://api.luxforge.app/v1/updates/macos-arm64/appcast.xml",
+            public_key: None,
+            extra: "",
+        });
+        fs::write(contents.join("Info.plist"), &plist).unwrap();
+        fs::write(contents.join("Resources").join(icon::ICNS), b"icns").unwrap();
+        std::os::unix::fs::symlink(
+            "Versions/Current/Sparkle",
+            contents.join("Frameworks/Sparkle.framework/Sparkle"),
+        )
+        .unwrap();
+        for path in executable_paths(&out, TARGETS[0].0) {
+            fs::write(&path, b"executable").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let archive = archive_payload(&out, &tag, TARGETS[0].0).unwrap();
+        assert_eq!(
+            archive.file_name().unwrap(),
+            "luxforge-0.1.0-macos-arm64.zip"
+        );
+        let extracted = tmp.path().join("extracted ünïcode");
+        let status = Command::new("ditto")
+            .args(["-x", "-k"])
+            .arg(&archive)
+            .arg(&extracted)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        for path in executable_paths(&extracted, TARGETS[0].0) {
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755, "{}", path.display());
+        }
+        let contents = extracted.join("Luxforge.app/Contents");
+        assert_eq!(
+            fs::read_to_string(contents.join("Info.plist")).unwrap(),
+            plist
+        );
+        assert_eq!(
+            fs::read(contents.join("Resources").join(icon::ICNS)).unwrap(),
+            b"icns"
+        );
+        assert_eq!(
+            fs::read_link(contents.join("Frameworks/Sparkle.framework/Sparkle")).unwrap(),
+            Path::new("Versions/Current/Sparkle")
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn linux_archive_preserves_all_cli_executable_modes() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
-        let payload = tmp.path().join("Luxforge");
-        fs::create_dir(&payload).unwrap();
+        let out = tmp.path().join("candidate wïth spaces");
+        let payload = out.join("Luxforge");
+        fs::create_dir_all(&payload).unwrap();
         for name in EXECUTABLES {
             fs::write(payload.join(name), b"executable").unwrap();
             fs::set_permissions(payload.join(name), fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let path = archive_payload(
-            tmp.path(),
-            &ReleaseTag::parse("v0.1").unwrap(),
-            TARGETS[1].0,
-        )
-        .unwrap();
+        let path =
+            archive_payload(&out, &ReleaseTag::parse("v0.1").unwrap(), TARGETS[1].0).unwrap();
         let mut archive =
             tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(path).unwrap()));
         let mut found = 0;

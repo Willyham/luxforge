@@ -24,6 +24,52 @@ fn failed_request_records_the_api_refusal_and_captures_its_state() {
     finish(editor, catalog);
 }
 
+/// An export `progressed` step captures once the status bar's export progress rises above where it
+/// stood when the step began, however long the export takes to get there, and fails with no
+/// export running.
+#[test]
+fn an_export_progressed_step_captures_once_the_progress_rises() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(
+        r#"[{"export":{"progressed":{"ms":10000}}},{"export":{"progressed":{"ms":10000}}}]"#,
+    );
+    let record = |editor: &Editor| {
+        crate::app::testing::evidence(editor)
+            .current
+            .clone()
+            .expect("a step record")
+    };
+    let _ = editor.next_step();
+    assert_eq!(record(&editor)["status"], json!("failed"));
+
+    editor.workspace.long_work.export = Some(crate::state::long_work::BusiestJob {
+        job_id: "job-1".into(),
+        label: "Rendering 60mp-web.jpg".into(),
+        fraction: Some(0.0),
+        jobs: 1,
+    });
+    let _ = editor.next_step();
+    // The failed step's frame is the one pending until the capture this test has no renderer for.
+    if let Some(evidence) = &mut editor.evidence {
+        evidence.capture_pending = false;
+    }
+    editor.wait_elapsed();
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(
+        evidence.export_progress.is_some() && !evidence.capture_pending,
+        "the progress has not risen"
+    );
+    if let Some(bar) = &mut editor.workspace.long_work.export {
+        bar.fraction = Some(0.21);
+    }
+    editor.wait_elapsed();
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(evidence.export_progress.is_none() && evidence.capture_pending);
+    let progressed = &record(&editor)["export_progressed"];
+    assert_eq!(progressed["finished"], json!(true));
+    assert_eq!(progressed["from"], json!(0.0));
+    finish(editor, catalog);
+}
+
 /// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame,
 /// nor a refit at Fit where the GPU would draw a picture at rest: there is none to refit.
 #[test]
@@ -291,9 +337,11 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     assert_eq!(editor.presentation.presenter.photo_version(), photo_version);
     assert_ne!(editor.overlay_surface().unwrap().version(), first_clipping);
 
+    let layout = editor.capture_layout();
     let evidence = editor.evidence.as_mut().expect("evidence run");
     evidence.sync.state = Some((json!({"old":"clipping"}), 1, photo_version, None));
     evidence.sync.clipping_version = Some(first_clipping);
+    evidence.sync.layout = Some(layout);
     evidence.capture_pending = false;
     evidence.saving = true;
     let shot = iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
@@ -308,6 +356,47 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     assert!(
         evidence.frames.is_empty(),
         "no mismatched frame was published"
+    );
+    finish(editor, catalog);
+}
+
+/// The canvas may be laid out again while a screenshot is in flight, as when a file's open brings
+/// the filmstrip back once its folder is read, without changing the photograph or its overlay. The
+/// frame read back is then retaken rather than published beside a canvas it was not drawn in.
+#[test]
+fn evidence_retries_a_readback_whose_canvas_was_laid_out_again() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+    editor
+        .presentation
+        .presenter
+        .show_photo(&luxforge_core::Raster {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255].into(),
+            source_fingerprint: "f".into(),
+            snapshot_id: luxforge_core::SnapshotId::new(),
+        });
+    let photo_version = editor.presentation.presenter.photo_version();
+    let clipping_version = editor.overlay_surface().map(luxforge_ui::Frame::version);
+    let layout = editor.capture_layout();
+    let evidence = editor.evidence.as_mut().expect("evidence run");
+    evidence.sync.state = Some((json!({"old":"layout"}), 1, photo_version, None));
+    evidence.sync.clipping_version = clipping_version;
+    evidence.sync.layout = Some(layout);
+    evidence.capture_pending = false;
+    evidence.saving = true;
+    editor.workspace.title.tools_panel_open = !layout.tools_panel;
+    let shot = iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
+    let _ = editor.dispatch(Message::Evidence(EvidenceMessage::Captured(shot)));
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(
+        evidence.capture_pending && !evidence.saving,
+        "a new draw is requested"
+    );
+    assert!(evidence.sync.state.is_none() && evidence.sync.layout.is_none());
+    assert!(
+        evidence.frames.is_empty(),
+        "no frame was published beside another canvas"
     );
     finish(editor, catalog);
 }

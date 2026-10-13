@@ -41,6 +41,7 @@ mod hdr_merge_measure;
 mod hdr_merge_smoke;
 mod hdr_merge_view_smoke;
 mod histogram_smoke;
+mod icon;
 mod information_smoke;
 mod inspect_dng;
 mod launch;
@@ -226,6 +227,8 @@ fn main_result() -> Result {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "release-gate" => xtask_cli::release_verify::run_gate(&mut a)?,
+        "release-verify" => xtask_cli::release_verify::run_verify(&mut a)?,
         "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
         "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
@@ -424,6 +427,10 @@ fn main_result() -> Result {
             let out = absolute(&root, &a.path("--output")?);
             a.done()?;
             lens_qualification::run(&manifest, &edges, &out)?;
+        }
+        "icon" => {
+            a.done()?;
+            icon::generate(&root)?;
         }
         "lensfun-import" => {
             let source = absolute(&root, &a.path("--source")?);

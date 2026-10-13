@@ -13,27 +13,26 @@ const TEMPLATE_SOURCE: &str = "packaging/linux/luxforge.desktop.in";
 /// The payload's folder of desktop files: the template and `icons/hicolor/…`.
 pub const DESKTOP_DIR: &str = "desktop";
 pub const TEMPLATE: &str = "luxforge.desktop.in";
-/// The application icon in each size the payload carries, as `(repository source, hicolor path,
-/// required)`. `desktop-integration.sh` installs and removes exactly these hicolor paths.
-pub const ICONS: &[(&str, &str, bool)] = &[
-    (
-        "packaging/icon/luxforge-256.png",
-        "256x256/apps/luxforge.png",
-        true,
-    ),
-    (
-        "packaging/icon/luxforge-512.png",
-        "512x512/apps/luxforge.png",
-        false,
-    ),
-    (
-        "packaging/icon/luxforge.svg",
-        "scalable/apps/luxforge.svg",
-        false,
-    ),
+/// The application icon in each size the payload carries, as `(file in` [`icon::DIRECTORY`]`,
+/// hicolor path)`. `desktop-integration.sh` installs and removes exactly these hicolor paths.
+pub const ICONS: &[(&str, &str)] = &[
+    ("luxforge-256.png", "256x256/apps/luxforge.png"),
+    ("luxforge-512.png", "512x512/apps/luxforge.png"),
+    (icon::SOURCE, "scalable/apps/luxforge.svg"),
 ];
 /// The packaged Linux help.
 pub const HELP: &str = "INSTALL.txt";
+
+/// The checkout files the Linux payload copies: the helper, the template and every icon.
+pub fn inputs(root: &Path) -> Vec<PathBuf> {
+    let mut inputs = vec![root.join(SCRIPT_SOURCE), root.join(TEMPLATE_SOURCE)];
+    inputs.extend(
+        ICONS
+            .iter()
+            .map(|(file, _)| root.join(icon::DIRECTORY).join(file)),
+    );
+    inputs
+}
 
 /// Adds the payload's Linux parts to `payload`, the extracted `Luxforge/` folder holding the
 /// executables, and records what they import in `metadata` as `elf_imports`.
@@ -77,16 +76,13 @@ pub fn desktop_integration(root: &Path, payload: &Path, version: &str, number: &
             format!("The payload already has {}", existing.display()),
         )?;
     }
-    let input = |relative: &str| -> Result<PathBuf> {
-        let path = root.join(relative);
+    for input in inputs(root) {
         ensure(
-            path.is_file(),
-            format!("Missing Linux payload input: {}", path.display()),
+            input.is_file(),
+            format!("Missing Linux payload input: {}", input.display()),
         )?;
-        Ok(path)
-    };
-    let script_source = input(SCRIPT_SOURCE)?;
-    let template = fs::read_to_string(input(TEMPLATE_SOURCE)?)?;
+    }
+    let template = fs::read_to_string(root.join(TEMPLATE_SOURCE))?;
     for placeholder in [
         "Exec=@EXEC@",
         "TryExec=@TRYEXEC@",
@@ -98,19 +94,6 @@ pub fn desktop_integration(root: &Path, payload: &Path, version: &str, number: &
             format!("{TEMPLATE_SOURCE} has no single {placeholder} line"),
         )?;
     }
-    let icons: Vec<(PathBuf, &str)> = ICONS
-        .iter()
-        .filter_map(|(source, hicolor, required)| {
-            let path = root.join(source);
-            (*required || path.is_file()).then_some((path, *hicolor))
-        })
-        .collect();
-    for (path, _) in &icons {
-        ensure(
-            path.is_file(),
-            format!("Missing Linux payload input: {}", path.display()),
-        )?;
-    }
     fs::create_dir(&desktop)?;
     fs::write(
         desktop.join(TEMPLATE),
@@ -118,12 +101,12 @@ pub fn desktop_integration(root: &Path, payload: &Path, version: &str, number: &
             .replace("@VERSION@", version)
             .replace("@BUILD@", number),
     )?;
-    for (path, hicolor) in icons {
+    for (file, hicolor) in ICONS {
         let destination = desktop.join("icons/hicolor").join(hicolor);
         fs::create_dir_all(destination.parent().ok_or("Icon folder")?)?;
-        fs::copy(path, &destination)?;
+        fs::copy(root.join(icon::DIRECTORY).join(file), &destination)?;
     }
-    fs::copy(script_source, &script)?;
+    fs::copy(root.join(SCRIPT_SOURCE), &script)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -244,19 +227,30 @@ mod tests {
     use luxforge_test_macros::slow;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A checkout holding the committed Linux packaging and a stand-in icon.
-    fn checkout(icon: bool) -> tempfile::TempDir {
-        let real = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    /// The repository this test was built from.
+    fn repository() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+    }
+
+    /// A checkout holding the committed Linux packaging and, with `icons`, the committed icons.
+    fn checkout(icons: bool) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("packaging/linux")).unwrap();
-        fs::create_dir_all(root.path().join("packaging/icon")).unwrap();
+        fs::create_dir_all(root.path().join(icon::DIRECTORY)).unwrap();
         for source in [SCRIPT_SOURCE, TEMPLATE_SOURCE] {
-            fs::copy(real.join(source), root.path().join(source)).unwrap();
+            fs::copy(repository().join(source), root.path().join(source)).unwrap();
         }
-        if icon {
-            fs::write(root.path().join(ICONS[0].0), b"\x89PNG stand-in icon").unwrap();
+        if icons {
+            for (file, _) in ICONS {
+                let relative = Path::new(icon::DIRECTORY).join(file);
+                fs::copy(repository().join(&relative), root.path().join(relative)).unwrap();
+            }
         }
         root
+    }
+
+    fn committed_icon() -> Vec<u8> {
+        fs::read(repository().join(icon::DIRECTORY).join("luxforge-256.png")).unwrap()
     }
 
     /// An extracted payload at `dir`: an executable editor stand-in, `build.json` and the
@@ -362,10 +356,22 @@ mod tests {
             assert!(text.lines().any(|l| l == line), "{line}");
         }
         let icon = dir.join("desktop/icons/hicolor/256x256/apps/luxforge.png");
-        assert_eq!(fs::read(&icon).unwrap(), b"\x89PNG stand-in icon");
+        assert_eq!(fs::read(&icon).unwrap(), committed_icon());
         assert_eq!(mode(&icon), 0o644);
-        // Optional sizes the checkout does not have are left out, and nothing names the checkout.
-        assert!(!dir.join("desktop/icons/hicolor/scalable").exists());
+        // Every size the helper knows, from the committed icons; the PNGs are the icon module's.
+        let script = fs::read_to_string(dir.join(SCRIPT)).unwrap();
+        for (file, hicolor) in ICONS {
+            let installed = dir.join("desktop/icons/hicolor").join(hicolor);
+            assert_eq!(
+                fs::read(installed).unwrap(),
+                fs::read(repository().join(icon::DIRECTORY).join(file)).unwrap()
+            );
+            assert!(script.contains(hicolor), "{hicolor}");
+        }
+        for (_, png) in icon::PNGS {
+            assert!(ICONS.iter().any(|(file, _)| file == png), "{png}");
+        }
+        // Nothing in the payload names the checkout.
         let checkout = root.path().to_str().unwrap();
         for path in files(&dir).unwrap() {
             let bytes = fs::read(&path).unwrap();
@@ -483,7 +489,7 @@ mod tests {
         assert_eq!(key(&text, "X-Luxforge-Build"), "7");
         assert!(!text.contains('@'), "{text}");
         assert_eq!(mode(&entry), 0o644);
-        assert_eq!(fs::read(&icon).unwrap(), b"\x89PNG stand-in icon");
+        assert_eq!(fs::read(&icon).unwrap(), committed_icon());
         // Luxforge's updater recognises the entry as this payload's and keeps its encoding.
         let build = luxforge_update::payload::BuildInfo::parse(
             r#"{"version":"0.2.0","build_number":"8","target":"x86_64-unknown-linux-gnu"}"#,
