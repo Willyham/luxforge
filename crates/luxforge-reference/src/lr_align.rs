@@ -214,6 +214,28 @@ pub fn locality(groups: &[Vec<([f64; 3], [f64; 3])>]) -> f64 {
     }
 }
 
+/// How far a tone response on a photograph depends on more than each sample's own lightness: the
+/// samples binned by neutral `L*` into bins `bin` wide, and in each bin of at least `minimum`
+/// samples the spread (90th less 10th percentile) of the response `ΔL*`; the median over the bins.
+/// A pointwise tone change measures 0, one that also reads a sample's surroundings does not.
+/// `NaN` when no bin qualifies.
+pub fn tone_locality(neutral: &[f64], adjusted: &[f64], bin: f64, minimum: usize) -> f64 {
+    let mut bins: std::collections::BTreeMap<i64, Vec<f64>> = std::collections::BTreeMap::new();
+    for (n, a) in neutral.iter().zip(adjusted) {
+        if n.is_finite() && a.is_finite() {
+            bins.entry((n / bin).floor() as i64)
+                .or_default()
+                .push(a - n);
+        }
+    }
+    let spreads: Vec<f64> = bins
+        .values()
+        .filter(|responses| responses.len() >= minimum)
+        .map(|responses| quantile(responses, 0.9) - quantile(responses, 0.1))
+        .collect();
+    median(&spreads)
+}
+
 // -------------------------------------------------------------------------------------------
 // Spatial measures
 // -------------------------------------------------------------------------------------------
@@ -423,6 +445,55 @@ pub fn blur_from_gains(bands: &[Band]) -> Option<f64> {
         denominator += x * x;
     }
     (denominator > 0.0).then(|| (numerator / denominator).sqrt())
+}
+
+/// A row-major plane box-blurred with a square of side `2r + 1`, the window clipped at the plane's
+/// edges, through a summed-area table: `O(n)` whatever the radius.
+pub fn box_blur(plane: &[f64], width: usize, radius: usize) -> Vec<f64> {
+    let height = plane.len() / width.max(1);
+    let stride = width + 1;
+    let mut table = vec![0.0f64; stride * (height + 1)];
+    for y in 0..height {
+        let mut row = 0.0;
+        for x in 0..width {
+            row += plane[y * width + x];
+            table[(y + 1) * stride + x + 1] = table[y * stride + x + 1] + row;
+        }
+    }
+    let mut out = vec![0.0; plane.len()];
+    for y in 0..height {
+        let (y0, y1) = (y.saturating_sub(radius), (y + radius + 1).min(height));
+        for x in 0..width {
+            let (x0, x1) = (x.saturating_sub(radius), (x + radius + 1).min(width));
+            let sum = table[y1 * stride + x1] - table[y0 * stride + x1] - table[y1 * stride + x0]
+                + table[y0 * stride + x0];
+            out[y * width + x] = sum / ((x1 - x0) * (y1 - y0)) as f64;
+        }
+    }
+    out
+}
+
+/// Band-pass energy at the scales `radii` names, strictly increasing: band `k` is the plane
+/// blurred at the radius before (the plane itself for the first) less the plane blurred at
+/// `radii[k]`, and its energy the RMS of that difference. A photograph's response at each scale is
+/// one editor's energy over its own neutral's.
+pub fn band_energy(plane: &[f64], width: usize, radii: &[usize]) -> Vec<f64> {
+    let mut previous = plane.to_vec();
+    radii
+        .iter()
+        .map(|radius| {
+            let blurred = box_blur(plane, width, *radius);
+            let energy = (previous
+                .iter()
+                .zip(&blurred)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                / plane.len().max(1) as f64)
+                .sqrt();
+            previous = blurred;
+            energy
+        })
+        .collect()
 }
 
 /// The standard deviation of `values` (population form). `NaN` for none.

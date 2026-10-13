@@ -7,9 +7,9 @@
 
 use luxforge_reference::colour::{self, Oklab};
 use luxforge_reference::lr_align::{
-    self, Band, Direction, Lab, Target, axis_profile, band_gains, blur_from_gains, carried,
-    crossing, deviation, dots, edge, grid_angle, keystone, linear_gain, locality, match_points,
-    orientation, radial_profile, sectors,
+    self, Band, Direction, Lab, Target, axis_profile, band_energy, band_gains, blur_from_gains,
+    box_blur, carried, crossing, deviation, dots, edge, grid_angle, keystone, linear_gain,
+    locality, match_points, orientation, radial_profile, sectors, tone_locality,
 };
 use luxforge_reference::{SplitMix64, srgb};
 
@@ -522,4 +522,60 @@ fn a_turned_ellipse_has_its_known_orientation_and_edge() {
         let profile = radial_profile(&plane, width, centre, (120.0, 60.0), degrees, 50, 2.0);
         assert!((crossing(&profile, 0.5).unwrap() - 1.0).abs() < 0.05);
     }
+}
+
+/// A box blur keeps a flat plane and the mean of any plane; band energies scale with the plane's
+/// contrast, and a fine pattern's energy sits in the finest band, a coarse one's in a coarser band.
+#[test]
+fn band_energy_scales_with_contrast_and_separates_scales() {
+    let (width, height) = (256usize, 128usize);
+    let flat = vec![0.4; width * height];
+    assert!(
+        box_blur(&flat, width, 5)
+            .iter()
+            .all(|v| (v - 0.4).abs() < 1e-12)
+    );
+    let wave = |period: f64, amplitude: f64| -> Vec<f64> {
+        (0..width * height)
+            .map(|i| 0.5 + amplitude * (std::f64::consts::TAU * (i % width) as f64 / period).sin())
+            .collect()
+    };
+    let radii = [2, 8, 32];
+    let fine = band_energy(&wave(4.0, 0.1), width, &radii);
+    let coarse = band_energy(&wave(64.0, 0.1), width, &radii);
+    assert!(fine[0] > fine[1] && fine[0] > fine[2], "{fine:?}");
+    assert!(coarse[2] > coarse[0] && coarse[1] > coarse[0], "{coarse:?}");
+    let doubled = band_energy(&wave(64.0, 0.2), width, &radii);
+    for (d, c) in doubled.iter().zip(&coarse) {
+        assert!((d / c - 2.0).abs() < 1e-9);
+    }
+}
+
+/// On a photograph-like field of mixed lightness, a pointwise tone curve measures no more locality
+/// than its own slope across one bin, and one that pulls each sample towards its neighbourhood's
+/// mean measures some.
+#[test]
+fn tone_locality_tells_a_local_tone_change_from_a_pointwise_one() {
+    let mut rng = SplitMix64(11);
+    let width = 200usize;
+    let neutral: Vec<f64> = (0..width * 100)
+        .map(|i| {
+            let region = if (i % width) < width / 2 { 40.0 } else { 60.0 };
+            (region + rng.next_range(-40.0, 40.0)).clamp(0.0, 100.0)
+        })
+        .collect();
+    let pointwise: Vec<f64> = neutral
+        .iter()
+        .map(|l| 100.0 * (l / 100.0).powf(0.8))
+        .collect();
+    assert!(tone_locality(&neutral, &pointwise, 1.0, 20) < 0.5);
+    let local: Vec<f64> = neutral
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let region = if (i % width) < width / 2 { 40.0 } else { 60.0 };
+            l + 0.4 * (region - l)
+        })
+        .collect();
+    assert!(tone_locality(&neutral, &local, 1.0, 20) > 5.0);
 }

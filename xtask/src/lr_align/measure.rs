@@ -24,14 +24,15 @@
 //! The round folder is only read: the evidence directory must not exist, its parent must, and it
 //! may not lie inside the round folder. Pure measures and fits are `luxforge_reference::lr_align`;
 //! this module renders, decodes, reduces and writes.
+use super::photographs::{Development, Photo};
 use super::report::{self, CALIBRATED, LIGHTROOM, LUXFORGE, Mark, Series, number};
 use super::{FORMAT, NEUTRAL, readback, targets};
 use crate::*;
 use luxforge_core::{
     BASIC_EFFECT, BoxRect, CURVE_EFFECT, Component, ComponentMode, CropPayload, CropStage,
-    DETAIL_EFFECT, Layer, MIXER_EFFECT, Mask, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT,
-    RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, SourceImage, VIGNETTE_EFFECT, open_source,
-    render,
+    DETAIL_EFFECT, Layer, LinearSettings, MIXER_EFFECT, Mask, ModuleRegistry, PERSPECTIVE_EFFECT,
+    PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, RenderSource,
+    SourceImage, VIGNETTE_EFFECT, open_source, render,
 };
 use luxforge_reference::lr_align::{self as la, Lab, Target};
 use luxforge_reference::srgb;
@@ -146,6 +147,9 @@ enum Sampling {
     Cells(u32),
     /// None: a geometric subject is compared by its dots.
     Dots,
+    /// Cells laid out in normalized coordinates, this many across: a photograph, whose frames
+    /// from the two editors may differ in size by their own default crops.
+    Normalized(u32),
 }
 
 /// What a contact sheet shows of a frame.
@@ -175,6 +179,8 @@ struct Reduced {
     height: u32,
     samples: Vec<[f64; 3]>,
     patches: Vec<[f64; 3]>,
+    /// A photograph's `L*` band energy at [`PHOTO_BANDS`].
+    energy: Vec<f64>,
     spatial: Option<Spatial>,
     /// `L*` at a quarter of the frame's size on each axis, for positional measures.
     plane: Option<(usize, Vec<f64>)>,
@@ -182,15 +188,32 @@ struct Reduced {
     thumb: Option<image::RgbImage>,
 }
 
-/// One target the round renders from: its layout, Luxforge's decode of its JPEG and its pristine
-/// pixels as the generator computed them.
+/// One subject the round renders from: a target, with its layout, Luxforge's decode of its JPEG
+/// and its pristine pixels as the generator computed them; or a RAW photograph, developed by the
+/// editor service.
 struct Subject {
     id: String,
     width: u32,
     height: u32,
     layout: Value,
-    source: SourceImage,
-    pristine: Vec<u8>,
+    kind: Kind,
+}
+
+enum Kind {
+    Target {
+        source: SourceImage,
+        pristine: Vec<u8>,
+    },
+    Photograph(Box<Photo>),
+}
+
+impl Subject {
+    fn photo(&self) -> Option<&Photo> {
+        match &self.kind {
+            Kind::Photograph(photo) => Some(photo),
+            Kind::Target { .. } => None,
+        }
+    }
 }
 
 fn rect_of(value: &Value) -> Option<(u32, u32, u32, u32)> {
@@ -298,6 +321,29 @@ fn spatial(frame: &Frame, layout: &Value) -> Option<Spatial> {
     })
 }
 
+/// Square-ish cells over the frame in normalized coordinates, `columns` across and as many rows as
+/// keep them square at the frame's aspect, each read in the frame's own pixels.
+fn normalized_cells(frame: &Frame, columns: u32) -> Vec<[f64; 3]> {
+    let rows = ((f64::from(columns) * f64::from(frame.height) / f64::from(frame.width)).round()
+        as u32)
+        .max(1);
+    let mut out = Vec::with_capacity((columns * rows) as usize);
+    for row in 0..rows {
+        let (y0, y1) = (row * frame.height / rows, (row + 1) * frame.height / rows);
+        for column in 0..columns {
+            let (x0, x1) = (
+                column * frame.width / columns,
+                (column + 1) * frame.width / columns,
+            );
+            out.push(frame.mean(x0, y0, (x1 - x0).max(1), (y1 - y0).max(1)));
+        }
+    }
+    out
+}
+
+/// The scales a photograph's band energy is read at, in quarter-size pixels.
+const PHOTO_BANDS: [usize; 3] = [1, 4, 16];
+
 fn quarter_plane(frame: &Frame) -> (usize, Vec<f64>) {
     let (w, h) = (frame.width / 4, frame.height / 4);
     let mut plane = Vec::with_capacity((w * h) as usize);
@@ -355,12 +401,20 @@ fn reduce(frame: &Frame, subject: &Subject, sampling: Sampling, view: Option<Vie
         Sampling::Patches => patches.clone(),
         Sampling::Cells(side) => cells(frame, side),
         Sampling::Dots => Vec::new(),
+        Sampling::Normalized(columns) => normalized_cells(frame, columns),
     };
     let same = (frame.width, frame.height) == (subject.width, subject.height);
+    let energy = if subject.photo().is_some() {
+        let (width, plane) = quarter_plane(frame);
+        la::band_energy(&plane, width, &PHOTO_BANDS)
+    } else {
+        Vec::new()
+    };
     Reduced {
         width: frame.width,
         height: frame.height,
         samples,
+        energy,
         patches,
         spatial: (same && subject.layout["kind"] == "spatial")
             .then(|| spatial(frame, &subject.layout))
@@ -471,12 +525,14 @@ fn parallel<T: Sync, R: Send>(
         .collect()
 }
 
-/// One Luxforge render to make: its subject, recipe, sampling and sheet view.
+/// One Luxforge render to make: its subject, recipe, sampling and sheet view, and for a photograph
+/// the development it renders over.
 struct Job {
     subject: String,
     recipe: Recipe,
     sampling: Sampling,
     view: Option<View>,
+    development: Development,
 }
 
 /// One export to read.
@@ -503,14 +559,31 @@ impl Context<'_> {
             .unwrap_or(1);
         parallel(jobs, workers(pixels), |job| {
             let subject = self.subject(&job.subject);
-            let study = render(
-                &self.registry,
-                &subject.source,
-                &job.recipe,
-                RenderOptions::default(),
-                &self.render,
-            )
-            .and_then(|r| r.study_frame16())
+            let study = match &subject.kind {
+                Kind::Target { source, .. } => render(
+                    &self.registry,
+                    source,
+                    &job.recipe,
+                    RenderOptions::default(),
+                    &self.render,
+                )
+                .and_then(|r| r.study_frame16()),
+                Kind::Photograph(photo) => {
+                    let developed = photo.develop(&job.development)?;
+                    let recipe = over(&self.registry, &developed.base, &job.recipe);
+                    render(
+                        &self.registry,
+                        RenderSource::Linear {
+                            image: &developed.image,
+                            settings: LinearSettings::default(),
+                        },
+                        &recipe,
+                        RenderOptions::default(),
+                        &self.render,
+                    )
+                    .and_then(|r| r.study_frame16())
+                }
+            }
             .map_err(|e| format!("{}: {e}", job.subject))?;
             if !study.narrow_boundaries.is_empty() {
                 let mut ledger = self.ledger.lock().map_err(|_| "a poisoned ledger")?;
@@ -635,8 +708,38 @@ fn check_round(manifest: &Value, round: u32, folder: &Path) -> Result {
     Ok(())
 }
 
-fn open_subjects(manifest: &Value, folder: &Path) -> Result<BTreeMap<String, Subject>> {
+/// The round's targets, and with `catalogs` its photographs, each imported into a scratch catalog
+/// of its own there from the round's copy beside its neutral variant.
+fn open_subjects(
+    manifest: &Value,
+    folder: &Path,
+    catalogs: Option<&Path>,
+) -> Result<BTreeMap<String, Subject>> {
     let mut subjects = BTreeMap::new();
+    for photograph in manifest["photographs"].as_array().into_iter().flatten() {
+        let Some(catalogs) = catalogs else { break };
+        let id = photograph["id"].as_str().unwrap_or_default().to_owned();
+        let extension = photograph["extension"].as_str().unwrap_or_default();
+        let copy = folder
+            .join(super::LIGHTROOM)
+            .join(&id)
+            .join(format!("{id}__{NEUTRAL}.{extension}"));
+        let photo = Photo::open(
+            &copy,
+            photograph["sha256"].as_str().unwrap_or_default(),
+            &catalogs.join(&id),
+        )?;
+        subjects.insert(
+            id.clone(),
+            Subject {
+                id,
+                width: photo.width,
+                height: photo.height,
+                layout: Value::Null,
+                kind: Kind::Photograph(Box::new(photo)),
+            },
+        );
+    }
     for target in manifest["targets"].as_array().into_iter().flatten() {
         let id = target["id"].as_str().unwrap_or_default().to_owned();
         let source = open_source(&folder.join(target["file"].as_str().unwrap_or_default()))?;
@@ -648,8 +751,10 @@ fn open_subjects(manifest: &Value, folder: &Path) -> Result<BTreeMap<String, Sub
                 width: source.width,
                 height: source.height,
                 layout: target["layout"].clone(),
-                source,
-                pristine: ours.rgb,
+                kind: Kind::Target {
+                    source,
+                    pristine: ours.rgb,
+                },
             },
         );
     }
@@ -706,6 +811,24 @@ fn recipe(
         let at = registry.insertion_index_for(&layers, &layer.effect_id);
         layers.insert(at, layer);
     }
+    Recipe {
+        format: RECIPE_FORMAT,
+        layers,
+        masks,
+        ..Recipe::default()
+    }
+}
+
+/// `extra`'s layers and masks over `base`'s, each layer inserted where the registry places its
+/// effect: a photograph's RAW layer (and lens layer) under a family's settings.
+fn over(registry: &ModuleRegistry, base: &Recipe, extra: &Recipe) -> Recipe {
+    let mut layers = base.layers.clone();
+    for layer in &extra.layers {
+        let at = registry.insertion_index_for(&layers, &layer.effect_id);
+        layers.insert(at, layer.clone());
+    }
+    let mut masks = base.masks.clone();
+    masks.extend(extra.masks.iter().cloned());
     Recipe {
         format: RECIPE_FORMAT,
         layers,
@@ -831,6 +954,8 @@ struct Measures {
     keystone: Option<(f64, f64)>,
     spacing: Option<f64>,
     size: Option<(u32, u32)>,
+    /// A photograph's band energy at [`PHOTO_BANDS`] over its editor's own neutral's.
+    energy: Vec<f64>,
 }
 
 /// A profile normalized by its value at its far end, and its 25, 50 and 75% crossings.
@@ -861,6 +986,26 @@ fn measures(subject: &Subject, neutral: &Reduced, adjusted: &Reduced) -> Measure
         size: Some((adjusted.width, adjusted.height)),
         ..Measures::default()
     };
+    if subject.photo().is_some() {
+        // A photograph: its band energy at three scales and how far its tone response depends on
+        // more than each cell's own lightness.
+        m.energy = neutral
+            .energy
+            .iter()
+            .zip(&adjusted.energy)
+            .map(|(n, a)| a / n)
+            .collect();
+        let lightness =
+            |samples: &[[f64; 3]]| samples.iter().map(|s| lstar(*s)).collect::<Vec<_>>();
+        let locality = la::tone_locality(
+            &lightness(&neutral.samples),
+            &lightness(&adjusted.samples),
+            1.0,
+            20,
+        );
+        m.locality = locality.is_finite().then_some(locality);
+        return m;
+    }
     match subject.id.as_str() {
         "wedge" => {
             m.transfer = la::transfer(&neutral.patches, &adjusted.patches);
@@ -996,6 +1141,9 @@ enum Response {
 
 struct Spec<'f> {
     id: String,
+    /// The round family whose exports are read, `<subject>__<family>__<label>`: the page's id
+    /// unless one family is fitted as several sweeps (RAW white balance's temperature and tint).
+    family: String,
     area: String,
     setting: String,
     subjects: Vec<String>,
@@ -1012,7 +1160,12 @@ struct Spec<'f> {
     /// How the settings the family holds away from neutral were converted.
     base: Vec<String>,
     recipe: Box<dyn Fn(f64) -> Recipe + Sync + 'f>,
+    /// The development a photograph renders each value over.
+    development: Box<dyn Fn(f64) -> Development + Sync + 'f>,
 }
+
+/// Columns of a photograph's normalized cells.
+const PHOTO_COLUMNS: u32 = 240;
 
 /// The responses of one editor at one value on every subject.
 struct Side {
@@ -1032,7 +1185,9 @@ struct Outcome {
 fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
     let first = spec.subjects[0].clone();
     let sampling = |s: &str| {
-        if spec.response == Response::Colour {
+        if ctx.subject(s).photo().is_some() {
+            Sampling::Normalized(PHOTO_COLUMNS)
+        } else if spec.response == Response::Colour {
             sampling_of(&spec.area, s)
         } else {
             Sampling::Dots
@@ -1064,6 +1219,7 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
             recipe: empty(),
             sampling: sampling(s),
             view: None,
+            development: Development::AsShot,
         });
         for u in &values {
             jobs.push(Job {
@@ -1071,6 +1227,7 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
                 recipe: (spec.recipe)(*u),
                 sampling: sampling(s),
                 view: (*s == first && identities.contains(&key(*u))).then_some(view),
+                development: (spec.development)(*u),
             });
         }
     }
@@ -1100,7 +1257,7 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
         for (label, _) in &spec.values {
             reads.push(Read {
                 subject: s.clone(),
-                id: format!("{s}__{}__{label}", spec.id),
+                id: format!("{s}__{}__{label}", spec.family),
                 sampling: sampling(s),
                 view: (*s == first).then_some(view),
             });
@@ -1124,7 +1281,7 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
         }
         for (vi, (label, _)) in spec.values.iter().enumerate() {
             if lr[si][vi].is_none() {
-                missing.push(format!("{s}__{}__{label}", spec.id));
+                missing.push(format!("{s}__{}__{label}", spec.family));
             }
         }
     }
@@ -1135,6 +1292,9 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
     let lr_neutral: Vec<Reduced> = lr_neutral.into_iter().flatten().collect();
     for (si, s) in spec.subjects.iter().enumerate() {
         let subject = ctx.subject(s);
+        if subject.photo().is_some() {
+            continue;
+        }
         ensure(
             (lr_neutral[si].width, lr_neutral[si].height) == (subject.width, subject.height),
             format!(
@@ -1249,6 +1409,7 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
                 recipe: (spec.recipe)(*u),
                 sampling: sampling(s),
                 view: (*s == first).then_some(view),
+                development: (spec.development)(*u),
             });
         }
     }
@@ -1522,14 +1683,25 @@ fn finish(
         ));
     }
     let subject_index = |name: &str| spec.subjects.iter().position(|s| s == name);
-    // Locality: a pointwise Luxforge control against a local Lightroom one.
-    if let Some(si) = subject_index("surround")
-        && spec.area == "basic"
-    {
+    // Locality: a pointwise Luxforge control against a local Lightroom one, on the surround
+    // target (CIEDE2000 across surrounds) or on the photographs (the spread of ΔL* at one
+    // lightness), each judged on its own subjects.
+    let local_subjects: Vec<usize> = spec
+        .subjects
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| *s == "surround" || ctx.subject(s).photo().is_some())
+        .map(|(si, _)| si)
+        .collect();
+    if !local_subjects.is_empty() && spec.area == "basic" {
         let pairs: Vec<(f64, f64)> = rows
             .iter()
             .filter(|r| r.far)
-            .filter_map(|r| Some((r.lr[si].locality?, r.cal[si].locality?)))
+            .flat_map(|r| {
+                local_subjects
+                    .iter()
+                    .filter_map(|si| Some((r.lr[*si].locality?, r.cal[*si].locality?)))
+            })
             .collect();
         let lr_local = la::median(&pairs.iter().map(|p| p.0).collect::<Vec<_>>());
         let lux_local = la::median(&pairs.iter().map(|p| p.1).collect::<Vec<_>>());
@@ -1942,6 +2114,21 @@ fn measure_tables(ctx: &Context, spec: &Spec, rows: &[Row]) -> Result<String> {
                     page += &format!("\n![profile {}]({link})\n", r.label);
                 }
             }
+            _ if ctx.subject(s).photo().is_some() => {
+                page += &format!(
+                    "\n## Photograph {s}\n\nTone locality (the spread of ΔL* among cells of one lightness, 0 for a pointwise change) and band energy at three scales (quarter-size radii {PHOTO_BANDS:?}) over the editor's own neutral. Lightroom / Luxforge / Luxforge calibrated.\n\n| Lightroom | locality | fine band | mid band | coarse band |\n|---|---|---|---|---|\n"
+                );
+                for r in rows {
+                    page += &format!(
+                        "| {} | {} | {} | {} | {} |\n",
+                        r.label,
+                        triple(&|m| m.locality, r, si),
+                        triple(&|m| m.energy.first().copied(), r, si),
+                        triple(&|m| m.energy.get(1).copied(), r, si),
+                        triple(&|m| m.energy.get(2).copied(), r, si),
+                    );
+                }
+            }
             "grid" => {
                 page += "\n## Dot grid\n\nRotation (degrees, clockwise), keystone along rows and columns, median dot spacing (pixels) and output size. Lightroom / Luxforge / Luxforge calibrated.\n\n| Lightroom | rotation | row keystone | column keystone | spacing | size |\n|---|---|---|---|---|---|\n";
                 for r in rows {
@@ -1972,24 +2159,45 @@ enum Method<'f> {
     Curve,
     Crop,
     Mask(bool),
+    /// RAW white balance on the photographs: a temperature sweep and a tint sweep.
+    WhiteBalance(Vec<String>),
+    /// The detected lens profile on the photographs, a conversion at the identity.
+    Lens(Vec<String>),
     Unmeasured(String),
 }
 
 fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
     let id = family["id"].as_str().unwrap_or_default().to_owned();
     let area = family["area"].as_str().unwrap_or_default().to_owned();
+    // A family on the photographs is measured on each of the round's photographs.
+    let photographs: Vec<String> = ctx
+        .subjects
+        .values()
+        .filter(|subject| subject.photo().is_some())
+        .map(|subject| subject.id.clone())
+        .collect();
     let subjects: Vec<String> = family["subjects"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|s| s.as_str().map(str::to_owned))
+        .filter_map(|s| s.as_str())
+        .flat_map(|s| {
+            if s == "photographs" {
+                photographs.clone()
+            } else {
+                vec![s.to_owned()]
+            }
+        })
         .collect();
-    if subjects.iter().all(|s| s == "photographs") {
+    if subjects.is_empty() {
         return Ok(Method::Unmeasured(
             "the round holds no RAW photographs (generated without --corpus or --manifest), so this family has no variant".into(),
         ));
     }
+    let on_photographs = subjects.iter().all(|s| photographs.contains(s));
     match id.as_str() {
+        "white-balance" => return Ok(Method::WhiteBalance(subjects)),
+        "lens-profile" => return Ok(Method::Lens(subjects)),
         "tone-curve" => return Ok(Method::Curve),
         "crop" => return Ok(Method::Crop),
         "mask-linear" => return Ok(Method::Mask(false)),
@@ -2040,6 +2248,7 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
         let subject = ctx.subject("grid");
         let (w, h) = (subject.width, subject.height);
         return Ok(Method::Numeric(Box::new(Spec {
+            family: id.clone(),
             id,
             area,
             setting: "CropAngle".into(),
@@ -2063,6 +2272,7 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
                     Vec::new(),
                 )
             }),
+            development: Box::new(|_| Development::AsShot),
         })));
     }
     let entry = family["luxforge"]
@@ -2082,7 +2292,12 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
         .iter()
         .any(|s| matches!(sampling_of(&area, s), Sampling::Cells(_)));
     let big = subjects.iter().all(|s| s == "edges-24mp");
+    // A photograph renders a whole RAW frame per value, so its grids are coarser.
     let dense = match (effect, field.as_str()) {
+        (_, "exposure") if on_photographs => grid(-5.0, 5.0, 0.5),
+        (e, "sharpening") if e == DETAIL_EFFECT && on_photographs => grid(0.0, 150.0, 25.0),
+        _ if on_photographs && lux_range.0 >= 0.0 => grid(lux_range.0, lux_range.1, 20.0),
+        _ if on_photographs => grid(lux_range.0, lux_range.1, 25.0),
         (_, "exposure") => grid(-5.0, 5.0, 0.25),
         (e, "radius") if e == DETAIL_EFFECT => grid(0.5, 3.0, 0.1),
         (e, "sharpening") if e == DETAIL_EFFECT => grid(0.0, 150.0, 10.0),
@@ -2111,6 +2326,7 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
     let field_key = field.clone();
     Ok(Method::Numeric(Box::new(Spec {
         anchor: base.is_empty().then_some((lr_default, lux_default)),
+        family: id.clone(),
         id,
         area,
         lr_range: lightroom_range(&setting),
@@ -2135,6 +2351,7 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
             fields.push((effect, field_key.clone(), value));
             recipe(registry, &fields, Vec::new(), Vec::new())
         }),
+        development: Box::new(|_| Development::AsShot),
     })))
 }
 
@@ -2148,6 +2365,185 @@ fn interpolate(points: &[(f64, f64)], value: f64) -> Option<f64> {
     sorted.windows(2).find_map(|pair| {
         let ((v0, u0), (v1, u1)) = (pair[0], pair[1]);
         (value > v0 && value < v1).then(|| u0 + (value - v0) / (v1 - v0) * (u1 - u0))
+    })
+}
+
+/// A white-balance variant's label, `<Kelvin>K<tint>`, as its Kelvin and tint.
+fn white_balance_label(label: &str) -> Option<(f64, f64)> {
+    let (kelvin, tint) = label.split_once('K')?;
+    Some((kelvin.parse().ok()?, number_of(tint)?))
+}
+
+/// RAW white balance on the photographs, fitted as two sweeps on Luxforge's own scale: Kelvin at
+/// Lightroom's tint 0, and tint at Lightroom's 5500 K, each holding the other at what the
+/// importer converts Lightroom's 5500 K and tint 0 to. Every value is a development of its own.
+fn white_balance(ctx: &Context, subjects: Vec<String>) -> Result<Vec<Outcome>> {
+    let labels: Vec<(String, (f64, f64))> = variants_on(ctx, "white-balance", &subjects[0])
+        .into_iter()
+        .filter_map(|(label, _)| white_balance_label(&label).map(|pair| (label, pair)))
+        .collect();
+    let converted = ctx
+        .variants
+        .get(&format!("{}__white-balance__5500K0", subjects[0]))
+        .map(|variant| &variant["luxforge"]["set-raw"]);
+    let held_kelvin = converted
+        .and_then(|raw| raw["temperature"].as_f64())
+        .unwrap_or(5500.0);
+    let held_tint = converted
+        .and_then(|raw| raw["tint"].as_f64())
+        .unwrap_or(0.0);
+    let mut temperatures: Vec<(String, f64)> = labels
+        .iter()
+        .filter(|(_, (_, tint))| *tint == 0.0)
+        .map(|(label, (kelvin, _))| (label.clone(), *kelvin))
+        .collect();
+    temperatures.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut tints: Vec<(String, f64)> = labels
+        .iter()
+        .filter(|(_, (kelvin, _))| *kelvin == 5500.0)
+        .map(|(label, (_, tint))| (label.clone(), *tint))
+        .collect();
+    tints.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let sweep = |id: &str, setting: &str, values: Vec<(String, f64)>| Spec {
+        id: id.to_owned(),
+        family: "white-balance".into(),
+        area: "white-balance".into(),
+        setting: setting.to_owned(),
+        subjects: subjects.clone(),
+        values,
+        dense: if setting == "Temperature" {
+            grid(2000.0, 12000.0, 500.0)
+        } else {
+            grid(-100.0, 100.0, 20.0)
+        },
+        lr_default: if setting == "Temperature" {
+            5500.0
+        } else {
+            0.0
+        },
+        lux_default: if setting == "Temperature" {
+            held_kelvin
+        } else {
+            held_tint
+        },
+        anchor: None,
+        lr_range: if setting == "Temperature" {
+            (2000.0, 12000.0)
+        } else {
+            (-150.0, 150.0)
+        },
+        lux_range: if setting == "Temperature" {
+            (2000.0, 12000.0)
+        } else {
+            (-100.0, 100.0)
+        },
+        integer: false,
+        response: Response::Colour,
+        luxforge: if setting == "Temperature" {
+            format!("set-raw temperature, tint held at {held_tint:.3}")
+        } else {
+            format!("set-raw tint, temperature held at {held_kelvin:.1} K")
+        },
+        base: Vec::new(),
+        recipe: Box::new(|_| empty()),
+        development: if setting == "Temperature" {
+            Box::new(move |u| Development::WhiteBalance {
+                temperature: u,
+                tint: held_tint,
+            })
+        } else {
+            Box::new(move |u| Development::WhiteBalance {
+                temperature: held_kelvin,
+                tint: u,
+            })
+        },
+    };
+    Ok(vec![
+        numeric(
+            ctx,
+            &sweep("white-balance-temperature", "Temperature", temperatures),
+        )?,
+        numeric(ctx, &sweep("white-balance-tint", "Tint", tints))?,
+    ])
+}
+
+/// The lens profile on the photographs: Luxforge's detected profile against Lightroom's profile
+/// distortion, a conversion at the identity judged by its residual on each photograph.
+fn lens(ctx: &Context, subjects: Vec<String>) -> Result<Outcome> {
+    let sampling = Sampling::Normalized(PHOTO_COLUMNS);
+    let mut page = String::from(
+        "# lens-profile\n\nLightroom's lens profile, distortion only, against Luxforge's detected profile for the same photograph (distortion only), each against its own neutral; no value to fit, so a conversion judged by its residual. CPU reference renderer (study 16-bit output).\n\n| photograph | Luxforge profile | residual (median ΔE2000) |\n|---|---|---|\n",
+    );
+    let mut points = Vec::new();
+    let mut sheet = Vec::new();
+    let mut worst: f64 = 0.0;
+    for subject in &subjects {
+        let photo = ctx.subject(subject).photo().ok_or("a photograph")?;
+        let Some(key) = &photo.lens else {
+            page += &format!("| {subject} | none eligible | – |\n");
+            points.push(json!({"label": subject, "profile": null}));
+            continue;
+        };
+        let job = |development: Development, view: Option<View>| Job {
+            subject: subject.clone(),
+            recipe: empty(),
+            sampling,
+            view,
+            development,
+        };
+        let lux = ctx.renders(&[
+            job(Development::AsShot, None),
+            job(Development::Lens, Some(View::Whole)),
+        ])?;
+        let read = |id: String, view: Option<View>| Read {
+            subject: subject.clone(),
+            id,
+            sampling,
+            view,
+        };
+        let lr = ctx.exports(&[
+            read(format!("{subject}__{NEUTRAL}"), None),
+            read(
+                format!("{subject}__lens-profile__distortion"),
+                Some(View::Whole),
+            ),
+        ])?;
+        let (Some((rn, _)), Some((rv, _))) = (&lr[0], &lr[1]) else {
+            page += &format!("| {subject} | {key} | export missing |\n");
+            continue;
+        };
+        let neutral_labs = labs(&lux[0].samples);
+        let reached: Vec<Lab> = lux[0]
+            .samples
+            .iter()
+            .zip(&rn.samples)
+            .zip(&rv.samples)
+            .map(|((n, r), a)| la::lab(la::carried(*n, *r, *a)))
+            .collect();
+        let residual = Target::new(&neutral_labs, reached).distance(&labs(&lux[1].samples));
+        worst = worst.max(residual);
+        page += &format!("| {subject} | {key} | {} |\n", number(Some(residual)));
+        points.push(json!({"label": subject, "profile": key, "residual": residual}));
+        sheet.push((
+            subject.clone(),
+            vec![lux[1].thumb.clone(), None, rv.thumb.clone()],
+        ));
+    }
+    report::contact_sheet(
+        &ctx.out.join("sheets/lens-profile.png"),
+        &["Luxforge", "(no calibration)", "Lightroom"],
+        &sheet,
+    )?;
+    page += "\n![sheet](../sheets/lens-profile.png)\n";
+    let candidate = worst > BEHAVIOUR_RESIDUAL;
+    let reasons: Vec<String> = if candidate {
+        vec![format!("median ΔE2000 at the identity up to {worst:.2}")]
+    } else {
+        Vec::new()
+    };
+    Ok(Outcome {
+        entry: json!({"family": "lens-profile", "area": "geometry", "kind": "conversion", "unit": "median ΔE2000", "worst_residual": worst, "candidate": candidate, "reasons": reasons, "points": points, "page": "pages/lens-profile.md"}),
+        page,
     })
 }
 
@@ -2183,6 +2579,7 @@ fn curve(ctx: &Context, family: &Value) -> Result<Outcome> {
             recipe: empty(),
             sampling: Sampling::Patches,
             view: None,
+            development: Development::AsShot,
         });
         reads.push(Read {
             subject: s.into(),
@@ -2202,6 +2599,7 @@ fn curve(ctx: &Context, family: &Value) -> Result<Outcome> {
                 ),
                 sampling: Sampling::Patches,
                 view: (s == "patches").then_some(View::Whole),
+                development: Development::AsShot,
             });
             reads.push(Read {
                 subject: s.into(),
@@ -2340,6 +2738,7 @@ fn crop(ctx: &Context) -> Result<Outcome> {
             recipe: recipe(&ctx.registry, &[], vec![Layer::crop(payload)], Vec::new()),
             sampling: Sampling::Dots,
             view: Some(View::Whole),
+            development: Development::AsShot,
         });
     }
     let lux = ctx.renders(&jobs)?;
@@ -2550,6 +2949,7 @@ fn mask(ctx: &Context, family: &str, radial: bool) -> Result<Outcome> {
         recipe,
         sampling: Sampling::Cells(10),
         view,
+        development: Development::AsShot,
     };
     let mut reads = vec![Read {
         subject: "flat".into(),
@@ -2746,6 +3146,44 @@ fn mask(ctx: &Context, family: &str, radial: bool) -> Result<Outcome> {
 fn base_rendering(ctx: &Context) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     for (id, subject) in &ctx.subjects {
+        if subject.photo().is_some() {
+            // A photograph has no bare control or pristine pixels: its base rendering is
+            // Lightroom's neutral (Adobe Color) against Luxforge's (the Standard look).
+            let sampling = Sampling::Normalized(PHOTO_COLUMNS);
+            let read = ctx.exports(&[Read {
+                subject: id.clone(),
+                id: format!("{id}__{NEUTRAL}"),
+                sampling,
+                view: None,
+            }])?;
+            let lux = ctx.renders(&[Job {
+                subject: id.clone(),
+                recipe: empty(),
+                sampling,
+                view: None,
+                development: Development::AsShot,
+            }])?;
+            let spread = read[0].as_ref().map(|(lr, _)| {
+                let d: Vec<f64> = lr
+                    .samples
+                    .iter()
+                    .zip(&lux[0].samples)
+                    .map(|(x, y)| {
+                        luxforge_reference::preview_error::ciede2000(la::lab(*x), la::lab(*y))
+                    })
+                    .collect();
+                let s = la::spread(&d);
+                json!({"median": s.median, "p95": s.p95, "max": s.max})
+            });
+            out.push(json!({
+                "target": id, "photograph": true,
+                "lightroom_neutral_vs_luxforge_neutral": spread,
+            }));
+            continue;
+        }
+        let Kind::Target { pristine, .. } = &subject.kind else {
+            continue;
+        };
         let sampling = if subject.layout["kind"] == "patches" {
             Sampling::Patches
         } else {
@@ -2771,15 +3209,12 @@ fn base_rendering(ctx: &Context) -> Result<Vec<Value>> {
             recipe: empty(),
             sampling,
             view: None,
+            development: Development::AsShot,
         }])?;
         let pristine_frame = Frame {
             width: subject.width,
             height: subject.height,
-            rgb: subject
-                .pristine
-                .iter()
-                .map(|c| u16::from(*c) * 257)
-                .collect(),
+            rgb: pristine.iter().map(|c| u16::from(*c) * 257).collect(),
         };
         let pristine = reduce(&pristine_frame, subject, sampling, None);
         let spread = |a: &Reduced, b: &Reduced| -> Value {
@@ -2881,21 +3316,21 @@ fn measure(
         .exists()
         .then(|| fs::read_to_string(&notes))
         .transpose()?;
+    fs::create_dir(out)?;
+    for dir in ["pages", "svg", "sheets"] {
+        fs::create_dir(out.join(dir))?;
+    }
     let ctx = Context {
         manifest: &manifest,
         exports: exports.to_owned(),
         out: out.to_owned(),
         registry: ModuleRegistry::developer(),
         render: RenderContext::new(),
-        subjects: open_subjects(&manifest, &folder)?,
+        subjects: open_subjects(&manifest, &folder, Some(&out.join("catalogs")))?,
         variants,
         ledger: Mutex::new(Ledger::default()),
         maps: Mutex::new(HashMap::new()),
     };
-    fs::create_dir(out)?;
-    for dir in ["pages", "svg", "sheets"] {
-        fs::create_dir(out.join(dir))?;
-    }
     let families: Vec<&Value> = manifest["families"]
         .as_array()
         .into_iter()
@@ -2907,25 +3342,37 @@ fn measure(
     for family in families {
         let id = family["id"].as_str().unwrap_or_default().to_owned();
         let started = std::time::Instant::now();
-        let outcome = match plan(&ctx, family)? {
-            Method::Numeric(spec) => Some(numeric(&ctx, &spec)?),
-            Method::Curve => Some(curve(&ctx, family)?),
-            Method::Crop => Some(crop(&ctx)?),
-            Method::Mask(radial) => Some(mask(&ctx, &id, radial)?),
+        let outcomes = match plan(&ctx, family)? {
+            Method::Numeric(spec) => vec![numeric(&ctx, &spec)?],
+            Method::Curve => vec![curve(&ctx, family)?],
+            Method::Crop => vec![crop(&ctx)?],
+            Method::Mask(radial) => vec![mask(&ctx, &id, radial)?],
+            Method::WhiteBalance(subjects) => white_balance(&ctx, subjects)?,
+            Method::Lens(subjects) => vec![lens(&ctx, subjects)?],
             Method::Unmeasured(why) => {
                 entries.push(
                     json!({"family": id, "area": family["area"], "kind": "unmeasured", "why": why}),
                 );
-                None
+                Vec::new()
             }
         };
-        if let Some(outcome) = outcome {
-            fs::write(out.join("pages").join(format!("{id}.md")), &outcome.page)?;
+        for outcome in outcomes {
+            let page = outcome.entry["family"].as_str().unwrap_or(&id).to_owned();
+            fs::write(out.join("pages").join(format!("{page}.md")), &outcome.page)?;
             entries.push(outcome.entry);
         }
         println!("{id}: {:.1} s", started.elapsed().as_secs_f64());
     }
     let base = base_rendering(&ctx)?;
+    // The round's photographs, read again: nothing changed them.
+    for subject in ctx.subjects.values() {
+        if let Some(photo) = subject.photo() {
+            ensure(
+                photo.intact()?,
+                format!("{} changed during the measurement", photo.path.display()),
+            )?;
+        }
+    }
     let ledger = ctx.ledger.into_inner().map_err(|_| "a poisoned ledger")?;
     let mut versions: BTreeMap<String, usize> = BTreeMap::new();
     let mut creators: BTreeMap<String, usize> = BTreeMap::new();
@@ -3195,15 +3642,18 @@ mod tests {
             out: directory.path().join("unused"),
             registry: ModuleRegistry::developer(),
             render: RenderContext::new(),
-            subjects: open_subjects(&manifest, &round).unwrap(),
+            subjects: open_subjects(&manifest, &round, None).unwrap(),
             variants: HashMap::new(),
             ledger: Mutex::new(Ledger::default()),
             maps: Mutex::new(HashMap::new()),
         };
         let write = |subject: &str, id: &str, recipe: &Recipe| {
+            let Kind::Target { source, .. } = &ctx.subject(subject).kind else {
+                panic!("a target")
+            };
             let study = render(
                 &ctx.registry,
-                &ctx.subject(subject).source,
+                source,
                 recipe,
                 RenderOptions::default(),
                 &ctx.render,
@@ -3277,5 +3727,208 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(other.contains("round 1, not 2"), "{other}");
+    }
+
+    /// A round on one synthetic RAW photograph (the test-camera DNG body), its Exposure and
+    /// white-balance families, whose "exports" are Luxforge's own renders through the same
+    /// photograph path: Exposure fits as the identity, each white-balance sweep fits with no
+    /// residual, the lens profile is reported with no eligible profile, the photograph is left as
+    /// it was, and the scratch catalog lies in the evidence directory.
+    #[test]
+    #[slow]
+    fn a_photograph_round_of_its_own_renders_measures_without_residual() {
+        luxforge_raw::admit_test_cameras();
+        let directory = tempfile::tempdir().unwrap();
+        let originals = directory.path().join("originals");
+        let written = luxforge_testkit::hdr_bracket::write_bracket(
+            &originals,
+            &luxforge_testkit::hdr_bracket::BracketSpec {
+                frames: 2,
+                noise: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = written[0].clone();
+        let bytes = fs::read(&original).unwrap();
+        let keep = [
+            "-1",
+            "+1",
+            "4000K0",
+            "5500K0",
+            "6500K0",
+            "5500K-25",
+            "5500K+25",
+            "distortion",
+        ];
+        let families: Vec<rounds::Family> = rounds::round_one()
+            .into_iter()
+            .filter(|f| {
+                matches!(
+                    f.id.as_str(),
+                    "exposure-photographs" | "white-balance" | "lens-profile"
+                )
+            })
+            .map(|mut f| {
+                f.steps.retain(|step| keep.contains(&step.label.as_str()));
+                f
+            })
+            .collect();
+        let photo = super::super::photos::Photo {
+            id: "synthetic".into(),
+            origin: "test",
+            camera: "Luxforge Synthetic Bracket".into(),
+            why: "a test".into(),
+            path: original.clone(),
+            extension: "DNG".into(),
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            bytes: bytes.len() as u64,
+            dimensions: [1520, 1008],
+        };
+        let round = directory.path().join("round");
+        generate(
+            &Plan {
+                round: 1,
+                families,
+                photos: vec![photo],
+                excluded: Vec::new(),
+            },
+            &round,
+        )
+        .unwrap();
+        let exports = round.join("exports");
+        fs::create_dir(&exports).unwrap();
+        let manifest = read_json(&round.join("manifest.json")).unwrap();
+        let scratch = directory.path().join("scratch");
+        let variants: HashMap<String, &Value> = manifest["variants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| (v["id"].as_str().unwrap().to_owned(), v))
+            .collect();
+        let ctx = Context {
+            manifest: &manifest,
+            exports: exports.clone(),
+            out: scratch.clone(),
+            registry: ModuleRegistry::developer(),
+            render: RenderContext::new(),
+            subjects: open_subjects(&manifest, &round, Some(&scratch)).unwrap(),
+            variants,
+            ledger: Mutex::new(Ledger::default()),
+            maps: Mutex::new(HashMap::new()),
+        };
+        // Luxforge's own render of a variant, written as its export.
+        let write = |id: &str, recipe: Recipe, development: Development| {
+            let subject = ctx.subject("synthetic");
+            let Kind::Photograph(photo) = &subject.kind else {
+                panic!("a photograph")
+            };
+            let developed = photo.develop(&development).unwrap();
+            let recipe = over(&ctx.registry, &developed.base, &recipe);
+            let study = render(
+                &ctx.registry,
+                RenderSource::Linear {
+                    image: &developed.image,
+                    settings: LinearSettings::default(),
+                },
+                &recipe,
+                RenderOptions::default(),
+                &ctx.render,
+            )
+            .unwrap()
+            .study_frame16()
+            .unwrap();
+            let xmp = "<x crs:ProcessVersion=\"11.0\"/>";
+            fs::write(
+                exports.join(format!("{id}.tif")),
+                crate::tiff::write(study.width, study.height, &study.rgb, Some(xmp)),
+            )
+            .unwrap();
+        };
+        write("synthetic__neutral", empty(), Development::AsShot);
+        let family = manifest["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == "exposure-photographs")
+            .unwrap();
+        let Method::Numeric(spec) = plan(&ctx, family).unwrap() else {
+            panic!("numeric")
+        };
+        for (label, value) in &spec.values {
+            write(
+                &format!("synthetic__exposure-photographs__{label}"),
+                (spec.recipe)(*value),
+                Development::AsShot,
+            );
+        }
+        // White balance as the measurement holds it: each Kelvin at the tint the importer gives
+        // Lightroom's 5500 K and tint 0, each tint offset from it at its Kelvin.
+        let held = &manifest["variants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "synthetic__white-balance__5500K0")
+            .unwrap()["luxforge"]["set-raw"];
+        let (held_kelvin, held_tint) = (
+            held["temperature"].as_f64().unwrap_or(5500.0),
+            held["tint"].as_f64().unwrap_or(0.0),
+        );
+        for (label, (kelvin, tint)) in ["4000K0", "5500K0", "6500K0", "5500K-25", "5500K+25"]
+            .iter()
+            .map(|l| (*l, white_balance_label(l).unwrap()))
+        {
+            let temperature = if kelvin == 5500.0 {
+                held_kelvin
+            } else {
+                kelvin
+            };
+            write(
+                &format!("synthetic__white-balance__{label}"),
+                empty(),
+                Development::WhiteBalance {
+                    temperature,
+                    tint: held_tint + tint,
+                },
+            );
+        }
+        drop(spec);
+        drop(ctx);
+        let out = directory.path().join("measured");
+        measure(1, &round, &exports, &out, None).unwrap();
+        let report = read_json(&out.join("lr-align.json")).unwrap();
+        let family = |id: &str| {
+            report["families"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["family"] == id)
+                .unwrap()
+                .clone()
+        };
+        // White balance renders a development per value on coarse grids (500 K, 20 tint), so its
+        // residual between two of them is the interpolation's, held to 1.
+        for (id, limit) in [
+            ("exposure-photographs", la::SHORTFALL_RESIDUAL),
+            ("white-balance-temperature", 1.0),
+            ("white-balance-tint", 1.0),
+        ] {
+            let family = family(id);
+            assert_eq!(family["direction"], "Increasing", "{family}");
+            for point in family["points"].as_array().unwrap() {
+                assert!(point["residual"].as_f64().unwrap() < limit, "{id}: {point}");
+            }
+        }
+        for point in family("exposure-photographs")["points"].as_array().unwrap() {
+            let value = point["lightroom"].as_f64().unwrap();
+            let span = [0, 1].map(|end| point["span"][end].as_f64().unwrap());
+            assert!(
+                span[0] - 1e-9 <= value && value <= span[1] + 1e-9,
+                "{point}"
+            );
+        }
+        assert_eq!(family("lens-profile")["points"][0]["profile"], Value::Null);
+        assert!(out.join("catalogs/synthetic").is_dir());
+        assert_eq!(fs::read(&original).unwrap(), bytes);
     }
 }

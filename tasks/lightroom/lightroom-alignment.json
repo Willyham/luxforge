@@ -3,7 +3,7 @@
   "plan_id": "lightroom-alignment",
   "title": "Lightroom alignment",
   "objective": "Make every supported slider do about what the same value does in Lightroom Classic: measure each setting's response from rendered outputs, calibrate the importers' conversions in the meantime, realign each control's response by editing area, and change an algorithm only where a dimension still differs past the threshold.",
-  "context_summary": "Planned from docs/design/lightroom-alignment.md, the contract every task follows; the owner decided every question on 2026-10-06 and authorized TASK-001, the generator, and TASK-002, measurement and fitting, on 2026-10-13; the later tasks await authorization. Lightroom is driven by generated XMP and one manual import and export per round by the owner; agents cannot run Lightroom. Only rendered outputs are compared by new alignment work: it introduces no Adobe code, SDK source, binary or data. The existing RAW importer and white-coordinate table are for separate review (owner, 2026-10-07). Response changes run by editing area (Basic and the Tone curve, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance); each raises its module's format marker so earlier recipes are refused. Behaviour changes follow only past the threshold (median ΔE2000 above 2 at ±25 and beyond, or a difference in kind). Decisions: docs/decisions.md. The whole-frame reference renderer supplies deterministic study buffers; rendering orchestration lives in xtask, never in the independent luxforge-reference crate. The RAW white-balance round includes calibrated preset import (owner, 2026-10-07). lr-align generate, lr-align measure and the lr_align test filters (xtask, and luxforge-reference's studies) exist; lr-align validate is a deliverable, not an existing command.",
+  "context_summary": "Planned from docs/design/lightroom-alignment.md, the contract every task follows; the owner decided every question on 2026-10-06 and authorized TASK-001, the generator, TASK-002, measurement and fitting, TASK-003, recording round 1, TASK-004, the calibrated mapping rows, the generator's fixes and the measurement of photographs on 2026-10-13; TASK-005 onward await authorization. Lightroom is driven by generated XMP and one manual import and export per round by the owner; agents cannot run Lightroom. Only rendered outputs are compared by new alignment work: it introduces no Adobe code, SDK source, binary or data. The existing RAW importer and white-coordinate table are for separate review (owner, 2026-10-07). Response changes run by editing area (Basic and the Tone curve, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance); each raises its module's format marker so earlier recipes are refused. Behaviour changes follow only past the threshold (median ΔE2000 above 2 at ±25 and beyond, or a difference in kind). Decisions: docs/decisions.md. The whole-frame reference renderer supplies deterministic study buffers; rendering orchestration lives in xtask, never in the independent luxforge-reference crate. The RAW white-balance round includes calibrated preset import (owner, 2026-10-07). lr-align generate, lr-align measure and the lr_align test filters (xtask, and luxforge-reference's studies) exist; lr-align validate is a deliverable, not an existing command.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -14,7 +14,8 @@
         "Only the round's own copies carry XMP: embedded in a JPEG copy, a sidecar beside a RAW copy. Originals and the corpus are never written. A DNG is left out and listed, because Lightroom reads a DNG's settings from inside the file.",
         "Every variant's XMP must read back through Luxforge's own preset reader to the manifest's settings: value transfers on their controls at the written numbers, and settings the importer does not map (Detail, crop, perspective, lens profile, gradient corrections) reported unsupported with their written text; a RAW white-balance pair beyond Luxforge's range is recorded as the importer's refusal.",
         "Round 1 is single settings across each range; round 2 the interacting pairs the design names. Supplied and corpus RAW files come from their manifests; none enter the repository. Colour grading is measured by the delivered grade-align round, not here.",
-        "The owner authorized this task on 2026-10-13. Delivered as cargo xtask lr-align generate (xtask/src/lr_align/) with the lr_align tests; round instructions are written into each round folder and summarized in the design's Running a round."
+        "The owner authorized this task on 2026-10-13. Delivered as cargo xtask lr-align generate (xtask/src/lr_align/) with the lr_align tests; round instructions are written into each round folder and summarized in the design's Running a round.",
+        "The owner authorized the generator's fixes on 2026-10-13, from round 1's exports: LocalExposure2012 is written as stops over four, and a straighten's crop as the opposite corners of the turned rectangle Lightroom reads (xtask/src/lr_align/settings.rs and rounds.rs)."
       ],
       "context_links": [
         {
@@ -67,7 +68,8 @@
         "Measures: transfer curves, ΔE2000 and signed ΔL*, Oklab chroma ratio and hue shift per sector, overshoot and halo width, band gain, radial profiles, grid positions; each checked on synthetic cases with known answers.",
         "Outputs only: no Adobe code, SDK source or binary is read or used.",
         "Current Render::frame and read_rect return 8-bit display buffers. Add study-only access before terminal display quantization; never promote those bytes and claim 16-bit precision. Preserve and report the existing JPEG geometry and other intermediate quantization. This is study output, not a new production export kind; a new export kind declares its tolerance with its feature.",
-        "The owner authorized this task on 2026-10-13. Delivered as cargo xtask lr-align measure (xtask/src/lr_align/measure.rs and report.rs, the TIFF reader in xtask/src/tiff.rs), Render::study_frame16 in luxforge-core (render/study.rs) and luxforge_reference::lr_align with its lr_align study; the measurement's recorded choices are in the design's Measuring a round. It measured the owner's round 1 exports of the synthetic targets on the CPU reference; the figures are evidence, not recorded in the design."
+        "The owner authorized this task on 2026-10-13. Delivered as cargo xtask lr-align measure (xtask/src/lr_align/measure.rs and report.rs, the TIFF reader in xtask/src/tiff.rs), Render::study_frame16 in luxforge-core (render/study.rs) and luxforge_reference::lr_align with its lr_align study; the measurement's recorded choices are in the design's Measuring a round. It measured the owner's round 1 exports of the synthetic targets on the CPU reference; the figures are evidence, not recorded in the design.",
+        "The owner authorized measuring a round's RAW photographs on 2026-10-13: xtask/src/lr_align/photographs.rs develops each through the editor service in a scratch catalog under the evidence directory, with normalized cells, band energy and tone locality from luxforge_reference::lr_align, white balance as two sweeps and the lens profile as a conversion; no photograph round has been exported yet."
       ],
       "context_links": [
         {
@@ -107,12 +109,13 @@
     {
       "id": "TASK-003",
       "description": "Run round 1 with the owner: single-setting sweeps over every supported setting, measured and fitted, with the figures, residuals and the settings past the A8 threshold recorded in the design.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
       "extra_context": [
-        "The owner imports the round folder into a scratch Lightroom catalog and exports it with the round's export settings (16-bit TIFF, sRGB, full size, no output sharpening, no metadata); agents cannot run Lightroom."
+        "The owner imports the round folder into a scratch Lightroom catalog and exports it with the round's export settings (16-bit TIFF, sRGB, full size, no output sharpening, no metadata); agents cannot run Lightroom.",
+        "The owner authorized this task on 2026-10-13 and supplied the export notes (Lightroom Classic 15.6, Camera Raw 18.7; variants at Process Version 5, bare targets at 6). Round 1 is recorded in the design's Round 1 section; the photograph families await a round with photographs."
       ],
       "context_links": [
         {
@@ -143,12 +146,13 @@
     {
       "id": "TASK-004",
       "description": "Add the calibrated mapping rows: each fitted level A map becomes a frozen fixture and a calibrated rule in the preset mapping, used by preset import and the Lightroom import until that setting's response change lands, with the report naming the rule applied.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
       "extra_context": [
-        "One mapping table; the calibrated rule sits beside value transfer and curve transfer."
+        "One mapping table; the calibrated rule sits beside value transfer and curve transfer.",
+        "The owner authorized this task on 2026-10-13. Delivered in crates/luxforge-core/src/presets/calibration.rs with the frozen table presets/alignment-round-1.json (lr-align measure's maps.json): 37 calibrated rows (Basic tone, colour and relative white balance, Clarity, Dehaze, the 24 mixer settings, Vignette Amount); a value at a range shortfall is refused; the report's mapped entry names the rule. Texture (undetermined) and the vignette's Midpoint, Feather and Roundness (fitted with Amount held) stay value transfers; Detail stays unsupported."
       ],
       "context_links": [
         {
