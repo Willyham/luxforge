@@ -86,7 +86,7 @@ const MIB: u64 = 1024 * 1024;
 /// [`SensorLevel`].
 pub(crate) const SPOOL_PIXEL: u64 = 14;
 /// One stored result pixel: three binary32 samples.
-const RESULT_PIXEL: u64 = 12;
+pub(crate) const RESULT_PIXEL: u64 = 12;
 /// Rows a development is spooled and reduced in at a time.
 const BAND_ROWS: u32 = 16;
 /// The most bytes one spool read takes: a window is read back in bands of whole rows, each band
@@ -104,10 +104,14 @@ pub(crate) enum Stage {
     /// That input is spooled and its development released.
     Spooled(usize),
     Aligning,
+    /// A panorama is about to match and register its frames, and plan its stitch.
+    Matching,
     /// A preview is about to draw its picture.
     Drawing,
     /// About to fuse and write this output chunk.
     Merging(usize),
+    /// About to stitch and write this output chunk of a panorama.
+    Stitching(usize),
     /// The result's source is durable, before the owner publishes it.
     Saved,
 }
@@ -132,7 +136,7 @@ impl Hooks {
         }
     }
 
-    fn spool_full(&self, _input: usize) -> bool {
+    pub(crate) fn spool_full(&self, _input: usize) -> bool {
         #[cfg(test)]
         return self.spool_full == Some(_input);
         #[cfg(not(test))]
@@ -192,6 +196,46 @@ impl Limits {
                 gib(available)
             ))
             .with_data(json!({"temp_bytes": bytes, "available_bytes": available})));
+        }
+        Ok(())
+    }
+
+    /// Refuse `more` bytes of temporary storage under `directory` beside the `spooled` bytes a job
+    /// already holds there: all of it, with the `held` bytes of open previews, beyond the ceiling,
+    /// or `more` beyond the volume's free space.
+    pub(crate) fn preflight_more(
+        &self,
+        directory: &Path,
+        spooled: u64,
+        more: u64,
+        held: u64,
+    ) -> Result<(), Error> {
+        let total = spooled.saturating_add(more);
+        if total.saturating_add(held) > self.temp_ceiling {
+            return Err(Error::resource_limit(format!(
+                "the merge needs {} of temporary storage with its result, above the {} a merge \
+                 may use",
+                gib(total.saturating_add(held)),
+                gib(self.temp_ceiling)
+            ))
+            .with_data(json!({
+                "temp_bytes": total,
+                "held_bytes": held,
+                "ceiling_bytes": self.temp_ceiling,
+            })));
+        }
+        let available = match self.available {
+            Some(available) => available.saturating_sub(spooled),
+            None => luxforge_process::disk::available_bytes(directory)
+                .map_err(|error| file_error("cannot read the free disk space", error.kind()))?,
+        };
+        if more > available {
+            return Err(Error::resource_limit(format!(
+                "the merge's result needs {} and the disk has {} free",
+                gib(more),
+                gib(available)
+            ))
+            .with_data(json!({"temp_bytes": more, "available_bytes": available})));
         }
         Ok(())
     }
@@ -464,14 +508,14 @@ impl Accounting {
 /// The job's spool files, removed as they are dropped, however the job or the preview holding them
 /// ends. The directory and anything else in it (the owner's request marker) are not the spool's to
 /// remove, unless it is a preview's own folder ([`Spool::owned`]).
-struct Spool {
-    files: Vec<PathBuf>,
+pub(crate) struct Spool {
+    pub(crate) files: Vec<PathBuf>,
     /// The folder to remove with the files: a preview's, which holds nothing else.
     folder: Option<PathBuf>,
 }
 
 impl Spool {
-    fn new(directory: &Path, inputs: usize) -> Result<Self, Error> {
+    pub(crate) fn new(directory: &Path, inputs: usize) -> Result<Self, Error> {
         fs::create_dir_all(directory).map_err(|error| {
             file_error("cannot create the merge's working folder", error.kind())
         })?;
@@ -484,7 +528,7 @@ impl Spool {
     }
 
     /// A spool whose folder is its own, removed with it.
-    fn owned(directory: &Path, inputs: usize) -> Result<Self, Error> {
+    pub(crate) fn owned(directory: &Path, inputs: usize) -> Result<Self, Error> {
         let mut spool = Self::new(directory, inputs)?;
         spool.folder = Some(directory.to_path_buf());
         Ok(spool)
@@ -992,28 +1036,8 @@ impl JobSpec {
     /// Refuse an input that is gone (`source-unavailable`) or not the file the request captured
     /// (`conflict`): one stat.
     fn check_signature(&self, input: &JobInput) -> Result<(), Error> {
-        let name = file_name(&input.path);
-        let metadata = input
-            .path
-            .metadata()
-            .ok()
-            .filter(|metadata| metadata.is_file())
-            .ok_or_else(|| {
-                Error::source_unavailable(format!(
-                    "{name} is no longer at {}; nothing was merged",
-                    input.path.display()
-                ))
-                .with_data(json!({"path": input.path}))
-            })?;
-        if !FileSignature::of(&metadata).unchanged(&input.signature) {
-            return Err(Error::conflict(format!(
-                "{name} changed since the merge was requested; nothing was merged"
-            ))
-            .with_data(json!({"path": input.path})));
-        }
-        Ok(())
+        check_signature(input)
     }
-
     /// Write `development`'s upright rows to `path`, [`SPOOL_PIXEL`] bytes a pixel, a band at a
     /// time, reducing each band into the input's proxy as it goes. Cancellable per band.
     fn spool_input(
@@ -1236,7 +1260,7 @@ fn band_rows(width: u32, bounds: PixelRect, limit: u64) -> usize {
 
 /// The most the window's band buffer holds when reading a `width`-pixel-wide frame:
 /// [`READ_BAND_BYTES`], or one frame row when that is larger.
-fn read_band_bytes(width: u32) -> u64 {
+pub(crate) fn read_band_bytes(width: u32) -> u64 {
     READ_BAND_BYTES.max(u64::from(width) * SPOOL_PIXEL)
 }
 
@@ -1292,7 +1316,7 @@ fn fusion_fits(
 /// The one source window buffer: an input's window read back from its spool into planes, through
 /// one bounded band buffer.
 #[derive(Default)]
-struct Window {
+pub(crate) struct Window {
     rgb: [Vec<f32>; 3],
     levels: Vec<SensorLevel>,
     band: Vec<u8>,
@@ -1300,7 +1324,12 @@ struct Window {
 
 impl Window {
     /// Read `bounds` of a `width`-pixel-wide spooled frame from `file`: see [`READ_BAND_BYTES`].
-    fn read(&mut self, file: &mut File, width: u32, bounds: PixelRect) -> Result<(), Error> {
+    pub(crate) fn read(
+        &mut self,
+        file: &mut File,
+        width: u32,
+        bounds: PixelRect,
+    ) -> Result<(), Error> {
         self.read_in_bands(file, width, bounds, READ_BAND_BYTES)
     }
 
@@ -1351,7 +1380,7 @@ impl Window {
         Ok(())
     }
 
-    fn source(&self, bounds: PixelRect) -> SourceWindow<'_> {
+    pub(crate) fn source(&self, bounds: PixelRect) -> SourceWindow<'_> {
         SourceWindow {
             x: bounds.x,
             y: bounds.y,
@@ -1366,7 +1395,7 @@ impl Window {
     }
 }
 
-fn spool_error(kind: std::io::ErrorKind) -> Error {
+pub(crate) fn spool_error(kind: std::io::ErrorKind) -> Error {
     let error = file_error("cannot use the merge's working data", kind);
     if error.kind == ErrorKind::ResourceLimit {
         Error::resource_limit("the disk holding the merge's working data is full")
@@ -1388,11 +1417,19 @@ pub(crate) fn report(control: &JobControl, stage: Stage, accounting: &Accounting
 
 /// The result's name: the reference file's stem with "HDR".
 pub(crate) fn result_name(reference: &Path) -> String {
+    named_result(reference, MergeKind::Hdr)
+}
+
+/// A result's name: the reference file's stem with "HDR" or "Panorama".
+pub(crate) fn named_result(reference: &Path, kind: MergeKind) -> String {
     let stem = reference.file_stem().map_or_else(
         || "Merge".to_owned(),
         |stem| stem.to_string_lossy().into_owned(),
     );
-    format!("{stem} HDR")
+    match kind {
+        MergeKind::Hdr => format!("{stem} HDR"),
+        MergeKind::Panorama => format!("{stem} Panorama"),
+    }
 }
 
 /// The result's header: the reference's capture time, place, camera, lens, aperture, ISO and focal
@@ -1411,7 +1448,32 @@ pub(crate) fn result_header(reference: &HeaderMetadata, width: u32, height: u32)
     }
 }
 
-fn file_name(path: &Path) -> String {
+/// Refuse an input that is gone (`source-unavailable`) or not the file the request captured
+/// (`conflict`): one stat.
+pub(crate) fn check_signature(input: &JobInput) -> Result<(), Error> {
+    let name = file_name(&input.path);
+    let metadata = input
+        .path
+        .metadata()
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .ok_or_else(|| {
+            Error::source_unavailable(format!(
+                "{name} is no longer at {}; nothing was merged",
+                input.path.display()
+            ))
+            .with_data(json!({"path": input.path}))
+        })?;
+    if !FileSignature::of(&metadata).unchanged(&input.signature) {
+        return Err(Error::conflict(format!(
+            "{name} changed since the merge was requested; nothing was merged"
+        ))
+        .with_data(json!({"path": input.path})));
+    }
+    Ok(())
+}
+
+pub(crate) fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),

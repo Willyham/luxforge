@@ -106,7 +106,9 @@ impl Owner {
             JobKind::PreviewExtract | JobKind::PreviewRegion | JobKind::PreviewRender => {
                 self.catalog.previews.cancelled(job_id, &mut self.jobs)
             }
-            JobKind::HdrMerge => library::cancelled(self, library::LaneKind::Merge, job_id),
+            JobKind::HdrMerge | JobKind::PanoramaMerge => {
+                library::cancelled(self, library::LaneKind::Merge, job_id)
+            }
             // A preview reads and aligns on the merge lane and draws again on its own.
             JobKind::MergePreview => {
                 let lane = if self.catalog.merge.lane.holds(job_id) {
