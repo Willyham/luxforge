@@ -195,7 +195,7 @@ impl Editor {
         }
         self.outcome(Outcome::EntryShown(&entry));
         self.show_entry(entry.clone());
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.preview_dimensions = Some(stage);
         }
         // The status bar names the GPU's picture once the surface draws it; until then it renders.
@@ -222,7 +222,7 @@ impl Editor {
             })
         });
         self.outcome(Outcome::Presented(outcome::Presented::Photo));
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
@@ -247,6 +247,21 @@ impl Editor {
             .filter(|target| target.content == content)
         {
             target.identity = identity.clone();
+        }
+    }
+
+    /// The held picture at rest of `content` was swept again, with the minimap overview, under
+    /// `versions`: counts still wanted of that content are the new tiles', as the earlier tiles
+    /// are handed no more and their counts never come.
+    pub(crate) fn gpu_counts_reswept(&mut self, content: Option<u64>, versions: [u64; 2]) {
+        if let Some(target) = self
+            .gpu
+            .counts
+            .as_mut()
+            .filter(|target| Some(target.content) == content)
+        {
+            target.versions = versions;
+            self.gpu.want_rest_counts(true);
         }
     }
 

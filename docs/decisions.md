@@ -228,6 +228,7 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - The title bar's Export button opens a menu. The export settings replaced its two items with Export… (`Cmd+E`), Export again (`Shift+Cmd+E`) and Export with preset, each in the command palette too.
 - The desktop exports the displayed entry, including a history preview, and never a draft.
 - The suggested name counts up (`-web-2.jpg`) when `-web.jpg` is taken.
+- An HDR or panorama result, which has no original, is named after its stack's first input with `-hdr` or `-pano` (`LXF_0005-pano-web.jpg`), and an HDR panorama would take `-hdr-pano`. No name the editor suggests has spaces, which are awkward on Linux: each run of whitespace becomes `-` (owner, 2026-10-13).
 - Exported metadata carries at most the design's EXIF field set, and no IPTC or XMP.
 - The encoder is libjpeg-turbo through the `mozjpeg` crate at its fastest profile: baseline, 4:4:4, one interleaved scan, standard Huffman tables. It is more than twice as fast as the `image` encoder at the same output; the comparison is in the [export design](design/export.md#decisions).
 - Import decodes JPEG with the same libjpeg-turbo (owner, 2026-09-27), for dependency consolidation rather than speed: shipped code uses one JPEG library, and `image` keeps PNG only. The decoded pixels differ from the previous decoder's by at most 3 codes ([performance](specs/performance.md#jpeg-decode-libjpeg-turbo-against-zune-jpeg)).
