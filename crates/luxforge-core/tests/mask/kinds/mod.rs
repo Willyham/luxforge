@@ -49,17 +49,76 @@ mod brush;
 pub(super) mod colour_range;
 mod linear;
 pub(super) mod luminance_range;
+mod model;
 mod radial;
 
 use super::*;
 use luxforge_core::{
-    ErrorKind, LinearSettings, ModuleRegistry, SnapshotId,
+    ArtifactId, ArtifactTable, ErrorKind, LinearSettings, ModuleRegistry, PreparedArtifact,
+    SnapshotId,
     mask::{self, CompiledMask},
     path::StrokeTable,
 };
 use luxforge_reference::mask::{Algebra, Mode, combine};
 use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
-use std::ops::RangeInclusive;
+use std::{
+    ops::{Deref, DerefMut, RangeInclusive},
+    sync::Arc,
+};
+
+/// What a kind's payloads reference beyond themselves, as a recipe holds it: the strokes a drawn
+/// kind's payload addresses and the artifacts a stored kind's payload binds. It dereferences to
+/// the stroke table, which is what most kinds' adapters reach for.
+pub(super) struct Store {
+    strokes: StrokeTable,
+    artifacts: Vec<Arc<PreparedArtifact>>,
+}
+
+impl Store {
+    pub(super) fn new() -> Self {
+        Self {
+            strokes: StrokeTable::new("the kind-conformance suite"),
+            artifacts: Vec::new(),
+        }
+    }
+
+    /// A store with no strokes and no artifacts, whose table is the unnamed one a recipe without
+    /// strokes holds.
+    pub(super) fn bare() -> Self {
+        Self {
+            strokes: StrokeTable::default(),
+            artifacts: Vec::new(),
+        }
+    }
+
+    /// Hold `artifact` and answer its identity, as a publish and a bind would.
+    pub(super) fn artifact(&mut self, artifact: PreparedArtifact) -> ArtifactId {
+        let id = artifact.id.clone();
+        if !self.artifacts.iter().any(|held| held.id == id) {
+            self.artifacts.push(Arc::new(artifact));
+        }
+        id
+    }
+
+    /// The bound table a recipe referencing these artifacts carries.
+    pub(super) fn table(&self) -> ArtifactTable {
+        self.artifacts.iter().cloned().collect()
+    }
+}
+
+impl Deref for Store {
+    type Target = StrokeTable;
+
+    fn deref(&self) -> &StrokeTable {
+        &self.strokes
+    }
+}
+
+impl DerefMut for Store {
+    fn deref_mut(&mut self) -> &mut StrokeTable {
+        &mut self.strokes
+    }
+}
 
 /// One component's reference falloff at a mask-space point and the pixel the masked operation
 /// receives, before its own inversion and before the fold.
@@ -67,7 +126,7 @@ type Falloff = Box<dyn Fn(&RefStage, f64, f64, [f64; 3]) -> f64>;
 
 /// A kind's random payload drawn in both spellings: the stored payload (its strokes, for a drawn
 /// kind, inserted into the table) and its reference falloff.
-type Sampler = fn(&mut SplitMix64, &[(u32, u32)], &mut StrokeTable) -> (Value, Falloff);
+type Sampler = fn(&mut SplitMix64, &[(u32, u32)], &mut Store) -> (Value, Falloff);
 
 /// The small stages the dense sweeps walk at every pixel, so the clamps' two ends and the exactly
 /// zero and exactly one plateaus are swept rather than sampled.
@@ -132,29 +191,31 @@ trait Kind {
     const RARE: usize = 0;
 
     /// A random legal payload, legal on every one of `stages`, and its reference falloff.
-    fn sample(
-        rng: &mut SplitMix64,
-        stages: &[(u32, u32)],
-        strokes: &mut StrokeTable,
-    ) -> (Value, Falloff);
+    fn sample(rng: &mut SplitMix64, stages: &[(u32, u32)], strokes: &mut Store)
+    -> (Value, Falloff);
     /// A case of [`Kind::sample`] the alone sweep must reach [`Kind::RARE`] times.
     fn rare(_payload: &Value) -> bool {
         false
     }
     /// Payloads that select nothing anywhere on a 40 × 30 frame. None for a value-based kind, which
     /// has no position to put off the frame.
-    fn nothing(strokes: &mut StrokeTable) -> Vec<Value>;
+    fn nothing(strokes: &mut Store) -> Vec<Value>;
     /// A payload drawn inside a 40 × 30 frame whose inversion is non-zero at every corner, with a
     /// pixel where that inversion is exactly zero; none for a kind whose inverse is itself bounded.
-    fn inverted_whole(strokes: &mut StrokeTable) -> Option<(Value, (u32, u32))>;
+    fn inverted_whole(strokes: &mut Store) -> Option<(Value, (u32, u32))>;
     /// A payload whose transition covers much of the small synthetic stage.
-    fn feathered(strokes: &mut StrokeTable) -> Value;
+    fn feathered(strokes: &mut Store) -> Value;
     /// Every refusal a malformed or illegal payload produces on a 400 × 400 stage, in full.
     fn refusals() -> Vec<(Value, ErrorKind, &'static str)>;
     /// Payloads at the edges of legality, each of which compiles on a 400 × 400 stage.
     fn legal() -> Vec<Value>;
     /// The ramps whose width `min_feature_px` states.
-    fn ramps(strokes: &mut StrokeTable) -> Vec<Ramp>;
+    fn ramps(strokes: &mut Store) -> Vec<Ramp>;
+    /// What [`Kind::refusals`] and [`Kind::legal`] compile against: nothing, unless the kind's
+    /// payloads reference artifacts.
+    fn bound() -> Store {
+        Store::bare()
+    }
 }
 
 /// One row of the checklist per test, for the kind `$kind`, in the adapter's own module.
@@ -210,7 +271,7 @@ macro_rules! checklist {
 use checklist;
 
 /// Every adapter, in the kind table's order: its kind and its sampler.
-fn adapters() -> [(&'static str, Sampler); 5] {
+fn adapters() -> [(&'static str, Sampler); 6] {
     fn of<K: Kind>() -> (&'static str, Sampler) {
         (K::KIND, K::sample)
     }
@@ -220,6 +281,7 @@ fn adapters() -> [(&'static str, Sampler); 5] {
         of::<brush::Brush>(),
         of::<luminance_range::LuminanceRange>(),
         of::<colour_range::ColourRange>(),
+        of::<model::Model>(),
     ]
 }
 
@@ -269,10 +331,10 @@ impl Fold {
     }
 }
 
-/// One randomized mask in both spellings, with the strokes its drawn components reference.
+/// One randomized mask in both spellings, with the strokes and artifacts its components reference.
 struct Sampled {
     mask: Mask,
-    strokes: StrokeTable,
+    strokes: Store,
     fold: Fold,
     kinds: Vec<&'static str>,
 }
@@ -283,10 +345,10 @@ struct Sampled {
 fn sample_mask(
     rng: &mut SplitMix64,
     components: usize,
-    mut draw: impl FnMut(&mut SplitMix64, &mut StrokeTable) -> (&'static str, Value, Falloff),
+    mut draw: impl FnMut(&mut SplitMix64, &mut Store) -> (&'static str, Value, Falloff),
 ) -> Sampled {
     let mut mask = Mask::new("Mask 1");
-    let mut strokes = StrokeTable::new("the kind-conformance suite");
+    let mut strokes = Store::new();
     mask.amount = rng.next_range(0.0, 100.0);
     mask.invert = rng.next_bool();
     let mut fold = Fold {
@@ -326,8 +388,8 @@ fn sample_of<K: Kind>(rng: &mut SplitMix64, components: usize, stages: &[(u32, u
     })
 }
 
-fn compile(mask: &Mask, (width, height): (u32, u32), strokes: &StrokeTable) -> CompiledMask {
-    CompiledMask::new(mask, stage(width, height), strokes)
+fn compile(mask: &Mask, (width, height): (u32, u32), strokes: &Store) -> CompiledMask {
+    CompiledMask::bound(mask, stage(width, height), strokes, &strokes.table())
         .unwrap_or_else(|error| panic!("{} on {width}x{height}: {error}", mask.components[0].kind))
 }
 
@@ -366,7 +428,7 @@ fn claims_its_kind<K: Kind>() {
         K::BAND.into_iter().collect::<Vec<_>>(),
         "{kind}: the band controls over {patch}"
     );
-    let mut strokes = StrokeTable::new("the kind-conformance suite");
+    let mut strokes = Store::new();
     let stored = one_component(kind, K::feathered(&mut strokes));
     assert_eq!(stored.components[0].name, format!("{} 1", K::TITLE));
     stored.validate().unwrap();
@@ -460,7 +522,7 @@ fn one_component_alone_is_its_reference_falloff<K: Kind>() {
     let mut rng = SplitMix64(K::SEEDS.alone);
     let (mut partial, mut rare) = (0usize, 0usize);
     for round in 0..K::ALONE_ROUNDS {
-        let mut strokes = StrokeTable::new("the kind-conformance suite");
+        let mut strokes = Store::new();
         let (payload, falloff) = K::sample(&mut rng, &STAGES, &mut strokes);
         if K::rare(&payload) {
             rare += 1;
@@ -555,7 +617,7 @@ fn evaluate_is_the_narrowed_field_and_stays_in_range<K: Kind>() {
         }
     }
     for _ in 0..200 {
-        let mut strokes = StrokeTable::new("the kind-conformance suite");
+        let mut strokes = Store::new();
         let (payload, _) = K::sample(&mut rng, &STAGES, &mut strokes);
         let mask = one_component(kind, payload);
         let compiled = compile(&mask, (6000, 4000), &strokes);
@@ -634,7 +696,7 @@ fn bounds_never_exclude_a_non_zero_pixel<K: Kind>() {
 fn the_rectangle_is_empty_or_whole_where_it_must_be<K: Kind>() {
     let kind = K::KIND;
     let size = (40u32, 30u32);
-    let mut strokes = StrokeTable::new("the kind-conformance suite");
+    let mut strokes = Store::new();
     let nothing = K::nothing(&mut strokes);
     assert_eq!(
         nothing.is_empty(),
@@ -722,21 +784,24 @@ fn the_rectangle_is_empty_or_whole_where_it_must_be<K: Kind>() {
 /// and the field; and the edges of legality compile.
 fn refusals_name_what_they_refuse<K: Kind>() {
     let kind = K::KIND;
+    let bound = K::bound();
     for (payload, error_kind, message) in K::refusals() {
-        let error = CompiledMask::new(
+        let error = CompiledMask::bound(
             &one_component(kind, payload.clone()),
             stage(400, 400),
-            &StrokeTable::default(),
+            &bound,
+            &bound.table(),
         )
         .expect_err("an illegal payload is refused");
         assert_eq!(error.kind, error_kind, "{kind}: {payload}");
         assert_eq!(error.to_string(), message, "{kind}: {payload}");
     }
     for payload in K::legal() {
-        CompiledMask::new(
+        CompiledMask::bound(
             &one_component(kind, payload.clone()),
             stage(400, 400),
-            &StrokeTable::default(),
+            &bound,
+            &bound.table(),
         )
         .unwrap_or_else(|error| panic!("{kind}: {payload} was refused: {error}"));
     }
@@ -748,7 +813,7 @@ fn refusals_name_what_they_refuse<K: Kind>() {
 /// is its narrowest component's.
 fn min_feature_px_is_the_measured_ramp<K: Kind>() {
     let kind = K::KIND;
-    let mut strokes = StrokeTable::new("the kind-conformance suite");
+    let mut strokes = Store::new();
     let ramps = K::ramps(&mut strokes);
     assert!(!ramps.is_empty(), "{kind} states no ramp");
     for ramp in &ramps {
@@ -830,7 +895,7 @@ fn min_feature_px_is_the_measured_ramp<K: Kind>() {
 fn reads_exactly_what_its_kind_says<K: Kind>() {
     let kind = K::KIND;
     let size = (37u32, 29u32);
-    let mut strokes = StrokeTable::new("the kind-conformance suite");
+    let mut strokes = Store::new();
     let mut mask = one_component(kind, K::feathered(&mut strokes));
     mask.components[0].invert = true;
     mask.invert = true;
@@ -893,11 +958,12 @@ fn a_sampled_byte_equals_the_rendered_byte<K: Kind>() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source();
     let linear = decoded(&source);
-    let mut strokes = StrokeTable::new("the kind-conformance suite");
+    let mut strokes = Store::new();
     let mask = one_component(kind, K::feathered(&mut strokes));
     let compiled = compile(&mask, (WIDTH, HEIGHT), &strokes);
     let stack = Recipe {
-        strokes,
+        artifacts: strokes.table(),
+        strokes: strokes.strokes.clone(),
         ..recipe(
             vec![masked(basic_layer(json!({"exposure": MASKED_EV})), &mask)],
             vec![mask.clone()],

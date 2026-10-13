@@ -553,20 +553,12 @@ impl CapabilityModule for CapabilitiesProofModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModuleRegistry;
     use crate::Stage;
-    use crate::{ModuleRegistry, artifacts::ArtifactId};
     use sha2::{Digest, Sha256};
 
     fn artifact(kind: &str, bytes: Vec<u8>) -> Arc<PreparedArtifact> {
-        let id = ArtifactId::for_hash(&format!("{:x}", Sha256::digest(&bytes))).unwrap();
-        Arc::new(PreparedArtifact {
-            id,
-            kind: kind.into(),
-            width: None,
-            height: None,
-            colour: None,
-            bytes: bytes.into(),
-        })
+        Arc::new(PreparedArtifact::of_bytes(kind, None, None, bytes.into()))
     }
 
     fn tint(gains: [f32; 3]) -> Vec<u8> {

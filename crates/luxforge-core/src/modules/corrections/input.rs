@@ -119,6 +119,18 @@ fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// The repair stage's **output** identity a model selection records as its `prefix_hash`: the
+/// SHA-256 of the content stage, the layers before the repair layer and every repair operation,
+/// which is exactly what a new top correction's input identity holds (`dimensions`, `upstream` and
+/// `earlier` over all operations). A colour edit, a crop or a lens correction after the repair
+/// layer changes none of it, so an ordinary edit never stales a selection; a removal does.
+/// `O(1)` over an identity already computed.
+pub(crate) fn selection_prefix(top: &RepairInput) -> String {
+    let canonical = serde_json::to_vec(&(top.dimensions, &top.upstream, &top.earlier))
+        .expect("an input identity is serializable");
+    digest(&canonical)
+}
+
 /// The `source` component of an asset: its fingerprint, kind and interpretation and its decoded
 /// dimensions, never its locator or file identity. `O(1)`; reads the catalog row only.
 pub(crate) fn source_identity(asset: &AssetRecord) -> String {

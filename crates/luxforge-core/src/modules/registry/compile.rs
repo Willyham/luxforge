@@ -145,6 +145,7 @@ impl ModuleRegistry {
         layer: &Layer,
         masks: &[Mask],
         strokes: &crate::path::StrokeTable,
+        artifacts: &ArtifactTable,
         stage: Stage,
         sampling: MaskSampling,
     ) -> Result<Option<MaskField>, Error> {
@@ -157,7 +158,9 @@ impl ModuleRegistry {
                 layer.id
             ))
         })?;
-        Ok(Some(MaskField::compile(mask, stage, strokes, sampling)?))
+        Ok(Some(MaskField::compile_bound(
+            mask, stage, strokes, artifacts, sampling,
+        )?))
     }
 
     /// Only a layer of an effect that declares `artifacts` may reference any. The host owns the
@@ -446,11 +449,12 @@ impl ModuleRegistry {
                         // `Processing` — against the stage this layer receives, which for a
                         // content-stage layer is the content stage its geometry is normalized to. A
                         // module returned a plain operation and never saw the reference.
-                        let operation =
-                            match Self::compiled_mask(layer, masks, strokes, stage, sampling)? {
-                                Some(mask) => operation.with_mask(mask),
-                                None => operation,
-                            };
+                        let operation = match Self::compiled_mask(
+                            layer, masks, strokes, artifacts, stage, sampling,
+                        )? {
+                            Some(mask) => operation.with_mask(mask),
+                            None => operation,
+                        };
                         segment.has_color = true;
                         segment.operations.push(Processing::Color(operation));
                     }
@@ -470,7 +474,7 @@ impl ModuleRegistry {
                     // coordinates. The module returned a plain operation and never saw the
                     // reference.
                     let operation = match Self::compiled_mask(
-                        layer, masks, strokes, stage, sampling,
+                        layer, masks, strokes, artifacts, stage, sampling,
                     )? {
                         Some(mask) => {
                             masked_spatial += 1;

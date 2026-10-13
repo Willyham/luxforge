@@ -17,9 +17,9 @@
 use super::gpu_plan::{coverage, surface_plan};
 use super::gpu_qualification::{figures, grid, held_to_whole, worst};
 use luxforge_core::{
-    BASIC_EFFECT, Cancel, Component, ComponentMode, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest,
-    GpuProgramKind, Layer, MASK_GPU_PROGRAMS, Mask, ModuleRegistry, Recipe, RenderContext,
-    RenderOptions, SnapshotId, SourceImage, Stage, gpu_plan,
+    ArtifactTable, BASIC_EFFECT, Cancel, Component, ComponentMode, GPU_PROGRAMS, GpuAnswer,
+    GpuPlanRequest, GpuProgramKind, Layer, MASK_GPU_PROGRAMS, Mask, ModuleRegistry, Recipe,
+    RenderContext, RenderOptions, SnapshotId, SourceImage, Stage, gpu_plan,
     mask::{BRUSH_GPU_BLOCK_WORDS_MAX, ColourLimit, CompiledMask, Stroke},
     path::StrokeTable,
     render,
@@ -57,6 +57,11 @@ fn basic() -> Layer {
 }
 
 fn masked_recipe(mask: &Mask, strokes: &StrokeTable) -> Recipe {
+    bound_recipe(mask, strokes, &ArtifactTable::default())
+}
+
+/// [`masked_recipe`] bound with the artifacts a model selection reads.
+fn bound_recipe(mask: &Mask, strokes: &StrokeTable, artifacts: &ArtifactTable) -> Recipe {
     Recipe {
         layers: vec![Layer {
             mask: Some(mask.id.clone()),
@@ -64,6 +69,7 @@ fn masked_recipe(mask: &Mask, strokes: &StrokeTable) -> Recipe {
         }],
         masks: vec![mask.clone()],
         strokes: strokes.clone(),
+        artifacts: artifacts.clone(),
         ..Recipe::default()
     }
 }
@@ -409,11 +415,12 @@ fn measure(
     qualifier: &Qualifier,
     mask: &Mask,
     strokes: &StrokeTable,
+    artifacts: &ArtifactTable,
     phase: Phase,
     pixels: &[[f32; 3]],
 ) -> Measured {
     let Stage { width, height } = phase.stage();
-    let plan = planned(&masked_recipe(mask, strokes), phase.request());
+    let plan = planned(&bound_recipe(mask, strokes, artifacts), phase.request());
     let core = plan.content[0].mask.as_ref().expect("a masked operation");
     let converted = coverage(core).expect("a runnable mask");
     let readback = GpuPlan {
@@ -433,7 +440,7 @@ fn measure(
         .zip(pixels)
         .map(|(out, input)| f64::from(out[1]) - f64::from(input[1]))
         .collect();
-    let compiled = CompiledMask::new(mask, phase.stage(), strokes).expect("a mask");
+    let compiled = CompiledMask::bound(mask, phase.stage(), strokes, artifacts).expect("a mask");
     if let Phase::Fit { proxy, .. } = phase {
         assert_eq!(
             core.supersample,
@@ -442,7 +449,8 @@ fn measure(
         );
     }
     let fine = core.supersample.then(|| {
-        CompiledMask::new(mask, stage(2 * width, 2 * height), strokes).expect("a doubled mask")
+        CompiledMask::bound(mask, stage(2 * width, 2 * height), strokes, artifacts)
+            .expect("a doubled mask")
     });
     let cpu: Vec<f64> = (0..width * height)
         .map(|index| {
@@ -474,8 +482,13 @@ fn measure(
     } else {
         POINT_FINE
     };
-    let finer = CompiledMask::new(mask, stage(factor * width, factor * height), strokes)
-        .expect("a finer mask");
+    let finer = CompiledMask::bound(
+        mask,
+        stage(factor * width, factor * height),
+        strokes,
+        artifacts,
+    )
+    .expect("a finer mask");
     let mut ties = vec![false; differences.len()];
     let (mut tied, mut tie_moved) = (0, 0.0f64);
     for (index, difference) in differences.iter().enumerate() {
@@ -516,6 +529,11 @@ fn phases() -> [Phase; 2] {
 
 /// Every case of one kind at every phase: each held to the contour rule, the figures printed.
 fn qualify(test: &str, cases: Vec<(&str, Mask, StrokeTable)>) {
+    qualify_bound(test, cases, &ArtifactTable::default());
+}
+
+/// [`qualify`] with the artifacts the cases' model selections read.
+fn qualify_bound(test: &str, cases: Vec<(&str, Mask, StrokeTable)>, artifacts: &ArtifactTable) {
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
@@ -524,7 +542,7 @@ fn qualify(test: &str, cases: Vec<(&str, Mask, StrokeTable)>) {
     for phase in phases() {
         let (_, pixels) = photograph(phase.stage().width, phase.stage().height);
         for (name, mask, strokes) in &cases {
-            let measured = measure(&qualifier, mask, strokes, phase, &pixels);
+            let measured = measure(&qualifier, mask, strokes, artifacts, phase, &pixels);
             eprintln!(
                 "{test}: {name}, {}{}: contour {:.4} px over {} crossings, coverage max {:.2e} \
                  mean {:.2e}, {} ties within {:.4} px",
@@ -619,6 +637,67 @@ fn gpu_mask_linear_coverage_meets_the_contour_rule() {
                 none(),
             ),
         ],
+    );
+}
+
+/// A model selection over a synthetic raster: a disc whose soft edge spans a few texels, with a
+/// band of fine stripes, so the bilinear read, the threshold and the feather all draw contours.
+#[test]
+#[slow]
+fn gpu_mask_model_coverage_meets_the_contour_rule() {
+    use luxforge_core::{PreparedArtifact, mask::ALPHA_KIND};
+    let (width, height) = (480u32, 320u32);
+    let codes: Vec<u8> = (0..width * height)
+        .map(|k| {
+            let (x, y) = (f64::from(k % width), f64::from(k / width));
+            let d = ((x - 230.0).hypot(y - 150.0) - 110.0) / 3.0;
+            let disc = (0.5 - d / 2.0).clamp(0.0, 1.0);
+            let stripes = if (380.0..460.0).contains(&x) && (k / width) % 6 < 3 {
+                0.8
+            } else {
+                0.0
+            };
+            (disc.max(stripes) * 255.0).round() as u8
+        })
+        .collect();
+    let artifact = Arc::new(PreparedArtifact::of_bytes(
+        ALPHA_KIND,
+        Some(width),
+        Some(height),
+        codes.into(),
+    ));
+    let artifacts: ArtifactTable = [artifact.clone()].into_iter().collect();
+    let model = |threshold: f64, feather: f64| {
+        json!({"artifact": artifact.id.as_str(), "class": "sky", "model": "test-model",
+               "model_version": "1", "input_fingerprint": "a".repeat(64),
+               "prefix_hash": "b".repeat(64), "threshold": threshold, "feather": feather})
+    };
+    let none = StrokeTable::default;
+    qualify_bound(
+        "gpu_mask_model_coverage_meets_the_contour_rule",
+        vec![
+            (
+                "the eased raster at the defaults",
+                one("model", model(50.0, 100.0)),
+                none(),
+            ),
+            (
+                "a narrow band below the middle",
+                one("model", model(30.0, 40.0)),
+                none(),
+            ),
+            ("a hard threshold", one("model", model(65.0, 0.0)), none()),
+            (
+                "an inverted selection at an amount",
+                mask_of(
+                    &[("model", ComponentMode::Add, true, model(50.0, 100.0))],
+                    false,
+                    75.0,
+                ),
+                none(),
+            ),
+        ],
+        &artifacts,
     );
 }
 
@@ -938,6 +1017,7 @@ fn gpu_mask_value_based_coverage_is_finite_over_extreme_inputs() {
             &qualifier,
             &mask,
             strokes,
+            &ArtifactTable::default(),
             Phase::Exact(stage(side, side)),
             &pixels,
         );
@@ -1783,5 +1863,71 @@ fn gpu_mask_the_paint_harness_layout_costs_a_tick_at_fit() {
             at(&alone, 95),
             at(&alone, 100),
         );
+    }
+}
+
+/// The corpus's model-mask rows apply through the API as they are written, on any host and with no
+/// device: the developer producer publishes the checked-in raster under the identity the rows name,
+/// `mask.create-model` binds it, the masked Basic layer renders and samples with it bound, and
+/// `mask.list` reports the selection's provenance and its staleness against the photograph (the
+/// rows record placeholder identities, so source and repair prefix). The gate itself needs a
+/// device; this is what makes a row's failure there a rendering difference and not a broken script.
+#[test]
+fn gpu_mask_the_corpus_model_rows_apply_and_bind_their_raster() {
+    use super::gpu_qualification::{CorpusSource, Opened};
+    use luxforge_testkit::client::call;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let corpus: Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("fixtures/preview/corpus.json")).unwrap(),
+    )
+    .unwrap();
+    let rows: Vec<&Value> = corpus["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["family"] == "mask-model")
+        .collect();
+    assert_eq!(rows.len(), 2);
+    let source = CorpusSource {
+        id: "jpeg".into(),
+        path: luxforge_testbase::paths::jpeg(),
+        raw: false,
+        derived: None,
+    };
+    for row in rows {
+        let steps = row["steps"].as_array().unwrap();
+        let dir = luxforge_testbase::paths::temp_dir("model-corpus");
+        let opened = Opened::new(&source, steps, &dir.join("catalog.sqlite"))
+            .unwrap_or_else(|error| panic!("{}: {error}", row["id"]));
+        let asset = json!(opened.asset.as_str());
+        let listing = call(
+            &opened.owner,
+            opened.client,
+            "mask.list",
+            json!({"asset_id": asset}),
+        )
+        .unwrap();
+        let component = &listing["masks"][0]["components"][0];
+        assert_eq!(component["kind"], "model", "{}", row["id"]);
+        assert_eq!(
+            component["model"]["artifact"],
+            luxforge_core::PROOF_SELECTION_ARTIFACT
+        );
+        assert_eq!(component["model"]["model"], "proof-selection");
+        assert_eq!(
+            component["model"]["stale"],
+            json!(["source", "repair-prefix"])
+        );
+        assert!(component["model"]["computed_ms"].as_i64().unwrap() > 0);
+        let sample = call(
+            &opened.owner,
+            opened.client,
+            "render.sample",
+            json!({"asset_id": asset, "x": 3, "y": 4}),
+        )
+        .unwrap_or_else(|error| panic!("{}: {error}", row["id"]));
+        assert!(sample["rgba"].is_array(), "{sample}");
+        drop(opened);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

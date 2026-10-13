@@ -34,6 +34,8 @@ mod catalog;
 mod catalog_rows;
 mod collapse;
 mod corrections;
+#[cfg(test)]
+mod model_mask_tests;
 pub use corrections::{BatchStaleAcknowledgement, StaleAcknowledgement};
 pub(crate) use corrections::{STALE_UNACKNOWLEDGED, acknowledged};
 pub(crate) mod derived_source;

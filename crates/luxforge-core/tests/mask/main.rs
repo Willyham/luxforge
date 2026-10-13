@@ -15,6 +15,7 @@ mod commands;
 mod constrained_brush;
 mod detail;
 mod geometry_survival;
+mod guided;
 mod kinds;
 mod masked_colour;
 mod masked_spatial;

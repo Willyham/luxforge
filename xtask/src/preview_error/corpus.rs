@@ -66,7 +66,7 @@ const DERIVED_GENERATOR: &str = "luxforge_testkit::derived::planes";
 /// Every recipe family and the class its limits come from: pointwise for the colour units, masks,
 /// the vignette and geometry under a colour edit, spatial for Presence, Detail, Clone, Heal and the
 /// frozen patch.
-const FAMILIES: [(&str, Class); 18] = [
+const FAMILIES: [(&str, Class); 19] = [
     ("basic", Class::Pointwise),
     ("tone-curve", Class::Pointwise),
     ("mixer", Class::Pointwise),
@@ -78,6 +78,7 @@ const FAMILIES: [(&str, Class); 18] = [
     ("mask-luminance-range", Class::Pointwise),
     ("mask-colour-range", Class::Pointwise),
     ("mask-composed", Class::Pointwise),
+    ("mask-model", Class::Pointwise),
     ("crop", Class::Pointwise),
     ("lens-perspective", Class::Pointwise),
     ("presence", Class::Spatial),
@@ -90,7 +91,7 @@ const FAMILIES: [(&str, Class); 18] = [
 /// The families the design lists, which the corpus must hold at least one recipe of. The component
 /// algebra's `mask-composed` and the four colour recipes together, `colour-stack`, are recipes the
 /// corpus adds beyond them.
-const REQUIRED_FAMILIES: [&str; 16] = [
+const REQUIRED_FAMILIES: [&str; 17] = [
     "basic",
     "tone-curve",
     "mixer",
@@ -100,6 +101,7 @@ const REQUIRED_FAMILIES: [&str; 16] = [
     "mask-brush",
     "mask-luminance-range",
     "mask-colour-range",
+    "mask-model",
     "crop",
     "lens-perspective",
     "presence",
@@ -993,12 +995,8 @@ mod tests {
             );
         }
         // Only the developer recipes say so.
-        assert!(
-            corpus
-                .recipes
-                .iter()
-                .all(|recipe| recipe.developer == (recipe.family == "repair-patch"))
-        );
+        assert!(corpus.recipes.iter().all(|recipe| recipe.developer
+            == matches!(recipe.family.as_str(), "repair-patch" | "mask-model")));
         let id = patches[0].id.clone();
         assert!(
             refused(|c| {

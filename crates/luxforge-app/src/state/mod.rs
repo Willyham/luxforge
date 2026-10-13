@@ -2717,6 +2717,7 @@ mod tests {
             payload: json!({}),
             available: true,
             strokes: Vec::new(),
+            model: None,
         };
         let listing = MaskListing {
             entry_id: EntryId::new(),
