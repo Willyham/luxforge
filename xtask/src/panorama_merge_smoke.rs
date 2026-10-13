@@ -1,37 +1,38 @@
-//! The `panorama-merge` smoke scenario: overlapping frames merged into panoramas, one shown in
-//! Select and developed, removed and put back, one past the resident source limits exported, and
-//! the first reopened with its frames moved away, in the real editor at 1440 × 900 ([panorama
+//! The `panorama-merge` smoke scenario: overlapping frames merged into panoramas in Select, one
+//! through the preview sheet and one by ⌥-click, shown as collapsed tiles, removed and put back,
+//! both developed and the one past the resident source limits exported, and both reopened with
+//! their frames moved away, in the real editor at 1440 × 900 ([panorama
 //! design](../../docs/design/panorama-merge.md), "Evidence and acceptance", item 5).
 //!
 //! The run first writes two rows of JPEG frames of one synthetic scene (`luxforge_reference::
 //! panorama`), each frame the scene seen by a level camera turned about its centre: `Frames/Row`,
 //! four 1536 × 1024 frames 30° apart with a 60° field (about 3 MP stitched), and `Frames/Wide`, ten
 //! 6000 × 4000 frames 26° apart with a 40° field, which stitch past the resident limits (about
-//! 150 MP, so its result is a paged source). It makes a new catalog with `Frames` indexed.
+//! 150 MP, so its result is a paged source). It makes a new catalog with `Frames` indexed and
+//! nothing merged (`panorama-merge-expected.json`).
 //!
-//! **The merges run through the core's API beforehand** until Select's panorama sheet is built,
-//! as the documented requests the desktop will send ([`PENDING`] lists each step and the task it
-//! waits on): the Row's as the panorama sheet sends them (`merge.plan`, `merge.preview`,
-//! `merge.preview-update` with Boundary Warp [`WARP`], then `merge.create` with the preview), and
-//! the Wide's as ⌥-click sends them (`merge.plan` and `merge.create` at once with the last
-//! settings), each job's progress read as it runs (`panorama-merge-expected.json`).
+//! The `select` launch, in [`select_plan`] order: `G`; the Row's folder, its four frames selected
+//! and the selection menu opened over them, both kinds planned; Merge panorama… opening the
+//! preview sheet; Boundary Warp dragged to [`WARP`]; Frame outlines and Crop and coverage turned
+//! off and on again; Merge, its pending row, and one collapsed panorama tile; `S` expanding its
+//! originals, each "Frame k of 4"; an original clicked, then the result, its Info band reading the
+//! projection and field of view; Remove merge (`⌫`), `Cmd+Z`, `Shift+Cmd+Z` and `Cmd+Z`; then the
+//! Wide's folder, its ten frames selected, the menu opened and Merge panorama ⌥-clicked, merging
+//! at once with the remembered settings, its pending row, and one collapsed tile of ten.
 //!
-//! The first launch, in [`first_plan`] order: `G`; the Row's folder, one collapsed panorama tile;
-//! `S` expanding its originals; an original clicked, its Info band "Frame k of 4"; the result's
-//! catalog folder, the result clicked and opened in Develop from its saved source; Fit, 100% and
-//! the bottom-right corner, Fit again; a linear mask and Exposure through it; `merge.inspect`; back
-//! to Select, the result clicked and Remove merge (`⌫`), `Cmd+Z`, `Shift+Cmd+Z` and `Cmd+Z`; then
-//! the Wide's folder, one collapsed tile of ten with its preview drawn; the paged result opened in
-//! Develop from its catalog folder, at Fit counting its overview, at 100% in its bottom-right
-//! corner from a window of level 0, Fit again, the same mask and Exposure through it, and Develop's
-//! export of it, above 128 MP, on the GPU.
+//! The catalog that launch left is read (`panorama-merge-after-select.json`): where each result is
+//! filed. The `develop` launch, in [`develop_plan`] order, opens the Row result from its catalog
+//! folder in Develop: Fit, 100% and the bottom-right corner, Fit again, a linear mask and Exposure
+//! through it, and `merge.inspect`; then the paged Wide result the same way, at Fit counting its
+//! overview and at 100% from a window of level 0, and Develop's export of it, above 128 MP, on the
+//! GPU. The catalog is read again (`panorama-merge-after-develop.json`), `Frames` renamed so no
+//! frame can be read, and the `offline` launch, in [`offline_plan`] order, opens the Row result
+//! with its masked edit and inspects it, then the Wide result with its own. The folder is named
+//! back, the catalog read again (`panorama-merge-after.json`) and every frame's hash checked.
 //!
-//! The catalog the first launch left is read (`panorama-merge-after-first.json`), `Frames` renamed
-//! so no frame can be read, and the second launch, in [`second_plan`] order, opens the Row result
-//! from its catalog folder in Develop with its masked edit and inspects it, then opens the Wide
-//! result with its own. The folder is named back, the catalog read again
-//! (`panorama-merge-after.json`) and every frame's hash checked. The run then fails naming the
-//! [`PENDING`] steps until there are none.
+//! Develop opens a photograph from a catalog folder, which the merges choose as they run, so the
+//! results are developed in a launch of their own, from the folders the catalog names; each launch
+//! also stays within the editor's bound on a scripted journey.
 use crate::{
     generate_catalog,
     hdr_merge_smoke::{ask, with_owner},
@@ -41,14 +42,17 @@ use crate::{
 };
 use luxforge_core::{BASIC_EFFECT, ClientId, EditorService, OwnerHandle};
 use luxforge_evidence::{
-    self as script, CatalogStep, DevelopStep, ExportFile, ExportStep, LibraryKey, SelectStep,
-    ViewStep,
+    self as script, CatalogStep, DevelopStep, ExportFile, ExportStep, LibraryKey, MergeChoice,
+    MergePreviewStep, SelectStep, ViewStep,
 };
 use luxforge_reference::{
     panorama::{Lens, Pose, Scene, apply, row},
     srgb,
 };
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 pub const SCENARIO: &str = "panorama-merge";
 /// What `reproduce.md` says the run does before, between and after its launches.
@@ -56,19 +60,19 @@ pub const NOTE: &str = "The run first writes two rows of JPEG frames of one synt
     (`luxforge_reference::panorama`, a level camera turned about its centre): \
     `generated/Frames/Row`, four 1536 × 1024 frames 30° apart with a 60° field, and \
     `generated/Frames/Wide`, ten 6000 × 4000 frames 26° apart with a 40° field, which stitch past \
-    128 MP. It makes `generated/catalog.sqlite` with `Frames` indexed and, through the core's own \
-    client, merges the Row as the panorama sheet does (`merge.plan`, `merge.preview`, \
-    `merge.preview-update` with Boundary Warp 60, `merge.create` with the preview) and the Wide as \
-    ⌥-click does (`merge.plan` and `merge.create` with Boundary Warp 60), reading each job's \
-    progress (`panorama-merge-expected.json`). The first launch opens that catalog with \
-    `--catalog` and exports the Wide result into its evidence directory (`wide-panorama.jpg`); the \
-    run then reads the catalog it left (`panorama-merge-after-first.json`), renames `Frames` to \
-    `Frames offline`, and the second launch reopens the same catalog; the folder is named back and \
-    the catalog read again (`panorama-merge-after.json`).";
+    128 MP. It makes `generated/catalog.sqlite` with `Frames` indexed and nothing merged \
+    (`panorama-merge-expected.json`). Each launch opens that catalog with `--catalog`. The `select` \
+    launch merges both rows; the run then reads where the catalog filed them \
+    (`panorama-merge-after-select.json`). The `develop` launch opens each from its catalog folder \
+    and exports the Wide result into its evidence directory (`wide-panorama.jpg`); the run reads \
+    the catalog again (`panorama-merge-after-develop.json`), renames `Frames` to `Frames offline`, \
+    and the `offline` launch reopens both; the folder is named back and the catalog read again \
+    (`panorama-merge-after.json`).";
 /// Where the run writes its frames and catalog.
 pub const GENERATED: &str = "generated";
 pub const EXPECTED: &str = "panorama-merge-expected.json";
-pub const AFTER_FIRST: &str = "panorama-merge-after-first.json";
+pub const AFTER_SELECT: &str = "panorama-merge-after-select.json";
+pub const AFTER_DEVELOP: &str = "panorama-merge-after-develop.json";
 pub const AFTER: &str = "panorama-merge-after.json";
 const EXPORT_FILE: &str = "wide-panorama.jpg";
 const FRAMES: &str = "Frames";
@@ -122,11 +126,11 @@ const QUALITY: u8 = 95;
 const WARP: u8 = 60;
 /// The largest source a resident derived source may hold: past it a result is paged.
 const RESIDENT_PIXELS: u64 = 128_000_000;
-/// How long the setup waits for a preview and a merge: the xtask is a dev build. And how long the
-/// first launch may take, developing and exporting the paged result.
-const PREVIEW_DEADLINE: Duration = Duration::from_secs(600);
-const MERGE_DEADLINE: Duration = Duration::from_secs(1800);
-const FIRST_LAUNCH_DEADLINE: Duration = Duration::from_secs(1200);
+/// How long the setup waits for a job (the folder's indexing; a test's previews), and how long the
+/// launches that merge and develop the Wide row may take: the editor ends a scripted journey after
+/// five minutes.
+const SETUP_DEADLINE: Duration = Duration::from_secs(600);
+const LAUNCH_DEADLINE: Duration = Duration::from_secs(420);
 /// The linear mask's ends in content coordinates, coverage 0 above `y0` and 1 below `y1`, and the
 /// Exposure through it.
 const GRADIENT: [f64; 4] = [0.5, 0.3, 0.5, 0.7];
@@ -144,68 +148,8 @@ const UNTOUCHED: f64 = 2.0;
 /// How far the reopened result's covered patch may be from the edited one's: the same saved source
 /// and edit at the same size by the same renderer.
 const REOPEN_TOLERANCE: f64 = 3.0;
-
-/// A step of item 5 the editor cannot take on this base: where it goes in a launch's plan, the
-/// gesture as a proposed script step, and what its frame must show. The setup or the runner drives
-/// its documented requests meanwhile, where a frame would otherwise have nothing to show.
-#[derive(Clone, Copy, Debug)]
-pub struct Pending {
-    /// The plan step it goes after, in the launch named first: `first/row` is after `row`.
-    pub after: &'static str,
-    /// The task whose delivery it waits on.
-    pub awaits: &'static str,
-    /// The proposed script steps, as JSON; a gesture with no script step yet proposes one.
-    pub gesture: &'static str,
-    pub expects: &'static str,
-}
-
-/// Every step of item 5 the journey cannot take yet. When the task a step awaits lands, add its
-/// script steps to the plan at `after`, move the setup's requests it replaces into the launch, check
-/// its frame in [`verify`], and delete its row. The run fails while any is left.
-pub const PENDING: &[Pending] = &[
-    Pending {
-        after: "first/select",
-        awaits: "TASK-010",
-        gesture: r#"[{"select":{"folder":"<Frames/Row>"}},{"select":{"click":{"position":0}}},{"select":{"click":{"position":3,"shift":true}}},{"select":{"choose":{"menu":"selection","item":"Merge panorama…"}}}]"#,
-        expects: "the Row's four frames selected and the selection menu's Merge panorama… opening the sheet \"Merge panorama · 4 photos\", captured once revision 1 is drawn; sent exactly merge.plan then merge.preview as the setup's Row `sent` records them; the setup's Row merge then moves here",
-    },
-    Pending {
-        after: "first/previewing",
-        awaits: "TASK-010",
-        gesture: r#"{"select":{"merge_preview":{"boundary_warp":60}}}"#,
-        expects: "merge.preview-update {preview_id, panorama: {boundary_warp: 60}} sent; a newer revision drawn, its crop losing no more and its output no smaller than revision 1's",
-    },
-    Pending {
-        after: "first/warped",
-        awaits: "TASK-010",
-        gesture: r#"[{"select":{"merge_preview":{"crop_overlay":true}}},{"select":{"merge_preview":{"frame_outlines":true}}}]"#,
-        expects: "the crop and coverage overlay and the frame outlines on, drawn from the revision's overlays: the crop rectangle, the dimmed coverage with \"Crop loses N% at the edges\", and frames numbered 1 to 4",
-    },
-    Pending {
-        after: "first/overlaid",
-        awaits: "TASK-010",
-        gesture: r#"[{"select":{"merge_preview":"merge"}},{"select":"merged"}]"#,
-        expects: "merge.create {kind: panorama, preview_id, panorama: {boundary_warp: 60}, folder: the plan's proposal} sent; the pending row \"Merging panorama · 4 photos\" with its stage words, bar and Cancel; then one collapsed tile, selected, with Select still shown; each Select frame's owner_merge_jobs lists merge.panorama jobs too",
-    },
-    Pending {
-        after: "first/expanded",
-        awaits: "TASK-010",
-        gesture: "none: the expanded frame's cells",
-        expects: "each original's cell footer reads \"Frame k of 4\" in the stack's order (today's cell words carry only HDR's EV offsets)",
-    },
-    Pending {
-        after: "first/clicked",
-        awaits: "TASK-010",
-        gesture: r#"{"select":{"click":{"position":0}}}"#,
-        expects: "the result's Info band \"Panorama · 4 photos\" with its resolved projection and field of view",
-    },
-    Pending {
-        after: "first/undone",
-        awaits: "TASK-010",
-        gesture: r#"[{"select":{"folder":"<Frames/Wide>"}},{"select":{"click":{"position":0}}},{"select":{"click":{"position":9,"shift":true}}},{"select":{"choose":{"menu":"selection","item":"Merge panorama"}}},{"select":"merged"}]"#,
-        expects: "⌥-click: merge.create {kind: panorama, plan_id, panorama: {boundary_warp: 60}} sent at once with no sheet, the last settings; the pending row \"Merging panorama · 10 photos\" showing \"Reading k of 10\" and \"Stitching k of n\"; then one collapsed tile of ten; the setup's Wide merge then moves here",
-    },
-];
+/// The words a merge's pending row shows for each stage of its job.
+const STAGES: [&str; 4] = ["Reading ", "Matching", "Stitching ", "Saving"];
 
 /// Where a set's result is filed, as the sources panel nests its folder and its place there.
 fn filed(places: &Value, set: &Set, whose: &str) -> Result<(String, u32)> {
@@ -232,16 +176,54 @@ fn click(name: &str, position: u32) -> Step {
     )
 }
 
-/// The result clicked in its catalog folder and opened in Develop; at Fit, at 100% in its
+/// A Select gesture.
+fn in_select(name: &str, step: SelectStep) -> Step {
+    Step::new(name, script::Step::Select(step))
+}
+
+fn key(name: &str, key: &str) -> Step {
+    Step::new(name, script::Step::key(key))
+}
+
+fn sheet(name: &str, step: MergePreviewStep) -> Step {
+    in_select(name, SelectStep::MergePreview(step))
+}
+
+/// A set's folder on disk browsed, its frames selected from the first to the last, and the
+/// selection's menu opened over the last. Each step's name begins with `prefix`.
+fn selected(prefix: &str, folder: String, set: &Set) -> Vec<Step> {
+    let name = |step: &str| format!("{prefix}{step}");
+    let last = set.frames as u32 - 1;
+    vec![
+        in_select(&name("folder"), SelectStep::Folder(folder)),
+        click(&name("first"), 0),
+        in_select(
+            &name("selected"),
+            SelectStep::Click {
+                position: last,
+                shift: true,
+                command: false,
+            },
+        ),
+        in_select(&name("menu"), SelectStep::MergeMenu(last)),
+    ]
+}
+
+/// The result clicked in its catalog folder, pressed first when it is given, and opened in
+/// Develop; at Fit, at 100% in its
 /// bottom-right corner and at Fit again; then a linear mask and one stop of Exposure through it.
 /// Each step's name begins with `prefix`.
-fn developed(prefix: &str, path: String, position: u32) -> Vec<Step> {
+fn developed(prefix: &str, path: Option<String>, position: u32) -> Vec<Step> {
     let name = |step: &str| format!("{prefix}{step}");
-    vec![
+    let place = path.map(|path| {
         Step::new(
             name("place"),
             script::Step::Catalog(CatalogStep::Source(path)),
-        ),
+        )
+    });
+    place
+        .into_iter()
+        .chain([
         click(&name("result"), position),
         Step::new(name("develop"), script::Step::Develop(DevelopStep::Active)),
         Step::new(name("fit"), ViewStep::Fit).commits(0).fit(),
@@ -272,10 +254,11 @@ fn developed(prefix: &str, path: String, position: u32) -> Vec<Step> {
         .label(MASKED_LABEL)
         .payload(BASIC_EFFECT, json!({ "exposure": EXPOSURE }))
         .fit(),
-    ]
+        ])
+        .collect()
 }
 
-/// A result opened in Develop as the first launch left it: its masked edit, at Fit.
+/// A result opened in Develop as the `develop` launch left it: its masked edit, at Fit.
 fn reopened(name: &str) -> Step {
     Step::new(name, script::Step::Develop(DevelopStep::Active))
         .payload(BASIC_EFFECT, json!({ "exposure": EXPOSURE }))
@@ -283,44 +266,70 @@ fn reopened(name: &str) -> Step {
         .fit()
 }
 
-/// The first launch's frames: the Row's stack, its result in Develop at Fit, at 100% in a corner
-/// and through a mask, its removal and undo; then the Wide's tile, its paged result in Develop the
-/// same way, and Develop's export of it.
-pub fn first_plan(expected: &Value) -> Result<Plan> {
-    let sets = &expected["sets"];
+/// The `select` launch's frames: the Row merged through the preview sheet, its stack and its
+/// removal and undo; then the Wide merged by ⌥-click.
+pub fn select_plan(expected: &Value) -> Result<Plan> {
     let folder = |set: &Set| -> Result<String> {
-        sets[set.name]["folder"]
+        expected["sets"][set.name]["folder"]
             .as_str()
             .filter(|folder| !folder.is_empty())
             .map(str::to_owned)
             .ok_or_else(|| format!("The expected answers name no {} folder", set.name).into())
     };
-    let places = json!({ ROW.name: sets[ROW.name]["place"], WIDE.name: sets[WIDE.name]["place"] });
-    let (row_path, row_position) = filed(&places, &ROW, "The expected answers")?;
-    let (wide_path, wide_position) = filed(&places, &WIDE, "The expected answers")?;
-    let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
-    let key = |name: &str, key: &str| Step::new(name, script::Step::key(key));
-    let mut steps = vec![
-        Step::opened("opened"),
-        key("select", "g"),
-        // TASK-010: the sheet's gestures and the merge go here (`PENDING`).
-        select("row", SelectStep::Folder(folder(&ROW)?)),
+    let mut steps = vec![Step::opened("opened"), key("select", "g")];
+    steps.extend(selected("row_", folder(&ROW)?, &ROW));
+    steps.extend([
+        in_select(
+            "previewing",
+            SelectStep::MergeChoose {
+                kind: MergeChoice::Panorama,
+                last_settings: false,
+            },
+        ),
+        sheet("warped", MergePreviewStep::BoundaryWarp(WARP)),
+        sheet("plain", MergePreviewStep::FrameOutlines(false)),
+        sheet("uncropped", MergePreviewStep::CropCoverage(false)),
+        sheet("outlined", MergePreviewStep::FrameOutlines(true)),
+        sheet("overlaid", MergePreviewStep::CropCoverage(true)),
+        sheet("merging", MergePreviewStep::Merge),
+        in_select("merged", SelectStep::Merged),
         key("expanded", "s"),
         click("original", 2),
         click("clicked", 0),
-    ];
-    steps.extend(developed("", row_path, row_position));
+        Step::new("removed", script::Step::Catalog(CatalogStep::DeleteKey)),
+        in_select("restored", SelectStep::Library(LibraryKey::Undo)),
+        in_select("redone", SelectStep::Library(LibraryKey::Redo)),
+        in_select("undone", SelectStep::Library(LibraryKey::Undo)),
+    ]);
+    steps.extend(selected("wide_", folder(&WIDE)?, &WIDE));
+    steps.extend([
+        in_select(
+            "wide_merging",
+            SelectStep::MergeChoose {
+                kind: MergeChoice::Panorama,
+                last_settings: true,
+            },
+        ),
+        in_select("wide_merged", SelectStep::Merged),
+    ]);
+    Ok(Plan::new(steps))
+}
+
+/// The `develop` launch's frames, over the catalog the `select` launch left: the Row result in
+/// Develop at Fit, at 100% in a corner and through a mask, and its merge inspected; then the Wide's
+/// paged result the same way, and Develop's export of it.
+pub fn develop_plan(after: &Value) -> Result<Plan> {
+    let places = &after["places"];
+    let whose = "The select launch's catalog";
+    let (row_path, row_position) = filed(places, &ROW, whose)?;
+    let (wide_path, wide_position) = filed(places, &WIDE, whose)?;
+    let mut steps = vec![Step::opened("opened"), key("select", "g")];
+    // Select shows the Row result's folder again; the Wide's is pressed only when it is another.
+    let wide_path = (wide_path != row_path).then_some(wide_path);
+    steps.extend(developed("", Some(row_path), row_position));
     steps.extend([
         Step::new("inspected", script::Step::call("merge.inspect", json!({}))),
         key("back", "g"),
-        select("again", SelectStep::Folder(folder(&ROW)?)),
-        click("chosen", 0),
-        Step::new("removed", script::Step::Catalog(CatalogStep::DeleteKey)),
-        select("restored", SelectStep::Library(LibraryKey::Undo)),
-        select("redone", SelectStep::Library(LibraryKey::Redo)),
-        select("undone", SelectStep::Library(LibraryKey::Undo)),
-        // TASK-010: the Wide's ⌥-click merge goes here (`PENDING`).
-        select("wide", SelectStep::Folder(folder(&WIDE)?)),
     ]);
     steps.extend(developed("wide_", wide_path, wide_position));
     steps.push(
@@ -338,17 +347,17 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
     Ok(Plan::new(steps))
 }
 
-/// The second launch's frames, over the catalog the first left with the frames moved away: the
-/// Row result's catalog folder, the result opened in Develop with its masked edit and its merge
-/// inspected; then the Wide result opened with its own.
-pub fn second_plan(after: &Value) -> Result<Plan> {
+/// The `offline` launch's frames, over the catalog the `develop` launch left with the frames moved
+/// away: the Row result's catalog folder, the result opened in Develop with its masked edit and its
+/// merge inspected; then the Wide result opened with its own.
+pub fn offline_plan(after: &Value) -> Result<Plan> {
     let places = &after["places"];
-    let whose = "The first launch's catalog";
+    let whose = "The develop launch's catalog";
     let (row_path, row_position) = filed(places, &ROW, whose)?;
     let (wide_path, wide_position) = filed(places, &WIDE, whose)?;
     let mut steps = vec![
         Step::opened("opened"),
-        Step::new("select", script::Step::key("g")),
+        key("select", "g"),
         Step::new(
             "place",
             script::Step::Catalog(CatalogStep::Source(row_path.clone())),
@@ -356,7 +365,7 @@ pub fn second_plan(after: &Value) -> Result<Plan> {
         click("result", row_position),
         reopened("reopened"),
         Step::new("inspected", script::Step::call("merge.inspect", json!({}))),
-        Step::new("back", script::Step::key("g")),
+        key("back", "g"),
     ];
     // Select shows the Row result's folder again; the Wide's is pressed only when it is another.
     if wide_path != row_path {
@@ -434,7 +443,7 @@ fn stitched_estimate(set: &Set) -> (f64, f64) {
     (lens.focal_px * turn, set.height as f64 * seam)
 }
 
-// The setup's requests.
+// The setup's requests and the catalog's answers.
 
 /// Read a job until it ends ready, keeping each progress message it showed on the way.
 fn follow(owner: &OwnerHandle, client: ClientId, job: &Value, deadline: Duration) -> Result<Value> {
@@ -473,94 +482,8 @@ fn proposal(plan: &Value) -> Value {
     }
 }
 
-/// `params` with `folder` set to the plan's proposal, when it makes one.
-fn into_proposal(mut params: Value, plan: &Value) -> Value {
-    let folder = proposal(plan);
-    if !folder.is_null() {
-        params["folder"] = folder;
-    }
-    params
-}
-
 fn mutation(request: &str) -> Value {
     json!({"request_id": request, "actor": "setup"})
-}
-
-/// One set merged as the panorama sheet merges it: the plan, the preview, Boundary Warp changed,
-/// then Merge with the preview. Answers every request as sent, the plan, both revisions and the
-/// merge's job with the progress it showed.
-fn merge_through_preview(
-    owner: &OwnerHandle,
-    client: ClientId,
-    frames: &[PathBuf],
-) -> Result<Value> {
-    let targets = json!({"kind": "paths", "paths": frames});
-    let mut sent = Vec::new();
-    let mut send = |method: &str, params: Value| -> Result<Value> {
-        sent.push(json!({"method": method, "params": params}));
-        ask(owner, client, method, params)
-    };
-    let plan = send(
-        "merge.plan",
-        json!({"kind": "panorama", "targets": targets}),
-    )?;
-    ensure(
-        plan["suitable"] == true,
-        format!("The core refused the Row: {plan}"),
-    )?;
-    let opened = send(
-        "merge.preview",
-        json!({"kind": "panorama", "targets": targets, "plan_id": plan["plan_id"]}),
-    )?;
-    let first = follow(owner, client, &opened["job_id"], PREVIEW_DEADLINE)?;
-    let preview_id = first["record"]["result"]["preview_id"].clone();
-    let options = json!({ "boundary_warp": WARP });
-    let updated = send(
-        "merge.preview-update",
-        json!({"preview_id": preview_id, "panorama": options}),
-    )?;
-    let second = follow(owner, client, &updated["job_id"], PREVIEW_DEADLINE)?;
-    let created = send(
-        "merge.create",
-        into_proposal(
-            json!({"kind": "panorama", "targets": targets, "preview_id": preview_id,
-                "panorama": options, "mutation": mutation("setup-row")}),
-            &plan,
-        ),
-    )?;
-    let job = follow(owner, client, &created["job_id"], MERGE_DEADLINE)?;
-    Ok(json!({"plan": plan, "sent": sent,
-        "previews": [first["record"]["result"], second["record"]["result"]],
-        "job": job, "result": job["record"]["result"]}))
-}
-
-/// One set merged as ⌥-click merges it: the plan with the last settings, then the merge at once.
-fn merge_at_once(owner: &OwnerHandle, client: ClientId, frames: &[PathBuf]) -> Result<Value> {
-    let targets = json!({"kind": "paths", "paths": frames});
-    let options = json!({ "boundary_warp": WARP });
-    let mut sent = Vec::new();
-    let mut send = |method: &str, params: Value| -> Result<Value> {
-        sent.push(json!({"method": method, "params": params}));
-        ask(owner, client, method, params)
-    };
-    let plan = send(
-        "merge.plan",
-        json!({"kind": "panorama", "targets": targets, "panorama": options}),
-    )?;
-    ensure(
-        plan["suitable"] == true,
-        format!("The core refused the Wide row: {plan}"),
-    )?;
-    let created = send(
-        "merge.create",
-        into_proposal(
-            json!({"kind": "panorama", "targets": targets, "plan_id": plan["plan_id"],
-                "panorama": options, "mutation": mutation("setup-wide")}),
-            &plan,
-        ),
-    )?;
-    let job = follow(owner, client, &created["job_id"], MERGE_DEADLINE)?;
-    Ok(json!({"plan": plan, "sent": sent, "job": job, "result": job["record"]["result"]}))
 }
 
 /// `asset`'s row in a view of `source`, read whole, or null.
@@ -624,8 +547,8 @@ fn place(owner: &OwnerHandle, client: ClientId, result: &Value) -> Result<Value>
     )
 }
 
-/// Write both sets, make the catalog with their folder indexed, and merge them as the desktop's
-/// sheet and ⌥-click would. Answers the expected record and every frame, Row then Wide.
+/// Write both sets and make the catalog with their folder indexed and nothing merged. Answers the
+/// expected record and every frame, Row then Wide.
 fn make(generated: &Path) -> Result<(Value, Vec<PathBuf>)> {
     let frames = generated.join(FRAMES);
     let canonical = |paths: Vec<PathBuf>| -> Result<Vec<PathBuf>> {
@@ -639,7 +562,7 @@ fn make(generated: &Path) -> Result<(Value, Vec<PathBuf>)> {
     let catalog = generated.join(generate_catalog::CATALOG);
     drop(EditorService::open(&catalog).map_err(|error| format!("a new catalog: {error}"))?);
     let frames = frames.canonicalize()?;
-    let sets = with_owner(&catalog, |owner, client| {
+    with_owner(&catalog, |owner, client| {
         let added = ask(
             owner,
             client,
@@ -647,24 +570,16 @@ fn make(generated: &Path) -> Result<(Value, Vec<PathBuf>)> {
             json!({"path": frames, "mutation": mutation("setup-frames")}),
         )?;
         if !added["job_id"].is_null() {
-            follow(owner, client, &added["job_id"], PREVIEW_DEADLINE)?;
+            follow(owner, client, &added["job_id"], SETUP_DEADLINE)?;
         }
-        let mut merged_row = merge_through_preview(owner, client, &row)?;
-        let mut merged_wide = merge_at_once(owner, client, &wide)?;
-        for (merged, set, paths) in [
-            (&mut merged_row, ROW, &row),
-            (&mut merged_wide, WIDE, &wide),
-        ] {
-            let filed = place(owner, client, &merged["result"]["result_asset_id"])?;
-            merged["place"] = filed;
-            merged["folder"] = json!(frames.join(set.name));
-            merged["frames"] = json!(paths);
-            merged["estimate"] = json!(stitched_estimate(&set));
-        }
-        Ok(json!({ ROW.name: merged_row, WIDE.name: merged_wide }))
+        Ok(())
     })?;
+    let set = |set: &Set, paths: &[PathBuf]| {
+        json!({"folder": frames.join(set.name), "frames": paths,
+            "estimate": stitched_estimate(set)})
+    };
     Ok((
-        json!({"sets": sets, "warp": WARP}),
+        json!({"sets": {ROW.name: set(&ROW, &row), WIDE.name: set(&WIDE, &wide)}, "warp": WARP}),
         row.into_iter().chain(wide).collect(),
     ))
 }
@@ -711,14 +626,35 @@ fn after(catalog: &Path, results: &[(&str, Value)]) -> Result<Value> {
     })
 }
 
-/// Make the frames, the catalog and the merges (a replay reads the recorded answers), launch the
-/// editor over them, read the catalog it left, take the frames offline, launch it again, and check
-/// every frame.
+/// Each result the `select` launch's merges answered, by set.
+fn results(launch: &Checked) -> Result<[(&'static str, Value); 2]> {
+    let result = |step: &str| -> Result<Value> {
+        let frame = launch.at(step)?;
+        let result = merge_answer(frame)["result_asset_id"].clone();
+        ensure(
+            result.is_string(),
+            format!(
+                "{step}: the merge answered no result: {}",
+                frame["step"]["merge_record"]
+            ),
+        )?;
+        Ok(result)
+    };
+    Ok([
+        (ROW.name, result("merged")?),
+        (WIDE.name, result("wide_merged")?),
+    ])
+}
+
+/// Make the frames and the catalog (a replay reads the recorded answers), launch the editor to
+/// merge them, read where the catalog filed the results, launch it to develop them, take the
+/// frames offline, launch it again, and check every frame.
 pub fn run(mut run: Run, scenario: &'static Scenario, _: Vec<PathBuf>) -> Result {
     let generated = run.out().join(GENERATED);
     let catalog = generated.join(generate_catalog::CATALOG);
     let expected_file = run.out().join(EXPECTED);
-    let first_file = run.out().join(AFTER_FIRST);
+    let select_file = run.out().join(AFTER_SELECT);
+    let develop_file = run.out().join(AFTER_DEVELOP);
     let after_file = run.out().join(AFTER);
     if let Some(note) = scenario.note {
         run.note(note);
@@ -740,43 +676,48 @@ pub fn run(mut run: Run, scenario: &'static Scenario, _: Vec<PathBuf>) -> Result
             Some(window) => launch.window(window),
             None => launch,
         };
-        let first = first_plan(&expected)?;
+        let selecting = select_plan(&expected)?;
         let launched = run.launch(window(
-            Launch::named("first")
+            Launch::named("select")
                 .catalog(&catalog)
-                .script("first-script.json", first.script())
-                .deadline(FIRST_LAUNCH_DEADLINE),
+                .script("select-script.json", selecting.script())
+                .deadline(LAUNCH_DEADLINE),
         ))?;
-        let first_checked = first.check(&launched.dir)?;
-        let results = [ROW.name, WIDE.name].map(|name| {
-            (
-                name,
-                expected["sets"][name]["result"]["result_asset_id"].clone(),
-            )
-        });
+        let select_checked = selecting.check(&launched.dir)?;
+        let results = results(&select_checked)?;
         if !run.replaying() {
-            write_json(&first_file, &after(&catalog, &results)?)?;
+            write_json(&select_file, &after(&catalog, &results)?)?;
         }
-        let after_first = read_json(&recorded(run, &first_file))?;
-        let second = second_plan(&after_first)?;
+        let developing = develop_plan(&read_json(&recorded(run, &select_file))?)?;
+        let launched = run.launch(window(
+            Launch::named("develop")
+                .catalog(&catalog)
+                .script("develop-script.json", developing.script())
+                .deadline(LAUNCH_DEADLINE),
+        ))?;
+        let develop_checked = developing.check(&launched.dir)?;
+        if !run.replaying() {
+            write_json(&develop_file, &after(&catalog, &results)?)?;
+        }
+        let reopening = offline_plan(&read_json(&recorded(run, &develop_file))?)?;
         let online = generated.join(FRAMES);
         let offline = generated.join(OFFLINE);
         if !run.replaying() {
             fs::rename(&online, &offline)?;
         }
         let launched = run.launch(window(
-            Launch::named("second")
+            Launch::named("offline")
                 .catalog(&catalog)
-                .script("second-script.json", second.script()),
+                .script("offline-script.json", reopening.script()),
         ));
         if !run.replaying() {
             fs::rename(&offline, &online)?;
         }
-        let second_checked = second.check(&launched?.dir)?;
+        let offline_checked = reopening.check(&launched?.dir)?;
         if !run.replaying() {
             write_json(&after_file, &after(&catalog, &results)?)?;
         }
-        (scenario.verify)(run, &[first_checked, second_checked])?;
+        (scenario.verify)(run, &[select_checked, develop_checked, offline_checked])?;
         if !run.replaying() {
             run.sources_unchanged()?;
         }
@@ -875,129 +816,6 @@ fn in_proposed_folder(plan: &Value, place: &Value) -> bool {
     }
 }
 
-/// The setup's merges: each plan, the Row's preview revisions, each request as the desktop will
-/// send it, each job's progress and each result where the plan proposed.
-fn check_setup(expected: &Value, checks: &mut Checks, first: &Checked) -> Result {
-    let row = &expected["sets"][ROW.name];
-    let wide = &expected["sets"][WIDE.name];
-    for (set, merged) in [(ROW, row), (WIDE, wide)] {
-        let plan = &merged["plan"];
-        ensure(
-            plan["kind"] == "panorama"
-                && plan["suitable"] == true
-                && plan["inputs"].as_array().map(Vec::len) == Some(set.frames),
-            format!("The core plans the {} as {plan}", set.name),
-        )?;
-        let result = &merged["result"];
-        ensure(
-            result["kind"] == "panorama"
-                && result["merged"] == true
-                && result["reused"] == false
-                && result["inputs"] == set.frames
-                && result["result_asset_id"].is_string()
-                && result["projection"].is_string()
-                && result["field_of_view_deg"].is_array()
-                && result["file_name"]
-                    .as_str()
-                    .is_some_and(|name| name.ends_with(" Panorama")),
-            format!("The {} merge answered {result}", set.name),
-        )?;
-        ensure(
-            in_proposed_folder(plan, &merged["place"]),
-            format!(
-                "The {} result is filed in {}, the plan proposed {}",
-                set.name,
-                merged["place"],
-                proposal(plan)
-            ),
-        )?;
-        let progress: Vec<&str> = merged["job"]["progress"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        ensure(
-            progress.iter().any(|stage| stage.starts_with("Reading "))
-                && progress.iter().any(|stage| stage.starts_with("Stitching ")),
-            format!("The {} merge showed the progress {progress:?}", set.name),
-        )?;
-    }
-
-    // The sheet's requests: plan, preview, Boundary Warp, Merge with the preview.
-    let methods: Vec<&Value> = row["sent"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|sent| &sent["method"])
-        .collect();
-    ensure(
-        methods
-            == [
-                &json!("merge.plan"),
-                &json!("merge.preview"),
-                &json!("merge.preview-update"),
-                &json!("merge.create"),
-            ],
-        format!("The Row's merge sent {methods:?}"),
-    )?;
-    let [opened, warped] = [&row["previews"][0], &row["previews"][1]];
-    let area = |revision: &Value| {
-        revision["output"]["width"].as_u64().unwrap_or(0)
-            * revision["output"]["height"].as_u64().unwrap_or(0)
-    };
-    let overlays = &opened["overlays"]["panorama"];
-    ensure(
-        opened["kind"] == "panorama"
-            && opened["revision"] == 1
-            && opened["path"].is_string()
-            && opened["refusal"].is_null()
-            && opened["diagnostics"]["panorama"]["projection"].is_string()
-            && overlays["crop"].as_array().map(Vec::len) == Some(4)
-            && overlays["covered"]
-                .as_array()
-                .is_some_and(|covered| !covered.is_empty())
-            && overlays["frames"].as_array().map(Vec::len) == Some(ROW.frames),
-        format!("The Row's preview opened as {opened}"),
-    )?;
-    let loss = |revision: &Value| revision["diagnostics"]["panorama"]["crop_loss"].as_f64();
-    ensure(
-        warped["preview_id"] == opened["preview_id"]
-            && warped["revision"] == 2
-            && warped["options"]["panorama"]["boundary_warp"] == WARP
-            && warped["refusal"].is_null()
-            && loss(warped).zip(loss(opened)).is_some_and(|(w, o)| w <= o)
-            && area(warped) >= area(opened),
-        format!("Boundary Warp {WARP} drew {warped}"),
-    )?;
-    let create = &row["sent"][3]["params"];
-    ensure(
-        create["preview_id"] == opened["preview_id"]
-            && create.get("plan_id").is_none()
-            && create["panorama"] == json!({ "boundary_warp": WARP }),
-        format!("The Row's Merge sent {create}"),
-    )?;
-    // ⌥-click's requests: the plan and the merge at once, with the last settings.
-    let create = &wide["sent"][1]["params"];
-    ensure(
-        wide["sent"].as_array().map(Vec::len) == Some(2)
-            && create["plan_id"] == wide["plan"]["plan_id"]
-            && create.get("preview_id").is_none()
-            && create["panorama"] == json!({ "boundary_warp": WARP }),
-        format!("The Wide's merge sent {}", wide["sent"]),
-    )?;
-    let [width, height] = [0, 1].map(|at| wide["estimate"][at].as_f64().unwrap_or(0.0));
-    checks.note(
-        first.at("opened")?,
-        "setup: the merges the desktop's sheet and ⌥-click will send, through the core",
-        json!({"row": {"previews": row["previews"], "progress": row["job"]["progress"],
-                "seconds": row["job"]["seconds"]},
-            "wide": {"progress": wide["job"]["progress"], "seconds": wide["job"]["seconds"],
-                "estimate": [width, height]}}),
-    );
-    Ok(())
-}
-
 /// A result opened in Develop from its saved source and its frames named `prefix…` by
 /// [`developed`]: drawn at Fit, at 100% in its corner and at Fit again, and one stop through its
 /// mask lifting the covered side only. Answers the lifted frame's covered patch.
@@ -1051,7 +869,7 @@ fn check_developed(
 }
 
 /// A result reopened in Develop with its frames moved away: from its saved source, its covered
-/// patch where the first launch's edit left it.
+/// patch where the `develop` launch's edit left it.
 fn check_reopened(
     checks: &mut Checks,
     frame: &Frame,
@@ -1073,62 +891,493 @@ fn check_reopened(
     )
 }
 
-pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
-    let [first, second] = launches else {
-        return Err(format!("panorama-merge has two launches, not {}", launches.len()).into());
+/// The result a merge step's frame recorded: the job's `ready` record's result.
+fn merge_answer(frame: &Frame) -> &Value {
+    &frame["step"]["merge_record"]["result"]
+}
+
+/// The merge jobs the owner's activity board listed when the frame was settled, and their kinds.
+fn merge_jobs(frame: &Frame) -> BTreeSet<(String, String)> {
+    frame["step"]["owner_merge_jobs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|job| {
+            Some((
+                job["job_id"].as_str()?.to_owned(),
+                job["kind"].as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// The requests in `sent`, by method, in order.
+fn methods(sent: &Value) -> Vec<&str> {
+    sent.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|request| request["method"].as_str())
+        .collect()
+}
+
+/// What the sheet showed in the frame.
+fn shown_sheet(frame: &Frame) -> &Value {
+    &select(frame)["merge"]["sheet"]
+}
+
+/// The preview revision the frame's step recorded last: the preview job's `ready` result.
+fn revision(frame: &Frame) -> &Value {
+    &frame["step"]["preview_record"]["result"]
+}
+
+/// The selection menu over a set's frames, planned: Merge panorama… enabled beside Merge HDR…
+/// where the frames are few enough for HDR, the panorama plan the menu asked for naming the frames
+/// selected, and its answer suitable. Answers the plan and its request.
+fn check_menu<'a>(frame: &'a Frame, name: &str, set: &Set) -> Result<(&'a Value, &'a Value)> {
+    let merge = &select(frame)["merge"];
+    let groups = merge["menu"].as_array().cloned().unwrap_or_default();
+    let heading = |heading: &str| groups.iter().find(|group| group["heading"] == heading);
+    ensure(
+        heading("Panorama").is_some_and(|group| {
+            group["entries"]
+                == json!([{"label": "Merge panorama\u{2026}", "enabled": true, "reason": null}])
+        }) && heading("HDR").is_some() == (set.frames <= 9),
+        format!("{name}: the menu shows {}", merge["menu"]),
+    )?;
+    let request = merge["plan"]
+        .as_array()
+        .and_then(|sent| sent.iter().find(|params| params["kind"] == "panorama"))
+        .ok_or_else(|| format!("{name}: the menu planned {}", merge["plan"]))?;
+    let plan = merge["plan_answers"]
+        .as_array()
+        .and_then(|answers| answers.iter().find(|answer| answer["kind"] == "panorama"))
+        .map(|answer| &answer["plan"])
+        .ok_or_else(|| {
+            format!(
+                "{name}: the menu's plans answered {}",
+                merge["plan_answers"]
+            )
+        })?;
+    ensure(
+        request["targets"]["kind"] == "files"
+            && request["targets"]["file_ids"].as_array().map(Vec::len) == Some(set.frames)
+            && plan["kind"] == "panorama"
+            && plan["suitable"] == true
+            && plan["inputs"].as_array().map(Vec::len) == Some(set.frames),
+        format!("{name}: the menu asked {request} and was answered {plan}"),
+    )?;
+    Ok((plan, request))
+}
+
+/// A merge's pending row while its job runs: the row's words with the job's stage, and the
+/// requests its start sent, the plan then the merge into the plan's proposal. Answers the job
+/// and the `merge.create` parameters.
+fn check_merging(frame: &Frame, name: &str, set: &Set, plan: &Value) -> Result<(String, Value)> {
+    let merge = &select(frame)["merge"];
+    let pending = &merge["pending"];
+    let job = pending["job_id"]
+        .as_str()
+        .ok_or_else(|| format!("{name}: no pending merge: {merge}"))?
+        .to_owned();
+    let stage = pending["message"].as_str().unwrap_or_default();
+    ensure(
+        pending["kind"] == "panorama"
+            && pending["frames"] == set.frames
+            && STAGES.iter().any(|words| stage.starts_with(words))
+            && pending["failed"].is_null()
+            && select(frame)["headers"]["pending"]
+                == json!([{"title": format!("Merging panorama \u{b7} {} photos", set.frames),
+                    "detail": stage, "action": "Cancel", "failed": false}])
+            && merge["sheet"].is_null()
+            && merge["option"] == false,
+        format!(
+            "{name}: the pending row is {} for {pending}",
+            select(frame)["headers"]["pending"]
+        ),
+    )?;
+    let sent = &frame["step"]["merge_sent"];
+    let create = sent
+        .as_array()
+        .and_then(|sent| {
+            sent.iter()
+                .find(|request| request["method"] == "merge.create")
+        })
+        .map(|request| request["params"].clone())
+        .ok_or_else(|| format!("{name}: no merge.create was sent: {sent}"))?;
+    ensure(
+        methods(sent) == ["merge.plan", "merge.create"]
+            && create["kind"] == "panorama"
+            && create["mutation"]["actor"] == "desktop"
+            && create["panorama"]["boundary_warp"] == WARP
+            && create["folder"] == proposal(plan),
+        format!("{name}: sent {sent}, the plan proposes {}", proposal(plan)),
+    )?;
+    Ok((job, create))
+}
+
+/// A merge's end: its job's answer, one collapsed panorama tile of its frames, selected, with
+/// Select still shown, its Info band reading the projection and field of view the merge answered,
+/// and no merge on the owner's board but this desktop's. Answers the result.
+fn check_merged(
+    frame: &Frame,
+    name: &str,
+    set: &Set,
+    job: &str,
+    jobs: &BTreeSet<(String, String)>,
+) -> Result<Value> {
+    let answer = merge_answer(frame);
+    let result = answer["result_asset_id"].clone();
+    ensure(
+        frame["step"]["merge_record"]["job_id"] == job
+            && answer["kind"] == "panorama"
+            && answer["merged"] == true
+            && answer["reused"] == false
+            && answer["inputs"] == set.frames
+            && result.is_string()
+            && answer["file_name"]
+                .as_str()
+                .is_some_and(|file| file.ends_with(" Panorama")),
+        format!("{name}: the job answered {}", frame["step"]["merge_record"]),
+    )?;
+    collapsed_leader(frame, name, set, &result)?;
+    let projection = answer["projection"].as_str().unwrap_or_default();
+    let field = |at: usize| {
+        answer["field_of_view_deg"][at]
+            .as_f64()
+            .map(|degrees| degrees.round() as i64)
     };
-    let expected = read_json(&recorded(run, &run.out().join(EXPECTED)))?;
-    let after_first = read_json(&recorded(run, &run.out().join(AFTER_FIRST)))?;
-    let after = read_json(&recorded(run, &run.out().join(AFTER)))?;
-    let mut checks = Checks::new();
-    check_setup(&expected, &mut checks, first)?;
-    let row_answer = &expected["sets"][ROW.name]["result"];
-    let row_result = row_answer["result_asset_id"].clone();
-    let wide_answer = &expected["sets"][WIDE.name]["result"];
-    let wide_result = wide_answer["result_asset_id"].clone();
+    let (Some(across), Some(down)) = (field(0), field(1)) else {
+        return Err(format!("{name}: the merge answered no field of view: {answer}").into());
+    };
+    let mut letters = projection.chars();
+    let words = format!(
+        "{}{} \u{b7} {across}\u{b0} \u{d7} {down}\u{b0}",
+        letters
+            .next()
+            .map(|first| first.to_ascii_uppercase())
+            .unwrap_or_default(),
+        letters.as_str()
+    );
+    let info = &select(frame)["info"];
+    ensure(
+        info["kind"] == "one"
+            && info["stack"]["title"] == format!("Panorama \u{b7} {} photos", set.frames)
+            && info["stack"]["detail"] == words.as_str()
+            && select(frame)["selection"]["active"] == 0
+            && select(frame)["shown"] == "select",
+        format!("{name}: the Info panel shows {info}, the merge answered {words}"),
+    )?;
+    // The board keeps finished work as recent only past its threshold and only the newest
+    // sixteen, so a quick merge may be gone already; no other merge may be there.
+    ensure(
+        merge_jobs(frame).is_subset(jobs),
+        format!("{name}: the board lists merges {:?}", merge_jobs(frame)),
+    )?;
+    Ok(result)
+}
 
-    // The Row's folder: one collapsed panorama tile.
-    collapsed_leader(first.at("row")?, "row", &ROW, &row_result)?;
+/// The Row through the preview sheet: the menu, the sheet's first revision, Boundary Warp, the
+/// overlay switches, Merge and its pending row, the merge's end, the originals' words, the Info
+/// bands, and Remove merge with its undo and redo. Answers the job and the menu's plan.
+fn check_row(checks: &mut Checks, launch: &Checked) -> Result<(String, Value)> {
+    let folder = launch.at("row_folder")?;
+    ensure(
+        select(folder)["count"] == ROW.frames && stacks(folder).is_empty(),
+        format!(
+            "row_folder: the view holds {} items, stacked {:?}",
+            select(folder)["count"],
+            stacks(folder)
+        ),
+    )?;
+    let menu = launch.at("row_menu")?;
+    let (plan, request) = check_menu(menu, "row_menu", &ROW)?;
 
-    // Expanded: the result, then its four originals.
-    let expanded = first.at("expanded")?;
+    // Merge panorama…: the sheet asks the menu's plan again, then the preview, and draws its
+    // first revision with Boundary Warp at 0 and both overlays on.
+    let previewing = launch.at("previewing")?;
+    let sheet = shown_sheet(previewing);
+    let opened = revision(previewing);
+    let overlays = &opened["overlays"]["panorama"];
+    let settings = &sheet["panorama"];
+    ensure(
+        sheet["title"] == format!("Merge panorama \u{b7} {} photos", ROW.frames)
+            && sheet["kind"] == "panorama"
+            && sheet["preview_id"].is_string()
+            && sheet["picture"].is_string()
+            && sheet["picture_shown"] == sheet["picture"]
+            && sheet["current"] == true
+            && sheet["refusal"].is_null()
+            && sheet["enabled"] == true
+            && sheet["status"].as_str().is_some_and(|status| {
+                status.starts_with("Preview from ") && status.contains("Crop loses ")
+            })
+            && methods(&sheet["sent"]) == ["merge.plan", "merge.preview"]
+            && sheet["sent"][0]["params"] == *request
+            && settings["boundary_warp"] == 0
+            && settings["outlines"] == true
+            && settings["crop"] == true
+            && sheet["frames"].as_array().map(Vec::len) == Some(ROW.frames)
+            && select(previewing)["merge"]["pending"].is_null(),
+        format!("previewing: the sheet is {sheet}"),
+    )?;
+    ensure(
+        opened["kind"] == "panorama"
+            && opened["preview_id"] == sheet["preview_id"]
+            && opened["revision"] == sheet["revision"]
+            && opened["path"] == sheet["picture"]
+            && opened["refusal"].is_null()
+            && opened["diagnostics"]["panorama"]["projection"].is_string()
+            && overlays["crop"].as_array().map(Vec::len) == Some(4)
+            && overlays["covered"]
+                .as_array()
+                .is_some_and(|covered| !covered.is_empty())
+            && overlays["frames"].as_array().map(Vec::len) == Some(ROW.frames),
+        format!("previewing: the preview opened as {opened}"),
+    )?;
+    let preview_id = sheet["preview_id"].clone();
+
+    // Boundary Warp let go at 60: the whole options sent to the same preview, a newer revision
+    // drawn, its crop losing no more and its output no smaller.
+    let warped = launch.at("warped")?;
+    let changed = shown_sheet(warped);
+    let update = changed["sent"]
+        .as_array()
+        .and_then(|sent| sent.last())
+        .cloned()
+        .unwrap_or_default();
+    let drawn = revision(warped);
+    let area = |revision: &Value| {
+        revision["output"]["width"].as_u64().unwrap_or(0)
+            * revision["output"]["height"].as_u64().unwrap_or(0)
+    };
+    let loss = |revision: &Value| revision["diagnostics"]["panorama"]["crop_loss"].as_f64();
+    ensure(
+        changed["panorama"]["boundary_warp"] == WARP
+            && changed["preview_id"] == preview_id
+            && changed["current"] == true
+            && changed["picture_shown"] == changed["picture"]
+            && changed["revision"].as_u64() > sheet["revision"].as_u64()
+            && update["method"] == "merge.preview-update"
+            && update["params"]["preview_id"] == preview_id
+            && update["params"]["panorama"]["boundary_warp"] == WARP,
+        format!("warped: the sheet is {changed}"),
+    )?;
+    ensure(
+        drawn["preview_id"] == preview_id
+            && drawn["revision"] == changed["revision"]
+            && drawn["options"]["panorama"]["boundary_warp"] == WARP
+            && drawn["refusal"].is_null()
+            && loss(drawn).zip(loss(opened)).is_some_and(|(w, o)| w <= o)
+            && area(drawn) >= area(opened),
+        format!("warped: Boundary Warp {WARP} drew {drawn}, after {opened}"),
+    )?;
+
+    // The overlay switches: drawn from the revision's data, sending nothing.
+    let sent = methods(&changed["sent"]).len();
+    for (name, outlines, crop) in [
+        ("plain", false, true),
+        ("uncropped", false, false),
+        ("outlined", true, false),
+        ("overlaid", true, true),
+    ] {
+        let shown = shown_sheet(launch.at(name)?);
+        ensure(
+            shown["panorama"]["outlines"] == outlines
+                && shown["panorama"]["crop"] == crop
+                && shown["revision"] == changed["revision"]
+                && methods(&shown["sent"]).len() == sent,
+            format!("{name}: the sheet is {shown}"),
+        )?;
+    }
+    checks.note(
+        launch.at("overlaid")?,
+        "previewing: the sheet draws the preview, redraws it for Boundary Warp, and its overlays",
+        json!({"opened": opened, "warped": drawn}),
+    );
+
+    // Merge: the preview continued into the pending row, then one collapsed tile.
+    let merging = launch.at("merging")?;
+    let (job, create) = check_merging(merging, "merging", &ROW, plan)?;
+    ensure(
+        create["preview_id"] == preview_id && create.get("plan_id").is_none(),
+        format!("merging: Merge sent {create}"),
+    )?;
+    let jobs = BTreeSet::from([(job.clone(), "merge.panorama".to_owned())]);
+    let result = check_merged(launch.at("merged")?, "merged", &ROW, &job, &jobs)?;
+
+    // Expanded: the result, then its four originals in the stack's order, "Frame k of 4".
+    let expanded = launch.at("expanded")?;
     let rows = stacks(expanded);
+    let words: Vec<Value> = rows
+        .iter()
+        .skip(1)
+        .map(|row| row["exposure"].clone())
+        .collect();
+    let frames: Vec<Value> = (1..=ROW.frames)
+        .map(|k| json!(format!("Frame {k} of {}", ROW.frames)))
+        .collect();
     ensure(
         rows.len() == ROW.frames + 1
             && rows[0]["role"] == "leader"
-            && rows[0]["item"]["asset_id"] == row_result
+            && rows[0]["item"]["asset_id"] == result
             && rows[0]["expansion"] == "expanded"
             && rows[0]["badge"] == badge(ROW.frames, true)
             && rows
                 .iter()
                 .skip(1)
                 .all(|row| row["role"] == "original" && row["kind"] == "panorama")
+            && words == frames
             && select(expanded)["merge"]["stack"]["expansion"] == "expanded",
         format!("expanded: the stack shows {rows:?}"),
     )?;
-    // An original's Info band names its place in the stack's order.
-    let band = &select(first.at("original")?)["info"]["stack"];
-    let title = band["title"].as_str().unwrap_or_default();
+    // An original's Info band names its place in the stack's order, as its cell does.
+    let band = &select(launch.at("original")?)["info"]["stack"];
     ensure(
-        band["leader"] == false
-            && (1..=ROW.frames).any(|k| title == format!("Frame {k} of {}", ROW.frames)),
+        band["leader"] == false && band["title"] == frames[1],
         format!("original: the Info band is {band}"),
     )?;
-    let band = &select(first.at("clicked")?)["info"]["stack"];
+    let band = &select(launch.at("clicked")?)["info"]["stack"];
+    let merged_band = &select(launch.at("merged")?)["info"]["stack"];
     ensure(
-        band["leader"] == true && band["title"] == format!("Panorama \u{b7} {} photos", ROW.frames),
+        band["leader"] == true
+            && band["title"] == merged_band["title"]
+            && band["detail"] == merged_band["detail"],
         format!("clicked: the Info band is {band}"),
     )?;
 
-    // Develop: the result from its saved source, at Fit, at 100% in its far corner, and edited
-    // through a linear mask; a resident source, whose histogram counts the photograph itself.
-    let row_lifted = check_developed(&mut checks, first, "", row_answer)?;
-    let histogram = &first.at("fit")?.state()["histogram"];
+    // Remove merge, then its undo, redo and undo again: the originals and the result in turn.
+    let removed = launch.at("removed")?;
+    ensure(
+        library(removed)["method"] == "merge.remove"
+            && library(removed)["error"].is_null()
+            && stacks(removed).is_empty()
+            && select(removed)["count"] == ROW.frames,
+        format!(
+            "removed: ⌫ sent {}, the view holds {} items",
+            library(removed),
+            select(removed)["count"]
+        ),
+    )?;
+    for (name, shown) in [("restored", true), ("redone", false), ("undone", true)] {
+        let frame = launch.at(name)?;
+        let method = if shown {
+            "library.undo"
+        } else {
+            "library.redo"
+        };
+        ensure(
+            library(frame)["method"] == method && library(frame)["error"].is_null(),
+            format!("{name}: sent {}", library(frame)),
+        )?;
+        let leader = stacks(frame)
+            .into_iter()
+            .find(|row| row["role"] == "leader");
+        ensure(
+            leader.is_some_and(|row| row["item"]["asset_id"] == result) == shown,
+            format!("{name}: the stacked rows are {:?}", stacks(frame)),
+        )?;
+    }
+    Ok((job, plan.clone()))
+}
+
+/// The Wide by ⌥-click: the menu, the merge at once with the remembered settings and no sheet,
+/// its pending row and its end, the tile's preview drawn. Answers the menu's plan.
+fn check_wide(checks: &mut Checks, launch: &Checked, row_job: &str) -> Result<Value> {
+    let folder = launch.at("wide_folder")?;
+    ensure(
+        select(folder)["count"] == WIDE.frames && stacks(folder).is_empty(),
+        format!(
+            "wide_folder: the view holds {} items, stacked {:?}",
+            select(folder)["count"],
+            stacks(folder)
+        ),
+    )?;
+    let (plan, _) = check_menu(launch.at("wide_menu")?, "wide_menu", &WIDE)?;
+    let merging = launch.at("wide_merging")?;
+    let (job, create) = check_merging(merging, "wide_merging", &WIDE, plan)?;
+    ensure(
+        create["plan_id"].is_string() && create.get("preview_id").is_none(),
+        format!("wide_merging: ⌥-click sent {create}"),
+    )?;
+    let jobs = BTreeSet::from([
+        (row_job.to_owned(), "merge.panorama".to_owned()),
+        (job.clone(), "merge.panorama".to_owned()),
+    ]);
+    let merged = launch.at("wide_merged")?;
+    check_merged(merged, "wide_merged", &WIDE, &job, &jobs)?;
+    let previews = &select(merged)["previews"];
+    ensure(
+        previews["visible"].as_u64() > Some(0)
+            && previews["visible_held"] == previews["visible"]
+            && previews["failed"] == 0
+            && previews["refused"] == 0,
+        format!("wide_merged: the tile's previews are {previews}"),
+    )?;
+    checks.note(
+        merging,
+        "wide_merging: ⌥-click merges at once with Boundary Warp 60, the sheet's last settings",
+        json!({"create": create, "pending": select(merging)["merge"]["pending"],
+            "estimate": stitched_estimate(&WIDE), "answer": merge_answer(merged)}),
+    );
+    Ok(plan.clone())
+}
+
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let [selecting, developing, offline] = launches else {
+        return Err(format!("panorama-merge has three launches, not {}", launches.len()).into());
+    };
+    let after_select = read_json(&recorded(run, &run.out().join(AFTER_SELECT)))?;
+    let after_develop = read_json(&recorded(run, &run.out().join(AFTER_DEVELOP)))?;
+    let after = read_json(&recorded(run, &run.out().join(AFTER)))?;
+    let mut checks = Checks::new();
+
+    // Select: the Row through the sheet, the Wide by ⌥-click.
+    let (row_job, row_plan) = check_row(&mut checks, selecting)?;
+    let wide_plan = check_wide(&mut checks, selecting, &row_job)?;
+    let row_answer = merge_answer(selecting.at("merged")?);
+    let row_result = row_answer["result_asset_id"].clone();
+    let wide_answer = merge_answer(selecting.at("wide_merged")?);
+    let wide_result = wide_answer["result_asset_id"].clone();
+
+    // The catalog the select launch left: both merges active, each result where its plan
+    // proposed, and nothing merged again by the undo and redo.
+    let merges = &after_select["merges"];
+    for (set, plan) in [(ROW, &row_plan), (WIDE, &wide_plan)] {
+        let place = &after_select["places"][set.name];
+        ensure(
+            merges[set.name]["state"] == "active"
+                && merges[set.name]["source"]["status"] == "available"
+                && in_proposed_folder(plan, place),
+            format!(
+                "The select launch left the {} merge as {}, filed in {place}, the plan proposed {}",
+                set.name,
+                merges[set.name],
+                proposal(plan)
+            ),
+        )?;
+    }
+    let count = |after: &Value, method: &str| {
+        after["changes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|change| change["method"] == method)
+            .count()
+    };
+    ensure(
+        count(&after_select, "merge.create") == 2,
+        format!("The journal records {}", after_select["changes"]),
+    )?;
+
+    // Develop: the Row result from its saved source, at Fit, at 100% in its far corner, and
+    // edited through a linear mask; a resident source, whose histogram counts the photograph.
+    let row_lifted = check_developed(&mut checks, developing, "", row_answer)?;
+    let histogram = &developing.at("fit")?.state()["histogram"];
     ensure(
         histogram["overview"].is_null(),
         format!("fit: the Row's histogram is {histogram}"),
     )?;
-    let inspected = &first.at("inspected")?["step"]["result"];
+    let inspected = &developing.at("inspected")?["step"]["result"];
     ensure(
         inspected["result_asset_id"] == row_result
             && inspected["kind"] == "panorama"
@@ -1143,62 +1392,17 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("inspected: merge.inspect answered {inspected}"),
     )?;
 
-    // Remove merge, then its undo, redo and undo again: the originals and the result in turn.
-    let removed = first.at("removed")?;
-    ensure(
-        library(removed)["method"] == "merge.remove"
-            && library(removed)["error"].is_null()
-            && stacks(removed).is_empty()
-            && select(removed)["count"] == ROW.frames,
-        format!(
-            "removed: ⌫ sent {}, the view holds {} items",
-            library(removed),
-            select(removed)["count"]
-        ),
-    )?;
-    for (name, shown) in [("restored", true), ("redone", false), ("undone", true)] {
-        let frame = first.at(name)?;
-        let method = if shown {
-            "library.undo"
-        } else {
-            "library.redo"
-        };
-        ensure(
-            library(frame)["method"] == method && library(frame)["error"].is_null(),
-            format!("{name}: sent {}", library(frame)),
-        )?;
-        let leader = stacks(frame)
-            .into_iter()
-            .find(|row| row["role"] == "leader");
-        ensure(
-            leader.is_some_and(|row| row["item"]["asset_id"] == row_result) == shown,
-            format!("{name}: the stacked rows are {:?}", stacks(frame)),
-        )?;
-    }
-
-    // The Wide's folder: one collapsed tile of ten, its preview rendered from its resident level.
-    let wide = first.at("wide")?;
-    collapsed_leader(wide, "wide", &WIDE, &wide_result)?;
-    let previews = &select(wide)["previews"];
-    ensure(
-        previews["visible"].as_u64() > Some(0)
-            && previews["visible_held"] == previews["visible"]
-            && previews["failed"] == 0
-            && previews["refused"] == 0,
-        format!("wide: the tile's previews are {previews}"),
-    )?;
-
     // The paged result in Develop: at Fit its histogram counts the overview; at 100% in its
     // corner the surface holds a window of level 0; then the mask and its export.
-    let wide_lifted = check_developed(&mut checks, first, "wide_", wide_answer)?;
-    let histogram = &first.at("wide_fit")?.state()["histogram"];
+    let wide_lifted = check_developed(&mut checks, developing, "wide_", wide_answer)?;
+    let histogram = &developing.at("wide_fit")?.state()["histogram"];
     ensure(
         histogram["overview"]
             .as_array()
             .is_some_and(|size| size.len() == 2),
         format!("wide_fit: the histogram is {histogram}"),
     )?;
-    let events = crate::scenario::events(&first.evidence.join("events.jsonl"))?;
+    let events = crate::scenario::events(&developing.evidence.join("events.jsonl"))?;
     let windows: Vec<&Value> = events
         .iter()
         .filter(|event| event["event"] == "gpu_window")
@@ -1208,9 +1412,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         windows.iter().any(|window| window["held"] == true),
         format!("wide_corner: no window of level 0 was held: {windows:?}"),
     )?;
-    let exported = first.at("wide_exported")?;
+    let exported = developing.at("wide_exported")?;
     let export = &exported["step"]["export"];
-    let (width, height) = image::image_dimensions(first.evidence.join(EXPORT_FILE))?;
+    let (width, height) = image::image_dimensions(developing.evidence.join(EXPORT_FILE))?;
     ensure(
         export["record"]["status"] == "ready"
             && export["record"]["result"]["renderer"]["record"] == "gpu"
@@ -1224,55 +1428,47 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "windows": windows.len()}),
     );
 
-    // The catalog the first launch left: both merges active and nothing merged again.
-    let merges = &after_first["merges"];
-    for name in [ROW.name, WIDE.name] {
-        ensure(
-            merges[name]["state"] == "active" && merges[name]["source"]["status"] == "available",
-            format!("The first launch left the {name} merge as {}", merges[name]),
-        )?;
-    }
-    let count = |after: &Value, method: &str| {
-        after["changes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|change| change["method"] == method)
-            .count()
-    };
+    // The catalog the develop launch left: both merges still active, nothing merged again, and
+    // the Row result's edits in its history.
     ensure(
-        count(&after_first, "merge.create") == 2,
-        format!("The journal records {}", after_first["changes"]),
+        [ROW.name, WIDE.name]
+            .iter()
+            .all(|name| after_develop["merges"][name]["state"] == "active")
+            && count(&after_develop, "merge.create") == 2,
+        format!("The develop launch left {after_develop}"),
     )?;
     ensure(
-        after_first["history"].as_array().map_or(0, Vec::len) >= 3,
-        format!("The Row result's history holds {}", after_first["history"]),
+        after_develop["history"].as_array().map_or(0, Vec::len) >= 3,
+        format!(
+            "The Row result's history holds {}",
+            after_develop["history"]
+        ),
     )?;
 
     // Reopened with the frames moved away: each result from its saved source with its edit.
     check_reopened(
         &mut checks,
-        second.at("reopened")?,
+        offline.at("reopened")?,
         "reopened",
         row_answer,
         row_lifted,
     )?;
     check_reopened(
         &mut checks,
-        second.at("wide_reopened")?,
+        offline.at("wide_reopened")?,
         "wide_reopened",
         wide_answer,
         wide_lifted,
     )?;
-    let offline = &second.at("inspected")?["step"]["result"];
+    let missing = &offline.at("inspected")?["step"]["result"];
     ensure(
-        offline["result_asset_id"] == row_result
-            && offline["state"] == "active"
-            && offline["source"]["status"] == "available"
-            && offline["inputs"]
+        missing["result_asset_id"] == row_result
+            && missing["state"] == "active"
+            && missing["source"]["status"] == "available"
+            && missing["inputs"]
                 .as_array()
                 .is_some_and(|inputs| inputs.iter().all(|input| input["file"] == "missing")),
-        format!("inspected: with the frames offline merge.inspect answered {offline}"),
+        format!("inspected: with the frames offline merge.inspect answered {missing}"),
     )?;
     // Named back: the same two merges, nothing merged again.
     ensure(
@@ -1280,42 +1476,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .iter()
             .all(|name| after["merges"][name]["state"] == "active")
             && after["changes"].as_array().map(Vec::len)
-                == after_first["changes"].as_array().map(Vec::len),
-        format!("After the second launch the catalog holds {after}"),
+                == after_develop["changes"].as_array().map(Vec::len),
+        format!("After the offline launch the catalog holds {after}"),
     )?;
     checks.write(
-        &first.evidence,
+        &selecting.evidence,
         SCENARIO,
         json!({"row": row_result, "wide": wide_result,
-            "tolerance": {"lift": LIFT, "untouched": UNTOUCHED, "reopen": REOPEN_TOLERANCE},
-            "pending": pending()}),
-    )?;
-    match PENDING {
-        [] => Ok(()),
-        _ => Err(format!(
-            "panorama-merge passed every step this build can take; {} steps of item 5 wait on {}: \
-             after {}",
-            PENDING.len(),
-            PENDING[0].awaits,
-            PENDING
-                .iter()
-                .map(|pending| pending.after)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-        .into()),
-    }
-}
-
-/// The steps still waiting, as the checks file records them.
-fn pending() -> Value {
-    PENDING
-        .iter()
-        .map(|pending| {
-            json!({"after": pending.after, "awaits": pending.awaits,
-                "gesture": pending.gesture, "expects": pending.expects})
-        })
-        .collect()
+            "tolerance": {"lift": LIFT, "untouched": UNTOUCHED, "reopen": REOPEN_TOLERANCE}}),
+    )
 }
 
 #[cfg(test)]
@@ -1332,55 +1501,78 @@ mod tests {
 
     fn expected() -> Value {
         json!({"sets": {
-            ROW.name: {"folder": "/tmp/Frames/Row", "place": places()[ROW.name]},
-            WIDE.name: {"folder": "/tmp/Frames/Wide", "place": places()[WIDE.name]},
+            ROW.name: {"folder": "/tmp/Frames/Row"},
+            WIDE.name: {"folder": "/tmp/Frames/Wide"},
         }})
     }
 
     #[test]
     fn the_panorama_merge_plans_are_well_formed() {
-        let first = first_plan(&expected()).unwrap();
-        first.validate().unwrap();
-        assert!(first.scripted());
-        assert_eq!(first.len(), 34);
-        let second = second_plan(&json!({ "places": places() })).unwrap();
-        second.validate().unwrap();
-        assert_eq!(second.len(), 9);
+        let selecting = select_plan(&expected()).unwrap();
+        selecting.validate().unwrap();
+        assert!(selecting.scripted());
+        assert_eq!(selecting.len(), 27);
+        let after = json!({ "places": places() });
+        let developing = develop_plan(&after).unwrap();
+        developing.validate().unwrap();
+        assert_eq!(developing.len(), 22);
+        assert!(developing.index("wide_place").is_none());
+        let reopening = offline_plan(&after).unwrap();
+        reopening.validate().unwrap();
+        assert_eq!(reopening.len(), 9);
         // A Wide result filed in another folder has that folder pressed first.
         let mut apart = places();
         apart[WIDE.name]["path"] = json!("2026 \u{203a} Elsewhere");
-        let second = second_plan(&json!({ "places": apart })).unwrap();
-        second.validate().unwrap();
-        assert!(second.index("wide_place").is_some());
+        let apart = json!({ "places": apart });
+        for plan in [develop_plan(&apart).unwrap(), offline_plan(&apart).unwrap()] {
+            plan.validate().unwrap();
+            assert!(plan.index("wide_place").is_some());
+        }
         // Registered, opening nothing a checkout lacks, so `verify --tier rendered` runs it.
         let row = crate::smoke::find(SCENARIO).unwrap();
         assert!(row.rendered() && !row.takes_source());
     }
 
+    /// Both merges are the desktop's own gestures: the Row's frames selected, the menu over them,
+    /// Merge panorama…, the sheet's Boundary Warp, overlays and Merge; the Wide's ⌥-clicked.
     #[test]
-    fn every_pending_step_names_its_place_task_and_gesture() {
-        let first = first_plan(&expected()).unwrap();
-        let second = second_plan(&json!({ "places": places() })).unwrap();
-        // Steps a pending row adds are named by the row before them.
-        let added = ["previewing", "warped", "overlaid"];
-        for pending in PENDING {
-            let (launch, step) = pending.after.split_once('/').unwrap();
-            let plan = match launch {
-                "first" => &first,
-                "second" => &second,
-                other => panic!("no launch {other}"),
-            };
-            assert!(
-                plan.index(step).is_some() || added.contains(&step),
-                "{} names no step",
-                pending.after
-            );
-            assert!(!pending.expects.is_empty());
-            if pending.gesture.starts_with(['[', '{']) {
-                serde_json::from_str::<Value>(pending.gesture).unwrap();
-            }
-        }
-        assert!(PENDING.iter().all(|pending| pending.awaits == "TASK-010"));
+    fn the_select_launch_merges_through_the_menu_and_the_sheet() {
+        let script = select_plan(&expected()).unwrap().script();
+        let steps = script.as_array().unwrap();
+        let at = |step: Value| {
+            steps
+                .iter()
+                .position(|held| *held == step)
+                .unwrap_or_else(|| panic!("no step {step} in {script}"))
+        };
+        let menu = at(json!({"select": {"merge_menu": 3}}));
+        assert_eq!(
+            steps[menu - 2..menu],
+            [
+                json!({"select": {"click": {"position": 0}}}),
+                json!({"select": {"click": {"position": 3, "shift": true}}}),
+            ]
+        );
+        let sheet = [
+            json!({"select": {"merge_choose": {"kind": "panorama"}}}),
+            json!({"select": {"merge_preview": {"boundary_warp": WARP}}}),
+            json!({"select": {"merge_preview": {"frame_outlines": false}}}),
+            json!({"select": {"merge_preview": {"crop_coverage": false}}}),
+            json!({"select": {"merge_preview": {"frame_outlines": true}}}),
+            json!({"select": {"merge_preview": {"crop_coverage": true}}}),
+            json!({"select": {"merge_preview": "merge"}}),
+            json!({"select": "merged"}),
+        ];
+        assert_eq!(steps[menu + 1..menu + 1 + sheet.len()], sheet);
+        let wide = at(json!({"select": {"merge_menu": 9}}));
+        assert!(wide > menu);
+        assert_eq!(
+            steps[wide + 1..],
+            [
+                json!({"select": {"merge_choose": {"kind": "panorama", "last_settings": true}}}),
+                json!({"select": "merged"}),
+            ]
+        );
     }
 
     #[test]
@@ -1442,7 +1634,7 @@ mod tests {
                     "merge.preview",
                     json!({"kind": "panorama", "targets": {"kind": "paths", "paths": frames}}),
                 )?;
-                follow(owner, client, &opened["job_id"], PREVIEW_DEADLINE)
+                follow(owner, client, &opened["job_id"], SETUP_DEADLINE)
             })
             .unwrap();
             let revision = preview["record"]["result"].clone();
