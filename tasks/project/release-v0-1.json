@@ -236,7 +236,7 @@
     {
       "id": "TASK-004",
       "description": "Build the self-contained macOS release bundle and metadata-preserving ZIP.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -246,7 +246,8 @@
         "Inspect actual Mach-O deployment target/runtime imports against the intended macOS 14 floor; the build configuration alone is not floor evidence. No universal/Intel Mac build or DMG is required by the macOS contract.",
         "Use existing Rust tooling plus system packaging tools where necessary to preserve permissions, bundle metadata and later stapling. Delegate routine icon/art and archive mechanics; no branding approval task.",
         "An unsigned assembled candidate is a useful rehearsal output and must never be labelled release-ready.",
-        "Existing notice/resource collectors already provide the bundle inputs: the independent source/distribution review is a final readiness dependency, not a prerequisite of usable macOS packaging. Reconcile any review findings before final assembly."
+        "Existing notice/resource collectors already provide the bundle inputs: the independent source/distribution review is a final readiness dependency, not a prerequisite of usable macOS packaging. Reconcile any review findings before final assembly.",
+        "Outcome: release-build bundles packaging/icon/luxforge.icns (CFBundleIconFile), refuses missing payload resources before compiling and refuses an executable whose Mach-O deployment target is later than LSMinimumSystemVersion, recording each as deployment_targets. The stated deployment target and the system-only runtime imports are not evidence of execution on macOS 14; that floor test, signing and installation remain with their own tasks (TASK-005, TASK-009)."
       ],
       "context_links": [
         {
@@ -297,7 +298,7 @@
     {
       "id": "TASK-005",
       "description": "Implement explicit Developer ID signing, notarization and stapling with credential-free failure tests.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
@@ -428,7 +429,7 @@
     {
       "id": "TASK-007",
       "description": "Complete candidate installation/help/release documentation using actual built artifacts.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
