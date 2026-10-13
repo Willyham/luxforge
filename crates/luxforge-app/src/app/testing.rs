@@ -503,6 +503,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         agent_wait: None,
         agent_host: None,
         long_work_wait: None,
+        sheet_when_quiet: None,
         merge_wait: None,
         loupe_arrows: None,
         grid_scroll: None,

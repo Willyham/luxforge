@@ -79,7 +79,12 @@ impl TileService for BandTiles {
 
     fn disconnect(&self, _: ClientId) {}
 
-    fn stream(&self, evaluation: &Evaluation, cancel: &Cancel) -> Result<BandStream, TileFallback> {
+    fn stream(
+        &self,
+        evaluation: &Evaluation,
+        output: crate::tiles::OutputSpec,
+        cancel: &Cancel,
+    ) -> Result<BandStream, TileFallback> {
         self.streams.fetch_add(1, Ordering::SeqCst);
         self.threads.lock().unwrap().push(
             std::thread::current()
@@ -99,7 +104,8 @@ impl TileService for BandTiles {
         };
         let identity = evaluation.identity().expect("the stack's identity");
         let width = identity.width;
-        let (sender, stream) = BandStream::channel(width, identity.height, Answered::gpu());
+        assert!(output.is_full(width, identity.height), "a full-size render");
+        let (sender, stream) = BandStream::channel(output, Answered::gpu());
         let (evaluation, cancel, gate, sent) = (
             evaluation.clone(),
             cancel.clone(),
@@ -138,11 +144,7 @@ impl TileService for BandTiles {
                 } else {
                     rgba.to_vec()
                 };
-                let band = Band {
-                    y0: index as u32 * rows,
-                    rows: (rgba.len() / stride) as u32,
-                    rgba,
-                };
+                let band = Band::eight(index as u32 * rows, (rgba.len() / stride) as u32, rgba);
                 if !sender.send(Ok(band)) {
                     return;
                 }

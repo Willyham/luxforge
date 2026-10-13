@@ -38,7 +38,7 @@ fn assets(assets: &[AssetId]) -> Value {
 }
 
 /// The renderer a file of an owner with no GPU provider names: the reference, its only renderer,
-/// with no reason, as `export.jpeg`'s result names it.
+/// with no reason, as `export.write`'s result names it.
 fn headless() -> Value {
     json!({"record": "reference", "reason": null})
 }
@@ -592,7 +592,7 @@ fn a_retried_batch_is_answered_once() {
 
     let out = harness.dir.join("out");
     fs::create_dir_all(&out).unwrap();
-    let export = json!({"targets": assets(&photographs), "destination": out, "mutation": envelope("export-1")});
+    let export = json!({"targets": assets(&photographs), "settings": into(&out), "mutation": envelope("export-1")});
     let first = harness.ok("batch.export", export.clone());
     assert_eq!(harness.settle(&first["job_id"])["status"], "ready");
     let retried = harness.ok("batch.export", export);
@@ -601,7 +601,7 @@ fn a_retried_batch_is_answered_once() {
     assert_eq!(names(&out), ["One-edited.jpg", "Two-edited.jpg"]);
 }
 
-/// A batch export writes each photograph's current entry byte for byte as `export.jpeg` writes it,
+/// A batch export writes each photograph's current entry byte for byte as `export.write` writes it,
 /// with and without metadata, preparing each original first, into one folder under the names the
 /// export's rule gives them there: two originals of one name get two names, and a file already there
 /// is never replaced. Each written file records an event, as a single export's does.
@@ -624,7 +624,7 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
     let before = harness.sequence();
     let started = harness.ok(
         "batch.export",
-        json!({"targets": assets(&photographs), "destination": out, "mutation": envelope("export")}),
+        json!({"targets": assets(&photographs), "settings": into(&out), "mutation": envelope("export")}),
     );
     let settled = harness.settle(&started["job_id"]);
     assert_eq!(settled["status"], "ready", "{settled}");
@@ -634,12 +634,12 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
         out.join("DSC_0001-edited-2.jpg"),
         out.join("Lake-edited-2.jpg"),
     ];
-    // Each file names its renderer as `export.jpeg`'s result does: this owner has no GPU provider,
+    // Each file names its renderer as `export.write`'s result does: this owner has no GPU provider,
     // so the reference, its only renderer, with no reason.
     let files: Vec<Value> = photographs
         .iter()
         .zip(&written)
-        .map(|(asset, path)| json!({"asset_id": asset, "path": path, "renderer": headless()}))
+        .map(|(asset, path)| json!({"asset_id": asset, "path": path, "renderer": headless(), "quality": 90}))
         .collect();
     assert_eq!(
         settled["result"],
@@ -667,8 +667,8 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
     for (index, (asset, path)) in photographs.iter().zip(&written).enumerate() {
         let destination = singles.join(format!("{index}.jpg"));
         let started = harness.prepared(
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": destination, "mutation": envelope(&format!("single-{index}"))}),
+            "export.write",
+            json!({"asset_id": asset, "settings": single_settings(), "destination": destination, "mutation": envelope(&format!("single-{index}"))}),
         );
         assert_eq!(harness.settle(&started["job_id"])["status"], "ready");
         assert!(
@@ -683,13 +683,13 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
     fs::create_dir_all(&kept).unwrap();
     let started = harness.ok(
         "batch.export",
-        json!({"targets": assets(&photographs[..1]), "destination": kept, "keep_metadata": true, "mutation": envelope("kept")}),
+        json!({"targets": assets(&photographs[..1]), "settings": kept_into(&kept), "mutation": envelope("kept")}),
     );
     assert_eq!(harness.settle(&started["job_id"])["status"], "ready");
     let destination = singles.join("kept.jpg");
     let started = harness.prepared(
-        "export.jpeg",
-        json!({"asset_id": photographs[0], "destination": destination, "keep_metadata": true, "mutation": envelope("single-kept")}),
+        "export.write",
+        json!({"asset_id": photographs[0], "settings": settings_with_metadata(), "destination": destination, "mutation": envelope("single-kept")}),
     );
     assert_eq!(harness.settle(&started["job_id"])["status"], "ready");
     let batched = fs::read(kept.join("DSC_0001-edited.jpg")).unwrap();
@@ -721,8 +721,8 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
         fs::write(out.join(format!("Full-edited-{n}.jpg")), b"taken").unwrap();
     }
     let gone = harness.refused(
-        "export.jpeg",
-        json!({"asset_id": missing, "destination": harness.dir.join("gone.jpg"), "mutation": envelope("gone")}),
+        "export.write",
+        json!({"asset_id": missing, "settings": single_settings(), "destination": harness.dir.join("gone.jpg"), "mutation": envelope("gone")}),
     );
     assert_eq!(gone.code, "source-unavailable");
     // Other bytes of the same length written in place: the one look every read of an original
@@ -734,8 +734,8 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     fs::write(&path, &bytes).unwrap();
     let preparing = harness
         .refused(
-            "export.jpeg",
-            json!({"asset_id": changed, "destination": harness.dir.join("changed.jpg"), "mutation": envelope("changed")}),
+            "export.write",
+            json!({"asset_id": changed, "settings": single_settings(), "destination": harness.dir.join("changed.jpg"), "mutation": envelope("changed")}),
         );
     assert_eq!(preparing.code, "preparation-required");
     let failed = harness.settle(&json!(preparing.job_id.unwrap()));
@@ -744,7 +744,7 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     let targets = [&changed, &exported, &removed, &missing, &crowded].map(Clone::clone);
     let started = harness.ok(
         "batch.export",
-        json!({"targets": assets(&targets), "destination": out, "mutation": envelope("skips")}),
+        json!({"targets": assets(&targets), "settings": into(&out), "mutation": envelope("skips")}),
     );
     let settled = harness.settle(&started["job_id"]);
     assert_eq!(settled["status"], "ready", "{settled}");
@@ -752,7 +752,7 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     assert_eq!(report["done"], json!([exported]));
     assert_eq!(
         report["written"],
-        json!([{"asset_id": exported, "path": out.join("Keep-edited.jpg"), "renderer": headless()}])
+        json!([{"asset_id": exported, "path": out.join("Keep-edited.jpg"), "renderer": headless(), "quality": 90}])
     );
     let skipped = report["skipped"].as_array().unwrap();
     assert_eq!(skipped.len(), 4, "{report}");
@@ -775,19 +775,40 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
 
     let file = harness.refused(
         "batch.export",
-        json!({"targets": assets(&targets), "destination": out.join("Keep-edited.jpg"), "mutation": envelope("file")}),
+        json!({"targets": assets(&targets), "settings": into(out.join("Keep-edited.jpg")), "mutation": envelope("file")}),
     );
     assert_eq!(file.code, "validation");
+    assert_eq!(file.data.unwrap()["notice"], "folder-missing");
     let relative = harness.refused(
         "batch.export",
-        json!({"targets": assets(&targets), "destination": "out", "mutation": envelope("relative")}),
+        json!({"targets": assets(&targets), "settings": into("out"), "mutation": envelope("relative")}),
     );
     assert_eq!(relative.code, "validation");
+    assert!(
+        relative.message.starts_with("settings.folder"),
+        "{}",
+        relative.message
+    );
     let absent = harness.refused(
         "batch.export",
-        json!({"targets": assets(&targets), "destination": harness.dir.join("absent"), "mutation": envelope("absent")}),
+        json!({"targets": assets(&targets), "settings": into(harness.dir.join("absent")), "mutation": envelope("absent")}),
     );
-    assert_eq!(absent.code, "read-error");
+    assert_eq!(absent.code, "validation");
+    assert_eq!(absent.data.unwrap()["notice"], "folder-missing");
+    // An output sharpening it does not know is refused by name before any job, as export.write
+    // refuses it.
+    let mut sharpened = into(&out);
+    sharpened["sharpen"] = json!({"medium": "screen", "amount": "extreme"});
+    let refused = harness.refused(
+        "batch.export",
+        json!({"targets": assets(&targets), "settings": sharpened, "mutation": envelope("sharpened")}),
+    );
+    assert_eq!(refused.code, "validation");
+    assert!(
+        refused.message.starts_with("settings.sharpen"),
+        "{}",
+        refused.message
+    );
 }
 
 /// A batch export cancelled while it encodes its second photograph keeps the first file, removes
@@ -815,7 +836,7 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
         })));
     let started = harness.ok(
         "batch.export",
-        json!({"targets": assets(&photographs), "destination": out, "mutation": envelope("cancel")}),
+        json!({"targets": assets(&photographs), "settings": into(&out), "mutation": envelope("cancel")}),
     );
     let job = started["job_id"].clone();
     gate.wait_reached(1, "the second photograph's encoding");
@@ -827,12 +848,16 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
         running["result"],
         json!({
             "done": [photographs[0]],
-            "written": [{"asset_id": photographs[0], "path": out.join("One-edited.jpg"), "renderer": headless()}],
+            "written": [{"asset_id": photographs[0], "path": out.join("One-edited.jpg"), "renderer": headless(), "quality": 90}],
             "skipped": [],
         })
     );
     let activity = harness.activity(&job);
     assert_eq!(activity["kind"], "batch.export");
+    assert_eq!(
+        activity["label"], "Exporting JPEG",
+        "the board names the format"
+    );
     assert_eq!(activity["phase"], "encoding");
     assert_eq!(activity["detail"], "3 photographs to out");
     let staged = names(&out);
@@ -852,6 +877,91 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
         "the first file stays and the temporary file is gone"
     );
     harness.owner.hold_exports(None);
+}
+
+/// A WebP batch under a size limit writes each photograph WebP can hold under the export rule's
+/// name, reporting the quality its search chose, and reports the one too wide for WebP as left out
+/// with the plan's code, `webp-too-large`, never silently. The same batch cancelled between its
+/// photographs keeps the first file and writes nothing more.
+#[test]
+#[slow]
+fn a_mixed_webp_batch_reports_the_photograph_webp_cannot_hold_and_cancels_between_photographs() {
+    let harness = Harness::new("export-webp");
+    let fits = harness.photograph("srgb.jpg", "photos/Fits.jpg");
+    // As wide as a source may be, one pixel wider than WebP can be.
+    let wide_path = harness.dir.join("photos/Wide.jpg");
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(&wide_path).unwrap(), 90)
+        .encode_image(&image::RgbImage::from_pixel(
+            16_384,
+            8,
+            image::Rgb([90, 120, 150]),
+        ))
+        .unwrap();
+    let wide: AssetId = serde_json::from_value(super::opening::import(
+        &harness.owner,
+        harness.client,
+        &wide_path,
+    ))
+    .unwrap();
+    let also = harness.photograph("portrait.jpg", "photos/Also.jpg");
+    let out = harness.dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let mut settings = into(&out);
+    for (field, value) in [
+        ("format", json!("webp")),
+        ("quality", json!(100)),
+        ("limit_bytes", json!(10_240)),
+    ] {
+        settings[field] = value;
+    }
+    settings.as_object_mut().unwrap().remove("chroma");
+    let targets = [fits.clone(), wide.clone(), also.clone()];
+
+    let started = harness.ok(
+        "batch.export",
+        json!({"targets": assets(&targets), "settings": settings, "mutation": envelope("webp")}),
+    );
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    let report = &settled["result"];
+    assert_eq!(report["done"], json!([fits, also]), "{report}");
+    let written = report["written"].as_array().unwrap();
+    for (file, (asset, name)) in written
+        .iter()
+        .zip([(&fits, "Fits-edited.webp"), (&also, "Also-edited.webp")])
+    {
+        assert_eq!(file["asset_id"], json!(asset));
+        assert_eq!(file["path"], json!(out.join(name)));
+        let quality = file["quality"].as_u64().unwrap();
+        assert!((10..100).contains(&quality), "{file}");
+        assert!(fs::metadata(out.join(name)).unwrap().len() <= 10_240);
+    }
+    let skipped = report["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 1, "{report}");
+    assert_eq!(skipped[0]["asset_id"], json!(wide));
+    assert_eq!(skipped[0]["code"], "webp-too-large", "{report}");
+    assert_eq!(names(&out), ["Also-edited.webp", "Fits-edited.webp"]);
+
+    // Cancelled between the first photograph and the second.
+    let again = harness.dir.join("again");
+    fs::create_dir_all(&again).unwrap();
+    settings["folder"] = json!({"path": again});
+    let gate = harness.hold_before_photograph(2);
+    let started = harness.ok(
+        "batch.export",
+        json!({"targets": assets(&targets), "settings": settings, "mutation": envelope("webp-cancel")}),
+    );
+    gate.wait_reached(1, "the batch's second photograph");
+    assert_eq!(
+        harness.activity(&started["job_id"])["label"],
+        "Exporting WebP",
+        "the board names the format"
+    );
+    harness.ok("job.cancel", json!({"job_id": started["job_id"]}));
+    gate.open();
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "cancelled", "{settled}");
+    assert_eq!(names(&again), ["Fits-edited.webp"]);
 }
 
 #[test]
@@ -1202,7 +1312,7 @@ fn stale_patch(catalog: &Path, asset: &AssetId) {
 }
 
 /// A photograph with a stale frozen patch is disclosed by `export.plan` and exported only as
-/// acknowledged: `export.jpeg` refuses it before any job until the request names exactly its frozen
+/// acknowledged: `export.write` refuses it before any job until the request names exactly its frozen
 /// entry and stale corrections, an acknowledgement of an entry a later commit replaced is refused,
 /// and the written file's result echoes what it acknowledged. A batch skips it with its entry and
 /// reasons while it exports the rest, and exports it once the batch acknowledges it.
@@ -1218,24 +1328,30 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
     stale_patch(&harness.catalog, &photographs[0]);
     let harness = harness.restart(ModuleRegistry::builtin());
     let stale = json!([{"operation": "correction-2", "name": "Patch 2", "reasons": ["earlier-correction"]}]);
-    let planned = harness.prepared("export.plan", json!({"asset_id": photographs[0]}));
+    let planned = harness.prepared(
+        "export.plan",
+        json!({"asset_id": photographs[0], "settings": single_settings()}),
+    );
     assert_eq!(planned["stale"], stale);
     let entry = planned["entry_id"].clone();
     assert_eq!(
-        harness.prepared("export.plan", json!({"asset_id": photographs[1]}))["stale"],
+        harness.prepared(
+            "export.plan",
+            json!({"asset_id": photographs[1], "settings": single_settings()})
+        )["stale"],
         json!([])
     );
     let out = harness.dir.join("out");
     fs::create_dir_all(&out).unwrap();
     let single = |request: &str, acknowledge: Option<Value>| {
-        let mut params = json!({"asset_id": photographs[0], "destination": out.join(format!("{request}.jpg")),
+        let mut params = json!({"asset_id": photographs[0], "settings": single_settings(), "destination": out.join(format!("{request}.jpg")),
                                 "mutation": envelope(request)});
         if let Some(acknowledge) = acknowledge {
             params["acknowledge_stale"] = acknowledge;
         }
         params
     };
-    let refused = harness.refused("export.jpeg", single("bare", None));
+    let refused = harness.refused("export.write", single("bare", None));
     assert_eq!(refused.code, "conflict");
     assert_eq!(
         refused.data,
@@ -1246,13 +1362,13 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
         json!({"entry_id": entry, "operations": ["correction-1"]}),
         json!({"entry_id": crate::EntryId::new(), "operations": ["correction-2"]}),
     ] {
-        let refused = harness.refused("export.jpeg", single("wrong", Some(wrong.clone())));
+        let refused = harness.refused("export.write", single("wrong", Some(wrong.clone())));
         assert_eq!(refused.code, "conflict", "{wrong}");
     }
     assert_eq!(names(&out), Vec::<String>::new(), "nothing was queued");
     let acknowledge = json!({"entry_id": entry, "operations": ["correction-2"]});
     let accepted = harness.prepared(
-        "export.jpeg",
+        "export.write",
         single("acknowledged", Some(acknowledge.clone())),
     );
     assert_eq!(accepted["acknowledged_stale"], stale);
@@ -1262,8 +1378,8 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
     assert!(out.join("acknowledged.jpg").is_file());
     // A plain photograph ignores an acknowledgement it does not need.
     let plain = harness.prepared(
-        "export.jpeg",
-        json!({"asset_id": photographs[1], "destination": out.join("plain.jpg"),
+        "export.write",
+        json!({"asset_id": photographs[1], "settings": single_settings(), "destination": out.join("plain.jpg"),
                "mutation": envelope("plain"), "acknowledge_stale": acknowledge}),
     );
     assert_eq!(plain["acknowledged_stale"], json!([]));
@@ -1274,7 +1390,7 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
     fs::create_dir_all(&folder).unwrap();
     let started = harness.ok(
         "batch.export",
-        json!({"targets": assets(&photographs), "destination": folder, "mutation": envelope("batch")}),
+        json!({"targets": assets(&photographs), "settings": into(&folder), "mutation": envelope("batch")}),
     );
     let report = harness.settle(&started["job_id"])["result"].clone();
     assert_eq!(report["done"], json!([photographs[1]]));
@@ -1297,21 +1413,24 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
     // A commit since the plan makes an old acknowledgement name another entry.
     harness.expose(&photographs[0], 0.25);
     let refused = harness.refused(
-        "export.jpeg",
+        "export.write",
         single(
             "after-commit",
             Some(json!({"entry_id": entry, "operations": ["correction-2"]})),
         ),
     );
     assert_eq!(refused.code, "conflict");
-    let current =
-        harness.prepared("export.plan", json!({"asset_id": photographs[0]}))["entry_id"].clone();
+    let current = harness.prepared(
+        "export.plan",
+        json!({"asset_id": photographs[0], "settings": single_settings()}),
+    )["entry_id"]
+        .clone();
     // Acknowledged, the batch exports both.
     let again = harness.dir.join("again");
     fs::create_dir_all(&again).unwrap();
     let started = harness.ok(
         "batch.export",
-        json!({"targets": assets(&photographs), "destination": again, "mutation": envelope("batch-2"),
+        json!({"targets": assets(&photographs), "settings": into(&again), "mutation": envelope("batch-2"),
                "acknowledge_stale": [{"asset_id": photographs[0], "entry_id": current, "operations": ["correction-2"]}]}),
     );
     let report = harness.settle(&started["job_id"])["result"].clone();
@@ -1319,10 +1438,38 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
     assert_eq!(names(&again), ["Plain-edited.jpg", "Stale-edited.jpg"]);
     let doubled = harness.refused(
         "batch.export",
-        json!({"targets": assets(&photographs), "destination": again, "mutation": envelope("batch-3"),
+        json!({"targets": assets(&photographs), "settings": into(&again), "mutation": envelope("batch-3"),
                "acknowledge_stale": [
                    {"asset_id": photographs[0], "entry_id": current, "operations": ["correction-2"]},
                    {"asset_id": photographs[0], "entry_id": current, "operations": ["correction-2"]}]}),
     );
     assert_eq!(doubled.code, "validation");
+}
+
+/// A batch export's settings for today's export into `folder`, naming each file
+/// `<stem>-edited.jpg` as the single export's suggestion does.
+fn into(folder: impl serde::Serialize) -> Value {
+    let mut settings = single_settings();
+    settings["folder"] = json!({"path": folder});
+    settings["suffix"] = json!("-edited");
+    settings
+}
+
+/// [`into`] writing every supported EXIF field.
+fn kept_into(folder: impl serde::Serialize) -> Value {
+    let mut settings = into(folder);
+    settings["metadata"] = json!("all");
+    settings
+}
+
+/// A single export's settings: today's export.
+fn single_settings() -> Value {
+    crate::export::settings::baseline_json()
+}
+
+/// [`single_settings`] writing every supported EXIF field.
+fn settings_with_metadata() -> Value {
+    let mut settings = single_settings();
+    settings["metadata"] = json!("all");
+    settings
 }

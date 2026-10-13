@@ -12,8 +12,8 @@ use crate::coalesce::Coalesce;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
-        BrushPreference, CanvasBackground, CatalogSelection, HdrMergePreference, INTERFACE_SIZES,
-        PanoramaMergePreference, RawLook, WindowFrame, WorkspacePreference,
+        BrushPreference, CanvasBackground, CatalogSelection, ExportLast, HdrMergePreference,
+        INTERFACE_SIZES, PanoramaMergePreference, RawLook, WindowFrame, WorkspacePreference,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -97,8 +97,10 @@ preferences! {
     brush: Option<BrushPreference>,
     /// The remembered window frame, or `None` for the system's placement.
     window: Option<WindowFrame>,
-    /// The folder `export.plan` suggests, or `None` for the original's.
-    export_folder: Option<PathBuf>,
+    /// The last export the person started, whose folder `export.plan` suggests, or `None`.
+    /// Boxed: the settings would otherwise more than double the size of every message that
+    /// carries the preferences.
+    export_last: Option<Box<ExportLast>>,
     /// The last HDR merge's alignment and deghosting, which ⌥-click merges with, or `None` for
     /// the defaults.
     hdr_merge: Option<HdrMergePreference>,
@@ -244,6 +246,17 @@ impl PreferenceWriter {
             .chain(&self.writing)
             .find_map(|change| change.theme.as_deref())
             .or_else(|| self.stored.as_ref().map(|stored| stored.theme.as_str()))
+    }
+
+    /// The last export [`Self::applied`] holds, without cloning the rest, as
+    /// [`Self::applied_theme`] reads the theme.
+    pub(crate) fn applied_export_last(&self) -> Option<&ExportLast> {
+        self.waiting
+            .iter()
+            .chain(&self.writing)
+            .find_map(|change| change.export_last.as_ref())
+            .or_else(|| self.stored.as_ref().map(|stored| &stored.export_last))?
+            .as_deref()
     }
 
     /// A change to the field named `field` has not been answered yet.
@@ -715,7 +728,7 @@ mod tests {
                           "clip_shadows": false, "clip_highlights": false},
             "brush": null,
             "window": null,
-            "export_folder": null,
+            "export_last": null,
             "hdr_merge": null,
             "panorama_merge": null,
             "theme": "luxforge.dark",

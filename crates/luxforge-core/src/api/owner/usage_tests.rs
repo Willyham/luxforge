@@ -225,7 +225,7 @@ fn usage_untrusted_enable_and_generic_preference_bypasses_are_refused() {
         "workspace",
         "brush",
         "window",
-        "export_folder",
+        "export_last",
         "hdr_merge",
         "panorama_merge",
         "theme",

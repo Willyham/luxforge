@@ -1,4 +1,4 @@
-//! Remembered state: the workspace switches, the brush and the export folder the desktop keeps
+//! Remembered state: the workspace switches, the brush and the last export the desktop keeps
 //! across launches with no Settings row of their own
 //! ([design](../../../../docs/design/preferences.md#behaviour)).
 //!
@@ -15,7 +15,7 @@ use crate::{
 use iced::Task;
 use luxforge_core::{
     ClientSession, WorkspaceState,
-    preferences::{BrushPreference, WorkspacePreference},
+    preferences::{BrushPreference, ExportLast, WorkspacePreference},
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -137,17 +137,17 @@ impl Editor {
         })
     }
 
-    /// An export whose destination the person chose in the save dialog succeeded: store the
-    /// destination's folder, which `export.plan` then suggests for the next export. `folder` is
-    /// `None` for a destination given any other way, which stores nothing.
-    pub(super) fn remember_export_folder(&mut self, folder: Option<PathBuf>) -> Task<Message> {
-        let Some(folder) = folder.filter(|folder| folder.is_absolute()) else {
+    /// An export the person started from the sheet, the menu or the palette succeeded: store its
+    /// settings and the preset it was, while unchanged, as the last export, which the sheet opens
+    /// on next and Export again repeats. `None` (an evidence file) stores nothing.
+    pub(crate) fn remember_export_last(&mut self, last: Option<ExportLast>) -> Task<Message> {
+        let Some(last) = last else {
             return Task::none();
         };
         match self.preferences.applied() {
-            Some(preferences) if preferences.export_folder.as_deref() != Some(&folder) => self
+            Some(preferences) if preferences.export_last.as_deref() != Some(&last) => self
                 .store_preferences(PreferenceChange {
-                    export_folder: Some(Some(folder)),
+                    export_last: Some(Some(Box::new(last))),
                     ..PreferenceChange::default()
                 }),
             _ => Task::none(),
@@ -155,7 +155,7 @@ impl Editor {
     }
 }
 
-/// The folder a chosen destination is in, as the remembered export folder stores it.
+/// The folder a chosen destination is in, which the last export's settings name.
 pub(crate) fn export_folder(destination: &Path) -> Option<PathBuf> {
     destination
         .parent()

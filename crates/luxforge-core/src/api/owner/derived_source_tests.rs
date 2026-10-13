@@ -214,24 +214,31 @@ fn a_derived_source_opens_samples_analyses_and_exports_through_the_owner() {
     )
     .unwrap();
     assert_eq!(analysed["result"], serde_json::to_value(expected).unwrap());
-    let plan = opened.ok("export.plan", json!({"asset_id": opened.asset}));
-    assert_eq!(plan["suggested"], Value::Null);
-    assert_eq!(
-        (plan["width"].clone(), plan["height"].clone()),
-        (json!(WIDTH), json!(HEIGHT))
+    let plan = opened.ok(
+        "export.plan",
+        json!({"asset_id": opened.asset, "settings": crate::export::settings::baseline_json_in(&opened.dir)}),
     );
+    // A derived photograph has no original to name the file after.
+    assert_eq!(plan["suggested"], Value::Null);
+    assert_eq!(plan["output"], json!({"width": WIDTH, "height": HEIGHT}));
     let destination = opened.dir.join("merge-edited.jpg");
     let accepted = opened.ok(
-        "export.jpeg",
-        json!({"asset_id": opened.asset, "destination": destination,
+        "export.write",
+        json!({"settings": crate::export::settings::baseline_json_in(&opened.dir), "asset_id": opened.asset, "destination": destination,
                "mutation": {"request_id": "derived-export", "actor": "test"}}),
     );
     let exported = opened.settled(&accepted["job_id"]);
     assert_eq!(exported["status"], "ready", "{exported}");
     let mut expected = Vec::new();
-    crate::export::encode::encode_jpeg(&mut expected, &reference, None, None, &mut |_| {}, &|| {
-        Ok(())
-    })
+    crate::export::encode::encode_jpeg(
+        &mut expected,
+        &reference,
+        &crate::export::encode::BASELINE_90,
+        None,
+        None,
+        &mut |_| {},
+        &|| Ok(()),
+    )
     .unwrap();
     assert!(
         fs::read(&destination).unwrap() == expected,
@@ -271,8 +278,8 @@ fn a_damaged_derived_source_fails_preparation_sampling_and_export_by_name() {
             json!({"asset_id": opened.asset, "x": 0, "y": 0}),
         ),
         (
-            "export.jpeg",
-            json!({"asset_id": opened.asset, "destination": destination,
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json_in(&opened.dir), "asset_id": opened.asset, "destination": destination,
                    "mutation": {"request_id": "derived-damaged-export", "actor": "test"}}),
         ),
     ] {

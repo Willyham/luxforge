@@ -3,10 +3,22 @@
 //! window.
 use crate::app::Editor;
 use crate::app::message::{
-    Message, crop::CropMessage, draft::DraftMessage, export::ExportMessage,
-    history::HistoryMessage, mask::BrushEdit, mask::KindMenu, mask::MaskKey, mask::MaskMessage,
-    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, preset::PresetMessage,
-    settings::SettingsMessage, sync::SyncMessage, view::ViewMessage,
+    Message,
+    crop::CropMessage,
+    draft::DraftMessage,
+    export::{ExportMessage, SheetMessage},
+    history::HistoryMessage,
+    mask::BrushEdit,
+    mask::KindMenu,
+    mask::MaskKey,
+    mask::MaskMessage,
+    mask::TypingEdit,
+    overlay::OverlayMessage,
+    palette::PaletteMessage,
+    preset::PresetMessage,
+    settings::SettingsMessage,
+    sync::SyncMessage,
+    view::ViewMessage,
 };
 use crate::app::message::{
     develop::DevelopMessage,
@@ -131,6 +143,9 @@ pub(crate) struct KeyContext {
     pub(crate) settings_open: bool,
     /// The title bar's Export menu is open, so Escape closes it.
     pub(crate) export_menu_open: bool,
+    /// The Export sheet is open: it is modal, so Escape closes it without exporting and no other
+    /// key reaches the workspace behind it.
+    pub(crate) export_sheet_open: bool,
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
     /// Escape with its own cancel first; a mode without one has nothing to discard.
     pub(crate) mode_active: bool,
@@ -303,6 +318,17 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
             _ => None,
         };
     }
+    // The Export sheet is modal as the Settings sheet is: Escape closes it without exporting, and
+    // no other key reaches the workspace behind it. Its fields still receive their own typing.
+    if context.export_sheet_open {
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Export(ExportMessage::Sheet(SheetMessage::Close))),
+            _ => None,
+        };
+    }
     if let Some(modal) = context.copy_settings_modal {
         use crate::app::message::copy_settings::CopySettingsMessage as C;
         return match keyboard {
@@ -422,11 +448,13 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         if character(key, "0") {
             return Some(Message::View(ViewMessage::Fit));
         }
-        // Export the displayed entry; Shift keeps its metadata.
+        // The Export sheet over the displayed entry; Shift exports again at once with the last
+        // export's settings.
         if character(key, "e") {
-            return Some(Message::Export(ExportMessage::Start {
-                keep_metadata: modifiers.shift(),
-                reference: false,
+            return Some(Message::Export(if modifiers.shift() {
+                ExportMessage::Again
+            } else {
+                ExportMessage::OpenSheet { reference: false }
             }));
         }
         // The panel toggles are the one pair that also needs Option, so they cannot collide with a
@@ -1376,6 +1404,7 @@ mod tests {
             palette_open: false,
             settings_open: false,
             export_menu_open: false,
+            export_sheet_open: false,
             mode_active: false,
             leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],
@@ -1840,6 +1869,10 @@ mod tests {
             export_menu_open: true,
             ..context()
         };
+        let export_sheet = KeyContext {
+            export_sheet_open: true,
+            ..context()
+        };
         let command = Modifiers::COMMAND;
         let shift_command = Modifiers::COMMAND | Modifiers::SHIFT;
         let option_command = Modifiers::COMMAND | Modifiers::ALT;
@@ -1887,18 +1920,32 @@ mod tests {
                 Some("Palette(Open)"),
             ),
             (
-                "export",
+                "export opens the sheet",
                 pressed(letter("e"), command),
                 Status::Ignored,
                 &plain,
-                Some("Export(Start { keep_metadata: false, reference: false })"),
+                Some("Export(OpenSheet { reference: false })"),
             ),
             (
-                "export keeping metadata",
+                "export again",
                 pressed(letter("E"), shift_command),
                 Status::Ignored,
                 &plain,
-                Some("Export(Start { keep_metadata: true, reference: false })"),
+                Some("Export(Again)"),
+            ),
+            (
+                "Escape closes the Export sheet",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &export_sheet,
+                Some("Export(Sheet(Close))"),
+            ),
+            (
+                "the Export sheet keeps the workspace's keys",
+                pressed(letter("z"), command),
+                Status::Ignored,
+                &export_sheet,
+                None,
             ),
             (
                 "a plain e is no shortcut",

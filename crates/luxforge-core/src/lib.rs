@@ -114,6 +114,14 @@ pub use editor::{
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
+/// An export's settings, its presets and what a plan says of it (`docs/design/export-settings.md`).
+pub use export::{
+    presets::ExportPreset,
+    settings::{
+        Chroma, ExportFolder, ExportFormat, ExportSettings, FormatSettings, MetadataLevel, Notice,
+        OutputSize,
+    },
+};
 /// The RAW test cameras' process-wide switch, which the desktop turns on only for a launch with
 /// `LUXFORGE_TEST_CAMERAS=1`: see `luxforge_raw::admit_test_cameras`.
 pub use luxforge_raw::{admit_test_cameras, test_cameras_admitted};
@@ -198,6 +206,8 @@ pub use render::{
     Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
+/// Output sharpening, an export setting (`docs/design/export-settings.md`, "Output sharpening").
+pub use tiles::sharpen::{Sharpen, SharpenAmount, SharpenMedium};
 
 // The catalog's public surface beyond `catalog_types`.
 pub use index::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, index_dir};
@@ -368,6 +378,21 @@ pub mod qualification {
         /// row by row, as the reference export encodes them.
         pub fn bands(&self) -> impl Iterator<Item = Result<(u32, Vec<u8>), crate::Error>> + '_ {
             self.banded.bands()
+        }
+
+        /// An export's `output` in bands from the top, as the reference export of a paged source
+        /// encodes them (`docs/design/export-settings.md`, "Paged sources"): each band its row
+        /// count and its pixels at the output's depth, resized and sharpened as the output asks,
+        /// every code the whole-frame reference's.
+        pub fn output<'b>(
+            &'b self,
+            output: crate::tiles::OutputSpec,
+            cancel: &'b crate::Cancel,
+        ) -> Result<
+            impl Iterator<Item = Result<(u32, crate::tiles::Pixels), crate::Error>> + 'b,
+            crate::Error,
+        > {
+            crate::render::bands_output::output_bands(&self.banded, output, cancel)
         }
 
         /// The output reduced to fit `bounds` by the linear-light area average the reference frame

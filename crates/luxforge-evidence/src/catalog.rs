@@ -23,9 +23,9 @@ use serde::{Deserialize, Serialize};
 /// presses Return.
 ///
 /// `{"apply_preset": "Warm"}` opens the Develop band's Apply preset… and chooses the library preset
-/// of that name for the selection; `{"export_into": "/path"}` presses Export… and answers the native
-/// folder dialog with that folder: each is captured once its batch has ended and what it changed
-/// has been read again. `"report"` presses the status bar's Report beside the batch's sentence.
+/// of that name for the selection, captured once its batch has ended and what it changed has been
+/// read again; `"export"` presses Export N…, captured with the Export sheet it opens over the
+/// selection (the `export` steps drive it). `"report"` presses the status bar's Report beside the batch's sentence.
 /// `"remove"` presses the Info panel's Remove from catalog…, `"delete_key"` presses ⌫ through the
 /// key table, `"empty_removed"` the filter bar's Empty Removed… over Removed: each is captured with
 /// its confirmation. `"confirm"` presses the confirmation's own button. `"put_back"` presses the
@@ -49,7 +49,7 @@ pub enum CatalogStep {
     AddTo(String),
     SaveSmart(String),
     ApplyPreset(String),
-    ExportInto(String),
+    Export,
     Report,
     Remove,
     DeleteKey,
@@ -92,8 +92,9 @@ impl CatalogStep {
             Self::SaveSmart(name) => text(name, "catalog smart collection name"),
             Self::ApplyPreset(name) => text(name, "catalog preset"),
             Self::ContextChoice(label) => text(label, "catalog context choice"),
-            Self::ExportInto(folder) => text(folder, "catalog export folder"),
+
             Self::Report
+            | Self::Export
             | Self::Remove
             | Self::DeleteKey
             | Self::Confirm
@@ -127,7 +128,7 @@ mod tests {
             {"catalog": {"add_to": "Print order"}},
             {"catalog": {"save_smart": "iPhone in Luzern"}},
             {"catalog": {"apply_preset": "Warm"}},
-            {"catalog": {"export_into": "/tmp/batch-export"}},
+            {"catalog": "export"},
             {"catalog": "report"},
             {"catalog": "remove"},
             {"catalog": "delete_key"},

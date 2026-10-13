@@ -7,11 +7,12 @@
 //! - **Apply settings**: each photograph on the owner through exactly the path
 //!   `edit.apply-settings` takes, the module action against the photograph's current revision,
 //!   announced as that call announces it.
-//! - **Export**: each photograph's current entry planned on the owner as `export.jpeg` plans it,
+//! - **Export**: each photograph's current entry planned on the owner as `export.write` plans it,
 //!   then rendered, encoded and published on the worker through the export's own steps
 //!   ([`export::write`]), streamed through the owner's tile service with the same reference
-//!   fallback, one photograph at a time, into the chosen folder under the export's naming rule;
-//!   each written file is announced as a single export's is.
+//!   fallback, one photograph at a time, with one set of settings, into their folder (the chosen
+//!   one, or each photograph's own original's) under the export's naming rule; each written file
+//!   is announced as a single export's is.
 //!
 //! A photograph whose stack needs a prepared source is prepared through the owner's one preparation
 //! path first, as a client's request would be, and the worker waits for that off the owner. The
@@ -304,15 +305,42 @@ fn apply(
     Ok(set.outcome(asset, result))
 }
 
-/// `batch.export`: check the folder, then start a `batch-export` job that exports each photograph
-/// `targets` names into it as `export.jpeg` would, answering a
+/// The batch export's catalog job, its activity label naming the format it writes, as a single
+/// export's does: `Exporting JPEG`, `Exporting WebP` or `Exporting TIFF`.
+fn batch_export_job(
+    format: crate::ExportFormat,
+) -> &'static crate::catalog_types::jobs::CatalogJob {
+    use crate::{ExportFormat, catalog_types::jobs::CatalogJob};
+    static JPEG: CatalogJob = CatalogJob {
+        label: "Exporting JPEG",
+        ..BATCH_EXPORT
+    };
+    static WEBP: CatalogJob = CatalogJob {
+        label: "Exporting WebP",
+        ..BATCH_EXPORT
+    };
+    static TIFF: CatalogJob = CatalogJob {
+        label: "Exporting TIFF",
+        ..BATCH_EXPORT
+    };
+    match format {
+        ExportFormat::Jpeg => &JPEG,
+        ExportFormat::Webp => &WEBP,
+        ExportFormat::Tiff => &TIFF,
+    }
+}
+
+/// `batch.export`: check the settings and a chosen folder, then start a `batch-export` job that
+/// exports each photograph `targets` names as `export.write` would, answering a
 /// [`BatchReport`](crate::catalog_types::BatchReport) with the files it wrote.
 pub(in crate::api) fn batch_export(
     owner: &mut Owner,
     call: &Call<'_>,
     params: BatchExport,
 ) -> Result<Value, Error> {
-    let folder = batch::export_folder(&params.destination)?;
+    let settings = Arc::new(params.settings);
+    // The one chosen folder, or none when each photograph goes beside its own original.
+    let chosen = batch::export_folder(&settings.folder)?;
     let assets = targets::assets(&owner.service, &params.targets, || {
         selected(owner, call.client)
     })?;
@@ -328,17 +356,12 @@ pub(in crate::api) fn batch_export(
             )));
         }
     }
-    let options = export::Options {
-        keep_metadata: params.keep_metadata.unwrap_or(false),
-        pixels_per_inch: None,
-        reference: false,
-    };
-    // Each photograph streams through the owner's tile service as `export.jpeg`'s job does.
+    // Each photograph streams through the owner's tile service as `export.write`'s job does.
     let tiles = Arc::clone(&owner.tiles);
     let (client, origin) = (call.client, call.origin.clone());
     #[cfg(test)]
     let hold = owner.export_hold.clone();
-    let detail = match folder.file_name() {
+    let detail = match chosen.as_deref().and_then(std::path::Path::file_name) {
         Some(name) => format!(
             "{} to {}",
             photographs(assets.len()),
@@ -348,7 +371,7 @@ pub(in crate::api) fn batch_export(
     };
     let task = Task {
         job_id: JobId::new(),
-        job: &BATCH_EXPORT,
+        job: batch_export_job(settings.format()),
         asset_id: only(&assets),
         detail: Some(detail),
         origin: call.origin.clone(),
@@ -366,40 +389,47 @@ pub(in crate::api) fn batch_export(
             for (asset, _) in assets {
                 job.pause(Phase::NextPhotograph);
                 let target = asset.clone();
-                let acknowledgements = acknowledgements.clone();
+                let (acknowledgements, planned_with) = (acknowledgements.clone(), settings.clone());
                 let planned = match ask_owner(job, client, move |owner: &mut Owner| {
-                    plan(owner, &target, &acknowledgements)
+                    plan(owner, &target, &acknowledgements, &planned_with)
                 }) {
                     Ok(planned) => planned,
                     Err(stopped) => return Box::new(move |_: &mut Owner| Err(stopped)),
                 };
-                let (plan, original) = match planned {
-                    Ok(Planned::Export { plan, original }) => (plan, original),
+                let (plan, original, folder) = match planned {
+                    Ok(Planned::Export {
+                        plan,
+                        original,
+                        folder,
+                    }) => (plan, original, folder),
                     Ok(Planned::Skipped(skip)) => {
                         progress.skip(skip);
                         continue;
                     }
                     Err(refused) => {
-                        progress.skip(batch::refused(&asset, &refused));
+                        progress.skip(batch::export_refused(&asset, &refused));
                         continue;
                     }
                 };
-                let written = batch::destination(&folder, &original).and_then(|destination| {
-                    let written = export::write(
-                        *plan,
-                        &destination,
-                        options,
-                        tiles.as_ref(),
-                        job.control,
-                        &phase,
-                        &mut |fraction| progress.within(fraction),
-                    )?;
-                    Ok(BatchWritten {
-                        asset_id: asset.clone(),
-                        path: destination.path().to_path_buf(),
-                        renderer: written.renderer.into(),
-                    })
-                });
+                let written =
+                    batch::destination(&folder, &original, &settings).and_then(|destination| {
+                        let written = export::write(
+                            *plan,
+                            &destination,
+                            &settings,
+                            false,
+                            tiles.as_ref(),
+                            job.control,
+                            &phase,
+                            &mut |fraction, _| progress.within(fraction),
+                        )?;
+                        Ok(BatchWritten {
+                            asset_id: asset.clone(),
+                            path: destination.path().to_path_buf(),
+                            renderer: written.renderer.into(),
+                            quality: written.quality,
+                        })
+                    });
                 match written {
                     Ok(written) => {
                         // Recorded as a single export's is, under the request that asked for it.
@@ -416,7 +446,7 @@ pub(in crate::api) fn batch_export(
                     Err(stopped) if stopped.kind == ErrorKind::Cancelled => {
                         return Box::new(move |_: &mut Owner| Err(stopped));
                     }
-                    Err(refused) => progress.skip(batch::refused(&asset, &refused)),
+                    Err(refused) => progress.skip(batch::export_refused(&asset, &refused)),
                 }
             }
             let report = progress.finish();
@@ -428,22 +458,25 @@ pub(in crate::api) fn batch_export(
 
 /// One photograph's export as the owner planned it.
 enum Planned {
-    /// Its current entry, frozen as `export.jpeg` freezes it, and where its original is, whose
-    /// name the exported file is named from.
+    /// Its current entry, frozen as `export.write` freezes it; where its original is, whose name
+    /// the exported file is named from; and the folder the settings put it in.
     Export {
         plan: Box<ExportPlan>,
         original: PathBuf,
+        folder: PathBuf,
     },
     Skipped(crate::catalog_types::BatchSkip),
 }
 
-/// Plan one photograph's export on the owner, as `export.jpeg` plans its current entry: left out
-/// while it is in Removed; refused as the single export would be, a missing or offline original
-/// with the refusal availability names and an unprepared source with what it needs.
+/// Plan one photograph's export on the owner, as `export.write` plans its current entry: left out
+/// while it is in Removed; refused as the single export would be, for a notice that refuses it
+/// with the plan's words, a missing or offline original with the refusal availability names and an
+/// unprepared source with what it needs.
 fn plan(
     owner: &mut Owner,
     asset: &AssetId,
     acknowledgements: &[crate::BatchStaleAcknowledgement],
+    settings: &crate::export::settings::ExportSettings,
 ) -> Result<Planned, Error> {
     if let Some(skip) = batch::removed(&owner.service.connection, asset)? {
         return Ok(Planned::Skipped(skip));
@@ -467,13 +500,28 @@ fn plan(
             ..batch::skip(asset, crate::editor::STALE_UNACKNOWLEDGED, refused.detail)
         }));
     }
+    // The notices that refuse it are the plan's, checked before anything is prepared.
+    let target = owner.service.export_target(asset, Some(&entry_id))?;
+    let stage = target.evaluation.identity()?;
+    let original_folder = settings.folder.resolve(target.original.as_deref());
+    if let Some(notice) = export::refusing_notice(
+        settings,
+        (stage.width, stage.height),
+        target.original.as_deref(),
+    ) {
+        return Err(notice.refusal());
+    }
+    drop(target);
     let plan = owner.service.export_plan(asset, Some(&entry_id))?;
     let original = library_rows::asset_source(&owner.service.connection, asset)?
         .ok_or_else(|| Error::validation(format!("unknown asset {asset}")))?
         .locator;
+    // A refusing notice already left out a photograph with no folder.
+    let folder = original_folder.ok_or_else(|| Error::internal("an export with no folder"))?;
     Ok(Planned::Export {
         plan: Box::new(plan),
         original,
+        folder,
     })
 }
 

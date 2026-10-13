@@ -19,6 +19,7 @@ pub(crate) mod corrections_panel;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 pub(crate) mod develop;
+pub(crate) mod export_sheet;
 pub(crate) mod fill_setup;
 mod gallery;
 pub(crate) mod long_work;
@@ -238,6 +239,9 @@ pub(crate) fn workspace<'a>(
     }
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
+    }
+    if let Some(sheet) = export_sheet::export_sheet(model.export_sheet.as_ref()) {
+        layers = layers.push(sheet);
     }
     if let Some(sheet) = settings::settings(&model.settings) {
         layers = layers.push(sheet);

@@ -200,6 +200,85 @@ impl<'a> Rgb8<'a> {
     }
 }
 
+/// A 16-bit sRGB frame: `width * height` pixels of three codes in `[0, 65535]`, row by row, top
+/// row first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rgb16<'a> {
+    width: u32,
+    height: u32,
+    rgb: &'a [u16],
+}
+
+impl<'a> Rgb16<'a> {
+    pub fn new(width: u32, height: u32, rgb: &'a [u16]) -> Result<Self, String> {
+        let expected = u64::from(width) * u64::from(height) * 3;
+        if rgb.len() as u64 != expected {
+            return Err(format!(
+                "a {width} x {height} 16-bit RGB frame holds {expected} codes, not {}",
+                rgb.len()
+            ));
+        }
+        Ok(Self { width, height, rgb })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn pixel(&self, x: usize, y: usize) -> [u16; 3] {
+        let at = (y * self.width as usize + x) * 3;
+        [self.rgb[at], self.rgb[at + 1], self.rgb[at + 2]]
+    }
+}
+
+/// CIELAB of one 16-bit sRGB pixel: each code over 65,535 decoded through the sRGB transfer
+/// function.
+pub fn lab_from_srgb16(rgb: [u16; 3]) -> [f64; 3] {
+    lab_from_linear(rgb.map(|code| srgb::decode_encoded(f64::from(code) / 65535.0)))
+}
+
+/// [`differences`] of two 16-bit frames over the whole of them, the rows `rows`: ΔE00 from their
+/// 16-bit values.
+pub fn differences16(
+    candidate: Rgb16<'_>,
+    reference: Rgb16<'_>,
+    rows: std::ops::Range<u32>,
+) -> Result<(Vec<f64>, Vec<f64>), String> {
+    if (candidate.width, candidate.height) != (reference.width, reference.height) {
+        return Err(format!(
+            "the frames differ in size: {} x {} against {} x {}",
+            candidate.width, candidate.height, reference.width, reference.height
+        ));
+    }
+    if rows.start > rows.end || rows.end > candidate.height {
+        return Err(format!(
+            "rows {rows:?} are outside the frame's {} rows",
+            candidate.height
+        ));
+    }
+    let count = candidate.width as usize * rows.len();
+    let mut delta_e = Vec::with_capacity(count);
+    let mut delta_l = Vec::with_capacity(count);
+    for y in rows.start as usize..rows.end as usize {
+        for x in 0..candidate.width as usize {
+            let (c, r) = (candidate.pixel(x, y), reference.pixel(x, y));
+            if c == r {
+                delta_e.push(0.0);
+                delta_l.push(0.0);
+            } else {
+                let (lab_c, lab_r) = (lab_from_srgb16(c), lab_from_srgb16(r));
+                delta_e.push(ciede2000(lab_r, lab_c));
+                delta_l.push(lab_c[0] - lab_r[0]);
+            }
+        }
+    }
+    Ok((delta_e, delta_l))
+}
+
 /// The four statistics over one photograph rectangle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Statistics {

@@ -11,7 +11,7 @@
 //! the source's lens profile and a Perspective warp against the core's own `render.transform`,
 //! then exports the warped entry on the GPU and on the reference renderer. The run then opens the
 //! catalog in its own owner, with no GPU, and exports the same entry through `export.plan`,
-//! `batch.export` and `export.jpeg`, read with `job.read`. Launches 6 to 8 are the Locate journey
+//! `batch.export` and `export.write`, read with `job.read`. Launches 6 to 8 are the Locate journey
 //! on a copy of the RAW, as the `corrections` scenario's.
 //!
 //! What the pixels prove: a Clone copies its source's developed pixels, so the committed Clone's
@@ -37,7 +37,7 @@ use luxforge_evidence::{
 use luxforge_reference::preview_error::{self, Class, Rgb8};
 
 pub const SCENARIO: &str = "raw-corrections";
-pub const NOTE: &str = "Six launches over a supplied RAW. The first develops it and walks automatic Heal spots, a set-source Clone stroke, `/`, undo, redo, a version, a history preview, Restore and its undo, and exports on the GPU and the reference renderer; the second reopens its catalog, shows the rendered preview in Select, removes and puts back the photograph and returns to Develop; the third reopens it and checks the overlay through the lens profile and a Perspective warp, then exports again. The run then exports the same entry in its own owner through export.plan, batch.export and export.jpeg. The fourth to sixth (launch6 to launch8) are the Locate journey over a copy of the RAW the run makes in locate/original.";
+pub const NOTE: &str = "Six launches over a supplied RAW. The first develops it and walks automatic Heal spots, a set-source Clone stroke, `/`, undo, redo, a version, a history preview, Restore and its undo, and exports on the GPU and the reference renderer; the second reopens its catalog, shows the rendered preview in Select, removes and puts back the photograph and returns to Develop; the third reopens it and checks the overlay through the lens profile and a Perspective warp, then exports again. The run then exports the same entry in its own owner through export.plan, batch.export and export.write. The fourth to sixth (launch6 to launch8) are the Locate journey over a copy of the RAW the run makes in locate/original.";
 
 /// Where things are, in normalized content coordinates.
 const SPOTS: [[f64; 2]; 2] = [[0.30, 0.35], [0.45, 0.62]];
@@ -246,7 +246,7 @@ fn prepared(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) 
 }
 
 /// The catalog's current entry exported in the run's own owner, which has no GPU: `export.plan`,
-/// then `batch.export` and `export.jpeg` of the same entry, each read with `job.read` until it
+/// then `batch.export` and `export.write` of the same entry, each read with `job.read` until it
 /// ends. Writes `headless/` with the files and `headless/result.json`.
 fn headless_exports(run: &Run, asset: &str) -> Result {
     let dir = run.out().join("headless");
@@ -258,20 +258,25 @@ fn headless_exports(run: &Run, asset: &str) -> Result {
     let single = dir.join("single.jpg");
     let catalog = run.out().join("launch1").join("catalog.sqlite");
     let result = with_owner(&catalog, |owner, client| {
-        let plan = prepared(owner, client, "export.plan", json!({"asset_id": asset}))?;
+        let plan = prepared(
+            owner,
+            client,
+            "export.plan",
+            json!({"asset_id": asset, "settings": crate::export_smoke::export_settings(&batch)}),
+        )?;
         let started = prepared(
             owner,
             client,
             "batch.export",
-            json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "destination": batch,
+            json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "settings": crate::export_smoke::export_settings(&batch),
                 "mutation": {"request_id": "raw-corrections-batch", "actor": "smoke"}}),
         )?;
         let batched = settle(owner, client, &started["job_id"])?;
         let started = prepared(
             owner,
             client,
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": single,
+            "export.write",
+            json!({"asset_id": asset, "destination": single, "settings": crate::export_smoke::export_settings(&dir),
                 "mutation": {"request_id": "raw-corrections-single", "actor": "smoke"}}),
         )?;
         let exported = settle(owner, client, &started["job_id"])?;
@@ -477,7 +482,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         &out.join("launch3").join(GPU_WARPED),
         &out.join("launch3").join(REFERENCE_WARPED),
     )?;
-    // The run's own owner: export.plan, batch.export and export.jpeg of the warped entry.
+    // The run's own owner: export.plan, batch.export and export.write of the warped entry.
     let headless = read_json(&out.join("headless").join("result.json"))?;
     let plan = &headless["plan"];
     ensure(

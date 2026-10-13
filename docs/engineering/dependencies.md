@@ -85,6 +85,17 @@ The macOS updater is [Sparkle](../design/auto-update.md#macos-sparkle) 2.10.0 (M
 
 The bridge crate `luxforge-sparkle` adds no external package to the lockfile: it uses the pinned `objc2` 0.6.4, `objc2-foundation` 0.3.2 with only the Foundation classes it names, `block2` 0.6.2 and the workspace's `dispatch2`. It depends on no workspace crate *(enforced)*. xtask now also builds `luxforge-update`, to read `release/update.json` for the bundle's feed and key. As with every other dependency, passing the automated checks is not the deferred manual review.
 
+## Export encoders: WebP and TIFF
+
+The [export settings](../design/export-settings.md#encoding) WebP encoder is libwebp, named only by the leaf crate `luxforge-webp` *(enforced: only it names `libwebp-sys`, only `luxforge-core` depends on it, and it depends on no workspace crate outside its tests)*. It adds two external packages to the lockfile:
+
+- `libwebp-sys` 0.14.4 (MIT for its bindings; the libwebp 1.6.0 source it vendors is BSD-3-Clause with Google's patent grant), built with no default features: its build script compiles every C file under the package's `vendor/src` and `vendor/sharpyuv` with `cc` and the platform's C compiler and links them statically, never a system libwebp, with no `bindgen` (the crate's committed bindings) and, without `std`, no libwebp threads. NEON on aarch64; SSE2 on x86_64, with SSE4.1 and AVX2 only for targets that enable them. `crates/luxforge-webp/THIRD_PARTY.md` records the package's checksum and source commit; `cargo xtask inventory` copies it and libwebp's `COPYING` and `PATENTS` (committed copies under `crates/luxforge-webp/notices/libwebp-1.6.0/`, since the package has no top-level licence file) into the notices under `native/`.
+- `glob` 0.3.4 (MIT or Apache-2.0), a build dependency of `libwebp-sys` that lists its C files. Its other build dependencies, `cc` and `pkg-config`, were already in the lockfile.
+
+The TIFF writer is the core's own: its strips are compressed with `flate2` 1.1.10 (MIT or Apache-2.0) on its default `miniz_oxide` backend, the version and features the Linux updater and xtask already build, so it adds no package. The `tiff` crate's encoder was not used: in 0.11.3 its strip-by-strip writer ignores the compression it declares in the file (only its whole-image write compresses) and its directory encoder borrows the encoder for its whole life, so it can neither compress strips as bands arrive nor be held between bands.
+
+Three packages are for the export tests only, as independent decoders: `image-webp` 0.2.4 (MIT or Apache-2.0) for WebP, and `tiff` 0.11.3 (MIT), with only its `deflate` feature, for TIFF, which brings `quick-error` 2.0.1 (MIT or Apache-2.0). Their other dependencies (`byteorder-lite`, `half`, `flate2`) were already in the lockfile. As with every other dependency, passing the automated checks is not the deferred manual review.
+
 ## Usage statistics dependencies
 
 The [usage statistics](../design/usage-statistics.md) consent record's image key is 32 bytes of the operating system's cryptographic randomness from `getrandom` 0.4.3 (MIT or Apache-2.0), a direct dependency of `luxforge-core` with no features. It is the version `uuid` already draws its v4 IDs from, so it adds no package to the lockfile.

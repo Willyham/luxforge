@@ -1999,7 +1999,7 @@ mod tests {
                     module_id: None,
                     resource_id: None,
                     asset_id: Some(asset.clone()),
-                    origin: Some(Origin::new("export.jpeg", "request")),
+                    origin: Some(Origin::new("export.write", "request")),
                     grants: Vec::new(),
                     activity: Some(ActivitySpec {
                         kind: "export",

@@ -32,7 +32,6 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
-| [Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)) | TASK-001 settings, presets and API; TASK-002 JPEG options and limit search; TASK-003 WebP and TIFF encoders; TASK-004 resized and 16-bit output | Formats, direct-writing sheet, sharpening after the core and uncapped optimisation with a large-image warning and progress bar chosen; other defaults recorded in the design. Planning only; implementation awaits authorization | High tier |
 | [v0.1 release preparation](../tasks/project/release-v0-1.json) ([design](design/release-v0.1.md)) | TASK-002 complete source/notices; TASK-003 distribution advisory review | Application version and candidate records are complete (TASK-001); the packaging tasks are listed under ready now. Preparation requested; implementation plan handed off here. Owner chose macOS and Linux together; both packaging lanes are executable after identity. Paid Apple membership is active; signing setup is reported complete with profile `luxforge-notarization`; credential validation and final native M4/Linux corpus/install evidence are late gates. `cargo xtask release TAG` checks clean synchronized main and pushes one annotated tag; owner invocation initiates automatic pre-release publication | High tier |
 | [Panorama merges and the merge preview](../tasks/library/panorama-merge.json) ([design](design/panorama-merge.md)) | TASK-003 paged derived sources; TASK-006 merge frame development; TASK-007 panorama registration | Owner chose RAW or JPEG frames, selection only, automatic crop with Boundary Warp, derived sources raised to 65,000 px / 512 MP, and a merge preview that opens first for HDR and panoramas on 2026-10-11; other defaults recorded in the design. The owner asked for HDR merges to be aligned to these designs: TASK-001 (the kind-tagged boundary) is complete and TASK-002 (HDR's merge preview) is in progress. Panorama implementation awaits authorization | High tier |
 
@@ -85,13 +84,11 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 
 ## Output
 
-**JPEG export follow-ups.** JPEG export is delivered ([design](design/export.md)).
-- **Export settings** ([design](design/export-settings.md), [tasks](../tasks/rendering/export-settings.json)) are planned:
-  - an Export sheet with Web, Print and Master presets and the person's own
-  - JPEG, lossy WebP and 8/16-bit TIFF, with resizing, optimised encoding, file-size limits and metadata levels
-  - output sharpening as a second delivery
-
-  The resized, 16-bit and sharpened tolerances are declared in the design. Settings, encoders and render paths can start independently before integration and the desktop. The request authorizes planning only.
+**Export.** The Export sheet, presets, JPEG, WebP and TIFF, resizing, Optimise, file-size limits, metadata levels and output sharpening are delivered, qualified on the whole corpus and measured on the M4 ([export settings](design/export-settings.md), [export](design/export.md)). What remains ([outstanding](design/export-settings.md#outstanding)):
+- A GPU resample that streams from windows, so a paged source's resized, 16-bit and sharpened exports stay on the GPU
+- A full-size sharpened or 16-bit GPU export without the held output stage, which makes it slower than the reference's on a light JPEG stack
+- Output sharpening's judgement in print
+- Native Windows and Linux GPU evidence
 - Wide-gamut output still needs its own decision and tolerance (owner, 2026-10-07)
 
 ## Library

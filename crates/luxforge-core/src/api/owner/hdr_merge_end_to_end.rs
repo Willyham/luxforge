@@ -400,8 +400,8 @@ impl Merging {
     fn export(&self, asset: &Value) -> (u32, u32) {
         let destination = self.directory.join("exported.jpg");
         let accepted = self.ok(
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": destination,
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json_in(&self.directory), "asset_id": asset, "destination": destination,
                    "mutation": {"request_id": "export", "actor": "test"}}),
         );
         self.finished(&accepted["job_id"]);

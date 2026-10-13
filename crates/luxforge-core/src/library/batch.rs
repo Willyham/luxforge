@@ -8,27 +8,26 @@
 //!   would write, labelled by the set's origin (`Preset: <name>`, `Paste settings from <source>`),
 //!   under a request identity derived from the batch's and the photograph's ([`request_id`]), so a
 //!   retry never applies it twice.
-//! - **Export** writes each photograph's current entry as `export.jpeg` writes it, into one
-//!   existing folder, under the name the export's naming rule gives it there ([`destination`]),
-//!   never replacing a file.
+//! - **Export** writes each photograph's current entry as `export.write` writes it, with one set of
+//!   settings, into their folder (a chosen one, or each photograph's own original's), under the
+//!   name the export's naming rule gives it there ([`destination`]), never replacing a file.
 //!
 //! What is common to both lives here; the owner's half (the job, and the calls on the owner) is
 //! `api/owner/library/batch.rs`.
 use crate::{
     AssetId, Error, MutationOutcome, SettingsOrigin, SkippedSetting,
-    atomic_file::file_error,
     catalog_types::{BatchReport, BatchSettingsSkipped, BatchSkip, BatchWritten},
     editor::{ActionResult, library_rows},
-    export::publish::{self, Destination},
+    export::{
+        publish::{self, Destination},
+        settings::{ExportFolder, ExportSettings},
+    },
     jobs::JobControl,
 };
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 /// A photograph in Removed: a batch leaves it as it is until it is put back.
 pub(crate) const REMOVED: &str = "removed";
@@ -67,6 +66,21 @@ pub(crate) fn request_id(batch: &str, asset: &AssetId) -> String {
 /// code and words.
 pub(crate) fn refused(asset: &AssetId, error: &Error) -> BatchSkip {
     skip(asset, error.kind.code(), error.detail.clone())
+}
+
+/// A photograph a batch export leaves out because the single export would refuse it: with the code
+/// of the notice or encoder that refused it, such as `webp-too-large`, `folder-missing` or
+/// `limit-unreachable`, where the refusal names one, and otherwise its kind's.
+pub(crate) fn export_refused(asset: &AssetId, error: &Error) -> BatchSkip {
+    let named = error
+        .data
+        .as_deref()
+        .and_then(|data| data.get("notice").or_else(|| data.get("code")))
+        .and_then(Value::as_str);
+    match named {
+        Some(code) => skip(asset, code, error.detail.clone()),
+        None => refused(asset, error),
+    }
 }
 
 pub(crate) fn skip(asset: &AssetId, code: &str, reason: impl Into<String>) -> BatchSkip {
@@ -192,30 +206,35 @@ impl SettingsApply {
     }
 }
 
-/// The folder a batch export writes into: an absolute path to an existing folder. A relative path
-/// or a file is `validation`; a folder that is not there or cannot be read is `read-error`.
-pub(crate) fn export_folder(path: &Path) -> Result<PathBuf, Error> {
-    if !path.is_absolute() {
-        return Err(Error::validation(
-            "the export destination must be an absolute path to a folder",
-        ));
+/// The one folder a batch export writes every photograph into, when its settings choose one, which
+/// must be an existing folder (refused as the plan's `folder-missing` notice refuses an export); and
+/// `None` for `"original"`, where each photograph goes beside its own original.
+pub(crate) fn export_folder(folder: &ExportFolder) -> Result<Option<PathBuf>, Error> {
+    match folder {
+        ExportFolder::Original => Ok(None),
+        ExportFolder::Path(path) if path.is_dir() => Ok(Some(path.clone())),
+        ExportFolder::Path(path) => Err(missing_folder(path)),
     }
-    let metadata = fs::metadata(path).map_err(|error| file_error(path.display(), error.kind()))?;
-    if !metadata.is_dir() {
-        return Err(Error::validation(format!(
-            "{} is not a folder",
-            path.display()
-        )));
-    }
-    Ok(path.to_path_buf())
+}
+
+/// The `folder-missing` refusal for a folder that is not an existing directory.
+pub(crate) fn missing_folder(path: &Path) -> Error {
+    Error::validation(format!("{} is not an existing folder", path.display())).with_data(
+        json!({"notice": crate::export::settings::FOLDER_MISSING, "field": "settings.folder"}),
+    )
 }
 
 /// Where one photograph is exported in `folder`: the export's naming rule
-/// ([`publish::suggest`]) from its original's file stem, `<stem>-edited.jpg`, else `-edited-2.jpg`
-/// and so on, checked as `export.jpeg` checks its destination. Named just before its file is
-/// written, one photograph at a time, so two originals of one name get two names. When all 64
-/// names the rule reads are taken, `conflict`.
-pub(crate) fn destination(folder: &Path, original: &Path) -> Result<Destination, Error> {
+/// ([`publish::suggest`]) from its original's file stem and the settings' suffix and format,
+/// `<stem><suffix>.<extension>`, else `<stem><suffix>-2.<extension>` and so on, checked as
+/// `export.write` checks its destination. Named just before its file is written, one photograph at
+/// a time, so two originals of one name get two names. When all 64 names the rule reads are taken,
+/// `conflict`.
+pub(crate) fn destination(
+    folder: &Path,
+    original: &Path,
+    settings: &ExportSettings,
+) -> Result<Destination, Error> {
     let stem = original
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -225,13 +244,16 @@ pub(crate) fn destination(folder: &Path, original: &Path) -> Result<Destination,
                 original.display()
             ))
         })?;
-    let path = publish::suggest(folder, stem).ok_or_else(|| {
+    let (suffix, format) = (settings.suffix.as_str(), settings.format());
+    let path = publish::suggest(folder, stem, suffix, format).ok_or_else(|| {
         Error::conflict(format!(
-            "{stem}-edited.jpg and the next 63 names the export gives it are taken in {}",
+            "{stem}{suffix}.{} and the next {} names the export gives it are taken in {}",
+            format.extension(),
+            publish::MAX_PROBES - 1,
             folder.display()
         ))
     })?;
-    Destination::check(&path)
+    Destination::check(&path, format)
 }
 
 /// A batch's report as it grows, one photograph at a time: kept on the job's worker, published on
@@ -326,6 +348,7 @@ impl<'a> Progress<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn a_batch_request_identity_names_the_batch_and_the_photograph_within_the_envelope() {
@@ -341,33 +364,52 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_export_folder_is_an_existing_absolute_folder() {
+    fn a_batch_export_folder_is_each_original_s_or_an_existing_chosen_folder() {
         let folder = luxforge_testbase::paths::temp_dir("batch-folder");
-        assert_eq!(export_folder(&folder).unwrap(), folder);
-        let relative = export_folder(Path::new("exports")).unwrap_err();
-        assert_eq!(relative.kind, crate::ErrorKind::Validation);
+        assert_eq!(export_folder(&ExportFolder::Original).unwrap(), None);
+        assert_eq!(
+            export_folder(&ExportFolder::Path(folder.clone())).unwrap(),
+            Some(folder.clone())
+        );
         let file = folder.join("a.jpg");
         fs::write(&file, b"x").unwrap();
-        let not_a_folder = export_folder(&file).unwrap_err();
-        assert_eq!(not_a_folder.kind, crate::ErrorKind::Validation);
-        let gone = export_folder(&folder.join("gone")).unwrap_err();
-        assert_eq!(gone.kind, crate::ErrorKind::FileAccess);
+        for missing in [file, folder.join("gone")] {
+            let error = export_folder(&ExportFolder::Path(missing)).unwrap_err();
+            assert_eq!(error.kind, crate::ErrorKind::Validation);
+            assert_eq!(error.data.unwrap()["notice"], "folder-missing");
+        }
     }
 
     #[test]
     fn a_batch_export_names_each_file_by_the_export_rule_in_its_folder() {
+        use crate::export::settings::{ExportFormat, FormatSettings, MetadataLevel};
         let folder = luxforge_testbase::paths::temp_dir("batch-names");
         let original = Path::new("/Volumes/Card/DCIM/DSC_0042.NEF");
-        let first = destination(&folder, original).unwrap();
-        assert_eq!(first.path(), folder.join("DSC_0042-edited.jpg"));
+        let mut settings = ExportSettings::baseline(MetadataLevel::None);
+        settings.suffix = "-web".into();
+        let first = destination(&folder, original, &settings).unwrap();
+        assert_eq!(first.path(), folder.join("DSC_0042-web.jpg"));
         fs::write(first.path(), b"x").unwrap();
-        let second = destination(&folder, original).unwrap();
-        assert_eq!(second.path(), folder.join("DSC_0042-edited-2.jpg"));
+        let second = destination(&folder, original, &settings).unwrap();
+        assert_eq!(second.path(), folder.join("DSC_0042-web-2.jpg"));
         fs::write(second.path(), b"x").unwrap();
         for n in 3..=64 {
-            fs::write(folder.join(format!("DSC_0042-edited-{n}.jpg")), b"x").unwrap();
+            fs::write(folder.join(format!("DSC_0042-web-{n}.jpg")), b"x").unwrap();
         }
-        let full = destination(&folder, original).unwrap_err();
+        let full = destination(&folder, original, &settings).unwrap_err();
         assert_eq!(full.kind, crate::ErrorKind::Conflict);
+        assert!(
+            full.detail.starts_with("DSC_0042-web.jpg"),
+            "{}",
+            full.detail
+        );
+        // Another format names its own extension, with no suffix as well.
+        settings.format = FormatSettings::Tiff {
+            bit_depth: crate::tiles::output::Depth::Sixteen,
+        };
+        settings.suffix.clear();
+        assert_eq!(settings.format(), ExportFormat::Tiff);
+        let tiff = destination(&folder, original, &settings).unwrap();
+        assert_eq!(tiff.path(), folder.join("DSC_0042.tif"));
     }
 }

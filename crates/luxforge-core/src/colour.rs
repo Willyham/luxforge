@@ -217,6 +217,12 @@ pub mod srgb {
         }
     }
 
+    /// The 65,535 thresholds of [`Quantizer16`], for the desktop to hand the GPU's 16-bit export
+    /// encoding: a value's 16-bit code is the number of these at or below it, clamped first.
+    pub fn output_thresholds16() -> &'static [f32] {
+        &quantizer16().thresholds[..65535]
+    }
+
     /// [`Quantizer16::channel`], for a test that quantizes one value.
     #[cfg(test)]
     pub(crate) fn quantize16(value: f32) -> u16 {

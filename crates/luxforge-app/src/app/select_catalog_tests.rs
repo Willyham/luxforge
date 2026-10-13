@@ -1169,15 +1169,37 @@ fn catalog_browse_applies_a_preset_and_exports_the_selection_on_a_real_owner() {
     assert_eq!(editor.status.text, "Nothing to undo");
     assert!(journal(&editor, agent).is_empty());
 
-    // Export…: into a scratch folder. The seeded originals are not on disk, so each photograph is
-    // left out with the owner's reason and nothing is written.
+    // Export N…: the batch sheet, the first time on Web, into a chosen scratch folder. The seeded
+    // originals are not on disk, so each photograph is left out with the owner's reason and
+    // nothing is written. The batch sends exactly the sheet's settings.
     let folder = luxforge_testbase::paths::temp_dir("select-catalog-export");
-    act(&mut editor, CatalogAction::ExportInto(Some(folder.clone())));
+    act(&mut editor, CatalogAction::Export);
+    let sheet =
+        |message| Message::Export(crate::app::message::export::ExportMessage::Sheet(message));
+    let _ = editor.update(sheet(
+        crate::app::message::export::SheetMessage::FolderChosen(Some(folder.clone())),
+    ));
+    editor.answer_sheet_plan();
+    let shown = editor
+        .workspace
+        .export_sheet
+        .clone()
+        .expect("the batch sheet");
+    assert_eq!(shown.title, "Export 5 photos");
+    let mut settings = editor
+        .export
+        .preset("luxforge.web")
+        .unwrap()
+        .settings
+        .clone();
+    settings.folder = luxforge_core::ExportFolder::Path(folder.clone());
+    let _ = editor.update(sheet(crate::app::message::export::SheetMessage::Export));
+    assert!(editor.export.sheet.is_none(), "Export closes the sheet");
     assert_eq!(
         batch_sent(&editor),
         (
             "batch.export".to_owned(),
-            json!({"targets": {"kind": "selection"}, "destination": folder})
+            json!({"targets": {"kind": "selection"}, "settings": settings})
         )
     );
     settle(&mut editor);

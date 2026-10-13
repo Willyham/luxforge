@@ -504,7 +504,7 @@ fn usage_generic_preference_writes_and_resets_keep_the_record() {
             workspace: Some(None),
             brush: Some(None),
             window: Some(None),
-            export_folder: Some(None),
+            export_last: Some(None),
             hdr_merge: Some(None),
             panorama_merge: Some(None),
             theme: Some(None),

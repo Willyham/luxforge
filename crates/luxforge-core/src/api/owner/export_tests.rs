@@ -5,6 +5,7 @@
 //! reference option never asking it, a stream it stops drawing rendered again by the reference
 //! naming why, and a cancel between its tiles.
 use super::*;
+use crate::export::settings::baseline_json;
 use crate::{
     AssetId, Cancel, Evaluation, GpuFallback, SnapshotId,
     api::ApiFailure,
@@ -43,7 +44,12 @@ impl Harness {
 
     /// [`Self::start`] with the person's preferences kept in `<dir>/config`.
     fn with_preferences(name: &str) -> Self {
-        let dir = temp_dir(&format!("export-{name}")).canonicalize().unwrap();
+        Self::with_preferences_in(temp_dir(&format!("export-{name}")).canonicalize().unwrap())
+    }
+
+    /// [`Self::with_preferences`] over the catalog and configuration already in `dir`, as after a
+    /// restart.
+    fn with_preferences_in(dir: PathBuf) -> Self {
         let catalog = dir.join("catalog.sqlite");
         let (owner, join) = OwnerHandle::start_with_host(
             &catalog,
@@ -189,7 +195,7 @@ impl Harness {
     }
 
     fn export(&self, params: Value) -> Value {
-        self.ok("export.jpeg", with_envelope(params))
+        self.ok("export.write", with_envelope(params))
     }
 
     /// Read an export until it leaves `queued` and `running`. Nothing in the owner polls; this is
@@ -258,7 +264,24 @@ fn with_envelope(mut params: Value) -> Value {
     if params.get("mutation").is_none() {
         params["mutation"] = request_envelope();
     }
+    with_settings(params)
+}
+
+/// `params` with today's export's settings unless they name their own.
+fn with_settings(mut params: Value) -> Value {
+    if params.get("settings").is_none() {
+        params["settings"] = baseline_json();
+    }
     params
+}
+
+/// Today's export's settings with `changes` laid over them.
+fn settings_with(changes: Value) -> Value {
+    let mut settings = baseline_json();
+    for (field, value) in changes.as_object().unwrap() {
+        settings[field] = value.clone();
+    }
+    settings
 }
 
 /// The renderer a written export's result names on an owner with no GPU provider: the reference
@@ -371,8 +394,16 @@ fn assert_matches(path: &Path, frame: &crate::Raster, what: &str) {
 /// the job rendered exactly that frame and added nothing to it.
 fn assert_encodes(path: &Path, frame: &crate::Raster, what: &str) {
     let mut expected = Vec::new();
-    crate::export::encode::encode_jpeg(&mut expected, frame, None, None, &mut |_| {}, &|| Ok(()))
-        .unwrap();
+    crate::export::encode::encode_jpeg(
+        &mut expected,
+        frame,
+        &crate::export::encode::BASELINE_90,
+        None,
+        None,
+        &mut |_| {},
+        &|| Ok(()),
+    )
+    .unwrap();
     assert!(
         fs::read(path).unwrap() == expected,
         "{what}: the file is not the encoding of the reference frame"
@@ -432,7 +463,7 @@ fn detail_export_evaluates_exact_detail_once() {
         "asset_id":asset,"entry_id":entry,"destination":destination,
         "mutation":{"request_id":"detail-export-once","actor":"test"}
     });
-    let accepted = harness.ok("export.jpeg", parameters.clone());
+    let accepted = harness.ok("export.write", with_settings(parameters.clone()));
     reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     assert_eq!(
         tiles.load(Ordering::Relaxed),
@@ -454,7 +485,7 @@ fn detail_export_evaluates_exact_detail_once() {
         1,
         "one exact Detail tile chain"
     );
-    let retry = harness.ok("export.jpeg", parameters);
+    let retry = harness.ok("export.write", with_settings(parameters));
     assert_eq!(retry["job_id"], accepted["job_id"]);
     assert_eq!(retry["deduplicated"], true);
     assert_eq!(
@@ -491,31 +522,116 @@ fn detail_export_evaluates_exact_detail_once() {
     );
 }
 
-/// With an export folder remembered, `export.plan` suggests a name there, counting up within it,
-/// while it is a folder that exists; otherwise beside the original, as with none remembered.
+/// `export.plan` suggests `<stem><suffix>.<extension>` in the settings' folder, counting up within
+/// it, while it is a folder that exists, and names `folder-missing` otherwise, suggesting nothing;
+/// beside the original for `"original"`. It answers the output size the settings give the stage,
+/// never enlarged, the physical size at their density and the encoder's estimate, for every valid
+/// setting, writing and rendering nothing.
 #[test]
-fn export_plan_suggests_the_remembered_folder_only_while_it_exists() {
-    let harness = Harness::with_preferences("remembered-folder");
+fn export_plan_answers_the_settings_output_folder_and_notices() {
+    let harness = Harness::start("plan-settings");
     let state = harness.import("DSC_0042.jpg");
     let asset = state["asset"]["id"].clone();
-    let suggested = || harness.ok("export.plan", json!({"asset_id": asset}))["suggested"].clone();
-    let beside = json!(harness.dir.join("DSC_0042-edited.jpg"));
-    assert_eq!(suggested(), beside, "nothing remembered");
+    let plan = |settings: Value| {
+        harness.ok(
+            "export.plan",
+            json!({"asset_id": asset, "settings": settings}),
+        )
+    };
+    let codes = |planned: &Value| -> Vec<String> {
+        planned["notices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|notice| notice["code"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let beside = plan(settings_with(json!({"suffix": "-edited"})));
+    assert_eq!(
+        beside["suggested"],
+        json!(harness.dir.join("DSC_0042-edited.jpg"))
+    );
     let folder = harness.dir.join("Exports");
-    harness.ok("preferences.set", json!({"export_folder": folder}));
-    assert_eq!(suggested(), beside, "a missing folder is not suggested");
+    let chosen = settings_with(json!({"folder": {"path": folder}, "suffix": "-web"}));
+    let missing = plan(chosen.clone());
+    assert_eq!(
+        missing["suggested"],
+        Value::Null,
+        "a missing folder is not suggested"
+    );
+    assert_eq!(codes(&missing), ["folder-missing"]);
+    assert_eq!(missing["notices"][0]["refuses"], json!(true));
     fs::create_dir(&folder).unwrap();
-    assert_eq!(suggested(), json!(folder.join("DSC_0042-edited.jpg")));
-    fs::write(folder.join("DSC_0042-edited.jpg"), b"taken").unwrap();
-    assert_eq!(suggested(), json!(folder.join("DSC_0042-edited-2.jpg")));
+    assert_eq!(
+        plan(chosen.clone())["suggested"],
+        json!(folder.join("DSC_0042-web.jpg"))
+    );
+    fs::write(folder.join("DSC_0042-web.jpg"), b"taken").unwrap();
+    let counted = plan(chosen.clone());
+    assert_eq!(
+        counted["suggested"],
+        json!(folder.join("DSC_0042-web-2.jpg"))
+    );
+    assert!(codes(&counted).is_empty());
     // A file where the folder was is not a folder.
     fs::remove_dir_all(&folder).unwrap();
     fs::write(&folder, b"not a folder").unwrap();
-    assert_eq!(suggested(), beside);
-    fs::remove_file(&folder).unwrap();
-    fs::create_dir(&folder).unwrap();
-    harness.ok("preferences.set", json!({"export_folder": null}));
-    assert_eq!(suggested(), beside, "forgotten");
+    assert_eq!(codes(&plan(chosen)), ["folder-missing"]);
+
+    // Every format and size answers, each never enlarged: the fixture is 480 x 320.
+    let web = crate::export::presets::builtin()[0].settings.to_json();
+    let planned = plan(web);
+    assert_eq!(planned["stage"], json!({"width": 480, "height": 320}));
+    assert_eq!(
+        planned["output"],
+        json!({"width": 480, "height": 320}),
+        "never enlarged"
+    );
+    assert_eq!(planned["estimate"], json!(480 * 320 * 6), "optimised 4:2:0");
+    assert_eq!(
+        planned["suggested"],
+        json!(harness.dir.join("DSC_0042-web.jpg"))
+    );
+    assert!(
+        planned.get("physical").is_none(),
+        "no density, no physical size"
+    );
+    let master = crate::export::presets::builtin()[2].settings.to_json();
+    let mut smaller = master.clone();
+    smaller["size"] = json!({"fit": "long_edge", "pixels": 240});
+    let planned = plan(smaller);
+    assert_eq!(planned["output"], json!({"width": 240, "height": 160}));
+    assert_eq!(planned["estimate"], json!(0), "a TIFF streams");
+    assert_eq!(
+        planned["suggested"],
+        json!(harness.dir.join("DSC_0042-master.tif"))
+    );
+    assert_eq!(
+        planned["physical"],
+        json!({"inches": {"width": 0.8, "height": 0.53}, "centimetres": {"width": 2.03, "height": 1.35}})
+    );
+    let within = plan(settings_with(
+        json!({"size": {"fit": "within", "width": 100, "height": 100}}),
+    ));
+    assert_eq!(within["output"], json!({"width": 100, "height": 67}));
+    // A setting is refused by name, as export.write refuses it.
+    let refused = harness.refused(
+        "export.plan",
+        json!({"asset_id": asset, "settings": settings_with(json!({"bit_depth": 16}))}),
+    );
+    assert_eq!(refused.code, "validation");
+    assert!(
+        refused.message.starts_with("settings.bit_depth"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(
+        listing(&harness.dir)
+            .iter()
+            .filter(|name| name.starts_with("DSC_0042-"))
+            .count(),
+        0
+    );
 }
 
 /// An export plans the entry's output stage and suggests a name beside the original, writes the
@@ -527,7 +643,9 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
     let state = harness.import("DSC_0042.jpg");
     let asset = state["asset"]["id"].clone();
     let entry = harness.expose(&asset, 0.7);
-    let planned = harness.ok("export.plan", json!({"asset_id": asset}));
+    let settings = settings_with(json!({"suffix": "-edited"}));
+    let plan = json!({"asset_id": asset, "settings": settings});
+    let planned = harness.ok("export.plan", plan.clone());
     let suggested = harness.dir.join("DSC_0042-edited.jpg");
     assert_eq!(
         planned,
@@ -535,15 +653,17 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
             "asset_id": asset,
             "entry_id": entry,
             "snapshot_id": planned["snapshot_id"],
-            "width": 480,
-            "height": 320,
+            "stage": {"width": 480, "height": 320},
+            "output": {"width": 480, "height": 320},
             "suggested": suggested,
+            "estimate": 0,
+            "notices": [],
             "stale": [],
         })
     );
     // A taken name is counted past, and the plan never wrote anything.
     fs::write(&suggested, b"taken").unwrap();
-    let planned = harness.ok("export.plan", json!({"asset_id": asset}));
+    let planned = harness.ok("export.plan", plan);
     assert_eq!(
         planned["suggested"],
         json!(harness.dir.join("DSC_0042-edited-2.jpg"))
@@ -552,8 +672,8 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
     let accepted = harness
         .send_as(
             "export-request",
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": destination, "mutation": request_envelope()}),
+            "export.write",
+            json!({"asset_id": asset, "settings": settings, "destination": destination, "mutation": request_envelope()}),
         )
         .result
         .expect("the export is accepted");
@@ -565,7 +685,7 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
         (accepted["width"].clone(), accepted["height"].clone()),
         (json!(480), json!(320))
     );
-    assert_eq!(accepted["keep_metadata"], json!(false));
+    assert_eq!(accepted["settings"], settings);
     assert_eq!(accepted["reference"], json!(false));
     assert_eq!(accepted["deduplicated"], json!(false));
     let read = harness.settle(&accepted["job_id"]);
@@ -575,7 +695,8 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
     assert_eq!(
         read["result"],
         json!({
-            "path": destination, "bytes": bytes, "width": 480, "height": 320, "metadata": [],
+            "path": destination, "bytes": bytes, "width": 480, "height": 320, "format": "jpeg",
+            "quality": 90, "optimised": false, "metadata": [],
             "renderer": reference_renderer(), "acknowledged_stale": [],
         })
     );
@@ -584,9 +705,9 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
         harness
             .events()
             .into_iter()
-            .filter(|(method, _)| method == "export.jpeg")
+            .filter(|(method, _)| method == "export.write")
             .collect::<Vec<_>>(),
-        [("export.jpeg".to_owned(), "export-request".to_owned())],
+        [("export.write".to_owned(), "export-request".to_owned())],
         "a finished export is one event under its request"
     );
     let activity = harness.ok("activity.list", json!({}));
@@ -681,7 +802,7 @@ fn a_later_commit_never_changes_an_accepted_export() {
 
 const RENDER_PHASE: &str = "rendering";
 
-/// A retried `export.jpeg` is answered from the first answer: one job, one file, one event.
+/// A retried `export.write` is answered from the first answer: one job, one file, one event.
 #[test]
 fn a_retried_export_is_answered_from_the_first_and_writes_one_file() {
     let harness = Harness::start("retry");
@@ -692,12 +813,12 @@ fn a_retried_export_is_answered_from_the_first_and_writes_one_file() {
         "asset_id": asset, "destination": out.join("once.jpg"),
         "mutation": {"request_id": "export-once", "actor": "test"},
     });
-    let first = harness.ok("export.jpeg", params.clone());
+    let first = harness.ok("export.write", with_settings(params.clone()));
     assert_eq!(harness.settle(&first["job_id"])["status"], "ready");
     let events = harness.events();
     // The file exists now, so running the handler again would be a conflict: the retry is
     // answered from the table instead.
-    let retried = harness.ok("export.jpeg", params.clone());
+    let retried = harness.ok("export.write", with_settings(params.clone()));
     assert_eq!(retried["deduplicated"], json!(true));
     let mut original = retried.clone();
     original["deduplicated"] = json!(false);
@@ -706,7 +827,7 @@ fn a_retried_export_is_answered_from_the_first_and_writes_one_file() {
     assert_eq!(listing(&out), ["once.jpg"]);
     let mut other = params;
     other["destination"] = json!(out.join("other.jpg"));
-    let conflict = harness.refused("export.jpeg", other);
+    let conflict = harness.refused("export.write", with_settings(other));
     assert_eq!(conflict.code, "conflict");
     assert_eq!(
         conflict.message,
@@ -733,13 +854,13 @@ fn the_reference_option_is_listed_echoed_and_hashed() {
     let out = destinations(&harness);
 
     let schema = harness.ok("schema.list", json!({}));
-    let listed = &schema["methods"]["export.jpeg"];
+    let listed = &schema["methods"]["export.write"];
     let parameter = listed["parameters"]
         .as_array()
         .unwrap()
         .iter()
         .find(|parameter| parameter["name"] == "reference")
-        .expect("export.jpeg lists reference");
+        .expect("export.write lists reference");
     assert_eq!(
         (
             parameter["kind"].clone(),
@@ -755,7 +876,7 @@ fn the_reference_option_is_listed_echoed_and_hashed() {
     );
     assert_eq!(listed["optional"]["reference"], json!(notes));
     let refused = harness.refused(
-        "export.jpeg",
+        "export.write",
         with_envelope(json!({
             "asset_id": asset, "destination": out.join("refused.jpg"), "reference": "yes",
         })),
@@ -792,15 +913,15 @@ fn the_reference_option_is_listed_echoed_and_hashed() {
         "asset_id": asset, "destination": out.join("hashed.jpg"), "reference": true,
         "mutation": {"request_id": "export-reference", "actor": "test"},
     });
-    let first = harness.ok("export.jpeg", params.clone());
+    let first = harness.ok("export.write", with_settings(params.clone()));
     assert_eq!(harness.settle(&first["job_id"])["status"], "ready");
-    let retried = harness.ok("export.jpeg", params.clone());
+    let retried = harness.ok("export.write", with_settings(params.clone()));
     assert_eq!(retried["deduplicated"], json!(true));
     assert_eq!(retried["job_id"], first["job_id"]);
     assert_eq!(retried["reference"], json!(true));
     let mut declined = params;
     declined["reference"] = json!(false);
-    let conflict = harness.refused("export.jpeg", declined);
+    let conflict = harness.refused("export.write", with_settings(declined));
     assert_eq!(
         (conflict.code.as_str(), conflict.message.as_str()),
         (
@@ -858,11 +979,12 @@ fn camera_jpeg() -> Vec<u8> {
     out
 }
 
-/// Metadata is off by default: no APP1 segment at all. With Keep metadata the file carries one
-/// EXIF segment, read back by an independent reader: the original's supported fields, the
-/// structural ones with Orientation 1 and the output's size, and no maker note or serial number.
+/// Metadata none writes no APP1 segment at all. Every other level writes one EXIF segment, read back
+/// by an independent reader: the level's fields of the original's supported ones (all of them for
+/// all, Artist and Copyright for copyright), the structural ones with Orientation 1 and the
+/// output's size, and no maker note or serial number.
 #[test]
-fn keep_metadata_writes_one_exif_segment_and_the_default_writes_none() {
+fn each_metadata_level_writes_its_fields_and_none_writes_no_exif() {
     let harness = Harness::start("metadata");
     let original = harness.dir.join("camera.jpg");
     fs::write(&original, camera_jpeg()).unwrap();
@@ -871,10 +993,29 @@ fn keep_metadata_writes_one_exif_segment_and_the_default_writes_none() {
     let stripped =
         harness.export(json!({"asset_id": asset, "destination": out.join("stripped.jpg")}));
     let kept = harness.export(json!({
-        "asset_id": asset, "destination": out.join("kept.jpg"), "keep_metadata": true,
+        "asset_id": asset, "destination": out.join("kept.jpg"), "settings": settings_with(json!({"metadata": "all"})),
     }));
-    assert_eq!(stripped["keep_metadata"], json!(false));
-    assert_eq!(kept["keep_metadata"], json!(true));
+    let copyright = harness.export(json!({
+        "asset_id": asset, "destination": out.join("copyright.jpg"),
+        "settings": settings_with(json!({"metadata": "copyright"})),
+    }));
+    assert_eq!(stripped["settings"]["metadata"], json!("none"));
+    assert_eq!(kept["settings"]["metadata"], json!("all"));
+    let copyright = harness.settle(&copyright["job_id"]);
+    assert_eq!(copyright["result"]["metadata"], json!(["Artist"]));
+    let copyright_bytes = fs::read(out.join("copyright.jpg")).unwrap();
+    let copyright_exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(&copyright_bytes))
+        .expect("the independent reader finds the EXIF segment");
+    let tags: Vec<exif::Tag> = copyright_exif
+        .fields()
+        .map(|field| field.tag)
+        .filter(|tag| ![exif::Tag::ExifIFDPointer].contains(tag))
+        .collect();
+    for tag in [exif::Tag::Make, exif::Tag::Model] {
+        assert!(!tags.contains(&tag), "copyright keeps no {tag}");
+    }
+    assert!(tags.contains(&exif::Tag::Artist) && tags.contains(&exif::Tag::PixelXDimension));
     let stripped = harness.settle(&stripped["job_id"]);
     let kept = harness.settle(&kept["job_id"]);
     assert_eq!(stripped["result"]["metadata"], json!([]));
@@ -931,10 +1072,10 @@ fn pixels_per_inch_sets_the_jfif_density_and_nothing_else() {
     let out = destinations(&harness);
     let plain = harness.export(json!({"asset_id": asset, "destination": out.join("plain.jpg")}));
     let dense = harness.export(json!({
-        "asset_id": asset, "destination": out.join("dense.jpg"), "pixels_per_inch": 144,
+        "asset_id": asset, "destination": out.join("dense.jpg"), "settings": settings_with(json!({"pixels_per_inch": 144})),
     }));
-    assert_eq!(plain["pixels_per_inch"], Value::Null);
-    assert_eq!(dense["pixels_per_inch"], json!(144));
+    assert_eq!(plain["settings"]["pixels_per_inch"], Value::Null);
+    assert_eq!(dense["settings"]["pixels_per_inch"], json!(144));
     harness.settle(&plain["job_id"]);
     harness.settle(&dense["job_id"]);
     let plain = fs::read(out.join("plain.jpg")).unwrap();
@@ -951,10 +1092,10 @@ fn pixels_per_inch_sets_the_jfif_density_and_nothing_else() {
     );
     for density in [0, 65536] {
         let refused = harness.refused(
-            "export.jpeg",
+            "export.write",
             with_envelope(json!({
                 "asset_id": asset, "destination": out.join("refused.jpg"),
-                "pixels_per_inch": density,
+                "settings": settings_with(json!({"pixels_per_inch": density})),
             })),
         );
         assert_eq!(refused.code, "validation", "{density}: {refused:?}");
@@ -977,7 +1118,7 @@ fn refusals_are_answered_at_once_and_write_nothing() {
     fs::write(&existing, b"keep me").unwrap();
     let export = |destination: Value| {
         harness.refused(
-            "export.jpeg",
+            "export.write",
             with_envelope(json!({"asset_id": asset, "destination": destination})),
         )
     };
@@ -1008,12 +1149,12 @@ fn refusals_are_answered_at_once_and_write_nothing() {
         assert_eq!(refused.code, code, "{what}: {refused:?}");
     }
     let unknown = harness.refused(
-        "export.jpeg",
+        "export.write",
         with_envelope(json!({"asset_id": AssetId::new(), "destination": out.join("a.jpg")})),
     );
     assert_eq!(unknown.code, "validation", "{unknown:?}");
     let unknown_entry = harness.refused(
-        "export.jpeg",
+        "export.write",
         with_envelope(json!({
             "asset_id": asset, "entry_id": EntryId::new(), "destination": out.join("b.jpg"),
         })),
@@ -1021,7 +1162,7 @@ fn refusals_are_answered_at_once_and_write_nothing() {
     assert_eq!(unknown_entry.code, "validation", "{unknown_entry:?}");
     let unknown_plan = harness.refused(
         "export.plan",
-        json!({"asset_id": asset, "entry_id": EntryId::new()}),
+        json!({"asset_id": asset, "entry_id": EntryId::new(), "settings": baseline_json()}),
     );
     assert_eq!(unknown_plan.code, unknown_entry.code);
     assert_eq!(
@@ -1048,11 +1189,11 @@ fn refusals_are_answered_at_once_and_write_nothing() {
     // and the same request is accepted once that job is ready.
     let harness = harness.reopen(Arc::new(ModuleRegistry::builtin()));
     let params = with_envelope(json!({"asset_id": asset, "destination": out.join("later.jpg")}));
-    let deferred = harness.refused("export.jpeg", params.clone());
+    let deferred = harness.refused("export.write", with_settings(params.clone()));
     assert_eq!(deferred.code, "preparation-required", "{deferred:?}");
     let job = deferred.job_id.expect("the preparation job");
     assert_eq!(harness.settle_source(&json!(job))["status"], "ready");
-    let accepted = harness.ok("export.jpeg", params);
+    let accepted = harness.ok("export.write", with_settings(params));
     assert_eq!(harness.settle(&accepted["job_id"])["status"], "ready");
     assert_eq!(listing(&out), ["existing.jpg", "later.jpg"]);
 }
@@ -1085,10 +1226,13 @@ fn an_unavailable_provider_refuses_the_export_and_writes_nothing() {
         ))
         .unwrap();
     let harness = harness.reopen(Arc::new(registry));
-    let planned = harness.refused("export.plan", json!({"asset_id": asset}));
+    let planned = harness.refused(
+        "export.plan",
+        json!({"asset_id": asset, "settings": baseline_json()}),
+    );
     assert_eq!(planned.code, "incompatible", "{planned:?}");
     let refused = harness.refused(
-        "export.jpeg",
+        "export.write",
         with_envelope(json!({"asset_id": asset, "destination": out.join("x.jpg")})),
     );
     assert_eq!(refused.code, "incompatible", "{refused:?}");
@@ -1206,7 +1350,7 @@ fn the_export_lane_holds_four_refuses_the_sixth_and_outlives_its_client() {
         accepted.push(job);
     }
     let refused = harness.refused(
-        "export.jpeg",
+        "export.write",
         with_envelope(json!({"asset_id": asset, "destination": out.join("5.jpg")})),
     );
     assert_eq!(refused.code, "resource-limit", "{refused:?}");
@@ -1302,15 +1446,15 @@ fn a_raw_export_matches_the_exact_render() {
         harness.ok("asset.state", json!({"asset_id": asset}))["current_entry"]["id"].clone();
     let out = destinations(&harness);
     let params = with_envelope(json!({
-        "asset_id": asset, "destination": out.join("raw.jpg"), "keep_metadata": true,
+        "asset_id": asset, "destination": out.join("raw.jpg"), "settings": settings_with(json!({"metadata": "all"})),
     }));
-    let accepted = match harness.send("export.jpeg", params.clone()) {
+    let accepted = match harness.send("export.write", with_settings(params.clone())) {
         ApiResponse {
             error: Some(error), ..
         } if error.code == "preparation-required" => {
             let job = json!(error.job_id.expect("the development job"));
             assert_eq!(harness.settle_source(&job)["status"], "ready");
-            harness.ok("export.jpeg", params)
+            harness.ok("export.write", with_settings(params))
         }
         response => response.result.expect("the export is accepted"),
     };
@@ -1470,7 +1614,7 @@ fn export_refuses_forged_lens_payload_before_publication() {
     h = h.reopen(Arc::new(ModuleRegistry::builtin()));
     let destination = h.dir.join("forged.jpg");
     let refused = h.refused(
-        "export.jpeg",
+        "export.write",
         with_envelope(json!({"asset_id":asset,"destination":destination})),
     );
     assert_eq!(refused.code, "validation");
@@ -1552,7 +1696,12 @@ impl TileService for StubTiles {
 
     fn disconnect(&self, _: ClientId) {}
 
-    fn stream(&self, evaluation: &Evaluation, cancel: &Cancel) -> Result<BandStream, TileFallback> {
+    fn stream(
+        &self,
+        evaluation: &Evaluation,
+        output: crate::tiles::OutputSpec,
+        cancel: &Cancel,
+    ) -> Result<BandStream, TileFallback> {
         self.streams.fetch_add(1, Ordering::SeqCst);
         let (rows, stop) = match self.behaviour.lock().unwrap().clone() {
             Behaviour::Refuse(reason) => return Err(reason),
@@ -1560,7 +1709,8 @@ impl TileService for StubTiles {
         };
         let identity = evaluation.identity().expect("the export's identity");
         let width = identity.width;
-        let (sender, stream) = BandStream::channel(width, identity.height, Answered::gpu());
+        assert!(output.is_full(width, identity.height), "a full-size export");
+        let (sender, stream) = BandStream::channel(output, Answered::gpu());
         let (evaluation, cancel) = (evaluation.clone(), cancel.clone());
         let (gate, hold, sent) = (
             Arc::clone(&self.gate),
@@ -1597,11 +1747,11 @@ impl TileService for StubTiles {
                     sender.send(Err(cancelled));
                     return;
                 }
-                let band = Band {
-                    y0: index as u32 * rows,
-                    rows: (rgba.len() / stride) as u32,
-                    rgba: rgba.to_vec(),
-                };
+                let band = Band::eight(
+                    index as u32 * rows,
+                    (rgba.len() / stride) as u32,
+                    rgba.to_vec(),
+                );
                 if !sender.send(Ok(band)) {
                     return;
                 }
@@ -1656,7 +1806,9 @@ fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
     let out = destinations(&harness);
 
     // Held before its sixth band, the export has encoded the rows it has: 35 of them, two whole
-    // strips, the second's start reported as the rows encoded before it over the stage's height.
+    // strips, the second's start reported as the rows encoded before it over the stage's height,
+    // which is the encoding phase's share of the whole export (all but the 5% of writing for a GPU
+    // export that streams), in whole percent.
     stub.hold_before(5);
     let held = harness.export(json!({"asset_id": asset, "destination": out.join("gpu.jpg")}));
     stub.gate.wait_reached(1, "the stub's sixth band");
@@ -1667,8 +1819,9 @@ fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
     assert_eq!(encoding["status"], "running", "{encoding}");
     assert_eq!(encoding["progress"]["message"], "encoding", "{encoding}");
     let fraction = encoding["progress"]["fraction"].as_f64().unwrap();
+    let expected = (16.0 / 320.0 * 0.95 * 100.0_f64).floor() / 100.0;
     assert!(
-        (fraction - 16.0 / 320.0).abs() < 1e-6,
+        (fraction - expected).abs() < 1e-9,
         "16 of 320 rows encoded: {fraction}"
     );
     assert_eq!(staged_files(&out).len(), 1, "one temporary file");
@@ -1681,12 +1834,13 @@ fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
         read["result"],
         json!({
             "path": out.join("gpu.jpg"), "bytes": bytes, "width": 480, "height": 320,
+            "format": "jpeg", "quality": 90, "optimised": false,
             "metadata": [], "renderer": {"record": "gpu", "reason": null},
             "acknowledged_stale": [],
         })
     );
     let kept = harness.export(json!({
-        "asset_id": asset, "destination": out.join("kept.jpg"), "keep_metadata": true,
+        "asset_id": asset, "destination": out.join("kept.jpg"), "settings": settings_with(json!({"metadata": "all"})),
     }));
     let read = harness.settle(&kept["job_id"]);
     assert_eq!(read["status"], "ready", "{read}");
@@ -1757,7 +1911,9 @@ fn a_stream_the_gpu_stops_drawing_is_rendered_again_by_the_reference_naming_why(
     let phases = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&phases);
     harness.owner.hold_exports(Some(Arc::new(move |phase| {
-        recorded.lock().unwrap().push(phase)
+        if !matches!(phase, "progress" | "written") {
+            recorded.lock().unwrap().push(phase)
+        }
     })));
 
     let export = |name: &str| {
@@ -1885,7 +2041,7 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
     };
     let h = Harness::start("job-wait");
     let asset = h.import("input.jpg")["asset"]["id"].clone();
-    let (reached, release) = h.hold_at("writing");
+    let (reached, release) = h.hold_at("written");
     let accepted = h.export(json!({"asset_id":asset,"destination":h.dir.join("output.jpg")}));
     reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     let job = accepted["job_id"].clone();
@@ -2004,3 +2160,185 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
         "completion before rearm is immediate"
     );
 }
+
+/// `export.write` refuses by name an output sharpening it does not know, never ignoring it; a
+/// destination whose extension is not the format's and a chosen folder that is missing are refused
+/// too, and none of these writes anything. `export.jpeg` no longer exists.
+#[test]
+fn export_write_refuses_unknown_sharpening_a_wrong_extension_and_a_missing_folder() {
+    let harness = Harness::start("not-yet");
+    let state = harness.import("not-yet.jpg");
+    let asset = state["asset"]["id"].clone();
+    let out = destinations(&harness);
+    let write = |settings: Value, name: &str| {
+        harness.refused(
+            "export.write",
+            with_envelope(
+                json!({"asset_id": asset, "destination": out.join(name), "settings": settings}),
+            ),
+        )
+    };
+    let sharpened = write(
+        settings_with(json!({"sharpen": {"medium": "canvas", "amount": "standard"}})),
+        "never.jpg",
+    );
+    assert_eq!(sharpened.code, "validation");
+    assert!(
+        sharpened.message.starts_with("settings.sharpen"),
+        "{}",
+        sharpened.message
+    );
+    let wrong_extension = write(baseline_json(), "never.tif");
+    assert_eq!(wrong_extension.code, "validation");
+    let missing = write(
+        settings_with(json!({"folder": {"path": harness.dir.join("gone")}})),
+        "never.jpg",
+    );
+    assert_eq!(missing.code, "validation");
+    assert_eq!(missing.data.unwrap()["notice"], "folder-missing");
+    assert!(listing(&out).is_empty(), "nothing written");
+    let gone = harness.send(
+        "export.jpeg",
+        with_envelope(json!({"asset_id": asset, "destination": out.join("old.jpg")})),
+    );
+    assert!(gone.error.is_some(), "export.jpeg is gone");
+    assert!(listing(&out).is_empty());
+}
+
+/// `schema.list` describes ExportSettings once, and every method that takes settings points at it.
+#[test]
+fn schema_list_describes_export_settings_once() {
+    let harness = Harness::start("schema-settings");
+    let schema = harness.ok("schema.list", json!({}));
+    let described = &schema["export_settings"];
+    let fields: Vec<&str> = described["fields"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for field in [
+        "format",
+        "size",
+        "quality",
+        "chroma",
+        "bit_depth",
+        "metadata",
+        "folder",
+        "suffix",
+    ] {
+        assert!(fields.contains(&field), "{field}");
+    }
+    assert!(described["notes"].as_str().unwrap().contains("left out"));
+    for method in [
+        "export.plan",
+        "export.write",
+        "batch.export",
+        "export.presets.create",
+    ] {
+        let settings = schema["methods"][method]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|parameter| parameter["name"] == "settings")
+            .unwrap_or_else(|| panic!("{method} takes settings"));
+        assert!(
+            settings["notes"]
+                .as_str()
+                .unwrap()
+                .contains("export_settings"),
+            "{method}: {settings}"
+        );
+    }
+    assert!(schema["methods"].get("export.jpeg").is_none());
+}
+
+/// Presets round-trip through create, list, update and delete over the API and survive the owner
+/// restarting; built-in presets refuse update and delete; a presets document this build cannot
+/// read is kept unchanged and refused by name.
+#[test]
+fn export_presets_round_trip_through_the_api_and_a_restart() {
+    let mut harness = Harness::with_preferences("presets");
+    let listed =
+        |harness: &Harness| harness.ok("export.presets.list", json!({}))["presets"].clone();
+    // The presets methods take no export settings beside their own.
+    let change = |mut params: Value| {
+        params["mutation"] = request_envelope();
+        params
+    };
+    let builtin: Vec<Value> = listed(&harness).as_array().unwrap().clone();
+    assert_eq!(
+        builtin
+            .iter()
+            .map(|preset| preset["preset_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["luxforge.web", "luxforge.print", "luxforge.master"]
+    );
+    assert!(
+        builtin
+            .iter()
+            .all(|preset| preset["builtin"] == json!(true))
+    );
+    let settings = settings_with(json!({"suffix": "-mine", "metadata": "copyright"}));
+    let created = harness.ok(
+        "export.presets.create",
+        change(json!({"name": "Mine", "settings": settings})),
+    )["preset"]
+        .clone();
+    assert_eq!(created["name"], "Mine");
+    assert_eq!(created["builtin"], false);
+    assert_eq!(created["settings"], settings);
+    let id = created["preset_id"].clone();
+    let duplicate = harness.refused(
+        "export.presets.create",
+        change(json!({"name": "mine", "settings": baseline_json()})),
+    );
+    assert_eq!(duplicate.code, "conflict");
+    let renamed = harness.ok(
+        "export.presets.update",
+        change(json!({"preset_id": id, "name": "Renamed"})),
+    )["preset"]
+        .clone();
+    assert_eq!(renamed["name"], "Renamed");
+    assert_eq!(renamed["settings"], settings, "the settings are kept");
+    let refused = harness.refused(
+        "export.presets.update",
+        change(json!({"preset_id": "luxforge.web", "name": "Mine"})),
+    );
+    assert_eq!(refused.code, "validation");
+    let refused = harness.refused(
+        "export.presets.delete",
+        change(json!({"preset_id": "luxforge.web"})),
+    );
+    assert_eq!(refused.code, "validation");
+
+    harness.stop();
+    let dir = std::mem::take(&mut harness.dir);
+    let config = dir.join("config");
+    let restarted = Harness::with_preferences_in(dir);
+    assert_eq!(listed(&restarted)[3], renamed, "kept across a restart");
+    let deleted = restarted.ok("export.presets.delete", change(json!({"preset_id": id})));
+    assert_eq!(deleted["outcome"], "applied");
+    assert_eq!(deleted["deleted"], true);
+    assert_eq!(listed(&restarted).as_array().unwrap().len(), 3);
+
+    let file = config.join("export-presets.json");
+    let unsupported = br#"{"format": 9, "presets": []}"#;
+    fs::write(&file, unsupported).unwrap();
+    let refused = restarted.refused("export.presets.list", json!({}));
+    assert_eq!(refused.code, "incompatible");
+    assert!(
+        refused.message.contains("export-presets.json"),
+        "{}",
+        refused.message
+    );
+    let refused = restarted.refused(
+        "export.presets.create",
+        change(json!({"name": "Other", "settings": baseline_json()})),
+    );
+    assert_eq!(refused.code, "incompatible");
+    assert_eq!(fs::read(&file).unwrap(), unsupported, "kept unchanged");
+}
+
+#[path = "export_settings_tests.rs"]
+mod settings_tests;
