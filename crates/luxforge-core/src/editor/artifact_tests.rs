@@ -711,6 +711,7 @@ fn jobs_pin_their_artifacts_and_an_unprepared_one_needs_preparation() {
         .analysis_plan(&asset, AnalysisSelection::Current)
         .unwrap();
     let evaluation = plan.evaluation.as_ref().expect("an evaluable stack");
+    let evaluation = evaluation.whole().expect("a whole source");
     assert_eq!(evaluation.recipe().artifacts.len(), 1);
     drop(plan);
     // Evicting everything the owner kept ready leaves the job's own recipe holding the bytes: it
