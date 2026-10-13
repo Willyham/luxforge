@@ -11,7 +11,7 @@ jobs:
   # What each lane proves, and what it never proves, is the development guide's CI section
   # (docs/engineering/development.md#ci). No lane here is native GPU evidence.
   native-build:
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
