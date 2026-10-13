@@ -558,7 +558,7 @@
     {
       "id": "TASK-008",
       "description": "Qualify the new export kinds on the full corpus, measure export cost once on the M4, and publish final documentation.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-007"
       ],
