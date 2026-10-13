@@ -233,6 +233,19 @@ fn every_preset_format_size_level_optimise_and_limit_writes_what_its_plan_says()
         assert_eq!(result["optimised"], settings["optimise"], "{name}");
         assert_eq!(result["metadata"], json!(kept(level)), "{name}");
         assert_eq!(result["renderer"], reference_renderer(), "{name}");
+        let activity = harness.ok("activity.list", json!({}));
+        let entry = activity["recent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["job_id"] == accepted["job_id"])
+            .expect("the export is on the board");
+        let label = match format {
+            "jpeg" => "Exporting JPEG",
+            "webp" => "Exporting WebP",
+            _ => "Exporting TIFF",
+        };
+        assert_eq!(entry["label"], label, "{name}: the board names the format");
         let limit = settings["limit_bytes"].as_u64();
         match (format, limit) {
             ("tiff", _) => assert!(result.get("quality").is_none(), "{name}"),
