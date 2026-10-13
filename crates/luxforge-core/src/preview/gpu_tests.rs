@@ -1858,7 +1858,16 @@ fn at_100_percent_the_tiles_are_reduced_to_the_backdrop_whatever_the_region() {
             (&reduced.plan, &reduced.tiles, reduced.output),
             "{view:?}: the tiles Fit reduces"
         );
-        planned.push(tiles);
+        // From 200% the same tiles are reduced to the minimap's overview too.
+        assert_eq!(
+            tiles.overview.is_some(),
+            magnification >= 2.0,
+            "{view:?}: the overview"
+        );
+        planned.push(crate::RestTiles {
+            overview: None,
+            ..*tiles
+        });
     }
     assert!(
         planned.windows(2).all(|pair| pair[0] == pair[1]),
