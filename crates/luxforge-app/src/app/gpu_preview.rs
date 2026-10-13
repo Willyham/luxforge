@@ -1493,6 +1493,15 @@ impl GpuPreviews {
         self.warm.as_ref()
     }
 
+    /// Whether the drag's latest tick has no plan of its own because its draft changes no layer of
+    /// the stack yet (`unchanged`): its frame is the committed stack's, the picture at rest.
+    fn drag_unchanged(&self) -> bool {
+        self.drag.as_ref().is_some_and(|drag| {
+            drag.surface.is_none()
+                && drag.reason.as_deref() == Some(luxforge_core::GpuFallback::Unchanged.code())
+        })
+    }
+
     /// The draft whose plan the surface is handed, open or ended and not yet released.
     pub(crate) fn draft(&self) -> Option<&DraftId> {
         self.drag.as_ref().map(|drag| &drag.draft)
@@ -2431,13 +2440,28 @@ impl Editor {
     /// draft is open or its plan still drawn, no crop draft is shown, and no evidence hook hands a
     /// plan of its own.
     pub(crate) fn gpu_at_rest(&self) -> bool {
+        self.gpu_rest_drawable() && self.core_gesture().is_none() && self.gpu.drag.is_none()
+    }
+
+    /// Whether the committed stack's picture at rest is the photograph on screen: at rest, or while
+    /// the open drag's latest tick is held because its draft changes no layer of the stack yet
+    /// (`unchanged`: a gradient moved on a mask no adjustment reads), whose frame is the committed
+    /// stack's own. The frame on screen stays the GPU's picture at rest, not the CPU frame behind
+    /// it, which for a stack the GPU presented is an earlier stack's or the instant preview.
+    fn gpu_rest_shown(&self) -> bool {
+        self.gpu_rest_drawable()
+            && ((self.core_gesture().is_none() && self.gpu.drag.is_none())
+                || self.gpu.drag_unchanged())
+    }
+
+    /// Whether the GPU may draw the committed stack's picture at rest at all: the gate lets the GPU
+    /// stage draw, no crop draft is shown, and no evidence hook hands a plan of its own.
+    fn gpu_rest_drawable(&self) -> bool {
         #[cfg(test)]
         if self.gpu.rest_off {
             return false;
         }
         self.gpu_preview_allowed().is_ok()
-            && self.core_gesture().is_none()
-            && self.gpu.drag.is_none()
             && !self.drafting()
             && self
                 .evidence
@@ -2445,13 +2469,14 @@ impl Editor {
                 .is_none_or(|evidence| evidence.gpu_identity.is_none())
     }
 
-    /// The committed stack's view plan the surface draws at rest ([`AtRest`]), where the view
-    /// shows it: its whole frame at Fit and below 100%, its region at 100% and above while that
-    /// region holds the view.
+    /// The committed stack's view plan the surface draws at rest ([`AtRest`]), and through a drag
+    /// whose draft changes nothing yet ([`Self::gpu_rest_shown`]), where the view shows it: its
+    /// whole frame at Fit and below 100%, its region at 100% and above while that region holds the
+    /// view.
     pub(crate) fn gpu_rest_plan(
         &self,
     ) -> Option<(&luxforge_gpu::GpuPlan, luxforge_gpu::GpuChange)> {
-        if !self.gpu_at_rest() {
+        if !self.gpu_rest_shown() {
             return None;
         }
         let at_rest = self.gpu.at_rest.as_ref()?;
@@ -2709,7 +2734,8 @@ impl Editor {
         {
             return None;
         }
-        let moving = self.core_gesture().is_some();
+        // A drag whose draft changes nothing yet keeps the picture at rest as it is.
+        let moving = self.core_gesture().is_some() && !self.gpu.drag_unchanged();
         let held = self.gpu.rest.as_ref()?;
         let ready = held.conversion.ready()?;
         // At 100% and above the view's region plan is the picture at rest, and the tiles' reduction

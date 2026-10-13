@@ -9,7 +9,9 @@
 //!   while no view is known (the tick's job was planned with no GPU preview), and the boundary,
 //!   source and surface waits (`boundary-pending`, `boundary-uploading`, `source-uploading`,
 //!   `source-missing`, `surface-pending`). The tick queues nothing and the frame on screen stays:
-//!   the surface draws the tick's plan once the wait is over, or the next tick does. Every drag's
+//!   the surface draws the tick's plan once the wait is over, or the next tick does. An `unchanged`
+//!   tick's frame is the committed stack's, so the GPU's picture at rest stays on screen
+//!   ([`Editor::gpu_rest_plan`]). Every drag's
 //!   first tick waits on its boundary this way, so no drag starts by queuing a whole frame. A hold
 //!   that has lasted the same half second, from the first tick of its run, renders the newest
 //!   held tick's reference frame after all, so a drag paused on a wait that does not pass still
