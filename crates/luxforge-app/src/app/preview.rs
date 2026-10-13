@@ -1042,6 +1042,7 @@ impl Editor {
                 }
             }
             PreviewMessage::GridReady(answer) => self.gpu_grid_ready(*answer),
+            PreviewMessage::OverviewReduced(answer) => self.reference_overview_reduced(*answer),
             PreviewMessage::ThumbnailSource(planned) => self.thumbnail_source_planned(planned),
             PreviewMessage::Loaded(result) => {
                 if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
@@ -1826,6 +1827,13 @@ impl Editor {
             self.proxy_bounds()
         };
         let content = self.presentation.admit(&job);
+        // The minimap's overview follows the content the canvas shows next, a whole committed
+        // stack or a crop draft's input stage; a draft's frames leave it as it is, marked updating
+        // while the gesture runs.
+        let overview = super::overview::OverviewKey::of(&job);
+        if job.evaluation.draft_revision().is_none() {
+            self.overviews.want(overview.clone(), Some(content));
+        }
         self.request_mask_coverage(&job, content);
         self.gpu_warm_from(job.gpu_warm.as_deref());
         // Every boundary is derived from the job's own source on the GPU: the surface is handed it
@@ -1841,7 +1849,7 @@ impl Editor {
         // where its view draws the stack at its own size or larger or the GPU cannot draw them.
         if committed && let Some(rest) = job.gpu_rest.as_mut() {
             let tiles = rest.tiles.take().and_then(Result::ok);
-            self.gpu_rest_from(tiles, region_view);
+            self.gpu_rest_from(tiles, region_view, overview);
             self.gpu.rest_planned_at = planned_at.filter(|_| !region_view);
         }
         self.gpu_resident_from(job.gpu_rest.take(), region_view, committed);
