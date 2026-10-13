@@ -943,6 +943,11 @@ pub struct RestTiles {
     /// view's region is drawn over ([`REST_BACKDROP_BOUNDS`]); `None` where neither reduces the
     /// stage, whose tiles are the counts' alone.
     pub reduction: Option<RestReduction>,
+    /// At a view that shows the minimap, a percentage zoom of [`crate::OVERVIEW_PERCENT`] or more,
+    /// the reduction of the tiles to the whole-stage overview ([`crate::overview_size`], within
+    /// 256 × 256), beside the backdrop and the counts and independent of both: the same tiles,
+    /// reduced twice as they are drawn (`docs/design/minimap.md`). `None` at every other view.
+    pub overview: Option<RestReduction>,
     /// The source every tile's boundary is cut from, and how its texels are held.
     pub source: ProxyIdentity,
     pub format: crate::BoundaryFormat,
@@ -1295,6 +1300,7 @@ pub(crate) fn plan_rest_tiles(
     evaluation: &Evaluation,
     bounds: ProxyBounds,
     sizing: RestSizing,
+    overview: bool,
 ) -> Result<Option<Result<Box<RestTiles>, GpuFallback>>, Error> {
     let output = evaluation.compiled()?.stage();
     // The view's size: the CPU proxy frame's, which a gesture's frame draws at too, or the output
@@ -1310,25 +1316,39 @@ pub(crate) fn plan_rest_tiles(
             None => return Ok(None),
         },
     };
-    plan_tiles(evaluation, Some(view), sizing).map(Some)
+    plan_tiles(evaluation, Some(view), sizing, overview).map(Some)
 }
 
 /// The stack of `evaluation` at full resolution in tiles with no reduction to a view
 /// ([`RestTiles`]), sized as `sizing` says: the tiles the histogram and clipping counts are reduced
-/// from where the view draws the output stage at its own size or larger. The reason when the stack
-/// cannot be drawn so now, as [`plan_rest_tiles`] names it. `O(tiles × segments)`, no pixel read.
+/// from where the view draws the output stage at its own size or larger, and the overview where
+/// `overview` asks for it. The reason when the stack cannot be drawn so now, as
+/// [`plan_rest_tiles`] names it. `O(tiles × segments)`, no pixel read.
 pub(crate) fn plan_count_tiles(
     evaluation: &Evaluation,
     sizing: RestSizing,
+    overview: bool,
 ) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
-    plan_tiles(evaluation, None, sizing)
+    plan_tiles(evaluation, None, sizing, overview)
 }
 
-/// The stack of `evaluation` at full resolution in tiles, reduced to `view` where it names one.
+/// The output stage's reduction to its overview ([`crate::overview_size`]).
+fn overview_reduction(output: Stage) -> Option<RestReduction> {
+    let size = crate::overview_size((output.width, output.height))?;
+    Some(RestReduction {
+        view: size,
+        across: crate::area_coverage(output.width, size.0),
+        down: crate::area_coverage(output.height, size.1),
+    })
+}
+
+/// The stack of `evaluation` at full resolution in tiles, reduced to `view` where it names one, and
+/// to the overview where `overview` asks for it.
 fn plan_tiles(
     evaluation: &Evaluation,
     view: Option<(u32, u32)>,
     sizing: RestSizing,
+    overview: bool,
 ) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
@@ -1353,16 +1373,22 @@ fn plan_tiles(
         WindowPlan::of_gpu_rect(compiled, source, rect)
             .map(|windows| super::anchored(windows.reads(0), anchor))
     };
+    let overview = overview.then(|| overview_reduction(output)).flatten();
     // What a tile's slot may take: the budget less the source the surface holds, the view plan's
-    // slot and the accumulator with its rest output, at most half the budget.
+    // slot and the accumulators with their outputs, the overview's among them, at most half the
+    // budget.
     let share =
         match sizing {
             #[cfg(any(test, feature = "qualification"))]
             RestSizing::Side(_) | RestSizing::StageFree(_) => None,
             RestSizing::Beside(view_bytes) => {
-                let accumulator = view.map_or(0, |(width, height)| {
-                    u64::from(width) * u64::from(height) * ACCUMULATOR_PIXEL_BYTES
-                });
+                let accumulator = view
+                    .into_iter()
+                    .chain(overview.as_ref().map(|overview| overview.view))
+                    .map(|(width, height)| {
+                        u64::from(width) * u64::from(height) * ACCUMULATOR_PIXEL_BYTES
+                    })
+                    .sum::<u64>();
                 Some(REST_SHARE_MAX.min(
                     GPU_PREVIEW_BYTES.saturating_sub(
                         source_bytes(evaluation.source()) + view_bytes + accumulator,
@@ -1490,6 +1516,7 @@ fn plan_tiles(
             across: crate::area_coverage(output.width, view.0),
             down: crate::area_coverage(output.height, view.1),
         }),
+        overview,
         source: evaluation.source().identity(),
         format,
     })))
@@ -1532,13 +1559,18 @@ pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRes
     // backdrop the view's region is drawn over; the counts' alone where neither reduces the stage.
     // Within the rest's share beside the view plan, whose slot stays held while the tiles are drawn.
     let sizing = RestSizing::Beside(view_bytes(&planned));
+    // The view shows the minimap: the tiles are reduced to the overview as well.
+    let overview = matches!(view, GpuView::Region { magnification, .. }
+        if magnification >= f64::from(crate::OVERVIEW_PERCENT) / 100.0);
     let reduced = match view {
-        GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, sizing)?,
-        GpuView::Region { .. } => plan_rest_tiles(evaluation, REST_BACKDROP_BOUNDS, sizing)?,
+        GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, sizing, overview)?,
+        GpuView::Region { .. } => {
+            plan_rest_tiles(evaluation, REST_BACKDROP_BOUNDS, sizing, overview)?
+        }
     };
     let tiles = Some(match reduced {
         Some(tiles) => tiles,
-        None => plan_count_tiles(evaluation, sizing)?,
+        None => plan_count_tiles(evaluation, sizing, overview)?,
     });
     Ok(GpuRest {
         view: planned,
