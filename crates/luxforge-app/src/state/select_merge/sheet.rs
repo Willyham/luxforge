@@ -348,10 +348,22 @@ pub(crate) struct FrameRow {
     pub(crate) number: Option<u32>,
 }
 
+/// Boundary Warp's largest amount, the slider's end.
+pub(crate) const WARP_MAX: u8 = luxforge_core::catalog_types::MAX_BOUNDARY_WARP;
+
+/// The projection segment at `index` chosen, Auto first.
+pub(crate) fn projection_at(index: usize) -> MergeAction {
+    let all = PanoramaProjection::ALL;
+    MergeAction::Projection(all[index.min(all.len() - 1)])
+}
+
 /// A panorama's settings as the sheet draws them.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PanoramaSettings {
     pub(crate) projection: PanoramaProjection,
+    /// The projection's segments, Auto first, and the chosen one's place among them.
+    pub(crate) projections: [&'static str; 4],
+    pub(crate) projection_at: usize,
     /// Under the projection while it is Auto and a revision resolved it: "Auto chose
     /// Cylindrical for a 164° × 41° field."
     pub(crate) resolved: Option<String>,
@@ -458,6 +470,11 @@ pub(crate) fn model(sheet: &PreviewSheet, busy: Option<&str>) -> SheetModel {
             });
         PanoramaSettings {
             projection: options.projection,
+            projections: PanoramaProjection::ALL.map(projection_name),
+            projection_at: PanoramaProjection::ALL
+                .iter()
+                .position(|projection| *projection == options.projection)
+                .unwrap_or(0),
             resolved,
             boundary_warp: options.boundary_warp,
             outlines: sheet.outlines,

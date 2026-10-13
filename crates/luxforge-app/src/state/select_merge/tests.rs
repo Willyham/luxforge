@@ -1069,7 +1069,7 @@ fn panorama_merge_stack_words_footers_and_band() {
     };
     let cell = stack_cell(Some(&stack), None);
     assert_eq!(cell.exposure, Some("Frame 2 of 7"));
-    assert_eq!(cell.icon, Some(Icon::Panorama));
+    assert_eq!(cell.icon, Some(KindIcon::Panorama));
     assert_eq!(stack_band(&stack, None).title, "Frame 2 of 7");
     assert_eq!(panorama_leader(Some(&stack)), None);
 

@@ -23,7 +23,6 @@ use luxforge_core::{
     merge::hdr::{AlignmentMode, DeghostMode},
     preferences::{HdrMergePreference, PanoramaMergePreference},
 };
-use luxforge_ui::Icon;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::LazyLock};
 
@@ -53,7 +52,15 @@ pub(crate) struct KindWords {
     /// The merge action's hint in the selection's menu.
     pub(crate) hint: &'static str,
     /// The kind's icon: on a result's badge, its originals' notes and the pending row.
-    pub(crate) icon: Icon,
+    pub(crate) icon: KindIcon,
+}
+
+/// A merge kind's icon, which the view draws: a bracket for HDR, a wide frame with curved top and
+/// bottom for a panorama.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KindIcon {
+    Bracket,
+    Panorama,
 }
 
 const HDR_WORDS: KindWords = KindWords {
@@ -66,7 +73,7 @@ const HDR_WORDS: KindWords = KindWords {
     original: "Original",
     action: "Merge HDR",
     hint: "Merge the frames into one HDR photograph in the catalog",
-    icon: Icon::Bracket,
+    icon: KindIcon::Bracket,
 };
 
 const PANORAMA_WORDS: KindWords = KindWords {
@@ -79,7 +86,7 @@ const PANORAMA_WORDS: KindWords = KindWords {
     original: "Frame",
     action: "Merge panorama",
     hint: "Merge the frames into one panorama in the catalog",
-    icon: Icon::Panorama,
+    icon: KindIcon::Panorama,
 };
 
 /// The words Select names `kind` with.
@@ -968,7 +975,7 @@ pub(crate) struct StackCell<'r> {
     /// panorama's ("Frame 2 of 7").
     pub(crate) exposure: Option<&'static str>,
     /// The stack's kind's icon, for the badge and the note.
-    pub(crate) icon: Option<Icon>,
+    pub(crate) icon: Option<KindIcon>,
 }
 
 /// The cell words of a row with `stack`, whose reason is `reason`.

@@ -31,7 +31,7 @@ use crate::{
     },
     state::{
         select::{Block, InfoModel},
-        select_merge::{MergeAction, plan_refusal, sheet::Picture, stack_cell},
+        select_merge::{KindIcon, MergeAction, plan_refusal, sheet::Picture, stack_cell},
     },
 };
 use iced::{Size, keyboard::Modifiers};
@@ -47,7 +47,6 @@ use luxforge_core::{
 };
 use luxforge_reference::panorama::{self as reference, Pose, Scene, Shot};
 use luxforge_test_macros::slow;
-use luxforge_ui::Icon;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -562,7 +561,7 @@ fn panorama_merge_menu_and_sheet_requests_are_a_json_clients() {
         cell.badge.map(|(long, short, _)| (long, short)),
         Some(("Panorama \u{b7} 3 photos", "Pano \u{b7} 3"))
     );
-    assert_eq!(cell.icon, Some(Icon::Panorama));
+    assert_eq!(cell.icon, Some(KindIcon::Panorama));
 
     // Its Info band: "Panorama · 3 photos", then the projection and field of view a client reads.
     let InfoModel::One(info) = &editor.workspace.select.info else {
