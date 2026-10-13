@@ -88,6 +88,7 @@ impl PhotoPrimitive {
             source: None,
             window: None,
             rest: None,
+            rest_under: false,
             overview: None,
             overview_draw: Some(version),
             offset: visible.offset,
