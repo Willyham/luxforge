@@ -1090,6 +1090,9 @@ fn module_controls(
     match headerless_group(module) {
         Some(children) => {
             for (index, control) in children.iter().enumerate() {
+                if !offered(inputs.modules, control, inputs.target) {
+                    continue;
+                }
                 controls.push(control_model(
                     ControlOwner::Module(module),
                     control,
@@ -1106,6 +1109,9 @@ fn module_controls(
         }
         None => {
             for (index, control) in module.controls.iter().enumerate() {
+                if !offered(inputs.modules, control, inputs.target) {
+                    continue;
+                }
                 controls.push(control_model(
                     ControlOwner::Module(module),
                     control,
@@ -1268,6 +1274,21 @@ pub(crate) fn analysis_refusal(inputs: &Inputs<'_>) -> Option<String> {
     })
 }
 
+/// The declared control is offered on the bound target. An analysis action (Auto tone) reads and
+/// sets the photo's global layer only, so a section or palette bound to a mask leaves it out, as
+/// Lightroom's mask panels have no Auto; its chord still reaches [`analysis_refusal`], which says
+/// why in the status bar.
+pub(crate) fn offered(
+    modules: &[ModuleDescriptor],
+    control: &Control,
+    target: Option<&MaskId>,
+) -> bool {
+    !(target.is_some()
+        && matches!(control, Control::Action(button)
+            if declared_action(modules, &button.action)
+                .is_some_and(|declared| declared.analysis.is_some())))
+}
+
 /// Why editing this module is disabled, in the words the status bar would use: its provider's
 /// unavailability first, then the one editability rule ([`Inputs::edit_refusal`]).
 fn disabled_reason(unavailable: Option<&str>, inputs: &Inputs<'_>) -> Option<String> {
@@ -1410,6 +1431,7 @@ fn resolved_model(
                 .controls
                 .iter()
                 .enumerate()
+                .filter(|(_, child)| offered(inputs.modules, child, inputs.target))
                 .map(|(index, child)| {
                     let mut child_path = path.to_vec();
                     child_path.push(index);
@@ -1446,6 +1468,7 @@ fn resolved_model(
                 .controls
                 .iter()
                 .enumerate()
+                .filter(|(_, child)| offered(inputs.modules, child, inputs.target))
                 .map(|(index, child)| {
                     let mut child_path = path.to_vec();
                     child_path.push(index);
@@ -3170,6 +3193,9 @@ fn collect_actions(
         let Some((_, control)) = resolved(modules, module, declared, kind, target) else {
             continue;
         };
+        if !offered(modules, control, target) {
+            continue;
+        }
         if let Control::Action(button) = control {
             entries.push((
                 format!("{} · {}", module.title, button.label),

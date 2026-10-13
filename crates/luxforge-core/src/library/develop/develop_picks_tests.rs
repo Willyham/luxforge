@@ -1,19 +1,15 @@
 //! The develop lane's parts on their own, over files written here: one read of a JPEG with its
 //! EXIF streams the fingerprint and reads its header and interpretation without decoding it; what
-//! cannot be developed is refused by its own error; a report is rebuilt from recorded changes; and,
+//! cannot be developed is refused by its own error; and,
 //! on the owner's Mac, how long the RAW fixtures' interpretations take. The helpers write photographs
 //! with the EXIF a camera would, for the owner tests (`api/owner/library/develop_picks_tests.rs`).
 use super::*;
 use crate::{
-    AssetId, ErrorKind,
-    catalog_types::{
-        CameraBody, FileRecord, FileSignature, GeoPosition, HeaderState, LibraryChange,
-        LibraryChangeRow, LibraryChangeSeq, VolumeId,
-    },
+    ErrorKind,
+    catalog_types::{CameraBody, FileRecord, FileSignature, GeoPosition, HeaderState, VolumeId},
     export::metadata::header::read_header,
     source::JPEG_LIMITS,
 };
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -383,84 +379,6 @@ fn develop_picks_read_refuses_what_cannot_be_developed() {
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Conflict, "{error:?}");
     fs::remove_dir_all(dir).unwrap();
-}
-
-/// A report rebuilt from recorded changes pairs each photograph a change created or relinked with
-/// the pick it cleared after it — a copy developed in its pick's place is its `used` — and leaves
-/// out a pick linked to a photograph already in the catalog; each is in the folder it is in now.
-#[test]
-fn develop_picks_recorded_report_pairs_each_photograph_with_its_pick() {
-    let (created, copied, relinked) = (AssetId::new(), AssetId::new(), AssetId::new());
-    let (day, other) = (
-        crate::catalog_types::CatalogFolderId::new(),
-        crate::catalog_types::CatalogFolderId::new(),
-    );
-    let pick = |path: &str| LibraryChangeRow {
-        item: LibraryItem::Pick { path: path.into() },
-        before: Some(json!({"path": path})),
-        after: None,
-    };
-    let part = |sequence: u64, rows: Vec<LibraryChangeRow>| LibraryChangeDetail {
-        change: LibraryChange {
-            sequence: LibraryChangeSeq(sequence),
-            actor: "a".into(),
-            request_id: "r".into(),
-            method: "pick.develop".into(),
-            label: "Developed".into(),
-            time_ms: 1,
-            item_count: rows.len() as u32,
-            undoes: None,
-            redoes: None,
-            undone_by: None,
-        },
-        rows,
-    };
-    let developed = |asset: &AssetId, path: &str| LibraryChangeRow {
-        item: LibraryItem::DevelopedAsset {
-            asset_id: asset.clone(),
-        },
-        before: None,
-        after: Some(json!({"path": path})),
-    };
-    let report = recorded_report(
-        &[
-            part(4, vec![developed(&created, "/a/1.jpg"), pick("/a/1.jpg")]),
-            part(
-                5,
-                vec![
-                    developed(&copied, "/copy/2.jpg"),
-                    pick("/card/2.jpg"),
-                    pick("/a/linked.jpg"),
-                    LibraryChangeRow {
-                        item: LibraryItem::AssetSource {
-                            asset_id: relinked.clone(),
-                        },
-                        before: Some(json!({"locator": "/old/3.jpg"})),
-                        after: Some(json!({"locator": "/a/3.jpg"})),
-                    },
-                    pick("/a/3.jpg"),
-                ],
-            ),
-        ],
-        |asset| {
-            Ok(if *asset == relinked {
-                other.clone()
-            } else {
-                day.clone()
-            })
-        },
-    )
-    .unwrap();
-    assert_eq!(report.changes, [LibraryChangeSeq(4), LibraryChangeSeq(5)]);
-    assert_eq!(
-        serde_json::to_value(&report.developed).unwrap(),
-        json!([
-            {"path": "/a/1.jpg", "asset_id": created, "outcome": "created", "folder_id": day},
-            {"path": "/card/2.jpg", "used": "/copy/2.jpg", "asset_id": copied, "outcome": "created", "folder_id": day},
-            {"path": "/a/3.jpg", "asset_id": relinked, "outcome": "relinked", "folder_id": other},
-        ])
-    );
-    assert!(report.failed.is_empty());
 }
 
 /// How long each of the owner's RAW fixtures takes to read and interpret without developing:

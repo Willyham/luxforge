@@ -26,6 +26,10 @@
 //! - **The camera preview.** Until a photograph has any render of a tier, a request for it also
 //!   asks the extraction workers for its camera preview (`crate::previews::CameraSource`), at the
 //!   request's priority: the fallback the next read answers. The render releases it.
+//! - **Whether a fallback is current.** A queued answer says whether its fallback shows the entry
+//!   asked for, edits included (`fallback_current`): a render of that entry at another tier or
+//!   generation, or the camera preview while the entry is the photograph's Original; never an
+//!   earlier entry's render nor an edited entry's camera preview. Develop draws only a current one.
 //! - **Following commits.** Every change the owner records names the asset it changed
 //!   ([`follow_changes`], from `Owner::record_announced`): a commit, an undo, a redo or a restore by
 //!   any client. Currency is by key, so the next read of a photograph whose current entry moved
@@ -406,7 +410,8 @@ fn source(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<(i64, CameraSource
 /// `preview.read` of a photograph: its tier of the entry named, or of its current entry, when that
 /// is rendered at this generation and its file is intact; otherwise the render that makes it, with
 /// the best row cached meanwhile as the fallback — an earlier entry's render, or its camera
-/// preview, which is asked for when the photograph has no row of the tier at all.
+/// preview, which is asked for when the photograph has no row of the tier at all — and whether
+/// that fallback shows the entry, edits included (`fallback_current`).
 pub(super) fn read_photo(
     owner: &mut Owner,
     call: &Call<'_>,
@@ -423,7 +428,7 @@ pub(super) fn read_photo(
     let source = photo(&owner.service, asset_id)?;
     let entry = entry_id.unwrap_or_else(|| source.entry_id.clone());
     owner.catalog.previews.renders.used();
-    let (fallback, camera) = {
+    let (fallback, fallback_current, camera) = {
         let index = owner.service.index()?;
         let rows = previews::photo_rows(index.connection(), asset_id)?;
         if let Some(ready) = rows
@@ -439,16 +444,44 @@ pub(super) fn read_photo(
         }
         let fallback = previews::fallbacks(&rows, asset_id, &entry, tier)
             .into_iter()
-            .find(|row| previews::intact(&row.path))
-            .map(|row| row.info(asset_id));
-        (fallback, !rows.iter().any(|row| row.tier == tier))
+            .find(|row| previews::intact(&row.path));
+        let fallback_current = match fallback {
+            None => false,
+            Some(row) if row.rendered() => row.entry_id == entry,
+            // A camera preview is the original's own picture, whichever entry it was made under.
+            Some(_) => is_original(&owner.service, asset_id, &entry)?,
+        };
+        (
+            fallback.map(|row| row.info(asset_id)),
+            fallback_current,
+            !rows.iter().any(|row| row.tier == tier),
+        )
     };
     let job_id = want(owner, Some(call), &source, &entry, tier, priority)?;
     if camera {
         want_camera(owner, source, tier, priority, call.client);
     }
     dispatch(owner);
-    answer(&PreviewAnswer::Queued { job_id, fallback })
+    answer(&PreviewAnswer::Queued {
+        job_id,
+        fallback,
+        fallback_current,
+    })
+}
+
+/// Whether `entry` is `asset_id`'s Original, the entry it was developed with and which holds no
+/// edit: one indexed read of its sequence. An entry not the photograph's is not.
+fn is_original(
+    service: &EditorService,
+    asset_id: &AssetId,
+    entry: &EntryId,
+) -> Result<bool, Error> {
+    let sequence: Option<i64> = service
+        .connection
+        .prepare_cached("SELECT sequence FROM entries WHERE id = ?1 AND asset_id = ?2")?
+        .query_row([entry.as_str(), asset_id.as_str()], |row| row.get(0))
+        .optional()?;
+    Ok(sequence == Some(0))
 }
 
 /// Queue `tier` of `photo` at `entry`, or join the render that makes it, and answer the job that

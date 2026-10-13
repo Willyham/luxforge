@@ -96,9 +96,10 @@ impl Editor {
         };
         let refused = answer.as_ref().err().cloned();
         let change = self.preferences.answered(answer).unwrap_or_default();
+        self.preferences.restore_mask_colour |=
+            refused.is_some() && change.sets("mask_overlay_colour");
         self.apply_display_preferences();
         let mut read = Task::none();
-        let saved = refused.is_none();
         match refused {
             // Only a change the core announces has an event for the sync to skip; a remembered
             // field's request id would only crowd the bounded list of the desktop's own requests.
@@ -124,8 +125,7 @@ impl Editor {
         }
         // The update policy follows the Updates group's switches: the status they leave is read
         // again, as the event sync reads it for another client's change.
-        let updates = if saved
-            && (change.sets("update_checks") || change.sets("update_install_automatically"))
+        let updates = if change.sets("update_checks") || change.sets("update_install_automatically")
         {
             self.read_updates()
         } else {
@@ -162,8 +162,8 @@ impl Editor {
         )
     }
 
-    /// Take up a `preferences.read` answer. When the stored mask overlay colour changed — another
-    /// client set it — this session draws the colour the desktop now shows.
+    /// Take up a `preferences.read` answer. A changed stored colour or a failed colour write
+    /// reconciles this session with the colour the desktop now shows, including waiting changes.
     pub(crate) fn preferences_read(
         &mut self,
         answer: Result<Preferences, String>,
@@ -175,9 +175,13 @@ impl Editor {
                 .map(|preferences| preferences.mask_overlay_colour)
         };
         let before = colour(self);
+        let restoring = self.preferences.restore_mask_colour && answer.is_ok();
         self.preferences.read(answer);
+        if restoring {
+            self.preferences.restore_mask_colour = false;
+        }
         self.apply_display_preferences();
-        if colour(self) == before {
+        if colour(self) == before && !restoring {
             return Task::none();
         }
         match self.preferences.applied() {

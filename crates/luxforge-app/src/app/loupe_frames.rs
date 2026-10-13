@@ -21,6 +21,13 @@
 //!   leaves the wanted ones while its read is still queued has its job cancelled with the next
 //!   batch (`job.cancel`), so a held arrow never leaves the lane working through frames, or moments'
 //!   strips, already passed ahead of the one on screen.
+//! - **Currency.** A held picture is current when the slot's newest answer names it and says it
+//!   shows what was asked for, edits included: a ready tier, or a fallback the owner marks
+//!   `fallback_current` (never an earlier entry's render nor an edited photograph's camera
+//!   preview). A photograph that may have moved to another entry since its answer
+//!   ([`LoupeFrames::moved`]) is not current until it is answered again, and is read again, which
+//!   queues its current entry's render. Develop draws only a current picture in place of a
+//!   photograph; the loupe draws a stand-in, saying so.
 //! - **Waking.** The owner wakes this client when a preview it waits on is written or its task
 //!   ends; the Select grid registers the one wake a client has
 //!   ([`OwnerHandle::watch_previews`](luxforge_core::OwnerHandle::watch_previews)) and passes it on
@@ -113,12 +120,14 @@ pub(crate) struct ReadAnswers {
     pub(crate) answers: Vec<(Slot, Result<PreviewAnswer, Refusal>)>,
 }
 
-/// A decoded preview held for a frame: its handle, what it is, and the entry a photograph's
-/// preview is of.
+/// A decoded preview held for a frame: its handle, what it is, the entry a photograph's preview is
+/// of, and whether the slot's newest answer says it shows the photograph's current entry, edits
+/// included.
 pub(crate) struct HeldPhoto<'a> {
     pub(crate) handle: &'a Handle,
     pub(crate) picture: &'a Picture,
     pub(crate) entry: Option<&'a EntryId>,
+    pub(crate) current: bool,
 }
 
 /// One picture the loupe wants: its slot, the pixels the area it is drawn in needs, and whether it
@@ -240,11 +249,16 @@ struct Source {
     origin: PreviewOrigin,
     stand_in: bool,
     approximate: bool,
+    /// Whether it shows what was asked for, edits included: a ready answer, or a fallback the
+    /// owner says is current (`fallback_current`). A photograph that may have moved to another
+    /// entry since ([`LoupeFrames::moved`]) has it cleared until it is answered again.
+    current: bool,
 }
 
 impl Source {
-    fn of(info: PreviewInfo, stand_in: bool) -> Self {
+    fn of(info: PreviewInfo, stand_in: bool, current: bool) -> Self {
         Self {
+            current,
             approximate: approximate(&info),
             entry: match &info.item {
                 PreviewItem::Photo { entry_id, .. } => entry_id.clone(),
@@ -288,6 +302,9 @@ struct Entry {
     /// The job the lane answered it `queued` with: cancelled when the slot is no longer wanted,
     /// and a later answer with another job means the lane ended this one without the tier.
     job: Option<String>,
+    /// Its photograph moved on while its read was in flight: the answer is not taken as current,
+    /// and it is read again.
+    reask: bool,
 }
 
 impl Default for Entry {
@@ -300,6 +317,7 @@ impl Default for Entry {
             over_budget: None,
             wanted_at: 0,
             job: None,
+            reask: false,
         }
     }
 }
@@ -542,16 +560,20 @@ impl LoupeFrames {
             if entry.read != Read::Asking {
                 continue;
             }
-            let (read, source) = match answer {
+            let (mut read, mut source) = match answer {
                 Ok(PreviewAnswer::Ready { preview }) => {
                     entry.job = None;
-                    (Read::Ready, Some(Source::of(preview, false)))
+                    (Read::Ready, Some(Source::of(preview, false, true)))
                 }
-                Ok(PreviewAnswer::Queued { job_id, fallback }) => {
+                Ok(PreviewAnswer::Queued {
+                    job_id,
+                    fallback,
+                    fallback_current,
+                }) => {
                     let job = job_id.as_str().to_owned();
                     let ended = entry.job.as_ref().is_some_and(|earlier| *earlier != job);
                     entry.job = Some(job);
-                    let fallback = fallback.map(|info| Source::of(info, true));
+                    let fallback = fallback.map(|info| Source::of(info, true, fallback_current));
                     if ended {
                         let refusal = Refusal {
                             code: "not-read".into(),
@@ -570,6 +592,15 @@ impl LoupeFrames {
                 }
                 Err(refusal) => (Read::Refused(refusal), None),
             };
+            if std::mem::take(&mut entry.reask) {
+                // Asked before its photograph moved on: what it names may still be drawn where a
+                // stand-in may be, but it is not taken as current, and it is asked again.
+                if let Some(source) = &mut source {
+                    source.current = false;
+                }
+                read = Read::Unasked;
+                self.cancel.extend(entry.job.take());
+            }
             entry.read = read;
             match source {
                 // The held picture stays until the one named is decoded.
@@ -642,15 +673,63 @@ impl LoupeFrames {
         (held.metadata.picture.key == picture.key).then_some(&held.handle)
     }
 
-    /// The handle, picture and entry held for `slot`, whatever its newest answer names: what
-    /// Develop presents in place of a photograph while it prepares.
+    /// The handle, picture and entry held for `slot`, whatever its newest answer names, and
+    /// whether that answer names this picture as current: what Develop presents in place of a
+    /// photograph while it prepares, when it is current.
     pub(crate) fn photo(&self, slot: &Slot) -> Option<HeldPhoto<'_>> {
-        let held = self.entries.get(slot)?.held.as_ref()?;
+        let entry = self.entries.get(slot)?;
+        let held = entry.held.as_ref()?;
+        let current = entry
+            .source
+            .as_ref()
+            .is_some_and(|source| source.current && source.key == held.metadata.picture.key);
         Some(HeldPhoto {
             handle: &held.handle,
             picture: &held.metadata.picture,
             entry: held.metadata.entry.as_ref(),
+            current,
         })
+    }
+
+    /// `slot`'s photograph may be at another entry than its newest answer was given for —
+    /// `current` names the entry it is at now, when that is known — so the answer no longer says
+    /// what its current picture is. Unless it is a ready answer of `current` itself, it stops
+    /// being taken as current and is asked again at the next plan, a read in flight once it
+    /// answers; a queued read's job, a render of the entry before, is cancelled with the next
+    /// batch. The picture held stays held, as a stand-in, until an answer names another.
+    pub(crate) fn moved(&mut self, slot: &Slot, current: Option<&EntryId>) {
+        let Some(entry) = self.entries.get_mut(slot) else {
+            return;
+        };
+        let still = entry.read == Read::Ready
+            && entry.source.as_ref().is_some_and(|source| {
+                source.current && current.is_some() && source.entry.as_ref() == current
+            });
+        if still {
+            return;
+        }
+        if let Some(source) = &mut entry.source {
+            source.current = false;
+        }
+        if entry.read == Read::Asking {
+            entry.reask = true;
+            return;
+        }
+        self.cancel.extend(entry.job.take());
+        entry.read = Read::Unasked;
+    }
+
+    /// [`Self::moved`], with no entry known, for the frame of every item `which` names.
+    pub(crate) fn moved_where(&mut self, which: impl Fn(&PreviewItem) -> bool) {
+        let slots: Vec<Slot> = self
+            .entries
+            .keys()
+            .filter(|slot| slot.role == Role::Frame && which(&slot.item))
+            .cloned()
+            .collect();
+        for slot in &slots {
+            self.moved(slot, None);
+        }
     }
 
     /// What is held for `slot`, as the model reads it.

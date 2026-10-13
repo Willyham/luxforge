@@ -1,6 +1,8 @@
 //! End-to-end transport tests against loopback servers, a fake resolver and a connector that routes
 //! chosen public addresses to those servers. Nothing here leaves the machine.
-use super::{Connect, HttpTransport, Resolve, TlsTrust, TransportConfig};
+use super::{
+    Connect, HttpTransport, Resolve, TlsTrust, TransportConfig, resolver::ResolverService,
+};
 use crate::CertificateDer;
 use luxforge_core::{
     Error,
@@ -24,7 +26,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
@@ -163,19 +165,26 @@ fn transport(
     resolver: Arc<dyn Resolve>,
     connector: Arc<dyn Connect>,
 ) -> HttpTransport {
-    HttpTransport::new(TransportConfig {
+    let mut transport = HttpTransport::new(TransportConfig {
         trust,
         resolver,
         connector,
-    })
+    });
+    // Ordinary fake/localhost lookups share a test pool; held resolver tests use their own pool.
+    // No test can strand a worker in the production process-wide service.
+    static TEST_POOL: OnceLock<Arc<ResolverService>> = OnceLock::new();
+    transport.resolver_service = Some(
+        TEST_POOL
+            .get_or_init(|| ResolverService::new(4, 64).unwrap())
+            .clone(),
+    );
+    transport
 }
 
 /// A transport for loopback servers: the test roots and direct connections.
 fn loopback() -> HttpTransport {
-    HttpTransport::new(TransportConfig {
-        trust: test_roots(),
-        ..TransportConfig::default()
-    })
+    let config = TransportConfig::default();
+    transport(test_roots(), config.resolver, config.connector)
 }
 
 /// A transport whose every lookup and connection attempt is observable and goes nowhere.
@@ -340,6 +349,248 @@ fn a_resolution_with_any_non_public_address_is_refused_before_connecting() {
     }
     assert_eq!(resolver.calls(), 0, "an IP literal is never looked up");
     assert!(routes.attempts().is_empty());
+}
+
+/// A resolver held inside its blocking call, independently of its caller's lifetime.
+struct HeldResolver {
+    gate: Arc<Gate>,
+    calls: AtomicUsize,
+}
+
+impl Resolve for HeldResolver {
+    fn resolve(&self, _: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.gate.pass();
+        Ok(vec![SocketAddr::new(PUBLIC, port)])
+    }
+}
+
+struct HeldDns {
+    transport: Arc<HttpTransport>,
+    resolver: Arc<HeldResolver>,
+    routes: Arc<Routes>,
+    service: Arc<ResolverService>,
+    stall: Stall,
+}
+
+impl HeldDns {
+    fn new() -> Self {
+        let stall = Stall::new();
+        let resolver = Arc::new(HeldResolver {
+            gate: stall.gate(),
+            calls: AtomicUsize::new(0),
+        });
+        let routes = Arc::new(Routes::default());
+        let service = ResolverService::new(1, 1).unwrap();
+        let mut transport = transport(test_roots(), resolver.clone(), routes.clone());
+        transport.resolver_service = Some(service.clone());
+        // Deadline tests measure lookup waiting, rather than first-use trust setup.
+        transport.tls().unwrap();
+        Self {
+            transport: Arc::new(transport),
+            resolver,
+            routes,
+            service,
+            stall,
+        }
+    }
+
+    fn start(&self, plan: Plan) -> WaitingDns {
+        let control = JobControl::new();
+        let transport = self.transport.clone();
+        let job = control.clone();
+        let (sent, received) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = send_with(
+                &transport,
+                &request(Method::Get, "https://downloads.example/"),
+                &plan,
+                &job,
+            );
+            sent.send(result).unwrap();
+        });
+        WaitingDns {
+            control,
+            received,
+            worker,
+        }
+    }
+}
+
+struct WaitingDns {
+    control: Arc<JobControl>,
+    received: mpsc::Receiver<Fetched>,
+    worker: thread::JoinHandle<()>,
+}
+
+impl WaitingDns {
+    fn finish(self) -> Fetched {
+        let result = self
+            .received
+            .recv_timeout(HANG)
+            .expect("the DNS caller ended while the resolver was held");
+        self.worker.join().unwrap();
+        result
+    }
+}
+
+#[test]
+fn cancelling_dns_releases_the_caller_and_transport_without_joining_the_lookup() {
+    let held = HeldDns::new();
+    let request = held.start(Plan::default());
+    held.stall.wait_reached(1, "the held OS resolver");
+    let job = Arc::downgrade(&request.control);
+    let transport = Arc::downgrade(&held.transport);
+    request.control.cancel("permission revoked");
+    let fetched = request.finish();
+    assert_eq!(fetched.code(), "cancelled");
+    assert_eq!(fetched.error().detail, "permission revoked");
+    assert!(held.stall.holding());
+    assert!(held.routes.attempts().is_empty());
+    assert!(
+        job.upgrade().is_none(),
+        "a blocked lookup must not retain JobControl"
+    );
+    drop(held.transport);
+    assert!(transport.upgrade().is_none());
+    assert_eq!(
+        held.service.retained(),
+        1,
+        "the blocked OS call still occupies its fixed slot"
+    );
+}
+
+#[test]
+#[slow]
+fn dns_waiting_obeys_both_idle_and_whole_request_deadlines() {
+    for total in [false, true] {
+        let held = HeldDns::new();
+        let mut plan = Plan::default();
+        if total {
+            plan.total_timeout = Duration::from_millis(150);
+        } else {
+            plan.read_timeout = Duration::from_millis(150);
+        }
+        let request = held.start(plan);
+        held.stall.wait_reached(1, "the held resolver");
+        let fetched = request.finish();
+        assert_eq!(fetched.code(), "read-error");
+        assert!(
+            fetched
+                .error()
+                .detail
+                .contains("resolving downloads.example timed out")
+        );
+        assert!(
+            held.stall.holding(),
+            "the deadline must end waiting before the OS call returns"
+        );
+        assert!(held.routes.attempts().is_empty());
+        assert_eq!(held.service.retained(), 1);
+    }
+}
+
+#[test]
+fn abandoned_dns_calls_and_queued_work_stay_bounded_and_capacity_recovers() {
+    let held = HeldDns::new();
+    let first = held.start(Plan::default());
+    held.stall.wait_reached(1, "the first held resolver");
+    first.control.cancel("cancelled first");
+    assert_eq!(first.finish().code(), "cancelled");
+    let queued = held.start(Plan::default());
+    wait_until("the single queued lookup", || held.service.retained() == 2);
+    queued.control.cancel("cancelled queued");
+    assert_eq!(queued.finish().code(), "cancelled");
+    let refused = fetch(
+        &held.transport,
+        &request(Method::Get, "https://downloads.example/"),
+        &Plan::default(),
+    );
+    assert_eq!(refused.code(), "resource-limit");
+    assert_eq!(held.service.retained(), 2);
+    assert_eq!(held.resolver.calls.load(Ordering::SeqCst), 1);
+    // Even with DNS saturated, an IP literal reaches the checked connector without resolving.
+    let literal = fetch(
+        &held.transport,
+        &request(Method::Get, "http://127.0.0.1:9/"),
+        &Plan::default(),
+    );
+    assert_eq!(literal.code(), "read-error");
+    assert_eq!(
+        held.routes.attempts(),
+        ["127.0.0.1:9".parse::<SocketAddr>().unwrap()]
+    );
+    held.stall.open();
+    wait_until("abandoned resolver slots to be freed", || {
+        held.service.retained() == 0
+    });
+    assert_eq!(
+        held.resolver.calls.load(Ordering::SeqCst),
+        1,
+        "cancelled queued work must be skipped"
+    );
+    let recovered = fetch(
+        &held.transport,
+        &request(Method::Get, "https://downloads.example/"),
+        &Plan::default(),
+    );
+    assert_eq!(recovered.code(), "read-error");
+    assert!(recovered.error().detail.contains("cannot connect"));
+    assert_eq!(held.resolver.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+#[slow]
+fn an_expired_queued_dns_request_is_skipped_before_lookup() {
+    let held = HeldDns::new();
+    let active = held.start(Plan::default());
+    held.stall.wait_reached(1, "the active resolver");
+    active.control.cancel("abandon active lookup");
+    active.finish();
+    let queued = held.start(Plan {
+        read_timeout: Duration::from_millis(150),
+        ..Plan::default()
+    });
+    let expired = queued.finish();
+    assert_eq!(expired.code(), "read-error");
+    assert!(
+        expired
+            .error()
+            .detail
+            .contains("resolving downloads.example timed out")
+    );
+    assert_eq!(held.service.retained(), 2);
+    held.stall.open();
+    wait_until("expired queued lookup to be skipped", || {
+        held.service.retained() == 0
+    });
+    assert_eq!(held.resolver.calls.load(Ordering::SeqCst), 1);
+    assert!(held.routes.attempts().is_empty());
+}
+
+#[test]
+fn dns_checks_the_whole_bounded_answer_and_refuses_excess_addresses() {
+    let mut late_private = vec![PUBLIC; 200];
+    late_private.push("10.0.0.1".parse().unwrap());
+    for (answer, code) in [
+        (late_private, "validation"),
+        (
+            vec![PUBLIC; super::resolver::MAX_DNS_ADDRESSES + 1],
+            "resource-limit",
+        ),
+    ] {
+        let resolver = FakeResolver::new(vec![answer]);
+        let routes = Arc::new(Routes::default());
+        let transport = transport(test_roots(), resolver.clone(), routes.clone());
+        let fetched = fetch(
+            &transport,
+            &request(Method::Get, "https://downloads.example/"),
+            &Plan::default(),
+        );
+        assert_eq!(fetched.code(), code);
+        assert_eq!(resolver.calls(), 1);
+        assert!(routes.attempts().is_empty());
+    }
 }
 
 #[test]

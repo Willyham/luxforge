@@ -538,14 +538,22 @@ impl PreferenceStore {
     /// Store the preferences `change` names, leaving the rest as they were, and answer them all
     /// as they were before the write and as they are after it. A value that breaks a rule is
     /// refused by name and nothing is written.
+    #[cfg(test)]
     pub(crate) fn set(
         &self,
         change: PreferenceChange,
     ) -> Result<(Preferences, Preferences), Error> {
+        self.set_published(change)?.finish()
+    }
+
+    pub(crate) fn set_published(
+        &self,
+        change: PreferenceChange,
+    ) -> Result<crate::atomic_file::Publication<(Preferences, Preferences)>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let before = preferences.clone();
                 change.apply(preferences);
                 preferences.check().map_err(Error::validation)?;
@@ -556,14 +564,14 @@ impl PreferenceStore {
     /// One locked read-modify-write of the protected usage statistics record alone, leaving every
     /// preference as it was. `apply` sees the record as stored (`None` when absent); a file that
     /// cannot be read, an `apply` that fails, or a result that breaks a rule writes nothing.
-    pub(crate) fn update_usage<R>(
+    pub(crate) fn update_usage_published<R>(
         &self,
         apply: impl FnOnce(&mut Option<crate::usage::consent::UsageRecord>) -> Result<R, Error>,
-    ) -> Result<R, Error> {
+    ) -> Result<crate::atomic_file::Publication<R>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let answer = apply(&mut preferences.usage_statistics)?;
                 preferences.check().map_err(Error::validation)?;
                 Ok(answer)
@@ -573,11 +581,19 @@ impl PreferenceStore {
     /// One locked read-modify-write of the skipped update version alone, leaving every preference
     /// as it was: `update.skip`'s write. Returns whether the stored version changed; an unchanged
     /// one writes nothing. A version that breaks the rule is refused by name and nothing is written.
+    #[cfg(test)]
     pub(crate) fn set_skipped_version(&self, version: &str) -> Result<bool, Error> {
+        self.set_skipped_version_published(version)?.finish()
+    }
+
+    pub(crate) fn set_skipped_version_published(
+        &self,
+        version: &str,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 if preferences.update_skipped_version.as_deref() == Some(version) {
                     return Ok(false);
                 }
@@ -589,11 +605,20 @@ impl PreferenceStore {
 
     /// Store one flag's value, or remove it for `None`, leaving every other stored flag as it
     /// was. Returns whether the stored value changed; an unchanged one writes nothing.
+    #[cfg(test)]
     pub(crate) fn set_flag(&self, id: &str, value: Option<Value>) -> Result<bool, Error> {
+        self.set_flag_published(id, value)?.finish()
+    }
+
+    pub(crate) fn set_flag_published(
+        &self,
+        id: &str,
+        value: Option<Value>,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let before = preferences.flags.get(id).cloned();
                 match &value {
                     Some(value) => preferences.flags.insert(id.to_owned(), value.clone()),
@@ -663,6 +688,8 @@ impl CatalogSelection {
     /// stored catalog whose folder is missing, as with an unplugged drive, selects the default and
     /// is kept as [`Self::missing`]; a folder without a catalog is still selected, since the
     /// desktop creates one there. `None` when nothing names a catalog and there is no default.
+    /// Only a missing parent selects the default. An inaccessible or non-directory parent keeps
+    /// the stored path, so opening the selected catalog reports its actual error.
     /// Selecting creates nothing.
     pub fn select(
         explicit: Option<PathBuf>,
@@ -676,8 +703,16 @@ impl CatalogSelection {
             });
         }
         let (path, missing) = match stored {
-            Some(stored) if stored.parent().is_some_and(Path::is_dir) => (stored, None),
-            Some(stored) => (default?, Some(stored)),
+            Some(stored)
+                if stored.parent().is_some_and(|parent| {
+                    parent
+                        .metadata()
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                }) =>
+            {
+                (default?, Some(stored))
+            }
+            Some(stored) => (stored, None),
             None => (default?, None),
         };
         Some(Self { path, missing })
@@ -1281,6 +1316,29 @@ mod tests {
         assert_eq!(select(None, None).unwrap().path, default);
         // Nowhere to keep the default and nothing naming a catalog.
         assert_eq!(CatalogSelection::select(None, None, None), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_non_directory_catalog_parent_keeps_the_stored_path_for_the_opening_error() {
+        let root = luxforge_testbase::paths::temp_dir("catalog-parent-is-file");
+        let parent = root.join("Photos");
+        std::fs::write(&parent, b"keep this file").unwrap();
+        let stored = parent.join(CATALOG_FILE);
+        let default = root.join("default").join(CATALOG_FILE);
+        assert_eq!(
+            CatalogSelection::select(None, Some(default.clone()), Some(stored.clone())),
+            Some(CatalogSelection {
+                path: stored,
+                missing: None
+            }),
+            "a non-directory parent is an opening failure, not a missing drive"
+        );
+        assert!(
+            !default.parent().unwrap().exists(),
+            "selection creates no default catalog"
+        );
+        assert_eq!(std::fs::read(&parent).unwrap(), b"keep this file");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

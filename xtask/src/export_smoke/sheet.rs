@@ -6,22 +6,22 @@
 //! the 24 MP one is displayed. Over it: the title bar's Export menu, with Export again disabled and
 //! the three built-in presets; the sheet, Web chosen and Choose… answered with the run's evidence
 //! directory (no step ever writes beside an original), exported; then Print and Master the same
-//! way. Web sharpens for the screen and Print for glossy paper, both at Standard, and Master not at
-//! all. A changed Web is saved as the preset `Mine`, changed again and updated, its plan naming the
-//! taken `-web` file and writing `-web-2`; Export again repeats it as `-web-3`; and `Mine` is
-//! deleted from its card's menu. Web is then written as an 8-bit TIFF twice, sharpened and with
-//! Sharpen set to None: the sharpened file must be the unsharpened one sharpened here by the
-//! reference, within the spatial display limit, with every pixel's chroma unchanged, and Print's
-//! JPEG nearer Master's TIFF sharpened for glossy paper than Master's itself. The RAW, when
-//! supplied, is opened and exported with Web, Print and Master; without one those frames are
-//! recorded as pending. The wide JPEG is opened: an optimised full-size WebP, wider than the
-//! format's 16,383 pixels, is refused by the plan's `webp-too-large` notice. The 60 MP JPEG is
-//! opened: the same WebP is written, but warned with `large-image`, as the optimised JPEG is; that
-//! is exported with the Performance section closed, its progress bar shown in the status bar from
-//! the start and rising, pressed to open the section, and cancelled from the section's row,
-//! leaving no file. Last, every photograph is selected in Select and Export N… opens the sheet in
-//! batch mode: the same optimised WebP leaves the wide photograph out, which the sheet says before
-//! the batch runs and its report names after.
+//! way, Master's settings scrolled to Save to first. Web sharpens for the screen and Print for
+//! glossy paper, both at Standard, and Master not at all. A changed Web is saved as the preset
+//! `Mine`, changed again and updated, its plan naming the taken `-web` file and writing `-web-2`;
+//! Export again repeats it as `-web-3`; and `Mine` is deleted from its card's menu. Web is then
+//! written as an 8-bit TIFF twice, sharpened and with Sharpen set to None: the sharpened file must
+//! be the unsharpened one sharpened here by the reference, within the spatial display limit, with
+//! every pixel's chroma unchanged, and Print's JPEG nearer Master's TIFF sharpened for glossy paper
+//! than Master's itself. The RAW, when supplied, is opened and exported with Web, Print and Master;
+//! without one those frames are recorded as pending. The wide JPEG is opened: an optimised
+//! full-size WebP, wider than the format's 16,383 pixels, is refused by the plan's `webp-too-large`
+//! notice. The 60 MP JPEG is opened: the same WebP is written, but warned with `large-image`, as
+//! the optimised JPEG is; that is exported with the Performance section closed, its progress bar
+//! shown in the status bar from the start and rising, pressed to open the section, and cancelled
+//! from the section's row, leaving no file. Last, every photograph is selected in Select and Export
+//! N… opens the sheet in batch mode: the same optimised WebP leaves the wide photograph out, which
+//! the sheet says before the batch runs and its report names after.
 //!
 //! The sharpened and unsharpened Web TIFFs are written by a second launch over the same
 //! photographs, `pair/`, since the journey's script holds the editor's 64 steps.
@@ -239,7 +239,11 @@ fn plan(sources: &[PathBuf]) -> Plan {
         export("web-written", ExportStep::Write(ExportWrite::default())).status_starts("Exported "),
     ]);
     steps.extend(with_preset("print", "Print"));
-    steps.extend(with_preset("master", "Master"));
+    // Master's settings scrolled to their end before it is written: Save to, its folder and the
+    // name, which must fit the sheet's width.
+    let mut master = with_preset("master", "Master");
+    master.insert(3, export("master-save-to", ExportStep::ScrollEnd));
+    steps.extend(master);
     steps.extend([
         // A changed Web saved as Mine, changed again and updated, exported to the taken name's
         // next, repeated by Export again, and deleted.

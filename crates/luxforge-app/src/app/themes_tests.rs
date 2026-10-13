@@ -768,3 +768,38 @@ fn a_theme_change_sends_no_asset_state_history_list_or_preview_job() {
     );
     finish(editor, host);
 }
+
+#[test]
+fn published_theme_failure_lists_visible_changes_and_preserves_the_refusal() {
+    let mut host = Host::start("published-theme-readback");
+    let mut editor = host.launch();
+    answer_list(&mut editor);
+    let id = host.import_paper();
+    let reason = "read-error: the replacement is visible but durability is unconfirmed".to_owned();
+    let _ = editor.update(Message::Theme(ThemeMessage::Imported(Err(reason.clone()))));
+    assert!(editor.themes.listing.in_flight());
+    answer_list(&mut editor);
+    assert!(editor.themes.list.as_ref().unwrap().find(&id).is_some());
+    assert_eq!(editor.status.text, reason);
+    assert!(
+        editor
+            .themes
+            .refusal
+            .as_deref()
+            .unwrap()
+            .contains("durability")
+    );
+    call(
+        &editor.owner,
+        host.agent,
+        "theme.delete",
+        delete_params(&id),
+    )
+    .unwrap();
+    let _ = editor.update(Message::Theme(ThemeMessage::Deleted(Err(reason.clone()))));
+    assert!(editor.themes.listing.in_flight());
+    answer_list(&mut editor);
+    assert!(editor.themes.list.as_ref().unwrap().find(&id).is_none());
+    assert_eq!(editor.status.text, reason);
+    finish(editor, host);
+}

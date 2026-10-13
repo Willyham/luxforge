@@ -116,6 +116,7 @@ fn queue_settings(
 ) -> Result<Value, Error> {
     let (client, origin) = (call.client, call.origin.clone());
     let tiles = Arc::clone(&owner.tiles);
+    let resolved = json!({"assets":assets,"settings":set.parameters,"origin":set.origin});
     let task = Task {
         job_id: JobId::new(),
         job: &BATCH_SETTINGS,
@@ -143,7 +144,7 @@ fn queue_settings(
             Box::new(move |_: &mut Owner| value(report))
         }),
     };
-    value(owner.catalog.library.queue(&mut owner.jobs, task)?)
+    value(super::queue(owner, task, resolved)?)
 }
 
 /// One pass of a photograph's apply on the owner: its answer, or the read it deferred, with the
@@ -284,9 +285,6 @@ fn apply(
         }
     }
     let request_id = batch::request_id(&set.request_id, asset);
-    if let Some(first) = owner.service.recorded_request(asset, &request_id)? {
-        return Ok(set.outcome(asset, first));
-    }
     let mutation = Mutation {
         expected_revision: owner.service.revision(asset)?,
         request_id,
@@ -369,6 +367,7 @@ pub(in crate::api) fn batch_export(
         ),
         None => photographs(assets.len()),
     };
+    let resolved = json!({"assets":assets,"settings":settings.as_ref(),"folder":chosen,"acknowledge_stale":acknowledgements.as_ref()});
     let task = Task {
         job_id: JobId::new(),
         job: batch_export_job(settings.format()),
@@ -428,16 +427,40 @@ pub(in crate::api) fn batch_export(
                     });
                 match written {
                     Ok(written) => {
-                        // Recorded as a single export's is, under the request that asked for it.
-                        let origin = origin.clone();
-                        let announced = job.commit(Box::new(move |owner: &mut Owner| {
-                            announce_once(&mut owner.announced, &origin);
-                            Ok(Value::Null)
-                        }));
-                        if let Err(stopped) = announced {
-                            return Box::new(move |_: &mut Owner| Err(stopped));
-                        }
+                        // The file is already visible: reconcile it even if cancellation won
+                        // before the owner received this notification.
+                        job.published(origin.clone(), None);
                         progress.done(asset, Some(written), Vec::new());
+                    }
+                    Err(mut refused)
+                        if refused
+                            .data
+                            .as_deref()
+                            .is_some_and(|data| data["published"] == true) =>
+                    {
+                        let report = value(progress.finish());
+                        let mut data = refused
+                            .data
+                            .take()
+                            .map(|data| *data)
+                            .unwrap_or_else(|| json!({}));
+                        match report {
+                            Ok(report) => data["partial_report"] = report,
+                            Err(error) => {
+                                data["partial_report_error"] = json!(error.detail);
+                                refused
+                                    .detail
+                                    .push_str("; the partial report could not be encoded");
+                            }
+                        }
+                        data["asset_id"] = json!(asset);
+                        refused.data = Some(Box::new(data));
+                        #[cfg(test)]
+                        if let Some(hold) = &hold {
+                            hold("published-failure");
+                        }
+                        job.published(origin.clone(), Some(refused.clone()));
+                        return Box::new(move |_: &mut Owner| Err(refused));
                     }
                     Err(stopped) if stopped.kind == ErrorKind::Cancelled => {
                         return Box::new(move |_: &mut Owner| Err(stopped));
@@ -449,7 +472,7 @@ pub(in crate::api) fn batch_export(
             Box::new(move |_: &mut Owner| value(report))
         }),
     };
-    value(owner.catalog.library.queue(&mut owner.jobs, task)?)
+    value(super::queue(owner, task, resolved)?)
 }
 
 /// One photograph's export as the owner planned it.

@@ -2344,3 +2344,37 @@ fn export_presets_round_trip_through_the_api_and_a_restart() {
 
 #[path = "export_settings_tests.rs"]
 mod settings_tests;
+
+/// A sync error after publication is a failed job with a visible complete export and one event.
+#[test]
+fn export_published_sync_failure_keeps_file_and_announces_it() {
+    let harness = Harness::start("published-sync-failure");
+    let state = harness.import("original.jpg");
+    let original = fs::read(harness.dir.join("original.jpg")).unwrap();
+    let output = harness.dir.join("output");
+    fs::create_dir(&output).unwrap();
+    let destination = output.join("export.jpg");
+    crate::atomic_file::sync_faults::inject(&output);
+    let accepted = harness.export(json!({
+        "asset_id": state["asset"]["id"], "destination": destination,
+        "settings": baseline_json(),
+    }));
+    let ended = harness.settle(&accepted["job_id"]);
+    assert_eq!(ended["status"], "failed", "{ended}");
+    assert_eq!(ended["error"]["data"]["published"], true, "{ended}");
+    assert_eq!(ended["error"]["data"]["durable"], false, "{ended}");
+    assert_eq!(ended["error"]["data"]["path"], json!(destination));
+    assert!(fs::metadata(&destination).unwrap().len() > 0);
+    assert_eq!(
+        fs::read(harness.dir.join("original.jpg")).unwrap(),
+        original
+    );
+    assert_eq!(
+        harness
+            .events()
+            .iter()
+            .filter(|(method, _)| method == "export.write")
+            .count(),
+        1
+    );
+}

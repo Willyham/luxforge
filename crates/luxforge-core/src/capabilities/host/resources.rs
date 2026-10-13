@@ -213,7 +213,7 @@ impl CapabilityHost {
     ) -> Result<Value, Error> {
         let descriptor = registered(registry, &request.module_id)?;
         let resource = declared_resource(descriptor, &request.resource_id)?;
-        let store = self.resources()?;
+        let store = self.resources()?.clone();
         let answer = |state: ResourceState, job: Option<&JobRecord>| {
             let mut value = json!({
                 "module_id": descriptor.id,
@@ -262,9 +262,18 @@ impl CapabilityHost {
                 denied,
             ));
         };
-        transfer::check_quota(store, resource, self.config.resource_quota_bytes)?;
+        transfer::check_quota(&store, resource, self.config.resource_quota_bytes)?;
         let job_id = JobId::new();
         let control = JobControl::new();
+        let permission = super::super::permission_watch::PermissionGuard::new(
+            self.grants()?.clone(),
+            self.settings()?.clone(),
+            descriptor.clone(),
+            vec![grant.clone()],
+            control.clone(),
+        );
+        self.permissions
+            .register(job_id.clone(), permission.clone())?;
         let job = InstallJob {
             store: store.clone(),
             module_id: descriptor.id.clone(),
@@ -274,6 +283,7 @@ impl CapabilityHost {
             quota: self.config.resource_quota_bytes,
             actor: request.mutation.actor.clone(),
             control: control.clone(),
+            permission: Some(permission),
             runtime: self.model_runtime(descriptor, &resource.id).map(|runtime| {
                 let backends = match super::runtime::runtime_capability(descriptor, &resource.id)
                     .map(|capability| &capability.kind)
@@ -284,20 +294,22 @@ impl CapabilityHost {
                 (runtime, backends)
             }),
         };
-        let record = jobs.submit(
-            NewJob {
-                job_id,
-                kind: JobKind::Install,
-                module_id: Some(descriptor.id.clone()),
-                resource_id: Some(resource.id.clone()),
-                asset_id: None,
-                origin: Some(origin.clone()),
-                grants: vec![grant.grant_id],
-                activity: None,
-            },
-            control,
-            Box::new(move || transfer::install(job)),
-        )?;
+        let record = jobs
+            .submit(
+                NewJob {
+                    job_id: job_id.clone(),
+                    kind: JobKind::Install,
+                    module_id: Some(descriptor.id.clone()),
+                    resource_id: Some(resource.id.clone()),
+                    asset_id: None,
+                    origin: Some(origin.clone()),
+                    grants: vec![grant.grant_id],
+                    activity: None,
+                },
+                control,
+                Box::new(move || transfer::install(job)),
+            )
+            .inspect_err(|_| self.permissions.remove(&job_id))?;
         Ok(answer(ResourceState::Installing, Some(&record)))
     }
 
@@ -349,13 +361,6 @@ impl CapabilityHost {
             .map_or(ResourceState::NotInstalled, |row| row.state);
         if let Some(job) = jobs.live(JobKind::Remove, &descriptor.id, Some(&resource.id)) {
             return Ok(answer(Some(&job), state));
-        }
-        // An interrupted transfer is removed with the resource, so Remove discards it too.
-        if !store.version_dir(&descriptor.id, resource).exists()
-            && !store.staging_dir(&descriptor.id, resource).exists()
-            && state != ResourceState::Installing
-        {
-            return Ok(answer(None, ResourceState::NotInstalled));
         }
         let control = JobControl::new();
         let work: Work = {

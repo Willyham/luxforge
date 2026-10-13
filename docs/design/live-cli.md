@@ -27,7 +27,8 @@ with the same history and undo behavior as an edit made in the desktop.
   removed with its lock. No running session is `no-session`; several is a `usage` failure listing
   each catalog, since the CLI never guesses. `--catalog PATH` reads that catalog's session file
   directly. The desktop writes the entry beside the session file and removes it before the session
-  file as it quits. The core owns the registry's format and its reader (`LiveSessionEntry`,
+  file as it quits. Stopping the listener closes existing connections and joins their workers,
+  releasing held requests before removing discovery. The core owns the registry's format and its reader (`LiveSessionEntry`,
   `running_sessions`, `LocalServer::register`); the desktop's catalog selection
   (`CatalogSelection`, `CATALOG_FILE`) is the core's, beside `LaunchPreferences`, and the CLI no
   longer reads it.
@@ -107,8 +108,8 @@ dependency for this four-command interface.
   id?}` with the meanings of `call`'s arguments, and sends them in order over one connection after
   one handshake, so session-scoped methods work across requests. Each request is answered with one
   stdout line, `{id?, result, warning?}` or `{id?, error, job? | call?}`, `id` echoed. A failed
-  request, or an unreadable line (`usage`), is answered and the batch continues; a lost connection
-  ends it, since nothing more can be sent. Lines are bounded to 1 MiB, the rest of a longer line
+  request, or a malformed line (`usage`), is answered and the batch continues; a lost connection
+  or an input read error ends it, reporting the failure once. Lines are bounded to 1 MiB, the rest of a longer line
   read and dropped; blank lines are skipped.
 - Bound each response line at 64 MiB and fail explicitly above it to keep client memory bounded.
   Validate a fully assembled target request against the 1 MiB protocol line limit

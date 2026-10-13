@@ -59,6 +59,82 @@ fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
 }
 
 #[test]
+fn a_late_recipe_read_cannot_replace_a_newer_entry_or_photograph() {
+    for another_photo in [false, true] {
+        let (mut editor, catalog, asset, previous) = opened(Vec::new(), 2);
+        let late = tasks::RecipeRead {
+            recipe: editor.document.recipe.clone().unwrap(),
+            masks: editor.document.masks.clone().unwrap(),
+        };
+        let next_asset = if another_photo { AssetId::new() } else { asset };
+        let next = entry(&next_asset, 3, None);
+        let refresh = refresh_for(&next_asset, &next, vec![next.clone()], &[&next], false);
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+        let fields = editor.controls.fields.clone();
+        let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(
+            previous,
+            Ok(Box::new(late)),
+        )));
+        assert_eq!(editor.document.recipe.as_ref().unwrap().entry_id, next.id);
+        assert_eq!(editor.document.masks.as_ref().unwrap().entry_id, next.id);
+        assert_eq!(
+            editor.document.current_recipe.as_ref().unwrap().entry_id,
+            next.id
+        );
+        assert_eq!(editor.controls.fields, fields);
+        finish(editor, catalog);
+    }
+}
+
+#[test]
+fn a_late_recipe_failure_cannot_mark_the_displayed_entry_unavailable() {
+    let (mut editor, catalog, asset, previous) = opened(Vec::new(), 2);
+    let next = entry(&asset, 3, None);
+    let refresh = refresh_for(&asset, &next, vec![next.clone()], &[&next], false);
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+    let status = editor.status.text.clone();
+    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(
+        previous,
+        Err("late read failed".into()),
+    )));
+    assert!(!editor.document.recipe_failed);
+    assert_eq!(editor.status.text, status);
+    finish(editor, catalog);
+}
+
+#[test]
+fn opening_a_file_requires_the_open_draft_to_be_finished() {
+    use super::testing::{hold_slider, open_crop};
+    use super::{gesture::Starting, message::crop::CropMessage};
+
+    for slider in [false, true] {
+        let (mut editor, catalog, asset, previous) = opened(Vec::new(), 2);
+        if slider {
+            hold_slider(&mut editor, "set-basic", "exposure");
+        } else {
+            let _ = editor.update(Message::Crop(CropMessage::Start));
+            open_crop(&mut editor);
+        }
+        let draft = editor.core_gesture().unwrap().draft.draft_id.clone();
+        let refusal = editor.gesture_refusal(Starting::Photograph).unwrap();
+        let generation = editor.activity.requested;
+        let _ = editor.update(Message::Sync(SyncMessage::Open));
+        assert!(!editor.view_state.picker_open);
+        assert!(!editor.workspace.title.can_open);
+        assert_eq!(editor.status.text, refusal);
+        let _ = editor.update(Message::Sync(SyncMessage::Picked(Some(PathBuf::from(
+            "next-photo.jpg",
+        )))));
+        assert_eq!(editor.status.text, refusal);
+        assert_eq!(editor.activity.requested, generation);
+        assert_eq!(editor.document.state.as_ref().unwrap().asset.id, asset);
+        assert_eq!(editor.displayed_entry(), Some(previous));
+        assert_eq!(editor.core_gesture().unwrap().draft.draft_id, draft);
+        finish(editor, catalog);
+    }
+}
+
+#[test]
 fn a_frame_of_the_photograph_on_screen_does_not_end_an_open_still_in_flight() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
     let _ = editor.open(PathBuf::from("invalid.jpg"));
@@ -361,6 +437,7 @@ fn nothing_new() -> tasks::SyncResult {
         usage: false,
         updates: false,
         own: Vec::new(),
+        moved: Default::default(),
     }
 }
 

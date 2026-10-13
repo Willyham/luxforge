@@ -34,7 +34,15 @@
 //!   byte budget (the loupe's own frames cache), is handed to the photo surface in the update of
 //!   the key, so it is drawn in the frame after it, labelled in the status bar's render slot. The
 //!   controls enable once the original is prepared, and its render replaces the preview as every
-//!   frame replaces the one before. Nothing prepares a neighbour.
+//!   frame replaces the one before. Nothing prepares a neighbour's original.
+//! - **Only the current edit.** The preview drawn is of the photograph's current entry, edits
+//!   included: its rendered large tier, or a fallback the owner says shows that entry (another
+//!   tier of it, or its camera preview while it is still its Original). An earlier entry's render
+//!   or an edited photograph's camera preview is never drawn; the canvas stays empty until a
+//!   current one is decoded or the open's render arrives. Reading the neighbours' large tiers
+//!   queues their current entries' renders, so the photographs either side are rendered ahead.
+//!   A photograph whose history moves — the one left after editing it, or one an event names —
+//!   has its large tier read again ([`LoupeFrames::moved`]).
 //! - **Identity.** A cached preview is of one photograph at one entry, and only the photograph
 //!   being switched to has its preview drawn: an answer or a decode for another arriving after a
 //!   move is kept for that photograph and never drawn for this one, and a preview of another entry
@@ -1042,6 +1050,25 @@ impl Editor {
         self.read_strip_task(folder)
     }
 
+    /// Photographs whose history moved, as a poll of the event log read them: each one's large
+    /// preview is asked for again, so a picture of the entry before is never drawn for it. The
+    /// photograph open is left to its own move, which knows the entry it is at, so its edits queue
+    /// no render while it stays open.
+    pub(crate) fn develop_photos_moved(&mut self, moved: &tasks::MovedPhotos) {
+        if moved.assets.is_empty() && !moved.all {
+            return;
+        }
+        let open = self
+            .document
+            .state
+            .as_ref()
+            .map(|state| item(&state.asset.id));
+        self.develop.frames.moved_where(|photo| {
+            Some(photo) != open.as_ref()
+                && (moved.all || moved.assets.iter().any(|asset| *photo == item(asset)))
+        });
+    }
+
     /// A double-click on the photograph at `position` of a catalog view: Develop opens on it at
     /// once, and its own catalog folder becomes the Develop folder, read into the strip.
     fn open_from_view(&mut self, position: u32) -> Task<Message> {
@@ -1128,6 +1155,14 @@ impl Editor {
             strip.selected.clear();
             strip.reveal(self.develop.state.capacity);
         }
+        // The photograph left may have moved to another entry while it was open: its large preview
+        // is asked for again, rendering its current entry ahead, unless it already is that entry's.
+        if let Some(state) = &self.document.state {
+            let left = Slot::frame(item(&state.asset.id));
+            self.develop
+                .frames
+                .moved(&left, Some(&state.current_entry.id));
+        }
         // The open path's own bookkeeping, as opening a file does: one open request, the frames in
         // flight for the photograph on screen stopped.
         self.begin_request();
@@ -1162,9 +1197,21 @@ impl Editor {
             || json!({"asset_id": photo.asset_id, "index": index, "generation": generation}),
         );
         if !self.present_cached() {
-            // Nothing is decoded for it yet: the photograph on screen is taken off rather than left
-            // standing for the one being opened.
+            // Nothing of its current entry is decoded for it yet: the photograph on screen is taken
+            // off rather than left standing for the one being opened, and a picture held of another
+            // entry, or its camera preview once edited, is not drawn in its place.
             self.presentation.withdraw();
+            if let Some(held) = self
+                .develop
+                .frames
+                .photo(&Slot::frame(item(&photo.asset_id)))
+            {
+                let (entry, key) = (held.entry.cloned(), held.picture.key.clone());
+                self.event(
+                    "develop_preview_withheld",
+                    || json!({"asset_id": photo.asset_id, "entry_id": entry, "key": key}),
+                );
+            }
         }
         // Its frame is drawn as any open's is: at the display bounds, its GPU picture at rest
         // planned at the view.
@@ -1180,7 +1227,10 @@ impl Editor {
     }
 
     /// Hand the decoded large preview of the photograph being switched to to the photo surface, in
-    /// place of what is on screen, when one is held and none is drawn yet: only that photograph's.
+    /// place of what is on screen, when one is held and none is drawn yet: only that photograph's,
+    /// and only a picture of its current entry, edits included. An earlier entry's render, or the
+    /// camera preview of an edited photograph, is never drawn for it: the canvas stays empty until
+    /// a current picture is decoded or the open's own render arrives.
     fn present_cached(&mut self) -> bool {
         let Some(switch) = &self.develop.switch else {
             return false;
@@ -1189,7 +1239,12 @@ impl Editor {
             return false;
         }
         let asset = switch.asset.clone();
-        let Some(held) = self.develop.frames.photo(&Slot::frame(item(&asset))) else {
+        let Some(held) = self
+            .develop
+            .frames
+            .photo(&Slot::frame(item(&asset)))
+            .filter(|held| held.current)
+        else {
             return false;
         };
         let Handle::Rgba {

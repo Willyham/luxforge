@@ -390,14 +390,15 @@ pub(in crate::api) fn skip(
     let changed = owner
         .host
         .preferences
-        .set_skipped_version(&params.version)?;
+        .set_skipped_version_published(&params.version)?;
     if let Some(port) = port(owner) {
         port.skip(&params.version);
     }
-    if changed {
+    if changed.value {
         announce_once(&mut owner.announced, &call.origin);
     }
     applied(owner);
+    let changed = changed.finish()?;
     Ok(json!({
         "outcome": if changed { "applied" } else { "no-op" },
         "status": status(owner),

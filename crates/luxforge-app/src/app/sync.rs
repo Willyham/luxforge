@@ -9,6 +9,7 @@ use super::{
         sync_task,
     },
 };
+use crate::app::gesture::Starting;
 use crate::app::{Before, outcome::Outcome, waker};
 use crate::coalesce::Coalesce;
 use crate::state::{
@@ -67,6 +68,10 @@ impl Editor {
     pub(super) fn sync_update(&mut self, message: SyncMessage) -> Task<Message> {
         match message {
             SyncMessage::Open => {
+                if let Some(reason) = self.gesture_refusal(Starting::Photograph) {
+                    self.status.text = reason;
+                    return Task::none();
+                }
                 if self.view_state.picker_open || self.busy || self.evidence.is_some() {
                     return Task::none();
                 }
@@ -190,29 +195,37 @@ impl Editor {
                     }
                 }
             }
-            SyncMessage::RecipeDescribed(result) => match result {
-                Ok(read) => {
-                    let read = *read;
-                    self.document.recipe_failed = false;
-                    // Rows of the current entry, read when a preview returns to it, are also the
-                    // rows the section dot follows.
-                    if self
-                        .document
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
-                    {
-                        self.document.current_recipe = Some(read.recipe.clone());
+            SyncMessage::RecipeDescribed(entry, result) => {
+                // This payload read outlives the selection request's busy flag. Another selection,
+                // commit or photograph may have reached the screen before its answer, including
+                // a failure, so only the entry it was requested for may adopt it.
+                if self.displayed_entry().as_ref() != Some(&entry) {
+                    return Task::none();
+                }
+                match result {
+                    Ok(read) => {
+                        let read = *read;
+                        self.document.recipe_failed = false;
+                        // Rows of the current entry, read when a preview returns to it, are also the
+                        // rows the section dot follows.
+                        if self
+                            .document
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
+                        {
+                            self.document.current_recipe = Some(read.recipe.clone());
+                        }
+                        self.document.recipe = Some(read.recipe);
+                        self.document.masks = Some(read.masks);
+                        self.seed_values();
                     }
-                    self.document.recipe = Some(read.recipe);
-                    self.document.masks = Some(read.masks);
-                    self.seed_values();
+                    Err(error) => {
+                        self.document.recipe_failed = true;
+                        self.status.text = format!("Recipe unavailable: {error}");
+                    }
                 }
-                Err(error) => {
-                    self.document.recipe_failed = true;
-                    self.status.text = format!("Recipe unavailable: {error}");
-                }
-            },
+            }
             // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
             SyncMessage::Changed => {
                 self.sync.poll.offer(());
@@ -269,6 +282,7 @@ impl Editor {
                             Task::none()
                         };
                         let flags = Task::batch([flags, updates]);
+                        self.develop_photos_moved(&sync.moved);
                         let strip = match sync.library {
                             Some(sequence) => self.develop_library_changed(sequence),
                             None => Task::none(),
@@ -331,7 +345,7 @@ impl Editor {
         path: PathBuf,
         queued: Option<tasks::StartupImport>,
     ) -> Task<Message> {
-        if let Some(reason) = self.mask_tool_refusal() {
+        if let Some(reason) = self.gesture_refusal(Starting::Photograph) {
             self.status.text = reason;
             self.develop.reopen = false;
             return Task::none();

@@ -12,7 +12,7 @@ No full bitmap per history entry, no private widget undo stack, no module-owned 
 
 ## Commit, undo, redo and restore
 
-A real image change atomically persists its snapshot and entry, the current pointer, a monotonic revision, redo state and the retry result, after validating all shared and effect invariants. Rejected actions, failed writes, no-op changes, pointer motion, Cancel and browsing add no row.
+A real image change atomically persists its snapshot and entry, the current pointer, a monotonic revision, redo state and the retry result, after validating all shared and effect invariants. Rejected actions, failed writes, no-op changes, pointer motion, Cancel and browsing add no history row. Successful no-op mutation results still belong in their transactional request store.
 
 Undo moves to the current entry's undo parent; redo follows the persisted redo path. Both change the concurrency revision and save navigation atomically without adding rows. Restore copies any retained snapshot, including Original, into a new Restore action whose undo parent is the previously current entry, keeping all later actions. The copied stack is admitted by the same checks as every commit, so restoring one this build cannot evaluate, such as a stack with an unavailable provider or a lost stroke or artifact, fails explicitly and writes nothing, while undo, redo and browsing still reach it. Restoring an equivalent current state is a no-op. A new edit or restore clears shortcut redo while every state stays in the chronological log.
 
@@ -45,7 +45,7 @@ A version names one retained entry per asset, unique ignoring case, without chan
 
 ## Catalog and live API
 
-Catalog reopen preserves Original, all layers and snapshots, entry identities, current state, redo navigation and request deduplication within the supported format. Only current shapes are supported. An unsupported catalog format fails explicitly and directs the user to a new catalog path; unsupported recipe or effect formats also fail explicitly. No existing data is rewritten or silently discarded. Drafts are session-only.
+Catalog reopen preserves Original, all layers and snapshots, entry identities, current state, redo navigation and request deduplication within the supported format. Only current shapes are supported. An unsupported catalog format fails explicitly and directs the user to a new catalog path; unsupported recipe or effect formats also fail explicitly. No existing data is rewritten or silently discarded. Drafts are session-only. Catalog-only mutations use a separate, permanent request table without an asset foreign key: full synchronous answers commit with their mutation, including no-op library undo/redo, versions, presets and Empty Removed. Same-family request IDs match canonical input before resolving targets; changed input conflicts. Async admission freezes targets/settings and reuses live jobs; completed outcomes are reconstructed after restart, while interrupted admission refuses to run again and requires a new ID. Previously committed parts and files remain. Session-only and external-store retry guarantees remain bounded by their owner cache.
 
 The desktop footer offers Copy message for its complete status or error text, including when an import fails before an asset is open. Copying leaves the displayed message and editing state intact. JSON clients receive failures directly as structured `error.code` and `error.message` fields.
 

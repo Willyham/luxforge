@@ -3,6 +3,7 @@
 //! records of every published release, and with `--deploy` the archive the release workflow
 //! publishes to the API's update store. Neither prints, logs or writes the private key.
 use crate::release_artifacts::{TARGETS, archive_name, verify_record};
+use crate::release_candidate;
 use crate::release_tag::ReleaseTag;
 use crate::{Args, Result, ensure};
 use luxforge_update::{
@@ -110,10 +111,16 @@ pub fn record(
     }
     let mut archives = BTreeMap::new();
     let mut notes = Vec::new();
-    for &(rust_target, platform) in TARGETS {
+    let builds = TARGETS
+        .iter()
+        .map(|&(target, platform)| verify_record(&input.join(platform), &tag, target))
+        .collect::<Result<Vec<_>>>()?;
+    // The standalone signing command enforces the same common candidate identity as assembly,
+    // before signing either archive, including a macOS build that will be left out of the feed.
+    release_candidate::check_release(&release_candidate::release_record(&tag, &builds), &tag)?;
+    for (&(rust_target, platform), build) in TARGETS.iter().zip(&builds) {
         let target = Target::from_rust_target(rust_target).ok_or("Unknown release target")?;
         let directory = input.join(platform);
-        let build = verify_record(&directory, &tag, rust_target)?;
         ensure(
             build["working_tree_dirty"] == false && build["rehearsal"] == false,
             "A dirty/local rehearsal cannot be signed for updates",

@@ -77,6 +77,7 @@ Owner decisions, release preparation, host services and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
+| [Release audit follow-up](project/v0-1-audit-followup.json) ([design](../docs/design/v0.1-audit-followup.md)) | Durable retries, source-integrity recovery, shared resources/permissions, publication outcomes, ingress bounds and DNS cancellation implemented; native rendering/platform/corpus qualification remains ready |
 | [Watcher verification](project/watcher-verification.json) ([contract](../docs/engineering/watcher-verification.md)) | Implemented and locally verified on macOS: deterministic owner/index-lane watcher checks in quick and a separate required real-platform delivery/recovery gate for watcher changes and releases; Windows/Linux and hosted execution remain unrun |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](project/product-decisions.json) | Open product questions |

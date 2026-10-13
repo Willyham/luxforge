@@ -106,8 +106,26 @@ impl EditorService {
             &AssetId,
         ) -> Result<Vec<(LibraryItem, Desired)>, Error>,
     ) -> Result<PublishedMerge, Error> {
+        self.publish_merge_answer(request, publication, extra, |_, _| {
+            Ok(serde_json::Value::Null)
+        })
+        .map(|(published, _)| published)
+    }
+
+    pub(crate) fn publish_merge_answer(
+        &mut self,
+        request: Request<'_>,
+        publication: &Publication<'_>,
+        extra: impl FnOnce(
+            &Transaction<'_>,
+            &MergeId,
+            &AssetId,
+        ) -> Result<Vec<(LibraryItem, Desired)>, Error>,
+        answer: impl FnOnce(&Connection, &PublishedMerge) -> Result<serde_json::Value, Error>,
+    ) -> Result<(PublishedMerge, serde_json::Value), Error> {
         if let Some(published) = published_by(&self.connection, request)? {
-            return Ok(published);
+            let result = answer(&self.connection, &published)?;
+            return Ok((published, result));
         }
         let provenance = publication.provenance;
         provenance.validate()?;
@@ -119,10 +137,8 @@ impl EditorService {
             now,
         )?;
         let root = self.artifact_root().to_path_buf();
+        let terminal = self.catalog_terminal_job.clone();
         write(&mut self.connection, |tx| {
-            if let Some(published) = published_by(tx, request)? {
-                return Ok(published);
-            }
             recheck_inputs(tx, provenance)?;
             // The folders it needs, their own change before the publication's
             // ([`develop::file_one`]): undoing the merge keeps its result in them.
@@ -199,12 +215,17 @@ impl EditorService {
             changes.extend(extra(tx, &merge_id, &asset_id)?);
             let label = format!("Merged {}", publication.file_name);
             let outcome = journal::apply(tx, request, changes, |_| label)?;
-            Ok(PublishedMerge {
+            let published = PublishedMerge {
                 merge_id,
                 result: asset_id,
                 outcome,
                 folders,
-            })
+            };
+            let response = answer(tx, &published)?;
+            if let Some(job) = terminal {
+                crate::editor::catalog_requests::finish(tx, &job, &Ok(response.clone()))?;
+            }
+            Ok((published, response))
         })
     }
 }
@@ -414,7 +435,25 @@ pub(crate) fn published_by(
         .rows
         .iter()
         .find_map(|row| match &row.item {
-            LibraryItem::MergeStack { merge_id } => Some(merge_id.clone()),
+            // A rerun records the old stack's removal before the new stack's publication.
+            // Identify the publication by its transition, rather than choosing the first stack:
+            // only the newly published merge starts undone and becomes active.
+            LibraryItem::MergeStack { merge_id }
+                if row
+                    .before
+                    .as_ref()
+                    .and_then(|value| value.get("state"))
+                    .and_then(Value::as_str)
+                    == Some(MergeState::Undone.as_str())
+                    && row
+                        .after
+                        .as_ref()
+                        .and_then(|value| value.get("state"))
+                        .and_then(Value::as_str)
+                        == Some(MergeState::Active.as_str()) =>
+            {
+                Some(merge_id.clone())
+            }
             _ => None,
         })
         .ok_or_else(|| {

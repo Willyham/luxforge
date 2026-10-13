@@ -1091,13 +1091,14 @@ fn removing_a_resource_deletes_only_the_resource() {
         owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["resources"][0]["state"],
         json!("not-installed")
     );
+    let absent = owner.ok(
+        REMOVE,
+        json!({"module_id": MODULE, "resource_id": "palette"}),
+    );
+    let absent = owner.finished(&absent["job_id"]);
     assert_eq!(
-        owner.ok(
-            REMOVE,
-            json!({"module_id": MODULE, "resource_id": "palette"})
-        ),
-        json!({"module_id": MODULE, "resource_id": "palette", "state": "not-installed", "deduplicated": false}),
-        "removing what is not installed queues nothing"
+        absent["result"]["removed"], false,
+        "an absent removal is serialized under the shared root lock"
     );
     assert_eq!(
         fs::read(fixture.catalog()).unwrap(),
@@ -1313,3 +1314,6 @@ fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_ev
     assert_eq!(revoked["outcome"], json!("committed"));
     owner.stop();
 }
+
+#[path = "shared_state_tests.rs"]
+mod shared_state_tests;

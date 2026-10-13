@@ -2418,16 +2418,25 @@ mod tests {
             })
             .collect();
         assert!(labels[0].iter().any(|(_, label)| label == "As shot"));
-        for (at, (name, ..)) in derived.iter().enumerate().skip(1) {
+        // A mask's section leaves out Auto, which sets only the global layer.
+        let global_only = ("action".to_owned(), "Auto".to_owned());
+        assert!(labels[0].contains(&global_only));
+        for (at, (name, _, target, ..)) in derived.iter().enumerate().skip(1) {
+            let expected: Vec<_> = labels[0]
+                .iter()
+                .filter(|shown| target.is_none() || **shown != global_only)
+                .cloned()
+                .collect();
             assert_eq!(
-                labels[at], labels[0],
+                labels[at], expected,
                 "{name}: the same labels in the same order"
             );
         }
 
         for (name, kind, target, section, shortcuts) in &derived {
-            let declared: Vec<&Control> =
-                crate::state::control_tree::walk(&basic.controls).collect();
+            let declared: Vec<&Control> = crate::state::control_tree::walk(&basic.controls)
+                .filter(|control| tools::offered(&modules, control, target.as_ref()))
+                .collect();
             let models: Vec<&ControlModel> =
                 crate::state::control_tree::walk(&section.controls).collect();
             assert_eq!(declared.len(), models.len(), "{name}");
@@ -4502,9 +4511,50 @@ mod tests {
             tools::analysis_refusal(&comparing).as_deref(),
             Some(NOT_CURRENT)
         );
+    }
+
+    /// Bound to a mask, Basic edits that mask's layer, and Auto sets the global one: the section
+    /// and the palette leave it out, as Lightroom's mask panels do, and its chord, which still
+    /// reaches the action, is refused with the reason. The global section keeps it.
+    #[test]
+    fn a_mask_bound_basic_section_offers_no_auto() {
+        fn offers_auto(scene: &Scene) -> bool {
+            let workspace = scene.derive();
+            control_tree::walk(&section(&workspace, "luxforge.basic").controls).any(
+                |control| matches!(control, ControlModel::Action(action) if action.action == "auto-tone"),
+            )
+        }
+        fn palette_offers_auto(scene: &Scene, target: Option<&MaskId>) -> bool {
+            tools::palette_entries(&scene.modules, false, scene.document.state.as_ref(), target)
+                .iter()
+                .any(|(_, _, action)| {
+                    matches!(action, palette::PaletteAction::Run { action, .. } if action == "auto-tone")
+                })
+        }
+        let mask = MaskId::new();
+        let mut scene = masked_scene(&[(&mask, "Sky")]);
+        assert!(offers_auto(&scene));
+        assert!(palette_offers_auto(&scene, None));
+        assert_eq!(tools::analysis_refusal(&scene.inputs()), None);
+
         scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
-        scene.mask_panel.selected_mask = Some(luxforge_core::MaskId::new());
-        assert!(action(&scene).reason.unwrap().contains("global Basic"));
+        scene.mask_panel.selected_mask = Some(mask.clone());
+        let workspace = scene.derive();
+        let basic = section(&workspace, "luxforge.basic");
+        assert_eq!(basic.scope.as_deref(), Some("Sky"), "Basic edits the mask");
+        assert!(
+            control_tree::walk(&basic.controls).any(
+                |control| matches!(control, ControlModel::Slider(slider) if slider.parameter == "exposure")
+            ),
+            "the mask's Basic sliders stay"
+        );
+        assert!(!offers_auto(&scene));
+        assert!(!palette_offers_auto(&scene, Some(&mask)));
+        assert!(
+            tools::analysis_refusal(&scene.inputs())
+                .expect("the chord is refused")
+                .contains("global Basic")
+        );
     }
 }
 

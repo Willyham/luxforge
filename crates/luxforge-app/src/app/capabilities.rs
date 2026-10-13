@@ -116,6 +116,19 @@ fn classify(error: CallError, retry: &Operation) -> Outcome {
     Outcome::Failed(error)
 }
 
+/// A stale revision or visible publication needs authoritative settings readback before the
+/// error is shown. A durability failure remains a failure, with its structured data intact.
+pub(super) fn settings_failure(error: CallError, read: impl FnOnce()) -> Outcome {
+    if error.code == "conflict" || error.published() {
+        read();
+    }
+    if error.code == "conflict" {
+        Outcome::Conflict(error.message)
+    } else {
+        Outcome::Failed(error)
+    }
+}
+
 /// Run one operation's own requests and say what they came to. A settings write puts the fresh
 /// settings it answers with into `settings`.
 fn perform(
@@ -158,12 +171,7 @@ fn perform(
                     *settings = parse(answer["settings"].clone()).ok();
                     Ok(answer)
                 }
-                // Somebody else changed the settings: read them again and say so.
-                Err(error) if error.code == "conflict" => {
-                    read(sent);
-                    return Outcome::Conflict(error.message);
-                }
-                Err(error) => Err(error),
+                Err(error) => return settings_failure(error, || read(sent)),
             }
         }
         Operation::Install { resource } => call(
@@ -783,6 +791,7 @@ impl Editor {
         );
         let state = self.capabilities.module_mut(&module_id);
         state.pending = state.pending.saturating_sub(1);
+        let settings_reconciled = settings.is_some();
         if let Some(settings) = settings {
             state.settings = Some(settings);
         }
@@ -850,6 +859,12 @@ impl Editor {
                 self.status.text = line;
             }
             Outcome::Failed(error) => {
+                if error.published()
+                    && settings_reconciled
+                    && let Operation::Set { field, .. } = &op
+                {
+                    state.edits.remove(field);
+                }
                 if let Some(run) = run {
                     run.phase = TaskPhase::Failed {
                         code: error.code.clone(),
@@ -901,6 +916,19 @@ impl Editor {
                     message: format!("the job ended {:?}", record.status),
                 },
             };
+        }
+        if matches!(
+            record.kind,
+            luxforge_core::jobs::JobKind::Install | luxforge_core::jobs::JobKind::Remove
+        ) && let Some(error) = record.error.as_ref().filter(|error| {
+            error
+                .data
+                .as_ref()
+                .is_some_and(|data| data["published"] == true)
+        }) {
+            let message = format!("{}: {}", error.code, error.message);
+            state.message = Some(message.clone());
+            self.status.text = message;
         }
     }
 

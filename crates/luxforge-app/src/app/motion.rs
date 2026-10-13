@@ -9,8 +9,13 @@
 //!   while no view is known (the tick's job was planned with no GPU preview), and the boundary,
 //!   source and surface waits (`boundary-pending`, `boundary-uploading`, `source-uploading`,
 //!   `source-missing`, `surface-pending`). The tick queues nothing and the frame on screen stays:
-//!   the surface draws the tick's plan once the wait is over, or the next tick does. Every drag's
-//!   first tick waits on its boundary this way, so no drag starts by queuing a whole frame. A hold
+//!   the surface draws the tick's plan once the wait is over, or the next tick does. The frame on
+//!   screen is never the CPU frame behind a stack the GPU presented, an earlier stack's: a tick
+//!   with no plan of its own keeps the GPU's picture at rest of the committed stack, or the drag's
+//!   own last GPU frame ([`Editor::gpu_rest_plan`], [`Editor::gpu_held`]), and a tick whose plan
+//!   the surface cannot draw yet shows the picture at rest under it ([`Editor::gpu_rest_under`]).
+//!   Every drag's first tick waits on its boundary this way, so no drag starts by queuing a whole
+//!   frame. A hold
 //!   that has lasted the same half second, from the first tick of its run, renders the newest
 //!   held tick's reference frame after all, so a drag paused on a wait that does not pass still
 //!   shows its value.

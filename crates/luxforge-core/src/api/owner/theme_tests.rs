@@ -859,3 +859,56 @@ fn the_bundled_themes_are_listed_after_luxforge_dark_and_can_be_chosen_but_not_t
     let announced: Vec<_> = harness.events().into_iter().map(|(_, id)| id).collect();
     assert_eq!(announced, ["choose"]);
 }
+
+#[test]
+fn visible_theme_import_and_delete_sync_errors_keep_the_library_and_events_consistent() {
+    let harness = Harness::start("visible-sync");
+    let config = harness.library().parent().unwrap().to_path_buf();
+    crate::atomic_file::sync_faults::inject(&config);
+    let failure = harness
+        .send(
+            "visible-theme",
+            "theme.import",
+            import(&night("Visible theme"), "visible-theme"),
+        )
+        .error
+        .unwrap();
+    assert_eq!(failure.data.as_ref().unwrap()["published"], true);
+    assert_eq!(failure.data.as_ref().unwrap()["durable"], false);
+    let listing = harness.ok("list-visible", "theme.list", json!({}));
+    let theme = listing["themes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|theme| theme["name"] == "Visible theme")
+        .unwrap();
+    let id = theme["id"].clone();
+    assert!(
+        harness
+            .events()
+            .contains(&("theme.import".into(), "visible-theme".into()))
+    );
+    crate::atomic_file::sync_faults::inject(&config);
+    let failure = harness
+        .send(
+            "delete-visible",
+            "theme.delete",
+            json!({"theme_id": id, "mutation": mutation("delete-visible")}),
+        )
+        .error
+        .unwrap();
+    assert_eq!(failure.data.as_ref().unwrap()["published"], true);
+    let listing = harness.ok("list-deleted", "theme.list", json!({}));
+    assert!(
+        !listing["themes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|theme| theme["id"] == id)
+    );
+    assert!(
+        harness
+            .events()
+            .contains(&("theme.delete".into(), "delete-visible".into()))
+    );
+}

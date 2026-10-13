@@ -10,6 +10,8 @@ An asset has a permanent catalog ID. Its path is a changeable locator. A content
 
 Store the source root separately from the relative path, plus availability state and the last verified fingerprint. Import records a full streamed hash in bounded background work. Read, hash and decode from a consistent snapshot and detect concurrent modification; never pair one version's hash with another's pixels. Size, mtime and filesystem IDs are hints, not proof. Byte-identical copies can share a fingerprint without being the same asset: never merge assets or edits because hashes match. A content change, including a metadata rewrite, invalidates the strict fingerprint; preserving edits across such a replacement is a future reviewed workflow.
 
+`source.check` normally checks presence, file identity and length without reading image bytes. Once a check or preparation has detected a changed original, that integrity failure survives later missing or offline observations. The library worker must verify the stored fingerprint before reporting the original available again, using Locate's bounded, cancellable read. The owner rejects stale observations after a locator change and rechecks the verified signature before clearing the failure. Each Changed refusal advances an integrity generation. Older observations are discarded, so neither metadata nor an earlier verification can clear a newer refusal even if the filesystem signature is unchanged.
+
 ## Locate missing original
 
 1. Detect an unavailable source and retain the asset, recipe and history. Show the last known path and any cached preview labelled as unavailable-original content. Missing means unavailable, not deleted.

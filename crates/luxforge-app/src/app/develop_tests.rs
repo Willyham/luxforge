@@ -18,7 +18,10 @@ use crate::{
         message::{preview::PreviewMessage, sync::SyncMessage},
         select::refresh_now,
         select_owner_tests::{answer_reads, evaluate, read_rows},
-        testing::{descriptors, hold_slider, patch_control},
+        testing::{
+            attach_log, descriptors, events, hold_slider, let_go, logged, patch_control,
+            run_commit, slide,
+        },
     },
     state::{develop::path_title, select::ReadSource},
 };
@@ -29,8 +32,11 @@ use iced::{
     keyboard::{Event as KeyEvent, Key, Modifiers, key::Named, key::Physical},
 };
 use luxforge_core::{
-    ApiRequest, Cancel, EditorService, EntryId,
-    catalog_types::{FolderChoice, ViewRows, ViewSource, ViewSummary},
+    ApiRequest, Cancel, EditorService, EntryId, JobId,
+    catalog_types::{
+        FolderChoice, PreviewAnswer, PreviewInfo, PreviewOrigin, PreviewTier, ViewRows, ViewSource,
+        ViewSummary,
+    },
     decode_preview,
 };
 use luxforge_test_macros::slow;
@@ -251,6 +257,15 @@ fn present(editor: &mut Editor) {
 /// tier: each read batch run against the owner, the lane's queued renders read again until they
 /// land, and each planned decode made from the cached file, as the worker would.
 fn decode(editor: &mut Editor, assets: &[AssetId]) {
+    decode_until(editor, assets, |held| !held.picture.stand_in);
+}
+
+/// [`decode`] until each of `assets` holds a picture `ready` accepts.
+fn decode_until(
+    editor: &mut Editor,
+    assets: &[AssetId],
+    ready: impl Fn(&loupe_frames::HeldPhoto<'_>) -> bool,
+) {
     wait_until("the large previews decoded", || {
         for batch in std::mem::take(&mut editor.develop.reads) {
             let answers = loupe_frames::read(&editor.owner, editor.client, batch);
@@ -280,7 +295,7 @@ fn decode(editor: &mut Editor, assets: &[AssetId]) {
                 .develop
                 .frames
                 .photo(&Slot::frame(item(asset)))
-                .is_some_and(|held| !held.picture.stand_in)
+                .is_some_and(|held| ready(&held))
         })
     });
 }
@@ -758,6 +773,197 @@ fn filmstrip_a_preview_of_another_entry_is_withdrawn() {
     assert!(editor.develop.state.preview.is_none());
     assert!(!editor.presentation.has_picture());
     present(editor);
+    finish(scene);
+}
+
+/// The photograph open is edited and left: its large preview, of the entry before the edit, is
+/// read again, which renders its new entry ahead. Going back to it never draws the picture from
+/// before the edit: the canvas is empty, saying why in `develop_preview_withheld`, until the new
+/// entry's preview is decoded, which is then drawn while the original prepares, at the entry the
+/// open shows.
+#[test]
+#[slow]
+fn filmstrip_an_edited_photograph_never_shows_its_picture_from_before_the_edit() {
+    let (mut scene, set) = developed("edited");
+    let editor = &mut scene.editor;
+    decode(editor, &set[..2]);
+    let before = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    let slot = Slot::frame(item(&set[0]));
+    assert_eq!(
+        editor.develop.frames.photo(&slot).unwrap().entry,
+        Some(&before)
+    );
+    let _ = slide(editor, "set-basic", "exposure", 1.0);
+    let _ = let_go(editor, "set-basic", "exposure");
+    assert!(run_commit(editor));
+    let edited = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    assert_ne!(edited, before, "the commit is a new entry");
+    wait_until("the edit on screen", || {
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+        editor.presentation.presented_entry.as_ref() == Some(&edited)
+            && !editor.presentation.queue.is_busy()
+    });
+
+    send(editor, DevelopMessage::Step(1));
+    assert!(
+        !editor.develop.frames.photo(&slot).unwrap().current,
+        "the photograph left is no longer taken as its picture"
+    );
+    run_open(editor);
+    present(editor);
+    let log = attach_log(editor);
+    send(editor, DevelopMessage::Step(-1));
+    assert!(
+        editor.develop.state.preview.is_none(),
+        "the picture from before the edit is never drawn"
+    );
+    assert!(!editor.presentation.has_picture(), "the canvas is empty");
+    let records = logged(editor, &log);
+    let withheld = events(&records, "develop_preview_withheld");
+    assert_eq!(withheld.len(), 1, "{records:?}");
+    assert_eq!(withheld[0]["entry_id"], json!(before));
+
+    // Read again when it was left, its new entry's render is decoded and drawn while it prepares.
+    decode_until(editor, &set[..1], |held| {
+        held.current && held.entry == Some(&edited)
+    });
+    send(editor, DevelopMessage::Woken);
+    let preview = editor
+        .develop
+        .state
+        .preview
+        .clone()
+        .expect("its current picture");
+    assert_eq!(preview.asset, set[0]);
+    assert_eq!(preview.entry.as_ref(), Some(&edited));
+    run_open(editor);
+    assert_eq!(
+        editor.document.state.as_ref().unwrap().current_entry.id,
+        edited
+    );
+    assert!(
+        editor.develop.state.preview.is_some(),
+        "the preview of the entry the open shows stays until the render"
+    );
+    present(editor);
+    finish(scene);
+}
+
+/// A move draws a held camera preview only when its answer says it shows the photograph's entry,
+/// as an unedited photograph's does: drawn in the key's update. One the owner says does not, an
+/// edited photograph's camera preview, is held but not drawn, and the canvas is empty until the
+/// open's render.
+#[test]
+#[slow]
+fn filmstrip_a_camera_preview_is_drawn_only_while_it_shows_the_entry() {
+    let (mut scene, set) = developed("camera");
+    let editor = &mut scene.editor;
+    let path = fixture("s0/orientation-1.jpg");
+    let camera = |asset: &AssetId, current: bool| PreviewAnswer::Queued {
+        job_id: JobId::new(),
+        fallback: Some(PreviewInfo {
+            renderer: None,
+            item: PreviewItem::Photo {
+                asset_id: asset.clone(),
+                entry_id: Some(EntryId::new()),
+            },
+            tier: PreviewTier::Large,
+            path: path.clone(),
+            width: 480,
+            height: 320,
+            origin: PreviewOrigin::Embedded,
+            approximate: false,
+            bytes: fs::metadata(&path).unwrap().len(),
+            key: format!("photo:{asset}:camera:large:embedded"),
+        }),
+        fallback_current: current,
+    };
+    // The lane's answers while every render waits: the second photograph's camera preview shows
+    // its entry, the third's does not.
+    wait_until("the neighbours' camera previews held", || {
+        for batch in std::mem::take(&mut editor.develop.reads) {
+            let answers = batch
+                .reads
+                .iter()
+                .map(|slot| {
+                    let PreviewItem::Photo { asset_id, .. } = &slot.item else {
+                        unreachable!("a photograph's frame")
+                    };
+                    let answer = if *asset_id == set[1] {
+                        camera(asset_id, true)
+                    } else if *asset_id == set[2] {
+                        camera(asset_id, false)
+                    } else {
+                        PreviewAnswer::Queued {
+                            job_id: JobId::new(),
+                            fallback: None,
+                            fallback_current: false,
+                        }
+                    };
+                    (slot.clone(), Ok(answer))
+                })
+                .collect();
+            let answers = loupe_frames::ReadAnswers {
+                serial: batch.serial,
+                answers,
+            };
+            send(
+                editor,
+                DevelopMessage::Frames(LoupeFramesMessage::Read(answers)),
+            );
+        }
+        for decode in editor.develop.frames.planned().to_vec() {
+            let result = decode_preview(&decode.path, decode.side, &Cancel::never())
+                .map_err(|error| error.to_string());
+            editor.develop.frames.adopt(Decoded { decode, result });
+        }
+        set[1..3].iter().all(|asset| {
+            editor
+                .develop
+                .frames
+                .photo(&Slot::frame(item(asset)))
+                .is_some()
+        })
+    });
+
+    send(editor, DevelopMessage::Step(1));
+    let preview = editor
+        .develop
+        .state
+        .preview
+        .clone()
+        .expect("the unedited photograph's camera preview, at once");
+    assert_eq!(preview.asset, set[1]);
+    assert_eq!(preview.origin, PreviewOrigin::Embedded);
+    assert!(editor.presentation.has_picture());
+
+    send(editor, DevelopMessage::Step(1));
+    assert_eq!(editor.develop.switch.as_ref().unwrap().asset, set[2]);
+    assert!(
+        editor.develop.state.preview.is_none(),
+        "the edited photograph's camera preview is not drawn"
+    );
+    assert!(!editor.presentation.has_picture(), "the canvas is empty");
+    run_open(editor);
+    present(editor);
+    assert_eq!(
+        editor.document.state.as_ref().map(|state| &state.asset.id),
+        Some(&set[2])
+    );
     finish(scene);
 }
 

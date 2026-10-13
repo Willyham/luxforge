@@ -47,6 +47,163 @@ fn envelope(request_id: &str) -> Value {
     json!({"request_id": request_id, "actor": "agent"})
 }
 
+/// Exercise the same tree behavior for catalog folders and collection groups, through the API.
+struct TreeCalls<'a> {
+    owner: &'a OwnerHandle,
+    client: ClientId,
+    family: &'a str,
+}
+
+impl TreeCalls<'_> {
+    fn run(&self, action: &str, mut params: Value, actor: &str, request: &str) -> Value {
+        params["mutation"] = json!({"actor": actor, "request_id": request});
+        ok(
+            self.owner,
+            self.client,
+            &format!("{}.{}", self.family, action),
+            params,
+        )
+    }
+
+    fn create(&self, name: &str, parent: Option<&Value>, request: &str) -> Value {
+        let mut params = json!({"name": name, "parent_id": parent});
+        if self.family == "collection" {
+            params["kind"] = json!("group");
+        }
+        self.run("create", params, "setup", request)[self.family]["id"].clone()
+    }
+
+    fn subject(&self, id: &Value) -> Value {
+        let mut params = json!({});
+        params[format!("{}_id", self.family)] = id.clone();
+        params
+    }
+
+    fn listing(&self) -> Value {
+        ok(
+            self.owner,
+            self.client,
+            &format!("{}.list", self.family),
+            json!({}),
+        )
+    }
+
+    fn navigation_refuses_without_writing(&self, navigation: &str, item: Value) {
+        let before = self.listing();
+        let journal = ok(self.owner, self.client, "library.journal", json!({}));
+        let after =
+            ok(self.owner, self.client, "events.since", json!({"after": 0}))["current_sequence"]
+                .as_u64()
+                .unwrap();
+        let error = call(
+            self.owner,
+            self.client,
+            &format!("library.{navigation}"),
+            json!({"mutation": {"actor": "agent", "request_id": "refused-navigation"}}),
+        )
+        .error
+        .expect("navigation would break a tree invariant");
+        assert_eq!(error.code, "conflict");
+        assert_eq!(error.data.unwrap()["items"], json!([item]));
+        assert_eq!(self.listing(), before);
+        assert_eq!(
+            ok(self.owner, self.client, "library.journal", json!({})),
+            journal,
+        );
+        assert!(
+            ok(
+                self.owner,
+                self.client,
+                "events.since",
+                json!({"after": after})
+            )["events"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn library_navigation_refuses_parent_cycles_created_by_another_actor() {
+    for family in ["folder", "collection"] {
+        for navigation in ["undo", "redo"] {
+            let fixture = Fixture::new(&format!("{family}-{navigation}-cycle"));
+            let (owner, join) = fixture.start();
+            let client = owner.register();
+            let calls = TreeCalls {
+                owner: &owner,
+                client,
+                family,
+            };
+            let a = calls.create("A", None, "create-a");
+            let b = calls.create("B", (navigation == "undo").then_some(&a), "create-b");
+            let mut moved = calls.subject(&b);
+            moved["parent_id"] = if navigation == "undo" {
+                Value::Null
+            } else {
+                a.clone()
+            };
+            calls.run("move", moved, "agent", "move-b");
+            if navigation == "redo" {
+                undo(&owner, client, "undo-b");
+            }
+            let mut moved = calls.subject(&a);
+            moved["parent_id"] = b.clone();
+            calls.run("move", moved, "other", "move-a");
+            let mut item = calls.subject(&b);
+            item["kind"] = json!(if family == "folder" {
+                "catalog-folder"
+            } else {
+                "collection"
+            });
+            calls.navigation_refuses_without_writing(navigation, item);
+            stop(owner, join);
+        }
+    }
+}
+
+#[test]
+fn library_navigation_refuses_unicode_sibling_name_clashes_created_by_another_actor() {
+    for family in ["folder", "collection"] {
+        for navigation in ["undo", "redo"] {
+            let fixture = Fixture::new(&format!("{family}-{navigation}-unicode"));
+            let (owner, join) = fixture.start();
+            let client = owner.register();
+            let calls = TreeCalls {
+                owner: &owner,
+                client,
+                family,
+            };
+            let original = if navigation == "undo" {
+                "Ärger"
+            } else {
+                "Other"
+            };
+            let a = calls.create(original, None, "create-a");
+            let mut renamed = calls.subject(&a);
+            renamed["name"] = json!(if navigation == "undo" {
+                "Other"
+            } else {
+                "Ärger"
+            });
+            calls.run("rename", renamed, "agent", "rename-a");
+            if navigation == "redo" {
+                undo(&owner, client, "undo-name");
+            }
+            calls.create("ärger", None, "create-sibling");
+            let mut item = calls.subject(&a);
+            item["kind"] = json!(if family == "folder" {
+                "catalog-folder"
+            } else {
+                "collection"
+            });
+            calls.navigation_refuses_without_writing(navigation, item);
+            stop(owner, join);
+        }
+    }
+}
+
 /// The library events after `after` as (method, library sequence), and the log's sequence.
 fn library_events(owner: &OwnerHandle, client: ClientId, after: u64) -> (Vec<(String, u64)>, u64) {
     let read = ok(owner, client, "events.since", json!({"after": after}));

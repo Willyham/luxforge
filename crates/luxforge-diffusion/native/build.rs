@@ -5,8 +5,9 @@
 //! Windows builds nothing: the crate's runtime then offers no backend (THIRD_PARTY.md says why).
 //!
 //! This file is a module of two build scripts, `luxforge-diffusion`'s own `build.rs` and the object
-//! removal probe's (`probes/object-removal/diffusion/build.rs`), each calling [`build`] with this
-//! crate's directory, so the probe builds these pinned sources rather than a copy of them.
+//! removal probe's (`probes/object-removal/diffusion/build.rs`), calling [`build`] and
+//! [`build_probe`] respectively with this crate's directory, so only the probe records text
+//! conditionings for inspection and both build these pinned sources rather than copies.
 
 use std::{
     env, fs,
@@ -84,7 +85,19 @@ pub fn builds_runtime(target_os: &str) -> bool {
 
 /// Compile the vendored runtime under `root`, `luxforge-diffusion`'s directory, into static
 /// libraries in `OUT_DIR` and link them; set `cfg(luxforge_sdcpp)` when this target builds it.
+#[allow(dead_code)] // This shared module's probe caller uses only `build_probe`.
 pub fn build(root: &Path) {
+    build_with_capture(root, false);
+}
+
+/// Compile the probe with its conditioning inspection enabled. Production never keeps copies
+/// of encoded prompts or their tensors in the shim's inspection store.
+#[allow(dead_code)] // This shared module's production caller uses only `build`.
+pub fn build_probe(root: &Path) {
+    build_with_capture(root, true);
+}
+
+fn build_with_capture(root: &Path, capture_conditioning: bool) {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
@@ -340,6 +353,9 @@ pub fn build(root: &Path) {
     sdb.file(&staged);
     sdb.file(root.join("native/vocab.cpp"));
     sdb.file(root.join("native/shim.cpp"));
+    if capture_conditioning {
+        sdb.define("LUXFORGE_CAPTURE_CONDITIONING", None);
+    }
     // version.cpp reads these, as CMake sets them from git.
     sdb.define("SDCPP_BUILD_COMMIT", Some(SD_COMMIT))
         .define("SDCPP_BUILD_VERSION", Some(SD_VERSION));

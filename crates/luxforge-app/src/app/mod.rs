@@ -1185,7 +1185,11 @@ impl Editor {
             session: &self.session,
             status: &self.status.text,
             busy: self.busy,
-            can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
+            can_open: !self.busy
+                && self.evidence.is_none()
+                && self
+                    .gesture_refusal(gesture::Starting::Photograph)
+                    .is_none(),
             can_export: self.can_export(),
             export_held: self.export.held.as_ref().map(|held| held.stale.as_slice()),
             export_sheet: self.export.sheet.as_ref(),
@@ -1359,8 +1363,9 @@ impl Editor {
             // The evidence hook's identity plan is drawn in place of the frame it was held from,
             // untagged: no gesture's hold or revision is its.
         } else if let Some((plan, change)) = self.gpu_rest_plan() {
-            // At rest the committed stack's own view plan is the photograph, drawn in place of its
-            // frame, until its picture at rest in tiles is in, where it has one.
+            // At rest, and through a gesture's tick it holds, the committed stack's own view plan is
+            // the photograph, drawn in place of its frame, until its picture at rest in tiles is
+            // in, where it has one.
             surfaces.gpu = Some(plan);
             surfaces.gpu_hold = false;
             surfaces.gpu_tag = None;
@@ -1378,6 +1383,7 @@ impl Editor {
         surfaces.gpu_source = self.gpu_source_handed();
         surfaces.gpu_window = self.gpu_window_handed();
         surfaces.gpu_rest = self.gpu_rest_handed();
+        surfaces.gpu_rest_under = self.gpu_rest_under();
         surfaces.stage_rest = self
             .gpu_stage_handed()
             .filter(|_| self.crop_stage_gpu_shown());
@@ -1417,6 +1423,7 @@ impl Editor {
                 surfaces.gpu_source = surfaces.compare_source;
                 surfaces.gpu_window = None;
                 surfaces.gpu_rest = surfaces.compare_rest;
+                surfaces.gpu_rest_under = false;
                 surfaces.gpu_counts = None;
                 surfaces.gpu_hold = false;
                 surfaces.gpu_tag = None;

@@ -1444,6 +1444,33 @@ fn hdr_merge_job_reruns_removes_restores_and_follows_the_provider() {
     assert_eq!(changed["data"]["path"], json!(bench.files[2]));
 }
 
+/// A rerun's publication names both the removed old stack and the new stack. Its durable retry
+/// must find the new one, rather than return the removed result that happened to be recorded first.
+#[test]
+#[slow]
+fn hdr_merge_job_rerun_retry_after_restart_returns_the_new_result() {
+    let mut bench = Bench::new("rerun-retry", 1);
+    let first = bench.merged(0, "create");
+    let params = json!({"merge_id": first["merge_id"], "hdr": {"deghost": "off"},
+                        "mutation": envelope("rerun")});
+    let started = bench.ok("merge.rerun", params.clone());
+    let second = bench.settled(&started["job_id"]);
+    assert_eq!(second["status"], "ready", "{second}");
+    let second = &second["result"];
+    assert_ne!(second["merge_id"], first["merge_id"]);
+    let reads = bench.reads();
+    bench.restart();
+    let retried = bench.ok("merge.rerun", params);
+    let retry = bench.settled(&retried["job_id"]);
+    assert_eq!(retry["status"], "ready", "{retry}");
+    for field in ["merge_id", "result_asset_id", "source_id"] {
+        assert_eq!(retry["result"][field], second[field], "{field}: {retry}");
+    }
+    assert_eq!(retry["result"]["deduplicated"], true);
+    assert_eq!(bench.reads(), reads, "retry reads and merges nothing again");
+    bench.originals_unchanged();
+}
+
 /// A merge holds no plane lease: an editor prepares and samples a photograph while a merge is
 /// held in its development, and a merge runs to its end while the editor's source work is held.
 #[test]
