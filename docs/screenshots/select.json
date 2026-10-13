@@ -1,0 +1,59 @@
+[
+  {
+    "select": {
+      "switch": "select"
+    }
+  },
+  {
+    "select": {
+      "add_folder": "PHOTO_FOLDER"
+    }
+  },
+  {
+    "wait": {
+      "ms": 6000
+    }
+  },
+  {
+    "select": {
+      "folder": "PHOTO_FOLDER"
+    }
+  },
+  {
+    "select": {
+      "choose": {
+        "menu": "group",
+        "item": "None"
+      }
+    }
+  },
+  {
+    "select": {
+      "click": {
+        "position": 2
+      }
+    }
+  },
+  {
+    "key": {
+      "key": "p"
+    }
+  },
+  {
+    "select": {
+      "click": {
+        "position": 3
+      }
+    }
+  },
+  {
+    "key": {
+      "key": "p"
+    }
+  },
+  {
+    "wait": {
+      "ms": 8000
+    }
+  }
+]
