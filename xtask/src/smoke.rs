@@ -1212,16 +1212,6 @@ pub static SCENARIOS: &[Scenario] = &[
         own: Some(hdr_merge::run),
     },
     Scenario {
-        name: panorama_merge::SCENARIO,
-        about: "Panorama merges end to end over two generated rows of JPEG frames: the Row merged as the sheet sends it (preview, Boundary Warp 60, Merge with the preview) and the Wide, past 128 MP, as ⌥-click sends it, through the core until Select's panorama sheet is built; one collapsed panorama tile, S expanding its originals with the Info band's Frame k of 4, the result in its proposed catalog folder opened in Develop at Fit, at 100% in its bottom-right corner and lifted through a linear mask, Remove merge, Cmd+Z, Shift+Cmd+Z and Cmd+Z with nothing merged again, the Wide's tile of ten, its export above 128 MP, and the Row result reopened with its frames moved away; fails naming the steps that wait on TASK-005 and TASK-010",
-        launches: &[],
-        verify: panorama_merge::verify,
-        source: Source::Fixtures(&[]),
-        window: Some(PANELLED),
-        note: Some(panorama_merge::NOTE),
-        own: Some(panorama_merge::run),
-    },
-    Scenario {
         name: hdr_merge_view::SCENARIO,
         about: "A 24 MP HDR merge with Clarity committed, panned at 100%, dragged there while panning and at Fit: no draw leaves the canvas showing through the photograph the view shows, draws no photograph, or drops the GPU's picture for the CPU frame",
         launches: &[],
@@ -1230,6 +1220,16 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: Some(hdr_merge_view::NOTE),
         own: Some(hdr_merge_view::run),
+    },
+    Scenario {
+        name: panorama_merge::SCENARIO,
+        about: "Panorama merges end to end over two generated rows of JPEG frames: the Row merged as the sheet sends it (preview, Boundary Warp 60, Merge with the preview) and the Wide, past 128 MP, as ⌥-click sends it, through the core until Select's panorama sheet is built; one collapsed panorama tile, S expanding its originals with the Info band's Frame k of 4, the result in its proposed catalog folder opened in Develop at Fit, at 100% in its bottom-right corner and lifted through a linear mask, Remove merge, Cmd+Z, Shift+Cmd+Z and Cmd+Z with nothing merged again, the Wide's tile of ten, its paged result developed the same way (the overview at Fit, a level-0 window at 100%) and exported above 128 MP on the GPU, and both reopened with their frames moved away; fails naming the steps that wait on TASK-010",
+        launches: &[],
+        verify: panorama_merge::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(panorama_merge::NOTE),
+        own: Some(panorama_merge::run),
     },
     Scenario {
         name: filmstrip::SCENARIO,
