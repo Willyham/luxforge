@@ -15,9 +15,9 @@
 //! a stage pixel at 200% and less above, far below one pixel of a 256-pixel overview.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use crate::state::canvas::ZoomView;
 use crate::view::canvas_view::CanvasView;
 use iced::{Point, Rectangle, Size};
-use luxforge_core::Zoom;
 
 /// The largest image area of the card, in logical pixels: the thumbnail is aspect-fitted inside
 /// it, centred, and the letterboxing around it is inert.
@@ -63,25 +63,27 @@ impl StageRect {
 }
 
 impl MainView {
-    /// The main view at `zoom`, where it shows the minimap ([`Zoom::shows_overview`]): `None` at
+    /// The main view at `zoom`, where it shows the minimap ([`ZoomView::shows_minimap`]): `None` at
     /// Fit, below 200%, and for a degenerate stage, viewport, display scale or pan, which leave no
     /// actionable geometry.
     pub(crate) fn new(
-        zoom: &Zoom,
+        zoom: ZoomView,
         stage: (f64, f64),
         viewport: Size,
         scale_factor: f32,
         pan: (f32, f32),
     ) -> Option<Self> {
-        let Zoom::Percent { value } = *zoom else {
+        let ZoomView::Percent(value) = zoom else {
             return None;
         };
-        if !zoom.shows_overview()
-            || !(viewport.width.is_finite() && viewport.height.is_finite())
-            || viewport.width <= 0.0
-            || viewport.height <= 0.0
-            || !(pan.0.is_finite() && pan.1.is_finite())
-        {
+        let usable = zoom.shows_minimap()
+            && viewport.width.is_finite()
+            && viewport.height.is_finite()
+            && viewport.width > 0.0
+            && viewport.height > 0.0
+            && pan.0.is_finite()
+            && pan.1.is_finite();
+        if !usable {
             return None;
         }
         let view = CanvasView::scrolled(value, scale_factor, stage, viewport, pan)?;
@@ -279,8 +281,8 @@ impl Navigation {
 mod tests {
     use super::*;
 
-    fn percent(value: f32) -> Zoom {
-        Zoom::Percent { value }
+    fn percent(value: f32) -> ZoomView {
+        ZoomView::Percent(value)
     }
 
     fn close(actual: f64, expected: f64) -> bool {
@@ -312,9 +314,9 @@ mod tests {
     #[test]
     fn the_minimap_is_eligible_from_two_hundred_percent_of_the_stored_value() {
         let stage = (6000.0, 4000.0);
-        let main = |zoom: Zoom| MainView::new(&zoom, stage, VIEWPORT, 1.0, (0.0, 0.0));
+        let main = |zoom: ZoomView| MainView::new(zoom, stage, VIEWPORT, 1.0, (0.0, 0.0));
         assert!(
-            main(Zoom::Fit).is_none(),
+            main(ZoomView::Fit).is_none(),
             "Fit never, however large it draws"
         );
         assert!(main(percent(199.9)).is_none());
@@ -366,7 +368,7 @@ mod tests {
                 [969.0, 564.0, 15.0, 10.5],
             ),
         ] {
-            let main = MainView::new(&percent(200.0), stage, VIEWPORT, 1.0, pan).unwrap();
+            let main = MainView::new(percent(200.0), stage, VIEWPORT, 1.0, pan).unwrap();
             assert_stage(main.visible(), visible);
             assert_rect(placement.rectangle(main.visible()), drawn);
         }
@@ -376,14 +378,14 @@ mod tests {
     fn a_click_centres_the_view_there_and_clamps_at_the_edges() {
         let stage = (6000.0, 4000.0);
         let placement = Placement::new(VIEWPORT, stage, NO_STRIP).unwrap();
-        let main = MainView::new(&percent(200.0), stage, VIEWPORT, 1.0, (0.0, 0.0)).unwrap();
+        let main = MainView::new(percent(200.0), stage, VIEWPORT, 1.0, (0.0, 0.0)).unwrap();
         // The thumbnail's centre is stage (3000, 2000): at 2 logical pixels a stage pixel its
         // centre lies 500 and 350 in from the viewport's corner at a pan of (5500, 3650).
         let (_, pan) = Navigation::press(&placement, &main, Point::new(894.0, 624.0)).unwrap();
         assert_eq!(pan, (5500.0, 3650.0));
         // From there, near the top-left corner the view clamps to the origin; near the far one
         // to the overhang, 12000 - 1000 and 8000 - 700.
-        let main = MainView::new(&percent(200.0), stage, VIEWPORT, 1.0, pan).unwrap();
+        let main = MainView::new(percent(200.0), stage, VIEWPORT, 1.0, pan).unwrap();
         let (_, pan) = Navigation::press(&placement, &main, Point::new(805.0, 565.0)).unwrap();
         assert_eq!(pan, (0.0, 0.0));
         let (_, pan) = Navigation::press(&placement, &main, Point::new(983.0, 683.0)).unwrap();
@@ -399,7 +401,7 @@ mod tests {
         let stage = (6000.0, 4000.0);
         let placement = Placement::new(VIEWPORT, stage, NO_STRIP).unwrap();
         let start = (2000.0, 1000.0);
-        let main = MainView::new(&percent(200.0), stage, VIEWPORT, 1.0, start).unwrap();
+        let main = MainView::new(percent(200.0), stage, VIEWPORT, 1.0, start).unwrap();
         // The rectangle covers stage [1000, 1500) x [500, 850), thumbnail x 834..849, y 579..589.5;
         // grabbed 3 thumbnail pixels right of and 2 above its centre (841.5, 584.25).
         let (navigation, pan) =
@@ -430,7 +432,7 @@ mod tests {
         // pointer: the rectangle's centre is 3 left of and 2 below it.
         let pointer = Point::new(874.5, 597.25);
         let pan = navigation.drag(&placement, &main, pointer);
-        let moved = MainView::new(&percent(200.0), stage, VIEWPORT, 1.0, pan).unwrap();
+        let moved = MainView::new(percent(200.0), stage, VIEWPORT, 1.0, pan).unwrap();
         let drawn = placement.rectangle(moved.visible());
         assert!((drawn.center_x() - (pointer.x - 3.0)).abs() < 1e-3);
         assert!((drawn.center_y() - (pointer.y + 2.0)).abs() < 1e-3);
@@ -445,7 +447,7 @@ mod tests {
         let placement = Placement::new(VIEWPORT, stage, NO_STRIP).unwrap();
         // 120 high and 80 wide, centred in the 180x120 area: 50 of letterbox each side.
         assert_rect(placement.image, [854.0, 564.0, 80.0, 120.0]);
-        let main = MainView::new(&percent(400.0), stage, VIEWPORT, 2.0, (100.0, 200.0)).unwrap();
+        let main = MainView::new(percent(400.0), stage, VIEWPORT, 2.0, (100.0, 200.0)).unwrap();
         assert_stage(main.visible(), [50.0, 100.0, 550.0, 450.0]);
         assert_rect(
             placement.rectangle(main.visible()),
@@ -457,7 +459,7 @@ mod tests {
         // visible, and the pan across is kept, however stale.
         let narrow = (600.0, 4000.0);
         let placement = Placement::new(VIEWPORT, narrow, NO_STRIP).unwrap();
-        let main = MainView::new(&percent(200.0), narrow, VIEWPORT, 2.0, (37.0, 0.0)).unwrap();
+        let main = MainView::new(percent(200.0), narrow, VIEWPORT, 2.0, (37.0, 0.0)).unwrap();
         assert_stage(main.visible(), [0.0, 0.0, 600.0, 700.0]);
         let (_, pan) = Navigation::press(
             &placement,
@@ -476,7 +478,7 @@ mod tests {
         // A stage that fits on both axes shows a full rectangle and navigation changes nothing.
         let small = (300.0, 200.0);
         let placement = Placement::new(VIEWPORT, small, NO_STRIP).unwrap();
-        let main = MainView::new(&percent(200.0), small, VIEWPORT, 1.0, (0.0, 0.0)).unwrap();
+        let main = MainView::new(percent(200.0), small, VIEWPORT, 1.0, (0.0, 0.0)).unwrap();
         assert_stage(main.visible(), [0.0, 0.0, 300.0, 200.0]);
         assert_rect(
             placement.rectangle(main.visible()),
@@ -495,12 +497,12 @@ mod tests {
         // pixel a logical pixel; the viewport is 800x560 logical pixels.
         let viewport = Size::new(800.0, 560.0);
         let stage = (4123.5, 2950.25);
-        let main = MainView::new(&percent(250.0), stage, viewport, 2.5, (1000.0, 500.0)).unwrap();
+        let main = MainView::new(percent(250.0), stage, viewport, 2.5, (1000.0, 500.0)).unwrap();
         assert_stage(main.visible(), [1000.0, 500.0, 1800.0, 1060.0]);
-        let edge = MainView::new(&percent(250.0), stage, viewport, 2.5, (9e9, 9e9)).unwrap();
+        let edge = MainView::new(percent(250.0), stage, viewport, 2.5, (9e9, 9e9)).unwrap();
         assert_stage(edge.visible(), [3323.5, 2390.25, 4123.5, 2950.25]);
         // At 1x the same 250% is 2.5 logical pixels a stage pixel: a third of the region.
-        let main = MainView::new(&percent(250.0), stage, viewport, 1.0, (1000.0, 500.0)).unwrap();
+        let main = MainView::new(percent(250.0), stage, viewport, 1.0, (1000.0, 500.0)).unwrap();
         assert_stage(main.visible(), [400.0, 200.0, 720.0, 424.0]);
         // Centring stage (2000, 1500) at 2.5: 5000 - 400 and 3750 - 280.
         assert_eq!(main.pan_centring((2000.0, 1500.0)), (4600.0, 3470.0));
@@ -540,17 +542,17 @@ mod tests {
     fn degenerate_geometry_is_not_actionable() {
         let stage = (6000.0, 4000.0);
         let zoom = percent(200.0);
-        assert!(MainView::new(&zoom, (0.0, 4000.0), VIEWPORT, 1.0, (0.0, 0.0)).is_none());
-        assert!(MainView::new(&zoom, (f64::NAN, 4000.0), VIEWPORT, 1.0, (0.0, 0.0)).is_none());
-        assert!(MainView::new(&zoom, stage, Size::new(0.0, 700.0), 1.0, (0.0, 0.0)).is_none());
-        assert!(MainView::new(&zoom, stage, VIEWPORT, 0.0, (0.0, 0.0)).is_none());
-        assert!(MainView::new(&zoom, stage, VIEWPORT, f32::NAN, (0.0, 0.0)).is_none());
-        assert!(MainView::new(&zoom, stage, VIEWPORT, 1.0, (f32::NAN, 0.0)).is_none());
+        assert!(MainView::new(zoom, (0.0, 4000.0), VIEWPORT, 1.0, (0.0, 0.0)).is_none());
+        assert!(MainView::new(zoom, (f64::NAN, 4000.0), VIEWPORT, 1.0, (0.0, 0.0)).is_none());
+        assert!(MainView::new(zoom, stage, Size::new(0.0, 700.0), 1.0, (0.0, 0.0)).is_none());
+        assert!(MainView::new(zoom, stage, VIEWPORT, 0.0, (0.0, 0.0)).is_none());
+        assert!(MainView::new(zoom, stage, VIEWPORT, f32::NAN, (0.0, 0.0)).is_none());
+        assert!(MainView::new(zoom, stage, VIEWPORT, 1.0, (f32::NAN, 0.0)).is_none());
         assert!(Placement::new(VIEWPORT, (0.0, 4000.0), NO_STRIP).is_none());
         assert!(Placement::new(Size::new(f32::INFINITY, 700.0), stage, NO_STRIP).is_none());
         assert!(Placement::new(Size::new(0.0, 0.0), stage, NO_STRIP).is_none());
         // A centre that is not a number keeps the pan rather than drifting.
-        let main = MainView::new(&zoom, stage, VIEWPORT, 1.0, (5.0, 6.0)).unwrap();
+        let main = MainView::new(zoom, stage, VIEWPORT, 1.0, (5.0, 6.0)).unwrap();
         assert_eq!(main.pan_centring((f64::NAN, f64::INFINITY)), (5.0, 6.0));
     }
 }

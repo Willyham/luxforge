@@ -83,6 +83,25 @@ pub(crate) struct ExactFrame {
     pub(crate) content: Option<u64>,
 }
 
+/// The minimap overview's key of what `job` renders ([`super::overview::OverviewKey`]), read as the
+/// job is requested: its whole committed stack, or a truncated job's prefix, a crop draft's input
+/// stage. `None` for a draft's job, which no overview is made of, and a stack with no key.
+/// `O(layers)`; reads no pixel.
+pub(crate) fn overview_key(job: &PreviewJob) -> Option<super::overview::OverviewKey> {
+    let evaluation = &job.evaluation;
+    if evaluation.draft_revision().is_some() {
+        return None;
+    }
+    let count = job.layer_count.unwrap_or(evaluation.recipe().layers.len());
+    Some(super::overview::OverviewKey {
+        asset: job.identity.asset_id.clone(),
+        entry: evaluation.entry().id.clone(),
+        layers: job.layer_count,
+        pixels: evaluation.prefix_content_key(count).ok()?,
+        geometry: evaluation.geometry_key(count).ok()?,
+    })
+}
+
 /// A frame the desktop holds for the generation on screen. Both reach the surface through the one
 /// presenting function, [`Editor::present`], whether a render just produced them or a zoom hands
 /// them back.
@@ -1830,7 +1849,7 @@ impl Editor {
         // The minimap's overview follows the content the canvas shows next, a whole committed
         // stack or a crop draft's input stage; a draft's frames leave it as it is, marked updating
         // while the gesture runs.
-        let overview = super::overview::OverviewKey::of(&job);
+        let overview = overview_key(&job);
         if job.evaluation.draft_revision().is_none() {
             self.overviews.want(overview.clone(), Some(content));
         }

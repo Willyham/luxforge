@@ -26,7 +26,7 @@
 //!   hidden; existing wakes — a readback's, a worker's answer — are the only ones it needs.
 use super::{Editor, Message, tasks};
 use iced::Task;
-use luxforge_core::{AssetId, Cancel, EntryId, PreviewJob, Raster};
+use luxforge_core::{AssetId, Cancel, EntryId, Raster};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -45,23 +45,6 @@ pub(crate) struct OverviewKey {
 }
 
 impl OverviewKey {
-    /// The key of what `job` renders: its whole committed stack, or a truncated job's prefix. `None`
-    /// for a draft's job, which no overview is made of, and a stack with no key.
-    pub(crate) fn of(job: &PreviewJob) -> Option<Self> {
-        if job.evaluation.draft_revision().is_some() {
-            return None;
-        }
-        let evaluation = &job.evaluation;
-        let count = job.layer_count.unwrap_or(evaluation.recipe().layers.len());
-        Some(Self {
-            asset: job.identity.asset_id.clone(),
-            entry: evaluation.entry().id.clone(),
-            layers: job.layer_count,
-            pixels: evaluation.prefix_content_key(count).ok()?,
-            geometry: evaluation.geometry_key(count).ok()?,
-        })
-    }
-
     /// Whether `other` puts its pixels where this one does: the same photograph, prefix and
     /// geometry. An overview of one stands in for the other's, marked updating.
     pub(crate) fn same_geometry(&self, other: &Self) -> bool {
