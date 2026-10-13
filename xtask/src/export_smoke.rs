@@ -40,7 +40,7 @@ use luxforge_evidence as script;
 mod sheet;
 
 /// What the run is, for its `result.json`.
-pub const NOTE: &str = "Two runs, each with its own `result.json`: `menu/` over the orientation fixture (the exports the menu and the palette start, the GPU's against the reference's, and the API's presets), and `sheet/` over the generated 24 MP and 60 MP JPEGs (`cargo xtask generate-fixtures --output fixtures/generated`) and the RAW `--source` names, when one is given: the Export sheet's presets, changes, Export again, the taken name, the refused WebP, the warned export's bar and its cancel from Performance, and a batch with one photograph left out. Without `--source` the RAW's frames are pending.";
+pub const NOTE: &str = "Two runs, each with its own `result.json`: `menu/` over the orientation fixture (the exports the menu and the palette start, the GPU's against the reference's, and the API's presets), and `sheet/` over the generated 24 MP and 60 MP JPEGs (`cargo xtask generate-fixtures --output fixtures/generated`), a 16,384 × 64 JPEG the run writes as `sheet/wide.jpg`, and the RAW `--source` names, when one is given: the Export sheet's presets, changes, Export again, the taken name, Web's and Print's sharpening read from their files, the wide photograph's WebP refused and the 60 MP one's warned, the warned export's bar and its cancel from Performance, and a batch that leaves the wide photograph out. Without `--source` the RAW's frames are pending.";
 
 /// The scenario's own run: the menu launch, then the sheet's, each in its own directory. The RAW,
 /// when `--source` names one, is what the sources hold in place of the fixture.
@@ -69,7 +69,7 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
     let journey = run.child("sheet").and_then(|child| sheet::run(child, raw));
     run.record_launches(
         &run.out().join("sheet"),
-        json!({"fixtures": [sheet::LARGE, sheet::PHOTO]}),
+        json!({"fixtures": [sheet::LARGE, sheet::PHOTO], "written": sheet::WIDE}),
     )?;
     if let Err(error) = journey {
         failures.push(format!("sheet: {error}"));
