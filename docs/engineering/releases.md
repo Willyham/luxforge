@@ -29,12 +29,31 @@ Open GitHub **Actions → Release builds** for logs and the public pre-release u
 - `luxforge-VERSION-macos-arm64.dmg`, the macOS download: a disk image holding `Luxforge.app` and an `Applications` link. Open it and drag Luxforge to Applications. The app holds the editor, both CLIs under `Contents/Helpers`, Lensfun resources, notices and help.
 - `luxforge-VERSION-macos-arm64.zip`, the same `Luxforge.app`, kept as the update archive.
 - `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices and help.
+- `luxforge-VERSION-source.tar.gz`, the complete corresponding [source archive](#the-source-archive) of the same commit.
 - `release.json`, per-platform build records and `SHA256SUMS` for the final files.
 - `luxforge-VERSION-updates.json`, the signed update record, once [automatic updates](#automatic-updates) are switched on. It is not listed in `SHA256SUMS` or `release.json`.
 
 The macOS app embeds Sparkle 2.10.0's `Sparkle.framework` for its updater. `release-build` downloads the official archive once into `target/sparkle/2.10.0/`, refuses it unless its length (16,319,840 bytes) and SHA-256 are the pinned ones (`xtask/src/sparkle.rs`), and copies the framework into `Luxforge.app/Contents/Frameworks/` without its XPC services; no Sparkle binary is committed. The app's `Info.plist` names the macOS feed, the committed public key (none while `release/update.json` has none), daily automatic checks and verification of an archive before it is extracted. Signing signs Sparkle's `Autoupdate`, `Updater.app` and the framework before the helpers and the app.
 
 The Linux build uses Ubuntu 24.04/glibc 2.39. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
+
+## The source archive
+
+`cargo xtask release-source --tag TAG --output NEW` writes `luxforge-VERSION-source.tar.gz` and `source.json` into a new directory. It makes the same source checks as `release-build`: without `--allow-dirty` the checkout must be clean, untracked files included, the tag must name HEAD and the Rust toolchain must be the pin. `--allow-dirty` labels a local rehearsal, which assembly refuses; it still archives the committed tree, never uncommitted changes. The release workflow builds it in its own `source` job, which receives no secrets, from the same commit as both downloads.
+
+The archive holds one directory, `luxforge-VERSION-source/`:
+
+- the tracked tree of the commit, exactly as `git archive` writes it, except that `.cargo/config.toml` keeps every original setting and gains the offline source replacement (`vendor/`) and `ORT_CACHE_DIR`;
+- `vendor/`, every crate `Cargo.lock` names, from `cargo vendor --locked --versioned-dirs`;
+- `third_party/onnxruntime-1.28.0/`, the prebuilt ONNX Runtime static libraries of both shipping targets, extracted from the archives `xtask/src/onnxruntime.rs` pins after their length and SHA-256 are checked, in the layout `ort-sys` reads, so its build script downloads nothing. The pinned archives are cached under `target/onnxruntime/`;
+- `notices/macos-arm64/` and `notices/linux-x86_64/`, each target's `cargo xtask inventory` output for its dependency graph;
+- `BUILD.md`, `INSTALL.md` and `RELINK.md`, rendered from `release/source/` with the commit, tag, lockfile hash and pinned toolchain, and `SOURCE.json`, the same identity with the archive's contents, exclusions and test-only omissions.
+
+Bundled native sources and patches (`crates/luxforge-raw`, `crates/luxforge-diffusion`), compiled-in data and their notices are already tracked. The archive leaves out ignored and untracked files: build, evidence and verification output, private inputs, owner originals and the licensed corpus, generated fixtures, catalogs, caches and environment files. A tracked path that looks like one of them (a top-level `artifacts/`, `dist/`, `private/` or `target/`, any `target/` directory, a camera original, a catalog, an environment file or a key, except the throwaway TLS test certificates of `luxforge-net`) refuses the archive rather than being dropped. After packing, the archive's paths, link targets and contents are scanned for the home directory, checkout, output and Cargo and rustup homes of the machine that made it; a match refuses it. The prebuilt ONNX Runtime libraries are not scanned: they were built upstream and are identified by their hashes. Entries carry no owner, group or modification time.
+
+`release-assemble` reads `source/source.json` and the archive beside it in its input when present, refuses another commit or lockfile, a dirty tree, a rehearsal or a size or hash mismatch, then copies the archive into the packet, names it in `release.json`'s `source_archive` and lists it in `SHA256SUMS`. Without a `source/` directory, `source_archive` stays null.
+
+To check the offline build, extract the archive into an empty directory and, with a new empty `CARGO_HOME` and target directory, run `cargo build --release --locked --offline -p luxforge-app -p luxforge-cli` there. A source archive is a build input, not a completed licence review: the distribution review remains a separate gate.
 
 ## One-time hosted macOS signing setup
 
@@ -130,4 +149,4 @@ The output must be new. On macOS it holds the ZIP and the disk image, both label
 
 ## Qualification status
 
-A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a complete corresponding-source/licence review. Those gates, the application icon/desktop integration and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.
+A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a completed source/licence review; the source archive is its input, not its result. The Linux offline build from the archive has not been run. Those gates, the application icon/desktop integration and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.
