@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Unify application and candidate identity for the editor, both CLIs and release metadata.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Ordinary developer builds use workspace.package.version; release builds use the validated normalized tag as the shared compiled application version without rewriting manifests or lockfile. Keep format markers independent. A numeric macOS build number is owned by packaging metadata.",
@@ -16,14 +16,14 @@
         "Define candidate identity and the outside-bundle release.json contract for later tasks: full revision, version, build number, target, profile, toolchain/SDK/native compiler, lock hash, final artifacts and executable hashes, source identity, signing/notary and qualification statuses. Avoid self-referential hashes.",
         "Release input validation refuses dirty tracked/untracked sources, mismatches, unsupported targets and reused outputs. Development packaging remains explicitly unsigned and may record a dirty tree.",
         "Candidate validation admits only the two shipping targets; per-target build/executable/signing/evidence records share the same commit/version/lock. Linux Apple signing/notary fields are not applicable; macOS requirements cannot be bypassed by a Linux result.",
-        "Tag identity and all three --version paths are implemented. Complete any remaining final-distribution build-environment/source/qualification metadata; do not require a Cargo version bump for every release tag."
+        "Tag identity, the core's shared APPLICATION_VERSION (stated by all three --version paths, logs, evidence, the lens report, the network user agent, usage statistics and update.status) and the candidate record contract in xtask/cli/src/release_candidate.rs are implemented: source/tag/output/target/toolchain input checks, build environment, before-signing and final executable hashes, and release.json with a source archive slot and every distribution and platform gate. Later tasks fill the source archive and gate results; readiness verification is TASK-006. No Cargo version bump is needed for a release tag."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "v0.1 distribution contract",
           "target": "docs/design/release-v0.1.md",
-          "relevance": "Scope, deliverables, release boundaries and acceptance"
+          "relevance": "Scope, deliverables, release boundaries, acceptance and the candidate record contract"
         },
         {
           "kind": "file",
@@ -33,27 +33,51 @@
         },
         {
           "kind": "file",
-          "label": "Existing packaging metadata",
+          "label": "Shared application version",
+          "target": "crates/luxforge-core/src/lib.rs",
+          "relevance": "APPLICATION_VERSION, the one compile-time version every executable and report states"
+        },
+        {
+          "kind": "file",
+          "label": "Candidate record contract",
+          "target": "xtask/cli/src/release_candidate.rs",
+          "relevance": "Source checks, target.json/build.json/release.json shape and validation"
+        },
+        {
+          "kind": "file",
+          "label": "Tag build packaging",
+          "target": "xtask/src/release_build.rs",
+          "relevance": "Builds and records a target candidate, checking every packaged --version"
+        },
+        {
+          "kind": "file",
+          "label": "Assembly and record verification",
+          "target": "xtask/cli/src/release_artifacts.rs",
+          "relevance": "Verifies target records against their files and writes release.json"
+        },
+        {
+          "kind": "file",
+          "label": "Development packaging",
           "target": "xtask/src/package.rs",
-          "relevance": "Current plist, build.json and hashes"
+          "relevance": "Unsigned development package, which keeps its stated behavior"
         },
         {
           "kind": "file",
           "label": "Editor startup",
           "target": "crates/luxforge-app/src/main.rs",
-          "relevance": "Add version handling before application launch"
+          "relevance": "Version handling before application launch"
         },
         {
           "kind": "file",
           "label": "Headless startup",
           "target": "crates/luxforge-cli/src/json.rs",
-          "relevance": "Add version handling without catalog ownership"
+          "relevance": "Version handling without catalog ownership"
         },
         {
           "kind": "file",
           "label": "Live CLI version",
           "target": "crates/luxforge-cli/src/live/command.rs",
-          "relevance": "Reuse current nonconnecting --version behavior"
+          "relevance": "Nonconnecting --version behavior"
         }
       ],
       "acceptance_criteria": [
@@ -68,8 +92,13 @@
           "Run quick once at the finished change; apply the performance checklist to any crates changes."
         ],
         "commands": [
-          "tools/cargo-cached test -p luxforge-cli live::tests::commands",
-          "tools/cargo-cached test -p xtask package::tests"
+          "tools/cargo-cached test -p xtask-cli --lib release_",
+          "tools/cargo-cached test -p xtask-cli --lib update",
+          "tools/cargo-cached test -p xtask --bin xtask release_",
+          "tools/cargo-cached test -p luxforge-cli --test version",
+          "tools/cargo-cached test -p luxforge-cli --lib version",
+          "tools/cargo-cached test -p luxforge-app --test version",
+          "tools/cargo-cached xtask release-build --tag v0.1 --build-number 1 --output artifacts/NEW --allow-dirty"
         ],
         "expected_results": [
           "Current recipes/catalogs are not rewritten merely because the application version changes; development packaging retains its stated behavior."
@@ -207,7 +236,7 @@
     {
       "id": "TASK-004",
       "description": "Build the self-contained macOS release bundle and metadata-preserving ZIP.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],
@@ -333,7 +362,7 @@
     {
       "id": "TASK-006",
       "description": "Complete the release-ready packet verifier over tag-build candidates, without duplicating the publication workflow.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],
@@ -603,7 +632,7 @@
     {
       "id": "TASK-010",
       "description": "Build the relocatable Linux x86-64 release tarball with CLI helpers and user-level desktop integration.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],

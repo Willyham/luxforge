@@ -1,4 +1,5 @@
 //! Assemble downloaded build records without compiling the editor or accepting credentials.
+use crate::release_candidate;
 use crate::release_tag::ReleaseTag;
 use crate::{Result, ensure, files, output, read_json};
 use serde_json::{Value, json};
@@ -9,7 +10,7 @@ fn write_json(path: &Path, value: &Value) -> Result {
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(value)?))?;
     Ok(())
 }
-fn hash(path: &Path) -> Result<String> {
+pub(crate) fn hash(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0; 65536];
@@ -68,16 +69,11 @@ pub fn archive_record(path: &Path) -> Result<Value> {
     )
 }
 
+/// Reads `directory/target.json`, checks it against the candidate contract
+/// ([`release_candidate::check_record`]) and its archive and any disk image against their files.
 pub fn verify_record(directory: &Path, tag: &ReleaseTag, target: &str) -> Result<Value> {
     let record = read_json(&directory.join("target.json"))?;
-    ensure(
-        record["schema_version"] == 1
-            && record["tag"] == tag.tag
-            && record["version"] == tag.version
-            && record["target"] == target
-            && record["profile"] == "release",
-        "Build artifact identity mismatch",
-    )?;
+    release_candidate::check_record(&record, tag, target)?;
     let expected = directory.join(archive_name(tag, target)?);
     ensure(
         record["archive"] == archive_record(&expected)?,
@@ -101,10 +97,6 @@ pub fn verify_record(directory: &Path, tag: &ReleaseTag, target: &str) -> Result
             "Only macOS records a disk image",
         )?,
     }
-    ensure(
-        record["release_ready"] == false,
-        "Build artifacts must not claim release qualification",
-    )?;
     Ok(record)
 }
 
@@ -136,13 +128,8 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
         records[0]["lock_sha256"] == hash(&root.join("Cargo.lock"))?,
         "Artifacts use another dependency lockfile",
     )?;
-    ensure(
-        matches!(
-            records[0]["signing"]["status"].as_str(),
-            Some("unsigned" | "notarized")
-        ) && records[1]["signing"]["status"] == "not-applicable",
-        "Invalid platform signing state",
-    )?;
+    let release = release_candidate::release_record(&tag, &records);
+    release_candidate::check_release(&release, &tag)?;
     fs::create_dir_all(out)?;
     for ((target, platform), record) in TARGETS.iter().zip(&records) {
         for name in asset_names(&tag, target)? {
@@ -150,10 +137,7 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
         }
         write_json(&out.join(format!("{platform}.json")), record)?;
     }
-    write_json(
-        &out.join("release.json"),
-        &json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"revision":records[0]["revision"],"lock_sha256":records[0]["lock_sha256"],"status":"build-candidate","release_ready":false,"qualification":{"source_and_licences":"pending","distribution_advisories":"pending","native_gpu_corpus_installation":"not-run"},"targets":records}),
-    )?;
+    write_json(&out.join("release.json"), &release)?;
     fs::write(
         out.join("release-notes.md"),
         format!(
@@ -184,18 +168,7 @@ mod tests {
     /// Writes a build candidate's assets and `target.json` into `directory`, as `release-build`
     /// would, and returns the record.
     fn candidate(directory: &Path, tag: &ReleaseTag, target: &str, extra: Value) -> Value {
-        fs::create_dir_all(directory).unwrap();
-        let archive = directory.join(archive_name(tag, target).unwrap());
-        fs::write(&archive, b"final build archive").unwrap();
-        let mac = target == TARGETS[0].0;
-        let status = if mac { "unsigned" } else { "not-applicable" };
-        let mut record = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"target":target,"profile":"release","archive":archive_record(&archive).unwrap(),"release_ready":false,"signing":{"status":status}});
-        if let Some(name) = disk_image_name(tag, target).unwrap() {
-            let image = directory.join(name);
-            fs::write(&image, b"final disk image").unwrap();
-            record["disk_image"] = archive_record(&image).unwrap();
-            record["signing"]["disk_image"] = json!({"status":status});
-        }
+        let mut record = release_candidate::fixture_record(directory, tag, target, "unsigned");
         for (key, value) in extra.as_object().unwrap() {
             record[key] = value.clone();
         }
@@ -293,7 +266,15 @@ mod tests {
                     .any(|line| line.ends_with(&format!("  {name}")))
             );
         }
+        // An assembled packet is never overwritten.
+        assert!(assemble(&root, &input, &out, &tag.tag).is_err());
         let release = read_json(&out.join("release.json")).unwrap();
+        release_candidate::check_release(&release, &tag).unwrap();
+        assert_eq!(release["release_ready"], false);
+        assert_eq!(
+            release["qualification"]["macos-arm64"]["clean_installation"]["status"],
+            "not-run"
+        );
         assert_eq!(
             release["targets"][0]["disk_image"],
             archive_record(&out.join(&image)).unwrap()
@@ -310,8 +291,9 @@ mod tests {
         let linux = input.join(TARGETS[1].1).join("target.json");
         let original = read_json(&linux).unwrap();
         for (field, bad) in [
-            ("revision", json!("another commit")),
-            ("lock_sha256", json!("another lock")),
+            ("revision", json!("c".repeat(40))),
+            ("lock_sha256", json!("c".repeat(64))),
+            ("build_number", json!("2")),
             ("working_tree_dirty", json!(true)),
             ("rehearsal", json!(true)),
         ] {
