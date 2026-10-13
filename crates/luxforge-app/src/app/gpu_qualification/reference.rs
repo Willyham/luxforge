@@ -586,7 +586,10 @@ fn measure(
     let evaluation = job.evaluation;
     let exact = luxforge_core::render(
         evaluation.registry(),
-        evaluation.source(),
+        evaluation
+            .source()
+            .whole()
+            .map_err(|error| error.to_string())?,
         evaluation.recipe(),
         RenderOptions::exact(&Cancel::never()),
         evaluation.context(),
@@ -2117,7 +2120,7 @@ fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
     let context = luxforge_core::RenderContext::new();
     let frame = luxforge_core::render(
         &registry,
-        &source,
+        source.whole().expect("a test's source is never paged"),
         &recipe,
         RenderOptions::exact(&Cancel::never()),
         &context,
@@ -2329,7 +2332,7 @@ fn the_overview_kind_draws_a_stacks_overview_at_200_within_the_display_tolerance
     let evaluation = crate::app::gpu_rest_tests::committed(photograph.clone(), recipe.clone());
     let reference = luxforge_core::render(
         &crate::app::gpu_tiles_tests::registry(),
-        &photograph,
+        photograph.whole().expect("a test's source is never paged"),
         &recipe,
         RenderOptions::exact(&Cancel::never()),
         &luxforge_core::RenderContext::new(),

@@ -192,6 +192,42 @@ impl GpuSource {
         })
     }
 
+    /// A paged derived source's level 0, `stage` pixels of three planes upright, of which no whole
+    /// frame is ever held: no pixels, only the geometry its windows are cut from. A window of it
+    /// is handed its own planes once they are read ([`Self::filled`]); a slot over this source
+    /// itself, or a window not filled, uploads nothing and derives nothing. `None` for an empty
+    /// stage.
+    pub fn paged(version: u64, stage: (u32, u32)) -> Option<Self> {
+        (stage.0 > 0 && stage.1 > 0).then_some(Self {
+            version,
+            pixels: None,
+            kind: SourceKind::Planes,
+            held: stage,
+            base: stage,
+            crop: (0, 0),
+            stage,
+            window: [0, 0, stage.0, stage.1],
+            map: [1, 0, 0, 0, 1, 0],
+        })
+    }
+
+    /// This window of a source, holding `planes`, its own held texels, red then green then blue,
+    /// row by row, as a paged source's window read gives them, in place of the source's pixels:
+    /// addressed in the whole content stage as before, so it cuts and uploads as the same window
+    /// of a source holding every pixel would. `None` for codes, or when `planes` does not hold
+    /// exactly the held texels.
+    pub fn filled<P: AsRef<[f32]> + Send + Sync + 'static>(&self, planes: Arc<P>) -> Option<Self> {
+        let expected = (self.held.0 as usize)
+            .checked_mul(self.held.1 as usize)?
+            .checked_mul(3)?;
+        (self.kind == SourceKind::Planes && (*planes).as_ref().len() == expected).then(|| Self {
+            pixels: Some(Pixels::Planes(planes)),
+            base: self.held,
+            crop: (0, 0),
+            ..self.clone()
+        })
+    }
+
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -1140,6 +1176,59 @@ mod tests {
             }
         }
         assert!(orientation_map(9, (width, height)).is_none());
+    }
+
+    /// A paged source's window, filled with its own planes, holds and addresses the texels the
+    /// same window of a whole source holding those planes would, and refuses planes of another
+    /// size; the paged source itself holds no pixels.
+    #[test]
+    fn paged_source_render_windows_are_filled_with_their_own_planes() {
+        let (width, height) = (40u32, 30u32);
+        let whole: Vec<f32> = (0..width * height * 3).map(|value| value as f32).collect();
+        let full = GpuSource::planes(
+            7,
+            Arc::new(whole.clone()),
+            (width, height),
+            [0, 0, width, height],
+            1,
+        )
+        .expect("whole planes");
+        let paged = GpuSource::paged(7, (width, height)).expect("a stage");
+        assert!(!paged.holds_pixels());
+        let rect = [10, 5, 12, 9];
+        let window = paged.window(rect).expect("inside");
+        let mut planes = Vec::new();
+        for channel in 0..3 {
+            for y in 5..14 {
+                let row = (channel * height + y) * width;
+                planes.extend_from_slice(&whole[(row + 10) as usize..(row + 22) as usize]);
+            }
+        }
+        assert!(window.filled(Arc::new(vec![0.0f32; 5])).is_none());
+        let filled = window.filled(Arc::new(planes)).expect("its own planes");
+        let expected = full.window(rect).expect("inside");
+        assert!(filled.holds_pixels());
+        assert_eq!(
+            (
+                filled.held,
+                filled.stage,
+                filled.window,
+                filled.map,
+                filled.version
+            ),
+            (
+                expected.held,
+                expected.stage,
+                expected.window,
+                expected.map,
+                expected.version
+            )
+        );
+        assert_eq!((filled.base, filled.crop), ((12, 9), (0, 0)));
+        // A cut of the filled window is the same window again.
+        let inner = filled.window([12, 6, 4, 4]).expect("inside");
+        assert_eq!(inner.crop, (2, 1));
+        assert!(filled.window([0, 0, 4, 4]).is_none());
     }
 
     /// The shaders of both kinds validate with the `naga` wgpu uses.

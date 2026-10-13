@@ -46,6 +46,8 @@ mod entries;
 mod evaluate;
 mod history;
 mod masks;
+#[cfg(test)]
+mod paged_source_render_tests;
 pub(crate) mod pixels;
 mod plan;
 mod source;

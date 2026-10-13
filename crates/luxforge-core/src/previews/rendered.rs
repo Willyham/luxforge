@@ -556,6 +556,8 @@ fn render_with<T>(
         None,
     )
     .of_kind(request.asset.source.tag());
+    // A paged source's tiers are its overview's, the stack over its resident level.
+    let evaluation = evaluation.overview()?.unwrap_or(evaluation);
     let keys = request.keys();
     let (rasters, renderer) = draw(evaluation, &keys, tiles, cancel)?;
     let renderer = RenderedBy::from(renderer);
@@ -784,13 +786,6 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
     let target = match &request.target {
         RenderTarget::File(target) => target.as_ref(),
         RenderTarget::Derived(read) => {
-            use crate::artifacts::derived_source::{SourceClass, paged_source::no_whole_frame};
-            // A paged source's previews render from its resident level once that path does
-            // (TASK-005 of the panorama plan); until then they are refused by name, before its
-            // overview is read.
-            if SourceClass::of(asset.width, asset.height)? == SourceClass::Paged {
-                return Err(no_whole_frame("a rendered preview", &read.id));
-            }
             // The stored source, verified chunk by chunk: a missing or damaged object is
             // `source-unavailable` naming the source and the chunk, and nothing is rendered.
             let work = SourceWork::Derived {
@@ -803,8 +798,22 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
                 .map_err(|error| cancelled_or(cancel, error))?
             {
                 Prepared::Derived(_, derived, _) => derived,
+                // A paged source's previews render from its resident level, read whole here on the
+                // lane's worker, never from level 0 ([`crate::Evaluation::overview`]).
                 Prepared::Paged(_, paged, _) => {
-                    return Err(no_whole_frame("a rendered preview", paged.source.id()));
+                    paged
+                        .source
+                        .resident_level(cancel.flag())
+                        .map_err(|error| cancelled_or(cancel, error))?;
+                    let source = PreviewSource::Paged(crate::PagedPreview::new(paged.source));
+                    if source.dimensions() != (asset.width, asset.height)
+                        || source.fingerprint() != asset.fingerprint
+                    {
+                        return Err(Error::internal(
+                            "the prepared source is not the one the asset records",
+                        ));
+                    }
+                    return Ok(PreparedRender { source, verified });
                 }
                 _ => {
                     return Err(Error::internal(

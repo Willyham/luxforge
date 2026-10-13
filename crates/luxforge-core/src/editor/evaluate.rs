@@ -45,6 +45,13 @@ pub struct Evaluation<S = PreviewSource> {
     /// The kind of photograph the stack edits, which a linear source alone does not say: a RAW's
     /// development and a derived source are both linear planes.
     kind: crate::SourceTag,
+    /// For a paged source's overview ([`Evaluation::overview`]): the full-resolution content stage
+    /// its source, the resident level, reduces, which every spatial parameter in source pixels is
+    /// resolved against and scaled from. `None` where the source is the content stage itself.
+    full: Option<(u32, u32)>,
+    /// The overview's own compilation against the level's stage, which takes the place of the
+    /// bound stack's ([`Evaluation::overview`]); `None` for every other evaluation.
+    reduced: Option<Arc<Result<Compiled, Error>>>,
 }
 
 struct Bound {
@@ -102,7 +109,7 @@ impl<S> Evaluation<S> {
 
     /// The output stage of the compiled stack, or `None` when the host cannot evaluate it.
     pub(crate) fn stage(&self) -> Option<(u32, u32)> {
-        self.bound.compiled.as_ref().ok().map(|compiled| {
+        self.compilation().as_ref().ok().map(|compiled| {
             let stage = compiled.stage();
             (stage.width, stage.height)
         })
@@ -126,7 +133,12 @@ impl<S> Evaluation<S> {
 
     /// The stack's compilation, or the reason the host cannot evaluate it.
     pub(crate) fn compiled(&self) -> Result<&Compiled, Error> {
-        self.bound.compiled.as_ref().map_err(Clone::clone)
+        self.compilation().as_ref().map_err(Clone::clone)
+    }
+
+    /// The overview's own compilation, or the bound stack's.
+    fn compilation(&self) -> &Result<Compiled, Error> {
+        self.reduced.as_deref().unwrap_or(&self.bound.compiled)
     }
 
     /// The kind of photograph the stack edits, the `kind` tag `asset.state` reports: what a module
@@ -142,6 +154,8 @@ impl<S> Evaluation<S> {
             source,
             sensor: self.sensor,
             kind: self.kind,
+            full: self.full,
+            reduced: self.reduced,
         }
     }
 }
@@ -165,6 +179,7 @@ impl Evaluation {
         let kind = match &source {
             PreviewSource::Jpeg(_) => crate::SourceTag::Jpeg,
             PreviewSource::Raw { .. } => crate::SourceTag::Raw,
+            PreviewSource::Paged(_) => crate::SourceTag::Derived,
         };
         Self {
             bound: Arc::new(Bound {
@@ -179,6 +194,8 @@ impl Evaluation {
             source,
             sensor: None,
             kind,
+            full: None,
+            reduced: None,
         }
     }
 
@@ -191,6 +208,54 @@ impl Evaluation {
     /// The buffer the stack is evaluated on.
     pub fn source(&self) -> &PreviewSource {
         &self.source
+    }
+
+    /// The full-resolution content stage the stack is resolved against: the source's own, or for
+    /// a paged source's overview the level 0 its resident level reduces ([`Self::overview`]).
+    pub fn full_stage(&self) -> (u32, u32) {
+        self.full.unwrap_or_else(|| self.source.dimensions())
+    }
+
+    /// Whether this is a paged source's overview, its source a level reduced from the content
+    /// stage, its spatial parameters scaled to it ([`Self::overview`]).
+    pub fn is_overview(&self) -> bool {
+        self.full.is_some()
+    }
+
+    /// The stack of a paged source's evaluation over its resident level
+    /// (`docs/design/panorama-merge.md`, "Rendering, samples and export"): the same entry, recipe,
+    /// draft and identity, the stack compiled once against the level's stage with every payload in
+    /// source pixels resolved against level 0 and scaled to the level, its masks taking the
+    /// thin-feature supersample a reduced stage takes, as a reduced Fit plan compiles. Every
+    /// picture below the level's scale, its histogram and the catalog's rendered previews are this
+    /// evaluation's: a declared approximation of the full-resolution stack reduced the same way.
+    /// `preparation-required`, naming the level, when the source worker has not read it yet; `None`
+    /// for any source but a paged one. `O(layers)`; no pixel is read.
+    pub fn overview(&self) -> Result<Option<Evaluation>, Error> {
+        let PreviewSource::Paged(paged) = &self.source else {
+            return Ok(None);
+        };
+        let level = paged.level_or_preparation()?.clone();
+        let full = paged.dimensions();
+        let compiled = self.registry().compile_sampled(
+            level.width(),
+            level.height(),
+            full.0,
+            full.1,
+            self.recipe(),
+            crate::mask_field::MaskSampling::ThinFeature,
+        );
+        Ok(Some(Evaluation {
+            bound: self.bound.clone(),
+            source: PreviewSource::Raw {
+                image: level,
+                settings: crate::LinearSettings::default(),
+            },
+            sensor: None,
+            kind: self.kind,
+            full: Some(full),
+            reduced: Some(Arc::new(compiled)),
+        }))
     }
 
     /// This evaluation holding the RAW sensor its source was developed from, for a sample grid's
@@ -216,7 +281,7 @@ impl Evaluation {
     /// reason it could not be compiled.
     pub(crate) fn exact(&self, cancel: &Cancel) -> Result<Render<'_>, Error> {
         Render::shared(
-            self.source.input(),
+            self.source.whole()?,
             self.compiled()?,
             RenderOptions::exact(cancel),
             self.context(),
@@ -254,6 +319,9 @@ pub(super) struct Stack {
     asset: AssetRecord,
     rule: RawSettingsMode,
     evaluation: Evaluation<()>,
+    /// A preview's stack, which a paged source draws over its resident level: one whose level the
+    /// source worker has not read yet is `preparation-required` until it has.
+    preview: bool,
 }
 
 impl Stack {
@@ -392,6 +460,7 @@ impl EditorService {
         Ok(Stack {
             asset,
             rule,
+            preview: matches!(purpose, Purpose::Preview { .. }),
             evaluation: Evaluation {
                 bound: Arc::new(Bound {
                     entry,
@@ -405,6 +474,8 @@ impl EditorService {
                 source: (),
                 sensor: None,
                 kind,
+                full: None,
+                reduced: None,
             },
         })
     }
@@ -424,6 +495,13 @@ impl EditorService {
             needs,
             source_of(prepared, stack.evaluation.recipe(), stack.rule),
         )?;
+        // A preview of a paged source is drawn over its resident level, which the source worker
+        // reads whole once ([`crate::artifacts::derived_source::PagedSource::resident_level`]).
+        if stack.preview
+            && let PreviewSource::Paged(paged) = &source
+        {
+            self.needing(needs, paged.level_or_preparation().map(|_| ()))?;
+        }
         // The compilation was made against the asset record's content stage and is rendered
         // against this buffer, so the two must be one stage of one original.
         if source.dimensions() != (stack.asset.width, stack.asset.height)
@@ -437,7 +515,7 @@ impl EditorService {
     }
 
     /// [`Self::evaluation`] of `selection` under the strict rule, reading its source.
-    fn exact_evaluation(
+    pub(super) fn exact_evaluation(
         &self,
         asset_id: &AssetId,
         selection: AnalysisSelection<'_>,
@@ -816,14 +894,11 @@ pub(super) fn source_of(
             image: derived.linear,
             settings: crate::LinearSettings::default(),
         }),
-        // A paged source has no whole frame to evaluate; the editor, previews and export read its
-        // levels and windows once their paths do (TASK-004, TASK-005 of the panorama plan).
-        PreparedSource::Paged(paged) => Err(
-            crate::artifacts::derived_source::paged_source::no_whole_frame(
-                "evaluating a recipe",
-                paged.source.id(),
-            ),
-        ),
+        // A paged source has no whole frame: a path that needs one refuses it by name
+        // ([`PreviewSource::input`]), and the GPU reads its resident level and windows of level 0.
+        PreparedSource::Paged(paged) => {
+            Ok(PreviewSource::Paged(crate::PagedPreview::new(paged.source)))
+        }
     }
 }
 
@@ -842,7 +917,13 @@ impl PointPlan {
     /// stack the host cannot compile, or a source the stack cannot be rendered against. Compiles
     /// the stack, `O(layers)`, and reads no pixel.
     fn new(evaluation: Evaluation, x: u32, y: u32) -> Result<Self, Error> {
-        evaluation.exact(&Cancel::never())?;
+        // A paged source has no whole frame to render, and its points are read through windows
+        // of level 0: its stack need only compile.
+        if evaluation.source().paged().is_some() {
+            evaluation.compiled()?;
+        } else {
+            evaluation.exact(&Cancel::never())?;
+        }
         Ok(Self { evaluation, x, y })
     }
 

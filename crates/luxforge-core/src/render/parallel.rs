@@ -210,6 +210,7 @@ mod tests {
                     .iter()
                     .flat_map(|value| value.to_le_bytes())
                     .collect(),
+                Output::Proxy(PreviewSource::Paged(_)) => unreachable!("no paged source here"),
             }
         }
     }

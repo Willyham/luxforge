@@ -2066,9 +2066,12 @@ impl AsRef<[f32]> for Planes {
 
 /// `source` as the runner cuts windows from it, under `version`: a JPEG's upright codes, or a RAW
 /// development's planes through its view, shared with the evaluation and never copied, as the
-/// desktop hands the photo surface the source on screen (`app::gpu_preview`).
+/// desktop hands the photo surface the source on screen (`app::gpu_preview`); or a paged derived
+/// source's level 0, which holds no pixels, each window of it filled with its own planes when it
+/// is read ([`Windows`]).
 fn gpu_source(version: u64, source: &PreviewSource) -> Result<GpuSource, TileFallback> {
     match source {
+        PreviewSource::Paged(paged) => GpuSource::paged(version, paged.dimensions()),
         PreviewSource::Jpeg(image) => {
             GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
         }
