@@ -132,7 +132,8 @@ fn sampled(
 /// level read; a stack over it streams through the GPU tile worker in tiles of 2,048, each band's
 /// tiles read in windows side by side, no band past its byte cap, and the stream is bit for bit
 /// what the photo surface's own drawing draws over each part of the stage from the same planes
-/// held whole; and a sample at the far corner reads the stream's codes.
+/// held whole; a sample at the far corner reads the stream's codes; and Auto tone's grid reads
+/// the source's own values at its points.
 #[test]
 #[slow]
 fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit() {
@@ -174,9 +175,10 @@ fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit()
     let window = adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     let mut surface = HeadlessSurface::new(&window.device, &window.queue);
+    let planes_held = Arc::new(planes);
     let whole = GpuSource::planes(
         1,
-        Arc::new(planes),
+        Arc::clone(&planes_held),
         (WIDTH, HEIGHT),
         [0, 0, WIDTH, HEIGHT],
         1,
@@ -236,6 +238,45 @@ fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit()
             streamed[at..at + 4],
             "{test}: the sample at ({x}, {y})"
         );
+    }
+
+    // Auto tone's grid of the stage Basic receives reads level 0 through windows on the GPU too:
+    // each point is the source's own value at its nearest pixel, every grid row in the source.
+    let (sender, grid) = mpsc::sync_channel(1);
+    let held = over_paged.clone();
+    service.submit(TileCall::caller(
+        client,
+        Cancel::new(),
+        move |reads, cancel| {
+            let read = luxforge_core::tiles::read_grid(&held, 0, reads, cancel)?;
+            let _ = sender.send(read);
+            Ok(serde_json::Value::Null)
+        },
+        |_| {},
+    ));
+    let read = grid
+        .recv_timeout(HANG)
+        .unwrap_or_else(|_| panic!("{test}: the Auto tone grid"));
+    assert_eq!(
+        read.answered,
+        Answered::gpu(),
+        "{test}: the GPU reads the grid"
+    );
+    let [columns, rows] = read.sample.grid;
+    assert_eq!(read.sample.rgb.len(), (columns * rows) as usize);
+    let plane = (WIDTH * HEIGHT) as usize;
+    for (index, rgb) in read.sample.rgb.iter().enumerate() {
+        let (column, row) = (index as u32 % columns, index as u32 / columns);
+        let x = ((f64::from(column) + 0.5) * f64::from(WIDTH) / f64::from(columns)) as usize;
+        let y = ((f64::from(row) + 0.5) * f64::from(HEIGHT) / f64::from(rows)) as usize;
+        let at = y * WIDTH as usize + x;
+        for (channel, value) in rgb.iter().enumerate() {
+            let expected = planes_held[channel * plane + at];
+            assert!(
+                (value - expected).abs() <= 1e-6,
+                "{test}: point ({x}, {y}) channel {channel}: {value} against {expected}"
+            );
+        }
     }
     eprintln!("{test}: the worker's figures {:?}", service.figures());
     owner.stop();
