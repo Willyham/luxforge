@@ -341,6 +341,20 @@ pub(crate) struct CaptureSync {
     /// arriving during the asynchronous screenshot invalidates that request just as a newer photo
     /// does.
     pub(crate) clipping_version: Option<u64>,
+    /// The layout the canvas had when readback was requested: the state panel, the tools panel and
+    /// the filmstrip. A file's open hides the strip until its folder is read, so the strip can come
+    /// back during the screenshot; the frame read back would then sit in another canvas than the
+    /// one recorded beside it, and is retaken.
+    pub(crate) layout: Option<CaptureLayout>,
+}
+
+/// What the canvas a frame is drawn in depends on besides the window: which side panels are open
+/// and whether Develop's filmstrip sits under the canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CaptureLayout {
+    pub(crate) state_panel: bool,
+    pub(crate) tools_panel: bool,
+    pub(crate) filmstrip: bool,
 }
 
 impl Default for CaptureSync {
@@ -351,6 +365,7 @@ impl Default for CaptureSync {
             drawn: Arc::new(AtomicU64::new(u64::MAX)),
             state: None,
             clipping_version: None,
+            layout: None,
         }
     }
 }
@@ -821,6 +836,15 @@ fn edit_messages(edit: &luxforge_evidence::SheetEdit, dir: &std::path::Path) -> 
 }
 
 impl Editor {
+    /// The layout the canvas is drawn in now, as a capture records it.
+    pub(super) fn capture_layout(&self) -> CaptureLayout {
+        CaptureLayout {
+            state_panel: self.workspace.title.state_panel_open,
+            tools_panel: self.workspace.title.tools_panel_open,
+            filmstrip: self.filmstrip_shown(),
+        }
+    }
+
     /// A scripted screenshot waits for the intended photograph's actual GPU draw. The capture
     /// sync marker proves the widget tree is current; this checks the texture when its write was
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
@@ -1190,7 +1214,9 @@ impl Editor {
                 self.follow_timing();
                 let recorded = (self.snapshot(), self.activity.requested, self.drawn_photo());
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
+                let layout = self.capture_layout();
                 if let Some(evidence) = &mut self.evidence {
+                    evidence.sync.layout = Some(layout);
                     evidence.sync.state = Some((
                         recorded.0,
                         recorded.1,
@@ -1225,11 +1251,13 @@ impl Editor {
                     || self.evidence.as_ref().is_some_and(|evidence| {
                         evidence.sync.clipping_version
                             != self.overlay_surface().map(luxforge_ui::Frame::version)
+                            || evidence.sync.layout != Some(self.capture_layout())
                     });
                 if stale {
                     if let Some(evidence) = &mut self.evidence {
                         evidence.sync.state = None;
                         evidence.sync.clipping_version = None;
+                        evidence.sync.layout = None;
                         evidence.saving = false;
                         evidence.capture_pending = true;
                     }
@@ -1238,6 +1266,7 @@ impl Editor {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.capture_overlay = false;
                     evidence.sync.clipping_version = None;
+                    evidence.sync.layout = None;
                 }
                 self.event(
                     "frame_captured",
@@ -1259,11 +1288,13 @@ impl Editor {
                     });
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
-                // The photo surface spans the window minus padding, the sidebar and their spacing.
-                let (state_panel, tools_panel) = (
-                    self.workspace.title.state_panel_open,
-                    self.workspace.title.tools_panel_open,
-                );
+                // The photo surface spans the window minus padding, the sidebar and their spacing,
+                // laid out as it was when the screenshot was asked for and still is.
+                let CaptureLayout {
+                    state_panel,
+                    tools_panel,
+                    filmstrip,
+                } = self.capture_layout();
                 let columns =
                     crate::layout::surface_columns(logical_width, scale, state_panel, tools_panel);
                 let canvas = crate::layout::canvas_rect(
@@ -1271,7 +1302,7 @@ impl Editor {
                     scale,
                     state_panel,
                     tools_panel,
-                    self.filmstrip_shown(),
+                    filmstrip,
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);

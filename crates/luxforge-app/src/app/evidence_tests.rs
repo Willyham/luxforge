@@ -291,9 +291,11 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     assert_eq!(editor.presentation.presenter.photo_version(), photo_version);
     assert_ne!(editor.overlay_surface().unwrap().version(), first_clipping);
 
+    let layout = editor.capture_layout();
     let evidence = editor.evidence.as_mut().expect("evidence run");
     evidence.sync.state = Some((json!({"old":"clipping"}), 1, photo_version, None));
     evidence.sync.clipping_version = Some(first_clipping);
+    evidence.sync.layout = Some(layout);
     evidence.capture_pending = false;
     evidence.saving = true;
     let shot = iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
@@ -308,6 +310,47 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     assert!(
         evidence.frames.is_empty(),
         "no mismatched frame was published"
+    );
+    finish(editor, catalog);
+}
+
+/// The canvas may be laid out again while a screenshot is in flight, as when a file's open brings
+/// the filmstrip back once its folder is read, without changing the photograph or its overlay. The
+/// frame read back is then retaken rather than published beside a canvas it was not drawn in.
+#[test]
+fn evidence_retries_a_readback_whose_canvas_was_laid_out_again() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+    editor
+        .presentation
+        .presenter
+        .show_photo(&luxforge_core::Raster {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255].into(),
+            source_fingerprint: "f".into(),
+            snapshot_id: luxforge_core::SnapshotId::new(),
+        });
+    let photo_version = editor.presentation.presenter.photo_version();
+    let clipping_version = editor.overlay_surface().map(luxforge_ui::Frame::version);
+    let layout = editor.capture_layout();
+    let evidence = editor.evidence.as_mut().expect("evidence run");
+    evidence.sync.state = Some((json!({"old":"layout"}), 1, photo_version, None));
+    evidence.sync.clipping_version = clipping_version;
+    evidence.sync.layout = Some(layout);
+    evidence.capture_pending = false;
+    evidence.saving = true;
+    editor.workspace.title.tools_panel_open = !layout.tools_panel;
+    let shot = iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
+    let _ = editor.dispatch(Message::Evidence(EvidenceMessage::Captured(shot)));
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(
+        evidence.capture_pending && !evidence.saving,
+        "a new draw is requested"
+    );
+    assert!(evidence.sync.state.is_none() && evidence.sync.layout.is_none());
+    assert!(
+        evidence.frames.is_empty(),
+        "no frame was published beside another canvas"
     );
     finish(editor, catalog);
 }
