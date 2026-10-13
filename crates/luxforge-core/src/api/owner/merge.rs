@@ -110,6 +110,9 @@ mod hdr_merge_end_to_end;
 #[cfg(test)]
 #[path = "hdr_merge_job.rs"]
 mod hdr_merge_job;
+#[cfg(test)]
+#[path = "panorama_merge_tests.rs"]
+mod panorama_merge;
 #[cfg(any(test, feature = "test-holds"))]
 pub use frames::SyntheticFrame;
 #[path = "merge_preview.rs"]
