@@ -215,7 +215,7 @@ impl MergeLane {
 
     /// Stitch panoramas with `stitcher` and read their frames with `frames`, as a build with its
     /// panorama stitch does.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-holds"))]
     pub(super) fn set_panorama(
         &mut self,
         stitcher: Arc<dyn Stitcher>,

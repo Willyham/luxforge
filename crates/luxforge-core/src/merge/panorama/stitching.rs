@@ -30,7 +30,7 @@ use crate::{
 };
 use std::{any::Any, sync::Arc};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-holds"))]
 #[path = "stitching_simple.rs"]
 pub(crate) mod simple;
 
