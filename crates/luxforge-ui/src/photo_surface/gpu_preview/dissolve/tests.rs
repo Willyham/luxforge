@@ -389,6 +389,7 @@ fn primitive(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>) -> PhotoPrimit
             share,
         }),
         source: None,
+        window: None,
         rest: None,
         overview: None,
         overview_draw: None,

@@ -118,6 +118,7 @@ fn primitive(steps: Vec<GpuStep>) -> PhotoPrimitive {
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        window: None,
         rest: None,
         overview: None,
         overview_draw: None,
