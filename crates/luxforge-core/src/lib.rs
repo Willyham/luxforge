@@ -140,6 +140,7 @@ pub use modules::{
     largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
     temperature_tint_from_gains,
 };
+pub use modules::PROOF_SELECTION_ARTIFACT;
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{DeveloperModels, HostView, TaskAdmission, TaskNeeds};
 pub use modules::{

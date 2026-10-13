@@ -209,6 +209,33 @@
       ]
     },
     {
+      "id": "mask-model",
+      "family": "mask-model",
+      "class": "pointwise",
+      "developer": true,
+      "description": "A model selection over the developer producer's checked-in 96 x 64 alpha raster (a soft ellipse, a hard rectangle and stripes, stretched over the content stage) at the defaults, so its coverage is the eased alpha, carrying a masked Basic layer: the raster read through the coverage program's storage block.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "task.publish-proof-selection", "params": {}}},
+        {"api": {"method": "mask.create-model", "params": {"artifact": "artifact-d808f41015876053c0122c8e78285f9a56389199669be0479850efe5e37b1f3f", "class": "subject", "model": "proof-selection", "model_version": "1", "input_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000", "prefix_hash": "0000000000000000000000000000000000000000000000000000000000000000", "threshold": 50.0, "feather": 100.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
+      "id": "mask-model-composed",
+      "family": "mask-model",
+      "class": "pointwise",
+      "developer": true,
+      "description": "The same raster as a hard-edged selection at threshold 40, intersected with a linear gradient, carrying a masked Basic layer: the hard branch and the composition with a geometric kind.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "task.publish-proof-selection", "params": {}}},
+        {"api": {"method": "mask.create-model", "params": {"artifact": "artifact-d808f41015876053c0122c8e78285f9a56389199669be0479850efe5e37b1f3f", "class": "subject", "model": "proof-selection", "model_version": "1", "input_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000", "prefix_hash": "0000000000000000000000000000000000000000000000000000000000000000", "threshold": 40.0, "feather": 0.0}}},
+        {"api": {"method": "mask.add-linear", "params": {"mask": {"name": "Mask 1"}, "mode": "intersect", "x0": 0.2, "y0": 0.5, "x1": 0.8, "y1": 0.5}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
       "id": "crop-straightened",
       "family": "crop",
       "class": "pointwise",
