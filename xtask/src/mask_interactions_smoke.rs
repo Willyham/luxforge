@@ -242,11 +242,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             json!({"target":frame.state()["masks"]["selected"]}),
         );
     }
+    // Each live frame shows the draft bar over the top of the canvas, which the portrait fixture
+    // reaches at Fit, and its shadow falls on the photograph's top few percent: the probes of full
+    // coverage stay below it.
     for (live, committed, probes) in [
         (
             "linear-black",
             "linear-committed",
-            vec![[0.65, 0.06], [0.65, 0.18], [0.65, 0.75]],
+            vec![[0.65, 0.09], [0.65, 0.18], [0.65, 0.75]],
         ),
         (
             "radial-live",
