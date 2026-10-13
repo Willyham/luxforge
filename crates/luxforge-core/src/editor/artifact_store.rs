@@ -475,6 +475,19 @@ impl EditorService {
         }
     }
 
+    /// When the catalog recorded artifact `id` as published, if it records the artifact. One
+    /// lookup.
+    pub(super) fn artifact_created_ms(&self, id: &ArtifactId) -> Result<Option<i64>, Error> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT created_ms FROM artifacts WHERE id=?1",
+                [id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?)
+    }
+
     /// `artifact.status`: the root, what its manifest says, and how many artifacts are referenced,
     /// collectable and recorded in bytes. Reads the manifest and counts rows; touches no object.
     pub(crate) fn artifact_status(&self) -> Result<Value, Error> {

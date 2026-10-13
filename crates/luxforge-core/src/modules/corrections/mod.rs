@@ -22,7 +22,7 @@ mod table;
 mod tests;
 
 pub use geometry::{SourceFit, fit_correction_source};
-pub(crate) use input::source_identity;
+pub(crate) use input::{selection_prefix, source_identity};
 pub use input::{RepairInput, StaleReason};
 pub(crate) use module::CorrectionsModule;
 pub use query::StaleCorrection;
