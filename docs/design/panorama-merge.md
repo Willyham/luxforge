@@ -333,7 +333,7 @@ Ordinary correctness, recovery and rendered checks ship with the working feature
    - Remove merge, undo and redo with no second merge;
    - a relaunch with the originals moved away.
 
-   The `hdr-merge` journey and existing JPEG and RAW journeys remain valid. The `panorama-merge` scenario (`xtask/src/panorama_merge_smoke.rs`) generates a four-frame row and a ten-frame row of 24 MP JPEGs whose result is about 150 MP. It runs three launches: `select` makes both merges through the menu, the sheet and ⌥-click; `develop` opens the results from the catalog folders they were filed in, edits and exports them; and `offline` reopens them with the frames renamed away. It has not yet been run.
+   The `hdr-merge` journey and existing JPEG and RAW journeys remain valid. The `panorama-merge` scenario (`xtask/src/panorama_merge_smoke.rs`) generates a four-frame row of 1.5 MP JPEGs and a ten-frame row of 24 MP JPEGs whose result is about 150 MP. It runs three launches: `select` makes both merges through the menu, the sheet and ⌥-click; `develop` opens the results from the catalog folders they were filed in, edits and exports them; and `offline` reopens them with the frames renamed away. It has not yet been run.
 6. After delivery, natural panoramas, the owner's own where available (the Z6, X100VI and Air 2S among them), qualify seams, levelling, colour, crop losses and warp quality. Photo-sized measurements behind the host lock report:
    - merge stages, cold and warm;
    - cancellation latency;
