@@ -17,21 +17,41 @@
 //!    length and radial term ([`camera`]) by robust bundle adjustment ([`bundle`]), checks
 //!    connectivity and same views, levels the world and picks the reference, or refuses with a
 //!    typed [`Refusal`] naming the frames.
+//!
+//! Stitching ([`stitch`]):
+//!
+//! 4. [`plan_stitch`] lays the output out from the registration and the frames' colour proxies:
+//!    the [`projection`], the bounding rectangle and scale ([`layout`]), per-frame gains
+//!    ([`photometric`]), seams by minimum cuts ([`seams`]), the two-band blend's correction field
+//!    ([`blend`]), Boundary Warp's mesh ([`warp`]), the crop and the stack order, and draws the
+//!    merge preview from the proxies ([`StitchPlan::preview`]).
+//! 5. [`StitchPlan::render_chunk`] draws any rectangle of the result from windows of the frames'
+//!    full-resolution pixels, bit-identically for any split into chunks.
 
+pub mod blend;
 pub mod bundle;
 pub mod camera;
 pub mod features;
 // The panorama merge job reads its frames through this; until it does, only the tests here do.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod frames;
+pub mod layout;
 mod linalg;
 pub mod matching;
+pub mod photometric;
+pub mod projection;
 pub mod proxy;
 pub mod refusal;
 pub mod registration;
+pub mod seams;
+pub mod stitch;
+pub mod warp;
 
 pub use camera::{Lens, MAX_RADIAL, Rotation};
 pub use features::{Feature, FrameFeatures, MAX_FEATURES};
+pub use layout::OutputGeometry;
+pub use photometric::{FrameGain, GainMode};
+pub use projection::{Field, Projection, ProjectionChoice};
 pub use proxy::{MAX_PROXY_SIDE, PanoramaProxy, ProxyBuilder, ProxyRows};
 pub use refusal::Refusal;
 pub use registration::{
@@ -40,6 +60,14 @@ pub use registration::{
     RegistrationDiagnostics, RegistrationOptions, RegistrationStage, register,
     register_with_progress,
 };
+pub use stitch::{
+    Contribution, CoveredRun, FrameOutline, FrameWindow, PanoramaOverlays, PanoramaPreview,
+    PlanGrid, SeamLength, StitchDiagnostics, StitchOptions, StitchPlan, StitchStage, StitchedChunk,
+    plan_stitch, plan_stitch_with_progress,
+};
+pub use warp::WarpMesh;
 
 #[cfg(test)]
 mod panorama_registration;
+#[cfg(test)]
+mod panorama_stitch;
