@@ -38,7 +38,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 ### In progress
 
-[Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)): the owner authorized implementation on 2026-10-12. TASK-001 settings, presets and API, TASK-002 JPEG options and the limit search, TASK-003 the WebP and TIFF encoders and TASK-004 resized and 16-bit output are complete, and TASK-005 joined them into `export.write` and `batch.export`. TASK-006, the desktop's Export sheet, menu and batch sheet, is in progress; output sharpening and qualification follow.
+[Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)): the owner authorized implementation on 2026-10-12. TASK-001 settings, presets and API, TASK-002 JPEG options and the limit search, TASK-003 the WebP and TIFF encoders and TASK-004 resized and 16-bit output are complete; TASK-005 joined them into `export.write` and `batch.export`, and TASK-006 delivered the desktop's Export sheet, menu and batch sheet. TASK-007, output sharpening, is in progress; TASK-008, full-corpus qualification, measurements and final documentation, follows.
 
 [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)): the owner asked on 2026-10-12 for the plan to be built. The minimap is implemented and documented, with a passing background zoom journey on generated 24 MP and 60 MP JPEGs. TASK-004 remains in progress for the GPU corpus qualification, RAW/resize/recovery rendered coverage and photo-sized M4 measurements, which have not been run.
 
@@ -83,13 +83,9 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 
 ## Output
 
-**JPEG export follow-ups.** JPEG export is delivered ([design](design/export.md)).
-- **Export settings** ([design](design/export-settings.md), [tasks](../tasks/rendering/export-settings.json)) are planned:
-  - an Export sheet with Web, Print and Master presets and the person's own
-  - JPEG, lossy WebP and 8/16-bit TIFF, with resizing, optimised encoding, file-size limits and metadata levels
-  - output sharpening as a second delivery
-
-  The resized, 16-bit and sharpened tolerances are declared in the design. Settings, encoders and render paths can start independently before integration and the desktop. The request authorizes planning only.
+**Export.** The Export sheet, presets, JPEG, WebP and TIFF, resizing, Optimise, file-size limits and metadata levels are delivered ([export settings](design/export-settings.md), [export](design/export.md)). What remains ([tasks](../tasks/rendering/export-settings.json)):
+- Output sharpening (Screen, Matte, Glossy by Low, Standard, High), in progress
+- Full-corpus `gpu-qualification` of the resized, 16-bit and sharpened export kinds, and measuring export cost on the M4 at 24 MP and 60 MP on both renderers
 - Wide-gamut output still needs its own decision and tolerance (owner, 2026-10-07)
 
 ## Library
