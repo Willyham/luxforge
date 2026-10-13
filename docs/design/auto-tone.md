@@ -73,7 +73,8 @@ The query answers a bounded report (at most 4 KiB):
 - `algorithm` (`auto-tone/1`) and `values`.
 - The sample's dimensions, count and exclusions, and how source clipping was detected (`source_clip_detection`: `jpeg-code-255` or `raw-sensor-white`).
 - The statistics each value came from: the luminance percentiles, the bright and dark band fractions, the clipping fractions and the mean chroma.
-- The fields that stopped at a bound.
+- The clipping floors of the last sweep (`floors`: `highlight` at Whites −60, `shadow` at Blacks +60).
+- The fields that stopped at a bound, and any constraint the final values do not meet (`unmet`).
 - The layers the forward model used and the layers it left out.
 
 `edit.auto-tone` answers the same report as `analysis.auto-tone` beside its mutation result, also on a no-op: the report its values came from, added to the answer after the commit and never stored with the request, so a deduplicated retry, which analyses nothing, carries none. A preset whose Auto step applied answers it the same way. The desktop shows the report's text in the Auto button's tooltip after a run, taken from that answer; it asks no query, so a click analyses and solves once. The query exists so a person or an agent can see why Auto would choose a value without committing.
@@ -121,7 +122,7 @@ The solve runs off the owner and off the tile service, in a pure function in `lu
 
 - `y` is the output's encoded Rec. 709 luminance.
 - `P_q` is a weighted percentile of `y` over the sample.
-- The clipping fractions count non-excluded samples with any output channel at 1 (highlight) or 0 (shadow).
+- The clipping fractions count non-excluded samples with any output channel at 1 (highlight) or every output channel at 0 (shadow). Basic's tone scales a pixel's channels together, so it drives one channel to 0 only with the others: a single channel at 0 is a colour out of gamut, such as turquoise water through the Look, which no Blacks value removes and which lifting Blacks only greys.
 
 **Steps**, in fixed order. Every search runs over the field's own grid, so the committed value meets its constraint exactly:
 
@@ -136,8 +137,9 @@ The solve runs off the owner and off the tile service, in a pure function in `lu
    - The cap answers the over-lift complaint.
 4. **Contrast** `C` within −50..50.
    - `C = 100 · (0.60 − (P_90 − P_10))`, measured with the values so far.
-5. **Whites** `W` within −60..60: the largest integer whose highlight clipping fraction is at most 0.05%. Binary search.
-6. **Blacks** `B` within −60..60: the smallest integer whose shadow clipping fraction is at most 0.05%. Binary search.
+5. **Whites** `W` within −60..60: the largest integer whose highlight clipping fraction is at most 0.05% above its floor, the fraction at Whites −60. Binary search.
+6. **Blacks** `B` within −60..60: the smallest integer whose shadow clipping fraction is at most 0.05% above its floor, the fraction at Blacks +60. Binary search.
+   - **Floors.** Each field is held to the clipping it causes. Clipping that remains at the field's bound that clips least is not its to remove, such as speculars far above white that are not flagged as clipped in the source. Held to the absolute 0.05% instead, a frame with more such samples than that has no acceptable value: the field stops at that bound (Whites −60 dims every other highlight; Blacks +60 greys the shadows and the second sweep then lowers Exposure to hold the median), with no gain.
 7. **Second sweep.** Repeat step 1 with the other tone values fixed, then steps 5 and 6. Exactly two sweeps.
 8. **Vibrance** and **Saturation.** `ĉ` is the mean Oklab chroma of non-excluded, non-near-black output samples at the final tone values.
    - Vibrance is `clamp(60 · (1 − ĉ / c_v), 0, 25)`, with `c_v = 0.07`.

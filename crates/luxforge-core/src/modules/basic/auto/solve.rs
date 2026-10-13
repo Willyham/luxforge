@@ -148,6 +148,14 @@ pub struct SampleReport {
     pub non_finite: usize,
 }
 
+/// The highlight and shadow clipping fractions that remain at the bound of Whites and of Blacks
+/// that clips least.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClipFloors {
+    pub highlight: f64,
+    pub shadow: f64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AutoToneReport {
     pub algorithm: String,
@@ -159,6 +167,9 @@ pub struct AutoToneReport {
     pub contrast: Statistics,
     pub tone: Statistics,
     pub output: Statistics,
+    /// The clipping fractions Whites and Blacks cannot remove, at the final tone values: what
+    /// remains at Whites −60 and at Blacks +60. Each field's allowance is counted above its floor.
+    pub floors: ClipFloors,
     pub bounded: Vec<String>,
     pub unmet: Vec<String>,
 }
@@ -373,7 +384,11 @@ fn counts(
                 }
                 counts.included += 1;
                 counts.highlights += usize::from(clamped.contains(&1.));
-                counts.shadows += usize::from(clamped.contains(&0.));
+                // Shadow clipping is black: every channel at 0. Basic's tone scales a pixel's
+                // channels together, so it drives one channel to 0 only with the others; a single
+                // channel at 0 is a colour out of gamut, such as turquoise water through the Look,
+                // which no Blacks value removes and lifting Blacks only greys.
+                counts.shadows += usize::from(clamped == [0.; 3]);
                 if need == Need::Chroma && luminance(clamped) > 1e-6 {
                     let lab = to_oklab(clamped);
                     counts.chroma_sum += f64::from(lab.a).hypot(f64::from(lab.b));
@@ -867,13 +882,39 @@ fn solve_reduced(
         )?;
         Ok(f64::from(guarded) / 100.)
     };
+    // Whites and Blacks are each held to the clipping they cause: the clipping that remains at the
+    // field's bound that clips least (Whites −60, Blacks +60), such as speculars far above white
+    // that the source does not flag, is not theirs to remove, so the allowance is counted above
+    // it. Held to the absolute fraction instead, a frame whose fixed clipping exceeds the
+    // allowance has no acceptable value and the field stops at that bound, dimming or greying the
+    // whole picture for nothing.
     let endpoints = |model: &mut Evaluator<'_, _>,
                      mut values: AutoToneValues|
-     -> Result<AutoToneValues, Error> {
+     -> Result<(AutoToneValues, ClipFloors), Error> {
+        let floors = ClipFloors {
+            highlight: model
+                .clipping(
+                    false,
+                    AutoToneValues {
+                        whites: BOUNDS[4].0,
+                        ..values
+                    },
+                )?
+                .0,
+            shadow: model
+                .clipping(
+                    false,
+                    AutoToneValues {
+                        blacks: BOUNDS[5].1,
+                        ..values
+                    },
+                )?
+                .1,
+        };
         values.whites = f64::from(model.search(
             (-60, 60),
             values.whites as i32,
-            targets.clipping,
+            floors.highlight + targets.clipping,
             |model, reduced, step| {
                 let candidate = AutoToneValues {
                     whites: f64::from(step),
@@ -886,7 +927,7 @@ fn solve_reduced(
         values.blacks = -f64::from(model.search(
             (-60, 60),
             -values.blacks as i32,
-            targets.clipping,
+            floors.shadow + targets.clipping,
             |model, reduced, step| {
                 let candidate = AutoToneValues {
                     blacks: -f64::from(step),
@@ -895,7 +936,7 @@ fn solve_reduced(
                 Ok(model.clipping(reduced, candidate)?.1)
             },
         )?);
-        Ok(values)
+        Ok((values, floors))
     };
     let mut values = AutoToneValues::default();
     values.exposure = exposure(&mut model, values)?;
@@ -908,9 +949,10 @@ fn solve_reduced(
     values.contrast = (100. * (targets.spread - (contrast.p90 - contrast.p10)))
         .clamp(-50., 50.)
         .round();
-    values = endpoints(&mut model, values)?;
+    (values, _) = endpoints(&mut model, values)?;
     values.exposure = exposure(&mut model, values)?;
-    values = endpoints(&mut model, values)?;
+    let floors;
+    (values, floors) = endpoints(&mut model, values)?;
     let tone = model.statistics(false, values, true)?;
     values.vibrance = (60. * (1. - tone.mean_chroma / targets.vibrance_chroma))
         .clamp(0., 25.)
@@ -928,8 +970,14 @@ fn solve_reduced(
         .collect();
     let unmet = [
         ("bright-guard", tone.near_white > targets.bright_guard),
-        ("highlight-clipping", tone.highlight_clip > targets.clipping),
-        ("shadow-clipping", tone.shadow_clip > targets.clipping),
+        (
+            "highlight-clipping",
+            tone.highlight_clip > floors.highlight + targets.clipping,
+        ),
+        (
+            "shadow-clipping",
+            tone.shadow_clip > floors.shadow + targets.clipping,
+        ),
     ]
     .into_iter()
     .filter(|(_, failed)| *failed)
@@ -944,6 +992,7 @@ fn solve_reduced(
         contrast,
         tone,
         output,
+        floors,
         bounded,
         unmet,
         sample: SampleReport {
