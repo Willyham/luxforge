@@ -95,6 +95,7 @@ pub(super) fn source(format: BoundaryFormat) -> PreviewSource {
 /// JPEG code's linear value or a RAW's `f32`, row by row.
 pub(super) fn whole(source: &PreviewSource) -> Vec<[f32; 3]> {
     match source {
+        PreviewSource::Paged(_) => unreachable!("no paged source here"),
         PreviewSource::Jpeg(image) => {
             let table = luxforge_core::colour::srgb::decode_table();
             image
@@ -242,7 +243,7 @@ fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
                 let context = RenderContext::new();
                 let exact = render(
                     &registry,
-                    &source,
+                    source.whole().expect("a test's source is never paged"),
                     &recipe,
                     RenderOptions::exact(&Cancel::never()),
                     &context,
@@ -395,7 +396,7 @@ fn gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
             let context = RenderContext::new();
             let exact = render(
                 &registry,
-                &source,
+                source.whole().expect("a test's source is never paged"),
                 &recipe,
                 RenderOptions::exact(&Cancel::never()),
                 &context,

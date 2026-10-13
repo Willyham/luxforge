@@ -344,6 +344,14 @@ pub(crate) enum SourceWork {
         /// first-open readiness the worker awaits.
         first_open: Option<Arc<crate::ModuleRegistry>>,
     },
+    /// Read the resident level of a paged derived source the cache holds, whole and verified
+    /// (`crate::artifacts::derived_source::PagedSource::resident_level`): what every view of it
+    /// below the level's scale is drawn over. Held by the source itself, counted by the plane
+    /// gate; nothing is adopted.
+    Level {
+        asset_id: AssetId,
+        source: Arc<crate::artifacts::derived_source::PagedSource>,
+    },
     /// Redevelop the cached RAW mosaic at new gains.
     Develop(Box<RawDevelopment>),
     /// The asset's source is already prepared; only its artifacts need reading.
@@ -491,6 +499,10 @@ impl SourceWork {
                         Prepared::Paged(asset_id, prepared, read()?)
                     }
                 })
+            }
+            Self::Level { asset_id, source } => {
+                source.resident_level(cancel)?;
+                Ok(Prepared::Artifacts(asset_id, read()?))
             }
             Self::Develop(request) => {
                 let developed = RawPrepared::develop(
@@ -895,6 +907,21 @@ impl EditorService {
             .map(|_| state))
     }
 
+    /// The paged derived source the cache holds for `asset_id`, shared, if it holds one.
+    fn cached_paged(
+        &self,
+        asset_id: &AssetId,
+    ) -> Option<Arc<crate::artifacts::derived_source::PagedSource>> {
+        let cache = self.source_cache.borrow();
+        match cache.as_ref().filter(|cached| cached.asset_id == *asset_id) {
+            Some(cached) => match &cached.source {
+                PreparedSource::Paged(paged) => Some(paged.source.clone()),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+
     /// Metadata-only stale-read guard, also for a preset's uncommitted RAW development. Both
     /// retained developments are immutable and valid while the original's signature matches.
     pub(super) fn holds_verified_source(
@@ -978,6 +1005,17 @@ impl EditorService {
             }
             return Ok(Preparing::Work(work, reads));
         };
+        // A paged source the cache holds whose resident level is still to be read: a preview
+        // refused for it asked for exactly that.
+        if let Some(source) = self.cached_paged(asset_id)
+            && source.resident_now().is_none()
+        {
+            let work = SourceWork::Level {
+                asset_id: asset_id.clone(),
+                source,
+            };
+            return Ok(Preparing::Work(work, reads));
+        }
         let development = match needs.gains {
             Some(gains) => self.raw_development(asset_id, gains)?,
             None => None,

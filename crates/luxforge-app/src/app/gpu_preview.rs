@@ -552,10 +552,23 @@ impl AsRef<[f32]> for DevelopedPlanes {
     }
 }
 
-/// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, or a
-/// RAW development's planes through its view, each shared with the preview job, never copied.
+/// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, a
+/// RAW development's planes through its view, or a paged derived source's resident level, once
+/// read, each shared with the preview job, never copied. A window of a paged source's level 0 is
+/// held beside it ([`GpuPreview::window`]).
 pub(crate) fn gpu_source_of(version: u64, source: &PreviewSource) -> Option<GpuSource> {
     match source {
+        PreviewSource::Paged(paged) => {
+            let level = paged.level()?;
+            let (_, base, crop, orientation) = level.shared_planes();
+            GpuSource::planes(
+                version,
+                Arc::new(DevelopedPlanes(level.clone())),
+                base,
+                crop,
+                orientation,
+            )
+        }
         PreviewSource::Jpeg(image) => {
             GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
         }

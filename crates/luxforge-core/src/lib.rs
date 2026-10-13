@@ -155,9 +155,9 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
-    PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
-    PreviewSource, Queued, ViewState, Zoom,
+    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PagedPreview, PhaseOutcome,
+    PreviewIntent, PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult,
+    PreviewSession, PreviewSource, Queued, SourceWindow, ViewState, Zoom,
 };
 pub use proxy::{ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage};
 pub use render::gpu::{
@@ -171,10 +171,11 @@ pub use render::gpu::{
     GpuRepairOperation, GpuResident, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep,
     GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES, REPAIR_ATLAS_SIDE,
     REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX, REST_BACKDROP_BOUNDS, REST_SHARE_MAX, REST_TILE_SIDES,
-    REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH,
-    SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights,
-    gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps, plan_stream_sweeps,
-    plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
+    REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_BAND_BYTES, STREAM_TILE_SIDES,
+    SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored,
+    band_sides, gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream,
+    plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes,
+    rest_slot_bytes,
 };
 pub use render::overview::{
     OVERVIEW_BOUNDS, OVERVIEW_CPU_BYTES, OVERVIEW_GPU_BYTES, Overview, overview_cpu_bytes,

@@ -1856,6 +1856,7 @@ mod tests {
                     {
                         PreviewSource::Raw { image, .. } => image,
                         PreviewSource::Jpeg(_) => unreachable!(),
+                        PreviewSource::Paged(_) => unreachable!("no paged source here"),
                     };
                     (image(base), image(exact))
                 }

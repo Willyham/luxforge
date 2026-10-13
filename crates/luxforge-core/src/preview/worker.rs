@@ -139,13 +139,15 @@ pub(super) fn run(
     // the stack again. It is charged to the first phase that hands over a frame.
     let compile_started = Instant::now();
     let exact = match &prefix {
-        Some(prefix) => render(
-            evaluation.registry(),
-            evaluation.source().input(),
-            prefix,
-            RenderOptions::exact(full_cancel),
-            evaluation.context(),
-        ),
+        Some(prefix) => evaluation.source().whole().and_then(|input| {
+            render(
+                evaluation.registry(),
+                input,
+                prefix,
+                RenderOptions::exact(full_cancel),
+                evaluation.context(),
+            )
+        }),
         None => evaluation.exact(full_cancel),
     };
     let mut compile_ms = Some(milliseconds_since(compile_started));

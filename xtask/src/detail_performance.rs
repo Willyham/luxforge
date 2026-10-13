@@ -106,7 +106,7 @@ fn full_render(fixture: &Fixture, samples: usize) -> Result<Value> {
         let start = Instant::now();
         let frame = render(
             evaluation.registry(),
-            evaluation.source(),
+            evaluation.source().whole()?,
             evaluation.recipe(),
             RenderOptions::default(),
             &context,
