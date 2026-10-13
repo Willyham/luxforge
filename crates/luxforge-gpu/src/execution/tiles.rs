@@ -943,15 +943,17 @@ impl TileRunner {
         self.account();
     }
 
-    /// The cuts of an output whose columns' and rows' taps are `columns` and `rows`, on this
-    /// runner's device ([`resample::resample_cuts`]).
+    /// The cuts of an output whose columns' and rows' taps are `columns` and `rows`, each computed
+    /// `margin` output pixels wider for its sharpening, on this runner's device
+    /// ([`resample::resample_cuts`]).
     pub fn resample_cuts(
         &self,
         columns: &[resample::ResampleTaps],
         rows: &[resample::ResampleTaps],
+        margin: u32,
     ) -> Result<Vec<resample::ResampleRange>, TileFailure> {
         let limit = self.device.limits().max_texture_dimension_2d;
-        resample::resample_cuts(columns, rows, limit).map_err(TileFailure::Plan)
+        resample::resample_cuts(columns, rows, limit, margin).map_err(TileFailure::Plan)
     }
 
     /// The readback copies tiles read back left for the next to copy into.
@@ -1378,6 +1380,17 @@ impl TileRunner {
             }));
         }
         let bytes = resample::cut_buffers(cut).ok_or(TileFailure::PIPELINE_FAILED)?;
+        if let Some(sharpen) = &cut.sharpen {
+            let [left, top, columns, rows] = sharpen.interior;
+            if sharpen.weights.len() % 2 == 0
+                || columns == 0
+                || rows == 0
+                || u64::from(left) + u64::from(columns) > cut.columns.len() as u64
+                || u64::from(top) + u64::from(rows) > cut.rows.len() as u64
+            {
+                return Err(TileFailure::PIPELINE_FAILED);
+            }
+        }
         let binding = u64::from(limits.max_storage_buffer_binding_size);
         for each in [bytes.across, bytes.codes] {
             if each > binding {
@@ -1449,7 +1462,7 @@ impl TileRunner {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
-        let columns = cut.columns.len() as u32;
+        let (columns, rows) = cut.read_back();
         self.tickets += 1;
         let tile = InFlight {
             ticket: self.tickets,
@@ -1458,7 +1471,7 @@ impl TileRunner {
                 buffer,
                 bytes: bytes.readback,
                 mapped,
-                size: (columns, cut.rows.len() as u32),
+                size: (columns, rows),
                 padded: columns * cut.depth.pixel_bytes(),
                 end: match cut.depth {
                     resample::ResampleDepth::Eight => ReadAs::End(TileEnd::Codes),
@@ -1626,7 +1639,61 @@ impl TileRunner {
             pass.set_bind_group(0, &down_group, &[]);
             pass.dispatch_workgroups(groups(columns), groups(rows), 1);
         }
-        encoder.copy_buffer_to_buffer(&codes, 0, &readback, 0, bytes.codes);
+        // A sharpened cut's interior, sharpened from the extended codes, is what it reads back.
+        let read = match &cut.sharpen {
+            None => codes,
+            Some(sharpen) => {
+                let [left, top, width, height] = sharpen.interior;
+                let params = filled(
+                    "luxforge.resample.sharpen.params",
+                    &le_bytes(&[
+                        columns,
+                        rows,
+                        left,
+                        top,
+                        width,
+                        height,
+                        sharpen.radius(),
+                        sharpen.amount.to_bits(),
+                    ]),
+                    wgpu::BufferUsages::UNIFORM,
+                );
+                let kernel = filled(
+                    "luxforge.resample.sharpen.kernel",
+                    &resample::float_bytes(sharpen.weights),
+                    storage,
+                );
+                let sharpened = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("luxforge.resample.sharpened"),
+                    size: bytes.readback,
+                    usage: storage | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("luxforge.resample.sharpen"),
+                    layout: &pipelines.sharpen_layout,
+                    entries: &[
+                        entry(0, params.as_entire_binding()),
+                        entry(1, kernel.as_entire_binding()),
+                        entry(2, codes.as_entire_binding()),
+                        entry(3, sharpened.as_entire_binding()),
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("luxforge.resample.sharpen"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(match cut.depth {
+                    resample::ResampleDepth::Eight => &pipelines.sharpen_eight,
+                    resample::ResampleDepth::Sixteen => &pipelines.sharpen_sixteen,
+                });
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(groups(width), groups(height), 1);
+                drop(pass);
+                sharpened
+            }
+        };
+        encoder.copy_buffer_to_buffer(&read, 0, &readback, 0, bytes.readback);
         let index = self.queue.submit([encoder.finish()]);
         Ok((index, readback))
     }
