@@ -76,19 +76,39 @@ pub(crate) struct MaskField {
 }
 
 impl MaskField {
-    /// Compile `mask` against `stage` and decide how this render will sample it.
-    ///
-    /// `O(components)`, twice at most, and reads no pixels. A mask with **no components** draws no
-    /// feature at all and [`CompiledMask::min_feature_px`] answers `f32::INFINITY`, which is not
-    /// less than [`MIN_FEATURE_PX`]: an empty mask is point sampled and reports no approximation,
-    /// which is the right answer for a field that is exactly zero everywhere.
+    /// [`Self::compile_bound`] with no artifacts bound, for a test's mask of kinds that read none.
+    #[cfg(test)]
     pub(crate) fn compile(
         mask: &Mask,
         stage: Stage,
         strokes: &crate::path::StrokeTable,
         sampling: MaskSampling,
     ) -> Result<Self, Error> {
-        let compiled = CompiledMask::new(mask, stage, strokes)?;
+        Self::compile_bound(
+            mask,
+            stage,
+            strokes,
+            &crate::ArtifactTable::default(),
+            sampling,
+        )
+    }
+
+    /// Compile `mask` against `stage`, with the recipe's bound artifacts a model selection reads,
+    /// and decide how this render will sample it: what every evaluation path compiles a layer's
+    /// mask with.
+    ///
+    /// `O(components)`, twice at most, and reads no pixels. A mask with **no components** draws no
+    /// feature at all and [`CompiledMask::min_feature_px`] answers `f32::INFINITY`, which is not
+    /// less than [`MIN_FEATURE_PX`]: an empty mask is point sampled and reports no approximation,
+    /// which is the right answer for a field that is exactly zero everywhere.
+    pub(crate) fn compile_bound(
+        mask: &Mask,
+        stage: Stage,
+        strokes: &crate::path::StrokeTable,
+        artifacts: &crate::ArtifactTable,
+        sampling: MaskSampling,
+    ) -> Result<Self, Error> {
+        let compiled = CompiledMask::bound(mask, stage, strokes, artifacts)?;
         let thin = sampling == MaskSampling::ThinFeature
             && compiled.min_feature_px(stage) < MIN_FEATURE_PX;
         if !thin {
@@ -110,7 +130,7 @@ impl MaskField {
                 bounds,
             });
         };
-        let fine = CompiledMask::new(mask, doubled, strokes)?;
+        let fine = CompiledMask::bound(mask, doubled, strokes, artifacts)?;
         let bounds = halved(fine.bounds(), stage);
         Ok(Self {
             mask: Arc::new(compiled),

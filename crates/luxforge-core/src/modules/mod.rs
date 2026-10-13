@@ -26,6 +26,7 @@ mod processing;
 mod raw;
 mod registry;
 mod repair;
+mod selection_proof;
 mod spatial;
 mod vignette;
 
@@ -94,7 +95,8 @@ pub use corrections::{
     CORRECTIONS_EFFECT, RepairInput, SourceFit, StaleCorrection, StaleReason, fit_correction_source,
 };
 pub(crate) use corrections::{
-    CorrectionsModule, RepairCarrier, source_identity as corrections_source_identity,
+    CorrectionsModule, RepairCarrier, selection_prefix as corrections_selection_prefix,
+    source_identity as corrections_source_identity,
 };
 pub(crate) use corrections::{
     new_top_input as corrections_top_input, repair_stage as corrections_repair_stage,
@@ -183,6 +185,8 @@ pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_am
 pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
 pub(crate) use repair::{RepairKind, RepairOperation};
+pub use selection_proof::PROOF_SELECTION_ARTIFACT;
+pub(crate) use selection_proof::SelectionProofModule;
 pub(crate) use spatial::{
     ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
     PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,

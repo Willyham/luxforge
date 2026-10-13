@@ -989,6 +989,7 @@ fn kinds(enabled: bool, flags: Option<&luxforge_core::flags::FlagList>) -> Vec<K
         })
         .filter_map(|kind| {
             let drawable = crate::mask_draft::drawable(kind);
+            // A stored kind's artifact has no default, so it is never typed: it is made by a task.
             let typed = luxforge_core::mask::component_geometry_is_defaulted(kind);
             (drawable || typed).then(|| KindOption {
                 kind: kind.to_owned(),

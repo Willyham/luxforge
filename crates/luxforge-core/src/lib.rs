@@ -124,6 +124,7 @@ pub use model::{
     Mask, MaskId, Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe,
     Snapshot, SnapshotId, Transform,
 };
+pub use modules::PROOF_SELECTION_ARTIFACT;
 /// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
 pub use modules::auto_tone;
 pub use modules::{
