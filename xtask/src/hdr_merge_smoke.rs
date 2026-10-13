@@ -177,7 +177,12 @@ pub fn second_plan(after: &Value) -> Result<Plan> {
 }
 
 /// One request through the runner's own client.
-fn ask(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Result<Value> {
+pub(crate) fn ask(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     let response = owner
         .call(
             client,
@@ -196,7 +201,7 @@ fn ask(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Re
 }
 
 /// `body` through an owner of the runner's own over `catalog`.
-fn with_owner<T>(
+pub(crate) fn with_owner<T>(
     catalog: &Path,
     body: impl FnOnce(&OwnerHandle, ClientId) -> Result<T>,
 ) -> Result<T> {
