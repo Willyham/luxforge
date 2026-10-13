@@ -189,13 +189,14 @@
     {
       "id": "TASK-005",
       "description": "Run round 2 with the owner: the interacting pairs (Exposure with Highlights and Whites, Contrast with Blacks and Whites, Vibrance with Saturation, Clarity with Texture, Dehaze with Contrast), checking that single-setting maps hold together and reporting pairs whose combined residual grows sharply.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
       "extra_context": [
         "Same owner round-trip as round 1.",
-        "The owner decided on 2026-10-13 (A9) to run round 2 in one Lightroom session with the corpus photographs before any control changes. lr-align measure measures pairs (identity and through both calibrated maps) and lr-align generate --families writes the round 1 photograph families (and the fixed masks and straighten) as their own round folder; both session folders were generated on 2026-10-13 from the five corpus photographs, which develop in Luxforge. The owner's import and export remain."
+        "The owner decided on 2026-10-13 (A9) to run round 2 in one Lightroom session with the corpus photographs before any control changes. lr-align measure measures pairs (identity and through both calibrated maps) and lr-align generate --families writes the round 1 photograph families (and the fixed masks and straighten) as their own round folder; both session folders were generated on 2026-10-13 from the five corpus photographs, which develop in Luxforge. The owner's import and export remain.",
+        "Run on 2026-10-13: the owner exported round 1's photograph families (with the fixed masks and straighten) and round 2; both measured, and the results are recorded in the design's Round 1 photographs and round 2. No NOTES.txt was written with either export."
       ],
       "context_links": [
         {

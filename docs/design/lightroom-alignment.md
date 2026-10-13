@@ -135,6 +135,23 @@ Also found:
 - **Base rendering.** The bare-target exports match Lightroom's neutral variants and the pristine targets within 0.06 CIEDE2000 median: Lightroom renders an untouched sRGB JPEG as it is.
 - **Metadata.** Every export embeds its full develop settings, though Copyright Only was asked.
 
+## Round 1 photographs and round 2
+
+Measured on 2026-10-13 from the owner's Lightroom Classic exports of round 1's photograph families with the fixed masks and straighten (264 variants) and of round 2 (397), on the five corpus photographs (Nikon Z 6, Fujifilm X100VI, Sony A7 IV, Canon EOS R6, OM System OM-1) and the synthetic targets, through the CPU reference renderer on Linux; no `NOTES.txt` was written with either export. Every photograph's export was exactly Luxforge's developed size, the X100VI in portrait. Figures are the A8 basis, as above.
+
+| Setting on the photographs | Residual after the map (identity) | Level C candidate |
+| --- | --- | --- |
+| Exposure | 7.7 (10.8) | Yes, and in kind: mildly local on photographs (locality 1.6 against Luxforge's 0.6) |
+| RAW white balance, Kelvin / tint | 7.1 / 6.7; Lightroom's tint ±50 lies beyond Luxforge's range | Both |
+| Dehaze | 6.1 (12.2) | Yes |
+| Whites, Blacks, Shadows | 3.7, 3.2 (7.1), 2.3 (9.7) | All three; Shadows also in kind (locality 1.7 against 0.2) |
+| Sharpening, Highlights, noise reduction | 1.2, 0.7 (1.5), 0.5 to 0.6 | No |
+| Lens profile, distortion only (Z 6, the one photograph with an eligible Luxforge profile) | 0.9 at the identity | No |
+
+Round 2's pairs through both settings' calibrated maps have median residuals of 2.5 to 4.1 on the targets and 3.5 to 7.7 on the photographs, against 2.7 to 7.6 at the identity, so the single maps mostly hold together; they break where Lightroom's control reacts to the other: Whites +100 after Exposure −2 lifts the wedge's top back to white (residual 34.9 through the maps, Luxforge's Whites at the end of its range), and Contrast with Whites +100 and Dehaze with Contrast at their extremes on the photographs reach 13 and 17. The fixes held: the local exposure written as stops over four applies −1.3 stops for −1, where the linear mask now matches Luxforge's within 0.4 (the radial's falloff still differs, 3.2), and Lightroom kept every straighten crop as written.
+
+The two editors' neutral renderings of the photographs differ by 9 to 19 CIEDE2000 median (Adobe Color against the Standard look), which carrying a response cancels only to first order: the photograph residuals include some of it, so a response change weighs the targets, where both editors read the same pixels, with the photographs.
+
 ## Measuring a response, not a look
 
 Two editors' base renderings of a RAW file differ (Adobe Color against Standard), and that difference would swamp the effect of one slider. Every comparison is therefore of **responses**: the change a value makes relative to the same editor's rendering of the same image at the setting's neutral value. To first order the base rendering cancels. JPEG targets give the cleanest responses; RAW photographs show what survives a real base rendering.
