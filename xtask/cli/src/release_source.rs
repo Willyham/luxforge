@@ -185,6 +185,19 @@ mod tests {
             sums.lines()
                 .any(|line| line.ends_with(&format!("  {name}")))
         );
+        // The packet verifier finds the archive where it expects it; without one, it is not ready.
+        let source_problems = |packet: &Path| {
+            let verdict = crate::release_verify::verify(packet);
+            verdict
+                .integrity
+                .iter()
+                .chain(&verdict.readiness)
+                .filter(|reason| reason.contains("source archive") || reason.contains(&name))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(source_problems(&out), Vec::<String>::new());
+        assert_eq!(source_problems(&tmp.path().join("unsourced")).len(), 1);
         // Another commit or lockfile, a rehearsal, a dirty tree or a tampered archive is refused.
         for (field, bad) in [
             ("revision", json!("c".repeat(40))),

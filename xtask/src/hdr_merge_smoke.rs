@@ -322,9 +322,17 @@ fn after(catalog: &Path, results: &[Value]) -> Result<Value> {
             "history.list",
             json!({ "asset_id": results[0] }),
         )?;
-        // The result's row in a view of `source`, read whole.
+        // The result's row in a view of `source`, read whole, ordered as Select views a source:
+        // newest first, ungrouped.
         let row_in = |source: Value| -> Result<Value> {
-            let view = ask(owner, client, "browse.view", json!({ "source": source }))?;
+            let view = ask(
+                owner,
+                client,
+                "browse.view",
+                json!({"source": source,
+                    "sort": {"key": "capture-time", "descending": true},
+                    "grouping": "none"}),
+            )?;
             let count = view["count"].as_u64().unwrap_or(0);
             if count == 0 {
                 return Ok(Value::Null);
@@ -355,7 +363,9 @@ fn after(catalog: &Path, results: &[Value]) -> Result<Value> {
         let position = if folder.is_null() {
             Value::Null
         } else {
-            row_in(json!({"kind": "catalog-folder", "folder_id": folder["id"]}))?["position"]
+            row_in(
+                json!({"kind": "catalog-folder", "folder_id": folder["id"], "subfolders": true}),
+            )?["position"]
                 .clone()
         };
         // The folder by its path from the top level, as the sources panel nests it.

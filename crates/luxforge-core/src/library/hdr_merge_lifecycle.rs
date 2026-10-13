@@ -747,6 +747,32 @@ fn hdr_merge_lifecycle_creation_undo_after_an_edit_and_redo_with_the_inputs_offl
 /// Remove from catalog moves a merge's result to Removed and deactivates its stack in one change,
 /// leaving the developed input and every original as they were; Put back makes both active again;
 /// the journal undoes either; Remove merge names the merge and does the same.
+/// A merge's result has no original: an export of it is named after its stack's first input, with
+/// the kind's suffix; a photograph that is no merge's result has no such name.
+#[test]
+fn hdr_merge_lifecycle_an_export_of_the_result_is_named_after_its_first_input() {
+    let mut bench = Bench::new("export-stem", 3);
+    let PublishedMerge {
+        merge_id, result, ..
+    } = bench.publish("create", &[0, 1, 2], 1);
+    let first = super::members(&bench.service.connection, &merge_id).unwrap()[0]
+        .path
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        super::export_stem(&bench.service.connection, &result).unwrap(),
+        Some(format!("{first}-hdr"))
+    );
+    assert_eq!(
+        super::export_stem(&bench.service.connection, &bench.developed).unwrap(),
+        None
+    );
+    bench.finish();
+}
+
 #[test]
 fn hdr_merge_lifecycle_remove_and_put_back_move_the_result_with_its_stack() {
     let mut bench = Bench::new("remove", 3);
