@@ -7,8 +7,8 @@ use super::testing::{frame_in, linear, render, sample, sample_in};
 use super::tests::*;
 use super::*;
 use crate::{
-    EFFECT_FORMAT, ErrorKind, Layer, LayerId, MAX_COLOR_UNITS, Orientation, Recipe, SnapshotId,
-    SourceImage, Transform,
+    ErrorKind, Layer, LayerId, MAX_COLOR_UNITS, Orientation, Recipe, SnapshotId, SourceImage,
+    Transform,
     colour::srgb::{CODE_BINS, decode_table, quantize_pixel, quantizer},
     modules::Processing,
 };
@@ -342,7 +342,7 @@ fn a_render_returns_the_frame_its_last_pass_wrote() {
     let layer = |effect: &str, payload: Value| Layer {
         id: LayerId::new(),
         effect_id: effect.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(effect),
         payload,
         mask: None,
         artifacts: Vec::new(),
@@ -443,7 +443,7 @@ fn a_pass_over_the_source_loads_its_rows_and_leaves_the_source_alone() {
     let colour = Layer {
         id: LayerId::new(),
         effect_id: crate::BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
         payload: json!({"exposure": 0.4, "contrast": 20.0}),
         mask: None,
         artifacts: Vec::new(),

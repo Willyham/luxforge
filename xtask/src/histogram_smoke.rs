@@ -28,8 +28,8 @@ use crate::{
     *,
 };
 use luxforge_core::{
-    BASIC_EFFECT, CONTROLS_EFFECT, CROP_EFFECT, Cancel, EFFECT_FORMAT, Layer, LayerId,
-    ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
+    BASIC_EFFECT, CONTROLS_EFFECT, CROP_EFFECT, Cancel, Layer, LayerId, ModuleRegistry,
+    RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
 };
 use luxforge_evidence::{self as script, PreviewStep, SliderStep, ViewStep, WorkspaceStep};
 
@@ -336,7 +336,7 @@ fn drafted_recipe(frame: &Value) -> Result<Recipe> {
         Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
             payload: fields,
             mask: None,
             artifacts: Vec::new(),

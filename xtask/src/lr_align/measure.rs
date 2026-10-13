@@ -1354,10 +1354,14 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
         .iter()
         .map(|vi| (spec.values[*vi].1, Target::new(&neutral_labs, carried(*vi))))
         .collect();
+    // The distance from each Lightroom response at every value of a grid refined between the
+    // dense values, for `lr-align fold`'s joint fit.
+    let mut distances = Value::Null;
     let fit = match spec.response {
         Response::Colour => {
             let dense_labs: Vec<Vec<Lab>> =
                 spec.dense.iter().map(|u| concat(&lux[&key(*u)])).collect();
+            distances = distance_table(&spec.dense, &dense_labs, &targets);
             la::fit(
                 &spec.dense,
                 &dense_labs,
@@ -1518,7 +1522,62 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
             [*u, y]
         })
         .collect();
-    finish(ctx, spec, &fit, rows, lux_curve, sheet, missing)
+    let mut outcome = finish(ctx, spec, &fit, rows, lux_curve, sheet, missing)?;
+    if !distances.is_null() {
+        outcome.entry["distances"] = distances;
+    }
+    Ok(outcome)
+}
+
+/// Basic's Exposure value whose strength is `stops`, or the end of its range towards them.
+fn exposure_for_stops(stops: f64) -> f64 {
+    let response = luxforge_core::basic_response("exposure");
+    response.and_then(|r| r.value(stops)).unwrap_or_else(|| {
+        let ends = response.map_or((-5.0, 5.0), |r| {
+            (r.knots[0][0], r.knots[r.knots.len() - 1][0])
+        });
+        if stops < 0.0 { ends.0 } else { ends.1 }
+    })
+}
+
+/// How finely [`distance_table`] refines between dense values.
+const DISTANCE_REFINE: usize = 4;
+
+/// Each Lightroom response's distance at every value of `dense` refined [`DISTANCE_REFINE`] times
+/// through interpolated responses: `{values, rows: [{lightroom, distances}]}`.
+fn distance_table(dense: &[f64], labs: &[Vec<Lab>], targets: &[(f64, Target)]) -> Value {
+    let mut values = Vec::new();
+    let mut responses: Vec<Vec<Lab>> = Vec::new();
+    for i in 0..dense.len() {
+        if i + 1 == dense.len() {
+            values.push(dense[i]);
+            responses.push(labs[i].clone());
+            break;
+        }
+        for step in 0..DISTANCE_REFINE {
+            let t = step as f64 / DISTANCE_REFINE as f64;
+            values.push(dense[i] + t * (dense[i + 1] - dense[i]));
+            responses.push(la::lerp_labs(&labs[i], &labs[i + 1], t));
+        }
+    }
+    let rows: Vec<Value> = std::thread::scope(|scope| {
+        let handles: Vec<_> = targets
+            .iter()
+            .map(|(lightroom, target)| {
+                let responses = &responses;
+                scope.spawn(move || {
+                    let distances: Vec<f64> =
+                        responses.iter().map(|r| target.distance(r)).collect();
+                    json!({"lightroom": lightroom, "distances": distances})
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or(Value::Null))
+            .collect()
+    });
+    json!({"values": values, "rows": rows})
 }
 
 /// One fitted point with everything measured at it.
@@ -3209,15 +3268,13 @@ fn mask(ctx: &Context, family: &str, radial: bool) -> Result<Outcome> {
         })
         .collect();
     // Luxforge again at the exposure each export shows, so the geometry is compared apart from
-    // the strength.
+    // the strength: the Exposure value whose strength, a gain in stops, is the export's.
     let matched_ev: Vec<f64> = lr_measures
         .iter()
         .zip(&settings)
-        .map(|(m, setting)| {
-            m.as_ref()
-                .and_then(|m| m.ev)
-                .unwrap_or_else(|| setting["local_exposure"].as_f64().unwrap_or(-1.0))
-                .clamp(-5.0, 5.0)
+        .map(|(m, setting)| match m.as_ref().and_then(|m| m.ev) {
+            Some(stops) => exposure_for_stops(stops),
+            None => setting["local_exposure"].as_f64().unwrap_or(-1.0),
         })
         .collect();
     let matched_jobs: Vec<Job> = settings
@@ -3302,7 +3359,7 @@ fn mask(ctx: &Context, family: &str, radial: bool) -> Result<Outcome> {
         directions.push(json!({"variant": label, "lightroom": l.side, "luxforge": x.side, "lightroom_stops": l.ev, "recorded": recorded}));
         points.push(json!({
             "label": label, "lightroom_side": l.side, "luxforge_side": x.side,
-            "lightroom_stops": l.ev, "luxforge_stops": x.ev, "matched_stops": matched_ev[i],
+            "lightroom_stops": l.ev, "luxforge_stops": x.ev, "matched_exposure": matched_ev[i],
             "lightroom_effect": l.effect, "luxforge_effect": x.effect,
             "lightroom_half": l.half, "matched_half": xm.half, "lightroom_ramp": l.ramp, "matched_ramp": xm.ramp,
             "lightroom_orientation": l.orientation, "matched_orientation": xm.orientation,
@@ -3624,6 +3681,7 @@ fn measure(
             "kept": ledger.quantization,
         },
         "behaviour_threshold": {"residual_de2000": BEHAVIOUR_RESIDUAL, "share_of_range_from_default": THRESHOLD_SHARE},
+        "basic_responses": super::fold::build_responses(),
         "exports": exports_json,
         "base_rendering": base,
         "families": entries,
@@ -4244,13 +4302,13 @@ mod tests {
                 "{point}"
             );
             let [vibrance, saturation] = [0, 1].map(|i| point["lightroom"][i].as_f64().unwrap());
+            // Each through its calibration, or as it is where the slider follows Lightroom's.
+            let through = |setting: &str, value: f64| {
+                luxforge_core::lightroom_calibration(setting, value).map_or(value, |c| c.unwrap())
+            };
             let expected = [
-                luxforge_core::lightroom_calibration("Vibrance", vibrance)
-                    .unwrap()
-                    .unwrap(),
-                luxforge_core::lightroom_calibration("Saturation", saturation)
-                    .unwrap()
-                    .unwrap(),
+                through("Vibrance", vibrance),
+                through("Saturation", saturation),
             ];
             assert_eq!(point["luxforge"], json!(expected), "{point}");
         }

@@ -2464,7 +2464,10 @@ mod tests {
         .unwrap();
         let layer = &committed.layers[1];
         assert_eq!(layer.effect_id, crate::BASIC_EFFECT);
-        assert_eq!(layer.effect_format, crate::EFFECT_FORMAT);
+        assert_eq!(
+            layer.effect_format,
+            crate::current_effect_format(crate::BASIC_EFFECT)
+        );
         assert_eq!(
             layer.mask.as_ref(),
             Some(&mask.id),

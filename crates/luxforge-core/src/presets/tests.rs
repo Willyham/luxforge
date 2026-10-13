@@ -475,10 +475,6 @@ fn an_earlier_process_preset_refuses_every_mapped_value_and_so_maps_nothing() {
     );
 }
 
-/// The reason a calibrated value at a range shortfall is refused with.
-const SHORTFALL: &str =
-    "beyond Luxforge's range through the Lightroom alignment calibration (round 1)";
-
 #[test]
 fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
     let preset = parse_preset(OUT_OF_RANGE, Some("bright.xmp"), &registry()).unwrap();
@@ -486,12 +482,11 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
     assert_eq!(preset.group, None);
     // Lightroom's absolute pair converts through the white it names, together; Custom is then
     // neutral, since the values it names are mapped. The relative temperature is Basic's.
-    // Contrast −100 lies in range but at its calibration's shortfall: refused, not clamped.
     let [kelvin, tint] = crate::lightroom_to_luxforge(5500.0, 10.0).unwrap();
     assert_eq!(
         preset.settings,
         object(json!({
-            "set-basic": {"saturation": 100, "shadows": 20, "temperature": 15},
+            "set-basic": {"contrast": -100, "saturation": 100, "shadows": 20, "temperature": 15},
             "set-raw": {"temperature": kelvin, "tint": tint}
         }))
     );
@@ -501,6 +496,7 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
             format: "lightroom-xmp".into(),
             process_version: Some("15.4".into()),
             mapped: vec![
+                mapped("Contrast2012", "-100", "set-basic", "contrast", json!(-100)),
                 mapped(
                     "IncrementalTemperature",
                     "+15",
@@ -527,7 +523,6 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
                     "-100.5",
                     "outside Luxforge's range -100..100"
                 ),
-                because("Contrast2012", "-100", SHORTFALL),
                 because("Exposure2012", "+6.0", "outside Luxforge's range -5..5"),
                 because(
                     "PostCropVignetteMidpoint",
@@ -2118,14 +2113,12 @@ fn origins_and_reports_serialize_to_the_record_shapes() {
     assert_eq!(value["format"], "lightroom-xmp");
     assert_eq!(value["process_version"], "15.4");
     assert_eq!(
-        value["mapped"][0],
+        value["mapped"][1],
         json!({"setting": "IncrementalTemperature", "value": "+15", "action": "set-basic",
-               "field": "temperature",
-               "applied": calibration::calibration("IncrementalTemperature").unwrap().convert(15.0).unwrap(),
-               "rule": "calibrated by the Lightroom alignment, round 1"})
+               "field": "temperature", "applied": 15})
     );
     assert_eq!(
-        value["refused"][4],
+        value["refused"][3],
         json!({"setting": "Vibrance", "value": "lots", "reason": "not a number"})
     );
     assert_eq!(
@@ -2139,7 +2132,7 @@ fn origins_and_reports_serialize_to_the_record_shapes() {
     );
     assert_eq!(
         serde_json::to_value(report.counts()).unwrap(),
-        json!({"mapped": 5, "neutral": 1, "unsupported": 0, "refused": 5})
+        json!({"mapped": 6, "neutral": 1, "unsupported": 0, "refused": 4})
     );
 }
 

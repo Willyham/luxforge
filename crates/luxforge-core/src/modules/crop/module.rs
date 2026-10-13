@@ -854,7 +854,11 @@ mod tests {
         );
         assert_eq!(
             module
-                .describe(BASIC_EFFECT, EFFECT_FORMAT, &json!({}))
+                .describe(
+                    BASIC_EFFECT,
+                    crate::current_effect_format(crate::BASIC_EFFECT),
+                    &json!({})
+                )
                 .unwrap_err()
                 .kind,
             ErrorKind::Incompatible
@@ -1246,7 +1250,7 @@ mod tests {
             (
                 "wrong effect",
                 BASIC_EFFECT,
-                EFFECT_FORMAT,
+                crate::current_effect_format(crate::BASIC_EFFECT),
                 ErrorKind::Incompatible,
             ),
             ("wrong format", CROP_EFFECT, 99, ErrorKind::Incompatible),
@@ -1411,7 +1415,13 @@ mod tests {
         );
         assert!(
             module
-                .carry(BASIC_EFFECT, EFFECT_FORMAT, &json!({}), INPUT, turned)
+                .carry(
+                    BASIC_EFFECT,
+                    crate::current_effect_format(crate::BASIC_EFFECT),
+                    &json!({}),
+                    INPUT,
+                    turned
+                )
                 .is_err()
         );
     }

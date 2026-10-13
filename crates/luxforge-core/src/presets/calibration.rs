@@ -220,9 +220,11 @@ mod tests {
     #[test]
     fn an_uncalibrated_row_transfers_its_number_and_names_no_rule() {
         let registry = ModuleRegistry::builtin();
+        // Contrast's slider follows Lightroom's response, so its row is the identity and gone.
         for (setting, action, field) in [
             ("Texture", "set-presence", "texture"),
             ("PostCropVignetteMidpoint", "set-vignette", "midpoint"),
+            ("Contrast2012", "set-basic", "contrast"),
         ] {
             assert!(calibration(setting).is_none());
             let read = inspect_preset(&preset(setting, 37.0), None, &registry).unwrap();

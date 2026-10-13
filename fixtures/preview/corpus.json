@@ -41,6 +41,26 @@
       ]
     },
     {
+      "id": "basic-extended-jpeg",
+      "family": "basic",
+      "class": "pointwise",
+      "description": "Basic at the slider values whose strengths reach past the units' former range to follow Lightroom: Exposure -5 (-6.6 EV), Contrast and Highlights -100, Whites +100, Temperature -100 and Tint +100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": -5.0, "contrast": -100.0, "highlights": -100.0, "whites": 100.0, "temperature": -100.0, "tint": 100.0}}}
+      ]
+    },
+    {
+      "id": "basic-extended-raw",
+      "family": "basic",
+      "class": "pointwise",
+      "description": "Basic at the slider values whose strengths reach past the units' former range on RAW sources: Exposure +5 (+6.5 EV), Contrast and Highlights -100 and Whites +100.",
+      "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 5.0, "contrast": -100.0, "highlights": -100.0, "whites": 100.0}}}
+      ]
+    },
+    {
       "id": "tone-curve",
       "family": "tone-curve",
       "class": "pointwise",

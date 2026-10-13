@@ -67,7 +67,7 @@ fn basic_layer(payload: serde_json::Value) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(BASIC_EFFECT),
         payload,
         mask: None,
         artifacts: Vec::new(),

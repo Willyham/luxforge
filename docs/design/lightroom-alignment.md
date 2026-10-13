@@ -1,6 +1,6 @@
 # Lightroom alignment
 
-Status: decided and planned (2026-10-06) ([task plan](../../tasks/lightroom/lightroom-alignment.json)). The owner authorized preparing round 1 on 2026-10-13: the rig's generator, `cargo xtask lr-align generate`, and its synthetic targets are built ([running a round](#running-a-round)). The owner authorized measurement and fitting (TASK-002) the same day: `cargo xtask lr-align measure` is built and has measured the owner's round 1 exports of the synthetic targets through the CPU reference renderer ([measuring a round](#measuring-a-round)); [round 1](#round-1) is recorded. Round 1 held no RAW photographs. The owner authorized the calibrated mapping rows (TASK-004), the generator's fixes and the measurement of photographs on 2026-10-13: preset import converts through round 1's calibrated maps ([presets](presets.md#mapping)), the generator writes local exposure and straighten crops as round 1 showed Lightroom reads them, and `measure` measures a round's RAW photographs, though none has been exported yet. No response change or behaviour change exists, `lr-align validate` is not built, and TASK-005 onward await authorization. The owner decided every question on 2026-10-06 ([decided](#decided)): Luxforge's sliders follow Lightroom Classic's responses (level B) for every supported setting, with targeted algorithm changes (level C) where a dimension still differs widely.
+Status: decided and planned (2026-10-06) ([task plan](../../tasks/lightroom/lightroom-alignment.json)). Built: the rig's generator (`cargo xtask lr-align generate`) and synthetic targets ([running a round](#running-a-round)), the measurement (`cargo xtask lr-align measure`, [measuring a round](#measuring-a-round)), the calibrated mapping rows for preset import ([presets](presets.md#mapping)) and the fold of measured responses into Basic's sliders (`cargo xtask lr-align fold`). Measured through the CPU reference renderer on Linux, with no GPU output: [round 1](#round-1)'s synthetic targets and [the corpus photographs and round 2's pairs](#round-1-photographs-and-round-2). [Basic is realigned](#basic-realigned) (TASK-006, level B): its sliders follow Lightroom's responses on the CPU reference, and Basic's format marker refuses earlier edits; the owner's review of the sheets, GPU warm-up and whole-corpus qualification on the Mac and a confirming round remain open. The Tone curve has no slider to fold. No behaviour change (level C) exists, `lr-align validate` is not built, and TASK-007 onward await authorization. The owner decided every question on 2026-10-06 ([decided](#decided)): Luxforge's sliders follow Lightroom Classic's responses (level B) for every supported setting, with targeted algorithm changes (level C) where a dimension still differs widely.
 
 It stands alone. [Preset import](presets.md#import) and the [Lightroom import](lightroom-import.md) use its results to convert values, and every Luxforge user gains from controls that behave the way photographers coming from Lightroom expect, but neither importer waits on it.
 
@@ -95,7 +95,7 @@ Round 1 has 706 variants on the targets and 49 on each RAW photograph (about 7 G
 
 `cargo xtask lr-align measure --round 1 --folder ROUND --output NEW` measures a round folder `generate` wrote, against the owner's exports in its `exports/` (or `--exports DIR`, whose parent is then the round); `--families ID,...` narrows it. It refuses a round whose manifest or targets are not this build's, an existing output, and an output inside the round folder, which it only reads. Each target's export with no XMP, named for the bare target, is Lightroom's control: its base rendering of an untouched JPEG, compared with its neutral variant and the pristine target. Every export's own XMP is read for the process version, the creator and each setting Lightroom recorded, and a setting recorded with another value than the one written is reported. Families on RAW photographs are reported unmeasured when the round has none.
 
-Under the evidence directory it writes `pages/<family>.md` per setting (the response curve, the map as 21 knots, the residual per value, the kind-specific tables and a contact sheet of Luxforge at the identity, Luxforge through the map and Lightroom), `svg/` and `sheets/`, `summary.md`, the settings ranked by residual with the level C candidates, the masks' directions, the exports' metadata and the base rendering, and `lr-align.json`, every figure. Its measures and fits are each checked on synthetic cases with known answers in `luxforge-reference`'s `lr_align` study, and its whole path on a round of Luxforge's own renders, which must fit as the identity, in xtask's `lr_align` tests.
+Under the evidence directory it writes `pages/<family>.md` per setting (the response curve, the map as 21 knots, the residual per value, the kind-specific tables and a contact sheet of Luxforge at the identity, Luxforge through the map and Lightroom), `svg/` and `sheets/`, `summary.md`, the settings ranked by residual with the level C candidates, the masks' directions, the exports' metadata and the base rendering, and `lr-align.json`, every figure, with the Basic responses the build applies and each colour family's distance table for [`fold`](#basic-realigned). Its measures and fits are each checked on synthetic cases with known answers in `luxforge-reference`'s `lr_align` study, and its whole path on a round of Luxforge's own renders, which must fit as the identity, in xtask's `lr_align` tests.
 
 Recorded choices, delegated to the implementer:
 
@@ -152,6 +152,37 @@ Round 2's pairs through both settings' calibrated maps have median residuals of 
 
 The two editors' neutral renderings of the photographs differ by 9 to 19 CIEDE2000 median (Adobe Color against the Standard look), which carrying a response cancels only to first order: the photograph residuals include some of it, so a response change weighs the targets, where both editors read the same pixels, with the photographs.
 
+## Basic realigned
+
+Basic's ten sliders apply strengths through frozen responses ([`response.json`](../../crates/luxforge-core/src/modules/basic/response.json)): per field, knots `[value, strength]` at the Lightroom values the rounds measured, read by linear interpolation, strictly increasing through `[0, 0]`. Each unit's algorithm and stage are unchanged ([Basic tone](basic-tone.md), [Basic colour](basic-colour.md)) and receive the strength, so the GPU programs are unchanged. Basic's payload format is 2: a layer of format 1 holds values of the earlier meaning and is refused as incompatible, naming its format. Auto tone keeps its rules and bounds in strengths and writes the slider values that apply them ([Auto tone](auto-tone.md)); the neutral picker solves strengths and answers whole slider values; preset import has no calibrated Basic rows ([A11](#decided)), so a Lightroom Basic value transfers as the same number. A mask's Basic adjustment uses the same responses; the masks' own alignment is TASK-009.
+
+`cargo xtask lr-align fold --measured DIR [--measured DIR ...] --output NEW` makes the table from `measure` outputs, which record the responses they measured and, per colour family, each Lightroom value's distance on Luxforge's grid refined four times. It writes `response.json`, `fold.json` and `fold.md` and reads nothing else. Recorded choices, delegated to the implementer:
+
+| Choice | Recorded |
+| --- | --- |
+| Joint fit | A field's measured families, the targets and (Exposure, Highlights, Shadows, Whites, Blacks) the photographs, fitted together: each Lightroom value matched at the Luxforge value with the least mean distance over the families holding it, each family weighted equally, then made monotone as a level A map is |
+| Knots | At the measured values and neutral. A point whose span is wide continues the slope of the point inside it, so a chart that saturates (the wedge at Exposure +5) leaves the slider moving rather than taking the span's first value |
+| Slope floor | Every step at least a fifth of its Lightroom step on the measured build's scale, so no stretch of slider is dead |
+| Extension | Measured on a study build whose responses stretched each short range (Exposure ±8 EV, Contrast and Highlights ±150, Whites ±200, Temperature −300 to +109, Tint ±250); the fold composes its map with the measured build's responses |
+| Stability (A10) | Highlights and Shadows reach at most ±150, where their stage keeps a slope of 0.1 (past about ±170 the lifting side stops being monotone); Temperature at most +109, the Planckian locus's 25000 K end; Saturation stops at −100, greyscale. Contrast is monotone at any strength, Whites and Blacks are a linear remap held apart by their gap clamp, Exposure is a gain. `every_extended_strength_keeps_its_unit_stable` holds the tone curve nondecreasing at every corner of the end strengths and white balance finite with a positive luminance; at Temperature −300 a grey leaves the gamut, as the pointwise contract allows |
+
+Folded from round 1's targets and the photographs (2026-10-13) and checked by measuring rounds 1 and 2 again on the realigned build, through the CPU reference renderer on Linux; no GPU output was measured. Residuals are the worst median CIEDE2000 at a threshold distance or more from the default, at the identity, before and after; the figures, pages and sheets are in the `lr-align measure` and `fold` evidence.
+
+| Setting | Strength at the slider's ends | Targets | Photographs | Level C candidate |
+| --- | --- | --- | --- | --- |
+| Exposure | −6.6, +6.5 EV | 6.6 → 4.4 | 10.8 → 7.7 | Yes; mildly local on photographs |
+| Contrast | −136.9, +99.4 | 3.5 → 3.3 | | Yes |
+| Highlights | −112.5, +93.8 | 3.1 → 3.0 | 1.5 → 1.4 | Yes; local on the surround |
+| Shadows | −40, +36.9 | 6.1 → 2.6 | 9.7 → 2.5 | Yes; local on photographs |
+| Whites | −45, +126.3 | 10.3 → 7.9 | 3.9 → 6.2 | Yes, in kind: the targets ask for far more at +75 and beyond than the photographs, so the joint fit worsens the photographs at +100 |
+| Blacks | −71.3, +57.5 | 4.7 → 3.6 | 7.1 → 3.6 | Yes |
+| Vibrance | −98.8, +88.8 | 4.7 → 4.7 | | Yes |
+| Saturation | −100, +87.5 | 1.8 → 1.8 | | No |
+| Temperature | −300, +109 | 19.3 → 18.1 | | Yes; short past +75 at the locus' end |
+| Tint | −246.9, +250 | 18.3 → 13.7 | | Yes; short at ±100 |
+
+Round 2's pairs at the identity on the realigned build have median residuals of 2.5 to 3.8 on the targets and 3.5 to 7.5 on the photographs, against 2.6 to 5.2 and 5.1 to 7.3 before; Whites +100 after Exposure −2 still reaches 32. The Tone curve has no slider value to fold: its conversion at the identity stays 3.8, a level C candidate (Lightroom's curve acts per channel). These are the A8 basis for the behaviour changes; the owner's review of the sheets, GPU warm-up and whole-corpus qualification on the Mac and a confirming Lightroom round close the batch.
+
 ## Measuring a response, not a look
 
 Two editors' base renderings of a RAW file differ (Adobe Color against Standard), and that difference would swamp the effect of one slider. Every comparison is therefore of **responses**: the change a value makes relative to the same editor's rendering of the same image at the setting's neutral value. To first order the base rendering cancels. JPEG targets give the cleanest responses; RAW photographs show what survives a real base rendering.
@@ -179,7 +210,7 @@ The maps become rows of the preset mapping with a calibrated rule ("value conver
 
 ## Changing a control (levels B and C)
 
-**B, a response change**, refits the curve from a slider's value to the strength the module's algorithm applies, so that the level A map for that setting becomes the identity within the study's tolerance. The fitted map is folded into the control: what was Luxforge's value `g_s(v)` becomes the value `v`. The algorithm and its stage stay unchanged. The supported physical range and maximum halo stay bounded; a range shortfall is reported rather than silently extending them. A fitted scale can change a value's kernel support, halo and processing cost, so those consequences are checked. Every supported setting gets one, in the [order](#decided) A2 sets.
+**B, a response change**, refits the curve from a slider's value to the strength the module's algorithm applies, so that the level A map for that setting becomes the identity within the study's tolerance. The fitted map is folded into the control: what was Luxforge's value `g_s(v)` becomes the value `v`. The algorithm and its stage stay unchanged. Where Lightroom's extreme does more than Luxforge's whole range, the control's internal strength extends past it where the algorithm stays stable, checked per setting ([A10](#decided)); a shortfall that cannot be extended is reported. The maximum halo stays bounded. A fitted scale can change a value's kernel support, halo and processing cost, so those consequences are checked. Every supported setting gets one, in the [order](#decided) A2 sets.
 
 ### When a setting needs C
 
@@ -199,7 +230,7 @@ The translations are fitted on test images; they are judged on real photographs.
 
 ## Deliverables
 
-- `cargo xtask lr-align generate | measure | validate` (`generate` and `measure` built), the synthetic targets, and the round manifests.
+- `cargo xtask lr-align generate | measure | fold | validate` (all but `validate` built), the synthetic targets, and the round manifests.
 - Per round, under the evidence directory: a page per setting with its response curves, map, residual and contact sheet (Luxforge, Luxforge calibrated, Lightroom), and a summary ranked by residual.
 - The calibrated mapping rows and their fixtures, for preset import and the catalog import.
 - Per setting: its response change, frozen with its study; and, where the threshold is met, the dimension a behaviour change would target, for the owner's review.

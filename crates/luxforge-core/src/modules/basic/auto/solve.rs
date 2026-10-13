@@ -900,28 +900,33 @@ fn solve_reduced(
     let mut values = AutoToneValues::default();
     values.exposure = exposure(&mut model, values)?;
     let bands = model.statistics(false, values, false)?;
-    values.highlights = (-targets.highlights_scale * bands.bright)
-        .clamp(-100., 0.)
-        .round();
-    values.shadows = (targets.shadows_scale * bands.dark).clamp(0., 60.).round();
+    // Highlights, Shadows, Contrast, Vibrance and Saturation are set by rule as strengths within
+    // their bounds, then written as the slider values that apply them.
+    let mut strengths = values;
+    strengths.highlights = (-targets.highlights_scale * bands.bright).clamp(-100., 0.);
+    values.highlights = slider("highlights", strengths.highlights);
+    strengths.shadows = (targets.shadows_scale * bands.dark).clamp(0., 60.);
+    values.shadows = slider("shadows", strengths.shadows);
     let contrast = model.statistics(false, values, false)?;
-    values.contrast = (100. * (targets.spread - (contrast.p90 - contrast.p10)))
-        .clamp(-50., 50.)
-        .round();
+    strengths.contrast = (100. * (targets.spread - (contrast.p90 - contrast.p10))).clamp(-50., 50.);
+    values.contrast = slider("contrast", strengths.contrast);
     values = endpoints(&mut model, values)?;
     values.exposure = exposure(&mut model, values)?;
     values = endpoints(&mut model, values)?;
     let tone = model.statistics(false, values, true)?;
-    values.vibrance = (60. * (1. - tone.mean_chroma / targets.vibrance_chroma))
-        .clamp(0., 25.)
-        .round();
-    values.saturation = (-60. * (tone.mean_chroma / targets.saturation_chroma - 1.))
-        .clamp(-15., 0.)
-        .round();
+    strengths.vibrance = (60. * (1. - tone.mean_chroma / targets.vibrance_chroma)).clamp(0., 25.);
+    values.vibrance = slider("vibrance", strengths.vibrance);
+    strengths.saturation =
+        (-60. * (tone.mean_chroma / targets.saturation_chroma - 1.)).clamp(-15., 0.);
+    values.saturation = slider("saturation", strengths.saturation);
     let output = model.statistics(false, values, true)?;
+    // The searched fields are bounded in slider values, the ruled ones in strengths.
+    strengths.exposure = values.exposure;
+    strengths.whites = values.whites;
+    strengths.blacks = values.blacks;
     let bounded = FIELDS
         .into_iter()
-        .zip(values.array())
+        .zip(strengths.array())
         .zip(BOUNDS)
         .filter(|((_, value), (low, high))| value == low || value == high)
         .map(|((name, _), _)| name.to_owned())
@@ -954,6 +959,23 @@ fn solve_reduced(
             non_finite: sample.rgb.len() - usable,
         },
     })
+}
+
+/// The whole slider value of Basic's `field` that applies `strength`, or the slider's end towards
+/// it when the slider does not reach it.
+fn slider(field: &str, strength: f64) -> f64 {
+    super::super::response::value(field, strength)
+        .unwrap_or_else(|| {
+            let knots = &super::super::response::response(field)
+                .expect("a strength beyond the slider is a realigned field's")
+                .knots;
+            if strength < 0. {
+                knots[0][0]
+            } else {
+                knots[knots.len() - 1][0]
+            }
+        })
+        .round()
 }
 
 /// `values` with Exposure at `step` hundredths of an EV.

@@ -24,8 +24,8 @@
 
 use super::*;
 use luxforge_core::{
-    AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
-    Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
+    AssetId, BASIC_EFFECT, Component, ComponentMode, EditorService, Layer, LayerId, Mask,
+    ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
     mask::{ColourLimit, Stroke},
     mask::{
         CompiledMask,
@@ -137,7 +137,7 @@ fn masked_stack(mask: Mask, strokes: StrokeTable) -> Recipe {
         layers: vec![Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),

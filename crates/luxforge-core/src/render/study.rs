@@ -178,7 +178,11 @@ mod tests {
             .zip(frame.rgba.chunks_exact(4))
         {
             for channel in 0..3 {
-                let expected = code16(srgb::decode(byte[channel]) * 2f64.powf(ev));
+                let gain = crate::basic_response("exposure")
+                    .expect("Exposure's response")
+                    .strength(ev)
+                    .exp2();
+                let expected = code16(srgb::decode(byte[channel]) * gain);
                 assert!(
                     pixel[channel].abs_diff(expected) <= 2,
                     "{} against {expected}",

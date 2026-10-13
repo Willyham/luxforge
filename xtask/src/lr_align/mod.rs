@@ -1,6 +1,6 @@
-//! `cargo xtask lr-align`: the Lightroom alignment rig's generator and measurement
-//! (`docs/design/lightroom-alignment.md`, "The rig" and "Running a round"). `measure` is
-//! [`measure`]'s; the rest of this module is the generator.
+//! `cargo xtask lr-align`: the Lightroom alignment rig's generator, measurement and fold
+//! (`docs/design/lightroom-alignment.md`, "The rig", "Running a round" and "Changing a control").
+//! `measure` is [`measure`]'s and `fold` [`fold`]'s; the rest of this module is the generator.
 //!
 //! `generate --round N --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...]`
 //! writes a round folder, or with `--families` the part of one those families make, for the owner
@@ -21,6 +21,7 @@
 //! bytes. The command writes only inside the new round folder, which must not exist and whose
 //! parent must; RAW originals are only read, verified by their SHA-256 before and after, and a
 //! failed run removes the folder it created.
+mod fold;
 mod measure;
 mod photographs;
 mod photos;
@@ -40,7 +41,7 @@ use serde_json::Map;
 use settings::{Field, Fields, Kind};
 
 const FORMAT: u32 = 1;
-const USAGE: &str = "lr-align generate --round 1|2 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...]";
+const USAGE: &str = "lr-align generate --round 1|2 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...] | lr-align fold --measured DIR [--measured DIR ...] --output NEW";
 /// The folder inside the round that the owner imports, and the one the exports go to.
 const LIGHTROOM: &str = "lightroom";
 const EXPORTS: &str = "exports";
@@ -52,6 +53,9 @@ pub fn run(root: &Path, mut a: Args) -> Result {
     a.0.remove(0);
     if op == "measure" {
         return measure::run(root, a);
+    }
+    if op == "fold" {
+        return fold::run(root, a);
     }
     ensure(op == "generate", USAGE)?;
     let round: u32 = a

@@ -6,7 +6,7 @@
 //! threshold within which one code of difference is permitted is `1e-5 + 1e-5 · |threshold|`,
 //! because production decodes, converts through Oklab and multiplies in f32.
 
-use super::basic_layer;
+use super::{basic_layer, strength};
 use luxforge_core::{ModuleRegistry, SnapshotId};
 use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
 use luxforge_testkit::fixtures::render;
@@ -113,6 +113,12 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
         )]);
         let rendered = render(&registry, &source, SnapshotId::new(), &stack)
             .expect("a rendered combined frame");
+        // The references take the strengths the stored slider values apply.
+        let (ev, v, s) = (
+            strength("exposure", ev),
+            strength("vibrance", v),
+            strength("saturation", s),
+        );
         for (index, input) in pixels.iter().enumerate() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");

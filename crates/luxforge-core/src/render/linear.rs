@@ -1272,7 +1272,7 @@ mod tests {
         Layer {
             id: crate::LayerId::new(),
             effect_id: effect_id.into(),
-            effect_format: crate::EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(effect_id),
             payload,
             mask: None,
             artifacts: Vec::new(),
@@ -2020,7 +2020,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: serde_json::json!({"exposure": 1.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -2036,22 +2036,24 @@ mod tests {
             LinearSettings::default(),
         )
         .unwrap();
-        // +1 EV doubles the linear value; the second pixel's blue clips only at the encoding.
+        // Exposure +1 applies its response's gain to the linear value; the second pixel's blue
+        // clips only at the encoding.
+        let gain = exposure_gain(1.0);
         assert_eq!(
             raster.pixel(0, 0),
             Some([
-                reference_srgb(0.2),
-                reference_srgb(0.4),
-                reference_srgb(0.6),
+                reference_srgb(0.1 * gain),
+                reference_srgb(0.2 * gain),
+                reference_srgb(0.3 * gain),
                 255
             ])
         );
         assert_eq!(
             raster.pixel(1, 0),
             Some([
-                reference_srgb(0.1),
-                reference_srgb(0.8),
-                reference_srgb(1.0),
+                reference_srgb(0.05 * gain),
+                reference_srgb(0.4 * gain),
+                reference_srgb(0.6 * gain),
                 255
             ])
         );
@@ -2107,8 +2109,16 @@ mod tests {
         .unwrap();
         assert_eq!(
             raster.pixel(0, 0),
-            Some([reference_srgb(0.36), 0, 255, 255])
+            Some([reference_srgb(0.18 * exposure_gain(1.0)), 0, 255, 255])
         );
+    }
+
+    /// The linear gain Basic's Exposure applies at slider value `ev`, through its response.
+    fn exposure_gain(ev: f64) -> f64 {
+        crate::basic_response("exposure")
+            .expect("Exposure's response")
+            .strength(ev)
+            .exp2()
     }
 
     #[test]
@@ -2455,7 +2465,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -2544,7 +2554,7 @@ mod tests {
         let layer = |effect: &str, payload, mask: Option<&crate::Mask>| Layer {
             id: crate::LayerId::new(),
             effect_id: effect.into(),
-            effect_format: crate::EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(effect),
             payload,
             mask: mask.map(|mask| mask.id.clone()),
             artifacts: Vec::new(),
@@ -2705,7 +2715,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: serde_json::json!({"exposure": 0.4, "contrast": 8.0, "vibrance": -15.0}),
                 mask: None,
                 artifacts: Vec::new(),

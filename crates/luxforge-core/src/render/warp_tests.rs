@@ -10,8 +10,7 @@ use crate::modules::{
     Stage, StageContext, ToolModule,
 };
 use crate::{
-    BASIC_EFFECT, CROP_EFFECT, Cancel, EFFECT_FORMAT, Error, Layer, LayerId, Recipe, SnapshotId,
-    Transform,
+    BASIC_EFFECT, CROP_EFFECT, Cancel, Error, Layer, LayerId, Recipe, SnapshotId, Transform,
 };
 use serde_json::{Map, Value, json};
 use std::{borrow::Cow, sync::Arc};
@@ -101,7 +100,7 @@ fn layer(id: &str, payload: Value) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: id.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(id),
         payload,
         mask: None,
         artifacts: vec![],

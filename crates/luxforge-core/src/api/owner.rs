@@ -8710,7 +8710,12 @@ mod tests {
                 ))
                 .unwrap();
                 let decoded = luxforge_reference::srgb::decode(code) as f32;
-                let expected = f64::from(decoded * (0.5_f64.exp2() as f32));
+                // The global Exposure 0.5's gain, through its response.
+                let gain = crate::basic_response("exposure")
+                    .expect("Exposure's response")
+                    .strength(0.5)
+                    .exp2();
+                let expected = f64::from(decoded * (gain as f32));
                 assert_eq!([input.r, input.g, input.b], [expected; 3]);
                 if code == 255 {
                     assert!(input.r > 1.0, "the queried colour input must not clamp");
@@ -8745,7 +8750,12 @@ mod tests {
                     .unwrap()
                 };
                 let none_selected = render(&no_mask);
-                no_mask.layers.last_mut().unwrap().payload = json!({"exposure":0.5 + masked_ev});
+                // One layer applying both exposures' strengths, which add as stops.
+                let response = crate::basic_response("exposure").expect("Exposure's response");
+                let both = response
+                    .value(response.strength(0.5) + response.strength(masked_ev))
+                    .expect("a reachable strength");
+                no_mask.layers.last_mut().unwrap().payload = json!({ "exposure": both });
                 let all_selected = render(&no_mask);
                 assert_ne!(all_selected.rgba, none_selected.rgba);
                 assert_eq!(
