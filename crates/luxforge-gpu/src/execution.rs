@@ -1786,6 +1786,12 @@ pub struct GpuStage {
     /// end. And the bytes of it written this frame, which every surface's `prepare` shares.
     source_handed: bool,
     source_written: u64,
+    /// A window of a source too large to hold whole, beside the source: a paged derived source's
+    /// level 0 around a view at 100% and above, the source then its resident level ([`window`]).
+    /// Derived from by version as the source is, charged and uploaded as it is, and retired at the
+    /// end of a frame in which no surface hands it.
+    window: Option<SourceSlot>,
+    window_handed: bool,
     /// The picture at rest's reduction and quantization, made the first time a surface is handed
     /// one ([`rest`]), or why they could not be.
     rest_passes: Option<Result<Arc<rest::RestPasses>, String>>,
@@ -1832,6 +1838,17 @@ fn device_lost(lost: &AtomicBool, wake: fn()) {
 }
 
 impl GpuStage {
+    /// The slot holding the source of `version`: the source, or the window beside it.
+    fn slot_of(&self, version: u64) -> Option<&SourceSlot> {
+        self.source
+            .as_ref()
+            .filter(|slot| slot.version() == version)
+            .or_else(|| {
+                self.window
+                    .as_ref()
+                    .filter(|slot| slot.version() == version)
+            })
+    }
     /// The stage for a pipeline on `device`, drawing to `format`, counting into `figures`. Its lost
     /// flag, which the device's lost callback sets, is the figures' own. `refused` is the launch's
     /// refusal of the stage ([`refuse_gpu_stage`]): the capability check then answers unavailable
@@ -1871,6 +1888,8 @@ impl GpuStage {
             layouts,
             source_handed: false,
             source_written: 0,
+            window: None,
+            window_handed: false,
             rest_passes: None,
         }
     }
@@ -2643,9 +2662,84 @@ impl Executor {
         diagnostics.gpu_source_refused = None;
     }
 
+    /// Make the pipeline hold `window` beside its source, which a surface hands this frame
+    /// ([`window`]): a window of a source too large to hold whole, a paged derived source's level 0
+    /// around a view at 100% and above, already read. Held, charged and uploaded as the source is,
+    /// sharing its frame's upload; another version or rectangle retires the one held. A window the
+    /// device cannot hold says why in the diagnostics and holds nothing.
+    pub fn fit_window(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        window: Option<&GpuSource>,
+    ) {
+        let Some(window) = window else {
+            return;
+        };
+        self.gpu.window_handed = true;
+        if self.gpu.support.is_none() || self.gpu.lost.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(held) = self.gpu.window.take_if(|held| !held.holds(window)) {
+            let bytes = held.bytes();
+            self.retire_preview(Held::Source(Box::new(held)), bytes);
+        }
+        if self.gpu.window.is_none() && window.holds_pixels() {
+            let Some(layouts) = self.gpu.layouts.as_ref() else {
+                self.figures.diagnostics().gpu_window_refused =
+                    Some((window.version(), GpuFallback::PipelineFailed));
+                return;
+            };
+            let preview = &self.figures.preview;
+            match SourceSlot::new(device, window, layouts, |bytes| preview.charge(bytes)) {
+                Ok(slot) => {
+                    self.gpu.window = Some(slot);
+                    self.figures.wake();
+                }
+                Err(fallback) => {
+                    self.figures.diagnostics().gpu_window_refused =
+                        Some((window.version(), fallback));
+                    return;
+                }
+            }
+        }
+        let Some(slot) = self.gpu.window.as_mut() else {
+            return;
+        };
+        if !slot.ready() {
+            let limit = self
+                .figures
+                .preview
+                .upload_per_frame
+                .load(Ordering::Acquire)
+                .saturating_sub(self.gpu.source_written);
+            if limit > 0 {
+                let written = slot.upload(queue, window, limit);
+                self.gpu.source_written += written;
+                self.figures
+                    .preview
+                    .staged
+                    .fetch_add(written, Ordering::AcqRel);
+                if slot.ready() {
+                    self.figures.wake();
+                }
+            }
+        }
+        let mut diagnostics = self.figures.diagnostics();
+        diagnostics.gpu_window = Some(slot.figures());
+        diagnostics.gpu_window_refused = None;
+    }
+
     /// At the end of every frame: the source no surface handed retires, with its charge, and the
     /// next frame's upload starts afresh.
     pub fn trim_source(&mut self) {
+        if !std::mem::take(&mut self.gpu.window_handed)
+            && let Some(held) = self.gpu.window.take()
+        {
+            let bytes = held.bytes();
+            self.retire_preview(Held::Source(Box::new(held)), bytes);
+            self.figures.diagnostics().gpu_window = None;
+        }
         self.gpu.source_written = 0;
         if std::mem::take(&mut self.gpu.source_handed) {
             return;
@@ -2805,9 +2899,7 @@ impl Executor {
         if let (Some((version, _)), false) = (&plan.boundary.derived, held) {
             let source = self
                 .gpu
-                .source
-                .as_ref()
-                .filter(|source| source.version() == *version)
+                .slot_of(*version)
                 .ok_or(GpuFallback::SourceMissing)?;
             if !source.ready() {
                 let figures = source.figures();
@@ -2916,11 +3008,10 @@ impl Executor {
                 // Derived from the source the pipeline holds, all of it uploaded (above): one pass
                 // writes the slot's boundary texture, submitted at once, ahead of the chain's, so
                 // the slot holds what it says it holds whatever this frame does next.
-                Some((_, derivation)) => {
+                Some((version, derivation)) => {
                     let (source, layouts) = self
                         .gpu
-                        .source
-                        .as_ref()
+                        .slot_of(*version)
                         .zip(self.gpu.layouts.as_ref())
                         .ok_or(GpuFallback::SourceMissing)?;
                     let size = plan.boundary.size();
@@ -3020,9 +3111,8 @@ impl Executor {
             .as_ref()
             .and_then(|(version, derivation)| {
                 self.gpu
-                    .source
-                    .as_ref()
-                    .filter(|source| source.version() == *version && source.ready())
+                    .slot_of(*version)
+                    .filter(|source| source.ready())
                     .zip(self.gpu.layouts.as_ref())
                     .map(|(source, layouts)| (source, layouts, derivation))
             });
