@@ -33,7 +33,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `workspace` | `{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}` | the workspace's defaults | remembered | next launch |
 | `brush` | `{size, feather, flow}`, or `null` | `null`: the neutral brush | remembered | next launch |
 | `window` | `{width, height, x, y}` in the system's points, or `null` | `null`: 1440 × 900, placed by the system | remembered | next launch |
-| `export_folder` | absolute path of a folder, or `null` | `null`: the original's folder | remembered | next export |
+| `export_last` | `{settings, preset_id}`, or `null` | `null`: the sheet opens on Web | remembered | next export |
 | `hdr_merge` | `{alignment, deghost}`, each `auto` or `off`, or `null` | `null`: both Auto | remembered | next ⌥-click merge |
 
 ### Protected usage statistics record
@@ -105,7 +105,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
   - **Off-display check.** Iced reports a display's size but not where it sits among the others. After opening, a frame no display holds is moved to the main display and checked again. A frame on the main display, taken to be the one whose bounds hold its top-left corner, that does not lie wholly within it is centred there at its size, shrunk to fit. A frame on another display is kept if it fits that display's size, and otherwise moved to the main one.
   - **Limit.** A secondary display larger than the main one, to its right or below it, can be taken for the main one, so a frame running past its edge can be moved to the main display. Exact placement needs the native screen frames.
   - **Events.** The event log records `window_fitted` and `window_moved_to_main_display`.
-- **Remembered export folder.** After an export whose destination the person chose in the save dialog succeeds, the desktop stores the destination's folder. When `export_folder` is stored and is an existing folder, `export.plan` suggests `<export_folder>/<stem>-edited.jpg`, counting up within that folder. Otherwise it suggests the original's folder as today. An export with a destination given by an evidence step or an API client stores nothing.
+- **Remembered export.** After an export the person started from the Export sheet, the Export menu or the palette succeeds, the desktop stores its settings and the preset they came from unchanged, or `null`. The sheet opens on them and Export again repeats them ([export settings](export-settings.md#the-export-sheet)). An API client's export stores nothing.
 - **Remembered HDR merge.** When a merge this desktop asked for starts, the desktop stores its alignment and deghosting as `hdr_merge`, if they differ from what is stored. ⌥-click on Merge HDR merges with them, and the [merge preview](panorama-merge.md#the-merge-preview) opens with them; with nothing stored, both are Auto. The folder, the reference and exposure overrides belong to one bracket and are not remembered.
 
 ## Desktop writes
@@ -166,7 +166,7 @@ Decided by the owner on 2026-10-04:
 - Add the mask overlay colour, the canvas background and a switch for automatic lens correction to General.
 - Add an interface size and a catalog location to General.
 - The GPU preview stays a per-session switch, not a preference. Superseded on 2026-10-05 ([decisions](../decisions.md#gpu-first-rendering)): the switch is retired, the GPU is the renderer of record, and only `--no-gpu-render` refuses it, for a launch.
-- **Export defaults** (owner, 2026-10-07): keep JPEG quality fixed at 90 and Keep metadata chosen per export. Neither becomes a preference; the export folder remains remembered as described above. The planned [export settings](export-settings.md) replace this when implemented, with export presets and a remembered last export (`export_last`) in place of `export_folder`.
+- **Export defaults** (owner, 2026-10-07): the [export settings](export-settings.md) hold quality, metadata and the folder in export presets, and the last export is remembered as `export_last`, with no Settings row, in place of `export_folder`.
 
 Recorded defaults, proposals the owner can revise:
 
