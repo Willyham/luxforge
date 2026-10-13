@@ -454,7 +454,10 @@ fn cell(
     let context = RenderContext::new();
     let exact = render(
         registry,
-        evaluation.source(),
+        evaluation
+            .source()
+            .whole()
+            .expect("a test's source is never paged"),
         recipe,
         RenderOptions::exact(&Cancel::never()),
         &context,
@@ -494,7 +497,10 @@ fn cell(
     let twin = |skip| {
         qualification::twin_lights(
             registry,
-            evaluation.source().into(),
+            evaluation
+                .source()
+                .whole()
+                .expect("a test's source is never paged"),
             recipe,
             &estimating,
             &FACTORS,

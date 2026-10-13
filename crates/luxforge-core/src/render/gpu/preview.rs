@@ -385,7 +385,13 @@ struct FitStage {
     /// The stage the plan addresses, and the source's full content stage.
     stage: Stage,
     full: Stage,
-    /// The source is a developed RAW, whose frames take the linear path.
+    /// The full-resolution content stage payloads in source pixels are resolved against: `full`,
+    /// or for a paged source's overview the level 0 its source reduces.
+    exact: Stage,
+    /// The stage of the source the photo surface holds whole, where it is not `full`: a paged
+    /// source's resident level, which a region of level 0 computes its lights over.
+    held: Option<Stage>,
+    /// The source is a developed RAW or a derived source, whose frames take the linear path.
     linear: bool,
     /// At a percentage zoom of 100% or more, the region of the output stage drawn, at this
     /// magnification.
@@ -412,7 +418,13 @@ impl FitStage {
                     compiled: evaluation.compiled()?.clone(),
                     stage: full,
                     full,
-                    linear: matches!(evaluation.source(), crate::PreviewSource::Raw { .. }),
+                    exact: stage_of(evaluation.full_stage()),
+                    held: evaluation
+                        .source()
+                        .paged()
+                        .and_then(|paged| paged.level())
+                        .map(|level| stage_of((level.width(), level.height()))),
+                    linear: evaluation.source().linear(),
                     region: Some((rect, magnification)),
                 })
             }
@@ -422,20 +434,20 @@ impl FitStage {
     fn of(evaluation: &Evaluation, bounds: ProxyBounds) -> Result<Self, Error> {
         let compiled = evaluation.compiled()?;
         let full = evaluation.source().dimensions();
+        let exact = evaluation.full_stage();
         let reduced = super::fit::reduced_stage(
             evaluation.registry(),
             evaluation.recipe(),
             full,
+            exact,
             compiled.stage(),
             bounds,
         )?;
-        let full = Stage {
-            width: full.0,
-            height: full.1,
-        };
+        let (full, exact) = (stage_of(full), stage_of(exact));
         // A developed RAW's frames are the linear path's, unclamped and unquantized between
-        // segments, where a JPEG's are clamped and quantized at every stage boundary.
-        let linear = matches!(evaluation.source(), crate::PreviewSource::Raw { .. });
+        // segments, where a JPEG's are clamped and quantized at every stage boundary; so are a
+        // derived source's.
+        let linear = evaluation.source().linear();
         Ok(match reduced {
             Some(reduced) => Self {
                 plan: Some(reduced.plan),
@@ -445,6 +457,8 @@ impl FitStage {
                 },
                 compiled: reduced.compiled,
                 full,
+                exact,
+                held: None,
                 linear,
                 region: None,
             },
@@ -453,6 +467,8 @@ impl FitStage {
                 compiled: compiled.clone(),
                 stage: full,
                 full,
+                exact,
+                held: None,
                 linear,
                 region: None,
             },
@@ -463,10 +479,19 @@ impl FitStage {
     /// ([`GpuPlanRequest::from_source`]).
     fn request(&self) -> GpuPlanRequest {
         let request = match self.plan {
-            Some(_) => GpuPlanRequest::fit(0, self.stage, self.full),
+            Some(_) => GpuPlanRequest::fit(0, self.stage, self.exact),
+            // A paged source's overview at its own stage is still a reduced stage of level 0.
+            None if self.exact != self.full => GpuPlanRequest::fit(0, self.full, self.exact),
             None => GpuPlanRequest::exact(0, self.full),
         }
         .from_source();
+        // A paged source's overview is held as its level, which its lights are computed over, and so
+        // are the lights of a region of its level 0.
+        let request = match self.held {
+            Some(held) => request.holding(held),
+            None if self.exact != self.full => request.holding(self.full),
+            None => request,
+        };
         if self.linear {
             request.linear()
         } else {
@@ -476,12 +501,51 @@ impl FitStage {
 
     /// The masks a proxy compiles take the thin-feature supersample; the exact stage's do not.
     fn sampling(&self) -> MaskSampling {
-        if self.plan.is_some() {
+        if self.plan.is_some() || self.exact != self.full {
             MaskSampling::ThinFeature
         } else {
             MaskSampling::Point
         }
     }
+}
+
+fn stage_of((width, height): (u32, u32)) -> Stage {
+    Stage { width, height }
+}
+
+/// The plan request of `evaluation`'s stack at its source's own stage, from the source itself: the
+/// exact stage, or for a paged source's overview its level as a reduced stage of level 0, whose
+/// payloads in source pixels are resolved against level 0 and scaled to it; on the linear path
+/// for a RAW's or a derived source's planes.
+pub(crate) fn source_request(evaluation: &Evaluation) -> GpuPlanRequest {
+    let stage = stage_of(evaluation.source().dimensions());
+    let request = if evaluation.is_overview() {
+        GpuPlanRequest::fit(0, stage, stage_of(evaluation.full_stage())).holding(stage)
+    } else {
+        GpuPlanRequest::exact(0, stage)
+    }
+    .from_source();
+    if evaluation.source().linear() {
+        request.linear()
+    } else {
+        request
+    }
+}
+
+/// The evaluation a view of `evaluation` is planned over: for a paged source at Fit and below
+/// 100%, its overview over the resident level ([`Evaluation::overview`]), and `evaluation` itself
+/// otherwise. `O(layers)` for an overview's compile; no pixel is read.
+pub(crate) fn viewed(
+    evaluation: &Evaluation,
+    view: GpuView,
+) -> Result<std::borrow::Cow<'_, Evaluation>, Error> {
+    Ok(match view {
+        GpuView::Fit(_) => match evaluation.overview()? {
+            Some(overview) => std::borrow::Cow::Owned(overview),
+            None => std::borrow::Cow::Borrowed(evaluation),
+        },
+        GpuView::Region { .. } => std::borrow::Cow::Borrowed(evaluation),
+    })
 }
 
 /// `recipe` with a neutral layer of `effect` for `mask` inserted at `index`: what a drafted layer
@@ -710,6 +774,9 @@ pub(crate) fn plan_preview_reducing(
     view: GpuView,
     reduce_after: u64,
 ) -> Result<GpuPreview, Error> {
+    // A paged source's view below 100% is its overview's.
+    let viewed = viewed(evaluation, view)?;
+    let evaluation = &*viewed;
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
     let drafted_layer = drafted(registry, recipe, draft);
@@ -1246,10 +1313,16 @@ fn view_bytes(preview: &GpuPreview) -> u64 {
 /// What the photo surface holds of `source` on the GPU: a JPEG's codes, 4 bytes a pixel, or a
 /// developed RAW's three `f32` planes, 12.
 fn source_bytes(source: &crate::PreviewSource) -> u64 {
-    let (width, height) = source.dimensions();
+    let (width, height) = match source {
+        // A paged source is held as its resident level; its windows are charged where planned.
+        crate::PreviewSource::Paged(paged) => paged
+            .level()
+            .map_or((0, 0), |level| (level.width(), level.height())),
+        source => source.dimensions(),
+    };
     let pixel = match source {
         crate::PreviewSource::Jpeg(_) => 4,
-        crate::PreviewSource::Raw { .. } => 12,
+        crate::PreviewSource::Raw { .. } | crate::PreviewSource::Paged(_) => 12,
     };
     u64::from(width) * u64::from(height) * pixel
 }
@@ -1339,14 +1412,9 @@ fn plan_tiles(
     let recipe = evaluation.recipe();
     let compiled = evaluation.compiled()?;
     let output = compiled.stage();
-    let full = evaluation.source().dimensions();
-    let full = Stage {
-        width: full.0,
-        height: full.1,
-    };
-    let linear = matches!(evaluation.source(), crate::PreviewSource::Raw { .. });
-    let request = GpuPlanRequest::exact(0, full).from_source();
-    let request = if linear { request.linear() } else { request };
+    let full = stage_of(evaluation.source().dimensions());
+    let linear = evaluation.source().linear();
+    let request = source_request(evaluation);
     let plan = match gpu_plan(registry, recipe, request)? {
         GpuAnswer::Plan(plan) => plan,
         GpuAnswer::Fallback(reason) => return Ok(Err(reason)),
@@ -1530,10 +1598,28 @@ pub(crate) fn staged_light_fallback(
 /// at rest, at 100% and above the backdrop under its region. `O(layers)` on the catalog owner and
 /// `O(tiles × segments)` for its tiles, no pixel read.
 pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRest, Error> {
-    let recipe = evaluation.recipe();
-    let fit = FitStage::of_view(evaluation, view)?;
+    // A paged source's picture below 100% is its overview's, and so are its tiles at every view:
+    // the backdrop and the histogram count the overview, never level 0 whole.
+    let paged = evaluation.overview()?;
+    let tiled = paged.as_ref().unwrap_or(evaluation);
+    let viewed = match view {
+        GpuView::Fit(_) => tiled,
+        GpuView::Region { .. } => evaluation,
+    };
+    let recipe = viewed.recipe();
+    let fit = FitStage::of_view(viewed, view)?;
     let request = fit.request();
-    let planned = planned_preview(evaluation, &fit, recipe, request, None, None)?;
+    let planned = planned_preview(viewed, &fit, recipe, request, None, None)?;
+    // A paged source's region at 100% and above is drawn over a window of level 0 the photo
+    // surface holds beside the resident level, charged with it.
+    let window = match (&paged, view) {
+        (Some(_), GpuView::Region { .. }) => planned
+            .boundary
+            .as_ref()
+            .and_then(|boundary| boundary.window)
+            .map_or(0, |window| window.pixels() * 12),
+        _ => 0,
+    };
     // Reduced to the view where it draws the stage smaller than it is; at 100% and above to the
     // backdrop the view's region is drawn over; the counts' alone where neither reduces the stage.
     // Within the rest's share beside the view plan, whose slot stays held while the tiles are drawn,
@@ -1543,14 +1629,14 @@ pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRes
         GpuView::Fit(_) => 0,
         GpuView::Region { .. } => crate::render::overview::OVERVIEW_GPU_BYTES,
     };
-    let sizing = RestSizing::Beside(view_bytes(&planned) + overview);
+    let sizing = RestSizing::Beside(view_bytes(&planned) + overview + window);
     let reduced = match view {
-        GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, sizing)?,
-        GpuView::Region { .. } => plan_rest_tiles(evaluation, REST_BACKDROP_BOUNDS, sizing)?,
+        GpuView::Fit(bounds) => plan_rest_tiles(tiled, bounds, sizing)?,
+        GpuView::Region { .. } => plan_rest_tiles(tiled, REST_BACKDROP_BOUNDS, sizing)?,
     };
     let tiles = Some(match reduced {
         Some(tiles) => tiles,
-        None => plan_count_tiles(evaluation, sizing)?,
+        None => plan_count_tiles(tiled, sizing)?,
     });
     Ok(GpuRest {
         view: planned,
@@ -1876,6 +1962,8 @@ pub struct GpuWarmList {
 /// hold fill what is left. `O(layers × modules)` compiles on the catalog owner, with no pixel
 /// read.
 pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<GpuWarmList, Error> {
+    let viewed = viewed(evaluation, view)?;
+    let evaluation = &*viewed;
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
     let fit = FitStage::of_view(evaluation, view)?;

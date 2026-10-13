@@ -48,6 +48,11 @@ pub const SWEEP_SPLIT_REACH: u32 = 64;
 /// sweep before it wrote and writes the other.
 pub const SWEEP_STAGE_TEXTURES: u32 = 2;
 
+/// The longest side a stage texture holds: two of the device's 8,192-texel textures, as the photo
+/// surface's and the tile worker's stage holders tile it (`luxforge_gpu`'s `STAGE_SIDE`). A
+/// content stage past it, a paged derived source's level 0, takes no staged sweep.
+pub(crate) const SWEEP_STAGE_SIDE_LIMIT: u32 = 2 * 8192;
+
 /// How a stack's tiles are drawn: in staged sweeps, or chained, every tile running every link,
 /// and why.
 #[derive(Clone, Debug, PartialEq)]
@@ -272,6 +277,17 @@ fn plan_ranges(request: &SweepRequest, ranges: Vec<Range<usize>>) -> GpuStaging 
         )));
     }
     let stage = plan.boundary.stage;
+    // A stage texture is held as the source is, in at most two textures of the device's side
+    // across and down: a content stage past them, a paged source's level 0, is drawn chained, each
+    // tile's whole chain over its own window.
+    if stage.width > SWEEP_STAGE_SIDE_LIMIT || stage.height > SWEEP_STAGE_SIDE_LIMIT {
+        return GpuStaging::Chained(Chained::Unplannable(format!(
+            "its {}x{} content stage is past the GPU's 2 x 2 stage textures of {} texels",
+            stage.width,
+            stage.height,
+            SWEEP_STAGE_SIDE_LIMIT / 2
+        )));
+    }
     let texture_bytes =
         u64::from(stage.width) * u64::from(stage.height) * format.texel_bytes() as u64;
     let textures = (ranges.len() as u32 - 1).min(SWEEP_STAGE_TEXTURES);

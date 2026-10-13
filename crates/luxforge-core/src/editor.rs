@@ -46,6 +46,8 @@ mod entries;
 mod evaluate;
 mod history;
 mod masks;
+#[cfg(test)]
+mod paged_source_render_tests;
 pub(crate) mod pixels;
 mod plan;
 mod source;
@@ -468,28 +470,10 @@ impl<'a> AnalysisSelection<'a> {
 #[derive(Debug)]
 pub(crate) struct AnalysisPlan {
     pub identity: AnalysisIdentity,
-    pub evaluation: Result<Sourced, Error>,
-}
-
-/// What an export or a full-resolution analysis evaluates: a stack over a source the reference
-/// renders whole, or over a paged derived source, which has no whole frame and which the reference
-/// renders in bands from windows of its level 0 (`crate::render::bands`,
-/// `docs/design/panorama-merge.md`, "The reference on paged sources").
-#[derive(Clone, Debug)]
-pub(crate) enum Sourced {
-    Whole(Evaluation),
-    Paged(Evaluation<Arc<crate::artifacts::derived_source::PagedSource>>),
-}
-
-impl Sourced {
-    /// The evaluation of a source rendered whole, `None` for a paged source's.
-    #[cfg(test)]
-    pub(crate) fn whole(&self) -> Option<&Evaluation> {
-        match self {
-            Self::Whole(evaluation) => Some(evaluation),
-            Self::Paged(_) => None,
-        }
-    }
+    /// Over a paged derived source ([`crate::PreviewSource::Paged`]) the reference renders it in
+    /// bands from windows of its level 0 (`crate::render::bands`, `docs/design/panorama-merge.md`,
+    /// "The reference on paged sources").
+    pub evaluation: Result<Evaluation, Error>,
 }
 
 /// One saved entry's export, frozen on the catalog owner: whatever is committed afterwards, the job
@@ -498,7 +482,9 @@ impl Sourced {
 pub(crate) struct ExportPlan {
     /// The asset, entry, snapshot, recipe hash, source fingerprint and output stage.
     pub identity: AnalysisIdentity,
-    pub evaluation: Sourced,
+    /// Over a paged derived source the GPU streams it from windows of its level 0, or the
+    /// reference renders it in bands.
+    pub evaluation: Evaluation,
     /// The original's supported EXIF fields, read once when its source was prepared.
     pub capture: Arc<crate::export::CaptureMetadata>,
 }

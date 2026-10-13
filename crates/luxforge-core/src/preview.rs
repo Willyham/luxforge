@@ -18,6 +18,7 @@ mod coverage;
 #[cfg(test)]
 mod gpu_tests;
 mod job;
+mod paged;
 mod queue;
 mod result;
 #[cfg(test)]
@@ -26,6 +27,7 @@ mod worker;
 
 pub use coverage::{MaskCoverage, MaskCoverageTarget, MaskOverlayOutcome};
 pub use job::{PreviewIntent, PreviewJob, PreviewSource};
+pub use paged::{PagedPreview, SourceWindow};
 pub use queue::{PreviewProgress, PreviewQueue, Queued};
 pub use result::{ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult};
 pub use worker::PROGRESS_QUIET as PREVIEW_PROGRESS_QUIET;
