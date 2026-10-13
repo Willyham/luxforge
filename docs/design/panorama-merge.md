@@ -216,12 +216,17 @@ Storage and preparation are implemented (`crates/luxforge-core/src/artifacts/der
 
 ### The reference on paged sources
 
-The CPU reference remains the oracle, so it gains a **banded mode**. It evaluates the output stage in full-width bands, each from level-0 windows with the stack's halos and its exact spatial semantics, and streams the bands to the export encoder or a test. Two requirements:
+The CPU reference remains the oracle, so it has a **banded mode** (`crates/luxforge-core/src/render/bands.rs`). It evaluates the output stage in full-width bands, each from a window of level 0 with the stack's halos and its exact spatial semantics, and streams the bands to the export encoder, the analysis or a test. The same mode reads any rectangle of the output as bytes or linear values, and reduces the output to a view by the reference's own linear-light area average, band by band.
 
-- On any source small enough for both modes, the banded mode is bit-identical to the whole-frame mode, for every output family.
-- A whole-frame statistic, such as the Dehaze light, is computed in a first bounded pass and gives the same result as the whole-frame computation.
+- **Windows.** Producing a rectangle of the output walks it back through the stack: through each exact geometry, a resample's taps with their margin, a spatial operation's summed halo and a repair's own rectangle. That names the window of level 0 to read and the window of each spatial or repair stage to materialize, and one windowed evaluation builds them. A spatial tile's value does not depend on the rectangle it is cut to, and the last pass writes the whole render's rows over the rectangle, so the output is the whole-frame render byte for byte. A resample whose reads cannot be bounded is refused by name (`resource-limit`); no stack the modules build today has one.
+- **First pass.** Whole-stage statistics are computed before any band, in stage order, each from its input stage read in full-width bands through the stack before it. A spatial operation's global estimates, such as the Dehaze light, come from one reduction built band by band, each block summed in the one order every reduction sums in, so the estimate equals the whole frame's bit for bit. A repair (Clone and Heal) evaluates its operations over the read set of every destination once and holds that working set for every band.
+- **Reduction factor.** The Dehaze light's reduction is 16-pixel blocks up to about 67 MP; on a larger stage its factor grows in steps of 16 until the grid is within its 262,144-block bound (`estimate_reduction`). The GPU's light link reduces at the same factor.
+- **Bounds.** A band is at most 2,048 rows and at most the 512 MiB evaluated-frame limit of output, which bounds a band, not the frame. The windows one band reads and builds (the level-0 window, every stage's frame and the band's output) hold at most 512 MiB; a band past that is cut in two along its longer side until each piece fits. A window may be as wide as a paged source but is otherwise held to the camera limits. Cancellation is read between pieces and bands and by every pass inside one.
+- **Parity.** On sources small enough for both modes, the banded output is bit-identical to the whole-frame output for colour, spatial, masked, geometry and repair stacks, at budgets that cut every band into pieces (`reference_bands` tests).
 
-The reference export of a paged source uses the banded mode, and so does the reference analysis at full resolution. The 512 MiB evaluated-frame limit then bounds a band, not the frame. Paged sources are qualified with a large generated derived entry in the GPU corpus, about 160 MP and wider than 16,384, through the banded reference.
+**Export and analysis.** The export of a paged source and `analysis.request` at full resolution use the banded mode. The export encodes each band as it is rendered. Its result names the reference renderer: `requested` when the export asked for it, no reason on an owner with no GPU provider, and `paged-source` otherwise, until the GPU streams paged sources. The analysis counts each band and adds the counts, giving the report of the whole output without holding it.
+
+Paged sources are qualified with a large generated derived entry in the GPU corpus, about 160 MP and wider than 16,384, through the banded reference.
 
 ### Memory
 
