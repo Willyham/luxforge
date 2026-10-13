@@ -93,6 +93,9 @@ fn paths(executable: Option<&Path>) -> Vec<PathBuf> {
         paths.push(directory.join("../Resources/lensfun/index.json"));
         paths.push(directory.join("lensfun/index.json"));
     }
+    // A development build also finds the checkout's index. A tag build reads only its own payload's,
+    // so a missing bundled index is reported, never replaced by the build machine's checkout.
+    #[cfg(not(luxforge_release_build))]
     paths.push(PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/data/lensfun/index.json"
@@ -182,6 +185,26 @@ mod tests {
         );
     }
     #[test]
+    fn only_a_development_build_falls_back_to_the_checkouts_index() {
+        let found = paths(Some(Path::new("/opt/Lüx forge/Luxforge/luxforge")));
+        let payload = Path::new("/opt/Lüx forge/Luxforge");
+        assert_eq!(
+            found[..2],
+            [
+                payload.join("../Resources/lensfun/index.json"),
+                payload.join("lensfun/index.json")
+            ]
+        );
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/lensfun/index.json");
+        let development = cfg!(not(luxforge_release_build));
+        assert_eq!(found.len(), if development { 3 } else { 2 });
+        assert_eq!(found.contains(&checkout), development);
+        assert_eq!(
+            development,
+            option_env!("LUXFORGE_RELEASE_VERSION").is_none()
+        );
+    }
+    #[test]
     fn lens_index_missing_file_answers_not_ready() {
         let error = load(Some(Path::new("/not-present/lens-profile-index"))).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::NotReady);
@@ -191,6 +214,10 @@ mod tests {
         );
     }
     #[test]
+    #[cfg_attr(
+        luxforge_release_build,
+        ignore = "reads the committed index through the development build's checkout fallback"
+    )]
     fn lens_index_parses_committed_file_off_the_calling_thread() {
         let caller = std::thread::current().id();
         load_in_background();
