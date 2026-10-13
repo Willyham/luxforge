@@ -342,6 +342,93 @@ fn every_preset_format_size_level_optimise_and_limit_writes_what_its_plan_says()
     );
 }
 
+/// A TIFF's pixels as opaque RGBA, 8 or 16 bits, as the `tiff` crate decodes them.
+fn tiff_pixels(bytes: &[u8]) -> crate::tiles::Pixels {
+    use tiff::decoder::{Decoder, DecodingResult};
+    let mut decoder = Decoder::new(Cursor::new(bytes)).unwrap();
+    match decoder.read_image().unwrap() {
+        DecodingResult::U8(rgb) => crate::tiles::Pixels::Eight(
+            rgb.chunks_exact(3)
+                .flat_map(|p| [p[0], p[1], p[2], u8::MAX])
+                .collect(),
+        ),
+        DecodingResult::U16(rgb) => crate::tiles::Pixels::Sixteen(
+            rgb.chunks_exact(3)
+                .flat_map(|p| [p[0], p[1], p[2], u16::MAX])
+                .collect(),
+        ),
+        _ => panic!("an 8 or 16-bit RGB TIFF"),
+    }
+}
+
+/// Output sharpening through `export.write`: a sharpened TIFF, resized at 8 bits and full size at
+/// 16, is exactly the same export unsharpened with the reference sharpening applied to its codes
+/// at the output's size, for the settings' density or 300 ppi without one; and it differs from it.
+#[test]
+#[slow]
+fn a_sharpened_export_is_the_unsharpened_output_sharpened_after_resizing() {
+    use crate::tiles::sharpen::{OutputSharpen, Sharpen, SharpenAmount, SharpenMedium};
+    let harness = Harness::start("sharpened");
+    let asset = camera(&harness);
+    let out = destinations(&harness);
+    let tiff = |size: Value, bits: u8, sharpen: Value, density: Value| {
+        json!({
+            "format": "tiff", "size": size, "optimise": false, "bit_depth": bits,
+            "sharpen": sharpen, "metadata": "none", "pixels_per_inch": density,
+            "folder": "original", "suffix": "",
+        })
+    };
+    let cases = [
+        (
+            "small",
+            json!({"fit": "within", "width": 90, "height": 90}),
+            8,
+            Sharpen {
+                medium: SharpenMedium::Screen,
+                amount: SharpenAmount::High,
+            },
+            None,
+        ),
+        (
+            "full",
+            json!({"fit": "full"}),
+            16,
+            Sharpen {
+                medium: SharpenMedium::Matte,
+                amount: SharpenAmount::Standard,
+            },
+            Some(600u16),
+        ),
+    ];
+    for (name, size, bits, sharpen, density) in cases {
+        let written = |suffix: &str, sharpening: Value| {
+            let destination = out.join(format!("{name}{suffix}.tif"));
+            let settings = tiff(size.clone(), bits, sharpening, json!(density));
+            let accepted = harness.export(
+                json!({"asset_id": asset, "destination": destination, "settings": settings}),
+            );
+            assert_eq!(accepted["settings"], settings, "{name}");
+            let read = harness.settle(&accepted["job_id"]);
+            assert_eq!(read["status"], "ready", "{name}: {read}");
+            let result = &read["result"];
+            let size = (
+                result["width"].as_u64().unwrap() as u32,
+                result["height"].as_u64().unwrap() as u32,
+            );
+            (tiff_pixels(&fs::read(destination).unwrap()), size)
+        };
+        let value = json!({"medium": sharpen.medium.as_str(), "amount": sharpen.amount.as_str()});
+        let (sharpened, size) = written("-sharpened", value);
+        let (mut expected, plain) = written("-plain", Value::Null);
+        assert_eq!(size, plain, "{name}");
+        assert_ne!(sharpened, expected, "{name}: sharpening changed nothing");
+        let kernel = OutputSharpen::new(sharpen, density).kernel();
+        crate::tiles::sharpen::sharpen(&mut expected, size, &kernel, &crate::Cancel::never())
+            .unwrap();
+        assert!(sharpened == expected, "{name}: not the output sharpened");
+    }
+}
+
 /// Each `job.read` of a running export, taken on the export lane each time its progress changes
 /// ([`Hold`]'s `"progress"`), for the export `export.write` accepts next.
 struct Reads {

@@ -229,14 +229,56 @@ fn a_field_the_format_does_not_use_is_refused_even_as_null_and_one_it_uses_is_re
 }
 
 #[test]
-fn sharpening_is_refused_by_name_until_it_is_delivered() {
-    let settings = with(
-        jpeg(),
-        "sharpen",
-        Some(json!({"medium": "screen", "amount": "standard"})),
+fn sharpening_takes_every_medium_and_amount_in_every_format_and_refuses_anything_else_by_name() {
+    use crate::tiles::sharpen::{Sharpen, SharpenAmount, SharpenMedium};
+    for base in [jpeg(), webp(), tiff()] {
+        for medium in SharpenMedium::ALL {
+            for amount in SharpenAmount::ALL {
+                let value = json!({"medium": medium.as_str(), "amount": amount.as_str()});
+                let settings = with(base.clone(), "sharpen", Some(value.clone()));
+                let read = ExportSettings::from_json(&settings).unwrap();
+                assert_eq!(read.sharpen, Some(Sharpen { medium, amount }));
+                assert_eq!(read.to_json(), settings, "it writes back what it read");
+            }
+        }
+    }
+    for value in [
+        json!("screen"),
+        json!({"medium": "canvas", "amount": "standard"}),
+        json!({"medium": "matte", "amount": "extreme"}),
+        json!({"medium": "matte"}),
+        json!({"medium": "matte", "amount": "low", "radius": 2}),
+    ] {
+        let settings = with(jpeg(), "sharpen", Some(value));
+        assert_names(settings.clone(), "sharpen");
+    }
+}
+
+#[test]
+fn the_output_spec_sharpens_for_the_settings_density_or_300_ppi() {
+    use crate::tiles::sharpen::{OutputSharpen, Sharpen, SharpenAmount, SharpenMedium};
+    let sharpen = Sharpen {
+        medium: SharpenMedium::Glossy,
+        amount: SharpenAmount::Standard,
+    };
+    let mut settings = ExportSettings {
+        sharpen: Some(sharpen),
+        ..ExportSettings::baseline(MetadataLevel::All)
+    };
+    assert_eq!(
+        settings.output_spec((600, 400)).sharpen,
+        Some(OutputSharpen {
+            sharpen,
+            pixels_per_inch: 300
+        })
     );
-    assert_names(settings.clone(), "sharpen");
-    assert!(refusal(&settings).detail.contains("not yet available"));
+    settings.pixels_per_inch = Some(240);
+    assert_eq!(
+        settings.output_spec((600, 400)).sharpen.map(|s| s.pixels_per_inch),
+        Some(240)
+    );
+    settings.sharpen = None;
+    assert_eq!(settings.output_spec((600, 400)).sharpen, None);
 }
 
 #[test]

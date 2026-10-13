@@ -22,23 +22,35 @@ impl Depth {
 }
 
 /// The pixels an export renders: `width` × `height`, at most the output stage's size on both sides
-/// and scaled from it by one factor, encoded at `depth`. A `width` and `height` equal to the stage's
-/// are the full-size output, which is rendered without resampling.
+/// and scaled from it by one factor, encoded at `depth`, then sharpened when `sharpen` says so
+/// ([`super::sharpen`]). A `width` and `height` equal to the stage's are the full-size output, which
+/// is rendered without resampling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OutputSpec {
     pub width: u32,
     pub height: u32,
     pub depth: Depth,
+    /// Output sharpening of the encoded codes, at the output's size, after resizing.
+    pub sharpen: Option<super::sharpen::OutputSharpen>,
 }
 
 impl OutputSpec {
-    /// The full-size 8-bit output of a `width` × `height` stage: today's export.
+    /// The full-size 8-bit output of a `width` × `height` stage, unsharpened: today's export.
     pub const fn full(width: u32, height: u32) -> Self {
         Self {
             width,
             height,
             depth: Depth::Eight,
+            sharpen: None,
         }
+    }
+
+    /// Whether it is the stage's own size at 8 bits, unsharpened: the exact frame itself, and on
+    /// the GPU its tiles' own codes, neither held nor resampled.
+    pub const fn is_exact_frame(&self, stage_width: u32, stage_height: u32) -> bool {
+        self.is_full(stage_width, stage_height)
+            && matches!(self.depth, Depth::Eight)
+            && self.sharpen.is_none()
     }
 
     /// Whether this output is the stage's own size, so nothing is resampled.
@@ -184,6 +196,8 @@ impl OutputFrame {
 ///   (`Render::wide_frame`), opaque.
 /// - **Smaller.** Those 16-bit values resampled in linear light by the separable Lanczos-3 filter
 ///   (`render::export_output`), clamped and encoded once at the output's depth.
+/// - **Sharpened.** Any of these, then sharpened in place on its codes ([`super::sharpen`]): a
+///   full-size 8-bit frame is first taken from the render, copied only while another holds it.
 ///
 /// An output with an empty side or past the stage is refused with `validation`; every frame is
 /// held to the evaluated-frame limit at its depth, the 16-bit terminal at six bytes a pixel and the
@@ -198,7 +212,8 @@ pub fn reference_output(
 }
 
 /// [`reference_output`], calling `resampling` once the exact render is done and before a smaller
-/// output is resampled from it, so an export reports the phase; its error stops the export there.
+/// output is resampled from it or any output is sharpened, so an export reports the phase; its
+/// error stops the export there.
 pub(crate) fn reference_output_phased(
     evaluation: &crate::Evaluation,
     output: OutputSpec,
@@ -210,25 +225,40 @@ pub(crate) fn reference_output_phased(
     let (width, height) = render.stage();
     output.check(width, height)?;
     let full = output.is_full(width, height);
-    if full && output.depth == Depth::Eight {
+    let frame = if full && output.depth == Depth::Eight {
         let frame = render.frame(snapshot_id)?;
-        return Ok(OutputFrame {
+        OutputFrame {
             width: frame.width,
             height: frame.height,
             samples: FrameSamples::Shared(frame.rgba),
-        });
-    }
-    let terminal = render.wide_frame()?;
-    drop(render);
-    let pixels = if full {
-        Pixels::Sixteen(terminal.into_rgba16(cancel)?)
+        }
     } else {
-        resampling()?;
-        crate::render::export_output::resample(&terminal, output, cancel)?
+        let terminal = render.wide_frame()?;
+        drop(render);
+        let pixels = if full {
+            Pixels::Sixteen(terminal.into_rgba16(cancel)?)
+        } else {
+            resampling()?;
+            crate::render::export_output::resample(&terminal, output, cancel)?
+        };
+        OutputFrame {
+            width: output.width,
+            height: output.height,
+            samples: FrameSamples::Owned(pixels),
+        }
     };
+    let Some(sharpen) = output.sharpen else {
+        return Ok(frame);
+    };
+    if full {
+        resampling()?;
+    }
+    let (width, height) = (frame.width, frame.height);
+    let mut pixels = frame.into_pixels();
+    super::sharpen::sharpen(&mut pixels, (width, height), &sharpen.kernel(), cancel)?;
     Ok(OutputFrame {
-        width: output.width,
-        height: output.height,
+        width,
+        height,
         samples: FrameSamples::Owned(pixels),
     })
 }

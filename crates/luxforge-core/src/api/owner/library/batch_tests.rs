@@ -795,10 +795,10 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     );
     assert_eq!(absent.code, "validation");
     assert_eq!(absent.data.unwrap()["notice"], "folder-missing");
-    // Output sharpening, not yet delivered, is refused by name before any job, as export.write
+    // An output sharpening it does not know is refused by name before any job, as export.write
     // refuses it.
     let mut sharpened = into(&out);
-    sharpened["sharpen"] = json!({"medium": "screen", "amount": "standard"});
+    sharpened["sharpen"] = json!({"medium": "screen", "amount": "extreme"});
     let refused = harness.refused(
         "batch.export",
         json!({"targets": assets(&targets), "settings": sharpened, "mutation": envelope("sharpened")}),

@@ -10,7 +10,14 @@
 use super::settings::{
     Chroma, ExportFolder, ExportSettings, FormatSettings, MetadataLevel, OutputSize,
 };
-use crate::{Error, capabilities::document::JsonDocument, tiles::output::Depth};
+use crate::{
+    Error,
+    capabilities::document::JsonDocument,
+    tiles::{
+        output::Depth,
+        sharpen::{Sharpen, SharpenAmount, SharpenMedium},
+    },
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -43,8 +50,8 @@ pub struct ExportPreset {
     pub settings: ExportSettings,
 }
 
-/// Web, Print and Master with the design's values, each saving to the original's folder. Output
-/// sharpening is not yet delivered, so none of them sharpens.
+/// Web, Print and Master with the design's values, each saving to the original's folder: Web
+/// sharpens for the screen and Print for glossy paper, both at Standard, and Master not at all.
 pub fn builtin() -> [ExportPreset; 3] {
     let preset = |preset_id: &str, name: &str, settings| ExportPreset {
         preset_id: preset_id.to_owned(),
@@ -64,6 +71,10 @@ pub fn builtin() -> [ExportPreset; 3] {
                 },
                 size: OutputSize::LongEdge { pixels: 2048 },
                 optimise: true,
+                sharpen: Some(Sharpen {
+                    medium: SharpenMedium::Screen,
+                    amount: SharpenAmount::Standard,
+                }),
                 metadata: MetadataLevel::Copyright,
                 pixels_per_inch: None,
                 folder: ExportFolder::Original,
@@ -81,6 +92,10 @@ pub fn builtin() -> [ExportPreset; 3] {
                 },
                 size: OutputSize::Full,
                 optimise: false,
+                sharpen: Some(Sharpen {
+                    medium: SharpenMedium::Glossy,
+                    amount: SharpenAmount::Standard,
+                }),
                 metadata: MetadataLevel::NoLocation,
                 pixels_per_inch: Some(300),
                 folder: ExportFolder::Original,
@@ -96,6 +111,7 @@ pub fn builtin() -> [ExportPreset; 3] {
                 },
                 size: OutputSize::Full,
                 optimise: true,
+                sharpen: None,
                 metadata: MetadataLevel::All,
                 pixels_per_inch: Some(300),
                 folder: ExportFolder::Original,
@@ -361,7 +377,8 @@ mod tests {
             web.settings.to_json(),
             serde_json::json!({
                 "format": "jpeg", "size": {"fit": "long_edge", "pixels": 2048}, "quality": 80,
-                "optimise": true, "chroma": "420", "limit_bytes": null, "sharpen": null,
+                "optimise": true, "chroma": "420", "limit_bytes": null,
+                "sharpen": {"medium": "screen", "amount": "standard"},
                 "metadata": "copyright", "pixels_per_inch": null, "folder": "original",
                 "suffix": "-web",
             })
@@ -370,7 +387,8 @@ mod tests {
             print.settings.to_json(),
             serde_json::json!({
                 "format": "jpeg", "size": {"fit": "full"}, "quality": 95, "optimise": false,
-                "chroma": "444", "limit_bytes": null, "sharpen": null, "metadata": "no_location",
+                "chroma": "444", "limit_bytes": null,
+                "sharpen": {"medium": "glossy", "amount": "standard"}, "metadata": "no_location",
                 "pixels_per_inch": 300, "folder": "original", "suffix": "-print",
             })
         );
