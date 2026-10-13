@@ -1879,6 +1879,12 @@ impl Exports {
         image::codecs::jpeg::JpegEncoder::new_with_quality(file, 95)
             .encode_image(photograph)
             .expect("the photograph is written");
+        Self::of(dir, original, tiles)
+    }
+
+    /// The same over the original at `original`, imported where it is, a RAW developed and
+    /// prepared as the desktop prepares it; the catalog and the exports go in `dir`.
+    fn of(dir: std::path::PathBuf, original: std::path::PathBuf, tiles: Arc<GpuTiles>) -> Self {
         let (owner, join) = OwnerHandle::start_with_host(
             &dir.join("catalog.sqlite"),
             Arc::new(ModuleRegistry::builtin()),
@@ -2843,6 +2849,375 @@ fn trivial_export_timing_gpu_against_reference() {
                 "gpu": gpu, "reference": reference, "figures": worker.figures().record(),
             })
         );
+    }
+}
+
+/// What each export setting costs, GPU against reference, through the owner's export lane as the
+/// desktop starts it: the built-in presets (Web, Print, Master), Optimise on and off for a
+/// full-size JPEG and for a TIFF, a full-size WebP with Optimise on and off, a full-size JPEG
+/// limited to halfway between its unlimited files at qualities 10 and 90, and a plain resize to
+/// Web's long edge. Each configuration on a fresh owner and tile worker over the original as it
+/// is, with Basic exposure +0.3, one export of each renderer kept apart as the warm-up, then
+/// `LUXFORGE_EXPORT_SAMPLES` (5) of each, alternating. Per export: the wall time from
+/// `export.write` to its job's end, read through `job.wait`; every progress change, so each phase's
+/// span; and the file's bytes, its quality and a limit search's attempts. Per configuration: the
+/// footprint before and after the warm-up, and the tile worker's figures, its peak charge among
+/// them. With `LUXFORGE_EXPORT_MEMORY=gpu|reference` each configuration instead exports once on
+/// that renderer and records the process's lifetime peak footprint above its footprint before
+/// (`EXPORT_MEMORY`), which a process of one configuration and renderer reads as what the export
+/// adds; `LUXFORGE_EXPORT_LIMIT_BYTES` then gives the limit search its limit. The generated 24 and
+/// 60 MP fixtures (`LUXFORGE_GENERATED_FIXTURES`, else the checkout's) and the RAW at
+/// `LUXFORGE_EXPORT_RAW` when it is set; `LUXFORGE_EXPORT_SOURCES=24mp,60mp,raw` and
+/// `LUXFORGE_EXPORT_CONFIGURATIONS=NAME,...` run only those. Each configuration's figures are
+/// printed as `EXPORT_SETTINGS {json}` and appended to `LUXFORGE_EXPORT_OUTPUT` when set.
+#[test]
+#[ignore = "release export-settings measurement on a quiet host; needs cargo xtask generate-fixtures"]
+fn export_settings_measurement() {
+    use std::{
+        io::Write,
+        time::{Duration, Instant},
+    };
+    let adapter = host_adapter("export_settings_measurement").expect("an adapter");
+    let samples: usize = std::env::var("LUXFORGE_EXPORT_SAMPLES")
+        .ok()
+        .and_then(|samples| samples.parse().ok())
+        .unwrap_or(5);
+    let memory = std::env::var("LUXFORGE_EXPORT_MEMORY").ok();
+    let only: Option<Vec<String>> = std::env::var("LUXFORGE_EXPORT_CONFIGURATIONS")
+        .ok()
+        .map(|names| names.split(',').map(str::to_owned).collect());
+    let fixtures = std::env::var_os("LUXFORGE_GENERATED_FIXTURES").map_or_else(
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated"),
+        std::path::PathBuf::from,
+    );
+    let mut sources = vec![
+        ("24mp".to_owned(), fixtures.join("24mp.jpg")),
+        ("60mp".to_owned(), fixtures.join("60mp.jpg")),
+    ];
+    if let Some(raw) = std::env::var_os("LUXFORGE_EXPORT_RAW") {
+        sources.push(("raw".to_owned(), raw.into()));
+    }
+    if let Ok(names) = std::env::var("LUXFORGE_EXPORT_SOURCES") {
+        sources.retain(|(source, _)| names.split(',').any(|name| name == source));
+    }
+    let mut output = std::env::var_os("LUXFORGE_EXPORT_OUTPUT").map(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("the output file")
+    });
+    // Settings over a full-size, unsharpened base without metadata, or a built-in preset's own.
+    let base = |format: Value| {
+        let mut settings = json!({
+            "size": {"fit": "full"}, "optimise": false, "sharpen": null, "metadata": "none",
+            "pixels_per_inch": null, "folder": "original", "suffix": "",
+        });
+        for (key, value) in format.as_object().expect("an object") {
+            settings[key] = value.clone();
+        }
+        settings
+    };
+    let jpeg = |quality: u8, optimise: bool| {
+        base(
+            json!({"format": "jpeg", "quality": quality, "chroma": "444", "limit_bytes": null,
+            "optimise": optimise}),
+        )
+    };
+    // A built-in preset's settings, as `export.presets.list` answers them, with `patch` over them.
+    let preset = |id: &str, patch: Value| json!({"preset": id, "patch": patch});
+    let configurations: Vec<(&str, Value, &str)> = vec![
+        ("jpeg", jpeg(90, false), "jpg"),
+        ("jpeg-optimised", jpeg(90, true), "jpg"),
+        ("web", preset("luxforge.web", json!({})), "jpg"),
+        ("print", preset("luxforge.print", json!({})), "jpg"),
+        ("master", preset("luxforge.master", json!({})), "tif"),
+        (
+            "master-uncompressed",
+            preset("luxforge.master", json!({"optimise": false})),
+            "tif",
+        ),
+        (
+            "webp",
+            base(json!({"format": "webp", "quality": 80, "limit_bytes": null})),
+            "webp",
+        ),
+        (
+            "webp-optimised",
+            base(json!({"format": "webp", "quality": 80, "limit_bytes": null, "optimise": true})),
+            "webp",
+        ),
+        ("jpeg-limited", jpeg(90, false), "jpg"),
+        (
+            "resized",
+            {
+                let mut resized = jpeg(90, false);
+                resized["size"] = json!({"fit": "long_edge", "pixels": 2048});
+                resized
+            },
+            "jpg",
+        ),
+    ];
+    let median = |values: Vec<f64>| luxforge_testbase::Distribution::of(values).map(|d| d.p50);
+    for (source, original) in &sources {
+        assert!(original.is_file(), "{} is missing", original.display());
+        for (name, settings, extension) in &configurations {
+            if only
+                .as_ref()
+                .is_some_and(|only| !only.iter().any(|only| only == name))
+            {
+                continue;
+            }
+            let mut settings = settings.clone();
+            let worker = Arc::new(GpuTiles::new(Some(adapter.clone()), false));
+            let exports = Exports::of(
+                paths::temp_dir(&format!("export-settings-{source}-{name}")),
+                original.clone(),
+                Arc::clone(&worker),
+            );
+            exports.edit("edit.set-basic", json!({"exposure": 0.3}));
+            if let Some(id) = settings.get("preset").cloned() {
+                let (list, _) = owner_call(
+                    &exports.owner,
+                    exports.client,
+                    "export.presets.list",
+                    json!({}),
+                )
+                .expect("the presets");
+                let mut preset = list["presets"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|preset| preset["preset_id"] == id)
+                    .expect("a built-in preset")["settings"]
+                    .clone();
+                for (key, value) in settings["patch"].as_object().expect("a patch") {
+                    preset[key] = value.clone();
+                }
+                settings = preset;
+            }
+            let footprint = || {
+                luxforge_core::resources::reading(Duration::ZERO)
+                    .reading
+                    .memory_bytes
+            };
+            let export = |file: &str, reference: bool, settings: &Value| -> Value {
+                let mut params = json!({
+                    "asset_id": exports.asset, "destination": exports.dir.join(file),
+                    "settings": settings,
+                    "mutation": {"request_id": format!("export-{file}"), "actor": "test"},
+                });
+                if reference {
+                    params["reference"] = json!(true);
+                }
+                let started = Instant::now();
+                let (queued, _) =
+                    owner_call(&exports.owner, exports.client, "export.write", params)
+                        .unwrap_or_else(|error| panic!("{source} {name}: {error}"));
+                let job = queued["job_id"].clone();
+                let (mut after, mut timeline) = (None, Vec::new());
+                let read = loop {
+                    let mut wait = json!({"job_id": job, "timeout_ms": 10_000});
+                    if let Some(after) = &after {
+                        wait["after"] = json!(after);
+                    }
+                    let (read, _) = owner_call(&exports.owner, exports.client, "job.wait", wait)
+                        .expect("the job");
+                    let at = started.elapsed().as_secs_f64() * 1000.0;
+                    let job = &read["job"];
+                    timeline.push(json!([
+                        at,
+                        job["progress"]["message"],
+                        job["progress"]["fraction"]
+                    ]));
+                    match job["status"].as_str() {
+                        Some("queued" | "running") => after = Some(read["change"].clone()),
+                        status => {
+                            assert_eq!(status, Some("ready"), "{source} {name}: {read}");
+                            break job.clone();
+                        }
+                    }
+                };
+                let total = started.elapsed().as_secs_f64() * 1000.0;
+                // Each phase from the first read naming it to the first naming the next.
+                let mut phases: Vec<(String, f64)> = Vec::new();
+                let mut previous_at = 0.0;
+                for entry in &timeline {
+                    let (at, message) = (entry[0].as_f64().unwrap(), &entry[1]);
+                    let phase = message
+                        .as_str()
+                        .map(|message| message.split(' ').next().unwrap_or_default().to_owned());
+                    if let Some(last) = phases.last_mut() {
+                        last.1 += at - previous_at;
+                    }
+                    if let Some(phase) = phase
+                        && phases.last().is_none_or(|(last, _)| *last != phase)
+                    {
+                        phases.push((phase, 0.0));
+                    }
+                    previous_at = at;
+                }
+                if let Some(last) = phases.last_mut() {
+                    last.1 += total - previous_at;
+                }
+                let attempts = timeline
+                    .iter()
+                    .filter_map(|entry| {
+                        entry[1]
+                            .as_str()?
+                            .strip_prefix("limiting ")?
+                            .split('/')
+                            .next()?
+                            .parse::<u32>()
+                            .ok()
+                    })
+                    .max();
+                let first_progress = timeline
+                    .iter()
+                    .find(|entry| entry[2].as_f64().is_some_and(|fraction| fraction > 0.0))
+                    .and_then(|entry| entry[0].as_f64());
+                let _ = std::fs::remove_file(exports.dir.join(file));
+                json!({
+                    "ms": total,
+                    "first_progress_ms": first_progress,
+                    "phases": phases,
+                    "bytes": read["result"]["bytes"], "quality": read["result"]["quality"],
+                    "width": read["result"]["width"], "height": read["result"]["height"],
+                    "renderer": read["result"]["renderer"], "attempts": attempts,
+                    "timeline": timeline,
+                })
+            };
+            // A limit halfway between the unlimited files at qualities 10 and 90 on the GPU, which
+            // a search can always reach and which leaves it work to do.
+            if *name == "jpeg-limited"
+                && let Some(limit) = std::env::var("LUXFORGE_EXPORT_LIMIT_BYTES")
+                    .ok()
+                    .and_then(|limit| limit.parse::<u64>().ok())
+            {
+                settings["limit_bytes"] = json!(limit);
+            } else if *name == "jpeg-limited" {
+                let bytes = |quality: u8| {
+                    let mut unlimited = settings.clone();
+                    unlimited["quality"] = json!(quality);
+                    export(
+                        &format!("unlimited-{quality}.{extension}"),
+                        false,
+                        &unlimited,
+                    )["bytes"]
+                        .as_f64()
+                        .expect("the file's bytes")
+                };
+                let (low, high) = (bytes(10), bytes(90));
+                settings["limit_bytes"] = json!(((low + high) / 2.0).round().max(10_240.0) as u64);
+            }
+            // The memory an export adds to a process that has prepared the photograph and not
+            // exported yet: the process's lifetime peak footprint after one export of the
+            // renderer, above its footprint before it. An export that peaks under the process's
+            // earlier peak (a RAW's development) is bounded by that peak instead.
+            if let Some(renderer) = &memory {
+                let context = luxforge_core::RenderContext::new();
+                // The first read opens the GPU device the allocations are read from.
+                let read = || luxforge_core::resources::read(&context).memory;
+                let _ = read();
+                let before = read();
+                let row = export(
+                    &format!("memory.{extension}"),
+                    renderer == "reference",
+                    &settings,
+                );
+                let after = read();
+                let (Some(bytes), Some(peak_before), Some(peak_after)) =
+                    (before.bytes, before.peak_bytes, after.peak_bytes)
+                else {
+                    panic!("this platform reports no footprint");
+                };
+                let record = json!({
+                    "source": source, "original": original, "configuration": name,
+                    "settings": settings, "renderer": renderer,
+                    "footprint_before": bytes, "peak_before": peak_before,
+                    "peak_after": peak_after,
+                    "peak_additional_bytes": (peak_after > peak_before)
+                        .then(|| peak_after - bytes),
+                    "under_earlier_peak_by_at_most": (peak_after <= peak_before)
+                        .then(|| peak_before - bytes),
+                    "export": row, "worker": worker.figures().record(),
+                });
+                println!("EXPORT_MEMORY {record}");
+                if let Some(output) = &mut output {
+                    writeln!(output, "{record}").expect("the output is written");
+                }
+                continue;
+            }
+            let footprint_before_warm = footprint();
+            let warm = [
+                export(&format!("warm-gpu.{extension}"), false, &settings),
+                export(&format!("warm-reference.{extension}"), true, &settings),
+            ];
+            let footprint_after_warm = footprint();
+            let (mut gpu, mut reference) = (Vec::new(), Vec::new());
+            for sample in 0..samples {
+                gpu.push(export(
+                    &format!("gpu-{sample}.{extension}"),
+                    false,
+                    &settings,
+                ));
+                reference.push(export(
+                    &format!("reference-{sample}.{extension}"),
+                    true,
+                    &settings,
+                ));
+            }
+            let summary = |rows: &[Value]| {
+                let figure =
+                    |key: &str| median(rows.iter().filter_map(|row| row[key].as_f64()).collect());
+                let mut phases = serde_json::Map::new();
+                for row in rows {
+                    for phase in row["phases"].as_array().into_iter().flatten() {
+                        phases
+                            .entry(phase[0].as_str().unwrap_or_default())
+                            .or_insert_with(|| json!([]));
+                    }
+                }
+                for (phase, spans) in &mut phases {
+                    *spans = json!(median(
+                        rows.iter()
+                            .map(|row| row["phases"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter(|entry| entry[0] == phase.as_str())
+                                .filter_map(|entry| entry[1].as_f64())
+                                .sum::<f64>())
+                            .collect()
+                    ));
+                }
+                json!({
+                    "ms": figure("ms"), "min_ms": rows.iter().filter_map(|row| row["ms"].as_f64()).reduce(f64::min),
+                    "max_ms": rows.iter().filter_map(|row| row["ms"].as_f64()).reduce(f64::max),
+                    "first_progress_ms": figure("first_progress_ms"),
+                    "bytes": figure("bytes"), "quality": rows.first().map(|row| row["quality"].clone()),
+                    "attempts": rows.first().map(|row| row["attempts"].clone()),
+                    "width": rows.first().map(|row| row["width"].clone()),
+                    "height": rows.first().map(|row| row["height"].clone()),
+                    "renderers": rows.iter().map(|row| row["renderer"].clone()).collect::<Vec<_>>(),
+                    "phases_ms": phases,
+                })
+            };
+            let record = json!({
+                "source": source, "original": original, "configuration": name,
+                "settings": settings, "samples": samples,
+                "gpu": summary(&gpu), "reference": summary(&reference),
+                "worker": worker.figures().record(),
+                "footprint_before_warm": footprint_before_warm,
+                "footprint_after_warm": footprint_after_warm,
+                "warm": warm,
+                "gpu_samples": gpu, "reference_samples": reference,
+            });
+            println!("EXPORT_SETTINGS {record}");
+            if let Some(output) = &mut output {
+                writeln!(output, "{record}").expect("the output is written");
+            }
+        }
     }
 }
 
