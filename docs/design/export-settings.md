@@ -1,6 +1,6 @@
 # Export settings
 
-Status: **in progress; the owner authorized implementation on 2026-10-12**. The owner asked for more comprehensive export with settings, JPEG, WebP and a lossless hand-off format, and optimised output by default for the web with a separate print setting. The owner's choices of 2026-10-07 are under [decisions](#decisions). The other defaults are recommendations recorded under [proposals](#proposals-with-recorded-defaults). [Tasks](../../tasks/rendering/export-settings.json) hold the implementation work. `export.write` and `batch.export` write every setting below except output sharpening, and the desktop's sheet, menu, palette entries and Select's batch export are delivered over them, with their rendered journey (`cargo xtask smoke --scenario export`, and `select` for the batch). Output sharpening, corpus qualification and the measurements remain. This design extends the [JPEG export](export.md) and keeps its freeze, render, publish and never-replace rules unchanged.
+Status: **in progress; the owner authorized implementation on 2026-10-12**. The owner asked for more comprehensive export with settings, JPEG, WebP and a lossless hand-off format, and optimised output by default for the web with a separate print setting. The owner's choices of 2026-10-07 are under [decisions](#decisions). The other defaults are recommendations recorded under [proposals](#proposals-with-recorded-defaults). [Tasks](../../tasks/rendering/export-settings.json) hold the implementation work. `export.write` and `batch.export` write every setting below, output sharpening included, and the desktop's sheet, menu, palette entries and Select's batch export are delivered over them, with their rendered journey (`cargo xtask smoke --scenario export`, and `select` for the batch). Corpus qualification, output sharpening's judgement in print and the measurements remain. This design extends the [JPEG export](export.md) and keeps its freeze, render, publish and never-replace rules unchanged.
 
 Boards: [Web preset](export-settings/web.png), [Print preset, changed](export-settings/print.png), [many photographs from Select](export-settings/batch.png) and [components and states](export-settings/components.png). The standalone pages are under [export-settings/html](export-settings/html/index.html).
 
@@ -21,7 +21,7 @@ Boards: [Web preset](export-settings/web.png), [Print preset, changed](export-se
    - **Chroma** (JPEG only). Full (4:4:4) or Half (4:2:0).
    - **Limit file size to** *N* KB, a switch and the kilobytes. Chooses the highest quality, at most the slider's, whose file fits the limit. The slider is disabled while the limit is on.
 6. **Bit depth** (TIFF). 16-bit or 8-bit. For TIFF, **Optimise file size** means lossless compression.
-7. **Sharpen.** None, Screen, Matte or Glossy, with Low, Standard or High. This row arrives with [output sharpening](#output-sharpening), the second delivery. The first delivery leaves it out of the sheet entirely rather than showing a placeholder.
+7. **Sharpen.** None, Screen, Matte or Glossy, then Low, Standard or High ([output sharpening](#output-sharpening)). The amount is disabled while Sharpen is None, and kept for the next medium chosen. Once the row differs from the selected preset's, a line under it says how: *Changed from Print (Glossy, Standard)*.
 8. **Metadata.** None, Copyright, All but location or All (see [metadata](#metadata)).
 9. **Save to.** The original's folder or a chosen folder (**Choose…** opens the native folder dialog), then the name: the photograph's stem, an editable suffix and the format's extension. A name already taken is reported in the sheet, with the name that will be written instead (`-2`, `-3` and so on). Nothing is ever replaced.
 
@@ -34,7 +34,7 @@ Optimisation, file-size limits and WebP have no memory cap (owner, 2026-10-08 an
 - **Warning.** When an optimised JPEG's output exceeds **24 MP**, a size limit applies to an output above 24 MP, or a WebP's output exceeds 24 MP, the sheet shows an amber notice under Quality. For example: *Large image: optimising 60.2 MP holds about 720 MB while encoding and is several times slower. Turn Optimise off to write it as it renders.* The memory figure comes from `export.plan`'s estimate. In batch mode the notice counts the photographs over the threshold and gives the largest estimate. The notice warns; it never blocks or asks for confirmation. Export again and Export with preset show no sheet, so their progress bar is the warning.
 - **Progress bar.** Every export reports determinate progress over its phases, rounded to whole percent: rendering, resampling, each encoding pass of an optimised JPEG (through libjpeg's progress monitor), each attempt of a limit search, and writing. The status bar shows a bar with the phase and percent, for example *Optimising DSC_0042-print.jpg · 64%*, as soon as the plan carries the large-image notice, and otherwise once an export has run for one second, so quick exports never flash a bar. Clicking it opens the Performance section, where the export's row has **Cancel**, as every long job does.
 
-The sheet is a client of the API; it holds no export rules of its own. Its readout, suggested name and notices come from `export.plan`. The sheet asks for a plan when a setting the plan depends on changes: the format, size, density, folder or suffix, and Optimise, chroma, the size limit and bit depth, which change its estimate and notices. Quality and metadata never ask for one, so the slider plans nothing. At most one plan is in flight, with the newest change pending, and Export is enabled only once the plan for the settings shown has answered and refuses nothing.
+The sheet is a client of the API; it holds no export rules of its own. Its readout, suggested name and notices come from `export.plan`. The sheet asks for a plan when a setting the plan depends on changes: the format, size, density, folder or suffix, and Optimise, chroma, the size limit and bit depth, which change its estimate and notices. Quality, sharpening and metadata never ask for one, so the slider plans nothing. At most one plan is in flight, with the newest change pending, and Export is enabled only once the plan for the settings shown has answered and refuses nothing.
 
 ### The Export menu and shortcuts
 
@@ -54,17 +54,17 @@ The Select workspace's **Export N…** opens the same sheet, titled *Export 5 ph
 
 | Preset | Format | Size | Quality | Other settings | Metadata | Density | Suffix |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Web** | JPEG | Long edge 2048 px | 80 | Optimise on, chroma 4:2:0 | Copyright | none | `-web` |
-| **Print** | JPEG | Full size | 95 | Optimise off, chroma 4:4:4 | All but location | 300 ppi | `-print` |
-| **Master** | TIFF | Full size | lossless | 16-bit, lossless compression | All | 300 ppi | `-master` |
+| **Web** | JPEG | Long edge 2048 px | 80 | Optimise on, chroma 4:2:0, Sharpen Screen / Standard | Copyright | none | `-web` |
+| **Print** | JPEG | Full size | 95 | Optimise off, chroma 4:4:4, Sharpen Glossy / Standard | All but location | 300 ppi | `-print` |
+| **Master** | TIFF | Full size | lossless | 16-bit, lossless compression, Sharpen None | All | 300 ppi | `-master` |
 
-Every built-in preset saves to the original's folder. Web is optimised by default: smaller pixels, a smaller encoding and no personal metadata. Print favours fidelity and speed at full resolution: it streams as it renders, which is why its Optimise is off by default (see [encoding](#encoding)). Master is the lossless, high-bit hand-off for printing and other editors. Once output sharpening lands, Web uses Screen / Standard, Print uses Glossy / Standard and Master uses None.
+Every built-in preset saves to the original's folder. Web is optimised by default: smaller pixels, a smaller encoding and no personal metadata. Print favours fidelity and speed at full resolution: it streams as it renders, which is why its Optimise is off by default (see [encoding](#encoding)). Master is the lossless, high-bit hand-off for printing and other editors, so it is not sharpened: what receives it sharpens for its own output.
 
 Colour is sRGB with its profile embedded for every format. Wide-gamut output (Display P3, Adobe RGB) is not in this plan; it needs its own decision and tolerance ([decisions](../decisions.md#export)).
 
 ## Settings
 
-One settings object, `ExportSettings`, is shared by `export.plan`, `export.write`, `batch.export`, presets and the remembered last export. Each field is validated by name: a refusal is `validation` whose message starts with `settings.<field>` and whose `data.field` names it. Every field that applies to the format is required, a nullable one sent as `null`. A field that does not apply to the chosen format must be left out: sending it, even as `null`, is refused rather than ignored. `sharpen` must be `null` until output sharpening lands.
+One settings object, `ExportSettings`, is shared by `export.plan`, `export.write`, `batch.export`, presets and the remembered last export. Each field is validated by name: a refusal is `validation` whose message starts with `settings.<field>` and whose `data.field` names it. Every field that applies to the format is required, a nullable one sent as `null`. A field that does not apply to the chosen format must be left out: sending it, even as `null`, is refused rather than ignored.
 
 | Field | Values | Applies to |
 | --- | --- | --- |
@@ -75,13 +75,13 @@ One settings object, `ExportSettings`, is shared by `export.plan`, `export.write
 | `chroma` | `444`, `420` | JPEG (WebP's lossy encoding is always 4:2:0) |
 | `limit_bytes` | `null`, or 10,240–1,073,741,824 | JPEG, WebP |
 | `bit_depth` | `8`, `16` | TIFF |
-| `sharpen` | `null`, or `{medium: "screen" \| "matte" \| "glossy", amount: "low" \| "standard" \| "high"}` | all, second delivery |
+| `sharpen` | `null` for none, or `{medium: "screen" \| "matte" \| "glossy", amount: "low" \| "standard" \| "high"}` | all |
 | `metadata` | `none`, `copyright`, `no_location`, `all` | all |
 | `pixels_per_inch` | `null`, or 1–65,535 | all; written to JPEG's JFIF header and TIFF's resolution tags, while WebP has no density field and carries none |
 | `folder` | `"original"`, or `{path}`, an absolute existing directory | all |
 | `suffix` | 0–64 characters, with no path separator, no control character and no leading dot | all |
 
-The output size is computed from the frozen entry's output stage, after orientation, transforms and crop, by scaling both sides by one factor and rounding to whole pixels. The factor is never above 1. A `null` density on the desktop means today's behaviour: on macOS the desktop names 72 pixels per inch for each physical pixel of a point ([export decision 7](export.md#decisions)); everywhere else, and through the API, no density is written.
+The output size is computed from the frozen entry's output stage, after orientation, transforms and crop, by scaling both sides by one factor and rounding to whole pixels. The factor is never above 1. A `null` density on the desktop means today's behaviour: on macOS the desktop names 72 pixels per inch for each physical pixel of a point ([export decision 7](export.md#decisions)); everywhere else, and through the API, no density is written. Settings that sharpen for Matte or Glossy paper are the exception: their radius follows the density, so with none set the desktop sends none and the sharpening is for 300 ppi.
 
 ## Rendering
 
@@ -95,20 +95,35 @@ A refusal `export.plan` can predict (`webp-too-large`, `tiff-too-large`, `folder
 
 **Resized output.** The stage is resampled in linear light by a separable Lanczos-3 filter whose support scales with the reduction (`luxforge_core::tiles::lanczos_taps`), then clamped and encoded once to the output. Both renderers resample the stage's terminal values clamped to `[0, 1]`, as the 16-bit terminal holds them, so ringing past white is clamped once more after the filter.
 - *The reference renderer* (`luxforge_core::tiles::reference_output`) stands in for the exact frame: a full-size 8-bit output is that frame itself, uncopied; any other output is cut from the stage's terminal encoded once at 16 bits (six bytes a pixel), resampled in `f64` in bands of 16 output rows on the shared pool and encoded once at the output's depth. Exact-buffer tests hold it against a stepwise reference.
-- *On the GPU tile worker*, the stream's tiles draw their linear values into the whole output stage, held in `Rgba32Float` beside any staged sweep's stage textures, and the resample sweep reads it in cuts of at most 256 output rows: each cut's window is copied out, summed across and down by the same taps in `f32`, clamped and encoded once, and read back at the output's depth, two cuts in flight and the cancellation checked between them. The held stage and the largest cut are charged to `GPU_TILE_BUDGET` less the stream's read reserve before anything is created; a stage that does not fit is the reference's (`tiles-budget`), which renders the whole export again, never mixing renderers. An output pixel whose taps a cut's window cannot hold, at reductions past about 340 times, is the reference's (`texture-limit`).
+- *On the GPU tile worker*, the stream's tiles draw their linear values into the whole output stage, held in `Rgba32Float` beside any staged sweep's stage textures, and the resample sweep reads it in cuts of at most 256 output rows: each cut's window is copied out, summed across and down by the same taps in `f32`, clamped and encoded once, sharpened when the settings ask ([output sharpening](#output-sharpening)), and read back at the output's depth, two cuts in flight and the cancellation checked between them. The held stage and the largest cut are charged to `GPU_TILE_BUDGET` less the stream's read reserve before anything is created; a stage that does not fit is the reference's (`tiles-budget`), which renders the whole export again, never mixing renderers. An output pixel whose taps a cut's window cannot hold, at reductions past about 340 times, is the reference's (`texture-limit`).
 - *Resize then encode.* Resizing happens before encoding, so the encoder never sees the full-size stage.
-- *The full-size 8-bit stream* is unchanged: its tiles' own codes, never held or resampled.
+- *The full-size 8-bit stream* is unchanged: its tiles' own codes, never held or resampled. Sharpened, a full-size 8-bit output goes through the held stage instead, its taps a single weight of one, as a 16-bit one does.
 
 **16-bit output** (TIFF only). The output encoding produces 16-bit sRGB once, instead of 8-bit. The reference encodes its terminal once at 16 bits. The GPU draws a full-size 16-bit output through the same held stage, each cut's taps a single weight of one, encodes it by the core's 16-bit thresholds and reads its bands back at 16 bits per channel.
 
 **Tolerances.** The owner asked that each of these outputs declare its tolerance when designed. This design declares them as follows; any cell that misses its limit is a defect to fix, not a reason to loosen the limit:
 - *Resized output.* Judged against the reference export resized by the reference resampler, within the display limit of the stack's class: the four statistics over every pixel. A linear resampling filter does not add new error classes.
 - *16-bit output.* Judged against the reference's 16-bit export, within the same class limits. ΔE00 is computed from the 16-bit values, so the limit is in the same perceptual units.
-- *Sharpened output.* Judged against the reference's sharpened export, within the spatial class's limit.
+- *Sharpened output.* Judged against the reference's sharpened export, within the spatial class's limit (1.0 / 2.5 / 5.0 / 0.5) whatever the stack's class: sharpening is a spatial operation, and the GPU's `f32` sum may round a change to the other side of a half code where the reference's integers do not.
 
-Each output is a `gpu-qualification` export kind on the corpus: `export-resized` and `export-16bit` beside `export`; the sharpened output's kind comes with output sharpening.
+Each output is a `gpu-qualification` export kind on the corpus: `export-resized`, `export-16bit` and `export-sharpened` beside `export`. `export-sharpened` is `export-resized`'s output sharpened for Matte paper at High and 300 ppi, the widest radius and the largest amount at the usual density.
 
-**Output sharpening.** This is the second delivery. It is applied after resizing, at the final pixel size, to luminance only, in the encoded (gamma) domain, so it adds no colour fringes. Its radius follows the medium and the output density: Screen uses a small radius; Matte and Glossy derive theirs from the density, Matte the stronger. Low, Standard and High scale the amount. The kernel and constants are the implementer's, calibrated by eye on the corpus. Like resizing, it has a CPU reference unit with exact fixtures and a GPU program as the last sweep. It is an export setting, never a recipe layer: Detail's capture sharpening remains the recipe's.
+**Output sharpening.** An unsharp mask applied after resizing, at the final pixel size, to luminance only, in the encoded (gamma) domain, so it adds no colour fringes. It is an export setting, never a recipe layer: Detail's capture sharpening remains the recipe's.
+
+- *Domain.* The output's own codes at its depth (8 or 16 bits), after resampling and encoding and before the file's encoder. Luma is Rec. 709's over the codes, `Y′ = (2126 R′ + 7152 G′ + 722 B′) / 10000`.
+- *Kernel.* A Gaussian of standard deviation σ output pixels, separable, truncated at radius `⌈3σ⌉`. Each axis's weights are rounded to integers summing to 4096, the centre taking the rounding's remainder. The change at a pixel is `amount × (Y′ − blur(Y′))`, rounded half away from zero, then held to `[−min(R′, G′, B′), top − max(R′, G′, B′)]` so that no channel clips, and added to R′, G′ and B′ alike. Every channel difference, and so every pixel's chroma, is exactly unchanged. Pixels past the image's border are its edge's.
+- *Radius.* Screen's σ is 0.6 px, whatever the density. Glossy's is the density over 360 and Matte's the density over 240, about 0.07 mm and 0.11 mm on paper: 0.83 px and 1.25 px at 300 ppi. σ is held to 0.5–3 px, so the radius is at most 9. With no density, paper sharpening is for 300 ppi.
+- *Amount.* Low, Standard and High, as a percentage of the difference added back:
+
+  | Medium | σ (px) | Low | Standard | High |
+  | --- | --- | --- | --- | --- |
+  | Screen | 0.6 | 40% | 70% | 110% |
+  | Glossy | ppi / 360 | 50% | 90% | 140% |
+  | Matte | ppi / 240 | 60% | 110% | 170% |
+
+  The constants were set by eye on Web-size and full-size crops of a real photograph: Screen at High adds no visible halo at three times, and paper sharpening looks crisp to crunchy on screen at 1:1, as print output sharpening does. Their judgement in print is open.
+- *The reference* (`luxforge_core::tiles::sharpen`) sharpens the output frame in place, in bands of 64 rows on the shared pool, reading a rolling window of the band's rows and the radius's either side. It computes in integers, so the bands, the pool and their order change no code. Exact-buffer tests hold it to a stepwise two-dimensional reference at every medium and amount, across band edges, at image borders and where the hold applies, and hold every chroma unchanged on saturated edges.
+- *On the GPU* it is the resample sweep's last pass. Each cut's codes are computed the radius wider on every side, held to the output's edges, and the pass reads them and writes the cut's interior alone, so no cut or band edge shows. It computes in `f32` with the reference's weights over 4096 and rounds and holds the change as the reference does. An output pixel whose window, with the radius's pixels either side, passes the sweep's scratch, as a reduction of about a hundred times sharpened for paper can, is the reference's (`texture-limit`).
 
 ## Encoding
 
@@ -143,7 +158,7 @@ Any level other than None also writes the structural fields the export defines (
 
 | Method | Envelope | Behavior |
 | --- | --- | --- |
-| `export.plan {asset_id, entry_id?, settings}` | none | Renders nothing. Answers `{asset_id, entry_id, snapshot_id, stage: {width, height}, output: {width, height}, physical?: {inches, centimetres}, suggested, estimate, notices, stale}`. `physical` is present with a density, each side to a hundredth. `suggested` is the absolute path `<stem><suffix>.<ext>` in `folder`, then `-2`, `-3` and so on, reading at most 64 names; it is `null` when the folder is missing or the photograph has no original to name it after. `estimate` gives the bytes the encoder will hold beyond the streamed bands. `notices` are `{code, message, refuses, bytes?}`: `large-image` (an optimised JPEG or a limit above 24 MP, with the estimate in `bytes`), and the refusing `webp-too-large` (a side above 16,383 px, or a frame and encoder state past the 512 MiB frame limit), `tiff-too-large` (a TIFF that could pass 4 GiB) and `folder-missing`. A refusing notice is what `export.write` and `batch.export` refuse with: `validation` with `data.notice` naming the code |
+| `export.plan {asset_id, entry_id?, settings}` | none | Renders nothing. Answers `{asset_id, entry_id, snapshot_id, stage: {width, height}, output: {width, height}, physical?: {inches, centimetres}, suggested, estimate, notices, stale}`. `physical` is present with a density, each side to a hundredth. `suggested` is the absolute path `<stem><suffix>.<ext>` in `folder`, then `-2`, `-3` and so on, reading at most 64 names; it is `null` when the folder is missing or the photograph has no original to name it after. `estimate` gives the bytes the encoder will hold beyond the streamed bands. `notices` are `{code, message, refuses, bytes?}`: `large-image` (an optimised JPEG, a limit or a WebP above 24 MP, with the estimate in `bytes`), and the refusing `webp-too-large` (a side above 16,383 px), `tiff-too-large` (a TIFF that could pass 4 GiB) and `folder-missing`. A refusing notice is what `export.write` and `batch.export` refuse with: `validation` with `data.notice` naming the code |
 | `export.write {asset_id, entry_id?, settings, destination, reference?, acknowledge_stale?}` | request | Replaces `export.jpeg`, which no longer exists. The destination is an absolute path whose extension matches the format (`.jpg`/`.jpeg`, `.webp`, `.tif`/`.tiff`), refused with `validation` naming `destination` otherwise and with `conflict` if anything exists there. It need not be inside `folder`, but a `{path}` folder must exist. A photograph saving to `"original"` with no original folder, such as a merge result, is refused `folder-missing`; a missing original is refused as an unavailable source. Freezing, stale acknowledgement and retries are as before: a retry with the same request id and parameters is answered from the stored answer. The answer echoes `settings` |
 | `job.read` | none | As today, now with determinate progress: `progress.fraction` over the whole export, in whole percent and never going back, and `progress.message` naming the phase (`rendering`, `resampling`, `encoding`, `optimising`, `limiting k/8`, `writing`; see [progress](#progress)). `result` is `{path, bytes, width, height, format, quality?, optimised, metadata, renderer, acknowledged_stale}`: `quality` is a JPEG's or WebP's, under a size limit the quality the search chose, and is absent for a TIFF |
 | `batch.export {targets, settings, mutation}` | as today | Exports each photograph's current entry with the settings, into `folder` (each photograph's own folder for `"original"`) under the name rule. The report lists `written: [{asset_id, path, renderer, quality?}]` and `skipped: [{asset_id, code, reason}]`, every photograph left out with its code: a refusing notice's (`webp-too-large`, `tiff-too-large`, `folder-missing`), `limit-unreachable`, or the code the single export refuses it with. It cancels between photographs and within one, removing that one's temporary file |
@@ -154,7 +169,7 @@ Any level other than None also writes the structural fields the export defines (
 
 The person's presets live in a JSON document of their own, `export-presets.json`, beside `preferences.json` in the host's configuration directory, outside every catalog. Every value in it is checked, and an unreadable or unsupported document is kept and refused by name rather than rewritten. The last export's settings and preset id are a remembered preference, `export_last`, with no Settings row. It is stored only after an export the person started from the sheet, the menu or the palette succeeds. It replaces the remembered `export_folder`, whose role a chosen folder now plays. It is `{settings, preset_id}` through `preferences.read` and `preferences.set`, `preset_id` being `null` or the preset the settings came from unchanged. Without a configuration directory, `export.presets.list` answers the built-in presets and every change is refused `not_ready`. `schema.list` describes `ExportSettings` once, as `export_settings`, and every method above refers to it.
 
-`export.write` and `batch.export` write every value above except `sharpen`, which is refused by name as not yet available until output sharpening lands.
+`export.write` and `batch.export` write every value above, `sharpen` included.
 
 ### Progress
 
@@ -163,7 +178,7 @@ An export's progress is one fraction of the whole job, reported to the activity 
 | Phase | GPU, streamed | GPU, held | Reference |
 | --- | --- | --- | --- |
 | `rendering` | 0 (the bands are counted as they are encoded) | 20, by bands collected | 30, as one step |
-| `resampling` | — (within the GPU's tiles) | — (within the GPU's tiles) | 10, only for an output smaller than the stage |
+| `resampling` | — (within the GPU's tiles) | — (within the GPU's tiles) | 10, only for an output smaller than the stage, at 16 bits or sharpened; it includes the sharpening |
 | `encoding` | 95, or 30 when optimised | 70 for a WebP without a limit | 55, or 15 when optimised; 70 for a WebP without a limit |
 | `optimising` | 65, when optimised | — | 40, when optimised |
 | `limiting k/8` | — | 70 | 70 |
@@ -176,6 +191,7 @@ A streamed encode reports the rows it has encoded over the output's height. An o
 - **Full size, Optimise off.** JPEG and TIFF keep today's streaming bounds: at most three bands of the output's width. A 16-bit band is twice an 8-bit one.
 - **Resized output on the GPU.** The content stage is held as stage textures on the tile worker inside `GPU_TILE_BUDGET`, as staged sweeps are today, plus bands of the output's width.
 - **Resized output on the reference.** The reference renders its existing exact frame and resamples it into an output frame, at most the stage's size. Both stay inside the 512 MiB evaluated-frame limit.
+- **Output sharpening.** The reference sharpens the output frame it already holds, in place, with a band's luma and its across sums for the band and the radius's rows either side: no second frame. On the GPU each cut is computed at most 9 pixels wider on each side, with one more buffer of the cut's sharpened codes, charged with the cut; a full-size 8-bit output held to be sharpened takes the held stage a 16-bit one takes.
 - **Optimised JPEG.** Coefficient arrays of about 12 bytes per output pixel at 4:4:4, or 6 at 4:2:0, with no cap (owner, 2026-10-08): `luxforge_jpeg::coefficient_bytes`, which its tests hold to what libjpeg allocates, about 288 MB at 24 MP and 723 MB at 60 MP at 4:4:4. This follows the shared memory budget rule: the budget is a target that keeps memory low, not a limit that refuses the person's work ([decisions](../decisions.md#rendering-memory)). One export runs at a time on the lane, and a batch exports one photograph at a time, so at most one image's arrays are held.
 - **Limit file size.** The output frame at 4 bytes per pixel, with no cap, plus one attempt's arrays when optimised and two files each at most the limit, the attempt's and the best so far. Attempts run one after another, so an optimised attempt's arrays are released before the next one starts.
 - **WebP.** Holds the output frame, at most 16,383 px a side, plus libwebp's state, which `luxforge_core::export::webp::webp_held_bytes` bounds at 4 bytes a pixel, or 11 optimised, from the codec's footprint tests, and with a limit the best file so far. It has no memory cap (owner, 2026-10-13): above 24 MP the plan carries `large-image` with that estimate, and only the format's own side limit refuses, as `webp-too-large`. A frame held from the GPU's bands is allocated at its size, and an allocation the host cannot make is refused as `resource-limit`; the reference renders the export within its own evaluated-frame limit, as it renders every frame.
@@ -225,7 +241,7 @@ Each of these stands until the owner records otherwise. The implementer owns rou
 3. **Optimise.** An optimised JPEG at a given quality is smaller than the baseline at the same quality on the corpus, with the standard tables. Optimise applies at every size, and `export.plan`'s memory estimate matches the coefficient arrays measured in tests. TIFF compression is lossless: the decoded pixels are identical with and without it.
 4. **Limit file size.** The written file is at most the limit at the highest quality the bisection finds. The quality used is reported, and an unreachable limit writes nothing.
 5. **Large images and progress.** The sheet's notice appears exactly when an output passes the warning threshold, with the plan's estimate. A job's progress rises monotonically through every phase, encoding pass and limit attempt. The status bar shows the bar from the start for a warned export and after one second otherwise, and Cancel in the Performance section stops an optimised encode between passes and a limit search between attempts.
-6. **Pixels.** Exact-buffer tests cover the reference resampler and 16-bit output encoding, and later output sharpening. `gpu-qualification` holds the GPU's resized, 16-bit and sharpened exports to the reference within the declared limits on the corpus. A stream that stops part-way still restarts on the reference, so no file mixes renderers.
+6. **Pixels.** Exact-buffer tests cover the reference resampler, 16-bit output encoding and output sharpening. `gpu-qualification` holds the GPU's resized, 16-bit and sharpened exports to the reference within the declared limits on the corpus. A stream that stops part-way still restarts on the reference, so no file mixes renderers.
 7. **Never destructive.** The original's checksum, the catalog's history and every existing file are unchanged by every export, refusal, cancellation and limit search. Temporary files are removed on failure and on cancel.
 8. **Parity.** The sheet, the menu, Export again, Export with preset and Select's batch each send exactly what an independent JSON client sends for the same settings, and produce the same files. Presets created, updated and deleted through the API appear in the sheet, and the reverse.
 9. **Rendered journey.** A background rendered journey on the owner's M4 correlates the sheet's state, logs, captures and written files across:
@@ -233,8 +249,9 @@ Each of these stands until the owner records otherwise. The implementer owns rou
    - a changed preset that is saved, updated and deleted
    - Export again
    - a taken name
+   - Web's and Print's sharpening, read from their files
    - a batch of mixed sources with one left out
-   - a refused WebP
+   - a WebP refused past 16,383 px a side
    - an optimised 60 MP export, with its warning, progress bar and a cancel
 10. **Measurement.** Measured once, after feature work, on the M4 in release, for 24 MP and 60 MP on both renderers: wall time and peak additional memory per format and preset, the cost of Optimise (whose measured rate may then refine the warning's wording), the number of encodes a limit search takes, and resampling's share of the export.
 
