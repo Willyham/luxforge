@@ -220,6 +220,61 @@ fn a_refused_preference_write_says_why_and_puts_the_stored_value_back() {
     finish(editor, root);
 }
 
+#[test]
+fn a_failed_mask_colour_save_reconciles_the_session_with_the_preference_read() {
+    for newer_choice in [false, true] {
+        let (mut editor, root) = launch();
+        let _ = editor.update(Message::Settings(SettingsMessage::Open(
+            SettingsTab::General,
+        )));
+        answer_read(&mut editor);
+        let _ = editor.choose_mask_overlay_colour(MaskOverlayColour::White);
+        // The workspace change succeeds at the owner before the independent preference write
+        // fails. Its answer leaves the real session white while storage is still green.
+        let (session, _) = call(
+            &editor.owner,
+            editor.client,
+            "workspace.set",
+            json!({"mask_overlay_colour": "white"}),
+        )
+        .unwrap();
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
+            serde_json::from_value(session).unwrap(),
+        ))));
+        assert_eq!(
+            editor.session.workspace.mask_overlay_colour,
+            MaskOverlayColour::White
+        );
+        assert_eq!(read(&editor)["mask_overlay_colour"], "green");
+        if newer_choice {
+            let _ = editor.choose_mask_overlay_colour(MaskOverlayColour::Green);
+            let _ = editor.choose_mask_overlay_colour(MaskOverlayColour::White);
+        }
+        let _ = editor.update(Message::Preferences(PreferenceMessage::Saved(Err(
+            "storage unavailable".into(),
+        ))));
+        assert!(editor.preferences.restore_mask_colour);
+        answer_preferences_read(&mut editor);
+        let expected = if newer_choice {
+            MaskOverlayColour::White
+        } else {
+            MaskOverlayColour::Green
+        };
+        assert_eq!(
+            editor.preferences.applied().unwrap().mask_overlay_colour,
+            expected
+        );
+        assert_eq!(editor.session.workspace.mask_overlay_colour, expected);
+        assert_eq!(
+            editor.workspace.settings.general[3].control.value(),
+            json!(expected.as_str())
+        );
+        assert!(!editor.preferences.restore_mask_colour);
+        assert_eq!(editor.preferences.writing().is_some(), newer_choice);
+        finish(editor, root);
+    }
+}
+
 /// Closing the window waits for the write in flight and the one waiting behind it.
 #[test]
 fn closing_the_window_waits_for_the_last_preference_write() {

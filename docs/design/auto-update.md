@@ -394,7 +394,7 @@ Otherwise it reports `linux-notify`. It still checks and offers the update, `upd
    - Files keep their permission bits, executable bits included, with set-id and sticky bits, group and other write removed. Directories gain owner access.
    - The extracted `build.json` must name the item's version and build and this payload's target, and the payload's executable must be present and executable (`build-mismatch` otherwise).
 
-   On Linux the filesystem is then synced, so a crash after the swap cannot leave files that never reached the disk. The archive is deleted.
+   On Linux the filesystem is then synced before the update is ready; a failure to open or sync it refuses the update, removes staging and leaves the installed payload untouched. The archive is deleted.
 5. **Install** at the end of the quit path, after the catalog is closed. The staged `build.json` is checked again first.
    - On Linux, `renameat2(RENAME_EXCHANGE)` swaps `Luxforge` and the staging's `Luxforge.new` atomically. It is called through `rustix`, so the crate needs no `unsafe`. The old payload then moves from the staging directory to `Luxforge.previous` beside the new one.
    - Where the filesystem cannot exchange, and on other unix systems, two renames are used instead. The payload moves to `Luxforge.previous` and the new one into its place. If the second rename fails, the first is undone.

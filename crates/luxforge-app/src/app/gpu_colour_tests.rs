@@ -594,6 +594,31 @@ fn gpu_colour_white_balance_meets_the_pointwise_limits() {
 #[slow]
 fn gpu_colour_tone_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
+    for contrast in [
+        -0.1,
+        0.1,
+        -0.18,
+        0.18,
+        -0.3,
+        0.3,
+        -1.6,
+        1.6,
+        -1.7,
+        1.7,
+        -1e-4,
+        1e-4,
+        -1e-6,
+        1e-6,
+        -1e-20,
+        1e-20,
+        -f64::from_bits(1),
+        f64::from_bits(1),
+    ] {
+        cases.push((
+            format!("small contrast {contrast:+}"),
+            basic(json!({"contrast": contrast})),
+        ));
+    }
     for field in ["contrast", "highlights", "shadows", "whites", "blacks"] {
         for value in [-100.0, 100.0] {
             cases.push((format!("{field} {value:+}"), basic(json!({ field: value }))));

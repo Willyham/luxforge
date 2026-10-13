@@ -1027,6 +1027,29 @@ fn panorama_merge_job_reruns_removes_restores_and_claims_across_kinds() {
     bench.originals_unchanged();
 }
 
+#[test]
+#[slow]
+fn panorama_merge_job_rerun_retry_after_restart_returns_the_new_result() {
+    let mut bench = Bench::new("rerun-retry", 1);
+    let first = bench.merged(0, "create");
+    let params = json!({"merge_id": first["merge_id"],
+                        "panorama": {"boundary_warp": 40, "projection": "spherical"},
+                        "mutation": envelope("rerun")});
+    let started = bench.ok("merge.rerun", params.clone());
+    let second = bench.ready(&started);
+    assert_ne!(second["merge_id"], first["merge_id"]);
+    let reads = bench.reads();
+    bench.restart();
+    let retried = bench.ok("merge.rerun", params);
+    let retry = bench.ready(&retried);
+    for field in ["merge_id", "result_asset_id", "source_id"] {
+        assert_eq!(retry[field], second[field], "{field}: {retry}");
+    }
+    assert_eq!(retry["deduplicated"], true);
+    assert_eq!(bench.reads(), reads, "retry reads and merges nothing again");
+    bench.originals_unchanged();
+}
+
 /// A panorama's preview reads each frame once and answers a picture with its projection, field of
 /// view and overlays in the stack's order; a projection change redraws without reading or
 /// registering, a reference change registers again on the retained frames; and a merge of the

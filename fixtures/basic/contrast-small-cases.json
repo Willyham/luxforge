@@ -1,0 +1,1325 @@
+{
+  "description": "Independent 430-digit Python Decimal evaluation of the original normalized logistic and negative reflection, using exact binary64 inputs; no tanhc or production/reference implementation used. Logistic exponents beyond +/-10000 saturate, an error below 10^-4342.",
+  "cases": [
+    {
+      "contrast": -0.1,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5000022499898751
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25000014062484177
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7499998593751582
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0000089999190007
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1715.5979959153537
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 2096817.3802357495
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.3058421445233434e+18
+    },
+    {
+      "contrast": -0.1,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.3058421445233434e+18
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.4999977500084375
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.24999985937505273
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7500001406249472
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.9999910000742493
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 1024.0,
+      "expected_encoded": 332.4014853862271
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 333.8335833332958
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 333.8335833332958
+    },
+    {
+      "contrast": 0.1,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -332.8335833332958
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5000072898937131
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.2500004556233393
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7499995443766607
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.000029159149717
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1862.3181894363772
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 2096963.76678378
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.305840207622607e+18
+    },
+    {
+      "contrast": -0.18,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.305840207622607e+18
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.49999271008857243
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.24999954437555358
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7500004556244464
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.999970840779426
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 1024.0,
+      "expected_encoded": 185.67977345141242
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 185.6856351849665
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 185.6856351849665
+    },
+    {
+      "contrast": 0.18,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -184.6856351849665
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5000202491799033
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25000126561218566
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7499987343878144
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0000809934394894
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1936.3819825369226
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 2097033.3110615942
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.3058352270565732e+18
+    },
+    {
+      "contrast": -0.3,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.3058352270565732e+18
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.499979750683415
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.24999873437927148
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7500012656207286
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.9999190060138057
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 1024.0,
+      "expected_encoded": 111.61185889300938
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 111.61186111009862
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 111.61186111009862
+    },
+    {
+      "contrast": 0.3,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -110.61186111009862
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5005753370971369
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.2500359896345375
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7499640103654626
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0022987028226975
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 1024.0,
+      "expected_encoded": 2026.4701999324782
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 2096929.3865454793
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.3056216992744796e+18
+    },
+    {
+      "contrast": -1.6,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.3056216992744796e+18
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.49942455244238215
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.249964003455718
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.750035996544282
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.9977008558433076
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 1024.0,
+      "expected_encoded": 21.33733317974176
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 21.33733317974176
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 21.33733317974176
+    },
+    {
+      "contrast": 1.6,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -20.33733317974176
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5006242195792281
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25003905029621043
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7499609497037896
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0024937643552594
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 1024.0,
+      "expected_encoded": 2027.2868241271428
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 2096913.1013703283
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.3056028772663757e+18
+    },
+    {
+      "contrast": -1.6666666666666667,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.3056028772663757e+18
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.4993756503804445
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.24996094156865017
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7500390584313499
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.9975057161321461
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 1024.0,
+      "expected_encoded": 20.50416649306589
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 20.50416649306589
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 20.50416649306589
+    },
+    {
+      "contrast": 1.6666666666666667,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -19.50416649306589
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5006494052836818
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.2500406274153674
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7499593725846326
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0025942509638663
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 1024.0,
+      "expected_encoded": 2027.6703709240892
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 2096904.6725168831
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.3055931784583485e+18
+    },
+    {
+      "contrast": -1.7,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.3055931784583485e+18
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.49935045396382444
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.24995936377902203
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7500406362209779
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.9974051867566114
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 1024.0,
+      "expected_encoded": 20.11209295302881
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 20.11209295302881
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 20.11209295302881
+    },
+    {
+      "contrast": 1.7,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -19.11209295302881
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.50000000000225
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.2500000000001406
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7499999999998593
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.000000000009
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.003216496286
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1765050.595417069
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.305843009212496e+18
+    },
+    {
+      "contrast": -0.0001,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.305843009212496e+18
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.49999999999775
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.24999999999985936
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.7500000000001407
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.999999999991
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1023.996783503714
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 332101.4045823936
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 333333.8333335833
+    },
+    {
+      "contrast": 0.0001,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -333332.8333335833
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5000000000000002
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.000000000000001
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0000003216508
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048921.7391054772
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 2.3058430091803604e+18
+    },
+    {
+      "contrast": -1e-06,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -2.3058430091803604e+18
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.4999999999999998
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.24999999999999997
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 2.0,
+      "expected_encoded": 1.9999999999999991
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1023.9999996783491
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048230.2608945227
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 33333333.833333336
+    },
+    {
+      "contrast": 1e-06,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -33333332.833333336
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921550581711e+18
+    },
+    {
+      "contrast": -1e-20,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921550581711e+18
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921458631983e+18
+    },
+    {
+      "contrast": 1e-20,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921458631983e+18
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921504606847e+18
+    },
+    {
+      "contrast": -1e-30,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921504606847e+18
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921504606847e+18
+    },
+    {
+      "contrast": 1e-30,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921504606847e+18
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921504606847e+18
+    },
+    {
+      "contrast": -2.2250738585072014e-308,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921504606847e+18
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921504606847e+18
+    },
+    {
+      "contrast": 2.2250738585072014e-308,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921504606847e+18
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921504606847e+18
+    },
+    {
+      "contrast": -5e-324,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921504606847e+18
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": -0.5,
+      "expected_encoded": -0.5
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 0.0,
+      "expected_encoded": 0.0
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 0.25,
+      "expected_encoded": 0.25
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 0.5,
+      "expected_encoded": 0.5
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 0.75,
+      "expected_encoded": 0.75
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 1.0,
+      "expected_encoded": 1.0
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 2.0,
+      "expected_encoded": 2.0
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 1024.0,
+      "expected_encoded": 1024.0
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 1048576.0,
+      "expected_encoded": 1048576.0
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": 1.152921504606847e+18,
+      "expected_encoded": 1.152921504606847e+18
+    },
+    {
+      "contrast": 5e-324,
+      "input_encoded": -1.152921504606847e+18,
+      "expected_encoded": -1.152921504606847e+18
+    }
+  ]
+}

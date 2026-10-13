@@ -1185,7 +1185,11 @@ impl Editor {
             session: &self.session,
             status: &self.status.text,
             busy: self.busy,
-            can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
+            can_open: !self.busy
+                && self.evidence.is_none()
+                && self
+                    .gesture_refusal(gesture::Starting::Photograph)
+                    .is_none(),
             can_export: self.can_export(),
             export_held: self.export.held.as_ref().map(|held| held.stale.as_slice()),
             export_sheet: self.export.sheet.as_ref(),

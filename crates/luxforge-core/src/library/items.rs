@@ -4,10 +4,11 @@
 //! the shapes [`LibraryItem`] documents; `None` is an absent item (no pick, no folder, a photograph
 //! not removed).
 //!
-//! A write validates only what the catalog holds: a photograph that is no longer in the catalog,
+//! A write validates against what the catalog holds: a photograph that is no longer in the catalog,
 //! or a value the schema refuses (a sibling's name, a folder that is not empty, a file another
 //! photograph names, a collection outside a group) is refused with `conflict` naming the item, and
-//! the caller's transaction rolls back.
+//! the caller's transaction rolls back. Tree values also check acyclic parents and Unicode
+//! sibling-name uniqueness, including when an undo or redo restores them.
 use crate::{
     AssetId, Error,
     catalog_types::{
@@ -108,6 +109,14 @@ pub(crate) fn write(
             Some(to) => {
                 let folder: FolderValue = typed(item, to)?;
                 same(item, folder.id == *folder_id)?;
+                super::tree::check_placement(
+                    tx,
+                    "catalog_folders",
+                    folder.id.as_str(),
+                    &folder.name,
+                    folder.parent_id.as_ref().map(|parent| parent.as_str()),
+                )
+                .map_err(|error| error.with_data(json!({"items": [item], "count": 1})))?;
                 sql(rows::put_catalog_folder(tx, &CatalogFolder::from(folder))).map(drop)
             }
         },
@@ -116,6 +125,14 @@ pub(crate) fn write(
             Some(to) => {
                 let collection: CollectionValue = typed(item, to)?;
                 same(item, collection.id == *collection_id)?;
+                super::tree::check_placement(
+                    tx,
+                    "collections",
+                    collection.id.as_str(),
+                    &collection.name,
+                    collection.parent_id.as_ref().map(|parent| parent.as_str()),
+                )
+                .map_err(|error| error.with_data(json!({"items": [item], "count": 1})))?;
                 sql(rows::put_collection(tx, &Collection::from(collection))).map(drop)
             }
         },

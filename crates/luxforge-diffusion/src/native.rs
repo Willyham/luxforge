@@ -75,6 +75,7 @@ unsafe extern "C" {
         error: *mut c_char,
         error_len: usize,
     ) -> i32;
+    fn lf_sd_condition_validate(path: *const c_char, error: *mut c_char, error_len: usize) -> i32;
     fn lf_sd_condition_supply(
         ctx: *mut c_void,
         text: *const c_char,
@@ -432,6 +433,21 @@ pub fn save_condition(text: &str, path: &Path) -> Result<(), String> {
             ERROR_LEN,
         )
     };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(message(&error))
+    }
+}
+
+/// Check a conditioning file's shape and length without loading weights or allocating tensor
+/// payloads. The same parser supplies the conditioning to a context later.
+pub fn validate_condition(path: &Path) -> Result<(), String> {
+    let path = c_path(path)?;
+    let mut error = vec![0u8; ERROR_LEN];
+    // SAFETY: the path is NUL-terminated and the caller-owned error buffer has ERROR_LEN bytes.
+    let status =
+        unsafe { lf_sd_condition_validate(path.as_ptr(), error.as_mut_ptr().cast(), ERROR_LEN) };
     if status == 0 {
         Ok(())
     } else {

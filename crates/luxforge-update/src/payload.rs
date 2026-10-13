@@ -456,7 +456,7 @@ impl Payload {
                 Path::new(&self.executable).display()
             )));
         }
-        sync_filesystem(&new_payload);
+        sync_filesystem(&new_payload)?;
         Ok(())
     }
 
@@ -564,11 +564,23 @@ fn same_filesystem(_: &Path, _: &Path) -> Option<bool> {
 /// Flushes the filesystem holding `path` before the swap, so a crash after it cannot leave a
 /// renamed payload whose files never reached the disk. Linux only; elsewhere the swap relies on
 /// the filesystem's own ordering.
-fn sync_filesystem(path: &Path) {
+fn sync_filesystem(path: &Path) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if let Ok(directory) = fs::File::open(path) {
-        let _ = rustix::fs::syncfs(&directory);
+    {
+        #[cfg(test)]
+        if let Some(kind) = SYNC_FAILURE.with(|failure| failure.take()) {
+            return Err(std::io::Error::from(kind).into());
+        }
+        let directory = fs::File::open(path)?;
+        rustix::fs::syncfs(&directory).map_err(std::io::Error::from)?;
     }
     #[cfg(not(target_os = "linux"))]
     let _ = path;
+    Ok(())
+}
+
+// One-shot, thread-local fault so a failed-sync test cannot affect another preparation.
+#[cfg(all(test, target_os = "linux"))]
+std::thread_local! {
+    static SYNC_FAILURE: std::cell::Cell<Option<std::io::ErrorKind>> = const { std::cell::Cell::new(None) };
 }

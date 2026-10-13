@@ -282,6 +282,8 @@ Debug builds and `--developer` runs expose a Developer button in the title bar f
 
 The delivered control kinds and gesture rules are specified in [UI components](ui-components.md). Continuous patch controls share the existing draft driver, built around the [provisional slider budget](../specs/performance.md#provisional-budgets); discrete controls commit once, numeric fields commit on Enter, and scrolling never edits. Canvas geometry is cached by model version, including selection, drag and histogram changes. The [component companion board](develop-workspace/components-ui.svg) covers the added states; `text` remains deferred.
 
+Opening a file follows the same draft rule as moving through the filmstrip: finish or discard the open draft first. Both the Open button and the open request enforce it, including a file-picker answer that arrives after a draft starts. Recipe and mask reads after a history selection are adopted only while their requested entry is still displayed; an overtaken answer or failure changes no panel or status.
+
 The widget crate is a separate crate for two reasons. It cannot depend on `luxforge-core`, so a widget cannot reach authoritative state, validate a parameter or build a request: the compiler enforces the "widgets hold no logic" rule rather than a review. And it compiles in isolation, so a styling change rebuilds the widgets and the app, never the core. It is a compile-time boundary only: it links into the same binary, adds no startup work, and `cargo xtask measure` on the empty workload before and after the split shows no launch-to-frame or idle cost.
 
 ### Message flow

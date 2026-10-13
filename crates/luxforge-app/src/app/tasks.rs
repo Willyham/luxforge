@@ -1195,8 +1195,9 @@ pub(crate) fn recipe_task(
     owner: OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
-    entry_id: Option<EntryId>,
+    entry_id: EntryId,
 ) -> Task<Message> {
+    let requested = entry_id.clone();
     owner_task(
         move || {
             let (described, _) = call(
@@ -1209,14 +1210,19 @@ pub(crate) fn recipe_task(
                 &owner,
                 client,
                 "mask.list",
-                mask_list_params(&asset_id, &entry_id),
+                mask_list_params(&asset_id, &Some(entry_id)),
             )?;
             Ok(RecipeRead {
                 recipe: parse::<RecipeDescription>(described)?,
                 masks: parse::<MaskListing>(masks)?,
             })
         },
-        |result| Message::Sync(SyncMessage::RecipeDescribed(result.map(Box::new))),
+        move |result| {
+            Message::Sync(SyncMessage::RecipeDescribed(
+                requested,
+                result.map(Box::new),
+            ))
+        },
     )
 }
 
