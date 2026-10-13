@@ -147,8 +147,8 @@ fn merge_preview_answers_a_picture_diagnostics_and_motion_overlays_through_the_r
         .find(|parameter| parameter["name"] == "kind")
         .cloned()
         .unwrap();
-    assert_eq!(kind["options"], json!(["hdr"]));
-    // Panorama has no provider: not-ready, naming it.
+    assert_eq!(kind["options"], json!(["hdr", "panorama"]));
+    // This build's panorama has no stitch: not-ready, naming its provider.
     let panorama = bench.failure(
         "merge.preview",
         json!({"kind": "panorama", "targets": {"kind": "paths", "paths": bench.paths(0)}}),

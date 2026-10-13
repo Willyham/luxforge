@@ -20,7 +20,9 @@ use std::{sync::atomic::AtomicBool, thread::JoinHandle};
 
 /// An HDR merge's resolution, inside its kind's tag.
 fn resolution(provenance: &MergeProvenance) -> &HdrResolution {
-    let MergeResolution::Hdr(resolved) = &provenance.resolved;
+    let MergeResolution::Hdr(resolved) = &provenance.resolved else {
+        panic!("an HDR merge's resolution");
+    };
     resolved
 }
 
