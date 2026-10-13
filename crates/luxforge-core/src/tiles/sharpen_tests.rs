@@ -38,12 +38,19 @@ fn values(pixels: &Pixels) -> Vec<u32> {
 /// The sharpened output computed pixel by pixel from `input` alone: its luma, the Gaussian of
 /// whole weights summed over both axes at once with clamped coordinates, the change rounded half
 /// away from zero and limited so no channel clips. Written from the design, not the code.
-fn stepwise(input: &[u32], (width, height): (u32, u32), kernel: &SharpenKernel, max: i128) -> Vec<u32> {
+fn stepwise(
+    input: &[u32],
+    (width, height): (u32, u32),
+    kernel: &SharpenKernel,
+    max: i128,
+) -> Vec<u32> {
     let (w, h) = (width as i128, height as i128);
     let r = (kernel.weights.len() / 2) as i128;
     let at = |x: i128, y: i128| ((y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) * 4) as usize;
     let y_of = |i: usize| {
-        2126 * i128::from(input[i]) + 7152 * i128::from(input[i + 1]) + 722 * i128::from(input[i + 2])
+        2126 * i128::from(input[i])
+            + 7152 * i128::from(input[i + 1])
+            + 722 * i128::from(input[i + 2])
     };
     let mut out = input.to_vec();
     for y in 0..h {
@@ -119,12 +126,21 @@ fn the_band_size_and_the_pool_change_no_code() {
     )
     .kernel();
     let expected = stepwise(&input, size, &kernel, 255);
-    for (band, pooled) in [(1, Some(false)), (3, Some(true)), (64, Some(false)), (500, Some(true))] {
+    for (band, pooled) in [
+        (1, Some(false)),
+        (3, Some(true)),
+        (64, Some(false)),
+        (500, Some(true)),
+    ] {
         let previous = crate::render::parallel::force(pooled);
         let mut output = pixels(&input, false);
         sharpen_in_bands(&mut output, size, &kernel, band, &Cancel::never()).unwrap();
         crate::render::parallel::force(previous);
-        assert_eq!(values(&output), expected, "bands of {band}, pooled {pooled:?}");
+        assert_eq!(
+            values(&output),
+            expected,
+            "bands of {band}, pooled {pooled:?}"
+        );
     }
 }
 
@@ -143,7 +159,11 @@ fn images_smaller_than_the_kernel_clamp_to_their_borders() {
         let input = codes(size.0, size.1, 255, u64::from(size.0 * 31 + size.1));
         let mut output = pixels(&input, false);
         sharpen(&mut output, size, &kernel, &Cancel::never()).unwrap();
-        assert_eq!(values(&output), stepwise(&input, size, &kernel, 255), "{size:?}");
+        assert_eq!(
+            values(&output),
+            stepwise(&input, size, &kernel, 255),
+            "{size:?}"
+        );
     }
     // One pixel is its own blur: nothing changes.
     let one = codes(1, 1, 255, 3);
@@ -167,14 +187,28 @@ fn a_step_edge_overshoots_by_the_exact_amount_and_flat_areas_keep_their_codes() 
     assert_eq!(kernel.weights, [11, 678, 2718, 678, 11], "σ 0.6, r 2");
     assert_eq!(kernel.percent, 70);
     let input: Vec<u32> = (0..4)
-        .flat_map(|_| (0..12).flat_map(|x| if x < 6 { [100, 100, 100, 255] } else { [140, 140, 140, 255] }))
+        .flat_map(|_| {
+            (0..12).flat_map(|x| {
+                if x < 6 {
+                    [100, 100, 100, 255]
+                } else {
+                    [140, 140, 140, 255]
+                }
+            })
+        })
         .collect();
     let mut output = pixels(&input, false);
     sharpen(&mut output, (12, 4), &kernel, &Cancel::never()).unwrap();
-    let row: Vec<u32> = values(&output)[..12 * 4].chunks(4).map(|pixel| pixel[0]).collect();
+    let row: Vec<u32> = values(&output)[..12 * 4]
+        .chunks(4)
+        .map(|pixel| pixel[0])
+        .collect();
     // Column 5's blur takes 689 / 4096 of the step: 0.7 × 40 × 689 / 4096 = 4.71, so it falls
     // to 95 and column 6 rises to 145; column 4 takes 11 / 4096, too little to round to a code.
-    assert_eq!(row, [100, 100, 100, 100, 100, 95, 145, 140, 140, 140, 140, 140]);
+    assert_eq!(
+        row,
+        [100, 100, 100, 100, 100, 95, 145, 140, 140, 140, 140, 140]
+    );
 }
 
 #[test]
@@ -209,14 +243,21 @@ fn luminance_only_sharpening_keeps_every_chroma_on_saturated_edges() {
         let mut moved = 0;
         for (before, after) in input.chunks(4).zip(output.chunks(4)) {
             let difference = |p: &[u32]| [p[0] as i64 - p[1] as i64, p[1] as i64 - p[2] as i64];
-            assert_eq!(difference(before), difference(after), "{sharpen:?}: {before:?} → {after:?}");
+            assert_eq!(
+                difference(before),
+                difference(after),
+                "{sharpen:?}: {before:?} → {after:?}"
+            );
             if before != after {
                 moved += 1;
             }
         }
         assert!(moved > 0, "{sharpen:?} changed nothing");
         // Pure red, already at the gamut's edge on two channels, cannot move at all.
-        let red = input.chunks(4).zip(output.chunks(4)).find(|(before, _)| before[..3] == [255, 0, 0]);
+        let red = input
+            .chunks(4)
+            .zip(output.chunks(4))
+            .find(|(before, _)| before[..3] == [255, 0, 0]);
         let (before, after) = red.unwrap();
         assert_eq!(before, after);
     }
@@ -239,11 +280,22 @@ fn the_radius_follows_the_medium_and_the_density() {
     assert_eq!(sigma(SharpenMedium::Glossy, None), 300.0 / 360.0);
     assert_eq!(sigma(SharpenMedium::Matte, None), 300.0 / 240.0);
     assert_eq!(sigma(SharpenMedium::Matte, Some(150)), 0.625);
-    assert_eq!(sigma(SharpenMedium::Glossy, Some(72)), 0.5, "held to the smallest");
-    assert_eq!(sigma(SharpenMedium::Matte, Some(2400)), 3.0, "held to the largest");
+    assert_eq!(
+        sigma(SharpenMedium::Glossy, Some(72)),
+        0.5,
+        "held to the smallest"
+    );
+    assert_eq!(
+        sigma(SharpenMedium::Matte, Some(2400)),
+        3.0,
+        "held to the largest"
+    );
     for medium in SharpenMedium::ALL {
         let percents = SharpenAmount::ALL.map(|amount| amount_percent(medium, amount));
-        assert!(percents[0] < percents[1] && percents[1] < percents[2], "{medium:?}");
+        assert!(
+            percents[0] < percents[1] && percents[1] < percents[2],
+            "{medium:?}"
+        );
     }
     for amount in SharpenAmount::ALL {
         assert!(
@@ -255,7 +307,13 @@ fn the_radius_follows_the_medium_and_the_density() {
         let kernel = SharpenKernel::gaussian(sigma, 100);
         assert_eq!(kernel.weights.iter().sum::<i64>(), WEIGHT_SUM, "{sigma}");
         assert_eq!(kernel.radius(), (3.0 * sigma).ceil() as u32);
-        assert!(kernel.weights.iter().zip(kernel.weights.iter().rev()).all(|(a, b)| a == b));
+        assert!(
+            kernel
+                .weights
+                .iter()
+                .zip(kernel.weights.iter().rev())
+                .all(|(a, b)| a == b)
+        );
     }
 }
 

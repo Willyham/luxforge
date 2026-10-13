@@ -55,7 +55,9 @@ impl SharpenMedium {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|medium| medium.as_str() == value)
+        Self::ALL
+            .into_iter()
+            .find(|medium| medium.as_str() == value)
     }
 
     /// Whether its radius follows the output density: Matte and Glossy paper.
@@ -84,7 +86,9 @@ impl SharpenAmount {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|amount| amount.as_str() == value)
+        Self::ALL
+            .into_iter()
+            .find(|amount| amount.as_str() == value)
     }
 }
 
@@ -246,7 +250,9 @@ impl Code for u16 {
 /// The luma of an RGBA pixel, times [`LUMA_SUM`].
 #[inline]
 fn luma<T: Code>(pixel: &[T]) -> i64 {
-    LUMA_WEIGHTS[0] * pixel[0].get() + LUMA_WEIGHTS[1] * pixel[1].get() + LUMA_WEIGHTS[2] * pixel[2].get()
+    LUMA_WEIGHTS[0] * pixel[0].get()
+        + LUMA_WEIGHTS[1] * pixel[1].get()
+        + LUMA_WEIGHTS[2] * pixel[2].get()
 }
 
 /// `pixel` with `change` added to its three channels, limited so none leaves `[0, MAX]`.
@@ -351,7 +357,10 @@ fn sharpen_codes<T: Code>(
         if until > have {
             let source: &[T] = samples;
             let fresh: Vec<Row> = if pool {
-                (have..until).into_par_iter().map(|y| read(y, source)).collect()
+                (have..until)
+                    .into_par_iter()
+                    .map(|y| read(y, source))
+                    .collect()
             } else {
                 (have..until).map(|y| read(y, source)).collect()
             };
