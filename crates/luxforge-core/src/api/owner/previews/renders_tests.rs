@@ -597,6 +597,10 @@ fn a_commit_renders_again_and_collects_the_old_tier() {
     let answer = setup.read(photo, GRID, "visible");
     assert_eq!(answer["state"], "queued", "{answer}");
     assert_eq!(answer["fallback"], old_grid, "the old tier meanwhile");
+    assert_eq!(
+        answer["fallback_current"], false,
+        "an earlier entry's render does not show the entry asked for"
+    );
     gate.open();
     let record = setup.settled(&answer["job_id"]);
     assert_eq!(record["status"], "ready", "{record}");
@@ -926,6 +930,10 @@ fn the_camera_preview_is_the_fallback_until_the_first_render() {
     let fallback = &second["fallback"];
     assert_eq!(fallback["origin"], "embedded");
     assert_eq!(
+        second["fallback_current"], true,
+        "the Original's camera preview shows it"
+    );
+    assert_eq!(
         fallback["key"],
         format!("photo:{}:{}:grid:embedded", photo.asset, photo.entry)
     );
@@ -952,6 +960,34 @@ fn the_camera_preview_is_the_fallback_until_the_first_render() {
     setup.edit(setup.client, photo, 0, 0.5);
     setup.read(photo, GRID, "visible");
     assert_eq!(setup.owner.cameras_dispatched().len(), 1);
+}
+
+/// An edited photograph's camera preview is still its fallback until the first render, but it is
+/// not the entry asked for: the answer says so, so a client that must show the edits shows nothing
+/// meanwhile, and the Original's is (`the_camera_preview_is_the_fallback_until_the_first_render`).
+#[test]
+#[slow]
+fn an_edited_photographs_camera_preview_is_not_its_current_picture() {
+    let (setup, photos) = Setup::new("rendered-owner-camera-edited", &["orientation-6.jpg"], true);
+    let photo = &photos[0];
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_renders(Some(gate.clone()));
+    let first = setup.read(photo, LARGE, "look-ahead");
+    assert_eq!(first["state"], "queued");
+    assert_eq!(first["fallback_current"], false, "no fallback yet");
+    wait_until("the camera preview is written", || {
+        setup.has_row(photo, &photo.entry, LARGE, "embedded")
+    });
+    let second = setup.read(photo, LARGE, "look-ahead");
+    assert_eq!(second["fallback"]["origin"], "embedded", "{second}");
+    assert_eq!(
+        second["fallback_current"], false,
+        "the camera preview does not show the edit"
+    );
+    gate.open();
+    let rendered = setup.ready(photo, LARGE);
+    assert_eq!(rendered["origin"], "rendered");
 }
 
 /// A view over photographs makes, in the background, only the camera previews of those with no

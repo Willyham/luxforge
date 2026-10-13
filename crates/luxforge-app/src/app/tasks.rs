@@ -191,6 +191,17 @@ pub(crate) struct SyncResult {
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
+    /// The photographs whose history the events moved, this desktop's own or another client's:
+    /// Develop reads their large previews again.
+    pub(crate) moved: MovedPhotos,
+}
+
+/// The photographs a poll's events moved to another entry: those named, or every one after a gap
+/// in the event log.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MovedPhotos {
+    pub(crate) assets: Vec<AssetId>,
+    pub(crate) all: bool,
 }
 
 #[cfg(test)]
@@ -210,6 +221,7 @@ impl SyncResult {
             usage: false,
             updates: false,
             own: Vec::new(),
+            moved: MovedPhotos::default(),
         }
     }
 }
@@ -2179,6 +2191,18 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("update."));
+    // An event that leaves an asset at a new revision moved its history; a version moves none.
+    let mut moved = MovedPhotos {
+        assets: Vec::new(),
+        all: events.gap,
+    };
+    for event in events.events.iter().chain(&read) {
+        if let (Some(asset_id), Some(_)) = (&event.asset_id, event.revision)
+            && !moved.assets.contains(asset_id)
+        {
+            moved.assets.push(asset_id.clone());
+        }
+    }
     let asset = held.as_ref().is_some_and(|(asset_id, held)| {
         events.gap
             || events.events.iter().any(|event| {
@@ -2213,6 +2237,7 @@ pub(crate) fn sync_now(
         usage,
         updates,
         own: read.into_iter().map(|event| event.request_id).collect(),
+        moved,
     })
 }
 
@@ -2735,6 +2760,10 @@ mod tests {
             "another photograph's import and edit read nothing back"
         );
         assert_eq!(calls, ["events.since"], "and plan no preview job");
+        assert!(
+            polled.moved.assets.contains(&other) && !polled.moved.all,
+            "but the edited photograph is named as moved, for its cached previews"
+        );
         let cursor = polled.sequence;
 
         call(
@@ -2765,6 +2794,11 @@ mod tests {
         )
         .unwrap();
         let (polled, _) = poll(again.sequence, held + 1);
+        assert_eq!(
+            polled.moved,
+            MovedPhotos::default(),
+            "a version moves no photograph's entry"
+        );
         let versions = polled
             .refresh
             .expect("a version is read back")
@@ -2951,6 +2985,7 @@ mod tests {
             usage: false,
             updates: false,
             own: Vec::new(),
+            moved: Default::default(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));
         assert_eq!(editor.sync.sequence, caught_up + 3);
