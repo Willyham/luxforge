@@ -11,13 +11,23 @@
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/develop.png" alt="The Luxforge Develop workspace editing a Nikon Z6 RAW of a bamboo bridge: history on the left, the photograph in the centre, the histogram, Look and Basic adjustments on the right" width="1100">
-  <br>
-  <sub>The Develop workspace editing a RAW file, captured from the running app.</sub>
-</p>
-
 ---
+
+## Getting started
+
+Maintainers can [run `cargo xtask release v0.1` from clean, synchronized `main`](docs/engineering/releases.md) to build macOS and Linux downloads. The workflow automatically publishes pre-release build candidates; no qualified public download exists yet.
+
+You'll need Rust (the toolchain is pinned) and a few platform prerequisites, listed in [development](docs/engineering/development.md). Then:
+
+```sh
+git clone https://github.com/Willyham/luxforge.git
+cd luxforge
+cargo xtask develop --open fixtures/s0/orientation-6.jpg
+```
+
+That builds an optimized editor and opens a sample photo. Use `--catalog path/to/catalog.sqlite` to keep your edits somewhere specific, or `--open` any JPEG or supported RAW file of your own. Luxforge only records a reference to the original and never copies or changes it.
+
+The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts and every tool. Initial [v0.1 distribution preparation](docs/design/release-v0.1.md) is planned; there is no published app download yet.
 
 ## Why Luxforge
 
@@ -41,6 +51,12 @@ These are the core principles that development follows.
 ## What it does today
 
 Luxforge is pre-release. Everything is v0, formats can change between builds, and there is no qualified public download yet. With that said, a lot already works and has been checked on Apple silicon Macs.
+
+<p align="center">
+  <img src="docs/screenshots/develop.png" alt="The Luxforge Develop workspace editing a Nikon Z6 RAW of a bamboo bridge: history on the left, the photograph in the centre, the histogram, Look and Basic adjustments on the right" width="1100">
+  <br>
+  <sub>The Develop workspace editing a RAW file, captured from the running app.</sub>
+</p>
 
 ### Browse, pick, develop
 
@@ -88,22 +104,6 @@ Luxforge is pre-release. Everything is v0, formats can change between builds, an
 ### On the way
 
 Generative Remove and Replace on local models are in progress behind an experiment flag. Automatic updates are built but not yet live. An MCP adapter, Lightroom catalog import and broader Windows and Linux verification are planned. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet, and the [roadmap](docs/plan.md) has what comes next.
-
-## Getting started
-
-Maintainers can [run `cargo xtask release v0.1` from clean, synchronized `main`](docs/engineering/releases.md) to build macOS and Linux downloads. The workflow automatically publishes pre-release build candidates; no qualified public download exists yet.
-
-You'll need Rust (the toolchain is pinned) and a few platform prerequisites, listed in [development](docs/engineering/development.md). Then:
-
-```sh
-git clone https://github.com/Willyham/luxforge.git
-cd luxforge
-cargo xtask develop --open fixtures/s0/orientation-6.jpg
-```
-
-That builds an optimized editor and opens a sample photo. Use `--catalog path/to/catalog.sqlite` to keep your edits somewhere specific, or `--open` any JPEG or supported RAW file of your own. Luxforge only records a reference to the original and never copies or changes it.
-
-The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts and every tool. Initial [v0.1 distribution preparation](docs/design/release-v0.1.md) is planned; there is no published app download yet.
 
 ## Scripting it
 
