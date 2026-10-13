@@ -5239,7 +5239,7 @@ Medians in milliseconds, GPU / reference; then peak additional memory in MB, GPU
 - **The held output stage.** Print and Master on the GPU go through the held `Rgba32Float` stage at full size: on the generated JPEGs 3.2 to 3.7 times the reference's Print and 2.0 to 2.1 times its Master, whose render of a light stack takes 8 to 19 ms. On the Z 6 they are about as fast. The stage is the tile worker's peak of 1,313 MB at 60 MP, against 324 MB for the streamed baseline.
 - **Against 1 GiB of process memory**, which an export may exceed (owner, 2026-10-13): the reference's process peaks at 487 to 1,171 MiB, Optimise's being the highest; the GPU's at 952 to 1,706 MiB, of which the tile worker's charges are 309 to 1,253 MiB of GPU memory in the same footprint.
 
-Evidence: `target/task-008-measure/` in the `export-settings-task-008` worktree (`timing.jsonl`, `memory.jsonl`, `load.log`, `table.md`).
+Evidence: `private/evidence/export-settings/task-008-measure/` in the owner's checkout (`timing.jsonl`, `memory.jsonl`, `load.log`, `table.md`).
 
 ```sh
 cargo test --release --locked -p luxforge-app --bin luxforge --no-run
