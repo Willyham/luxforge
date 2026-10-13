@@ -262,7 +262,7 @@ fn gpu_rest_an_overview_is_the_whole_stage_reduced_within_the_display_tolerance(
             // The reference renderer's whole frame, reduced by the core and independently.
             let frame = render(
                 &super::gpu_tiles_tests::registry(),
-                &photograph,
+                photograph.whole().expect("a test's source is never paged"),
                 &recipe,
                 RenderOptions::exact(&Cancel::never()),
                 &RenderContext::new(),

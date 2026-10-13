@@ -86,6 +86,7 @@ impl PhotoPrimitive {
             gpu_options: Default::default(),
             dissolve: None,
             source: None,
+            window: None,
             rest: None,
             overview: None,
             overview_draw: Some(version),

@@ -147,6 +147,18 @@ struct HeldSource {
     /// Why the surface could not hold it, which every boundary of it names until a job hands its
     /// pixels again.
     refused: Option<&'static str>,
+    /// A paged derived source's level 0, whose windows a region's boundaries are cut from
+    /// ([`super::gpu_paged`]); the source held is then its resident level.
+    paged: Option<luxforge_core::PagedPreview>,
+}
+
+/// What identifies the source the surface holds for `source`: its own identity, or a paged
+/// source's resident level's, which it holds in its place.
+pub(crate) fn held_identity(source: &PreviewSource) -> ProxyIdentity {
+    source
+        .paged()
+        .and_then(luxforge_core::PagedPreview::level_identity)
+        .unwrap_or_else(|| source.identity())
 }
 
 /// Conversion belongs to each resource's identity; ready data and a refusal cannot coexist.
@@ -552,10 +564,23 @@ impl AsRef<[f32]> for DevelopedPlanes {
     }
 }
 
-/// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, or a
-/// RAW development's planes through its view, each shared with the preview job, never copied.
+/// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, a
+/// RAW development's planes through its view, or a paged derived source's resident level, once
+/// read, each shared with the preview job, never copied. A window of a paged source's level 0 is
+/// held beside it ([`GpuPreview::window`]).
 pub(crate) fn gpu_source_of(version: u64, source: &PreviewSource) -> Option<GpuSource> {
     match source {
+        PreviewSource::Paged(paged) => {
+            let level = paged.level()?;
+            let (_, base, crop, orientation) = level.shared_planes();
+            GpuSource::planes(
+                version,
+                Arc::new(DevelopedPlanes(level.clone())),
+                base,
+                crop,
+                orientation,
+            )
+        }
         PreviewSource::Jpeg(image) => {
             GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
         }
@@ -640,13 +665,56 @@ fn derivation_of(request: &SourceBoundary, stage: (u32, u32)) -> Result<Derived,
 /// `O(source + proxy)` for a reduction's coverage; no pixel is read.
 fn derive_held(
     source: Option<&HeldSource>,
+    windows: &mut super::gpu_paged::PagedWindows,
     versions: &mut u64,
     grids: &mut Grids,
     request: &SourceBoundary,
 ) -> Result<Held, &'static str> {
-    let source = source
-        .filter(|source| source.identity == *request.key.source())
-        .ok_or("source-missing")?;
+    let source = source.ok_or("source-missing")?;
+    // A region of a paged source's level 0: cut from the window of it held beside the resident
+    // level, asked for here when none holds the region (`boundary-pending` until it is read).
+    if let Some(paged) = source
+        .paged
+        .as_ref()
+        .filter(|paged| paged.identity() == *request.key.source())
+    {
+        let (width, height) = paged.dimensions();
+        let wanted = request.window.unwrap_or(Region {
+            x0: 0,
+            y0: 0,
+            width,
+            height,
+        });
+        let Some(window) = windows.covering(request.key.source(), wanted) else {
+            windows.want(paged, wanted);
+            return Err("boundary-pending");
+        };
+        let grid = match GridKey::of(request) {
+            None => None,
+            Some(key) => grids
+                .of(key)
+                .map_err(|()| "boundary-pending")?
+                .map(|grid| gpu_plan::WarpGrid::new(&grid)),
+        };
+        let Derived {
+            derivation,
+            size,
+            origin,
+        } = derivation_of(request, window.stage).map_err(|_| "boundary-size")?;
+        *versions += 1;
+        let boundary = GpuBoundary::derived(&window.gpu, derivation, size.0, size.1, *versions)
+            .ok_or("boundary-size")?;
+        return Ok(Held {
+            key: request.key.clone(),
+            boundary,
+            origin,
+            grid,
+            grid_key: GridKey::of(request),
+        });
+    }
+    if source.identity != *request.key.source() {
+        return Err("source-missing");
+    }
     if let Some(reason) = source.refused {
         return Err(reason);
     }
@@ -1106,6 +1174,10 @@ pub(crate) struct GpuPreviews {
     sources: u64,
     /// A lens warp's coordinate grids, by boundary key.
     grids: Grids,
+    /// A window of a paged source's level 0 held beside its resident level at 100% and above, and
+    /// the committed stack's region view plan waiting for it to be read.
+    windows: super::gpu_paged::PagedWindows,
+    window_rest: Option<Box<(CorePlan, SourceBoundary)>>,
     stamps: Stamps,
     /// The last boundary version handed out: each held boundary is derived once.
     versions: u64,
@@ -1545,6 +1617,7 @@ impl GpuPreviews {
             "source": source,
             "rest": rest,
             "warm": self.warm.as_ref().map(GpuWarm::version),
+            "window": self.windows.summary(),
         })
     }
 
@@ -1650,6 +1723,7 @@ impl Editor {
         let resident = &mut self.gpu.resident;
         let stamps = &mut self.gpu.stamps;
         let source = self.gpu.source.as_ref();
+        let windows = &mut self.gpu.windows;
         let versions = &mut self.gpu.versions;
         let grids = &mut self.gpu.grids;
         let drag = match &mut self.gpu.drag {
@@ -1769,7 +1843,7 @@ impl Editor {
                     // The surface's own name for a plan over the budget.
                     Some("budget-exceeded")
                 } else {
-                    match derive_held(source, versions, grids, &request) {
+                    match derive_held(source, windows, versions, grids, &request) {
                         Ok(held) => {
                             derived_now = Some(derived_evidence(&held, false));
                             drag.held = Some(held);
@@ -1937,7 +2011,7 @@ impl Editor {
         if self.gpu_preview_allowed().is_err() {
             return;
         }
-        let identity = source.identity();
+        let identity = held_identity(source);
         let (surface, _) = self.surface_source();
         let asset = self
             .document
@@ -1964,6 +2038,8 @@ impl Editor {
                 }
             }
             slot => {
+                // Another photograph or development: a window of the last one goes with it.
+                self.gpu.windows.clear();
                 self.gpu.sources += 1;
                 let version = self.gpu.sources;
                 let Some(gpu) = gpu_source_of(version, source) else {
@@ -1982,6 +2058,7 @@ impl Editor {
                     gpu,
                     asset,
                     refused: None,
+                    paged: source.paged().cloned(),
                 });
                 self.event("gpu_source", || {
                     json!({"version": version, "width": stage.0, "height": stage.1,
@@ -2052,13 +2129,14 @@ impl Editor {
     /// The coordinate grids asked for since the last message, each computed off the interface
     /// thread on the runtime's blocking pool and answered as a [`GridAnswer`].
     fn gpu_compute_grids(&mut self) -> iced::Task<super::Message> {
+        let window = self.gpu_read_window();
         let started = self.gpu.grids.start();
         if started.is_empty() {
-            return iced::Task::none();
+            return window;
         }
         let count = started.len();
         self.event("gpu_grid_requested", || json!({"grids": count}));
-        iced::Task::batch(started.into_iter().map(|key| {
+        let grids = started.into_iter().map(|key| {
             super::tasks::owner_task(
                 {
                     let key = key.clone();
@@ -2070,7 +2148,68 @@ impl Editor {
                     ))
                 },
             )
-        }))
+        });
+        iced::Task::batch(grids.chain([window]))
+    }
+
+    /// The window of a paged source's level 0 asked for since the last message, read off the
+    /// interface thread on the runtime's blocking pool and answered as a
+    /// [`super::gpu_paged::WindowAnswer`]; the read in flight for another is cancelled.
+    fn gpu_read_window(&mut self) -> iced::Task<super::Message> {
+        let Some((paged, rect, cancel)) = self.gpu.windows.start() else {
+            return iced::Task::none();
+        };
+        self.event(
+            "gpu_window_requested",
+            || json!({"rect": [rect.x0, rect.y0, rect.width, rect.height]}),
+        );
+        let identity = paged.identity();
+        super::tasks::owner_task(
+            move || super::gpu_paged::read_window(&paged, rect, &cancel),
+            move |read| {
+                super::Message::Preview(super::message::preview::PreviewMessage::WindowRead(
+                    Box::new(super::gpu_paged::WindowAnswer {
+                        identity,
+                        rect,
+                        read,
+                    }),
+                ))
+            },
+        )
+    }
+
+    /// A window of a paged source's level 0 read: held beside its resident level under a new
+    /// version when it is still the one wanted, and the picture at rest and the crop stage that
+    /// waited for it derived from it.
+    pub(crate) fn gpu_window_read(&mut self, answer: super::gpu_paged::WindowAnswer) {
+        self.gpu.sources += 1;
+        let version = self.gpu.sources;
+        let rect = [
+            answer.rect.x0,
+            answer.rect.y0,
+            answer.rect.width,
+            answer.rect.height,
+        ];
+        let held = self.gpu.windows.finish(answer, version);
+        self.event("gpu_window", || match &held {
+            Ok(held) => json!({"version": version, "rect": rect, "held": held}),
+            Err(why) => json!({"rect": rect, "held": false, "why": why}),
+        });
+        if held == Ok(true) {
+            if let Some(waiting) = self.gpu.window_rest.take() {
+                let (plan, request) = *waiting;
+                self.gpu_rest_view(plan, request);
+            }
+            self.gpu_convert_rest();
+            self.gpu_convert_stage();
+        }
+    }
+
+    /// The window of a paged source's level 0 the surfaces are handed beside the source, while the
+    /// gate allows the GPU stage.
+    pub(crate) fn gpu_window_handed(&self) -> Option<&GpuSource> {
+        self.gpu_preview_allowed().ok()?;
+        self.gpu.windows.handed()
     }
 
     /// A lens warp's grid computed for a boundary key: held for every boundary of that key derived
@@ -2107,6 +2246,11 @@ impl Editor {
         // Every committed job sets the picture at rest's view plan or lets the last one go: a plan
         // of an earlier stack is never drawn at rest.
         self.gpu.at_rest = None;
+        self.gpu.window_rest = None;
+        // Below 100% no window of a paged source's level 0 is drawn from.
+        if !region {
+            self.gpu.windows.clear();
+        }
         if self.gpu_preview_allowed().is_err() {
             return;
         }
@@ -2137,6 +2281,15 @@ impl Editor {
             self.gpu_at_rest_over(&plan, boundary, origin, grid, region);
             return;
         }
+        self.gpu_rest_view(*plan, request);
+    }
+
+    /// The committed stack's view plan `plan` held at rest over the boundary `request` names: the
+    /// resident boundary, or one derived from the source the surface holds. A region of a paged
+    /// source whose window of level 0 is still being read is kept, and derived once it is
+    /// ([`Self::gpu_window_read`]).
+    fn gpu_rest_view(&mut self, plan: CorePlan, request: SourceBoundary) {
+        self.gpu.window_rest = None;
         let held = match self
             .gpu
             .resident
@@ -2154,6 +2307,7 @@ impl Editor {
                 }
                 let derived = derive_held(
                     self.gpu.source.as_ref(),
+                    &mut self.gpu.windows,
                     &mut self.gpu.versions,
                     &mut self.gpu.grids,
                     &request,
@@ -2165,6 +2319,9 @@ impl Editor {
                             "gpu_boundary",
                             || json!({"held": false, "resident": true, "why": why}),
                         );
+                        if why == "boundary-pending" && self.gpu.windows.wanting() {
+                            self.gpu.window_rest = Some(Box::new((plan, request)));
+                        }
                         return;
                     }
                 };

@@ -232,6 +232,8 @@ impl SurfaceFigures {
         let gpu = self.signals.diagnostics();
         overall.gpu_source = gpu.gpu_source;
         overall.gpu_source_refused = gpu.gpu_source_refused;
+        overall.gpu_window = gpu.gpu_window;
+        overall.gpu_window_refused = gpu.gpu_window_refused;
         overall.gpu_retirement_failures += gpu.gpu_retirement_failures;
         drop(gpu);
         let draws = self.draws.lock().expect("surface draw identities lock");
@@ -532,6 +534,10 @@ pub struct SurfaceDiagnostics {
     /// more tiles than a pass binds, or no derivation passes on the device. Cleared by the next
     /// source held.
     pub gpu_source_refused: Option<(u64, GpuFallback)>,
+    /// The window held beside the source ([`PhotoSurface::gpu_window`]), and the last that could
+    /// not be held, and why.
+    pub gpu_window: Option<gpu_preview::SourceFigures>,
+    pub gpu_window_refused: Option<(u64, GpuFallback)>,
     /// How many boundaries the GPU stage has derived from the source it holds, over every frame.
     pub gpu_source_derived: u64,
     /// The picture at rest this surface draws in tiles: how far it has got, or why it stopped
@@ -793,6 +799,8 @@ pub struct PhotoSurface {
     dissolve: Option<Dissolve>,
     /// The prepared source the pipeline holds on the GPU; see [`PhotoSurface::gpu_source`].
     source: Option<GpuSource>,
+    /// A window held beside it; see [`PhotoSurface::gpu_window`].
+    window: Option<GpuSource>,
     /// The picture at rest the GPU stage draws in tiles; see [`PhotoSurface::gpu_rest`].
     rest: Option<GpuRest>,
     /// The minimap overviews the surface may keep; see [`PhotoSurface::gpu_overview`].
@@ -841,6 +849,7 @@ pub fn photo_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        window: None,
         rest: None,
         overview: None,
         clock: None,
@@ -878,6 +887,7 @@ pub fn viewport_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        window: None,
         rest: None,
         overview: None,
         clock: None,
@@ -908,6 +918,7 @@ pub fn stage_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        window: None,
         rest: None,
         overview: None,
         clock: None,
@@ -1023,6 +1034,16 @@ impl PhotoSurface {
         self
     }
 
+    /// Hold `window` beside the source: a window of a source too large to hold whole, already
+    /// read — a paged derived source's level 0 around a view at 100% and above, the source then
+    /// its resident level — which boundaries derived from it are drawn from as from the source.
+    /// Charged to the GPU-preview budget and uploaded as the source is; retired at the end of a
+    /// frame in which no surface hands it.
+    pub fn gpu_window(mut self, window: Option<&GpuSource>) -> Self {
+        self.window = window.cloned();
+        self
+    }
+
     /// Draw the picture at rest on the GPU, process-first ([`GpuRest`]): its tiles a frame at a
     /// time through a slot of the surface's own, reduced into the view's size, and, once the last
     /// is in, the photograph drawn from the rest output in place of its frame, through the same
@@ -1084,6 +1105,15 @@ impl PhotoSurface {
                 && diagnostics
                     .gpu_source_refused
                     .is_none_or(|(version, _)| version != source.version())
+        }) || self.window.as_ref().is_some_and(|window| {
+            window.holds_pixels()
+                && diagnostics.gpu_stage == GpuStageState::Available
+                && diagnostics
+                    .gpu_window
+                    .is_none_or(|held| held.version != window.version() || !held.ready)
+                && diagnostics
+                    .gpu_window_refused
+                    .is_none_or(|(version, _)| version != window.version())
         });
         // A picture at rest whose tiles remain, the next one ready to draw: one a frame until the
         // last, and then each frame of its dissolve. A tile that waits for its sequence to compile
@@ -1185,6 +1215,7 @@ impl PhotoSurface {
             gpu_options: self.gpu_options.clone(),
             dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
             source: self.source.clone(),
+            window: self.window.clone(),
             rest: self.rest_drawn().cloned(),
             overview: self.overview.clone(),
             overview_draw: None,
@@ -1389,6 +1420,8 @@ pub struct PhotoPrimitive {
     dissolve: Option<gpu_preview::DissolveFrame>,
     /// The prepared source the pipeline holds for every surface ([`PhotoSurface::gpu_source`]).
     source: Option<GpuSource>,
+    /// A window held beside it ([`PhotoSurface::gpu_window`]).
+    window: Option<GpuSource>,
     /// A whole-frame photograph's picture at rest on the GPU ([`PhotoSurface::gpu_rest`]).
     rest: Option<GpuRest>,
     /// The minimap overviews the surface keeps ([`PhotoSurface::gpu_overview`]).
@@ -1758,6 +1791,7 @@ impl shader::Primitive for PhotoPrimitive {
         // The source every derived boundary is drawn from, before any plan derives one: held for
         // every surface, a frame's rows of it written.
         pipeline.fit_source(device, queue, self.source.as_ref());
+        pipeline.fit_window(device, queue, self.window.as_ref());
         // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
         // without a plan it releases the slot, unless a dissolve into a frame already in its
         // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
@@ -4378,6 +4412,7 @@ mod gpu_surface_tests {
             gpu_options: Default::default(),
             dissolve: None,
             source: None,
+            window: None,
             rest: None,
             overview: None,
             overview_draw: None,
@@ -4407,6 +4442,7 @@ mod gpu_surface_tests {
             gpu_options: Default::default(),
             dissolve: None,
             source: None,
+            window: None,
             rest: None,
             overview: None,
             overview_draw: None,

@@ -474,7 +474,7 @@ fn detail_export_evaluates_exact_detail_once() {
         )
         .unwrap();
     let plan = service.export_plan(&asset, None).unwrap();
-    let evaluation = plan.evaluation.whole().expect("a whole source");
+    let evaluation = &plan.evaluation;
     let context = evaluation.context();
     let (before_compiles, before_frames) = (context.compiles(), context.spatial_frames());
     let frame = evaluation

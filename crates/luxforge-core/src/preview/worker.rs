@@ -138,15 +138,32 @@ pub(super) fn run(
     // The proxy plan reads its output stage and the exact phase renders it, so neither compiles
     // the stack again. It is charged to the first phase that hands over a frame.
     let compile_started = Instant::now();
-    let exact = match &prefix {
-        Some(prefix) => render(
-            evaluation.registry(),
-            evaluation.source().input(),
-            prefix,
-            RenderOptions::exact(full_cancel),
-            evaluation.context(),
-        ),
-        None => evaluation.exact(full_cancel),
+    // A paged source has no whole frame: the reference draws its overview, the stack over its
+    // resident level, which the view shows reduced (`docs/design/panorama-merge.md`, "Rendering,
+    // samples and export").
+    let overview = evaluation.overview();
+    let exact = match (&prefix, &overview) {
+        (_, Err(error)) => Err(error.clone()),
+        (None, Ok(Some(overview))) => overview.exact(full_cancel),
+        (Some(prefix), Ok(Some(overview))) => overview.source().whole().and_then(|input| {
+            render(
+                overview.registry(),
+                input,
+                prefix,
+                RenderOptions::exact(full_cancel),
+                overview.context(),
+            )
+        }),
+        (Some(prefix), Ok(None)) => evaluation.source().whole().and_then(|input| {
+            render(
+                evaluation.registry(),
+                input,
+                prefix,
+                RenderOptions::exact(full_cancel),
+                evaluation.context(),
+            )
+        }),
+        (None, Ok(None)) => evaluation.exact(full_cancel),
     };
     let mut compile_ms = Some(milliseconds_since(compile_started));
 
@@ -229,6 +246,7 @@ pub(super) fn run(
     if let Some(activity) = activity {
         activity.finish(Outcome::of(&result));
     }
+    let overview = job.evaluation.source().paged().is_some();
     let exact_result = PreviewResult {
         generation,
         entry_id,
@@ -240,6 +258,7 @@ pub(super) fn run(
             result,
             report,
             proxy_declined: declined,
+            overview,
         })),
         approximate_white_balance,
         render_ms,
@@ -267,10 +286,24 @@ pub(super) fn view_frame(
     {
         return Ok(None);
     }
-    let (Some(bounds), Ok(raster)) = (job.proxy, result) else {
+    let paged = job.evaluation.source().paged().is_some();
+    let Ok(raster) = result else {
         return Ok(None);
     };
-    crate::render::reduce_to_view(raster, bounds, cancel)
+    // A paged source's frame is its overview, smaller than the stage: always shown reduced, at
+    // most the largest proxy at 100% and above.
+    let bounds = match (job.proxy, paged) {
+        (Some(bounds), _) => bounds,
+        (None, true) => crate::ProxyBounds {
+            width: crate::ProxyBounds::MAX_SIDE,
+            height: crate::ProxyBounds::MAX_SIDE,
+        },
+        (None, false) => return Ok(None),
+    };
+    match crate::render::reduce_to_view(raster, bounds, cancel)? {
+        None if paged => Ok(Some(raster.clone())),
+        display => Ok(display),
+    }
 }
 
 /// A resized Fit reuses the immutable exact allocation and performs only bounded reduction.
@@ -322,6 +355,7 @@ fn run_reduce(
             result,
             report: None,
             proxy_declined: None,
+            overview: false,
         })),
         render_ms: milliseconds_since(started),
         queue_wait_ms,
