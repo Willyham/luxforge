@@ -304,8 +304,82 @@ fn shows_rate(text: &str, rate: f64) -> bool {
         .any(|candidate| percent_text(*candidate) == text)
 }
 
+/// The board's fraction as the section holds it: clamped and in `f32`.
+fn fraction(job: &Value) -> Value {
+    match job["progress"]["fraction"].as_f64() {
+        Some(fraction) => json!(f64::from(fraction.clamp(0.0, 1.0) as f32)),
+        None => Value::Null,
+    }
+}
+
+/// Whether a board entry is the catalog's long-running work, which the section draws as a work row
+/// with its own Cancel: a kind a catalog job publishes, with the job `job.cancel` stops.
+fn followed(job: &Value) -> bool {
+    job["job_id"].is_string()
+        && job["kind"]
+            .as_str()
+            .and_then(luxforge_core::catalog_types::jobs::catalog_job)
+            .is_some()
+}
+
+/// What catalog work is doing, as its row names it: indexing followed by its place (a path under
+/// the home folder from `~`, one longer than 28 characters by its last component), any other work
+/// with its detail after a dot (`Rendering previews · 60mp.jpg`).
+fn work_label(job: &Value) -> String {
+    let label = job["label"].as_str().unwrap_or_default();
+    let Some(detail) = job["detail"].as_str() else {
+        return label.to_owned();
+    };
+    if job["kind"] != luxforge_core::catalog_types::jobs::INDEX_REFRESH.activity {
+        return format!("{label} \u{b7} {detail}");
+    }
+    let path = Path::new(detail);
+    if !path.is_absolute() {
+        return format!("{label} {detail}");
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let shown = match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    };
+    let place = match path.file_name() {
+        Some(name) if shown.chars().count() > 28 => format!("\u{2026}/{}", name.to_string_lossy()),
+        _ => shown,
+    };
+    format!("{label} {place}")
+}
+
+/// Whether a work row's estimate reads as the section words one: none until a rate is known, then
+/// `about 40 s`, `about 1 min 40 s`, `about 12 min` or `about 2 h 5 min`. It comes from the
+/// desktop's rate over its reads of the board, which one recorded board does not hold, so only its
+/// form is checked.
+fn estimate_worded(estimate: &Value) -> bool {
+    if estimate.is_null() {
+        return true;
+    }
+    let Some(rest) = estimate
+        .as_str()
+        .and_then(|text| text.strip_prefix("about "))
+    else {
+        return false;
+    };
+    let words: Vec<&str> = rest.split(' ').collect();
+    let number = |word: &str| !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit());
+    let units: Vec<&str> = words.iter().skip(1).step_by(2).copied().collect();
+    words.len().is_multiple_of(2)
+        && words.iter().step_by(2).all(|word| number(word))
+        && matches!(
+            units.as_slice(),
+            ["s"] | ["min"] | ["min", "s"] | ["h"] | ["h", "min"]
+        )
+}
+
 /// The job rows, the `+N more` caption and the heading caption the display rules give for one
-/// recorded `activity.list`.
+/// recorded `activity.list`. A work row's estimate is left out, for [`estimate_worded`].
 fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
     let active = activity["active"]
         .as_array()
@@ -323,6 +397,17 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
             .iter()
             .take(MAX_JOB_ROWS)
             .map(|job| {
+                if followed(job) {
+                    return json!({
+                        "label": work_label(job),
+                        "trailing": elapsed_text(job["elapsed_ms"].as_u64().unwrap_or_default()),
+                        "detail": null,
+                        "running": true,
+                        "job_id": null, "cancelling": false,
+                        "progress": fraction(job),
+                        "work": {"job_id": job["job_id"], "count": job["progress"]["message"]},
+                    });
+                }
                 let mut parts = Vec::new();
                 if let Some(detail) = job["detail"].as_str() {
                     parts.push(detail.to_owned());
@@ -330,11 +415,7 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
                 if let Some(phase) = job["phase"].as_str() {
                     parts.push(format!("{phase} phase"));
                 }
-                // The board's fraction as the section holds it: clamped and in `f32`.
-                let progress = match job["progress"]["fraction"].as_f64() {
-                    Some(fraction) => json!(f64::from(fraction.clamp(0.0, 1.0) as f32)),
-                    None => Value::Null,
-                };
+                let progress = fraction(job);
                 json!({
                     "label": job["label"],
                     "trailing": elapsed_text(job["elapsed_ms"].as_u64().unwrap_or_default()),
@@ -377,7 +458,8 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
             };
             let ago = ((job["ended_ms_ago"].as_u64().unwrap_or_default() + 500) / 1000).max(1);
             json!({
-                "label": job["label"],
+                // Catalog work keeps the place it worked on, as it read while it ran.
+                "label": if followed(job) { json!(work_label(job)) } else { job["label"].clone() },
                 "trailing": elapsed_text(job["duration_ms"].as_u64().unwrap_or_default()),
                 "detail": format!("{how} {ago} s ago"),
                 "running": false,
@@ -645,13 +727,21 @@ fn expect_expanded(step: &str, frame: &Value) -> Result<Value> {
         rates[name] = json!({"shown":text,"computed":computed});
     }
 
-    // Jobs: exactly what the display rules give for the recorded board, and a single job line
+    // Jobs: exactly what the display rules give for the recorded board, and a single plain job line
     // without a detail keeps that line's room, so one job line is always the same height.
     let (rows_expected, more, caption) = expected_jobs(&section["activity"])?;
+    let mut jobs = section["jobs"].clone();
+    for row in jobs.as_array_mut().into_iter().flatten() {
+        if let Some(work) = row.get_mut("work").and_then(Value::as_object_mut) {
+            let estimate = work.remove("estimate").unwrap_or_default();
+            ensure(
+                estimate_worded(&estimate),
+                format!("Step {step:?}: a work row's estimate reads {estimate}"),
+            )?;
+        }
+    }
     ensure(
-        section["jobs"] == json!(rows_expected)
-            && section["more"] == more
-            && section["caption"] == caption,
+        jobs == json!(rows_expected) && section["more"] == more && section["caption"] == caption,
         format!(
             "Step {step:?}: jobs {} more {} caption {}; the recorded board gives {} more {more} caption {caption}",
             section["jobs"],
@@ -660,7 +750,10 @@ fn expect_expanded(step: &str, frame: &Value) -> Result<Value> {
             json!(rows_expected)
         ),
     )?;
-    let reserve = rows_expected.len() == 1 && rows_expected[0]["detail"].is_null();
+    // A work row is drawn as the work row, with its own count line.
+    let reserve = rows_expected.len() == 1
+        && rows_expected[0]["detail"].is_null()
+        && rows_expected[0].get("work").is_none();
     ensure(
         section["reserve_detail"] == json!(reserve),
         format!(
@@ -1120,6 +1213,52 @@ mod tests {
         assert_eq!(rows[0]["trailing"], json!("1.6 s"));
         let (rows, ..) = expected_jobs(&json!({"active": [], "recent": []})).unwrap();
         assert_eq!(rows[0]["label"], json!("No background work"));
+    }
+
+    /// Catalog work is named by what it works on, with the job its own Cancel stops and its count,
+    /// while it runs and once it has finished; a desktop job of the same label is a plain row.
+    #[test]
+    fn catalog_work_rows_name_what_they_work_on() {
+        let render = json!({"id":3,"kind":"preview.photo","label":"Rendering previews","detail":"60mp.jpg","job_id":"job-7","elapsed_ms":900,"progress":{"message":"1 of 2"}});
+        let (rows, ..) = expected_jobs(&json!({"active": [render], "recent": []})).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                json!({"label":"Rendering previews \u{b7} 60mp.jpg","trailing":"0.9 s","detail":null,"running":true,"job_id":null,"cancelling":false,"progress":null,"work":{"job_id":"job-7","count":"1 of 2"}})
+            ]
+        );
+        let finished = json!({"id":3,"kind":"preview.photo","label":"Rendering previews","detail":"60mp.jpg","job_id":"job-7","outcome":"completed","duration_ms":900,"ended_ms_ago":1500});
+        let (rows, ..) = expected_jobs(&json!({"active": [], "recent": [finished]})).unwrap();
+        assert_eq!(
+            rows[0]["label"],
+            json!("Rendering previews \u{b7} 60mp.jpg")
+        );
+        assert_eq!(rows[0]["detail"], json!("Finished 2 s ago"));
+        let unfollowed = json!({"id":4,"kind":"preview.photo","label":"Rendering previews","detail":"60mp.jpg","elapsed_ms":900});
+        let (rows, ..) = expected_jobs(&json!({"active": [unfollowed], "recent": []})).unwrap();
+        assert_eq!(rows[0]["label"], json!("Rendering previews"));
+        assert_eq!(rows[0]["detail"], json!("60mp.jpg"));
+        let indexing = json!({"id":5,"kind":"index.refresh","label":"Indexing","detail":"the NIKON Z 8 card","job_id":"job-8","elapsed_ms":900});
+        assert_eq!(work_label(&indexing), "Indexing the NIKON Z 8 card");
+        for worded in [
+            "about 40 s",
+            "about 1 min 40 s",
+            "about 12 min",
+            "about 2 h",
+            "about 2 h 5 min",
+        ] {
+            assert!(estimate_worded(&json!(worded)), "{worded}");
+        }
+        assert!(estimate_worded(&Value::Null));
+        for unworded in [
+            "40 s",
+            "about",
+            "about s",
+            "about 1 s 40 min",
+            "about 1 min 2",
+        ] {
+            assert!(!estimate_worded(&json!(unworded)), "{unworded}");
+        }
     }
 
     /// The plan scripts one step per frame after the open, and its heavy step is every Presence
