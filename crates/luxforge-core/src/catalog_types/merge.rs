@@ -889,7 +889,8 @@ pub struct HdrPreviewDiagnostics {
 
 /// What a panorama preview measured, for its status line and output: the proxies' long side, the
 /// resolved projection and field of view, the fraction of the covered region the crop loses, the
-/// reference and the registration's largest residual in full-resolution pixels.
+/// reference, the registration's largest residual in full-resolution pixels, and the frames in
+/// the stack's order, which the overlays' frame outlines and `reference` number.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PanoramaPreviewDiagnostics {
@@ -901,6 +902,9 @@ pub struct PanoramaPreviewDiagnostics {
     /// The reference's position in the stack's order.
     pub reference: u32,
     pub max_residual_px: f64,
+    /// Each frame's path, in the stack's order: left to right in the result (top to bottom, then
+    /// left to right, for several rows).
+    pub frames: Vec<PathBuf>,
 }
 
 /// A preview's diagnostics by kind: `{"hdr": HdrPreviewDiagnostics}` or `{"panorama":
