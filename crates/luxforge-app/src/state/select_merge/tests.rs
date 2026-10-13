@@ -232,6 +232,7 @@ fn hdr_merge_requests_send_only_what_was_chosen() {
         reference: Some("/a/2.NEF".into()),
         overrides: vec![("/a/1.NEF".into(), -2.0)],
         folder: FolderPick::Proposed,
+        ..MergeOptions::default()
     };
     let params = create_params(
         &chosen,
@@ -400,16 +401,19 @@ fn merge_preview_requests_name_the_preview_and_its_whole_options() {
 /// deghosting, sent as an agent writes them; what a merge stores back is the same pair.
 #[test]
 fn merge_preview_last_settings_come_from_the_remembered_state() {
-    let defaults = MergeOptions::last(None);
+    let defaults = MergeOptions::last(None, None);
     assert_eq!(defaults, MergeOptions::default());
-    assert!(defaults.wire().is_empty());
+    assert!(defaults.wire(MergeKind::Hdr).is_empty());
     let remembered = HdrMergePreference {
         alignment: AlignmentMode::Off,
         deghost: DeghostMode::Auto,
     };
-    let last = MergeOptions::last(Some(remembered));
+    let last = MergeOptions::last(Some(remembered), None);
     assert_eq!((last.alignment, last.deghost), (Toggle::Off, Toggle::Auto));
-    assert_eq!(Value::Object(last.wire()), json!({"alignment": "off"}));
+    assert_eq!(
+        Value::Object(last.wire(MergeKind::Hdr)),
+        json!({"alignment": "off"})
+    );
     assert_eq!(last.remembered(), remembered);
     assert_eq!(
         MergeOptions::default().remembered(),
@@ -417,71 +421,99 @@ fn merge_preview_last_settings_come_from_the_remembered_state() {
     );
 }
 
-/// The selection menu's HDR group: its heading, its one Merge HDR item with its hint and the
-/// ellipsis that ⌥ drops; a plan's refusal disables it with its reason, and so does a merge
-/// already running.
+/// A selection's merge menu, of 3 frames: the HDR group and the Panorama group, each headed by its
+/// kind with its one item and hint and the ellipsis that ⌥ drops; a plan's refusal disables only
+/// its own kind's item with its reason, and a merge already running disables both.
 #[test]
-fn merge_preview_menu_is_the_hdr_group_and_option_drops_the_ellipsis() {
-    let mut merge = SelectMerge {
-        menu: Some(MergeMenu {
+fn merge_preview_menu_offers_each_kind_and_option_drops_the_ellipsis() {
+    let offers = |hdr: Option<&str>, panorama: Option<&str>| {
+        vec![
+            KindOffer {
+                kind: MergeKind::Hdr,
+                refusal: hdr.map(str::to_owned),
+            },
+            KindOffer {
+                kind: MergeKind::Panorama,
+                refusal: panorama.map(str::to_owned),
+            },
+        ]
+    };
+    let frames = |count, kinds| {
+        Some(MergeMenu {
             x: 0.0,
             y: 0.0,
-            kind: MergeMenuKind::Frames {
-                kind: MergeKind::Hdr,
-                count: 3,
-                refusal: None,
-            },
-        }),
+            kind: MergeMenuKind::Frames { count, kinds },
+        })
+    };
+    let mut merge = SelectMerge {
+        menu: frames(3, offers(None, None)),
         ..SelectMerge::default()
     };
     let menu = derive(&merge).menu.unwrap();
-    assert_eq!(menu.heading, Some("HDR"));
-    let labels: Vec<_> = menu
-        .entries
-        .iter()
-        .map(|entry| entry.label.as_str())
-        .collect();
+    let headings: Vec<_> = menu.groups.iter().map(|group| group.heading).collect();
+    assert_eq!(headings, [Some("HDR"), Some("Panorama")]);
+    let hdr = menu.group("HDR").unwrap();
+    let labels: Vec<_> = hdr.entries.iter().map(|entry| entry.label.as_str()).collect();
     assert_eq!(labels, ["Merge HDR\u{2026}"]);
     assert_eq!(
-        menu.entries[0].hint,
+        hdr.entries[0].hint,
         Some("Merge the frames into one HDR photograph in the catalog")
     );
     assert_eq!(
-        menu.entries[0].action,
+        hdr.entries[0].action,
         Some(MergeAction::Start(MergeKind::Hdr))
+    );
+    let panorama = menu.group("Panorama").unwrap();
+    assert_eq!(panorama.entries.len(), 1);
+    assert_eq!(panorama.entries[0].label, "Merge panorama\u{2026}");
+    assert_eq!(
+        panorama.entries[0].hint,
+        Some("Merge the frames into one panorama in the catalog")
+    );
+    assert_eq!(
+        panorama.entries[0].action,
+        Some(MergeAction::Start(MergeKind::Panorama))
     );
     merge.option = true;
     let menu = derive(&merge).menu.unwrap();
-    assert_eq!(menu.entries[0].label, "Merge HDR");
+    assert_eq!(menu.group("HDR").unwrap().entries[0].label, "Merge HDR");
+    assert_eq!(
+        menu.group("Panorama").unwrap().entries[0].label,
+        "Merge panorama"
+    );
 
     let reason = "Exposures must differ: DSC_4102.NEF and DSC_4103.NEF are both 0 EV";
-    merge.menu = Some(MergeMenu {
-        x: 0.0,
-        y: 0.0,
-        kind: MergeMenuKind::Frames {
-            kind: MergeKind::Hdr,
-            count: 7,
-            refusal: Some(reason.into()),
-        },
-    });
-    for entry in derive(&merge).menu.unwrap().entries {
-        assert!(entry.action.is_none());
-        assert_eq!(entry.reason.as_deref(), Some(reason));
-    }
-    merge.menu = Some(MergeMenu {
-        x: 0.0,
-        y: 0.0,
-        kind: MergeMenuKind::Frames {
-            kind: MergeKind::Hdr,
-            count: 3,
-            refusal: None,
-        },
-    });
+    merge.menu = frames(7, offers(Some(reason), None));
+    let menu = derive(&merge).menu.unwrap();
+    let hdr = &menu.group("HDR").unwrap().entries[0];
+    assert!(hdr.action.is_none());
+    assert_eq!(hdr.reason.as_deref(), Some(reason));
+    let panorama = &menu.group("Panorama").unwrap().entries[0];
+    assert_eq!(
+        panorama.action,
+        Some(MergeAction::Start(MergeKind::Panorama))
+    );
+    assert_eq!(panorama.reason, None);
+
+    merge.menu = frames(3, offers(None, None));
     merge.starting = Some(request());
-    for entry in derive(&merge).menu.unwrap().entries {
-        assert!(entry.action.is_none());
-        assert_eq!(entry.reason.as_deref(), Some(BUSY));
+    for group in derive(&merge).menu.unwrap().groups {
+        for entry in group.entries {
+            assert!(entry.action.is_none());
+            assert_eq!(entry.reason.as_deref(), Some(BUSY));
+        }
     }
+}
+
+/// Each kind is offered only within its input bounds: HDR's 2–9, a panorama's 2–32.
+#[test]
+fn panorama_merge_menu_offers_each_kind_within_its_bounds() {
+    assert!(offered(1).is_empty());
+    assert_eq!(offered(2), [MergeKind::Hdr, MergeKind::Panorama]);
+    assert_eq!(offered(9), [MergeKind::Hdr, MergeKind::Panorama]);
+    assert_eq!(offered(10), [MergeKind::Panorama]);
+    assert_eq!(offered(32), [MergeKind::Panorama]);
+    assert!(offered(33).is_empty());
 }
 
 /// The sheet's states in turn: reading the frames, preparing with the job's words and bar while
@@ -561,11 +593,13 @@ fn merge_preview_sheet_draws_each_state_from_the_owner_answers() {
         width,
         height,
         regions,
+        stitch,
         updating,
     } = &model.picture
     else {
         panic!("a picture: {:?}", model.picture);
     };
+    assert!(stitch.is_none(), "HDR draws no stitch");
     assert_eq!(path, &PathBuf::from("/cache/merge-preview-0.jpg"));
     assert_eq!((*width, *height), (1024, 681));
     assert!(regions.is_empty(), "the overlay is off until shown");
