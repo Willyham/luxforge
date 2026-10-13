@@ -170,8 +170,10 @@ pub(crate) struct Select {
     pub(crate) reveal_held: bool,
     /// The newest `stack.set-expanded` parameters sent, for evidence.
     pub(crate) stack_sent: Option<Value>,
-    /// The newest `merge.plan` parameters the menu sent, for evidence.
-    pub(crate) plan_sent: Option<Value>,
+    /// The `merge.plan` parameters the newest menu sent, one a kind it offers, for evidence.
+    pub(crate) plan_sent: Vec<Value>,
+    /// The newest `merge.inspect` parameters the Info panel sent, for evidence.
+    pub(crate) inspect_sent: Option<Value>,
 }
 
 /// A card or a folder on disk whose listing and headers the index lane is reading.
@@ -257,7 +259,8 @@ impl Default for Select {
             merge_record: None,
             reveal_held: false,
             stack_sent: None,
-            plan_sent: None,
+            plan_sent: Vec::new(),
+            inspect_sent: None,
         }
     }
 }
@@ -319,12 +322,16 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
             },
             Block::Singles(count) => GridBlock::Singles(*count),
             Block::Pending {
+                kind,
                 title,
                 detail,
                 progress,
                 action,
                 failed,
             } => GridBlock::Pending(PendingRow {
+                icon: crate::view::select_merge::icon(
+                    crate::state::select_merge::words(*kind).icon,
+                ),
                 title: title.clone(),
                 detail: detail.clone(),
                 progress: *progress,
@@ -2372,13 +2379,14 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();
+    let inspect = editor.inspect_panorama();
     if editor.evidence.is_some() && editor.select_shown() {
         if editor.select_quiet() {
             editor.outcome(Outcome::SelectSettled);
         }
         editor.outcome(Outcome::MergeShown);
     }
-    Task::batch([rows, previews, check])
+    Task::batch([rows, previews, check, inspect])
 }
 
 fn previews_message(message: SelectPreviewMessage) -> Message {

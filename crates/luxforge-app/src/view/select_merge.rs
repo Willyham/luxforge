@@ -7,10 +7,11 @@ use crate::{
     app::message::{Message, select::SelectMessage, select_merge::MergeMessage},
     layout::DIVIDER_WIDTH,
     state::select_merge::{
-        MenuModel, MergeAction, PutBackModel, SheetModel, StackBand, Toggle,
+        KindIcon, MenuModel, MergeAction, PutBackModel, SheetModel, StackBand, Toggle,
         sheet::{
-            EXPOSURE_HINT, FileId, FrameRow, LAST_SETTINGS_HINT, OVERLAY_HINT, Picture, Region,
-            Tint, fit, hatch, stepped,
+            EXPOSURE_HINT, FRAMES_HINT, FileId, FrameRow, LAST_SETTINGS_HINT, OVERLAY_HINT,
+            PanoramaSettings, Picture, Region, StitchOverlay, Tint, WARP_HINT, WARP_MAX, fit,
+            hatch, projection_at, stepped,
         },
     },
 };
@@ -23,36 +24,44 @@ use iced::{
 };
 use luxforge_ui::{
     ButtonSize, ButtonTone, Element, FilterOption, FilterSegmentsModel, Icon, IconButtonModel,
-    LabelledButtonModel, MenuEntry, MenuItem, NoticeCardModel, Token, Tone as NoticeTone, caption,
-    filter_segments, header_icon_button, labelled_button, menu_list, notice_card, popover,
-    section_label, text_button, theme, truncated_text, with_tooltip,
+    LabelledButtonModel, MenuEntry, MenuItem, NoticeCardModel, SliderModel, Token,
+    Tone as NoticeTone, ValueEdit, caption, filter_segments, header_icon_button, labelled_button,
+    menu_list, notice_card, popover, section_label, slider, text_button, theme, truncated_text,
+    with_tooltip,
 };
 
 fn act(action: MergeAction) -> Message {
     Message::Select(SelectMessage::Merge(MergeMessage::Act(action)))
 }
 
-/// The merge menu at the pointer: the kind's group, Merge HDR… with its hint, or a result's stack
-/// actions; an entry the core refuses says why as its tooltip.
+/// The merge menu at the pointer: each kind's group (HDR, Panorama) with its Merge HDR… or Merge
+/// panorama… and its hint, or a result's stack actions; an entry the core refuses says why as its
+/// tooltip.
 pub(crate) fn menu(model: &MenuModel, viewport: Size) -> Element<'_, Message> {
-    let mut entries = Vec::with_capacity(model.entries.len() * 2 + 1);
+    let mut entries = Vec::new();
     let mut lines = 0.0;
-    if let Some(heading) = model.heading {
-        entries.push(MenuEntry::Heading(heading.to_owned()));
-        lines += 1.0;
-    }
-    for entry in &model.entries {
-        entries.push(MenuEntry::Item(MenuItem {
-            icon: None,
-            label: entry.label.clone(),
-            trailing: entry.trailing.clone(),
-            on_press: entry.action.clone().map(act),
-            reason: entry.reason.clone(),
-        }));
-        lines += 1.0;
-        if let Some(hint) = entry.hint {
-            entries.push(MenuEntry::Hint(hint.to_owned()));
+    for (at, group) in model.groups.iter().enumerate() {
+        if at > 0 {
+            entries.push(MenuEntry::Separator);
+            lines += 0.5;
+        }
+        if let Some(heading) = group.heading {
+            entries.push(MenuEntry::Heading(heading.to_owned()));
             lines += 1.0;
+        }
+        for entry in &group.entries {
+            entries.push(MenuEntry::Item(MenuItem {
+                icon: None,
+                label: entry.label.clone(),
+                trailing: entry.trailing.clone(),
+                on_press: entry.action.clone().map(act),
+                reason: entry.reason.clone(),
+            }));
+            lines += 1.0;
+            if let Some(hint) = entry.hint {
+                entries.push(MenuEntry::Hint(hint.to_owned()));
+                lines += 1.0;
+            }
         }
     }
     // Hints wrap to two lines at the menu's width; the menu is kept inside the grid with room
@@ -106,6 +115,21 @@ const BELOW: Color = Color::from_rgb8(176, 140, 255);
 const REFERENCE: Color = Color::from_rgb8(110, 160, 255);
 const ABOVE: Color = Color::from_rgb8(90, 205, 185);
 const LABEL_SURFACE: Color = Color::from_rgba(0.08, 0.08, 0.09, 0.9);
+
+/// A panorama's overlays, drawn over the photograph and so fixed, not themed, but for the crop,
+/// which is the accent: the dimming outside the crop, the covered region's edge, and the frame
+/// outlines in white with their numbered circles.
+const OUTSIDE_CROP: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.55);
+const COVERED_EDGE: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.35);
+const OUTLINE: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.85);
+/// A crop corner tick's length and width, and a frame number's circle, on screen.
+const TICK_LENGTH: f32 = 12.0;
+const TICK_WIDTH: f32 = 3.0;
+const NUMBER_RADIUS: f32 = 10.0;
+/// A panorama frame's thumbnail in the frame strip, and the strip's spacing.
+const STRIP_THUMB: f32 = 40.0;
+/// A legend chip's swatch.
+const LEGEND_SWATCH: f32 = 10.0;
 
 fn tint(tint: Tint) -> Color {
     match tint {
@@ -200,7 +224,7 @@ pub(crate) fn sheet<'a>(
     .align_y(Alignment::Center)
     .padding([theme::SPACING * 1.5, theme::SPACING * 2.0]);
 
-    let status = row![
+    let mut status = row![
         text(model.status.clone())
             .size(theme::SIZE_CAPTION)
             .style(theme::ink(if model.status_refused {
@@ -210,11 +234,31 @@ pub(crate) fn sheet<'a>(
             })),
         Space::new().width(Length::Fill),
     ]
-    .push(match model.note {
-        Some(note) => caption(note),
-        None => Space::new().into(),
-    })
+    .spacing(theme::SPACING)
     .align_y(Alignment::Center);
+    match (&model.panorama, &model.picture) {
+        // A panorama's legend: the overlays shown, as the board's chips.
+        (
+            Some(settings),
+            Picture::Ready {
+                stitch: Some(_), ..
+            },
+        ) => {
+            if settings.crop {
+                status = status
+                    .push(legend(Swatch::Crop, "Crop"))
+                    .push(legend(Swatch::Outside, "Outside the crop"));
+            }
+            if settings.outlines {
+                status = status.push(legend(Swatch::Frames, &settings.frames_legend));
+            }
+        }
+        _ => {
+            if let Some(note) = model.note {
+                status = status.push(caption(note));
+            }
+        }
+    }
     let left = column![picture_area(model, picture), status]
         .spacing(theme::SPACING * 1.5)
         .padding(theme::SPACING * 2.0)
@@ -283,6 +327,7 @@ fn picture_area<'a>(model: &'a SheetModel, picture: Option<&'a Handle>) -> Eleme
             width,
             height,
             regions,
+            stitch,
             updating,
             ..
         } => {
@@ -300,6 +345,16 @@ fn picture_area<'a>(model: &'a SheetModel, picture: Option<&'a Handle>) -> Eleme
                     .center(Length::Fill)
                     .into(),
             });
+            if let (Some(_), Some(stitch)) = (picture, stitch) {
+                layers = layers.push(
+                    canvas(StitchCanvas {
+                        stitch,
+                        size: (*width as f32, *height as f32),
+                    })
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+                );
+            }
             if picture.is_some() && !regions.is_empty() {
                 layers = layers.push(
                     canvas(Overlay {
@@ -379,6 +434,34 @@ fn side<'a>(
     model: &'a SheetModel,
     thumbnail: impl Fn(FileId) -> Option<&'a Handle>,
 ) -> Element<'a, Message> {
+    let settings = match &model.panorama {
+        Some(panorama) => panorama_settings(model, panorama, thumbnail),
+        None => hdr_settings(model, thumbnail),
+    };
+    let foot = foot(model);
+    column![
+        scrollable(container(settings).padding(Padding {
+            top: 0.0,
+            right: theme::SPACING,
+            bottom: theme::SPACING,
+            left: 0.0,
+        }))
+        .height(Length::Fill),
+        foot,
+    ]
+    .spacing(theme::SPACING)
+    .padding(theme::SPACING * 2.0)
+    .width(Length::Fixed(SIDE_WIDTH))
+    .height(Length::Fill)
+    .into()
+}
+
+/// HDR's settings: the frames with their exposure steppers and Ref., Alignment, Deghosting and
+/// Show deghost overlay.
+fn hdr_settings<'a>(
+    model: &'a SheetModel,
+    thumbnail: impl Fn(FileId) -> Option<&'a Handle>,
+) -> Element<'a, Message> {
     let mut settings = Column::new()
         .spacing(theme::SPACING * 1.5)
         .push(section_label("Frames"));
@@ -416,7 +499,170 @@ fn side<'a>(
                 .on_toggle(|shown| act(MergeAction::Overlay(shown))),
         )
         .push(caption(OVERLAY_HINT));
+    settings.into()
+}
 
+/// A panorama's settings, as the boards draw them: Projection with Auto's choice, Boundary Warp,
+/// the overlay switches, and the frame strip in the stack's order, where a click on a frame makes
+/// it the reference.
+fn panorama_settings<'a>(
+    model: &'a SheetModel,
+    settings: &'a PanoramaSettings,
+    thumbnail: impl Fn(FileId) -> Option<&'a Handle>,
+) -> Element<'a, Message> {
+    let projection = filter_segments(
+        &FilterSegmentsModel {
+            options: settings
+                .projections
+                .iter()
+                .map(|label| FilterOption {
+                    label: (*label).into(),
+                    count: None,
+                })
+                .collect(),
+            selected: settings.projection_at,
+            enabled: true,
+        },
+        |index| act(projection_at(index)),
+    );
+    let mut column = Column::new()
+        .spacing(theme::SPACING * 1.5)
+        .push(section_label("Projection"))
+        .push(projection);
+    if let Some(resolved) = &settings.resolved {
+        column = column.push(caption(resolved.clone()));
+    }
+    let max = f64::from(WARP_MAX);
+    let warp = slider(
+        &SliderModel {
+            id: None,
+            label: "Boundary Warp".into(),
+            min: 0.0,
+            max,
+            soft_min: 0.0,
+            soft_max: max,
+            value: f64::from(settings.boundary_warp),
+            step: 1.0,
+            shift_step: 10.0,
+            fine_step: 1.0,
+            zero: Some(0.0),
+            rail: luxforge_ui::RailDecoration::Plain,
+            over_range: None,
+            unit: None,
+            display: settings.boundary_warp.to_string(),
+            edit: ValueEdit::Display,
+            dragging: false,
+            enabled: true,
+        },
+        move |fraction| {
+            act(MergeAction::BoundaryWarp(
+                (fraction.clamp(0.0, 1.0) * max).round() as u8,
+            ))
+        },
+        act(MergeAction::BoundaryWarpReleased),
+        act(MergeAction::BoundaryWarpReleased),
+        |_| act(MergeAction::BoundaryWarpReleased),
+        act(MergeAction::BoundaryWarpReleased),
+        act(MergeAction::BoundaryWarpReset),
+    );
+    column = column
+        .push(rule())
+        .push(warp)
+        .push(caption(WARP_HINT))
+        .push(rule())
+        .push(section_label("Show"))
+        .push(
+            checkbox(settings.outlines)
+                .label("Frame outlines")
+                .text_size(theme::SIZE_CONTROL)
+                .size(14)
+                .on_toggle(|shown| act(MergeAction::FrameOutlines(shown))),
+        )
+        .push(
+            checkbox(settings.crop)
+                .label("Crop and coverage")
+                .text_size(theme::SIZE_CONTROL)
+                .size(14)
+                .on_toggle(|shown| act(MergeAction::CropCoverage(shown))),
+        )
+        .push(rule());
+    let mut heading =
+        row![section_label("Frames"), Space::new().width(Length::Fill)].align_y(Alignment::Center);
+    if let Some(reference) = &settings.reference {
+        heading = heading.push(caption(reference.clone()));
+    }
+    column = column.push(heading);
+    if model.reading {
+        column = column.push(caption("Reading the frames\u{2026}"));
+    } else {
+        let strip = model
+            .frames
+            .iter()
+            .map(|frame| strip_frame(frame, frame.file_id.and_then(&thumbnail)));
+        column = column.push(
+            iced::widget::Row::with_children(strip.collect::<Vec<_>>())
+                .spacing(theme::SPACING * 0.75)
+                .wrap()
+                .vertical_spacing(theme::SPACING),
+        );
+    }
+    column.push(caption(FRAMES_HINT)).into()
+}
+
+/// One frame of a panorama's strip: its thumbnail, framed in the accent while it is the
+/// reference, and its number under it; a press makes it the reference.
+fn strip_frame<'a>(frame: &'a FrameRow, thumbnail: Option<&'a Handle>) -> Element<'a, Message> {
+    let thumb: Element<'a, Message> = match thumbnail {
+        Some(handle) => image(handle.clone())
+            .content_fit(ContentFit::Cover)
+            .width(Length::Fixed(STRIP_THUMB))
+            .height(Length::Fixed(STRIP_THUMB))
+            .into(),
+        None => container(Space::new())
+            .width(Length::Fixed(STRIP_THUMB))
+            .height(Length::Fixed(STRIP_THUMB))
+            .style(theme::control_surface)
+            .into(),
+    };
+    let reference = frame.reference;
+    let framed = container(thumb)
+        .padding(2.0)
+        .style(move |theme: &luxforge_ui::Theme| container::Style {
+            border: iced::Border {
+                color: if reference {
+                    theme.palette().accent
+                } else {
+                    Color::TRANSPARENT
+                },
+                width: 1.5,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        });
+    let number = text(
+        frame
+            .number
+            .map(|number| number.to_string())
+            .unwrap_or_default(),
+    )
+    .size(theme::SIZE_CAPTION)
+    .style(theme::ink(if reference {
+        Token::Accent
+    } else {
+        Token::TextSecondary
+    }));
+    let content = column![framed, number]
+        .spacing(2.0)
+        .align_x(Alignment::Center);
+    let button = iced::widget::button(content)
+        .padding(0)
+        .style(theme::button_bare)
+        .on_press_maybe((!reference).then(|| act(MergeAction::Reference(frame.path.clone()))));
+    with_tooltip(button, frame.name.clone(), tooltip::Position::Top)
+}
+
+/// The folder and the output at the settings' foot.
+fn foot(model: &SheetModel) -> Element<'_, Message> {
     let folder_label = row![
         text(model.folder.clone())
             .size(theme::SIZE_CONTROL)
@@ -468,21 +714,227 @@ fn side<'a>(
                 .style(theme::ink(Token::Text)),
         );
     }
-    column![
-        scrollable(container(settings).padding(Padding {
-            top: 0.0,
-            right: theme::SPACING,
-            bottom: theme::SPACING,
-            left: 0.0,
-        }))
-        .height(Length::Fill),
-        foot,
-    ]
-    .spacing(theme::SPACING)
-    .padding(theme::SPACING * 2.0)
-    .width(Length::Fixed(SIDE_WIDTH))
-    .height(Length::Fill)
+    foot.into()
+}
+
+/// A merge kind's icon.
+pub(crate) fn icon(kind: KindIcon) -> Icon {
+    match kind {
+        KindIcon::Bracket => Icon::Bracket,
+        KindIcon::Panorama => Icon::Panorama,
+    }
+}
+
+/// A legend chip's swatch: the crop's accent square, the dimmed outside, a frame's circle.
+#[derive(Clone, Copy)]
+enum Swatch {
+    Crop,
+    Outside,
+    Frames,
+}
+
+/// One chip of a panorama's overlay legend.
+fn legend<'a>(swatch: Swatch, label: &str) -> Element<'a, Message> {
+    container(
+        row![
+            canvas(swatch)
+                .width(Length::Fixed(LEGEND_SWATCH))
+                .height(Length::Fixed(LEGEND_SWATCH)),
+            text(label.to_owned())
+                .size(theme::SIZE_CAPTION)
+                .style(theme::ink(Token::Text))
+                .wrapping(text::Wrapping::None),
+        ]
+        .spacing(theme::SPACING * 0.75)
+        .align_y(Alignment::Center),
+    )
+    .padding([2.0, theme::SPACING])
+    .style(theme::control_surface)
     .into()
+}
+
+impl canvas::Program<Message, luxforge_ui::Theme> for Swatch {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        theme: &luxforge_ui::Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let side = bounds.width.min(bounds.height) - 1.0;
+        let square = canvas::Path::rounded_rectangle(
+            Point::new(0.5, 0.5),
+            Size::new(side, side),
+            2.0.into(),
+        );
+        match self {
+            Swatch::Crop => frame.stroke(
+                &square,
+                canvas::Stroke::default()
+                    .with_color(theme.palette().accent)
+                    .with_width(1.5),
+            ),
+            Swatch::Outside => frame.fill(&square, Color::BLACK),
+            Swatch::Frames => frame.stroke(
+                &canvas::Path::circle(frame.center(), side / 2.0),
+                canvas::Stroke::default()
+                    .with_color(theme.palette().text)
+                    .with_width(1.2),
+            ),
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A panorama's overlays over the picture fitted in its area: outside the crop dimmed, the
+/// covered region's edge, the crop in the accent with its corner ticks, and each frame's outline
+/// in white with its number in a circle near its top.
+struct StitchCanvas<'a> {
+    stitch: &'a StitchOverlay,
+    /// The revision's picture size, which the overlay's pixels are in.
+    size: (f32, f32),
+}
+
+impl canvas::Program<Message, luxforge_ui::Theme> for StitchCanvas<'_> {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        theme: &luxforge_ui::Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let (origin, scale) = fit(self.size, (bounds.width, bounds.height));
+        if scale <= 0.0 {
+            return Vec::new();
+        }
+        let at = |[x, y]: [f32; 2]| Point::new(origin[0] + x * scale, origin[1] + y * scale);
+        let polygon = |points: &[[f32; 2]]| {
+            canvas::Path::new(|path| {
+                if let Some(first) = points.first() {
+                    path.move_to(at(*first));
+                    for point in &points[1..] {
+                        path.line_to(at(*point));
+                    }
+                    path.close();
+                }
+            })
+        };
+        let picture = Rectangle::new(
+            Point::new(origin[0], origin[1]),
+            Size::new(self.size.0 * scale, self.size.1 * scale),
+        );
+        if let Some([x, y, width, height]) = self.stitch.crop {
+            let crop = Rectangle::new(at([x, y]), Size::new(width * scale, height * scale));
+            // Outside the crop, within the picture: four bands around it.
+            for band in [
+                Rectangle::new(
+                    picture.position(),
+                    Size::new(picture.width, (crop.y - picture.y).max(0.0)),
+                ),
+                Rectangle::new(
+                    Point::new(picture.x, crop.y + crop.height),
+                    Size::new(
+                        picture.width,
+                        (picture.y + picture.height - crop.y - crop.height).max(0.0),
+                    ),
+                ),
+                Rectangle::new(
+                    Point::new(picture.x, crop.y),
+                    Size::new((crop.x - picture.x).max(0.0), crop.height),
+                ),
+                Rectangle::new(
+                    Point::new(crop.x + crop.width, crop.y),
+                    Size::new(
+                        (picture.x + picture.width - crop.x - crop.width).max(0.0),
+                        crop.height,
+                    ),
+                ),
+            ] {
+                frame.fill_rectangle(band.position(), band.size(), OUTSIDE_CROP);
+            }
+            for covered in &self.stitch.covered {
+                if covered.len() >= 3 {
+                    frame.stroke(
+                        &polygon(covered),
+                        canvas::Stroke::default()
+                            .with_color(COVERED_EDGE)
+                            .with_width(1.0),
+                    );
+                }
+            }
+            let accent = theme.palette().accent;
+            frame.stroke(
+                &canvas::Path::rectangle(crop.position(), crop.size()),
+                canvas::Stroke::default().with_color(accent).with_width(1.5),
+            );
+            let tick = canvas::Stroke::default()
+                .with_color(accent)
+                .with_width(TICK_WIDTH);
+            let (left, top) = (crop.x, crop.y);
+            let (right, bottom) = (crop.x + crop.width, crop.y + crop.height);
+            let length = TICK_LENGTH.min(crop.width / 3.0).min(crop.height / 3.0);
+            for (corner, dx, dy) in [
+                (Point::new(left, top), 1.0, 1.0),
+                (Point::new(right, top), -1.0, 1.0),
+                (Point::new(left, bottom), 1.0, -1.0),
+                (Point::new(right, bottom), -1.0, -1.0),
+            ] {
+                frame.stroke(
+                    &canvas::Path::new(|path| {
+                        path.move_to(Point::new(corner.x + dx * length, corner.y));
+                        path.line_to(corner);
+                        path.line_to(Point::new(corner.x, corner.y + dy * length));
+                    }),
+                    tick,
+                );
+            }
+        }
+        for (number, outline) in &self.stitch.frames {
+            if outline.len() < 3 {
+                continue;
+            }
+            frame.stroke(
+                &polygon(outline),
+                canvas::Stroke::default()
+                    .with_color(OUTLINE)
+                    .with_width(1.0),
+            );
+            // The number sits in a circle a fifth of the way down the frame, at its centre.
+            let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for [x, y] in outline {
+                low = [low[0].min(*x), low[1].min(*y)];
+                high = [high[0].max(*x), high[1].max(*y)];
+            }
+            let centre = at([(low[0] + high[0]) / 2.0, low[1] + (high[1] - low[1]) * 0.2]);
+            let circle = canvas::Path::circle(centre, NUMBER_RADIUS);
+            frame.fill(&circle, LABEL_SURFACE);
+            frame.stroke(
+                &circle,
+                canvas::Stroke::default()
+                    .with_color(OUTLINE)
+                    .with_width(1.2),
+            );
+            frame.fill_text(canvas::Text {
+                content: number.to_string(),
+                position: centre,
+                color: theme::PHOTO_LABEL,
+                size: theme::SIZE_CAPTION.into(),
+                font: theme::FONT_SEMIBOLD,
+                align_x: iced::widget::text::Alignment::Center,
+                align_y: iced::alignment::Vertical::Center,
+                ..canvas::Text::default()
+            });
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 /// One frame: its thumbnail, name, exposure and shutter, its exposure stepper and its Ref. radio.
