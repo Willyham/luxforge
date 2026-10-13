@@ -668,6 +668,7 @@ impl Presentation {
             gpu_source: None,
             gpu_window: None,
             gpu_rest: None,
+            gpu_rest_under: false,
             stage_rest: None,
             gpu_counts: None,
             compare_gpu: None,
@@ -695,6 +696,13 @@ impl Presentation {
     /// ([`super::presenter::Presenter::region_coverage`]).
     pub(crate) fn coverage(&self) -> Option<&luxforge_ui::Frame> {
         self.presenter.coverage(self.presented_generation)
+    }
+
+    /// Whether the GPU presents the content on screen with no CPU frame of it
+    /// ([`Self::show_gpu`]): the presenter's frame under the GPU's picture is an earlier stack's,
+    /// an open's empty frame or its instant preview, never to be drawn in place of that picture.
+    pub(crate) fn frame_behind(&self) -> bool {
+        self.gpu_presented == Some(self.presented_content)
     }
 
     /// The reduced frame retained for the generation on screen, when there is one.

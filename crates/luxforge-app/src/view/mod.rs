@@ -119,6 +119,11 @@ pub(crate) struct Surfaces<'a> {
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
     pub(crate) gpu_rest: Option<&'a luxforge_gpu::GpuRest>,
+    /// The picture at rest handed, drawn whole already, stands in for the photograph's frame, an
+    /// earlier stack's, under a gesture's frames: a whole frame draws it only where no plan's
+    /// output is drawn, and a percentage view draws its backdrop in place of that frame
+    /// ([`crate::app::Editor::gpu_rest_under`]).
+    pub(crate) gpu_rest_under: bool,
     /// The same tiles where the picture is not handed, handed to whichever surface draws the
     /// photograph, a percentage view's included: at 100% and above reduced to the backdrop the
     /// view's region is drawn over where it does not cover the view; otherwise drawn for their
