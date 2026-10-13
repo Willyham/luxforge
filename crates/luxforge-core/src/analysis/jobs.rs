@@ -16,9 +16,8 @@ use super::{DOMAIN, Report, deserialize_domain, reduce, reduce_bands};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    AssetId, DraftStamp, EntryId, Error, HistoryEntry, JobId, Recipe, SnapshotId,
+    AssetId, DraftStamp, EntryId, Error, Evaluation, HistoryEntry, JobId, Recipe, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
-    editor::Sourced,
     latest::{Latest, Running, WAITING_RESULTS},
     render::bands::Banded,
 };
@@ -134,7 +133,7 @@ impl AnalysisIdentity {
 pub(crate) struct AnalysisJob {
     pub job_id: JobId,
     pub identity: AnalysisIdentity,
-    pub evaluation: Sourced,
+    pub evaluation: Evaluation,
 }
 
 impl std::fmt::Debug for AnalysisJob {
@@ -309,8 +308,8 @@ fn analyse(
         })
     });
     let cancel = running.abandoned();
-    let result = match &evaluation {
-        Sourced::Whole(evaluation) => evaluation
+    let result = match evaluation.source().paged() {
+        None => evaluation
             .exact(cancel)
             .and_then(|render| render.frame(identity.snapshot_id.clone()))
             .and_then(|raster| {
@@ -323,9 +322,9 @@ fn analyse(
         // A paged source has no whole frame: the reference renders its output in bands, each
         // counted and released as it comes (`docs/design/panorama-merge.md`, "The reference on
         // paged sources").
-        Sourced::Paged(evaluation) => evaluation.compiled().and_then(|compiled| {
+        Some(paged) => evaluation.compiled().and_then(|compiled| {
             let banded = Banded::new(
-                evaluation.source().as_ref(),
+                paged.source().as_ref(),
                 compiled,
                 evaluation.context(),
                 cancel,
@@ -453,7 +452,7 @@ mod tests {
         AnalysisJob {
             job_id: JobId::new(),
             identity: evaluation.identity().unwrap(),
-            evaluation: Sourced::Whole(evaluation),
+            evaluation,
         }
     }
 

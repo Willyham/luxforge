@@ -109,7 +109,7 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
             let context = RenderContext::new();
             let exact = render(
                 &registry,
-                &source,
+                source.whole().expect("a test's source is never paged"),
                 &recipe,
                 RenderOptions::exact(&Cancel::never()),
                 &context,

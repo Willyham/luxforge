@@ -18,7 +18,7 @@ use crate::{
     activity::ActivitySpec,
     api::announce_once,
     api::params::host_params,
-    editor::{ExportPlan, Sourced},
+    editor::ExportPlan,
     export::{
         CaptureMetadata,
         encode::{encode_jpeg, encode_jpeg_rows},
@@ -350,20 +350,6 @@ pub(super) fn write(
         keep_metadata: options.keep_metadata,
         pixels_per_inch: options.pixels_per_inch,
     };
-    let evaluation = match evaluation {
-        Sourced::Whole(evaluation) => evaluation,
-        Sourced::Paged(evaluation) => {
-            return banded(
-                evaluation,
-                destination,
-                options,
-                tiles,
-                &encoding,
-                phase,
-                encoded,
-            );
-        }
-    };
     // Which renderer renders the file, and why the reference does: the reference when the export
     // asked for it or the host has no GPU provider, whose only renderer it is; the GPU otherwise,
     // unless the service says why it cannot.
@@ -392,6 +378,10 @@ pub(super) fn write(
             Err(fallback) => Some(RendererReason::from(&fallback)),
         }
     };
+    // A paged source has no whole frame: the reference renders it in bands.
+    if evaluation.source().paged().is_some() {
+        return banded(evaluation, reason, destination, &encoding, phase, encoded);
+    }
     let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
     // The frame is the render's own exact frame, from the compilation the plan made, inside the
     // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
@@ -417,37 +407,29 @@ pub(super) fn write(
     written(destination, staged, size, &encoding, renderer)
 }
 
-/// The reason a paged source's export names when the host has a GPU provider: the GPU does not
-/// stream a paged source, so the reference renders it.
-pub(super) const PAGED_SOURCE: &str = "paged-source";
-
-/// A paged source's export (`docs/design/panorama-merge.md`, "The reference on paged sources"):
-/// the reference renders the output stage in full-width bands from windows of the source's level 0
-/// ([`Banded`]), after a first pass over the stages a whole-stage statistic or a repair reads, and
-/// the encoder takes each band as it is rendered, so neither the source nor the output is ever held
-/// whole. The renderer is the reference: `requested` when the export asked for it, no reason on an
-/// owner with no GPU provider, and [`PAGED_SOURCE`] otherwise. Phases, progress, cancellation and
-/// the staged file behave as they do for a whole frame's export.
+/// A paged source's export by the reference (`docs/design/panorama-merge.md`, "The reference on
+/// paged sources"), when the export asked for it, the host has no GPU provider or the GPU's stream
+/// said why it could not draw it (`reason`, as for a whole frame): the output stage in full-width
+/// bands from windows of the source's level 0 ([`Banded`]), after a first pass over the stages a
+/// whole-stage statistic or a repair reads, the encoder taking each band as it is rendered, so
+/// neither the source nor the output is ever held whole. Phases, progress, cancellation and the
+/// staged file behave as they do for a whole frame's export.
 fn banded(
-    evaluation: crate::Evaluation<Arc<crate::artifacts::derived_source::PagedSource>>,
+    evaluation: crate::Evaluation,
+    reason: Option<RendererReason>,
     destination: &Destination,
-    options: Options,
-    tiles: &dyn TileService,
     encoding: &Encoding<'_>,
     phase: &dyn Fn(&'static str) -> Result<(), Error>,
     encoded: &mut dyn FnMut(f64),
 ) -> Result<Written, Error> {
-    let reason = if options.reference {
-        Some(RendererReason::Requested)
-    } else if tiles.status() == TileStatus::Reference(None) {
-        None
-    } else {
-        Some(RendererReason::Plan(PAGED_SOURCE))
-    };
     let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
     let control = encoding.control;
+    let paged = evaluation
+        .source()
+        .paged()
+        .ok_or_else(|| Error::internal("a banded export of a source that is not paged"))?;
     let banded = Banded::new(
-        evaluation.source().as_ref(),
+        paged.source().as_ref(),
         evaluation.compiled()?,
         evaluation.context(),
         control.render_cancel(),
@@ -462,7 +444,7 @@ fn banded(
         size,
         banded.bands(),
         exif.as_deref(),
-        options.pixels_per_inch,
+        encoding.pixels_per_inch,
         encoded,
         &|| control.checkpoint(),
     )?;

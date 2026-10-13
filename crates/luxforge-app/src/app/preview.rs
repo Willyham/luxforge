@@ -241,6 +241,11 @@ pub(crate) struct Presentation {
     reduction_job: Option<PreviewJob>,
     /// Whether the frame on screen is the reduced one.
     pub(crate) presented_reduced: bool,
+    /// The generation whose frame is a paged derived source's overview (`docs/design/panorama-merge.md`,
+    /// "Rendering, samples and export"): smaller than its stage at every zoom, so it is shown
+    /// reduced at 100% and above too, never reduced again from its retained frame, whose report
+    /// counts the overview.
+    pub(crate) overview_generation: Option<u64>,
     /// Whether the frame on screen is a drag tick's display-size proxy, and how it approximates.
     pub(crate) presented_proxy: Option<cpu_proxy::ProxyFrame>,
     /// The exact frame of the newest job whose exact phase landed.
@@ -429,8 +434,12 @@ impl Presentation {
             result,
             report,
             display,
+            overview,
             ..
         } = *outcome;
+        if overview {
+            self.overview_generation = Some(generation);
+        }
         let frame = result.map(|raster| ExactFrame {
             generation,
             raster: Arc::new(raster),
@@ -587,7 +596,10 @@ impl Presentation {
     /// What a zoom that wants the exact frame reduced to the view — or, with `wants_reduced`
     /// false, the exact frame itself — finds for the frame on screen.
     pub(crate) fn zoom(&self, wants_reduced: bool) -> Zoomed {
-        if self.presented_generation == 0 || wants_reduced == self.presented_reduced {
+        if self.presented_generation == 0
+            || wants_reduced == self.presented_reduced
+            || self.overview_generation == Some(self.presented_generation)
+        {
             return Zoomed::Kept;
         }
         if self.presenter.photo().is_none() && self.render_error.is_some() {
@@ -654,6 +666,7 @@ impl Presentation {
             dissolve: None,
             gpu_warm: None,
             gpu_source: None,
+            gpu_window: None,
             gpu_rest: None,
             stage_rest: None,
             gpu_counts: None,
@@ -1047,6 +1060,7 @@ impl Editor {
                 }
             }
             PreviewMessage::GridReady(answer) => self.gpu_grid_ready(*answer),
+            PreviewMessage::WindowRead(answer) => self.gpu_window_read(*answer),
             PreviewMessage::OverviewReduced(reduced) => self.overview_reduced(*reduced),
             PreviewMessage::ThumbnailSource(planned) => self.thumbnail_source_planned(planned),
             PreviewMessage::Loaded(result) => {
@@ -2031,6 +2045,7 @@ impl Editor {
     fn reduce_retained(&mut self, bounds: ProxyBounds) -> bool {
         let Some(exact) = self.presentation.exact.as_ref().filter(|frame| {
             !frame.approximate_white_balance
+                && self.presentation.overview_generation != Some(frame.generation)
                 && frame.content == Some(self.presentation.presented_content)
                 && self.presentation.presented_content == self.presentation.content_serial
         }) else {

@@ -736,6 +736,7 @@ mod tests {
             dissolve: None,
             gpu_warm: None,
             gpu_source: None,
+            gpu_window: None,
             gpu_rest: None,
             gpu_counts: None,
             compare_gpu: None,

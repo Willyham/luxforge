@@ -109,6 +109,10 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<Information> {
     if capture.captured_at.is_some() {
         add("Captured", capture.captured_at.clone());
     }
+    // A paged derived photograph's histogram counts its overview, the stack over its resident level.
+    if let Some(size) = inputs.analysis.and_then(|analysis| analysis.overview()) {
+        rows.push(("Histogram", super::histogram::overview_label(size)));
+    }
     Some(Information { dimensions, rows })
 }
 

@@ -161,8 +161,8 @@ pub(crate) struct CorpusSource {
     pub(crate) path: std::path::PathBuf,
     pub(crate) raw: bool,
     /// A synthetic derived source's dimensions: its planes are made by
-    /// [`luxforge_testkit::derived::planes`] and stored as a derived photograph (an HDR merge's
-    /// result), with no original file.
+    /// [`luxforge_testkit::derived::planes`] and stored as a derived photograph (an HDR or
+    /// panorama merge's result, paged past the camera limits), with no original file.
     pub(crate) derived: Option<(u32, u32)>,
 }
 
@@ -451,12 +451,14 @@ impl Opened {
         let derived = source
             .derived
             .map(|(width, height)| {
-                luxforge_core::qualification::publish_derived(
+                // Written a chunk at a time, as a merge's worker writes its result: a source past
+                // the camera limits is stored paged, its frame never held.
+                luxforge_core::qualification::publish_derived_streamed(
                     catalog,
                     &luxforge_testbase::paths::jpeg(),
                     width,
                     height,
-                    &luxforge_testkit::derived::planes(width, height),
+                    |rect, planes| luxforge_testkit::derived::fill(width, height, rect, planes),
                 )
                 .map_err(|error| error.to_string())
             })

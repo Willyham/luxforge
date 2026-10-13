@@ -65,6 +65,13 @@ impl PreviewSource {
                 image: downscale_linear(image, plan, cancel, band_bytes)?,
                 settings: *settings,
             }),
+            // A paged source is drawn over its resident level, never reduced from level 0 whole.
+            Self::Paged(paged) => Err(
+                crate::artifacts::derived_source::paged_source::no_whole_frame(
+                    "a proxy of the whole frame",
+                    paged.source().id(),
+                ),
+            ),
         }
     }
 }

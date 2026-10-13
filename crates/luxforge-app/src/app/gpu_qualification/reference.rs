@@ -64,6 +64,8 @@
 //! limit — the picture at rest, and the motion frame where the owner gates it
 //! (`LUXFORGE_GPU_QUALIFICATION_MOTION=rest` or `reference`) — or for every cell with
 //! `LUXFORGE_GPU_QUALIFICATION_FRAMES=all`.
+mod paged;
+
 use super::{CorpusSource, EMPTY_MASK, Opened, corpus_sources, fit_bounds, headless, write_png};
 use crate::app::gpu_tiles::GpuTiles;
 use crate::app::{
@@ -584,9 +586,25 @@ fn measure(
         PreviewRequest::new(opened.client, opened.asset.clone()),
     )?;
     let evaluation = job.evaluation;
+    // A paged source has no whole frame: its reference is the banded one.
+    if evaluation.source().paged().is_some() {
+        return paged::measure(
+            (qualifier, exporters),
+            surface,
+            settings,
+            class,
+            &opened,
+            &evaluation,
+            cell,
+            record,
+        );
+    }
     let exact = luxforge_core::render(
         evaluation.registry(),
-        evaluation.source(),
+        evaluation
+            .source()
+            .whole()
+            .map_err(|error| error.to_string())?,
         evaluation.recipe(),
         RenderOptions::exact(&Cancel::never()),
         evaluation.context(),
@@ -2117,7 +2135,7 @@ fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
     let context = luxforge_core::RenderContext::new();
     let frame = luxforge_core::render(
         &registry,
-        &source,
+        source.whole().expect("a test's source is never paged"),
         &recipe,
         RenderOptions::exact(&Cancel::never()),
         &context,
@@ -2329,7 +2347,7 @@ fn the_overview_kind_draws_a_stacks_overview_at_200_within_the_display_tolerance
     let evaluation = crate::app::gpu_rest_tests::committed(photograph.clone(), recipe.clone());
     let reference = luxforge_core::render(
         &crate::app::gpu_tiles_tests::registry(),
-        &photograph,
+        photograph.whole().expect("a test's source is never paged"),
         &recipe,
         RenderOptions::exact(&Cancel::never()),
         &luxforge_core::RenderContext::new(),

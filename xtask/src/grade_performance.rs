@@ -88,7 +88,7 @@ fn sample(
     let started = Instant::now();
     let frame = render(
         e.registry(),
-        e.source(),
+        e.source().whole()?,
         e.recipe(),
         RenderOptions::default(),
         e.context(),

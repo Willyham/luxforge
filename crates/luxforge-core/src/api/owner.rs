@@ -564,6 +564,9 @@ impl SourceTaskKind {
             Self::Prepare(SourceWork::Artifacts(asset_id)) => {
                 (JobKind::Artifacts, Some(asset_id.clone()))
             }
+            Self::Prepare(SourceWork::Level { asset_id, .. }) => {
+                (JobKind::Prepare, Some(asset_id.clone()))
+            }
             Self::Collect(_) => (JobKind::Collect, None),
             Self::Accept(work) => (JobKind::Artifacts, Some(work.asset_id().clone())),
         }
@@ -695,6 +698,17 @@ impl SourceQueue {
                     path: asset_id.as_str().into(),
                     signature: None,
                     expected_fingerprint: None,
+                    gains_bits: None,
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
+            // One paged source's resident level is one read, whoever asks.
+            SourceWork::Level { asset_id, source } => (
+                SourceFlightKey {
+                    path: asset_id.as_str().into(),
+                    signature: None,
+                    expected_fingerprint: Some(format!("{}/resident-level", source.id())),
                     gains_bits: None,
                     artifacts: flight_artifacts(&artifacts),
                 },
@@ -902,6 +916,13 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
             label: "Developing RAW",
             detail: request.file_name.clone(),
             asset_id: Some(request.asset_id.clone()),
+            job_id: Some(task.id.to_string()),
+        },
+        SourceTaskKind::Prepare(SourceWork::Level { asset_id, .. }) => ActivitySpec {
+            kind: "source.prepare",
+            label: "Reading saved source",
+            detail: None,
+            asset_id: Some(asset_id.clone()),
             job_id: Some(task.id.to_string()),
         },
         SourceTaskKind::Prepare(SourceWork::Artifacts(asset_id)) => ActivitySpec {

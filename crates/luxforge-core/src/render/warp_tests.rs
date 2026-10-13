@@ -199,6 +199,7 @@ fn detail_and_curve_keep_warp_full_point_and_window_pixels_identical() {
             crate::PreviewSource::Raw { image, .. } => {
                 (Arc::new(Vec::new()), image.planes().to_vec())
             }
+            crate::PreviewSource::Paged(_) => unreachable!("no paged source here"),
         };
         let context = RenderContext::new();
         let rendered = render(
@@ -254,6 +255,7 @@ fn detail_and_curve_keep_warp_full_point_and_window_pixels_identical() {
                 assert_eq!(image.rgba, original_bytes);
             }
             crate::PreviewSource::Raw { image, .. } => assert_eq!(image.planes(), original_planes),
+            crate::PreviewSource::Paged(_) => unreachable!("no paged source here"),
         }
         assert_eq!(context.scratch().in_use(), 0);
         assert_eq!(context.spatial().in_use(), 0);

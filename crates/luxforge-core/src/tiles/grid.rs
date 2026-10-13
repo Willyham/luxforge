@@ -87,6 +87,8 @@ impl ClipDetection {
             (PreviewSource::Jpeg(_), _) => Self::JpegCode255,
             (PreviewSource::Raw { .. }, Some(_)) => Self::RawSensorWhite,
             (PreviewSource::Raw { .. }, None) => Self::Unavailable,
+            // A derived source has no sensor and no codes: nothing was clipped before it.
+            (PreviewSource::Paged(_), _) => Self::Unavailable,
         }
     }
 }
@@ -106,6 +108,7 @@ fn clipped_at(evaluation: &Evaluation, x: f64, y: f64) -> bool {
         PreviewSource::Raw { .. } => evaluation
             .sensor()
             .is_some_and(|sensor| sensor.clipped_at(x, y)),
+        PreviewSource::Paged(_) => false,
     }
 }
 

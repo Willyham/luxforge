@@ -1090,10 +1090,11 @@ fn a_render_cancelled_inside_its_stream_answers_cancelled() {
     assert_eq!(tiles.sent(), 0, "the stream ended before its first band");
 }
 
-/// A paged derived photograph's rendered previews are refused by name, `resource-limit` saying it
-/// has no whole frame, before any part of its source is read.
+/// A paged derived photograph's rendered previews are its overview's: the stack evaluated over its
+/// resident level, the largest within the camera limits, read whole on the render's own thread, and
+/// never a chunk of level 0. Both tiers are the reference's render of that overview, area-averaged.
 #[test]
-fn paged_source_previews_are_refused_by_name_before_any_read() {
+fn paged_source_render_previews_from_the_resident_level() {
     use crate::artifacts::derived_source::{merged_planes, payload_work};
     let path = copied_fixture("rendered-paged", "orientation-1.jpg");
     let mut service = EditorService::open(&paths::temp_catalog("rendered-paged")).unwrap();
@@ -1109,17 +1110,32 @@ fn paged_source_previews_are_refused_by_name_before_any_read() {
         .unwrap();
     payload_work::take();
     let request = plan_render(&service, &asset, None, &BOTH).unwrap();
-    let refused = render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap_err();
-    assert_eq!(refused.kind, ErrorKind::ResourceLimit, "{refused}");
-    let id = service.derived_source_read(&asset).unwrap().id;
+    assert_eq!(payload_work::take(), 0, "planned from the catalog alone");
+    let tiers = rasters(&request);
+    // The manifest and the overview's three chunks, as a preparation reads them, then level 1
+    // (8,195 x 2), the resident level, chunk by chunk.
+    let level = (width.div_ceil(2), height.div_ceil(2));
+    let chunks = level
+        .0
+        .div_ceil(crate::artifacts::derived_source::CHUNK_SIDE)
+        * level
+            .1
+            .div_ceil(crate::artifacts::derived_source::CHUNK_SIDE);
     assert_eq!(
-        refused.detail,
-        format!(
-            "a rendered preview is not available for paged derived source {id}, which has no \
-             whole frame; it is read through its levels and windows"
-        )
+        payload_work::take(),
+        1 + 3 + u64::from(chunks),
+        "the manifest, the overview and the resident level's chunks, none of level 0"
     );
-    assert_eq!(payload_work::take(), 0, "nothing of the source was read");
+    let [(grid_key, grid), (large_key, large)] = &tiers[..] else {
+        panic!("two tiers");
+    };
+    assert_eq!(
+        (grid_key.tier, large_key.tier),
+        (PreviewTier::Grid, PreviewTier::Large)
+    );
+    assert_eq!(large.width, PHOTO_LARGE_SIDE.min(level.0));
+    assert_eq!(grid.width, PHOTO_GRID_SIDE.min(level.0));
+    assert!(large.height >= 1 && grid.height >= 1);
 }
 
 /// A derived photograph (an HDR merge's result) has no original file and no camera preview: its
