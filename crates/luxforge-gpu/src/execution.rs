@@ -3921,7 +3921,9 @@ mod compile;
 mod fill;
 mod source;
 pub use compile::GpuOptions;
-pub use source::{AxisCoverage, Derivation, GpuSource, Reduction, SourceFigures, SourceKind};
+pub use source::{
+    AxisCoverage, Derivation, GpuSource, Reduction, SourceFigures, SourceKind, SourceReader,
+};
 use source::{Layouts as SourceLayouts, SourceSlot};
 mod stage;
 mod submission;
