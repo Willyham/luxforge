@@ -653,7 +653,7 @@ impl Editor {
         self.export_preset_changed(what.to_owned(), result)
     }
 
-    fn export_preset_changed(
+    pub(super) fn export_preset_changed(
         &mut self,
         what: String,
         result: Result<Option<ExportPreset>, String>,
@@ -691,8 +691,13 @@ impl Editor {
                 }
             }
             Err(error) => {
-                self.status.text = format!("Export preset not saved: {error}");
+                self.status.text = format!("Export preset error: {error}");
                 sheet.preset_error = Some(error);
+                // A visible delete may have succeeded before durability failed. The listing
+                // above is authoritative even when this originating request reports an error.
+                if sheet.preset(&presets).is_none() {
+                    sheet.preset_id = None;
+                }
             }
         }
         // A new preset's settings may ask for a plan; the outcome follows, so a step waiting on the

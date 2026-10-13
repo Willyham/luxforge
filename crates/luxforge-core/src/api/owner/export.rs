@@ -343,8 +343,14 @@ pub(in crate::api) fn write_file(
 /// The export lane finished a job: record it and start the next. A written file is announced under
 /// the request that asked for it, so every client learns of it from the event log.
 pub(super) fn finished(owner: &mut Owner, job_id: &JobId, result: Result<Value, Error>) {
+    let published = result.as_ref().is_err_and(|error| {
+        error
+            .data
+            .as_deref()
+            .is_some_and(|data| data["published"] == true)
+    });
     if let Some(done) = owner.jobs.complete(job_id, result)
-        && done.record.status == JobStatus::Ready
+        && (done.record.status == JobStatus::Ready || published)
         && let Some(origin) = &done.origin
     {
         announce_once(&mut owner.announced, origin);
@@ -1225,9 +1231,9 @@ pub(in crate::api) fn presets_create(
         .host
         .preferences
         .export_presets()
-        .create(&params.name, params.settings)?;
+        .create_published(&params.name, params.settings)?;
     announce_once(&mut owner.announced, &call.origin);
-    Ok(json!({ "preset": preset }))
+    Ok(json!({ "preset": preset.finish()? }))
 }
 
 /// `export.presets.update`: a preset of the person's own renamed, given new settings, or both,
@@ -1237,13 +1243,13 @@ pub(in crate::api) fn presets_update(
     call: &Call<'_>,
     params: PresetUpdate,
 ) -> Result<Value, Error> {
-    let preset = owner.host.preferences.export_presets().update(
+    let preset = owner.host.preferences.export_presets().update_published(
         &params.preset_id,
         params.name.as_deref(),
         params.settings,
     )?;
     announce_once(&mut owner.announced, &call.origin);
-    Ok(json!({ "preset": preset }))
+    Ok(json!({ "preset": preset.finish()? }))
 }
 
 /// `export.presets.delete`: a preset of the person's own removed, announced when it was there. A
@@ -1257,10 +1263,11 @@ pub(in crate::api) fn presets_delete(
         .host
         .preferences
         .export_presets()
-        .delete(&params.preset_id)?;
-    if deleted {
+        .delete_published(&params.preset_id)?;
+    if deleted.value {
         announce_once(&mut owner.announced, &call.origin);
     }
+    let deleted = deleted.finish()?;
     let outcome = if deleted {
         crate::MutationOutcome::Applied
     } else {

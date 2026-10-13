@@ -550,9 +550,9 @@ fn a_cancelled_batch_preset_keeps_the_photographs_it_finished_and_showed_its_pro
     assert_eq!(harness.current(&photographs[0])["label"], "Preset: Warm");
 }
 
-/// A retry of a batch preset is answered with its first job, and after a restart, when the owner no
-/// longer remembers it, each photograph is answered as its first attempt was: nothing is applied
-/// twice and nothing is announced again. A batch export's retry is answered with its first job.
+/// Live retries reuse the admitted batch job. After restart a completed retry reconstructs the
+/// full durable report, applying and announcing nothing again. A batch export likewise reuses its
+/// first live job and writes no additional files.
 #[test]
 fn a_retried_batch_is_answered_once() {
     let harness = Harness::new("retry");
@@ -586,8 +586,8 @@ fn a_retried_batch_is_answered_once() {
     );
     assert_eq!(
         harness.sequence(),
-        sequence + 1,
-        "nothing is announced again but the retry's job ending"
+        sequence,
+        "reconstructing the original report announces no new operation or job ending"
     );
 
     let out = harness.dir.join("out");

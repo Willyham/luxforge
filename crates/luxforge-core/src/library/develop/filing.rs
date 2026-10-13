@@ -22,7 +22,7 @@ use std::collections::HashMap;
 pub(crate) const UNDATED: &str = "Undated";
 
 /// The catalog folder a Develop brings an event's photographs into.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub(crate) enum Destination {
     /// That folder; with `days`, each dated photograph's day folder inside it.
     Existing {

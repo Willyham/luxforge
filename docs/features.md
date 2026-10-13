@@ -1,6 +1,6 @@
 # Feature status
 
-The [v0.1 code audit](../reports/v0.1-code-audit.md) records the current release risks and verification scope. Catalog inverse writes reject cyclic parents and conflicting sibling names; the desktop rejects stale recipe and export-sheet results and keeps Open behind the active draft guard. Tiny Contrast values use a stable evaluation of the existing curve; native GPU qualification of that correction remains open. Durable catalog-only request retries and cross-owner resource and grant coordination remain outstanding.
+The [v0.1 code audit](../reports/v0.1-code-audit.md) records the current release risks and verification scope. Catalog inverse writes reject cyclic parents and conflicting sibling names; the desktop rejects stale recipe and export-sheet results and keeps Open behind the active draft guard. Tiny Contrast values use a stable evaluation of the existing curve; native GPU qualification of that correction remains open. Catalog format 2 retains catalog request results across restart and permanent deletion; source checks preserve known integrity failures until streamed verification succeeds. Shared resource mutations use an OS lock, active permissions are revalidated and observed across owners, and published durability errors reconcile visible state. DNS waiting, ingress rates, feed loading and identifier retention are bounded. The [audit follow-up](design/v0.1-audit-followup.md) keeps native platform, vignette-boundary and corpus qualification open.
 
 | Capability | Status | Notes |
 | --- | --- | --- |

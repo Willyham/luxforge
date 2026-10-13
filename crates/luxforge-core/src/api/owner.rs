@@ -716,7 +716,7 @@ impl SourceQueue {
             ),
         };
         let kind = SourceTaskKind::Prepare(work);
-        self.submit(jobs, client, key, kind, artifacts, sensor, true)
+        self.submit(jobs, client, key, kind, artifacts, sensor, true, None)
     }
 
     /// Refuse a development of a mosaic no queued development pins yet once they pin
@@ -751,6 +751,17 @@ impl SourceQueue {
         path: PathBuf,
         kind: SourceTaskKind,
     ) -> Result<JobId, Error> {
+        self.enqueue_maintenance_with_id(jobs, client, path, kind, None)
+    }
+
+    fn enqueue_maintenance_with_id(
+        &mut self,
+        jobs: &mut Jobs,
+        client: ClientId,
+        path: PathBuf,
+        kind: SourceTaskKind,
+        id: Option<JobId>,
+    ) -> Result<JobId, Error> {
         let key = SourceFlightKey {
             path,
             signature: None,
@@ -758,7 +769,7 @@ impl SourceQueue {
             gains_bits: None,
             artifacts: Vec::new(),
         };
-        self.submit(jobs, client, key, kind, Vec::new(), None, false)
+        self.submit(jobs, client, key, kind, Vec::new(), None, false, id)
     }
 
     /// Queue one task on the source worker and record its job, or join the queued or running job
@@ -773,12 +784,13 @@ impl SourceQueue {
         artifacts: Vec<ArtifactRead>,
         sensor: Option<Weak<luxforge_raw::RawSource>>,
         shared: bool,
+        id: Option<JobId>,
     ) -> Result<JobId, Error> {
         let joined = JoinKey::Source(key.clone());
         if shared && let Some(id) = jobs.join(&joined, client) {
             return Ok(id);
         }
-        let id = JobId::new();
+        let id = id.unwrap_or_default();
         let control = JobControl::new();
         let (job_kind, asset_id) = kind.job();
         let task = SourceTask {
@@ -1254,6 +1266,11 @@ impl OwnerHandle {
         let completions = sender.clone();
         let usage = host.usage.clone();
         let host = CapabilityHost::new(host);
+        let permission_wake = sender.clone();
+        host.set_permission_wake(Arc::new(move || {
+            // Invalidation is retained by the observer and drained after every message.
+            let _ = permission_wake.try_send(OwnerMessage::Update);
+        }));
         let runtime = host.runtime().clone();
         // Every usage producer records into the host's one collector.
         service.usage = crate::usage::produce::Producer::new(host.usage().clone());
@@ -1714,6 +1731,10 @@ fn owner_loop(
         // transaction and the entry cache moves only after a commit, so nothing is left half done.
         let owed = Owed::of(&message);
         let served = catch_unwind(AssertUnwindSafe(|| {
+            owner
+                .host
+                .reconcile_permissions(&mut owner.jobs, &mut owner.announced);
+            owner.record_announced();
             match message {
                 OwnerMessage::Stop => return ControlFlow::Break(()),
                 OwnerMessage::Call(call) => owner.call(call),
@@ -2242,10 +2263,32 @@ impl Owner {
         // A retried mutation whose method declares the owner answers it is answered from the
         // request table, and its handler does not run again; the catalog answers the others.
         let key = match method.retries() {
-            Retries::Owner => RequestKey::of(&request.method, &request.params),
+            Retries::Owner | Retries::Durable => RequestKey::of(&request.method, &request.params)
+                .map(|mut key| {
+                    key.cache = method.retries() == Retries::Owner;
+                    key
+                }),
             Retries::Catalog | Retries::None => None,
         };
-        if let Some(key) = &key
+        if method.retries() == Retries::Durable {
+            // Authority is current even when the requested work was completed by an older owner.
+            if request.method == "catalog.empty-removed"
+                && self.authority(client) != ClientAuthority::Permissions
+            {
+                return Err(Error::forbidden(
+                    "emptying Removed needs permission authority",
+                ));
+            }
+            if let Some(key) = &key
+                && let Some(mut first) =
+                    library::durable_retry(self, &key.durable(), request, client)?
+            {
+                usage::deduplicated(self, &request.method, &mut first);
+                return Ok(Planned::Value(first));
+            }
+        }
+        if method.retries() != Retries::Durable
+            && let Some(key) = &key
             && let Some(mut first) = self.requests.answered(key)?
         {
             usage::deduplicated(self, &request.method, &mut first);
@@ -2304,52 +2347,58 @@ impl Owner {
             let parks = self.call_parks;
             return accept::begin(self, &call, action_id, parks).map(Planned::Value);
         }
-        let result = match method.route() {
-            Route::Owner(handler) => {
-                let call = Call {
-                    client,
-                    request,
-                    origin,
-                };
-                handler(self, &call).map(Planned::Value)
-            }
-            // A task queues a capability job and announces nothing: the task is announced when it
-            // succeeds. It samples its asset's current entry before it is queued, so an
-            // unprepared source or artifact is refused naming what it needs, as below.
-            Route::Task(task_id) => self
-                .host
-                .task(
-                    &mut self.jobs,
-                    &self.service,
-                    task_id,
-                    &request.params,
-                    &origin,
-                )
-                .map(Planned::Value),
-            Route::Service => {
-                let session = self.sessions.entry(client).or_default();
-                // Read only for a method that can change something, so a read or a draft's
-                // `draft.set` pays nothing for it.
-                let subject = method
-                    .mutates()
-                    .then(|| subject(session, &request.params))
-                    .flatten();
-                // The handler reports what it changed: a no-op and a retry answered from a
-                // store's request log changed nothing, and an asset's change names its revision.
-                method
-                    .plan_taking(&mut self.service, session, &mut request.params)
-                    .map(|(planned, changed)| {
-                        if let Changed::Something { revision } = changed {
-                            let origin = match subject {
-                                Some(asset_id) => origin.changed(asset_id, revision),
-                                None => origin,
-                            };
-                            announce_once(&mut self.announced, &origin);
-                        }
-                        planned
-                    })
-            }
-        };
+        self.service.catalog_request = (method.retries() == Retries::Durable)
+            .then(|| key.as_ref().map(RequestKey::durable))
+            .flatten();
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match method.route() {
+                Route::Owner(handler) => {
+                    let call = Call {
+                        client,
+                        request,
+                        origin,
+                    };
+                    handler(self, &call).map(Planned::Value)
+                }
+                // A task queues a capability job and announces nothing: the task is announced when it
+                // succeeds. It samples its asset's current entry before it is queued, so an
+                // unprepared source or artifact is refused naming what it needs, as below.
+                Route::Task(task_id) => self
+                    .host
+                    .task(
+                        &mut self.jobs,
+                        &self.service,
+                        task_id,
+                        &request.params,
+                        &origin,
+                    )
+                    .map(Planned::Value),
+                Route::Service => {
+                    let session = self.sessions.entry(client).or_default();
+                    // Read only for a method that can change something, so a read or a draft's
+                    // `draft.set` pays nothing for it.
+                    let subject = method
+                        .mutates()
+                        .then(|| subject(session, &request.params))
+                        .flatten();
+                    // The handler reports what it changed: a no-op and a retry answered from a
+                    // store's request log changed nothing, and an asset's change names its revision.
+                    method
+                        .plan_taking(&mut self.service, session, &mut request.params)
+                        .map(|(planned, changed)| {
+                            if let Changed::Something { revision } = changed {
+                                let origin = match subject {
+                                    Some(asset_id) => origin.changed(asset_id, revision),
+                                    None => origin,
+                                };
+                                announce_once(&mut self.announced, &origin);
+                            }
+                            planned
+                        })
+                }
+            }))
+            .unwrap_or_else(|_| Err(Error::internal("the call could not be answered")));
+        self.service.catalog_request = None;
         // A stack whose source or artifacts are not prepared queues exactly what the refusal
         // names and answers with the job to wait for, whichever handler evaluated it.
         // A deferred pixel read takes precedence, even when a handler swallowed its internal error.
@@ -2375,7 +2424,11 @@ impl Owner {
                 Ok(Planned::Value(value))
             }
             (Ok(Planned::Value(mut value)), Some(key)) => {
-                self.requests.record(key, &mut value);
+                if key.cache {
+                    self.requests.record(key, &mut value);
+                } else {
+                    requests::mark_first(&mut value);
+                }
                 Ok(Planned::Value(value))
             }
             (result, _) => result,
@@ -2828,6 +2881,21 @@ impl Owner {
                 .changed(state.asset.id.clone(), Some(state.revision));
             self.log.record(&origin);
         }
+        if self.jobs.kind(id) == Some(JobKind::Collect) {
+            let recorded = match &outcome {
+                Ok(Completed::Value(value)) => Ok(value.clone()),
+                Ok(_) => Err(Error::internal("collection returned an unexpected result")),
+                Err(error) => Err(error.clone()),
+            };
+            if let Err(error) =
+                crate::editor::catalog_requests::finish(&self.service.connection, id, &recorded)
+            {
+                self.jobs.finish(id, Err(error));
+                self.sources.complete(id);
+                self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
+                return;
+            }
+        }
         self.jobs.finish(
             id,
             outcome.map(|completed| match completed {
@@ -3113,16 +3181,29 @@ pub(super) fn artifact_collect(
     call: &Call<'_>,
     _: Collect,
 ) -> Result<Value, Error> {
-    let collection = owner.service.plan_collection()?;
+    let job = JobId::new();
+    let collection = owner.service.plan_collection_for(Some(&job))?;
     let root = collection.root.clone();
-    let id = owner.sources.enqueue_maintenance(
+    announce_once(&mut owner.announced, &call.origin);
+    let result = owner.sources.enqueue_maintenance_with_id(
         &mut owner.jobs,
         call.client,
         root,
         SourceTaskKind::Collect(collection),
-    )?;
-    announce_once(&mut owner.announced, &call.origin);
-    Ok(json!({"job_id": id, "status": JobStatus::Queued}))
+        Some(job.clone()),
+    );
+    match result {
+        Ok(id) => Ok(json!({"job_id":id,"status":JobStatus::Queued})),
+        Err(error) => {
+            let error = error.with_data(json!({"rows_committed":true}));
+            crate::editor::catalog_requests::finish(
+                &owner.service.connection,
+                &job,
+                &Err(error.clone()),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 /// `flags.list`: the flags this host lists, read from the preferences file now.
@@ -3151,18 +3232,20 @@ pub(super) fn flags_set(
     params: FlagsSet,
 ) -> Result<Value, Error> {
     let developer = owner.service.registry().serves_test_modules();
-    if crate::flags::set(
+    let published = crate::flags::set_published(
         &owner.host.preferences,
         &params.flag,
         params.value,
         developer,
-    )? {
+    )?;
+    if published.value {
         announce_once(&mut owner.announced, &call.origin);
         // The pre-release channel reaches the update port at once.
         if params.flag == crate::flags::PRERELEASE_CHANNEL {
             update::applied(owner);
         }
     }
+    published.finish()?;
     flags_list(owner, call, NoParams {})
 }
 
@@ -3239,7 +3322,8 @@ pub(super) fn preferences_set(
         update_install_automatically: params.update_install_automatically,
         update_ask_to_move: params.update_ask_to_move,
     };
-    let (before, stored) = owner.host.preferences.set(change)?;
+    let published = owner.host.preferences.set_published(change)?;
+    let (before, stored) = published.value;
     // The update preferences reach the update port at once.
     if (
         before.update_checks(),
@@ -3259,6 +3343,9 @@ pub(super) fn preferences_set(
     owner.service.set_raw_look(stored.raw_look());
     if before.general() != stored.general() || before.theme() != stored.theme() {
         announce_once(&mut owner.announced, &call.origin);
+    }
+    if let Some(error) = published.durability_error {
+        return Err(error);
     }
     Ok(methods::preference_values(&stored))
 }
@@ -6739,7 +6826,25 @@ mod tests {
             assert_eq!(retried["deduplicated"], json!(true), "{method}");
             let mut original = retried.clone();
             original["deduplicated"] = json!(false);
-            assert_eq!(original, first, "{method}: the retry is the first answer");
+            if first["job_id"].is_string() && first.get("status").is_some() {
+                assert_eq!(
+                    retried["job_id"], first["job_id"],
+                    "{method}: a live retry reuses its job"
+                );
+                let initial: JobStatus = serde_json::from_value(first["status"].clone()).unwrap();
+                let current: JobStatus = serde_json::from_value(retried["status"].clone()).unwrap();
+                if initial.is_finished() {
+                    assert_eq!(current, initial);
+                }
+                if initial == JobStatus::Running {
+                    assert_ne!(current, JobStatus::Queued);
+                }
+                original["status"] = first["status"].clone();
+            }
+            assert_eq!(
+                original, first,
+                "{method}: synchronous fields retain the first answer"
+            );
             assert_eq!(
                 after_retry, after_first,
                 "{method}: the retry records no event"
@@ -6782,7 +6887,10 @@ mod tests {
         let retried = ok(&owner, client, "develop", "pick.develop", develop);
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["job_id"], json!(job_id));
-        assert_eq!(retried["status"], queued["status"], "the first answer");
+        assert_eq!(
+            retried["status"], ready["status"],
+            "the admitted job's current status"
+        );
         assert_eq!(events_after(&owner, client, 0).1, developed_at);
         conflict(
             "pick.develop",

@@ -3,8 +3,7 @@
 //! and the derived-artifact objects (`artifacts::store`). Bytes go to a temporary file that is
 //! synced, then renamed over the target, and the directory is synced so the rename itself is
 //! durable. A failure before rename leaves the previous file; a directory-sync failure after
-//! rename leaves the replacement visible with durability unconfirmed. The current error does not
-//! distinguish these outcomes. Writers that share a file serialize on an OS advisory lock beside
+//! rename leaves the replacement visible with durability unconfirmed. Errors distinguish these outcomes. Writers that share a file serialize on an OS advisory lock beside
 //! it, and a read is bounded. [`flush`] is the one call in the core that
 //! makes written bytes durable, for these writes and for the resource and export writers.
 use crate::Error;
@@ -90,11 +89,76 @@ pub(crate) fn stage(path: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
+/// The result of a visible publication, retaining its value until required consequences run.
+#[derive(Debug)]
+pub(crate) struct Publication<T> {
+    pub value: T,
+    pub durability_error: Option<Error>,
+}
+
+impl<T> Publication<T> {
+    pub(crate) fn confirmed(value: T) -> Self {
+        Self {
+            value,
+            durability_error: None,
+        }
+    }
+
+    pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U) -> Publication<U> {
+        Publication {
+            value: map(self.value),
+            durability_error: self.durability_error,
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<T, Error> {
+        match self.durability_error {
+            Some(error) => Err(error),
+            None => Ok(self.value),
+        }
+    }
+}
+
+/// A publication failure records whether the replacement is already visible.
+#[derive(Debug)]
+pub(crate) struct PublishError {
+    pub published: bool,
+    error: io::Error,
+}
+
+impl PublishError {
+    pub(crate) fn into_error(self, path: &Path) -> Error {
+        if self.published {
+            durability_error(path, self.error.kind())
+        } else {
+            file_error(path.display(), self.error.kind())
+        }
+    }
+}
+
+pub(crate) fn durability_error(path: &Path, kind: io::ErrorKind) -> Error {
+    let mut error = file_error(path.display(), kind);
+    // Keep the ordinary code/cause mapping, including disk full, without letting its concise
+    // resource-limit wording discard the publication phase that clients must display.
+    error.detail = format!(
+        "{}: the replacement is visible but durability is unconfirmed; {}",
+        path.display(),
+        error.detail
+    );
+    error.with_data(serde_json::json!({"published": true, "durable": false, "path": path}))
+}
+
 /// Rename the staged file `from` over `to` and sync `to`'s directory, so the rename is durable.
-pub(crate) fn publish(from: &Path, to: &Path) -> io::Result<()> {
-    fs::rename(from, to)?;
+pub(crate) fn publish(from: &Path, to: &Path) -> Result<(), PublishError> {
+    fs::rename(from, to).map_err(|error| PublishError {
+        published: false,
+        error,
+    })?;
     match to.parent() {
-        Some(dir) => sync_dir(dir),
+        Some(dir) => sync_dir(dir).map_err(|error| PublishError {
+            published: true,
+            error,
+        }),
         None => Ok(()),
     }
 }
@@ -102,23 +166,102 @@ pub(crate) fn publish(from: &Path, to: &Path) -> io::Result<()> {
 /// Replace `path` with `bytes` through `<path>.tmp` beside it: [`stage`], then [`publish`]. A
 /// failure removes any remaining temporary file. Before rename the previous target is intact;
 /// after rename a directory-sync error leaves the replacement visible.
-pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<Publication<()>, Error> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
     stage(&temporary, bytes).map_err(|error| file_error(temporary.display(), error.kind()))?;
-    publish(&temporary, path).map_err(|error| {
-        let _ = fs::remove_file(&temporary);
-        file_error(path.display(), error.kind())
-    })
+    match publish(&temporary, path) {
+        Ok(()) => Ok(Publication::confirmed(())),
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            if error.published {
+                Ok(Publication {
+                    value: (),
+                    durability_error: Some(error.into_error(path)),
+                })
+            } else {
+                Err(error.into_error(path))
+            }
+        }
+    }
 }
 
 /// Make a rename or removal in `dir` durable. Directories cannot be opened for syncing on Windows,
 /// where a rename is durable once it returns.
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if sync_faults::take(dir) {
+        return Err(io::Error::other("injected directory sync failure"));
+    }
     #[cfg(unix)]
     flush(&File::open(dir)?)?;
     #[cfg(not(unix))]
     let _ = dir;
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod sync_faults {
+    use std::{
+        collections::HashSet,
+        path::{Path, PathBuf},
+        sync::{Mutex, OnceLock},
+    };
+    fn faults() -> &'static Mutex<HashSet<PathBuf>> {
+        static FAULTS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+        FAULTS.get_or_init(Default::default)
+    }
+    pub(crate) fn inject(dir: &Path) {
+        faults().lock().unwrap().insert(dir.to_owned());
+    }
+    pub(super) fn take(dir: &Path) -> bool {
+        faults().lock().unwrap().remove(dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn published_disk_full_and_quota_errors_keep_the_visible_durability_message() {
+        let path = Path::new("state.json");
+        for kind in [io::ErrorKind::StorageFull, io::ErrorKind::QuotaExceeded] {
+            let error = durability_error(path, kind);
+            assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
+            assert!(
+                error
+                    .detail
+                    .contains("visible but durability is unconfirmed")
+            );
+            assert!(error.detail.contains("disk full"));
+            assert_eq!(error.data.as_deref().unwrap()["published"], true);
+            assert_eq!(error.data.as_deref().unwrap()["durable"], false);
+            assert_eq!(error.data.as_deref().unwrap()["path"], "state.json");
+        }
+    }
+
+    #[test]
+    fn publication_failure_preserves_visible_replacement_and_reports_phase() {
+        let dir =
+            std::env::temp_dir().join(format!("luxforge-publication-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, b"old").unwrap();
+        sync_faults::inject(&dir);
+        let published = replace(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        let error = published.finish().unwrap_err();
+        assert_eq!(error.data.as_deref().unwrap()["published"], true);
+        assert_eq!(error.data.as_deref().unwrap()["durable"], false);
+        assert!(
+            error
+                .detail
+                .contains("visible but durability is unconfirmed")
+        );
+        let error = publish(&dir.join("absent"), &path).unwrap_err();
+        assert!(!error.published);
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

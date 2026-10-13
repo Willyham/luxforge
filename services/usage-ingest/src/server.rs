@@ -47,7 +47,7 @@ const BUSY: &[u8] = b"HTTP/1.1 429 Too Many Requests\r\nconnection: close\r\ncon
 
 struct Shared {
     global: Global,
-    ids: Option<IdLimiter>,
+    ids: Option<Arc<IdLimiter>>,
     queue: Queue,
     diag: Arc<Diagnostics>,
     clock: Arc<dyn Clock>,
@@ -89,12 +89,12 @@ impl Server {
         let shared = Arc::new(Shared {
             global: Global::new(config.global_per_second, config.global_burst, now),
             ids: (config.id_interval_secs > 0).then(|| {
-                IdLimiter::new(
+                Arc::new(IdLimiter::new(
                     config.id_interval_secs,
                     u64::from(config.id_burst),
                     config.id_ttl_secs,
                     config.id_max_entries,
-                )
+                ))
             }),
             queue,
             diag: diag.clone(),
@@ -110,13 +110,26 @@ impl Server {
             config.request_timeout,
             stopped.clone(),
         ));
-        let stats = tokio::spawn(stats_loop(shared, config.stats_interval, stopped));
+        let mut tasks = vec![accept];
+        if let Some(ids) = &shared.ids {
+            tasks.push(tokio::spawn(expiry_loop(
+                ids.clone(),
+                shared.clock.clone(),
+                stopped.clone(),
+            )));
+        }
+        tasks.push(tokio::spawn(stats_loop(
+            diag.clone(),
+            config.stats_interval,
+            stopped,
+        )));
+        tasks.push(forwarder);
         diag.note("usage-ingest listening");
         Ok(Server {
             addr,
             diag,
             stop,
-            tasks: vec![accept, stats, forwarder],
+            tasks,
         })
     }
 
@@ -132,32 +145,56 @@ impl Server {
     /// Stop accepting, end open connections and drop whatever is still queued.
     pub async fn shutdown(self) {
         let _ = self.stop.send(true);
-        for task in &self.tasks[..2] {
+        for task in &self.tasks[..self.tasks.len() - 1] {
             while !task.is_finished() {
                 sleep(Duration::from_millis(5)).await;
             }
         }
-        self.tasks[2].abort();
+        self.tasks.last().expect("the forwarder exists").abort();
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.stop.send(true);
-        self.tasks[2].abort();
+        self.tasks.last().expect("the forwarder exists").abort();
     }
 }
 
-async fn stats_loop(shared: Arc<Shared>, every: Duration, mut stopped: watch::Receiver<bool>) {
+async fn stats_loop(diag: Arc<Diagnostics>, every: Duration, mut stopped: watch::Receiver<bool>) {
     loop {
         tokio::select! {
             _ = sleep(every) => {
-                shared.diag.emit();
-                if let Some(ids) = &shared.ids {
-                    ids.sweep(shared.clock.now_ms());
-                }
+                diag.emit();
             }
             _ = stopped.changed() => return,
+        }
+    }
+}
+
+/// No timer exists while the ID store is empty. Register before inspecting the next deadline so
+/// admission cannot lose a wake between that inspection and the wait.
+async fn expiry_loop(
+    ids: Arc<IdLimiter>,
+    clock: Arc<dyn Clock>,
+    mut stopped: watch::Receiver<bool>,
+) {
+    loop {
+        let changed = ids.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        ids.sweep(clock.now_ms());
+        if let Some(deadline) = ids.next_deadline() {
+            tokio::select! {
+                _ = sleep(Duration::from_millis(deadline.saturating_sub(clock.now_ms()))) => {}
+                _ = &mut changed => {}
+                _ = stopped.changed() => return,
+            }
+        } else {
+            tokio::select! {
+                _ = &mut changed => {}
+                _ = stopped.changed() => return,
+            }
         }
     }
 }
@@ -413,5 +450,80 @@ async fn route(shared: &Shared, request: Request<Incoming>) -> Response<Full<Byt
                 Some(shared.retry_after_secs),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod expiry_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    const A: &str = "c9a10716-1b78-4cbe-8d1c-b8309e5e7247";
+    const B: &str = "5f0c2e3a-8d47-4b6e-9a1f-2c7d9e4b1a60";
+
+    struct PausedClock(tokio::time::Instant);
+
+    impl Clock for PausedClock {
+        fn unix_secs(&self) -> u64 {
+            0
+        }
+        fn now_ms(&self) -> u64 {
+            self.0.elapsed().as_millis() as u64
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_ids_expire_without_stats_or_refill_and_empty_workers_stop() {
+        let clock = Arc::new(PausedClock(tokio::time::Instant::now()));
+        // Neither a daily refill nor daily statistics publication can extend the retention.
+        let ids = Arc::new(IdLimiter::new(86_400, 1, 900, 10));
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = log.clone();
+        let diag = Arc::new(Diagnostics::new(Arc::new(move |line| {
+            captured.lock().unwrap().push(line.to_owned());
+        })));
+        let (stop, stopped) = watch::channel(false);
+        let stats = tokio::spawn(stats_loop(
+            diag,
+            Duration::from_secs(86_400),
+            stopped.clone(),
+        ));
+        let expiry = tokio::spawn(expiry_loop(ids.clone(), clock.clone(), stopped));
+        tokio::task::yield_now().await;
+        assert!(ids.next_deadline().is_none());
+        assert_eq!(ids.admit(A, clock.now_ms()), IdVerdict::Admit);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(899_999)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(ids.len(), 1);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(ids.is_empty());
+        assert!(log.lock().unwrap().is_empty());
+        stop.send(true).unwrap();
+        expiry.await.unwrap();
+        stats.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refreshing_the_earliest_id_reschedules_the_expiry_worker() {
+        let clock = Arc::new(PausedClock(tokio::time::Instant::now()));
+        let ids = Arc::new(IdLimiter::new(86_400, 1, 1, 10));
+        let (stop, stopped) = watch::channel(false);
+        let expiry = tokio::spawn(expiry_loop(ids.clone(), clock.clone(), stopped));
+        assert_eq!(ids.admit(A, 0), IdVerdict::Admit);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+        assert_eq!(ids.admit(B, clock.now_ms()), IdVerdict::Admit);
+        assert!(matches!(ids.admit(A, clock.now_ms()), IdVerdict::Refuse(_)));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(ids.len(), 2);
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+        assert!(ids.is_empty());
+        stop.send(true).unwrap();
+        expiry.await.unwrap();
     }
 }

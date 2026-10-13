@@ -1027,6 +1027,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
             "crates/luxforge-core/src/previews/region.rs",
+            // Production cancellation/completion waits for active DNS and resource-lock work.
+            "crates/luxforge-core/src/jobs.rs",
             // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
             "crates/luxforge-app/src/app/mask_coverage.rs",
             // The desktop's GPU tile worker, asleep while no call or export tile waits for it.
@@ -1123,6 +1125,10 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/tiles/analysis.rs",
             // The one usage statistics worker, alive only while collection is effective.
             "crates/luxforge-core/src/usage/supervisor.rs",
+            // Permission observation is lazy and stops when the owner's last relevant job ends.
+            "crates/luxforge-core/src/capabilities/permission_watch.rs",
+            // Four lazy process-level DNS workers with bounded queued and retained admissions.
+            "crates/luxforge-net/src/transport/resolver.rs",
             // The catalog's bounded workers: the index lane and its watchers, the preview lane,
             // and the develop lane (`docs/design/catalog.md`, "Architecture").
             "crates/luxforge-core/src/index",

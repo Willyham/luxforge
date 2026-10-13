@@ -121,6 +121,44 @@ fn build_json_is_read_as_the_release_build_writes_it() {
 }
 
 #[test]
+fn check_diagnostics_keep_original_rss_positions_after_parser_skips() {
+    let key = testing::test_key();
+    let item = |build, format| testing::item("0.2.0", build, ARCHIVE_URL, b"x", &key, None, format);
+    let xml = testing::feed(vec![
+        item(5, Some(1)),
+        item(6, None),
+        item(7, Some(1)),
+        item(8, Some(1)),
+    ])
+    .replacen(
+        "<sparkle:version>5</sparkle:version>",
+        "<sparkle:version>bad</sparkle:version>",
+        1,
+    )
+    .replace(
+        "<sparkle:version>8</sparkle:version>",
+        "<sparkle:version>bad</sparkle:version>",
+    );
+    let fetch = MemoryFetch::new();
+    fetch.serve(&feed_url(), xml.into_bytes());
+    let installation = installed("0.1.0", 4);
+    let checked = installation
+        .payload
+        .check(&*fetch, FEED_BASE, &[Channel::Default], &Cancel::new())
+        .unwrap();
+    assert_eq!(checked.item.unwrap().build, 7);
+    assert_eq!(
+        checked
+            .skipped
+            .iter()
+            .map(|item| item.index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 3]
+    );
+    assert_eq!(checked.skipped[1].reason, "no luxforge:catalogFormat");
+}
+
+#[test]
 fn a_check_offers_the_newest_followed_build_with_a_catalog_format() {
     let key = testing::test_key();
     let item = |version: &str, build, channel, format| {

@@ -45,7 +45,7 @@ pub(crate) struct Plan {
 }
 
 /// One file of a plan.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct PlannedFile {
     /// Its path, as a pick names it.
     pub path: PathBuf,

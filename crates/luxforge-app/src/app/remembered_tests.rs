@@ -598,3 +598,45 @@ fn an_evidence_export_and_a_refused_one_store_nothing() {
     assert_eq!(stored(&editor)["export_last"], Value::Null);
     finish(editor, root);
 }
+
+#[test]
+#[slow]
+fn published_export_preset_delete_reads_back_the_library_and_clears_the_missing_selection() {
+    let (mut editor, root, _) = launch(json!({}), true);
+    let agent = editor.owner.register();
+    let settings =
+        agent_call(&editor, agent, "export.presets.list", json!({}))["presets"][0]["settings"]
+            .clone();
+    let preset = agent_call(
+        &editor,
+        agent,
+        "export.presets.create",
+        json!({"name": "Visible", "settings": settings}),
+    );
+    let id = preset["preset"]["preset_id"].as_str().unwrap().to_owned();
+    let _ = editor.update(Message::Export(ExportMessage::OpenSheet {
+        reference: false,
+    }));
+    sheet(&mut editor, SheetMessage::Preset(id.clone()));
+    assert_eq!(
+        editor.export.sheet.as_ref().unwrap().preset_id.as_deref(),
+        Some(id.as_str())
+    );
+    agent_call(
+        &editor,
+        agent,
+        "export.presets.delete",
+        json!({"preset_id": id}),
+    );
+    let reason = "read-error: the replacement is visible but durability is unconfirmed".to_owned();
+    let _ = editor.export_preset_changed("delete".into(), Err(reason.clone()));
+    assert!(editor.export.preset(&id).is_none());
+    assert!(editor.export.sheet.as_ref().unwrap().preset_id.is_none());
+    assert_eq!(
+        editor.export.sheet.as_ref().unwrap().preset_error.as_ref(),
+        Some(&reason)
+    );
+    assert!(editor.status.text.contains(&reason));
+    assert!(!editor.status.text.contains("Deleted the export preset"));
+    finish(editor, root);
+}

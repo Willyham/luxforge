@@ -394,3 +394,56 @@ fn only_a_change_to_a_general_row_is_announced() {
         ]
     );
 }
+
+#[test]
+fn visible_preference_and_flag_sync_errors_reconcile_values_and_events() {
+    let harness = Harness::start("visible-sync");
+    let config = harness.file().parent().unwrap().to_path_buf();
+    crate::atomic_file::sync_faults::inject(&config);
+    let failure = harness
+        .send(
+            "visible-preferences",
+            "preferences.set",
+            json!({
+                "auto_collapse_history": false, "raw_look": "neutral", "canvas_background": "black",
+            }),
+        )
+        .error
+        .unwrap();
+    assert_eq!(failure.data.as_ref().unwrap()["published"], true);
+    assert_eq!(failure.data.as_ref().unwrap()["durable"], false);
+    let preferences = harness.ok("read-visible", "preferences.read", json!({}));
+    assert_eq!(preferences["auto_collapse_history"], false);
+    assert_eq!(preferences["raw_look"], "neutral");
+    assert_eq!(preferences["canvas_background"], "black");
+    assert_eq!(harness.announced(), ["visible-preferences"]);
+
+    crate::atomic_file::sync_faults::inject(&config);
+    let failure = harness
+        .send(
+            "visible-flag",
+            "flags.set",
+            json!({
+                "flag": crate::flags::PRERELEASE_CHANNEL, "value": true,
+            }),
+        )
+        .error
+        .unwrap();
+    assert_eq!(failure.data.as_ref().unwrap()["published"], true);
+    let flags = harness.ok("read-flag", "flags.list", json!({}));
+    let flag = flags["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flag| flag["id"] == crate::flags::PRERELEASE_CHANNEL)
+        .unwrap();
+    assert_eq!(flag["value"], true);
+    let events = harness.ok("events-flags", "events.since", json!({"after": 0}));
+    assert!(
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["method"] == "flags.set" && event["request_id"] == "visible-flag")
+    );
+}

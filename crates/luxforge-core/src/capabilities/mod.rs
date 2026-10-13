@@ -20,6 +20,7 @@ pub mod host;
 mod lifecycle_tests;
 #[cfg(test)]
 mod model_resource_tests;
+pub(crate) mod permission_watch;
 #[cfg(test)]
 mod proof_tests;
 pub mod read;

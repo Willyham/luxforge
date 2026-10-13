@@ -833,7 +833,16 @@ impl ThemeStore {
     /// `theme.import`: store what [`Self::inspect`] answers, with a new id, `actor` and the time.
     /// A name another theme holds is a `conflict`, and a full library or a record past
     /// [`MAX_THEME_BYTES`] a `resource-limit` error; nothing is renamed, replaced or stored then.
+    #[cfg(test)]
     pub(crate) fn import(&self, input: ThemeInput<'_>, actor: &str) -> Result<Theme, Error> {
+        self.import_published(input, actor)?.finish()
+    }
+
+    pub(crate) fn import_published(
+        &self,
+        input: ThemeInput<'_>,
+        actor: &str,
+    ) -> Result<crate::atomic_file::Publication<Theme>, Error> {
         checked_actor(actor)?;
         let document = self.document()?;
         let mut theme = self.inspect(input)?;
@@ -843,7 +852,7 @@ impl ThemeStore {
         theme.created_ms = Some(now);
         theme.updated_ms = Some(now);
         let record = Stored::of(&theme).encode()?;
-        document.transact(|library| {
+        let publication = document.transact_published(|library| {
             if library.themes.len() >= MAX_THEMES {
                 return Err(Error::resource_limit(format!(
                     "the theme library holds at most {MAX_THEMES} themes; delete one first"
@@ -853,13 +862,22 @@ impl ThemeStore {
             library.themes.push(record);
             Ok(())
         })?;
-        Ok(theme)
+        Ok(publication.map(|()| theme))
     }
 
     /// `theme.delete`: remove a stored theme, or a stored record this build cannot read, by id:
     /// `Applied` when it was there and `NoOp` when it was not. A built-in theme and `active`, the
     /// theme the preferences choose, are refused by name.
+    #[cfg(test)]
     pub(crate) fn delete(&self, theme_id: &str, active: &str) -> Result<MutationOutcome, Error> {
+        self.delete_published(theme_id, active)?.finish()
+    }
+
+    pub(crate) fn delete_published(
+        &self,
+        theme_id: &str,
+        active: &str,
+    ) -> Result<crate::atomic_file::Publication<MutationOutcome>, Error> {
         if let Some(theme) = built_in_themes()
             .iter()
             .find(|theme| theme.id() == theme_id)
@@ -875,9 +893,11 @@ impl ThemeStore {
             )));
         }
         let Some(document) = &self.0 else {
-            return Ok(MutationOutcome::NoOp);
+            return Ok(crate::atomic_file::Publication::confirmed(
+                MutationOutcome::NoOp,
+            ));
         };
-        document.transact(|library| {
+        document.transact_published(|library| {
             let before = library.themes.len();
             library
                 .themes

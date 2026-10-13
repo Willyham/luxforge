@@ -31,6 +31,7 @@ mod artifact_store;
 #[cfg(test)]
 mod artifact_tests;
 mod catalog;
+pub(crate) mod catalog_requests;
 mod catalog_rows;
 mod collapse;
 mod corrections;
@@ -690,6 +691,10 @@ struct CachedSource {
 pub struct EditorService {
     /// The catalog. The preset library in `presets::library` keeps its own table here.
     pub(crate) connection: Connection,
+    /// Set only while dispatching a durable synchronous catalog request.
+    pub(crate) catalog_request: Option<catalog_requests::Key>,
+    /// The terminal commit currently being accepted from a library worker.
+    pub(crate) catalog_terminal_job: Option<crate::JobId>,
     /// Hydrated entries and asset heads, so a read after the first decodes nothing. Every write
     /// that moves a head updates it where it commits.
     entries: RefCell<entries::EntryCache>,
@@ -808,6 +813,8 @@ impl EditorService {
             ));
         Ok(Self {
             connection,
+            catalog_request: None,
+            catalog_terminal_job: None,
             // Opening starts empty: nothing read before a reopen is trusted after it.
             entries: RefCell::new(entries::EntryCache::default()),
             source_cache: RefCell::new(None),

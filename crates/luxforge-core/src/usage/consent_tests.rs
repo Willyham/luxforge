@@ -582,3 +582,28 @@ fn usage_hosted_developer_eligibility_still_needs_explicit_consent() {
     disable(&usage, &dir, "developer-off").unwrap();
     assert!(usage.active().is_none());
 }
+
+#[test]
+fn usage_visible_sync_errors_reconcile_the_process_gate_and_remember_the_request() {
+    let dir = Dir::new("visible-sync");
+    let usage = launched(eligible(), &dir);
+    crate::atomic_file::sync_faults::inject(&dir.0);
+    let error = enable(&usage, &dir, "visible-enable").unwrap_err();
+    assert_eq!(error.data.as_deref().unwrap()["published"], true);
+    assert_eq!(error.data.as_deref().unwrap()["durable"], false);
+    assert_eq!(usage.read(&dir.store()).enabled, Some(true));
+    assert!(usage.gate().current().is_some());
+    let active = usage.active().unwrap();
+    assert!(!enable(&usage, &dir, "visible-enable").unwrap().changed);
+    assert_eq!(
+        usage.active().unwrap().installation_id,
+        active.installation_id
+    );
+    crate::atomic_file::sync_faults::inject(&dir.0);
+    let error = disable(&usage, &dir, "visible-disable").unwrap_err();
+    assert_eq!(error.data.as_deref().unwrap()["published"], true);
+    assert_eq!(usage.read(&dir.store()).enabled, Some(false));
+    assert!(usage.gate().current().is_none());
+    assert!(usage.active().is_none());
+    assert!(!disable(&usage, &dir, "visible-disable").unwrap().changed);
+}

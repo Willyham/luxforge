@@ -13,6 +13,7 @@
 //! the whole request's deadline, both checked with the job's cancel before every read and write.
 use super::{
     connect::{self, Connect, Resolve},
+    resolver::ResolverService,
     tls,
 };
 use luxforge_core::{Error, capabilities::endpoint::Endpoint, jobs::JobControl};
@@ -122,6 +123,7 @@ fn refused(error: Error) -> ureq::Error {
 struct PolicyResolver {
     endpoint: Endpoint,
     resolve: Arc<dyn Resolve>,
+    service: Option<Arc<ResolverService>>,
     pace: Arc<Pace>,
 }
 
@@ -143,7 +145,8 @@ impl Resolver for PolicyResolver {
         if uri.host() != self.endpoint.url.host_str() {
             return Err(refused(Error::validation("the request left its endpoint")));
         }
-        let addresses = connect::resolve(&self.endpoint, &*self.resolve).map_err(refused)?;
+        let addresses = connect::resolve(&self.endpoint, &self.resolve, &self.service, &self.pace)
+            .map_err(refused)?;
         let mut answer = self.empty();
         for address in addresses {
             if answer.try_push(address).is_err() {
@@ -368,11 +371,12 @@ impl Transport for TlsTransport {
 pub(super) fn agent(
     endpoint: &Endpoint,
     tls: &Arc<ClientConfig>,
-    resolve: &Arc<dyn Resolve>,
+    resolution: (&Arc<dyn Resolve>, &Option<Arc<ResolverService>>),
     connect: &Arc<dyn Connect>,
     connect_timeout: Duration,
     pace: &Arc<Pace>,
 ) -> Agent {
+    let (resolve, service) = resolution;
     let config = Agent::config_builder()
         .proxy(None)
         .max_redirects(0)
@@ -395,6 +399,7 @@ pub(super) fn agent(
     let resolver = PolicyResolver {
         endpoint: endpoint.clone(),
         resolve: resolve.clone(),
+        service: service.clone(),
         pace: pace.clone(),
     };
     Agent::with_parts(config, connector, resolver)

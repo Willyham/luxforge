@@ -631,3 +631,27 @@ fn the_editor_hands_iced_its_own_luxforge_dark_theme() {
     assert_eq!(theme.generation(), editor.theme().generation());
     finish(editor, root);
 }
+
+#[test]
+fn published_preference_failure_reads_the_visible_value_without_a_saved_message() {
+    let (mut editor, root) = launch();
+    answer_read(&mut editor);
+    general(
+        &mut editor,
+        GeneralPreference::CanvasBackground,
+        GeneralValue::Choice(1),
+    );
+    let params = editor.preferences.writing().unwrap().params();
+    // The host committed these bytes before it reported a durability failure to the writer.
+    call(&editor.owner, editor.client, "preferences.set", params).unwrap();
+    let reason = "read-error: the replacement is visible but durability is unconfirmed".to_owned();
+    let _ = editor.update(Message::Preferences(PreferenceMessage::Saved(Err(
+        reason.clone()
+    ))));
+    assert!(editor.preferences.reading.in_flight());
+    answer_preferences_read(&mut editor);
+    assert_eq!(editor.view_state.canvas_background, CanvasBackground::Black);
+    assert!(editor.status.text.contains(&reason));
+    assert!(!editor.status.text.contains("Saved"));
+    finish(editor, root);
+}

@@ -604,9 +604,14 @@ impl EditorService {
             .find(|version| version.name.eq_ignore_ascii_case(&name))
         {
             if existing.entry_id == entry.id {
-                return Ok(VersionResult {
+                let result = VersionResult {
                     outcome: MutationOutcome::NoOp,
                     version: Some(existing),
+                };
+                let key = self.catalog_request.clone();
+                return write(&mut self.connection, |tx| {
+                    super::catalog_requests::record(tx, key.as_ref(), &result)?;
+                    Ok(result)
                 });
             }
             return Err(Error::conflict(format!(
@@ -622,6 +627,11 @@ impl EditorService {
             actor: actor.into(),
             created_ms: now_ms(),
         };
+        let key = self.catalog_request.clone();
+        let result = VersionResult {
+            outcome: MutationOutcome::Applied,
+            version: Some(version.clone()),
+        };
         write(&mut self.connection, |tx| {
             tx.execute(
                 "INSERT INTO versions VALUES (?1,?2,?3,?4,?5)",
@@ -633,11 +643,8 @@ impl EditorService {
                     version.created_ms
                 ],
             )?;
-            Ok(())
-        })?;
-        Ok(VersionResult {
-            outcome: MutationOutcome::Applied,
-            version: Some(version),
+            super::catalog_requests::record(tx, key.as_ref(), &result)?;
+            Ok(result)
         })
     }
 
@@ -648,46 +655,23 @@ impl EditorService {
         name: &str,
     ) -> Result<VersionResult, Error> {
         let name = valid_version_name(name)?;
-        let removed = write(&mut self.connection, |tx| {
-            Ok(tx.execute(
+        let key = self.catalog_request.clone();
+        write(&mut self.connection, |tx| {
+            let removed = tx.execute(
                 "DELETE FROM versions WHERE asset_id=?1 AND name=?2",
                 params![asset_id.as_str(), name],
-            )?)
-        })?;
-        Ok(VersionResult {
-            outcome: if removed == 0 {
-                MutationOutcome::NoOp
-            } else {
-                MutationOutcome::Applied
-            },
-            version: None,
+            )?;
+            let result = VersionResult {
+                outcome: if removed == 0 {
+                    MutationOutcome::NoOp
+                } else {
+                    MutationOutcome::Applied
+                },
+                version: None,
+            };
+            super::catalog_requests::record(tx, key.as_ref(), &result)?;
+            Ok(result)
         })
-    }
-
-    /// The whole answer this asset gave `request_id`, whatever input it was made with, marked
-    /// deduplicated, or `None` when it has none: how a batch answers a photograph its earlier
-    /// attempt already did under the request identity it derives for that photograph, although
-    /// the revision that attempt expected has moved on since (`crate::library::batch`).
-    pub(crate) fn recorded_request(
-        &self,
-        asset_id: &AssetId,
-        request_id: &str,
-    ) -> Result<Option<ActionResult>, Error> {
-        let found = self
-            .connection
-            .query_row(
-                "SELECT result_json FROM requests WHERE asset_id=?1 AND request_id=?2",
-                params![asset_id.as_str(), request_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        found
-            .map(|result_json| {
-                let mut result: ActionResult = decode("invalid saved request result", result_json)?;
-                result.mutation.deduplicated = true;
-                Ok(result)
-            })
-            .transpose()
     }
 
     /// The whole answer this asset already gave `request_id`, marked deduplicated, or `None` for a

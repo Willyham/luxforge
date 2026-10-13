@@ -538,14 +538,22 @@ impl PreferenceStore {
     /// Store the preferences `change` names, leaving the rest as they were, and answer them all
     /// as they were before the write and as they are after it. A value that breaks a rule is
     /// refused by name and nothing is written.
+    #[cfg(test)]
     pub(crate) fn set(
         &self,
         change: PreferenceChange,
     ) -> Result<(Preferences, Preferences), Error> {
+        self.set_published(change)?.finish()
+    }
+
+    pub(crate) fn set_published(
+        &self,
+        change: PreferenceChange,
+    ) -> Result<crate::atomic_file::Publication<(Preferences, Preferences)>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let before = preferences.clone();
                 change.apply(preferences);
                 preferences.check().map_err(Error::validation)?;
@@ -556,14 +564,14 @@ impl PreferenceStore {
     /// One locked read-modify-write of the protected usage statistics record alone, leaving every
     /// preference as it was. `apply` sees the record as stored (`None` when absent); a file that
     /// cannot be read, an `apply` that fails, or a result that breaks a rule writes nothing.
-    pub(crate) fn update_usage<R>(
+    pub(crate) fn update_usage_published<R>(
         &self,
         apply: impl FnOnce(&mut Option<crate::usage::consent::UsageRecord>) -> Result<R, Error>,
-    ) -> Result<R, Error> {
+    ) -> Result<crate::atomic_file::Publication<R>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let answer = apply(&mut preferences.usage_statistics)?;
                 preferences.check().map_err(Error::validation)?;
                 Ok(answer)
@@ -573,11 +581,19 @@ impl PreferenceStore {
     /// One locked read-modify-write of the skipped update version alone, leaving every preference
     /// as it was: `update.skip`'s write. Returns whether the stored version changed; an unchanged
     /// one writes nothing. A version that breaks the rule is refused by name and nothing is written.
+    #[cfg(test)]
     pub(crate) fn set_skipped_version(&self, version: &str) -> Result<bool, Error> {
+        self.set_skipped_version_published(version)?.finish()
+    }
+
+    pub(crate) fn set_skipped_version_published(
+        &self,
+        version: &str,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 if preferences.update_skipped_version.as_deref() == Some(version) {
                     return Ok(false);
                 }
@@ -589,11 +605,20 @@ impl PreferenceStore {
 
     /// Store one flag's value, or remove it for `None`, leaving every other stored flag as it
     /// was. Returns whether the stored value changed; an unchanged one writes nothing.
+    #[cfg(test)]
     pub(crate) fn set_flag(&self, id: &str, value: Option<Value>) -> Result<bool, Error> {
+        self.set_flag_published(id, value)?.finish()
+    }
+
+    pub(crate) fn set_flag_published(
+        &self,
+        id: &str,
+        value: Option<Value>,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let before = preferences.flags.get(id).cloned();
                 match &value {
                     Some(value) => preferences.flags.insert(id.to_owned(), value.clone()),
