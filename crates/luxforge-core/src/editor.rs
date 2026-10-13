@@ -468,7 +468,28 @@ impl<'a> AnalysisSelection<'a> {
 #[derive(Debug)]
 pub(crate) struct AnalysisPlan {
     pub identity: AnalysisIdentity,
-    pub evaluation: Result<Evaluation, Error>,
+    pub evaluation: Result<Sourced, Error>,
+}
+
+/// What an export or a full-resolution analysis evaluates: a stack over a source the reference
+/// renders whole, or over a paged derived source, which has no whole frame and which the reference
+/// renders in bands from windows of its level 0 (`crate::render::bands`,
+/// `docs/design/panorama-merge.md`, "The reference on paged sources").
+#[derive(Clone, Debug)]
+pub(crate) enum Sourced {
+    Whole(Evaluation),
+    Paged(Evaluation<Arc<crate::artifacts::derived_source::PagedSource>>),
+}
+
+impl Sourced {
+    /// The evaluation of a source rendered whole, `None` for a paged source's.
+    #[cfg(test)]
+    pub(crate) fn whole(&self) -> Option<&Evaluation> {
+        match self {
+            Self::Whole(evaluation) => Some(evaluation),
+            Self::Paged(_) => None,
+        }
+    }
 }
 
 /// One saved entry's export, frozen on the catalog owner: whatever is committed afterwards, the job
@@ -477,7 +498,7 @@ pub(crate) struct AnalysisPlan {
 pub(crate) struct ExportPlan {
     /// The asset, entry, snapshot, recipe hash, source fingerprint and output stage.
     pub identity: AnalysisIdentity,
-    pub evaluation: Evaluation,
+    pub evaluation: Sourced,
     /// The original's supported EXIF fields, read once when its source was prepared.
     pub capture: Arc<crate::export::CaptureMetadata>,
 }
