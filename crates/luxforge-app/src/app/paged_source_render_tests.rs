@@ -162,11 +162,7 @@ fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit()
     let over_paged = stack(&paged, &edits());
     let before = service.figures();
     let bands = service
-        .stream(
-            &over_paged,
-            OutputSpec::full(WIDTH, HEIGHT),
-            &Cancel::new(),
-        )
+        .stream(&over_paged, OutputSpec::full(WIDTH, HEIGHT), &Cancel::new())
         .unwrap_or_else(|fallback| panic!("{test}: the paged stream: {fallback:?}"));
     assert_eq!(bands.answered(), &Answered::gpu());
     let streamed = stitched(bands);
@@ -286,6 +282,74 @@ fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit()
         }
     }
     eprintln!("{test}: the worker's figures {:?}", service.figures());
+    owner.stop();
+    join.join().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A resized, 16-bit or sharpened export holds its whole output stage on the GPU, in at most 2 × 2
+/// textures of 8,192 and within the stream's budget, and a paged source's stage passes one or the
+/// other (wider than 16,384, or above 128 MP): so a Web-size export of a paged photograph ends
+/// before any band, `texture-limit` past 2 × 8,192 across and `tiles-budget` past the budget, and
+/// the export lane renders it on the banded reference instead. Never a band of it from the GPU.
+#[test]
+#[slow]
+fn paged_source_render_resized_exports_end_before_any_band_for_the_banded_reference() {
+    use luxforge_core::tiles::{Depth, OutputSharpen, Sharpen, SharpenAmount, SharpenMedium};
+    let test = "paged_source_render_resized_exports_end_before_any_band_for_the_banded_reference";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let (dir, catalog, asset, _) = published("web");
+    let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+    let client = owner.register();
+    let job = tasks::ready_preview_job(&owner, PreviewRequest::new(client, asset))
+        .unwrap_or_else(|error| panic!("{test}: the preview job: {error}"));
+    let paged = job.evaluation.source().clone();
+    let over_paged = stack(&paged, &edits());
+    let web = OutputSpec {
+        width: 2048,
+        height: (2048.0 * f64::from(HEIGHT) / f64::from(WIDTH)).round() as u32,
+        depth: Depth::Eight,
+        sharpen: Some(OutputSharpen::new(
+            Sharpen {
+                medium: SharpenMedium::Screen,
+                amount: SharpenAmount::Standard,
+            },
+            None,
+        )),
+    };
+    let master = OutputSpec {
+        depth: Depth::Sixteen,
+        ..OutputSpec::full(WIDTH, HEIGHT)
+    };
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.poison(true);
+    let ended = |output: OutputSpec| {
+        let mut bands = service
+            .stream(&over_paged, output, &Cancel::new())
+            .expect("a stream");
+        let ended = bands
+            .next()
+            .expect("the end")
+            .expect_err("no band of a paged source's held stage");
+        assert!(bands.next().is_none(), "{test}: {output:?}");
+        ended.data.as_deref().cloned().unwrap_or_default()
+    };
+    for output in [web, master] {
+        let data = ended(output);
+        assert_eq!(
+            data["fallback"], "texture-limit",
+            "{test}: {output:?}: {data}"
+        );
+    }
+    let stage_bytes = u64::from(WIDTH) * u64::from(HEIGHT) * 16;
+    service.budget_streams(Some(stage_bytes - 1));
+    let data = ended(web);
+    assert_eq!(data["fallback"], "tiles-budget", "{test}: {data}");
+    assert_eq!(data["requested"], stage_bytes, "{test}: {data}");
+    service.budget_streams(None);
     owner.stop();
     join.join().unwrap();
     let _ = std::fs::remove_dir_all(dir);
