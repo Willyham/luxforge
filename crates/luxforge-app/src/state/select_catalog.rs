@@ -26,7 +26,7 @@ use luxforge_core::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -107,10 +107,23 @@ pub(crate) enum BatchKind {
     Paste {
         source: String,
     },
-    /// `batch.export` into the folder.
+    /// `batch.export` with the Export sheet's settings, and the preset they are while unchanged,
+    /// which the last export remembers once it writes a file.
     Export {
-        folder: PathBuf,
+        settings: Box<luxforge_core::ExportSettings>,
+        preset_id: Option<String>,
     },
+}
+
+/// Where a batch export writes, as the status bar and its report say it: its chosen folder, or
+/// beside each original.
+fn export_place(settings: &luxforge_core::ExportSettings, home: Option<&Path>) -> String {
+    match &settings.folder {
+        luxforge_core::ExportFolder::Path(folder) => {
+            super::long_work::place(&folder.to_string_lossy(), home)
+        }
+        luxforge_core::ExportFolder::Original => "each original\u{2019}s folder".to_owned(),
+    }
 }
 
 /// How a batch ended, as its `job.read` record says.
@@ -159,10 +172,10 @@ impl BatchRun {
                     BatchKind::Paste { source } => {
                         format!("Pasted settings from {source} to {}", photographs(done))
                     }
-                    BatchKind::Export { folder } if done > 0 => format!(
+                    BatchKind::Export { settings, .. } if done > 0 => format!(
                         "Exported {} to {}",
                         photographs(done),
-                        super::long_work::place(&folder.to_string_lossy(), home)
+                        export_place(settings, home)
                     ),
                     BatchKind::Export { .. } => "Exported no photographs".to_owned(),
                 };
@@ -186,9 +199,9 @@ impl BatchRun {
             (BatchEnd::Cancelled, BatchKind::Paste { .. }) => {
                 "Cancelled pasting: finished photographs keep their entries".into()
             }
-            (BatchEnd::Cancelled, BatchKind::Export { folder }) => format!(
+            (BatchEnd::Cancelled, BatchKind::Export { settings, .. }) => format!(
                 "Cancelled exporting: the files it wrote stay in {}",
-                super::long_work::place(&folder.to_string_lossy(), home)
+                export_place(settings, home)
             ),
             (BatchEnd::Failed(reason), BatchKind::Preset { name }) => {
                 format!("Applying {name} failed: {reason}")
@@ -395,11 +408,8 @@ pub(crate) enum CatalogAction {
         id: PresetId,
         name: String,
     },
-    /// Export…: the native folder dialog, then [`Self::ExportInto`].
+    /// Export N…: the Export sheet over the selection, whose Export starts `batch.export`.
     Export,
-    /// The folder Export… writes into, or none when the dialog was dismissed: `batch.export` of
-    /// the selection.
-    ExportInto(Option<PathBuf>),
     /// Remove from catalog… (or `Delete` over a catalog view): its confirmation.
     Remove,
     /// Put back: `asset.restore` of the selection, over Removed.
@@ -664,10 +674,34 @@ pub(crate) fn batch_preset_params(preset: &PresetId, mutation: &MutationRequest)
     json!({"targets": selection(), "preset_id": preset, "mutation": mutation})
 }
 
-/// `batch.export`'s parameters: the selection, exported into the existing folder `destination`
-/// with the export's own settings.
-pub(crate) fn batch_export_params(destination: &Path, mutation: &MutationRequest) -> Value {
-    json!({"targets": selection(), "destination": destination, "mutation": mutation})
+/// `batch.export`'s parameters: the selection, exported with the Export sheet's `settings`.
+pub(crate) fn batch_export_params(
+    settings: &luxforge_core::ExportSettings,
+    mutation: &MutationRequest,
+) -> Value {
+    json!({"targets": selection(), "settings": settings, "mutation": mutation})
+}
+
+/// The batch Export sheet's target for the selection: how many it names, how many are RAW and how
+/// many JPEG among the rows the desktop holds, and those photographs, which the sheet plans.
+pub(crate) fn export_target(
+    state: &SelectState,
+    selection: &SelectionModel,
+) -> crate::state::export_sheet::SheetTarget {
+    let rows = selected_rows(state, selection).unwrap_or_default();
+    let count = |tag: SourceTag| rows.iter().filter(|row| row.kind == tag).count() as u32;
+    crate::state::export_sheet::SheetTarget::Batch {
+        count: selection.count,
+        raw: count(SourceTag::Raw),
+        jpeg: count(SourceTag::Jpeg),
+        assets: rows
+            .iter()
+            .filter_map(|row| match &row.item {
+                RowItem::Photo { asset_id } => Some(asset_id.clone()),
+                RowItem::File { .. } | RowItem::Input { .. } => None,
+            })
+            .collect(),
+    }
 }
 
 /// `catalog.empty-removed`'s parameters. Each call is a request of its own: a call that finds
@@ -1374,7 +1408,7 @@ pub(crate) fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<C
             format!("Pasted settings from {source}"),
             "Each photograph has its own history entry; undo in that photograph’s history.".into(),
         ),
-        BatchKind::Export { folder } => {
+        BatchKind::Export { settings, .. } => {
             let written: Vec<(String, String)> = report
                 .written
                 .iter()
@@ -1400,7 +1434,11 @@ pub(crate) fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<C
                 format!(
                     "Into {}, each named by the export's rule; no file was replaced. Every one \
                      left out is listed with why.",
-                    shown_path(folder, home)
+                    match &settings.folder {
+                        luxforge_core::ExportFolder::Path(folder) => shown_path(folder, home),
+                        luxforge_core::ExportFolder::Original =>
+                            "each original\u{2019}s folder".to_owned(),
+                    }
                 ),
             )
         }
@@ -1431,16 +1469,17 @@ fn stale_skips(
 /// The code a photograph left out for unacknowledged stale frozen patches is skipped with.
 const STALE_UNACKNOWLEDGED: &str = "stale-unacknowledged";
 
-/// The batch export report's Export anyway, as `batch.export`'s parameters and the photographs it
-/// names: the ones the ended export left out for stale frozen patches, into its folder, each
+/// The batch export report's Export anyway, as its kind, `batch.export`'s parameters and the
+/// photographs it names: the ones the ended export left out for stale frozen patches, with its
+/// settings, each
 /// acknowledged exactly — the entry and patches the owner named — and nothing else. `None` when
 /// the last batch is not an export that left any out so.
 pub(crate) fn export_anyway_params(
     catalog: &CatalogState,
     mutation: &MutationRequest,
-) -> Option<(PathBuf, Value, BTreeMap<AssetId, String>)> {
+) -> Option<(BatchKind, Value, BTreeMap<AssetId, String>)> {
     let (batch, report) = report_of(catalog)?;
-    let BatchKind::Export { folder } = &batch.kind else {
+    let BatchKind::Export { settings, .. } = &batch.kind else {
         return None;
     };
     let stale: Vec<_> = stale_skips(report).collect();
@@ -1462,10 +1501,10 @@ pub(crate) fn export_anyway_params(
         .map(|skip| (skip.asset_id.clone(), batch.name(&skip.asset_id)))
         .collect();
     Some((
-        folder.clone(),
+        batch.kind.clone(),
         json!({
             "targets": {"kind": "assets", "asset_ids": stale.iter().map(|skip| &skip.asset_id).collect::<Vec<_>>()},
-            "destination": folder,
+            "settings": settings,
             "acknowledge_stale": acknowledgements,
             "mutation": mutation,
         }),

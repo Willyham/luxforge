@@ -276,6 +276,7 @@ fn jpeg(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
         &luxforge_jpeg::Settings {
             quality: 85,
             chroma: (2, 2),
+            optimise: false,
             segments: &[],
             icc: None,
             pixels_per_inch: None,

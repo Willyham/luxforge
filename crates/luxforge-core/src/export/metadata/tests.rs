@@ -246,6 +246,52 @@ fn every_kept_field_round_trips_from_each_container() {
     }
 }
 
+/// Each metadata level keeps exactly the tabled fields, read back by the independent reader:
+/// copyright Artist and Copyright, no_location everything but the GPS group, all everything, and
+/// none no field (the export then writes no segment at all). Every level that writes EXIF also
+/// writes the structural fields.
+#[test]
+fn each_metadata_level_keeps_exactly_its_tabled_fields() {
+    use crate::export::settings::MetadataLevel;
+    let mut input = kept();
+    input.extend(excluded());
+    let metadata = CaptureMetadata::from_raw(&tiff(&input, true, false));
+    let gps = |tag: &Tag| tag.to_string().starts_with("GPS");
+    for (level, wanted) in [
+        (MetadataLevel::None, Vec::new()),
+        (
+            MetadataLevel::Copyright,
+            kept()
+                .into_iter()
+                .filter(|(tag, _)| [Tag::Artist, Tag::Copyright].contains(tag))
+                .collect(),
+        ),
+        (
+            MetadataLevel::NoLocation,
+            kept().into_iter().filter(|(tag, _)| !gps(tag)).collect(),
+        ),
+        (MetadataLevel::All, kept()),
+    ] {
+        let at_level = metadata.at_level(level);
+        let names: Vec<String> = wanted.iter().map(|(tag, _)| tag.to_string()).collect();
+        assert_eq!(at_level.field_names(), names, "{level:?}");
+        assert_eq!(
+            read_back(&at_level.exif_payload(300, 200)),
+            expected(&wanted, 300, 200),
+            "{level:?}"
+        );
+        assert_eq!(level.writes_exif(), level != MetadataLevel::None);
+    }
+    // The table's 33 fields less its 11 GPS fields.
+    assert_eq!(
+        metadata
+            .at_level(MetadataLevel::NoLocation)
+            .field_names()
+            .len(),
+        22
+    );
+}
+
 #[test]
 fn information_reads_validated_capture_values_from_jpeg_tiff_and_raf() {
     for little_endian in [false, true] {

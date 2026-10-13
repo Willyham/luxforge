@@ -226,10 +226,16 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         .into(),
         None => screen,
     };
-    if let Some(sheet) = crate::view::copy_settings::confirmation(&model.copy_settings) {
+    let screen = if let Some(sheet) = crate::view::copy_settings::confirmation(&model.copy_settings)
+    {
         stack![screen, sheet].into()
     } else {
         screen
+    };
+    // Export N…'s sheet, modal over the whole window.
+    match crate::view::export_sheet::export_sheet(model.export_sheet.as_ref()) {
+        Some(sheet) => stack![screen, sheet].into(),
+        None => screen,
     }
 }
 

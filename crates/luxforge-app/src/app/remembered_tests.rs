@@ -1,14 +1,20 @@
 //! Remembered state against a real owner: a launch over stored preferences starts with those
 //! panels, overlays, colour and brush through one `workspace.set` and writes nothing back; a
 //! toggle of a remembered switch and a change of the brush are stored through the writer, and a
-//! mode, overlay or zoom change is not; and a dialog-chosen export stores its folder, which the
-//! next dialog opens on, while an evidence step's export stores nothing.
+//! mode, overlay or zoom change is not; and an export from the Export sheet sends what an API
+//! client sends, writes the same file and is stored as the last export, which Export again
+//! repeats, while an evidence step's export stores nothing. The sheet's preset changes are the
+//! API's.
 use super::{
     Boot, Editor,
-    export::{ExportChoice, dialog_start, plan_now},
+    export::{ExportRequest, export_params, read_now, screen_pixels_per_inch, write_now},
     job_reads::Reader,
     message::{
-        Message, export::ExportMessage, mask::BrushEdit, mask::MaskMessage, sync::SyncMessage,
+        Message,
+        export::{ExportMessage, SheetMessage},
+        mask::BrushEdit,
+        mask::MaskMessage,
+        sync::SyncMessage,
         view::ViewMessage,
     },
     settings_tests::{answer_preference, finish},
@@ -17,6 +23,7 @@ use super::{
 };
 use crate::mask_draft::NEUTRAL_BRUSH;
 use luxforge_core::{AssetId, ClientSession, MaskOverlayColour};
+use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
@@ -287,139 +294,307 @@ fn remembered_brush_is_stored_on_a_change_and_coalesced_under_repeated_keys() {
     finish(editor, root);
 }
 
-/// Answer an export's chain as the runtime would, from the chosen destination to its end.
-fn export_to(editor: &mut Editor, asset: &AssetId, destination: PathBuf) {
-    let entry = editor.displayed_entry().unwrap();
-    let plan = plan_now(&editor.owner, editor.client, asset, &entry).unwrap();
-    let choice = ExportChoice {
-        asset_id: asset.clone(),
-        entry_id: entry,
-        destination,
-        keep_metadata: false,
-        pixels_per_inch: None,
-        reference: false,
-        plan,
-        acknowledge_stale: None,
-    };
-    let queued = super::export::send_now(&editor.owner, editor.client, &choice);
-    let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
-        choice,
-    ))))));
-    let _ = editor.update(Message::Export(ExportMessage::Queued(queued)));
-    let job = editor
+/// One gesture on the open Export sheet.
+fn sheet(editor: &mut Editor, message: SheetMessage) {
+    let _ = editor.update(Message::Export(ExportMessage::Sheet(message)));
+}
+
+/// Run an export request's chain as the runtime would, from its plan to its end, and say what
+/// `export.write` was sent, without its mutation envelope.
+fn run(editor: &mut Editor, request: ExportRequest) -> Value {
+    let _ = editor.start_export(request.clone());
+    assert!(editor.export.active(), "{}", editor.status.text);
+    let (choice, result) = write_now(&editor.owner, editor.client, request);
+    let choice = choice.expect("the plan named a destination");
+    let mut sent = export_params(&choice);
+    sent.as_object_mut().unwrap().remove("mutation");
+    let _ = editor.update(Message::Export(ExportMessage::Sent {
+        choice: Some(Box::new(choice)),
+        result,
+    }));
+    if let Some(job) = editor
         .export
         .run
         .as_ref()
         .and_then(|run| run.job_id.clone())
-        .expect("a queued job");
-    // The reader the subscription starts while the job is live; its last message is the end.
-    let mut reader = Followed::new(super::export::export_reads(&Reader {
-        identity: job,
-        owner: editor.owner.clone(),
-        client: editor.client,
-        presentation_visible: true,
-    }));
-    while let Some(message) = reader.next() {
-        let _ = editor.update(message);
+    {
+        // The reader the subscription starts while the job is live; its last message is the end.
+        let mut reader = Followed::new(super::export::export_reads(&Reader {
+            identity: job,
+            owner: editor.owner.clone(),
+            client: editor.client,
+            presentation_visible: true,
+        }));
+        while let Some(message) = reader.next() {
+            let _ = editor.update(message);
+        }
     }
     assert!(editor.export.run.is_none());
+    sent
 }
 
-/// A dialog-chosen export stores its folder once it succeeds, and the next dialog opens there; an
-/// export whose destination an evidence step named stores nothing.
+/// One request through an independent client, a change under a mutation envelope of its own.
+fn agent_call(
+    editor: &Editor,
+    agent: luxforge_core::ClientId,
+    method: &str,
+    mut params: Value,
+) -> Value {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    if !matches!(method, "export.plan" | "export.presets.list") {
+        let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        params["mutation"] = json!({"request_id": format!("agent-{next}"), "actor": "agent"});
+    }
+    call(&editor.owner, agent, method, params)
+        .unwrap_or_else(|error| panic!("{method}: {error}"))
+        .0
+}
+
+/// The sheet's Export sends exactly what an independent JSON client sends for the same settings —
+/// Web's, into a chosen folder, at this window's density — and the two write the same bytes. It is
+/// stored as the last export, and Export again repeats it, counting the name up.
 #[test]
-fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evidence_one() {
+#[slow]
+fn the_sheets_export_is_what_an_api_client_sends_and_export_again_repeats_it() {
     let (mut editor, root, asset) = launch(json!({}), true);
     let asset = asset.unwrap();
-    let original = editor
-        .document
-        .state
-        .as_ref()
-        .unwrap()
-        .asset
-        .locator
-        .clone();
-
-    // An evidence step's destination: nothing is stored.
-    let evidence = root.join("evidence");
-    std::fs::create_dir_all(&evidence).unwrap();
-    let _ = editor.export_start(false, false, Some(evidence.join("step.jpg")));
-    export_to(&mut editor, &asset, evidence.join("step.jpg"));
-    assert!(evidence.join("step.jpg").exists(), "{}", editor.status.text);
-    assert!(editor.preferences.idle(), "nothing stored");
-    assert_eq!(stored(&editor)["export_folder"], Value::Null);
-
-    // The save dialog's destination: its folder is stored once the export succeeds.
-    let chosen = root.join("chosen");
-    std::fs::create_dir_all(&chosen).unwrap();
-    let _ = editor.update(Message::Export(ExportMessage::Start {
-        keep_metadata: false,
+    let out = root.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let _ = editor.update(Message::Export(ExportMessage::OpenSheet {
         reference: false,
     }));
-    assert!(editor.view_state.picker_open, "the dialog is open");
-    export_to(&mut editor, &asset, chosen.join("mine.jpg"));
-    assert!(chosen.join("mine.jpg").exists(), "{}", editor.status.text);
+    sheet(&mut editor, SheetMessage::FolderChosen(Some(out.clone())));
+    editor.answer_sheet_plan();
+    let shown = editor.workspace.export_sheet.clone().expect("the sheet");
+    assert_eq!(
+        shown.name.as_deref(),
+        Some("\u{2192} orientation-1-web.jpg")
+    );
+    assert!(shown.can_export, "{:?}", shown.refusals);
+
+    // What an independent client sends: Web's settings as the API lists them, into the folder, at
+    // the density this window names.
+    let agent = editor.owner.register();
+    let mut settings =
+        agent_call(&editor, agent, "export.presets.list", json!({}))["presets"][0]["settings"]
+            .clone();
+    settings["folder"] = json!({"path": out});
+    let remembered = settings.clone();
+    settings["pixels_per_inch"] = json!(screen_pixels_per_inch(
+        editor.view_state.system_scale_factor
+    ));
+    let entry = editor.displayed_entry().unwrap();
+    let request = editor.sheet_request().unwrap();
+    let sent = run(&mut editor, request);
+    let written = out.join("orientation-1-web.jpg");
+    assert_eq!(
+        sent,
+        json!({"asset_id": asset, "entry_id": entry, "settings": settings, "destination": written})
+    );
+    assert!(
+        editor
+            .status
+            .text
+            .starts_with("Exported orientation-1-web.jpg \u{b7} ")
+            && editor.status.text.ends_with("\u{b7} quality 80"),
+        "{}",
+        editor.status.text
+    );
+    let independent = root.join("independent");
+    std::fs::create_dir_all(&independent).unwrap();
+    let mut theirs = settings.clone();
+    theirs["folder"] = json!({"path": independent});
+    let plan = agent_call(
+        &editor,
+        agent,
+        "export.plan",
+        json!({"asset_id": asset, "entry_id": entry, "settings": theirs}),
+    );
+    let queued = agent_call(
+        &editor,
+        agent,
+        "export.write",
+        json!({"asset_id": asset, "entry_id": entry, "settings": theirs,
+               "destination": plan["suggested"]}),
+    );
+    let job = queued["job_id"].as_str().unwrap().to_owned();
+    luxforge_testbase::wait_until("the independent export", || {
+        read_now(&editor.owner, agent, &job).unwrap()["status"] == "ready"
+    });
+    assert_eq!(
+        std::fs::read(&written).unwrap(),
+        std::fs::read(independent.join("orientation-1-web.jpg")).unwrap(),
+        "the same settings write the same file"
+    );
+
+    // Stored as the last export, with no preset: its folder is not Web's.
+    let last = json!({"settings": remembered, "preset_id": null});
     assert_eq!(
         editor.preferences.writing().unwrap().params(),
-        json!({"export_folder": chosen})
+        json!({"export_last": last})
     );
     answer_preference(&mut editor);
-    assert_eq!(stored(&editor)["export_folder"], json!(chosen));
+    assert_eq!(stored(&editor)["export_last"], last);
+    let _ = editor.update(Message::Export(ExportMessage::Menu));
+    assert_eq!(
+        editor
+            .workspace
+            .title
+            .export_menu
+            .as_ref()
+            .unwrap()
+            .again
+            .as_deref(),
+        Some("Export again with the last settings")
+    );
 
-    // The next dialog opens on the remembered folder, at the plan's suggestion.
-    let entry = editor.displayed_entry().unwrap();
-    let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
-    let (folder, name) = dialog_start(&plan, &original);
-    assert_eq!(folder, chosen);
-    assert!(name.ends_with("-edited.jpg"), "{name}");
-
-    // The same folder again stores nothing new.
-    let _ = editor.update(Message::Export(ExportMessage::Start {
-        keep_metadata: false,
-        reference: false,
-    }));
-    export_to(&mut editor, &asset, chosen.join("again.jpg"));
+    // Export again: the same request, the name counted up; the same last export stores nothing.
+    let request = editor.again_request().unwrap();
+    let sent = run(&mut editor, request);
+    assert_eq!(sent["settings"], settings);
+    assert_eq!(
+        sent["destination"],
+        json!(out.join("orientation-1-web-2.jpg"))
+    );
+    assert!(out.join("orientation-1-web-2.jpg").exists());
     assert!(editor.preferences.idle());
     finish(editor, root);
 }
 
-/// A dialog export that fails or is cancelled stores nothing.
+/// The sheet's preset changes are the API's: a preset an agent created is a card, Save as preset…
+/// creates one of the current settings, Update "Name"… replaces its settings and Delete removes
+/// it, each listed by the API as the sheet shows it.
 #[test]
-fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
-    let (mut editor, root, asset) = launch(json!({}), true);
-    let asset = asset.unwrap();
-    let _ = editor.update(Message::Export(ExportMessage::Start {
-        keep_metadata: false,
-        reference: false,
-    }));
-    let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(None))));
-    assert!(editor.preferences.idle());
-
-    // An existing file is refused, never replaced.
-    let folder = root.join("taken");
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("taken.jpg"), b"kept").unwrap();
-    let _ = editor.update(Message::Export(ExportMessage::Start {
-        keep_metadata: false,
-        reference: false,
-    }));
-    let entry = editor.displayed_entry().unwrap();
-    let choice = ExportChoice {
-        asset_id: asset.clone(),
-        entry_id: entry.clone(),
-        destination: folder.join("taken.jpg"),
-        keep_metadata: false,
-        pixels_per_inch: None,
-        reference: false,
-        plan: plan_now(&editor.owner, editor.client, &asset, &entry).unwrap(),
-        acknowledge_stale: None,
+#[slow]
+fn the_sheets_preset_changes_are_the_apis() {
+    let (mut editor, root, _) = launch(json!({}), true);
+    let agent = editor.owner.register();
+    let listed = |editor: &Editor| {
+        agent_call(editor, agent, "export.presets.list", json!({}))["presets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|preset| {
+                (
+                    preset["name"].as_str().unwrap().to_owned(),
+                    preset["settings"]["quality"].clone(),
+                )
+            })
+            .collect::<Vec<_>>()
     };
-    let queued = super::export::send_now(&editor.owner, editor.client, &choice);
-    let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
-        choice,
-    ))))));
-    let _ = editor.update(Message::Export(ExportMessage::Queued(queued)));
-    assert!(editor.export.run.is_none(), "{}", editor.status.text);
+    let web =
+        agent_call(&editor, agent, "export.presets.list", json!({}))["presets"][0]["settings"]
+            .clone();
+    let _ = agent_call(
+        &editor,
+        agent,
+        "export.presets.create",
+        json!({"name": "Agent's", "settings": web}),
+    );
+    let _ = editor.update(Message::Export(ExportMessage::OpenSheet {
+        reference: false,
+    }));
+    editor.answer_sheet_plan();
+    let names = |editor: &Editor| {
+        editor
+            .workspace
+            .export_sheet
+            .as_ref()
+            .unwrap()
+            .cards
+            .iter()
+            .map(|card| card.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&editor), ["Web", "Print", "Master", "Agent's"]);
+
+    sheet(&mut editor, SheetMessage::Quality(60));
+    let shown = editor.workspace.export_sheet.clone().unwrap();
+    assert!(
+        shown.cards[0].changed && shown.update.is_none(),
+        "Web is built in"
+    );
+    sheet(
+        &mut editor,
+        SheetMessage::Name(crate::state::export_sheet::NamingTarget::New),
+    );
+    sheet(&mut editor, SheetMessage::NameText("Mine".into()));
+    sheet(&mut editor, SheetMessage::NameSubmit);
+    assert_eq!(
+        names(&editor),
+        ["Web", "Print", "Master", "Agent's", "Mine"]
+    );
+    let shown = editor.workspace.export_sheet.clone().unwrap();
+    assert!(shown.cards[4].selected && !shown.cards[4].changed);
+    assert!(listed(&editor).contains(&("Mine".to_owned(), json!(60))));
+
+    sheet(&mut editor, SheetMessage::Quality(70));
+    assert_eq!(
+        editor
+            .workspace
+            .export_sheet
+            .as_ref()
+            .unwrap()
+            .update
+            .as_deref(),
+        Some("Update \u{201c}Mine\u{201d}\u{2026}")
+    );
+    sheet(&mut editor, SheetMessage::Update);
+    assert!(listed(&editor).contains(&("Mine".to_owned(), json!(70))));
+    assert!(!editor.workspace.export_sheet.as_ref().unwrap().cards[4].changed);
+
+    let mine = editor
+        .export
+        .sheet
+        .as_ref()
+        .unwrap()
+        .preset_id
+        .clone()
+        .unwrap();
+    sheet(
+        &mut editor,
+        SheetMessage::Card(mine, crate::state::export_sheet::CardChoice::Delete),
+    );
+    assert_eq!(names(&editor), ["Web", "Print", "Master", "Agent's"]);
+    assert!(!listed(&editor).iter().any(|(name, _)| name == "Mine"));
+    assert_eq!(editor.export.sheet.as_ref().unwrap().preset_id, None);
+    finish(editor, root);
+}
+
+/// An evidence step's export stores nothing, and neither does an export that is refused.
+#[test]
+#[slow]
+fn an_evidence_export_and_a_refused_one_store_nothing() {
+    let (mut editor, root, _) = launch(json!({}), true);
+    let evidence = root.join("evidence");
+    std::fs::create_dir_all(&evidence).unwrap();
+    let request = |editor: &Editor, name: &str| ExportRequest {
+        asset_id: editor.document.state.as_ref().unwrap().asset.id.clone(),
+        entry_id: editor.displayed_entry().unwrap(),
+        settings: luxforge_core::ExportSettings {
+            folder: luxforge_core::ExportFolder::Path(evidence.clone()),
+            ..luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)
+        },
+        destination: Some(evidence.join(name)),
+        reference: false,
+        remember: None,
+    };
+    let first = request(&editor, "step.jpg");
+    let _ = run(&mut editor, first);
+    assert!(evidence.join("step.jpg").exists(), "{}", editor.status.text);
+    assert!(editor.preferences.idle(), "nothing stored");
+
+    // The same file again is refused, never replaced, and stores nothing even when it would.
+    let refused = ExportRequest {
+        remember: Some(luxforge_core::preferences::ExportLast {
+            settings: luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),
+            preset_id: None,
+        }),
+        ..request(&editor, "step.jpg")
+    };
+    let _ = run(&mut editor, refused);
+    assert_eq!(editor.status.text, super::export::refused_text("step.jpg"));
     assert!(editor.preferences.idle());
+    assert_eq!(stored(&editor)["export_last"], Value::Null);
     finish(editor, root);
 }

@@ -18,6 +18,10 @@
 //! - **Streams.** A stream's bands, stitched, are the whole stage the surface draws, bit for bit;
 //!   two streams, on one device and on two, are byte-identical; a cancelled stream stops between
 //!   tiles and lets go of what it held.
+//! - **Resampled streams.** An output smaller than its stage, or at 16 bits, is within its class's
+//!   display limit of the reference output over every pixel, in bands of a cut's rows; it lets go
+//!   of its held output stage when it ends or is cancelled, ends naming `tiles-budget` when that
+//!   stage and its largest cut do not fit, and an output larger than its stage is refused.
 //! - **Exports.** Through a catalog owner's export lane, as the desktop's launch hands it the
 //!   worker: a GPU export, decoded, is within its class's display limit of the reference export
 //!   decoded, over every pixel, on generated photographs and the corpus's Presence fixture; two
@@ -39,18 +43,21 @@ use crate::adapters;
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
     Evaluation, GpuFallback, HostConfig, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT,
-    PreviewSource, Recipe, Region, RenderContext, TilePlan, plan_read, plan_stream_sweeps_at,
+    PreviewSource, Recipe, Region, RenderContext, SnapshotId, TilePlan, plan_read,
+    plan_stream_sweeps_at,
     tiles::{
-        Answered, BandStream, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, ReadAnswer, ReadPixels,
-        ReadStage, ReadValues, ReferenceTiles, TileCall, TileFallback, TileService, TileStatus,
-        TileUnavailable,
+        Answered, BandStream, Depth, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, OutputSpec, PixelRows,
+        Pixels, ReadAnswer, ReadPixels, ReadStage, ReadValues, ReferenceTiles, TileCall,
+        TileFallback, TileService, TileStatus, TileUnavailable, reference_output,
     },
 };
 use luxforge_gpu::{
-    Derivation, GpuBoundary, GpuPlan, GpuSource, headless::HeadlessSurface, tiles::GPU_TILE_BUDGET,
-    tiles::TileEnd, tiles::TilePixels,
+    Derivation, GpuBoundary, GpuPlan, GpuSource, headless::HeadlessSurface,
+    resample::RESAMPLE_ROWS, tiles::GPU_TILE_BUDGET, tiles::TileEnd, tiles::TilePixels,
 };
-use luxforge_reference::preview_error::{Class, ciede2000, lab_from_srgb8, statistics_of};
+use luxforge_reference::preview_error::{
+    Class, Statistics, ciede2000, lab_from_srgb8, statistics_of,
+};
 use luxforge_test_macros::slow;
 use luxforge_testbase::{Gate, HANG, paths, wait_until};
 use serde_json::{Value, json};
@@ -240,6 +247,12 @@ fn code(value: f32) -> u8 {
         .partition_point(|threshold| *threshold <= value) as u8
 }
 
+/// The full-size 8-bit output of `stack`'s output stage: today's export.
+fn whole(stack: &Evaluation) -> OutputSpec {
+    let identity = stack.identity().expect("the stack's identity");
+    OutputSpec::full(identity.width, identity.height)
+}
+
 /// Every band of `stream` in order, stitched into its output stage's codes, each band checked to
 /// start where the last ended and to be at most `side` rows.
 fn stitched(stream: BandStream, side: u32) -> Vec<u8> {
@@ -249,7 +262,7 @@ fn stitched(stream: BandStream, side: u32) -> Vec<u8> {
         assert_eq!(band.y0, rows, "bands in order");
         assert!(band.rows <= side, "a band is one row of tiles");
         rows += band.rows;
-        rgba.extend(band.rgba);
+        rgba.extend(band.into_rgba8().expect("8-bit codes"));
     }
     rgba
 }
@@ -743,7 +756,7 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         unit: "unprogrammed".into(),
     });
     assert_eq!(
-        service.stream(&unlit, &Cancel::new()).err(),
+        service.stream(&unlit, whole(&unlit), &Cancel::new()).err(),
         Some(why.clone()),
         "a stream of it is refused at once"
     );
@@ -784,7 +797,10 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         Answered::reference(Some(refusal.clone()))
     );
     assert_eq!(answers[0].pixels, expected[0].pixels);
-    assert_eq!(refused.stream(&held, &Cancel::new()).err(), Some(refusal));
+    assert_eq!(
+        refused.stream(&held, whole(&held), &Cancel::new()).err(),
+        Some(refusal)
+    );
     settle(&refused, client);
     assert_eq!(refused.figures().adapter, None, "nothing was opened");
 
@@ -867,7 +883,9 @@ fn an_interactive_read_waits_behind_at_most_two_export_tiles() {
     // Held before the stream's beginning, then before its first tile.
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &Cancel::new())
+        .expect("a stream");
     wait_until("the worker held before the stream begins", || {
         begin.holding()
     });
@@ -1052,7 +1070,7 @@ fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
             let before = service.figures();
             let stream = |service: &GpuTiles| {
                 let bands = service
-                    .stream(&stack, &Cancel::new())
+                    .stream(&stack, whole(&stack), &Cancel::new())
                     .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
                 assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
                 stitched(bands, STAGED_SIDE)
@@ -1090,7 +1108,8 @@ fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
 /// Every family on both paths streamed in tiles of [`SIDE`], the worker's scratch starting from
 /// NaN, two tiles in flight and each band's window of the source uploaded once: its bands,
 /// stitched, are bit for bit the whole output stage the photo surface's own drawing draws as one
-/// region on another device of the same adapter, so its tiles carry no seam.
+/// region on another device of the same adapter, so its tiles carry no seam; and a full-size 8-bit
+/// output is never resampled nor holds its output stage.
 #[test]
 #[slow]
 fn a_stream_is_the_whole_stage_render_bit_for_bit() {
@@ -1123,7 +1142,7 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
             settle(&service, client);
             let before = service.figures();
             let bands = service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
             assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
             let rgba = stitched(bands, SIDE);
@@ -1141,6 +1160,9 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
                 "{what}: one upload a band"
             );
             assert_eq!((after.in_flight, after.in_use), (0, 0), "{what}");
+            // The full-size 8-bit output is its tiles' own codes, never resampled.
+            assert_eq!(after.resampled, before.resampled, "{what}: not resampled");
+            assert_eq!(after.stage_bytes, 0, "{what}: no output stage held");
             eprintln!(
                 "{test}: {what}: {} x {} in tiles of {SIDE}, bit for bit the surface's region",
                 plan.size.width, plan.size.height
@@ -1191,7 +1213,9 @@ fn two_streams_are_byte_identical() {
                 let stack = stack(&source, &recipe);
                 let stream = |service: &GpuTiles| {
                     stitched(
-                        service.stream(&stack, &Cancel::new()).expect("a stream"),
+                        service
+                            .stream(&stack, whole(&stack), &Cancel::new())
+                            .expect("a stream"),
                         u32::MAX,
                     )
                 };
@@ -1230,7 +1254,9 @@ fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
     let cancel = Cancel::new();
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &cancel).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &cancel)
+        .expect("a stream");
     drop(stack);
     wait_until("the worker held before the stream begins", || {
         begin.holding()
@@ -1286,7 +1312,9 @@ fn a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled(
     let cancel = Cancel::new();
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &cancel).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &cancel)
+        .expect("a stream");
     wait_until("the worker held before the stream begins", || {
         begin.holding()
     });
@@ -1357,6 +1385,335 @@ fn a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled(
     eprintln!("{test}: {drawing:?} then {after:?}");
 }
 
+/// The outputs a resampled stream of a `stage` output stage is asked for: smaller at 8 bits, smaller
+/// at 16 bits, and the stage itself at 16 bits.
+fn resampled_outputs(stage: OutputSpec) -> [(&'static str, OutputSpec); 3] {
+    let scaled = |numerator: u32, denominator: u32| {
+        OutputSpec::full(
+            (stage.width * numerator / denominator).max(1),
+            (stage.height * numerator / denominator).max(1),
+        )
+    };
+    [
+        ("smaller at 8 bits", scaled(5, 12)),
+        (
+            "smaller at 16 bits",
+            OutputSpec {
+                depth: Depth::Sixteen,
+                ..scaled(2, 3)
+            },
+        ),
+        (
+            "full size at 16 bits",
+            OutputSpec {
+                depth: Depth::Sixteen,
+                ..stage
+            },
+        ),
+    ]
+}
+
+/// Every band of a resampled `stream` in order, stitched into its output's samples at its depth,
+/// each band checked to start where the last ended, to be at most [`RESAMPLE_ROWS`] rows and of the
+/// output's depth: the samples and how many bands there were.
+fn stitched_output(stream: BandStream) -> (Pixels, u32) {
+    let output = stream.output();
+    let (mut eight, mut sixteen, mut rows, mut bands) = (Vec::new(), Vec::new(), 0, 0);
+    for band in stream {
+        let band = band.unwrap_or_else(|error| panic!("a band: {error:?}"));
+        assert_eq!(band.y0, rows, "bands in order");
+        assert!(
+            band.rows <= RESAMPLE_ROWS,
+            "a band is at most one cut's rows"
+        );
+        assert_eq!(
+            band.pixels.depth(),
+            output.depth,
+            "a band at the output's depth"
+        );
+        rows += band.rows;
+        bands += 1;
+        match band.pixels {
+            Pixels::Eight(rgba) => eight.extend(rgba),
+            Pixels::Sixteen(rgba) => sixteen.extend(rgba),
+        }
+    }
+    assert_eq!(rows, output.height, "every row of the output");
+    let pixels = match output.depth {
+        Depth::Eight => Pixels::Eight(eight),
+        Depth::Sixteen => Pixels::Sixteen(sixteen),
+    };
+    (pixels, bands)
+}
+
+/// `candidate` against `reference`, two outputs of `output`'s size and depth, by the preview error
+/// statistics over every pixel, ΔE00 from their own depth's values.
+fn output_against(candidate: &Pixels, reference: PixelRows<'_>, output: OutputSpec) -> Statistics {
+    use luxforge_reference::preview_error::{Rgb8, Rgb16, compare, differences16};
+    fn rgb<T: Copy>(rgba: &[T]) -> Vec<T> {
+        rgba.chunks_exact(4)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .collect()
+    }
+    let (width, height) = (output.width, output.height);
+    match (candidate.rows(), reference) {
+        (PixelRows::Eight(ours), PixelRows::Eight(theirs)) => {
+            let (ours, theirs) = (rgb(ours), rgb(theirs));
+            compare(
+                Rgb8::new(width, height, &ours).expect("the candidate"),
+                Rgb8::new(width, height, &theirs).expect("the reference"),
+                [0, 0, width, height],
+            )
+            .expect("the statistics")
+        }
+        (PixelRows::Sixteen(ours), PixelRows::Sixteen(theirs)) => {
+            let (ours, theirs) = (rgb(ours), rgb(theirs));
+            let (delta_e, delta_l) = differences16(
+                Rgb16::new(width, height, &ours).expect("the candidate"),
+                Rgb16::new(width, height, &theirs).expect("the reference"),
+                0..height,
+            )
+            .expect("the differences");
+            statistics_of(width as usize, height as usize, &delta_e, &delta_l)
+                .expect("the statistics")
+        }
+        _ => panic!("the outputs differ in depth"),
+    }
+}
+
+/// The class of display limit a family's output is judged by: spatial for a stack with a spatial
+/// step, pointwise otherwise.
+fn class_of(family: &str) -> Class {
+    if ["Presence", "Detail", "Heal", "lens"]
+        .iter()
+        .any(|spatial| family.contains(spatial))
+    {
+        Class::Spatial
+    } else {
+        Class::Pointwise
+    }
+}
+
+/// Every family on both paths, and a staged stack whose output stage is cut in several bands,
+/// streamed smaller at 8 and 16 bits and at full size at 16 bits — its tiles drawn into the held
+/// output stage, its cuts resampled and encoded and read back at the output's depth, the worker's
+/// scratch starting from NaN — is within its class's display limit of the reference output over
+/// every pixel, a 16-bit output judged from its 16-bit values. Each stream is counted resampled,
+/// peaks within [`GPU_TILE_BUDGET`] and, once it ends, holds nothing but the 16-bit thresholds a
+/// 16-bit cut made.
+#[test]
+#[slow]
+fn a_resampled_stream_is_within_the_display_limit_of_the_reference_output() {
+    let test = "a_resampled_stream_is_within_the_display_limit_of_the_reference_output";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.poison(true);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let thresholds = luxforge_gpu::resample::WIDE_THRESHOLDS as u64 * 4;
+    let mut wide = false;
+    let mut cases: Vec<(String, PreviewSource, &'static str, Recipe)> = Vec::new();
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        for (family, recipe) in families() {
+            cases.push((path.into(), source(format), family, recipe));
+        }
+    }
+    let (family, recipe) = staged_families().swap_remove(0);
+    cases.push((
+        "the byte path, staged".into(),
+        staged_source(BoundaryFormat::Half),
+        family,
+        recipe,
+    ));
+    for (path, source, family, recipe) in cases {
+        let stack = stack(&source, &recipe);
+        let class = class_of(family);
+        for (asked, output) in resampled_outputs(whole(&stack)) {
+            let what = format!("{family} on {path}, {asked}");
+            settle(&service, client);
+            let before = service.figures();
+            let bands = service
+                .stream(&stack, output, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+            assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
+            assert_eq!(bands.output(), output, "{what}: the stream's shape");
+            let (pixels, count) = stitched_output(bands);
+            let reference = reference_output(&stack, output, SnapshotId::new(), &Cancel::never())
+                .unwrap_or_else(|error| panic!("{what}: the reference: {error:?}"));
+            let statistics = output_against(&pixels, reference.rows(), output);
+            let verdict = luxforge_reference::preview_error::verdict(&statistics, class);
+            eprintln!(
+                "{test}: {what}: {} x {} in {count} bands, {} limits: {statistics:?}",
+                output.width,
+                output.height,
+                class.name()
+            );
+            assert!(verdict.passed(), "{what}: {statistics:?} past the limits");
+            assert_eq!(
+                count,
+                output.height.div_ceil(RESAMPLE_ROWS),
+                "{what}: one band a cut's rows"
+            );
+            wide |= output.depth == Depth::Sixteen;
+            settle(&service, client);
+            let after = service.figures();
+            assert_eq!(after.resampled - before.resampled, 1, "{what}: resampled");
+            assert!(after.peak <= GPU_TILE_BUDGET, "{what}: {after:?}");
+            let kept = if wide { thresholds } else { 0 };
+            assert_eq!(
+                (after.stage_bytes, after.in_use, after.in_flight),
+                (kept, kept, 0),
+                "{what}: nothing held once it ends but the 16-bit thresholds"
+            );
+        }
+    }
+    eprintln!("{test}: the worker's figures {:?}", service.figures());
+}
+
+/// A resampled stream held before its second tile into the held output stage holds that stage,
+/// charged; cancelled there, it draws nothing more, ends `cancelled` and lets go of the held stage
+/// with the rest of what its runner held.
+#[test]
+fn a_cancelled_resampled_stream_stops_between_tiles_and_frees_its_held_stage() {
+    let test = "a_cancelled_resampled_stream_stops_between_tiles_and_frees_its_held_stage";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence after Detail")
+        .expect("the family");
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
+    let (_, output) = resampled_outputs(whole(&stack))[0];
+    let cancel = Cancel::new();
+    let begin = shut();
+    service.hold_steps(Some(Arc::clone(&begin)));
+    let mut bands = service.stream(&stack, output, &cancel).expect("a stream");
+    wait_until("the worker held before the stream begins", || {
+        begin.holding()
+    });
+    let first = next_step(&service, &begin);
+    let second = next_step(&service, &first);
+    let drawing = service.figures();
+    let held = u64::from(WIDTH) * u64::from(HEIGHT) * 16;
+    assert_eq!(drawing.resampled, 1, "the stream is resampled");
+    assert!(
+        drawing.stage_bytes >= held && drawing.in_use >= drawing.stage_bytes,
+        "its output stage held, charged, while it draws: {drawing:?}"
+    );
+    assert_eq!(drawing.bands, 0, "no band before its tiles are drawn");
+
+    cancel.cancel();
+    service.hold_steps(None);
+    second.open();
+    let ended = loop {
+        match bands.next().expect("the end") {
+            Ok(_) => {}
+            Err(ended) => break ended,
+        }
+    };
+    assert_eq!(ended.kind.code(), "cancelled");
+    assert!(bands.next().is_none(), "nothing after the cancellation");
+    settle(&service, client);
+    let after = service.figures();
+    assert_eq!(
+        (after.stage_bytes, after.in_use, after.in_flight),
+        (0, 0, 0),
+        "the held output stage let go with the rest"
+    );
+    eprintln!("{test}: {drawing:?} then {after:?}");
+}
+
+/// A resampled stream whose held output stage and largest cut do not fit the stream's budget ends
+/// naming `tiles-budget`, what it would hold and the budget, before it holds anything: the export
+/// lane's cue to render the whole export again with the reference.
+#[test]
+fn a_resampled_stream_past_its_budget_ends_naming_tiles_budget() {
+    let test = "a_resampled_stream_past_its_budget_ends_naming_tiles_budget";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "a colour stack")
+        .expect("the family");
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
+    // Room for the held output stage alone, none for a cut beside it.
+    let budget = u64::from(WIDTH) * u64::from(HEIGHT) * 16;
+    service.budget_streams(Some(budget));
+    for (asked, output) in resampled_outputs(whole(&stack)) {
+        let mut bands = service
+            .stream(&stack, output, &Cancel::new())
+            .expect("a stream");
+        let ended = bands.next().expect("the end").expect_err("past the budget");
+        let data = ended.data.as_deref().cloned().unwrap_or_default();
+        assert_eq!(data["fallback"], "tiles-budget", "{asked}: {ended:?}");
+        assert_eq!(data["budget"], budget, "{asked}: {ended:?}");
+        assert!(
+            data["requested"]
+                .as_u64()
+                .is_some_and(|requested| requested > budget),
+            "{asked}: {ended:?}"
+        );
+        assert!(
+            matches!(bands.fallback(), Some(TileFallback::Budget { .. })),
+            "{asked}"
+        );
+        assert!(bands.next().is_none(), "{asked}: nothing after the end");
+    }
+    settle(&service, client);
+    let after = service.figures();
+    assert_eq!(after.resampled, 0, "no stream held its output stage");
+    assert_eq!(
+        (after.stage_bytes, after.in_use, after.in_flight),
+        (0, 0, 0),
+        "nothing held"
+    );
+    eprintln!("{test}: {after:?}");
+}
+
+/// A stream asked for an output larger than its output stage, or with an empty side, ends at once
+/// with `validation`, drawing nothing.
+#[test]
+fn a_stream_larger_than_its_stage_or_empty_is_refused() {
+    let test = "a_stream_larger_than_its_stage_or_empty_is_refused";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    let (_, recipe) = families().swap_remove(0);
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
+    let stage = whole(&stack);
+    for (asked, output) in [
+        ("wider", OutputSpec::full(stage.width + 1, stage.height)),
+        ("taller", OutputSpec::full(stage.width, stage.height + 1)),
+        ("empty", OutputSpec::full(0, stage.height)),
+    ] {
+        let mut bands = service
+            .stream(&stack, output, &Cancel::new())
+            .expect("a stream");
+        let ended = bands.next().expect("the end").expect_err("refused");
+        assert_eq!(ended.kind.code(), "validation", "{asked}: {ended:?}");
+        assert!(bands.next().is_none(), "{asked}");
+    }
+    assert_eq!(service.figures().streams, 0, "nothing drawn");
+}
+
 /// A stream whose device is lost before a tile ends naming `device-lost` in its error's data, the
 /// export lane's cue to render it again with the reference; from then on the status names it, a
 /// read is the reference's naming it, and a stream is refused at once.
@@ -1377,7 +1734,9 @@ fn a_lost_device_ends_the_stream_with_device_lost() {
     let stack = stack(&source(BoundaryFormat::Half), &recipe);
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
-    let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+    let mut bands = service
+        .stream(&stack, whole(&stack), &Cancel::new())
+        .expect("a stream");
     wait_until("the worker held before the stream begins", || {
         begin.holding()
     });
@@ -1403,7 +1762,10 @@ fn a_lost_device_ends_the_stream_with_device_lost() {
         &[point(ReadStage::Output, 3, 3, ReadValues::Codes)],
     );
     assert_eq!(answers[0].answered, Answered::reference(Some(lost.clone())));
-    assert_eq!(service.stream(&stack, &Cancel::new()).err(), Some(lost));
+    assert_eq!(
+        service.stream(&stack, whole(&stack), &Cancel::new()).err(),
+        Some(lost)
+    );
     eprintln!("{test}: {:?}", service.figures());
 }
 
@@ -1517,6 +1879,12 @@ impl Exports {
         image::codecs::jpeg::JpegEncoder::new_with_quality(file, 95)
             .encode_image(photograph)
             .expect("the photograph is written");
+        Self::of(dir, original, tiles)
+    }
+
+    /// The same over the original at `original`, imported where it is, a RAW developed and
+    /// prepared as the desktop prepares it; the catalog and the exports go in `dir`.
+    fn of(dir: std::path::PathBuf, original: std::path::PathBuf, tiles: Arc<GpuTiles>) -> Self {
         let (owner, join) = OwnerHandle::start_with_host(
             &dir.join("catalog.sqlite"),
             Arc::new(ModuleRegistry::builtin()),
@@ -1564,13 +1932,14 @@ impl Exports {
         let destination = self.dir.join(name);
         let mut params = json!({
             "asset_id": self.asset,
+            "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),
             "destination": destination,
             "mutation": {"request_id": format!("export-{name}"), "actor": "test"},
         });
         if reference {
             params["reference"] = json!(true);
         }
-        let (queued, _) = owner_call(&self.owner, self.client, "export.jpeg", params)
+        let (queued, _) = owner_call(&self.owner, self.client, "export.write", params)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         let job = queued["job_id"].clone();
         let read = luxforge_testbase::wait_for("an export to end", || {
@@ -1809,16 +2178,18 @@ fn a_gpu_export_leaves_the_original_unchanged() {
     assert_eq!(stripped["renderer"]["record"], "gpu", "{stripped}");
     let kept = json!({
         "asset_id": exports.asset, "destination": exports.dir.join("kept.jpg"),
-        "keep_metadata": true, "mutation": {"request_id": "export-kept", "actor": "test"},
+        "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::All),
+        "mutation": {"request_id": "export-kept", "actor": "test"},
     });
-    owner_call(&exports.owner, exports.client, "export.jpeg", kept).expect("an export");
+    owner_call(&exports.owner, exports.client, "export.write", kept).expect("an export");
     let (_, reference) = exports.export("reference.jpg", true);
     let refused = owner_call(
         &exports.owner,
         exports.client,
-        "export.jpeg",
+        "export.write",
         json!({
             "asset_id": exports.asset, "destination": exports.dir.join("stripped.jpg"),
+            "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),
             "mutation": {"request_id": "export-taken", "actor": "test"},
         }),
     );
@@ -1889,7 +2260,9 @@ fn the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs() {
         let (stack, _) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe));
         let begin = shut();
         service.hold_steps(Some(Arc::clone(&begin)));
-        let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+        let mut bands = service
+            .stream(&stack, whole(&stack), &Cancel::new())
+            .expect("a stream");
         drop(stack);
         wait_until("the worker held before the stream begins", || {
             begin.holding()
@@ -2014,12 +2387,13 @@ fn a_measured_export_staged_is_chained() {
             let started = std::time::Instant::now();
             let mut rgba = Vec::new();
             for band in service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"))
             {
                 rgba.extend(
                     band.unwrap_or_else(|error| panic!("{what}: {error:?}"))
-                        .rgba,
+                        .into_rgba8()
+                        .expect("8-bit codes"),
                 );
             }
             let wall = started.elapsed();
@@ -2151,7 +2525,7 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
             assert!(drawn.figures.sweeps >= 2, "{what}: drawn in sweeps");
             settle(&service, client);
             let bands = service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
             assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
             let rgba = stitched(bands, STAGED_SIDE);
@@ -2219,7 +2593,7 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
                 );
             }
             let bands = stage_free
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: stage-free: {fallback:?}"));
             assert_eq!(bands.answered(), &Answered::gpu(), "{what}: stage-free");
             let free = stitched(bands, STAGED_SIDE);
@@ -2272,10 +2646,14 @@ fn code_structure_export_measurement() {
             let started = std::time::Instant::now();
             let mut bytes = 0usize;
             for band in service
-                .stream(&stack, &Cancel::new())
+                .stream(&stack, whole(&stack), &Cancel::new())
                 .expect("a GPU stream")
             {
-                bytes += band.expect("a complete band").rgba.len();
+                bytes += band
+                    .expect("a complete band")
+                    .rgba8()
+                    .expect("8-bit codes")
+                    .len();
             }
             let ms = started.elapsed().as_secs_f64() * 1e3;
             assert_eq!(bytes, dimensions.0 as usize * dimensions.1 as usize * 4);
@@ -2392,7 +2770,7 @@ fn auto_tone_gpu_grid_and_values_agree_with_the_reference() {
 }
 
 /// A trivial export's whole time, GPU against reference, through the owner's export lane as the
-/// desktop starts it: `export.jpeg` to its job's end, read through `job.wait`, with the moment
+/// desktop starts it: `export.write` to its job's end, read through `job.wait`, with the moment
 /// encoding began. Alternating, after one discarded export of each; the generated 24 and 60 MP
 /// fixtures with Basic exposure +0.3.
 #[test]
@@ -2416,13 +2794,14 @@ fn trivial_export_timing_gpu_against_reference() {
         let time = |file: &str, reference: bool| -> (f64, f64) {
             let mut params = json!({
                 "asset_id": exports.asset, "destination": exports.dir.join(file),
+                "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None),
                 "mutation": {"request_id": format!("export-{file}"), "actor": "test"},
             });
             if reference {
                 params["reference"] = json!(true);
             }
             let started = Instant::now();
-            let (queued, _) = owner_call(&exports.owner, exports.client, "export.jpeg", params)
+            let (queued, _) = owner_call(&exports.owner, exports.client, "export.write", params)
                 .expect("an export");
             let job = queued["job_id"].clone();
             let (mut after, mut encoding) = (None, None);
@@ -2470,6 +2849,375 @@ fn trivial_export_timing_gpu_against_reference() {
                 "gpu": gpu, "reference": reference, "figures": worker.figures().record(),
             })
         );
+    }
+}
+
+/// What each export setting costs, GPU against reference, through the owner's export lane as the
+/// desktop starts it: the built-in presets (Web, Print, Master), Optimise on and off for a
+/// full-size JPEG and for a TIFF, a full-size WebP with Optimise on and off, a full-size JPEG
+/// limited to halfway between its unlimited files at qualities 10 and 90, and a plain resize to
+/// Web's long edge. Each configuration on a fresh owner and tile worker over the original as it
+/// is, with Basic exposure +0.3, one export of each renderer kept apart as the warm-up, then
+/// `LUXFORGE_EXPORT_SAMPLES` (5) of each, alternating. Per export: the wall time from
+/// `export.write` to its job's end, read through `job.wait`; every progress change, so each phase's
+/// span; and the file's bytes, its quality and a limit search's attempts. Per configuration: the
+/// footprint before and after the warm-up, and the tile worker's figures, its peak charge among
+/// them. With `LUXFORGE_EXPORT_MEMORY=gpu|reference` each configuration instead exports once on
+/// that renderer and records the process's lifetime peak footprint above its footprint before
+/// (`EXPORT_MEMORY`), which a process of one configuration and renderer reads as what the export
+/// adds; `LUXFORGE_EXPORT_LIMIT_BYTES` then gives the limit search its limit. The generated 24 and
+/// 60 MP fixtures (`LUXFORGE_GENERATED_FIXTURES`, else the checkout's) and the RAW at
+/// `LUXFORGE_EXPORT_RAW` when it is set; `LUXFORGE_EXPORT_SOURCES=24mp,60mp,raw` and
+/// `LUXFORGE_EXPORT_CONFIGURATIONS=NAME,...` run only those. Each configuration's figures are
+/// printed as `EXPORT_SETTINGS {json}` and appended to `LUXFORGE_EXPORT_OUTPUT` when set.
+#[test]
+#[ignore = "release export-settings measurement on a quiet host; needs cargo xtask generate-fixtures"]
+fn export_settings_measurement() {
+    use std::{
+        io::Write,
+        time::{Duration, Instant},
+    };
+    let adapter = host_adapter("export_settings_measurement").expect("an adapter");
+    let samples: usize = std::env::var("LUXFORGE_EXPORT_SAMPLES")
+        .ok()
+        .and_then(|samples| samples.parse().ok())
+        .unwrap_or(5);
+    let memory = std::env::var("LUXFORGE_EXPORT_MEMORY").ok();
+    let only: Option<Vec<String>> = std::env::var("LUXFORGE_EXPORT_CONFIGURATIONS")
+        .ok()
+        .map(|names| names.split(',').map(str::to_owned).collect());
+    let fixtures = std::env::var_os("LUXFORGE_GENERATED_FIXTURES").map_or_else(
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated"),
+        std::path::PathBuf::from,
+    );
+    let mut sources = vec![
+        ("24mp".to_owned(), fixtures.join("24mp.jpg")),
+        ("60mp".to_owned(), fixtures.join("60mp.jpg")),
+    ];
+    if let Some(raw) = std::env::var_os("LUXFORGE_EXPORT_RAW") {
+        sources.push(("raw".to_owned(), raw.into()));
+    }
+    if let Ok(names) = std::env::var("LUXFORGE_EXPORT_SOURCES") {
+        sources.retain(|(source, _)| names.split(',').any(|name| name == source));
+    }
+    let mut output = std::env::var_os("LUXFORGE_EXPORT_OUTPUT").map(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("the output file")
+    });
+    // Settings over a full-size, unsharpened base without metadata, or a built-in preset's own.
+    let base = |format: Value| {
+        let mut settings = json!({
+            "size": {"fit": "full"}, "optimise": false, "sharpen": null, "metadata": "none",
+            "pixels_per_inch": null, "folder": "original", "suffix": "",
+        });
+        for (key, value) in format.as_object().expect("an object") {
+            settings[key] = value.clone();
+        }
+        settings
+    };
+    let jpeg = |quality: u8, optimise: bool| {
+        base(
+            json!({"format": "jpeg", "quality": quality, "chroma": "444", "limit_bytes": null,
+            "optimise": optimise}),
+        )
+    };
+    // A built-in preset's settings, as `export.presets.list` answers them, with `patch` over them.
+    let preset = |id: &str, patch: Value| json!({"preset": id, "patch": patch});
+    let configurations: Vec<(&str, Value, &str)> = vec![
+        ("jpeg", jpeg(90, false), "jpg"),
+        ("jpeg-optimised", jpeg(90, true), "jpg"),
+        ("web", preset("luxforge.web", json!({})), "jpg"),
+        ("print", preset("luxforge.print", json!({})), "jpg"),
+        ("master", preset("luxforge.master", json!({})), "tif"),
+        (
+            "master-uncompressed",
+            preset("luxforge.master", json!({"optimise": false})),
+            "tif",
+        ),
+        (
+            "webp",
+            base(json!({"format": "webp", "quality": 80, "limit_bytes": null})),
+            "webp",
+        ),
+        (
+            "webp-optimised",
+            base(json!({"format": "webp", "quality": 80, "limit_bytes": null, "optimise": true})),
+            "webp",
+        ),
+        ("jpeg-limited", jpeg(90, false), "jpg"),
+        (
+            "resized",
+            {
+                let mut resized = jpeg(90, false);
+                resized["size"] = json!({"fit": "long_edge", "pixels": 2048});
+                resized
+            },
+            "jpg",
+        ),
+    ];
+    let middle = |values: Vec<f64>| luxforge_testbase::Distribution::of(values).map(|d| d.p50);
+    for (source, original) in &sources {
+        assert!(original.is_file(), "{} is missing", original.display());
+        for (name, settings, extension) in &configurations {
+            if only
+                .as_ref()
+                .is_some_and(|only| !only.iter().any(|only| only == name))
+            {
+                continue;
+            }
+            let mut settings = settings.clone();
+            let worker = Arc::new(GpuTiles::new(Some(adapter.clone()), false));
+            let exports = Exports::of(
+                paths::temp_dir(&format!("export-settings-{source}-{name}")),
+                original.clone(),
+                Arc::clone(&worker),
+            );
+            exports.edit("edit.set-basic", json!({"exposure": 0.3}));
+            if let Some(id) = settings.get("preset").cloned() {
+                let (list, _) = owner_call(
+                    &exports.owner,
+                    exports.client,
+                    "export.presets.list",
+                    json!({}),
+                )
+                .expect("the presets");
+                let mut preset = list["presets"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|preset| preset["preset_id"] == id)
+                    .expect("a built-in preset")["settings"]
+                    .clone();
+                for (key, value) in settings["patch"].as_object().expect("a patch") {
+                    preset[key] = value.clone();
+                }
+                settings = preset;
+            }
+            let footprint = || {
+                luxforge_core::resources::reading(Duration::ZERO)
+                    .reading
+                    .memory_bytes
+            };
+            let export = |file: &str, reference: bool, settings: &Value| -> Value {
+                let mut params = json!({
+                    "asset_id": exports.asset, "destination": exports.dir.join(file),
+                    "settings": settings,
+                    "mutation": {"request_id": format!("export-{file}"), "actor": "test"},
+                });
+                if reference {
+                    params["reference"] = json!(true);
+                }
+                let started = Instant::now();
+                let (queued, _) =
+                    owner_call(&exports.owner, exports.client, "export.write", params)
+                        .unwrap_or_else(|error| panic!("{source} {name}: {error}"));
+                let job = queued["job_id"].clone();
+                let (mut after, mut timeline) = (None, Vec::new());
+                let read = loop {
+                    let mut wait = json!({"job_id": job, "timeout_ms": 10_000});
+                    if let Some(after) = &after {
+                        wait["after"] = json!(after);
+                    }
+                    let (read, _) = owner_call(&exports.owner, exports.client, "job.wait", wait)
+                        .expect("the job");
+                    let at = started.elapsed().as_secs_f64() * 1000.0;
+                    let job = &read["job"];
+                    timeline.push(json!([
+                        at,
+                        job["progress"]["message"],
+                        job["progress"]["fraction"]
+                    ]));
+                    match job["status"].as_str() {
+                        Some("queued" | "running") => after = Some(read["change"].clone()),
+                        status => {
+                            assert_eq!(status, Some("ready"), "{source} {name}: {read}");
+                            break job.clone();
+                        }
+                    }
+                };
+                let total = started.elapsed().as_secs_f64() * 1000.0;
+                // Each phase from the first read naming it to the first naming the next.
+                let mut phases: Vec<(String, f64)> = Vec::new();
+                let mut previous_at = 0.0;
+                for entry in &timeline {
+                    let (at, message) = (entry[0].as_f64().unwrap(), &entry[1]);
+                    let phase = message
+                        .as_str()
+                        .map(|message| message.split(' ').next().unwrap_or_default().to_owned());
+                    if let Some(last) = phases.last_mut() {
+                        last.1 += at - previous_at;
+                    }
+                    if let Some(phase) = phase
+                        && phases.last().is_none_or(|(last, _)| *last != phase)
+                    {
+                        phases.push((phase, 0.0));
+                    }
+                    previous_at = at;
+                }
+                if let Some(last) = phases.last_mut() {
+                    last.1 += total - previous_at;
+                }
+                let attempts = timeline
+                    .iter()
+                    .filter_map(|entry| {
+                        entry[1]
+                            .as_str()?
+                            .strip_prefix("limiting ")?
+                            .split('/')
+                            .next()?
+                            .parse::<u32>()
+                            .ok()
+                    })
+                    .max();
+                let first_progress = timeline
+                    .iter()
+                    .find(|entry| entry[2].as_f64().is_some_and(|fraction| fraction > 0.0))
+                    .and_then(|entry| entry[0].as_f64());
+                let _ = std::fs::remove_file(exports.dir.join(file));
+                json!({
+                    "ms": total,
+                    "first_progress_ms": first_progress,
+                    "phases": phases,
+                    "bytes": read["result"]["bytes"], "quality": read["result"]["quality"],
+                    "width": read["result"]["width"], "height": read["result"]["height"],
+                    "renderer": read["result"]["renderer"], "attempts": attempts,
+                    "timeline": timeline,
+                })
+            };
+            // A limit halfway between the unlimited files at qualities 10 and 90 on the GPU, which
+            // a search can always reach and which leaves it work to do.
+            if *name == "jpeg-limited"
+                && let Some(limit) = std::env::var("LUXFORGE_EXPORT_LIMIT_BYTES")
+                    .ok()
+                    .and_then(|limit| limit.parse::<u64>().ok())
+            {
+                settings["limit_bytes"] = json!(limit);
+            } else if *name == "jpeg-limited" {
+                let bytes = |quality: u8| {
+                    let mut unlimited = settings.clone();
+                    unlimited["quality"] = json!(quality);
+                    export(
+                        &format!("unlimited-{quality}.{extension}"),
+                        false,
+                        &unlimited,
+                    )["bytes"]
+                        .as_f64()
+                        .expect("the file's bytes")
+                };
+                let (low, high) = (bytes(10), bytes(90));
+                settings["limit_bytes"] = json!(((low + high) / 2.0).round().max(10_240.0) as u64);
+            }
+            // The memory an export adds to a process that has prepared the photograph and not
+            // exported yet: the process's lifetime peak footprint after one export of the
+            // renderer, above its footprint before it. An export that peaks under the process's
+            // earlier peak (a RAW's development) is bounded by that peak instead.
+            if let Some(renderer) = &memory {
+                let context = luxforge_core::RenderContext::new();
+                // The first read opens the GPU device the allocations are read from.
+                let read = || luxforge_core::resources::read(&context).memory;
+                let _ = read();
+                let before = read();
+                let row = export(
+                    &format!("memory.{extension}"),
+                    renderer == "reference",
+                    &settings,
+                );
+                let after = read();
+                let (Some(bytes), Some(peak_before), Some(peak_after)) =
+                    (before.bytes, before.peak_bytes, after.peak_bytes)
+                else {
+                    panic!("this platform reports no footprint");
+                };
+                let record = json!({
+                    "source": source, "original": original, "configuration": name,
+                    "settings": settings, "renderer": renderer,
+                    "footprint_before": bytes, "peak_before": peak_before,
+                    "peak_after": peak_after,
+                    "peak_additional_bytes": (peak_after > peak_before)
+                        .then(|| peak_after - bytes),
+                    "under_earlier_peak_by_at_most": (peak_after <= peak_before)
+                        .then(|| peak_before - bytes),
+                    "export": row, "worker": worker.figures().record(),
+                });
+                println!("EXPORT_MEMORY {record}");
+                if let Some(output) = &mut output {
+                    writeln!(output, "{record}").expect("the output is written");
+                }
+                continue;
+            }
+            let footprint_before_warm = footprint();
+            let warm = [
+                export(&format!("warm-gpu.{extension}"), false, &settings),
+                export(&format!("warm-reference.{extension}"), true, &settings),
+            ];
+            let footprint_after_warm = footprint();
+            let (mut gpu, mut reference) = (Vec::new(), Vec::new());
+            for sample in 0..samples {
+                gpu.push(export(
+                    &format!("gpu-{sample}.{extension}"),
+                    false,
+                    &settings,
+                ));
+                reference.push(export(
+                    &format!("reference-{sample}.{extension}"),
+                    true,
+                    &settings,
+                ));
+            }
+            let summary = |rows: &[Value]| {
+                let figure =
+                    |key: &str| middle(rows.iter().filter_map(|row| row[key].as_f64()).collect());
+                let mut phases = serde_json::Map::new();
+                for row in rows {
+                    for phase in row["phases"].as_array().into_iter().flatten() {
+                        phases
+                            .entry(phase[0].as_str().unwrap_or_default())
+                            .or_insert_with(|| json!([]));
+                    }
+                }
+                for (phase, spans) in &mut phases {
+                    *spans = json!(middle(
+                        rows.iter()
+                            .map(|row| row["phases"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter(|entry| entry[0] == phase.as_str())
+                                .filter_map(|entry| entry[1].as_f64())
+                                .sum::<f64>())
+                            .collect()
+                    ));
+                }
+                json!({
+                    "ms": figure("ms"), "min_ms": rows.iter().filter_map(|row| row["ms"].as_f64()).reduce(f64::min),
+                    "max_ms": rows.iter().filter_map(|row| row["ms"].as_f64()).reduce(f64::max),
+                    "first_progress_ms": figure("first_progress_ms"),
+                    "bytes": figure("bytes"), "quality": rows.first().map(|row| row["quality"].clone()),
+                    "attempts": rows.first().map(|row| row["attempts"].clone()),
+                    "width": rows.first().map(|row| row["width"].clone()),
+                    "height": rows.first().map(|row| row["height"].clone()),
+                    "renderers": rows.iter().map(|row| row["renderer"].clone()).collect::<Vec<_>>(),
+                    "phases_ms": phases,
+                })
+            };
+            let record = json!({
+                "source": source, "original": original, "configuration": name,
+                "settings": settings, "samples": samples,
+                "gpu": summary(&gpu), "reference": summary(&reference),
+                "worker": worker.figures().record(),
+                "footprint_before_warm": footprint_before_warm,
+                "footprint_after_warm": footprint_after_warm,
+                "warm": warm,
+                "gpu_samples": gpu, "reference_samples": reference,
+            });
+            println!("EXPORT_SETTINGS {record}");
+            if let Some(output) = &mut output {
+                writeln!(output, "{record}").expect("the output is written");
+            }
+        }
     }
 }
 
@@ -2588,10 +3336,14 @@ fn repair_step_stream_and_reads_measurement() {
         let started = Instant::now();
         let mut bytes = 0usize;
         for band in service
-            .stream(&stack, &Cancel::new())
+            .stream(&stack, whole(&stack), &Cancel::new())
             .expect("a GPU stream")
         {
-            bytes += band.expect("a complete band").rgba.len();
+            bytes += band
+                .expect("a complete band")
+                .rgba8()
+                .expect("8-bit codes")
+                .len();
         }
         let stream_ms = started.elapsed().as_secs_f64() * 1e3;
         assert_eq!(bytes, width as usize * height as usize * 4);

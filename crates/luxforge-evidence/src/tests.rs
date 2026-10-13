@@ -1040,6 +1040,59 @@ fn export_steps_round_trip_and_take_a_bare_file_name() {
 }
 
 #[test]
+fn export_sheet_steps_round_trip_and_refuse_unknown_choices() {
+    let steps = round_trip(json!([
+        {"export":{"sheet":{}}},
+        {"export":{"sheet":{"reference":true}}},
+        {"export":{"preset":"Print"}},
+        {"export":{"edit":{"format":"webp","size":"long_edge","long_edge":"3000",
+            "quality":70,"optimise":false,"limit":true,"limit_kb":"400","folder":"evidence",
+            "suffix":"-x","metadata":"no_location","print_size":true,"density":"240",
+            "sharpen":"matte","sharpen_amount":"high"}}},
+        {"export":{"edit":{"sharpen":"none"}}},
+        {"export":{"save_preset":"Mine"}},
+        {"export":{"update_preset":true}},
+        {"export":{"delete_preset":"Mine"}},
+        {"export":{"write":{}}},
+        {"export":{"write":{"background":true}}},
+        {"export":{"close":true}},
+        {"export":{"again":{}}},
+        {"export":{"with_preset":{"name":"Web"}}},
+        {"export":{"bar":true}},
+        {"export":{"edit":{"folder":{"path":"/tmp/out"}}}},
+    ]));
+    assert_eq!(steps[0], Step::export_sheet());
+    assert_eq!(steps[2], Step::export_preset("Print"));
+    assert_eq!(steps[8], Step::export_write());
+    for (script, expected) in [
+        (
+            json!({"export":{"edit":{"format":"png"}}}),
+            "format takes one of",
+        ),
+        (
+            json!({"export":{"edit":{"bit_depth":12}}}),
+            "bit_depth takes 8 or 16",
+        ),
+        (
+            json!({"export":{"edit":{"sharpen":"canvas"}}}),
+            "sharpen takes one of",
+        ),
+        (
+            json!({"export":{"edit":{"sharpen_amount":"extreme"}}}),
+            "sharpen_amount takes one of",
+        ),
+        (json!({"export":{"preset":" "}}), "export preset name"),
+        (json!({"export":{"close":false}}), "takes true"),
+        (
+            json!({"export":{"edit":{"folder":{"path":""}}}}),
+            "folder path",
+        ),
+    ] {
+        refused(json!([script]), expected);
+    }
+}
+
+#[test]
 fn capability_steps_round_trip_and_an_api_step_is_kept_through_the_redactor() {
     let module = "luxforge.capabilities";
     let steps = round_trip(json!([

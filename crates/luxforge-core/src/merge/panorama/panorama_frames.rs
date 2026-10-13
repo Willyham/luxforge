@@ -113,6 +113,7 @@ fn encode_chart(icc: Option<&[u8]>) -> Vec<u8> {
         &luxforge_jpeg::Settings {
             quality: 100,
             chroma: (1, 1),
+            optimise: false,
             pixels_per_inch: None,
             segments: &[],
             icc,

@@ -23,7 +23,7 @@ impl EditorService {
     }
 
     /// The stale frozen patches of `recipe`, a stack of `asset`, in operation order; empty when it
-    /// holds none. What `recipe.describe`, `export.plan`, `export.jpeg` and `batch.export` disclose.
+    /// holds none. What `recipe.describe`, `export.plan`, `export.write` and `batch.export` disclose.
     pub(crate) fn stale_corrections(
         &self,
         asset: &AssetRecord,
@@ -57,7 +57,7 @@ impl EditorService {
 }
 
 /// What an export acknowledges it writes stale: the entry it freezes and exactly that entry's stale
-/// frozen patches (`export.jpeg`'s and `batch.export`'s `acknowledge_stale`).
+/// frozen patches (`export.write`'s and `batch.export`'s `acknowledge_stale`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StaleAcknowledgement {

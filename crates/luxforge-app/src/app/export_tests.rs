@@ -1,12 +1,15 @@
-//! The desktop's export flow: the title bar's button and menu, the refusals that keep one export
-//! per window, the status line each answer leaves, and the reader that exists only while a job is
-//! live and sends the desktop only what changed. The owner's answers are handed in as the messages
-//! the runtime delivers.
+//! The desktop's export flow: the Export menu, the Export sheet and how it asks for plans, the
+//! refusals that keep one export per window, the status line and progress bar each answer leaves,
+//! and the reader that exists only while a job is live and sends the desktop only what changed.
+//! The owner's answers are handed in as the messages the runtime delivers.
 use super::{
-    export::{ExportChoice, export_pass, exported_text, refused_text},
+    export::{
+        BAR_DELAY, ExportChoice, ExportRequest, export_params, export_pass, exported_text,
+        refused_text, write_now,
+    },
     gesture,
     job_reads::reads,
-    message::{export::ExportMessage, view::ViewMessage},
+    message::export::{ExportMessage, SheetMessage},
     tasks::CallError,
     testing::{
         Followed, boot, derive_ran, descriptors, finish, idle_workers, mark_no_derive,
@@ -14,24 +17,50 @@ use super::{
     },
     *,
 };
-use crate::state::MenuTarget;
+use crate::state::export_sheet::Fit;
 use crate::state::palette::PaletteAction;
+use luxforge_core::{ExportSettings, MetadataLevel};
 use luxforge_test_macros::slow;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-fn start(editor: &mut Editor, keep_metadata: bool) {
-    let _ = editor.update(Message::Export(ExportMessage::Start {
-        keep_metadata,
+fn sheet(editor: &mut Editor, message: SheetMessage) {
+    let _ = editor.update(Message::Export(ExportMessage::Sheet(message)));
+}
+
+fn open_sheet(editor: &mut Editor) {
+    let _ = editor.update(Message::Export(ExportMessage::OpenSheet {
         reference: false,
     }));
 }
 
-/// The plan answered and the dialog chose `/tmp/<name>`: the status names the file, and
-/// `export.jpeg` is what the returned task would send.
-fn chosen(editor: &mut Editor, name: &str) {
+/// An export of the displayed entry into `/tmp/<name>` with today's full-size settings.
+fn request(editor: &Editor, name: &str) -> ExportRequest {
+    let state = editor
+        .document
+        .state
+        .as_ref()
+        .expect("a photograph is open");
+    ExportRequest {
+        asset_id: state.asset.id.clone(),
+        entry_id: state.current_entry.id.clone(),
+        settings: ExportSettings::baseline(MetadataLevel::None),
+        destination: Some(std::path::PathBuf::from("/tmp").join(name)),
+        reference: false,
+        remember: None,
+    }
+}
+
+fn start(editor: &mut Editor) {
+    let request = request(editor, "photo-edited.jpg");
+    let _ = editor.start_export(request);
+}
+
+/// The plan answered for `/tmp/<name>` and `export.write` answered `result`, as the chain's one
+/// message delivers them.
+fn sent(editor: &mut Editor, name: &str, plan: Value, result: Result<Value, CallError>) {
     let state = editor
         .document
         .state
@@ -41,26 +70,35 @@ fn chosen(editor: &mut Editor, name: &str) {
         asset_id: state.asset.id.clone(),
         entry_id: state.current_entry.id.clone(),
         destination: std::path::PathBuf::from("/tmp").join(name),
-        keep_metadata: false,
-        pixels_per_inch: None,
+        settings: ExportSettings::baseline(MetadataLevel::None),
         reference: false,
-        plan: json!({"suggested": null}),
+        plan,
         acknowledge_stale: None,
+        remember: None,
     };
-    let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
-        choice,
-    ))))));
-    assert_eq!(editor.status.text, format!("Exporting {name}\u{2026}"));
-    assert!(!editor.view_state.picker_open);
+    let _ = editor.update(Message::Export(ExportMessage::Sent {
+        choice: Some(Box::new(choice)),
+        result,
+    }));
+}
+
+fn quiet_plan() -> Value {
+    json!({"suggested": null, "notices": []})
+}
+
+fn queued(job: &str) -> Result<Value, CallError> {
+    Ok(json!({"job_id": job, "status": "queued"}))
 }
 
 #[test]
 fn with_no_photograph_export_is_disabled_and_refused() {
     let (mut editor, catalog) = boot();
     assert!(!editor.workspace.title.can_export);
-    start(&mut editor, false);
-    assert!(editor.export.run.is_none());
+    open_sheet(&mut editor);
+    assert!(editor.export.sheet.is_none());
     assert_eq!(editor.status.text, "Open a photograph to export it");
+    let _ = editor.update(Message::Export(ExportMessage::Again));
+    assert!(editor.export.run.is_none());
     assert!(editor.export_reader_subscription().is_none());
     finish(editor, catalog);
 }
@@ -86,55 +124,71 @@ fn export_refusal_and_the_menu_agree() {
         editor.export_refusal(),
         editor.gesture_refusal(gesture::Starting::Export)
     );
-    start(&mut editor, false);
+    open_sheet(&mut editor);
     assert_eq!(editor.status.text, crate::state::IN_FLIGHT);
-    assert!(editor.export.run.is_none(), "nothing starts");
+    assert!(editor.export.sheet.is_none(), "nothing opens");
 
     editor.busy = false;
     let (action, parameter) = crate::app::testing::patch_control(&editor);
     let _ = crate::app::testing::slide(&mut editor, &action, &parameter, 25.0);
     assert!(editor.slider_gesture().is_some());
     assert!(agree(&mut editor, "a draft is open"));
-    start(&mut editor, false);
-    assert!(editor.export.run.is_some(), "{}", editor.status.text);
+    open_sheet(&mut editor);
+    assert!(editor.export.sheet.is_some(), "{}", editor.status.text);
     finish(editor, catalog);
 }
 
+/// The button opens the menu: Export…, Export again (disabled until something was exported) and
+/// one row per preset. Export… opens the sheet on Web the first time, which asks for its plan; the
+/// quality slider and the metadata level never ask, a size change while one is in flight waits as
+/// one pending plan, and Cancel closes it with nothing exported.
 #[test]
-fn the_button_opens_its_menu_and_an_item_starts_one_export_at_a_time() {
+fn the_menu_opens_the_sheet_which_plans_only_what_it_must_one_at_a_time() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
-    assert!(editor.workspace.title.can_export);
-    assert!(!editor.workspace.title.export_menu_open);
-    let _ = editor.update(Message::View(ViewMessage::OpenMenu(MenuTarget::Export)));
+    let _ = editor.update(Message::Export(ExportMessage::Menu));
     assert!(editor.workspace.title.export_menu_open);
+    let menu = editor.workspace.title.export_menu.clone().unwrap();
+    assert_eq!(menu.again, None, "nothing has been exported yet");
+    assert_eq!(
+        menu.presets
+            .iter()
+            .map(|(_, name, detail)| (name.as_str(), detail.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("Web", "JPEG \u{b7} 2048 px"),
+            ("Print", "JPEG \u{b7} full \u{b7} 300 ppi"),
+            ("Master", "TIFF \u{b7} 16-bit \u{b7} full \u{b7} 300 ppi"),
+        ]
+    );
     assert_eq!(editor.snapshot()["export"]["menu_open"], json!(true));
 
-    // An item closes the menu and starts the chain: the dialog is open, so Open and Export wait.
-    start(&mut editor, true);
+    open_sheet(&mut editor);
     assert!(!editor.workspace.title.export_menu_open);
-    assert!(editor.view_state.picker_open);
-    assert!(!editor.workspace.title.can_export);
-    assert_eq!(
-        editor.export.run.as_ref().map(|run| run.keep_metadata),
-        Some(true)
-    );
-    // Nothing is queued at the core yet, so nothing is read.
-    assert!(editor.export_reader_subscription().is_none());
+    let open = editor.export.sheet.as_ref().unwrap();
+    assert_eq!(open.preset_id.as_deref(), Some("luxforge.web"));
+    assert!(open.plan.in_flight && open.plan.sent == 1);
+    sheet(&mut editor, SheetMessage::Quality(55));
+    sheet(&mut editor, SheetMessage::Metadata(MetadataLevel::All));
+    let open = editor.export.sheet.as_ref().unwrap();
+    assert!(!open.plan.pending && open.plan.sent == 1, "neither asks");
+    sheet(&mut editor, SheetMessage::Fit(Fit::Full));
+    sheet(&mut editor, SheetMessage::Fit(Fit::LongEdge));
+    sheet(&mut editor, SheetMessage::Fit(Fit::Full));
+    let open = editor.export.sheet.as_ref().unwrap();
+    assert!(open.plan.pending && open.plan.sent == 1, "one in flight");
+    assert!(!editor.workspace.export_sheet.as_ref().unwrap().can_export);
+    // The first plan answers: the newest settings are planned, once.
+    editor.answer_sheet_plan();
+    let open = editor.export.sheet.as_ref().unwrap();
+    assert_eq!(open.plan.sent, 2);
+    assert!(!open.plan.in_flight && !open.plan.pending);
+    let shown = editor.workspace.export_sheet.as_ref().unwrap();
+    assert!(shown.can_export, "{:?}", shown.refusals);
+    assert_eq!(shown.cards[0].detail, "Changed from preset");
 
-    // A second press while the first runs is refused and changes nothing.
-    start(&mut editor, false);
-    assert_eq!(editor.status.text, "An export is already running");
-    assert_eq!(
-        editor.export.run.as_ref().map(|run| run.keep_metadata),
-        Some(true)
-    );
-
-    // Cancelling the dialog ends it.
-    let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(None))));
-    assert_eq!(editor.status.text, "Export cancelled");
-    assert!(editor.export.run.is_none());
-    assert!(!editor.view_state.picker_open);
-    assert!(editor.workspace.title.can_export);
+    sheet(&mut editor, SheetMessage::Close);
+    assert!(editor.export.sheet.is_none() && editor.export.run.is_none());
+    assert!(editor.workspace.export_sheet.is_none());
     finish(editor, catalog);
 }
 
@@ -143,14 +197,16 @@ fn the_button_opens_its_menu_and_an_item_starts_one_export_at_a_time() {
 fn running_export(progress: f64) -> (Editor, std::path::PathBuf) {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
     idle_workers(&mut editor);
-    start(&mut editor, false);
-    chosen(&mut editor, "photo-edited.jpg");
-    let _ = editor.update(Message::Export(ExportMessage::Queued(Ok(
-        json!({"job_id":"job-1","status":"queued"}),
-    ))));
+    start(&mut editor);
+    sent(
+        &mut editor,
+        "photo-edited.jpg",
+        quiet_plan(),
+        queued("job-1"),
+    );
     let _ = editor.update(read(
         "job-1",
-        json!({"status":"running","progress":progress}),
+        json!({"status":"running","progress":{"fraction": progress, "message": "rendering"}}),
     ));
     (editor, catalog)
 }
@@ -167,43 +223,92 @@ fn read(job_id: &str, record: Value) -> Message {
 #[test]
 fn a_queued_job_is_followed_by_a_reader_until_it_ends_and_says_what_was_written() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
-    start(&mut editor, false);
-    chosen(&mut editor, "photo-edited.jpg");
+    start(&mut editor);
     assert!(
         editor.export_reader_subscription().is_none(),
         "nothing is queued at the core yet"
     );
-    let _ = editor.update(Message::Export(ExportMessage::Queued(Ok(
-        json!({"job_id":"job-1","status":"queued"}),
-    ))));
+    sent(
+        &mut editor,
+        "photo-edited.jpg",
+        quiet_plan(),
+        queued("job-1"),
+    );
     assert!(editor.export_reader_subscription().is_some());
 
     // A read for a job this window no longer follows is dropped.
-    let _ = editor.update(Message::Export(ExportMessage::Read {
-        job_id: "job-0".into(),
-        result: Ok(json!({"job_id":"job-0","status":"ready"})),
-    }));
+    let _ = editor.update(read("job-0", json!({"status":"ready"})));
     assert!(editor.export.run.is_some());
 
-    let _ = editor.update(Message::Export(ExportMessage::Read {
-        job_id: "job-1".into(),
-        result: Ok(json!({"job_id":"job-1","status":"running","progress":0.5})),
-    }));
+    let _ = editor.update(read("job-1", json!({"status":"running","progress":0.5})));
     assert!(editor.export_reader_subscription().is_some());
 
-    let _ = editor.update(Message::Export(ExportMessage::Read {
-        job_id: "job-1".into(),
-        result: Ok(json!({"job_id":"job-1","status":"ready","progress":1.0,
-            "result":{"path":"/tmp/photo-edited.jpg","bytes":8_412_345,"width":6000,"height":4000,"metadata":[]}})),
-    }));
+    let _ = editor.update(read(
+        "job-1",
+        json!({"status":"ready","progress":1.0,
+            "result":{"path":"/tmp/photo-edited.jpg","bytes":8_412_345,"width":6000,"height":4000,"quality":90,"metadata":[]}}),
+    ));
     assert_eq!(
         editor.status.text,
-        exported_text("photo-edited.jpg", 6000, 4000, 8_412_345)
+        exported_text("photo-edited.jpg", 6000, 4000, 8_412_345, Some(90), None)
     );
     assert!(editor.export.run.is_none());
     assert!(
         editor.export_reader_subscription().is_none(),
         "no reader once the job has ended"
+    );
+    finish(editor, catalog);
+}
+
+/// The status bar shows an export's progress from the start when its plan warned `large-image`,
+/// and otherwise only once a read finds it has run a second: a quick export never shows a bar.
+/// The bar names the phase and the file, at the job's fraction, and opens the Performance section.
+#[test]
+fn the_progress_bar_shows_from_the_start_for_a_warned_export_and_after_a_second_otherwise() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
+    let progress = |fraction: f64, phase: &str| {
+        read(
+            "job-1",
+            json!({"status":"running","progress":{"fraction":fraction,"message":phase}}),
+        )
+    };
+    // A quick export: read at once, no bar.
+    start(&mut editor);
+    sent(&mut editor, "quick.jpg", quiet_plan(), queued("job-1"));
+    let _ = editor.update(progress(0.3, "rendering"));
+    assert_eq!(editor.workspace.long_work.export, None);
+    // The same export a second on shows it.
+    editor.export.run.as_mut().unwrap().queued = Some(std::time::Instant::now() - BAR_DELAY);
+    let _ = editor.update(progress(0.64, "encoding"));
+    let bar = editor.workspace.long_work.export.clone().expect("the bar");
+    assert_eq!(bar.label, "Encoding quick.jpg");
+    assert_eq!(bar.fraction, Some(0.64));
+    let _ = editor.update(read("job-1", json!({"status":"cancelled"})));
+    assert_eq!(editor.workspace.long_work.export, None);
+
+    // A warned export shows the bar from its queueing, rising with each read.
+    start(&mut editor);
+    let warned = json!({"suggested": "/tmp/large.jpg", "notices": [
+        {"code": "large-image", "refuses": false, "bytes": 720_000_000, "message": "Large image"}]});
+    sent(&mut editor, "large.jpg", warned, queued("job-1"));
+    assert_eq!(
+        editor
+            .workspace
+            .long_work
+            .export
+            .as_ref()
+            .map(|bar| bar.fraction),
+        Some(Some(0.0))
+    );
+    let _ = editor.update(progress(0.12, "optimising"));
+    let bar = editor.workspace.long_work.export.clone().unwrap();
+    assert_eq!(
+        (bar.label.as_str(), bar.fraction),
+        ("Optimising large.jpg", Some(0.12))
+    );
+    assert_eq!(
+        editor.snapshot()["export"]["status_bar"]["label"],
+        "Optimising large.jpg"
     );
     finish(editor, catalog);
 }
@@ -223,18 +328,20 @@ fn an_export_reader_is_identified_by_its_job_alone() {
         hasher.finish()
     };
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
-    start(&mut editor, false);
-    chosen(&mut editor, "photo-edited.jpg");
-    let _ = editor.update(Message::Export(ExportMessage::Queued(Ok(
-        json!({"job_id":"job-1","status":"queued"}),
-    ))));
-    let queued = identity(&editor);
+    start(&mut editor);
+    sent(
+        &mut editor,
+        "photo-edited.jpg",
+        quiet_plan(),
+        queued("job-1"),
+    );
+    let first = identity(&editor);
     let _ = editor.update(read("job-1", json!({"status":"running","progress":0.5})));
-    assert_eq!(identity(&editor), queued, "a read does not make a new one");
+    assert_eq!(identity(&editor), first, "a read does not make a new one");
     if let Some(run) = &mut editor.export.run {
         run.job_id = Some("job-2".into());
     }
-    assert_ne!(identity(&editor), queued, "another job is another reader");
+    assert_ne!(identity(&editor), first, "another job is another reader");
     finish(editor, catalog);
 }
 
@@ -280,7 +387,7 @@ fn running(progress: f64) -> Value {
 
 fn ready() -> Value {
     json!({"job_id":"job-1","status":"ready","progress":1.0,
-        "result":{"path":"/tmp/photo-edited.jpg","bytes":8_412_345,"width":6000,"height":4000,"metadata":[]}})
+        "result":{"path":"/tmp/photo-edited.jpg","bytes":8_412_345,"width":6000,"height":4000,"quality":90,"metadata":[]}})
 }
 
 /// `record` read `times` over.
@@ -435,7 +542,7 @@ fn the_end_of_the_job_takes_the_full_update_and_shows_in_the_status_line_and_the
     assert!(derive_ran(&editor));
     assert_eq!(
         editor.status.text,
-        exported_text("photo-edited.jpg", 6000, 4000, 8_412_345)
+        exported_text("photo-edited.jpg", 6000, 4000, 8_412_345, Some(90), None)
     );
     assert!(editor.workspace.title.can_export);
     finish(editor, catalog);
@@ -444,39 +551,44 @@ fn the_end_of_the_job_takes_the_full_update_and_shows_in_the_status_line_and_the
 #[test]
 fn a_destination_that_exists_is_refused_in_the_status_bar() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
-    start(&mut editor, false);
-    if let Some(run) = &mut editor.export.run {
-        run.file_name = Some("photo-edited.jpg".into());
-    }
-    let _ = editor.update(Message::Export(ExportMessage::Queued(Err(CallError {
-        code: "conflict".into(),
-        message: "a file already exists at the destination".into(),
-        data: None,
-        job_id: None,
-    }))));
+    start(&mut editor);
+    sent(
+        &mut editor,
+        "photo-edited.jpg",
+        quiet_plan(),
+        Err(CallError {
+            code: "conflict".into(),
+            message: "a file already exists at the destination".into(),
+            data: None,
+            job_id: None,
+        }),
+    );
     assert_eq!(editor.status.text, refused_text("photo-edited.jpg"));
     assert!(editor.export.run.is_none());
 
-    start(&mut editor, false);
-    chosen(&mut editor, "b.png");
-    let _ = editor.update(Message::Export(ExportMessage::Queued(Err(CallError {
-        code: "validation".into(),
-        message: "the destination must end in .jpg or .jpeg".into(),
-        data: None,
-        job_id: None,
-    }))));
+    start(&mut editor);
+    sent(
+        &mut editor,
+        "b.png",
+        quiet_plan(),
+        Err(CallError {
+            code: "validation".into(),
+            message: "the destination must end in .jpg or .jpeg".into(),
+            data: None,
+            job_id: None,
+        }),
+    );
     assert_eq!(
         editor.status.text,
-        "Export failed: the destination must end in .jpg or .jpeg"
+        "Not exported: the destination must end in .jpg or .jpeg"
     );
     finish(editor, catalog);
 }
 
-/// The palette lists the title bar's two exports and the reference renderer's, which only it
-/// offers, each for `export.jpeg`; running the reference entry starts the same chain as the menu's
-/// items, marked as asking for the reference renderer.
+/// The palette lists the Export menu's entries, one per preset, and the reference renderer's
+/// export, which opens the sheet marked to send `reference: true`.
 #[test]
-fn the_palette_lists_every_export_for_export_jpeg() {
+fn the_palette_lists_the_export_menu_and_the_reference_export() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
     let _ = editor.update(Message::Palette(
         crate::app::message::palette::PaletteMessage::Open,
@@ -489,97 +601,78 @@ fn the_palette_lists_every_export_for_export_jpeg() {
         .palette
         .entries
         .iter()
-        .filter(|entry| matches!(entry.action, PaletteAction::Export { .. }))
-        .map(|entry| {
-            (
-                entry.label.as_str(),
-                entry.detail.as_str(),
-                entry.action.clone(),
+        .filter(|entry| {
+            matches!(
+                entry.action,
+                PaletteAction::Export { .. }
+                    | PaletteAction::ExportAgain
+                    | PaletteAction::ExportWithPreset(_)
             )
         })
+        .map(|entry| (entry.label.as_str(), entry.action.clone()))
         .collect();
-    let export = |keep_metadata, reference| PaletteAction::Export {
-        keep_metadata,
-        reference,
-    };
     assert_eq!(
         exports,
         vec![
-            ("Export JPEG\u{2026}", "export.jpeg", export(false, false)),
+            ("Export\u{2026}", PaletteAction::Export { reference: false }),
             (
-                "Export JPEG, keep metadata\u{2026}",
-                "export.jpeg",
-                export(true, false)
+                "Export with preset: Web",
+                PaletteAction::ExportWithPreset("luxforge.web".into())
+            ),
+            (
+                "Export with preset: Print",
+                PaletteAction::ExportWithPreset("luxforge.print".into())
+            ),
+            (
+                "Export with preset: Master",
+                PaletteAction::ExportWithPreset("luxforge.master".into())
             ),
             (
                 "Export reference render\u{2026}",
-                "export.jpeg",
-                export(false, true)
+                PaletteAction::Export { reference: true }
             ),
         ]
-    );
-    assert_eq!(
-        crate::state::title::EXPORT_ITEMS.len(),
-        2,
-        "the title bar's menu offers no reference export"
     );
     let _ = editor.update(Message::Palette(
         crate::app::message::palette::PaletteMessage::Query("reference render".into()),
     ));
-    assert_eq!(
-        editor.workspace.palette.entries[0].action,
-        export(false, true)
-    );
     let _ = editor.update(Message::Palette(
         crate::app::message::palette::PaletteMessage::Run,
     ));
-    let run = editor.export.run.as_ref().expect("the export started");
-    assert!(run.reference && !run.keep_metadata, "{run:?}");
-    assert!(editor.view_state.picker_open, "the save dialog chooses");
+    let open = editor.export.sheet.as_ref().expect("the sheet opened");
+    assert!(open.reference);
     assert_eq!(
-        editor.snapshot()["export"]["running"]["reference"],
+        editor.snapshot()["export"]["sheet"]["reference"],
         json!(true)
     );
     finish(editor, catalog);
 }
 
-/// The palette's reference export sends what an API client sends for it, `reference: true`,
-/// through the same chain as the title bar's, whose exports send no `reference`: the owner echoes
-/// each as it took it, and the reference renderer writes the file, naming the reference as
-/// requested where it was asked for.
+/// The reference export sends what an API client sends for it, `reference: true`, through the same
+/// chain as every other, which sends no `reference`: the owner echoes each as it took it, and the
+/// reference renderer writes the file, naming the reference as requested where it was asked for.
 #[test]
+#[slow]
 fn the_reference_export_sends_reference_true_and_the_others_none() {
-    use super::export::{export_params, plan_now, read_now, send_now};
+    use super::export::read_now;
     let dir = luxforge_testbase::paths::temp_dir("reference-export");
     let catalog = dir.join("catalog.sqlite");
-    let (mut editor, asset, _) = super::testing::real_photo(&catalog);
-    let entry = editor.displayed_entry().unwrap();
-    let export = |editor: &mut Editor, name: &str, reference: bool| {
-        let destination = dir.join(name);
-        let _ = editor.export_start(false, reference, Some(destination.clone()));
-        assert_eq!(
-            editor.export.run.as_ref().map(|run| run.reference),
-            Some(reference)
-        );
-        let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
-        let choice = ExportChoice {
-            asset_id: asset.clone(),
-            entry_id: entry.clone(),
-            destination,
-            keep_metadata: false,
-            pixels_per_inch: None,
+    let (editor, _, _) = super::testing::real_photo(&catalog);
+    let export = |name: &str, reference: bool| {
+        let request = ExportRequest {
+            destination: Some(dir.join(name)),
             reference,
-            plan,
-            acknowledge_stale: None,
+            ..request(&editor, name)
         };
+        let (choice, queued) = write_now(&editor.owner, editor.client, request);
+        let choice = choice.expect("the plan named it");
         let sent = export_params(&choice);
         assert_eq!(
             sent.get("reference"),
             reference.then_some(&json!(true)),
             "{sent}"
         );
-        let queued = send_now(&editor.owner, editor.client, &choice).unwrap();
-        editor.export.run = None;
+        let queued = queued.unwrap();
         let job = queued["job_id"].as_str().unwrap().to_owned();
         let read = luxforge_testbase::wait_for("the export to end", || {
             let read = read_now(&editor.owner, editor.client, &job).unwrap();
@@ -588,7 +681,7 @@ fn the_reference_export_sends_reference_true_and_the_others_none() {
         assert_eq!(read["status"], "ready", "{read}");
         (queued, read)
     };
-    let (queued, read) = export(&mut editor, "asked.jpg", true);
+    let (queued, read) = export("asked.jpg", true);
     assert_eq!(queued["reference"], json!(true));
     assert_eq!(
         read["result"]["renderer"],
@@ -596,7 +689,7 @@ fn the_reference_export_sends_reference_true_and_the_others_none() {
     );
     // An owner with no GPU provider, as a test's is, renders the other with the reference too,
     // for no reason of its own: the file is the same.
-    let (queued, read) = export(&mut editor, "default.jpg", false);
+    let (queued, read) = export("default.jpg", false);
     assert_eq!(queued["reference"], json!(false), "its default");
     assert_eq!(
         read["result"]["renderer"],
@@ -611,45 +704,50 @@ fn the_reference_export_sends_reference_true_and_the_others_none() {
 }
 
 /// One whole export against a real owner, with the owner's answers handed in as the runtime would:
-/// the plan, the chosen file, the queued job and the messages its reader sends, then the same file
-/// again, refused.
+/// the plan and the queued job in the chain's one message and the messages its reader sends, then
+/// the same file again, refused.
 #[test]
+#[slow]
 fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
-    use super::{
-        export::{export_reads, plan_now, send_now},
-        job_reads::Reader,
-    };
+    use super::{export::export_reads, job_reads::Reader};
     let catalog = std::env::temp_dir().join(format!(
         "luxforge-export-{}-{}.sqlite",
         std::process::id(),
         super::tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let (mut editor, asset, _) = super::testing::real_photo(&catalog);
+    let (mut editor, _, _) = super::testing::real_photo(&catalog);
     let folder = catalog.with_extension("exports");
     std::fs::create_dir_all(&folder).unwrap();
     let destination = folder.join("photo-edited.jpg");
-    let entry = editor.displayed_entry().unwrap();
 
     let export_once = |editor: &mut Editor| {
-        let _ = editor.export_start(true, false, Some(destination.clone()));
-        assert!(editor.export.active(), "{}", editor.status.text);
-        let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
-        assert_eq!(plan["entry_id"], json!(entry));
-        let choice = ExportChoice {
-            asset_id: asset.clone(),
-            entry_id: entry.clone(),
-            destination: destination.clone(),
-            keep_metadata: true,
-            pixels_per_inch: Some(144),
-            reference: false,
-            plan,
-            acknowledge_stale: None,
+        let request = ExportRequest {
+            settings: ExportSettings {
+                pixels_per_inch: Some(144),
+                folder: luxforge_core::ExportFolder::Path(folder.clone()),
+                suffix: "-edited".into(),
+                ..ExportSettings::baseline(MetadataLevel::All)
+            },
+            destination: Some(destination.clone()),
+            ..request(editor, "photo-edited.jpg")
         };
-        let queued = send_now(&editor.owner, editor.client, &choice);
-        let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
-            choice,
-        ))))));
-        let _ = editor.update(Message::Export(ExportMessage::Queued(queued)));
+        let _ = editor.start_export(request.clone());
+        assert!(editor.export.active(), "{}", editor.status.text);
+        let (choice, queued) = write_now(&editor.owner, editor.client, request);
+        let choice = choice.unwrap();
+        assert_eq!(choice.plan["entry_id"], json!(choice.entry_id));
+        assert_eq!(
+            export_params(&choice)["settings"],
+            json!({
+                "format": "jpeg", "size": {"fit": "full"}, "quality": 90, "optimise": false,
+                "chroma": "444", "limit_bytes": null, "sharpen": null, "metadata": "all",
+                "pixels_per_inch": 144, "folder": {"path": folder}, "suffix": "-edited",
+            })
+        );
+        let _ = editor.update(Message::Export(ExportMessage::Sent {
+            choice: Some(Box::new(choice)),
+            result: queued,
+        }));
         // The reader the subscription starts while the job is live: what it sends goes to the
         // update function, and the first message is what was read at once.
         if let Some(job) = editor
@@ -702,7 +800,7 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
         decoded.height()
     );
     assert!(
-        editor.status.text.starts_with(&expected),
+        editor.status.text.starts_with(&expected) && editor.status.text.ends_with("quality 90"),
         "{}",
         editor.status.text
     );
@@ -720,9 +818,9 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
 /// A real slider commit must be the After raster and the JPEG target, including while the
 /// comparison session selects the Original for its Before surface.
 #[test]
+#[slow]
 fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
     use super::{
-        export::{plan_now, send_now},
         message::{history::HistoryMessage, preview::PreviewMessage},
         testing::{let_go, real_photo, run_commit, slide},
     };
@@ -778,38 +876,26 @@ fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
         editor.presentation.exact().unwrap().raster.rgba,
         original.rgba
     );
-    assert_eq!(
-        editor
-            .presentation
-            .compare_after
-            .as_ref()
-            .unwrap()
-            .full()
-            .pixels(),
-        edited.rgba.as_slice()
-    );
 
+    // Export with a preset exports the displayed entry, which Compare fixes at After.
     let destination = dir.join("edited.jpg");
-    let _ = editor.export_start(false, false, Some(destination.clone()));
-    assert!(editor.export.active());
-    let target = editor.export_entry().unwrap();
-    let plan = plan_now(&editor.owner, editor.client, &asset, &target).unwrap();
-    assert_eq!(
-        plan["entry_id"],
-        json!(edited_entry),
-        "comparison exports After"
-    );
-    let choice = ExportChoice {
-        asset_id: asset,
-        entry_id: target,
-        destination: destination.clone(),
-        keep_metadata: false,
-        pixels_per_inch: None,
-        reference: false,
-        plan,
-        acknowledge_stale: None,
+    editor.list_export_presets();
+    let request = ExportRequest {
+        destination: Some(destination.clone()),
+        ..editor.preset_request("luxforge.web").unwrap()
     };
-    let queued = send_now(&editor.owner, editor.client, &choice).unwrap();
+    assert_eq!(request.entry_id, edited_entry, "comparison exports After");
+    let request = ExportRequest {
+        settings: ExportSettings {
+            size: luxforge_core::OutputSize::Full,
+            optimise: false,
+            ..request.settings
+        },
+        ..request
+    };
+    let (choice, queued) = write_now(&editor.owner, editor.client, request);
+    assert_eq!(choice.unwrap().plan["entry_id"], json!(edited_entry));
+    let queued = queued.unwrap();
     let job = queued["job_id"].as_str().unwrap();
     luxforge_testbase::wait_until("the edited JPEG", || {
         let read = super::export::read_now(&editor.owner, editor.client, job).unwrap();
@@ -867,22 +953,8 @@ fn a_stale_refusal_is_held_until_export_anyway_acknowledges_exactly_what_it_name
         job_id: None,
     };
     for answer in ["anyway", "cancel"] {
-        start(&mut editor, false);
-        chosen(&mut editor, "stale.jpg");
-        assert_eq!(
-            editor
-                .export
-                .run
-                .as_ref()
-                .unwrap()
-                .choice
-                .as_ref()
-                .unwrap()
-                .acknowledge_stale,
-            None,
-            "the first request acknowledges nothing"
-        );
-        let _ = editor.update(Message::Export(ExportMessage::Queued(Err(refusal()))));
+        start(&mut editor);
+        sent(&mut editor, "stale.jpg", quiet_plan(), Err(refusal()));
         assert!(editor.export.run.is_none());
         assert_eq!(
             editor.status.text,
@@ -911,8 +983,8 @@ fn a_stale_refusal_is_held_until_export_anyway_acknowledges_exactly_what_it_name
         );
         assert!(!editor.workspace.title.can_export);
         assert_eq!(
-            editor.snapshot()["export"]["held_stale"]["stale"][1]["operation"],
-            "correction-4"
+            editor.held_stale_operation(1),
+            Some("correction-4".to_owned())
         );
         if answer == "cancel" {
             let _ = editor.update(Message::Export(ExportMessage::Dismiss));
@@ -928,19 +1000,29 @@ fn a_stale_refusal_is_held_until_export_anyway_acknowledges_exactly_what_it_name
         let acknowledgement =
             json!({"entry_id": entry, "operations": ["correction-2", "correction-4"]});
         assert_eq!(choice.acknowledge_stale, Some(acknowledgement.clone()));
-        assert_eq!(
-            super::export::export_params(choice)["acknowledge_stale"],
-            acknowledgement
-        );
+        assert_eq!(export_params(choice)["acknowledge_stale"], acknowledgement);
         assert_eq!(editor.status.text, "Exporting stale.jpg\u{2026}");
         // The job's end lets the next export start; nothing stays held.
-        let _ = editor.update(Message::Export(ExportMessage::Queued(Err(CallError {
-            code: "validation".into(),
-            message: "stop here".into(),
-            data: None,
-            job_id: None,
-        }))));
+        let held = run.choice.clone();
+        let _ = editor.update(Message::Export(ExportMessage::Sent {
+            choice: held,
+            result: Err(CallError {
+                code: "validation".into(),
+                message: "stop here".into(),
+                data: None,
+                job_id: None,
+            }),
+        }));
         assert!(editor.export.run.is_none() && editor.export.held.is_none());
     }
     finish(editor, catalog);
+}
+
+impl Editor {
+    /// The held export's stale patch at `index`, as the evidence summary records it.
+    fn held_stale_operation(&self, index: usize) -> Option<String> {
+        self.snapshot()["export"]["held_stale"]["stale"][index]["operation"]
+            .as_str()
+            .map(str::to_owned)
+    }
 }

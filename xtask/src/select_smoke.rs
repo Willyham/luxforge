@@ -1781,7 +1781,7 @@ mod tests {
             catalog,
         );
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 63);
+        assert_eq!(plan.len(), 65);
         assert!(plan.scripted());
     }
 }

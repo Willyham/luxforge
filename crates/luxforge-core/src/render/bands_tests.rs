@@ -25,7 +25,7 @@ const HEIGHT: u32 = 100;
 
 /// A textured linear source: a smooth gradient under a fine pattern, with values below zero and
 /// above one, so every spatial operation has edges and every colour unit a range to act on.
-fn textured(width: u32, height: u32) -> LinearImage {
+pub(super) fn textured(width: u32, height: u32) -> LinearImage {
     let pattern = varied(width, height);
     let reader = pattern.reader();
     let pixels: Vec<[f32; 3]> = (0..height)
@@ -77,7 +77,7 @@ fn range_mask() -> Mask {
 
 /// One layer of a stack, a geometry layer built against the stage it receives.
 #[derive(Clone, Copy, Debug)]
-enum Step {
+pub(super) enum Step {
     Basic,
     Curve,
     Detail,
@@ -185,7 +185,7 @@ impl Step {
 }
 
 /// `steps` added in turn, each where the host places a new layer of its effect and target.
-fn stack(registry: &ModuleRegistry, width: u32, height: u32, steps: &[Step]) -> Recipe {
+pub(super) fn stack(registry: &ModuleRegistry, width: u32, height: u32, steps: &[Step]) -> Recipe {
     let mut recipe = Recipe {
         format: crate::RECIPE_FORMAT,
         masks: vec![linear_mask(), range_mask()],
@@ -268,7 +268,11 @@ fn window_bytes(compiled: &crate::render::Compiled, source: Stage, rect: Region)
 
 /// Two budgets that cut a stack's output: one whose bands are about a third of the stage's
 /// height, and one in which not even a full-width row fits, so every band is cut into columns.
-fn cutting_budgets(registry: &ModuleRegistry, image: &LinearImage, recipe: &Recipe) -> [u64; 2] {
+pub(super) fn cutting_budgets(
+    registry: &ModuleRegistry,
+    image: &LinearImage,
+    recipe: &Recipe,
+) -> [u64; 2] {
     let compiled = registry
         .compile(image.width(), image.height(), recipe)
         .unwrap();

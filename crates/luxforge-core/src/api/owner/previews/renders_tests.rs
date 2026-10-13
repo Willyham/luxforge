@@ -393,6 +393,7 @@ fn generated_jpeg(label: &str, width: u32, height: u32) -> PathBuf {
     let settings = luxforge_jpeg::Settings {
         quality: 92,
         chroma: (1, 1),
+        optimise: false,
         segments: &[],
         icc: None,
         pixels_per_inch: None,

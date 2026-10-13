@@ -432,8 +432,8 @@ fn grading_journey(
         let accepted = call(
             owner,
             editor,
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": destination, "keep_metadata": false,
+            "export.write",
+            json!({"asset_id": asset, "destination": destination, "settings": crate::export_smoke::export_settings(exports),
                    "mutation": {"request_id": client::request_id(request), "actor": "editor-acceptance"}}),
         )?;
         let settled = client::settle(owner, editor, &accepted["job_id"])?;
@@ -460,7 +460,7 @@ fn grading_journey(
         owner,
         editor,
         "batch.export",
-        json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "destination": batch,
+        json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "settings": crate::export_smoke::export_settings(&batch),
                "mutation": {"request_id": client::request_id("grading-batch"), "actor": "editor-acceptance"}}),
     )?;
     let settled = client::settle(owner, editor, &accepted["job_id"])?;

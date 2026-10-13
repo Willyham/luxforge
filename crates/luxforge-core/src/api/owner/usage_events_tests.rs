@@ -347,8 +347,8 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
     // The open photograph's export: started, then written.
     let destination = harness.dir.join("export.jpg");
     let accepted = harness.ok(
-        "export.jpeg",
-        json!({"asset_id": asset, "destination": destination, "mutation": harness.request("export")}),
+        "export.write",
+        json!({"settings": crate::export::settings::baseline_json(), "asset_id": asset, "destination": destination, "mutation": harness.request("export")}),
     );
     let record = harness.settle(&accepted["job_id"]);
     assert_eq!(record["status"], "ready", "{record}");
@@ -363,8 +363,8 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
     // A refused export (nothing may exist at its destination) is no interaction and no outcome.
     let refused = harness.respond(
         "export-again",
-        "export.jpeg",
-        json!({"asset_id": asset, "destination": destination, "mutation": harness.request("export-again")}),
+        "export.write",
+        json!({"settings": crate::export::settings::baseline_json(), "asset_id": asset, "destination": destination, "mutation": harness.request("export-again")}),
     );
     assert!(refused.error.is_some());
     assert_eq!(harness.events(), []);
@@ -712,8 +712,8 @@ fn edited(name: &str, source: &Path, collecting: bool) -> Outputs {
     );
     let destination = harness.dir.join("export.jpg");
     let accepted = harness.ok(
-        "export.jpeg",
-        json!({"asset_id": asset, "destination": destination, "mutation": harness.request("export")}),
+        "export.write",
+        json!({"settings": crate::export::settings::baseline_json(), "asset_id": asset, "destination": destination, "mutation": harness.request("export")}),
     );
     let record = harness.settle(&accepted["job_id"]);
     assert_eq!(record["status"], "ready", "{record}");

@@ -802,16 +802,16 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "export",
-        about: "The Export menu, two GPU exports and a reference one written and read back, the GPU's within the display limit of the reference's, one GPU export repeated byte for byte, and a refused one",
+        about: "The Export menu, two GPU exports and a reference one written and read back, the GPU's within the display limit of the reference's, one repeated byte for byte, and a refused one; then the Export sheet over the 24 MP and 60 MP JPEGs and a supplied RAW: Web, Print and Master, a preset saved, updated and deleted, Export again, a taken name, a refused WebP, a warned export's bar cancelled from Performance, and a batch with one photograph left out",
         launches: &[LaunchSpec {
             plan: export::plan,
             ..APP
         }],
         verify: export::verify,
-        source: Source::Fixtures(&[export::FIXTURE]),
+        source: Source::Default(&[export::FIXTURE]),
         window: Some(PANELLED),
         note: None,
-        own: None,
+        own: Some(export::run),
     },
     Scenario {
         name: mask::SCENARIO,
@@ -2389,6 +2389,7 @@ mod tests {
                 "raw-detail",
                 "auto-tone",
                 "copy-settings",
+                "export",
                 "performance",
                 "filmstrip",
                 "raw-panel",

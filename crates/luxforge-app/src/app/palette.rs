@@ -28,6 +28,8 @@ impl Editor {
                 self.palette.open = true;
                 self.palette.query.clear();
                 self.palette.selected = 0;
+                // The palette lists one entry per export preset, as the API lists them now.
+                self.list_export_presets();
                 return operation::focus(view::palette::QUERY_ID);
             }
             PaletteMessage::Close => self.palette.open = false,
@@ -88,13 +90,15 @@ impl Editor {
                     Some(PaletteAction::Compare) => {
                         self.dispatch(Message::History(HistoryMessage::CompareToggle))
                     }
-                    Some(PaletteAction::Export {
-                        keep_metadata,
-                        reference,
-                    }) => self.dispatch(Message::Export(ExportMessage::Start {
-                        keep_metadata,
-                        reference,
-                    })),
+                    Some(PaletteAction::Export { reference }) => {
+                        self.dispatch(Message::Export(ExportMessage::OpenSheet { reference }))
+                    }
+                    Some(PaletteAction::ExportAgain) => {
+                        self.dispatch(Message::Export(ExportMessage::Again))
+                    }
+                    Some(PaletteAction::ExportWithPreset(preset_id)) => {
+                        self.dispatch(Message::Export(ExportMessage::WithPreset(preset_id)))
+                    }
                     Some(PaletteAction::Settings(tab)) => {
                         self.dispatch(Message::Settings(SettingsMessage::Open(tab)))
                     }

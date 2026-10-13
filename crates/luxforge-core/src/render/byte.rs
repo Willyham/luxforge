@@ -478,6 +478,35 @@ pub(super) fn rasterize_suffix(
     })
 }
 
+/// The whole frame of a stack compiled against a byte source with its terminal encoded once at 16
+/// bits instead of 8: [`rasterize`]'s frames with the last segment's output wide, and its input wide
+/// too where its boundary materializes a frame, so the last colour run's values, or the last
+/// spatial operation's, are quantized once through [`Quantizer16`] rather than to 8 bits. Every
+/// boundary before the last is the 8-bit render's, so an 8-bit code the stack hands on unchanged
+/// (a resample's, the source's) is that code's multiple of 257. Answers the stage's red, green and
+/// blue codes, row by row, inside the evaluated-frame limit.
+pub(super) fn rasterize_wide(
+    source: &SourceImage,
+    compiled: &Compiled,
+    cancel: &Cancel,
+    tiling: spatial::Tiling,
+    context: &RenderContext,
+) -> Result<(Vec<u16>, Stage), Error> {
+    let (frame, stage) = frames_with(source, compiled, cancel, tiling, context, None, None, true)?;
+    let rgb = match frame {
+        ByteFrame::Wide(rgb) => Arc::try_unwrap(rgb).unwrap_or_else(|shared| (*shared).clone()),
+        // A stack that computes nothing hands on the source's codes.
+        ByteFrame::Narrow(rgba) => {
+            cancel.check()?;
+            super::wide_terminal_len(stage.width, stage.height)?;
+            rgba.chunks_exact(4)
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]].map(|code| u16::from(code) * 257))
+                .collect()
+        }
+    };
+    Ok((rgb, stage))
+}
+
 pub(super) fn frames(
     source: &SourceImage,
     compiled: &Compiled,
@@ -487,9 +516,32 @@ pub(super) fn frames(
     stop: Option<usize>,
     held: Option<(usize, ByteFrame, Stage)>,
 ) -> Result<(ByteFrame, Stage), Error> {
+    frames_with(source, compiled, cancel, tiling, context, stop, held, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn frames_with(
+    source: &SourceImage,
+    compiled: &Compiled,
+    cancel: &Cancel,
+    tiling: spatial::Tiling,
+    context: &RenderContext,
+    stop: Option<usize>,
+    held: Option<(usize, ByteFrame, Stage)>,
+    wide_terminal: bool,
+) -> Result<(ByteFrame, Stage), Error> {
     cancel.check()?;
     let domain = Byte(source);
-    let widths = byte_frame_widths(compiled);
+    let mut widths = byte_frame_widths(compiled);
+    if wide_terminal
+        && let (Some(last), Some(segment)) = (widths.last_mut(), compiled.segments.last())
+    {
+        last.output = true;
+        last.input |= segment
+            .entry
+            .as_ref()
+            .is_some_and(super::Entry::materializes);
+    }
     let start = held.as_ref().map_or(0, |(index, _, _)| *index);
     let reused = held.is_some();
     let (mut frame, mut stage) = held.map_or_else(

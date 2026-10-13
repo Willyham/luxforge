@@ -1159,6 +1159,7 @@ fn write_jpeg(path: &Path, frame: &reference::Frame) {
         &luxforge_jpeg::Settings {
             quality: 100,
             chroma: (1, 1),
+            optimise: false,
             pixels_per_inch: None,
             segments: &[],
             icc: None,

@@ -16,6 +16,10 @@ luxforge-gpu-types = { path = "../luxforge-gpu-types" }
 half = { version = "=2.7.1", default-features = false, features = ["std"] }
 idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }
+luxforge-webp = { path = "../luxforge-webp" }
+# The TIFF export's lossless strip compression (Deflate), the version and default `miniz_oxide`
+# backend the Linux updater and xtask already build, so it adds no package.
+flate2 = "=1.1.10"
 # Only for `test-holds` below; no build of a shipped binary names it.
 luxforge-testbase = { path = "../luxforge-testbase", optional = true }
 luxforge-process = { path = "../luxforge-process" }
@@ -70,6 +74,9 @@ luxforge-test-macros = { path = "../luxforge-test-macros" }
 # An independent JPEG decoder and encoder for the tests, and PNG for their diagnostic images.
 image = { workspace = true, features = ["jpeg"] }
 kamadak-exif.workspace = true
+# Independent decoders for the WebP and TIFF export tests.
+image-webp.workspace = true
+tiff.workspace = true
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 # Parses and validates the WGSL of every GPU program the core ships, with the surface's calling

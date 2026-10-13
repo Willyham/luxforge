@@ -267,6 +267,7 @@ pub(crate) fn encode_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8
     let settings = Settings {
         quality: REGION_JPEG_QUALITY,
         chroma: (1, 1),
+        optimise: false,
         segments: &[],
         icc: None,
         pixels_per_inch: None,

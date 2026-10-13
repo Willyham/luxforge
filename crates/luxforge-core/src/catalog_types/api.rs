@@ -411,9 +411,8 @@ host_params! {
     /// `batch.export`.
     pub(crate) struct BatchExport {
         targets: Targets = json(TARGETS),
-        destination: PathBuf = path().notes("an existing folder; each file is named by the export's naming rule and nothing is replaced"),
+        settings: crate::export::settings::ExportSettings = json("ExportSettings, as schema.list's export_settings describes: one set for every photograph; folder \"original\" writes each beside its own original, and {path} into that existing folder; each file is named <original stem><suffix>.<extension>, counting up per folder, and nothing is replaced"),
         mutation: MutationRequest,
-        keep_metadata: Option<bool> = boolean().default(false),
         acknowledge_stale: Option<Vec<crate::BatchStaleAcknowledgement>> = json("[{asset_id, entry_id, operations: [correction-…]}], at most one a photograph: export these photographs' stale frozen patches as they render; a photograph with stale corrections and no exactly matching acknowledgement of its current entry is skipped stale-unacknowledged, with entry_id and stale in its skipped row"),
     }
 }

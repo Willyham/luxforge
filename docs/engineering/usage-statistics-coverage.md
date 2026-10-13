@@ -140,8 +140,12 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `event.list` | Exempt (read) | Lists the catalog's events (photo groups). |
 | `events.since` | Exempt (read) | Reads the event log; never copied into statistics. |
 | `events.wait` | Exempt (read) | Holds a read of the event log. |
-| `export.jpeg` | `interaction` `export`; `operation.end` export | The interaction when accepted (image when the photograph is open); the job's terminal outcome with `count` 1 when written and the open photograph's image. A refusal records neither; a cancelled or failed export carries no count. |
-| `export.plan` | Exempt (read) | Plans an export (output stage, suggested destination). |
+| `export.plan` | Exempt (read) | Plans an export (output size, suggested destination, estimate and notices). |
+| `export.presets.create` | Exempt (internal) | Stores an export preset; no export-preset event is approved yet. The export made with it records `export`. |
+| `export.presets.delete` | Exempt (internal) | Removes an export preset; no export-preset event is approved yet. |
+| `export.presets.list` | Exempt (read) | Lists the export presets. |
+| `export.presets.update` | Exempt (internal) | Renames an export preset or replaces its settings; no export-preset event is approved yet. |
+| `export.write` | `interaction` `export`; `operation.end` export | The interaction when accepted (image when the photograph is open); the job's terminal outcome with `count` 1 when written and the open photograph's image. A refusal records neither; a cancelled or failed export carries no count. |
 | `flags.list` | Exempt (read) | Lists feature flags. |
 | `flags.set` | `interaction` preferences-change | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `folder.create` | `interaction` folder-create | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
@@ -234,7 +238,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `pick.plan` | Exempt (read) | Plans a Develop of picks; its `pick.develop` is the operation. |
 | `pick.set` | `interaction` pick-set | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `preferences.read` | Exempt (read) | Reads preferences. |
-| `preferences.set` | `interaction` preferences-change | Only a deliberate preference the event log announces (Settings); the remembered workspace, brush, window, export folder and Performance state a desktop stores as it goes are not. |
+| `preferences.set` | `interaction` preferences-change | Only a deliberate preference the event log announces (Settings); the remembered workspace, brush, window, last export and Performance state a desktop stores as it goes are not. |
 | `preset.capture` | Exempt (read) | Captures settings for a preset form; the save is `preset.create`/`preset.update`. |
 | `preset.create` | `interaction` preset-create | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `preset.delete` | `interaction` preset-delete | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |

@@ -1184,6 +1184,10 @@ impl Editor {
             can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
             can_export: self.can_export(),
             export_held: self.export.held.as_ref().map(|held| held.stale.as_slice()),
+            export_sheet: self.export.sheet.as_ref(),
+            export_presets: self.export.presets.as_deref(),
+            export_last: self.preferences.applied_export_last(),
+            export_progress: self.export_progress(),
             developer: self.developer,
             compare_held: self.document.compare_return.is_some(),
             view_state: &self.view_state,
@@ -1508,6 +1512,7 @@ impl Editor {
             palette_open: self.palette.open,
             settings_open: self.settings.open.is_some(),
             export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
+            export_sheet_open: self.export.sheet.is_some(),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(

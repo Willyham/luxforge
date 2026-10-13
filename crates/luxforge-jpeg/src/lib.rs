@@ -2,11 +2,12 @@
 //! previews whole ([`Decoder`], at full size or one of libjpeg's DCT [`Scale`]s) or one rectangle
 //! at full size ([`RegionDecoder`]), and writing exports ([`Encoder`], and [`encode`] for a whole
 //! frame), with the JPEG container around them: the bounded marker walk ([`header`],
-//! [`segments`]) and the ICC profile's APP2 chunks both ways. The whole decode and the encode go
-//! through the `mozjpeg` crate's safe API; the region decode needs libjpeg's `cinfo` for its
-//! cropped columns and skipped rows, which that API does not expose, so it runs its own libjpeg
-//! session over `mozjpeg-sys` (`session.rs`), the crate's one module of `unsafe` calls into the C
-//! library. No other crate names `mozjpeg`, and this one depends on no workspace crate, which
+//! [`segments`]) and the ICC profile's APP2 chunks both ways. The whole decode goes through the
+//! `mozjpeg` crate's safe API. The region decode needs libjpeg's `cinfo` for its cropped columns
+//! and skipped rows, and the encode for its progress monitor and the parameters of an optimised
+//! encode, which that API does not expose, so each runs its own libjpeg session over `mozjpeg-sys`
+//! (`session.rs` and `compress.rs`), the crate's two modules of `unsafe` calls into the C library.
+//! No other crate names `mozjpeg`, and this one depends on no workspace crate, which
 //! `cargo xtask check-repository` enforces, so the safety around the C library lives here once and
 //! the caller keeps only its policy: the limits it passes in, and what each [`JpegError`] means to
 //! it.
@@ -47,13 +48,18 @@
 //!   numbered from 1 as the ICC specification (ICC.1, Annex B.4) requires; a chunk sequence that
 //!   does not follow it is an unsupported profile, not a missing one.
 //! - [`Encoder`] writes libjpeg's fastest baseline profile (one interleaved scan, standard Huffman
-//!   tables) at the caller's quality and chroma sampling, with the caller's APPn segments and then
-//!   the ICC profile after the JFIF header, streaming into the writer through libjpeg's buffer of
-//!   at most 64 KiB. It takes the image's rows in order in bands of any size and hands libjpeg the
-//!   same strips whatever the bands, so the bytes are those of [`encode`], the session given the
-//!   whole frame as one band. It uses `mozjpeg`'s default error manager, whose fatal errors carry
-//!   libjpeg's message.
+//!   tables), or with [`Settings::optimise`] mozjpeg's progressive scans, optimised Huffman tables
+//!   and trellis quantisation over the same standard quantisation tables, at the caller's quality
+//!   and chroma sampling, with the caller's APPn segments and then the ICC profile after the JFIF
+//!   header, streaming into the writer through libjpeg's buffer of at most 64 KiB. It takes the
+//!   image's rows in order in bands of any size and hands libjpeg the same strips whatever the
+//!   bands, so the bytes are those of [`encode`], the session given the whole frame as one band. A
+//!   baseline encode writes as the rows arrive; an optimised one holds the image's coefficients
+//!   ([`coefficient_bytes`], with no cap) and writes the file in further passes when it finishes,
+//!   reported through libjpeg's progress monitor as [`Progress`], and stoppable between reports.
+//!   Its error manager's fatal errors carry libjpeg's message, as `mozjpeg`'s do.
 
+mod compress;
 mod container;
 mod decode;
 mod encode;
@@ -65,7 +71,7 @@ mod warnings;
 
 pub use container::{Header, Segment, Segments, header, segments};
 pub use decode::Decoder;
-pub use encode::{Encoder, Settings, encode};
+pub use encode::{Encoder, Progress, Settings, coefficient_bytes, encode};
 pub use region::{Region, RegionDecoder};
 pub use scale::Scale;
 
@@ -140,5 +146,7 @@ impl fmt::Display for JpegError {
 
 impl std::error::Error for JpegError {}
 
+#[cfg(test)]
+mod encode_tests;
 #[cfg(test)]
 mod tests;

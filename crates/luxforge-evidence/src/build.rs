@@ -197,6 +197,26 @@ impl Step {
         Self::Export(ExportStep::Menu)
     }
 
+    /// Open the Export sheet, as `Cmd+E` does.
+    pub fn export_sheet() -> Self {
+        Self::Export(ExportStep::Sheet(crate::SheetOpen::default()))
+    }
+
+    /// Press the sheet's preset card named `name`.
+    pub fn export_preset(name: impl Into<String>) -> Self {
+        Self::Export(ExportStep::Preset(name.into()))
+    }
+
+    /// Change the open sheet's settings.
+    pub fn export_edit(edit: crate::SheetEdit) -> Self {
+        Self::Export(ExportStep::Edit(Box::new(edit)))
+    }
+
+    /// Press the sheet's Export, captured once the export ends.
+    pub fn export_write() -> Self {
+        Self::Export(ExportStep::Write(crate::ExportWrite::default()))
+    }
+
     /// Export the displayed entry to `name` in the run's evidence directory.
     pub fn export(name: impl Into<String>, keep_metadata: bool) -> Self {
         Self::Export(ExportStep::File(ExportFile {
