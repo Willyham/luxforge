@@ -221,6 +221,8 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
             gpu_tiles: figures.gpu_tiles,
             gpu_us: figures.gpu_us,
             gpu_max_us: figures.gpu_max_us,
+            overview: None,
+            overview_bytes: 0,
         }
     );
     assert_eq!(figures.evaluation.window_texels, {
@@ -288,6 +290,7 @@ fn rest_of(tiles: &[GpuPlan]) -> GpuRest {
             across: axis(&coverage(WIDTH, SIDE)),
             down: axis(&coverage(HEIGHT, SIDE)),
         }),
+        overview: None,
         stages: None,
         light_sweeps: Arc::from([]),
     }
@@ -768,4 +771,159 @@ fn a_percentage_views_backdrop_fills_what_its_region_frame_does_not_cover() {
     assert!(!seen.drawn_photo_uncovered);
     paint(&device, &queue, &mut pipeline, &handing_none());
     settle(&pipeline);
+}
+
+/// The overview `pipeline`'s surface [`ID`] holds of its picture at rest of `version`, once settled,
+/// the device polled meanwhile.
+fn rest_overview(
+    device: &wgpu::Device,
+    pipeline: &PhotoPipeline,
+    version: u64,
+) -> luxforge_gpu::OverviewOutcome {
+    luxforge_testbase::wait_for("the picture at rest's overview", || {
+        let _ = device.poll(wgpu::PollType::Poll);
+        let held = pipeline.figures.counts.lock().unwrap().get(&ID).cloned()?;
+        let (reduced, overview) = held.overview?;
+        assert_eq!(reduced, version);
+        match overview.outcome() {
+            luxforge_gpu::OverviewOutcome::Pending => None,
+            outcome => Some(outcome),
+        }
+    })
+}
+
+/// Draw `rest` until its last tile is in, and answer the frame drawn then.
+fn drawn_whole(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &mut PhotoPipeline,
+    primitive: &PhotoPrimitive,
+    version: u64,
+) -> Vec<u8> {
+    for _ in 0..8 {
+        let drawn = paint(device, queue, pipeline, primitive);
+        let seen = diagnostics(pipeline, ID);
+        let figures = seen.gpu_rest.expect("the rest's figures");
+        assert_eq!(figures.fallback, None, "{figures:?}");
+        if seen.drawn_rest == Some(version) {
+            return drawn;
+        }
+    }
+    panic!("the picture at rest of {version} was never drawn");
+}
+
+/// The minimap's overview (`docs/design/minimap.md`): the same tiles reduced to a 32 × 24 overview
+/// beside the 64 × 64 view, read back once without a wait. Each overview pixel is the reference's
+/// area average of the tiles' codes within a code, the declared display tolerance, while the
+/// picture drawn and the counts are byte for byte those of the same tiles with no overview. An
+/// overview that is not an overview's size is refused alone, the picture drawn all the same.
+#[test]
+fn a_picture_at_rest_reduces_its_tiles_to_the_overview_beside_the_view() {
+    let test = "a_picture_at_rest_reduces_its_tiles_to_the_overview_beside_the_view";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let source = GpuSource::codes(3, Arc::new(rgba.clone()), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    pipeline.compile_now(&device, &tiles[0]);
+    let size = (32, 24);
+    let (across, down) = (coverage(WIDTH, size.0), coverage(HEIGHT, size.1));
+    let plain = rest_of(&tiles);
+    let with_overview = GpuRest {
+        version: 2,
+        overview: Some(RestReduction {
+            view: size,
+            across: axis(&across),
+            down: axis(&down),
+        }),
+        ..plain.clone()
+    };
+    let primitive = |rest: &GpuRest| PhotoPrimitive {
+        source: Some(source.clone()),
+        rest: Some(rest.clone()),
+        ..primitive(ID, None)
+    };
+    let without = drawn_whole(&device, &queue, &mut pipeline, &primitive(&plain), 1);
+    let counted = rest_counts(&device, &pipeline, 1);
+    let drawn = drawn_whole(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(&with_overview),
+        2,
+    );
+    assert_eq!(
+        drawn, without,
+        "the picture is the same bytes beside an overview"
+    );
+    let counts = rest_counts(&device, &pipeline, 2);
+    assert_eq!(compared(&counts), compared(&counted));
+    let figures = diagnostics(&pipeline, ID).gpu_rest.expect("figures");
+    assert_eq!(figures.overview, Some(size));
+    let luxforge_gpu::OverviewOutcome::Ready(overview) = rest_overview(&device, &pipeline, 2)
+    else {
+        panic!("no overview");
+    };
+    assert_eq!((overview.width, overview.height), size);
+    let held = held_codes(&rgba);
+    let mut exact = 0;
+    for y in 0..size.1 as usize {
+        for x in 0..size.0 as usize {
+            let reference: [u8; 3] = [0, 1, 2].map(|channel| {
+                let mut sum = 0.0;
+                for j in down.1[y]..down.1[y + 1] {
+                    let sy = (down.0[y] + j - down.1[y]) as usize;
+                    for i in across.1[x]..across.1[x + 1] {
+                        let sx = (across.0[x] + i - across.1[x]) as usize;
+                        sum += down.2[j as usize]
+                            * across.2[i as usize]
+                            * srgb::decode(held[sy * WIDTH as usize + sx][channel]);
+                    }
+                }
+                srgb::code(sum)
+            });
+            let at = (y * size.0 as usize + x) * 4;
+            let gpu = [
+                overview.rgba[at],
+                overview.rgba[at + 1],
+                overview.rgba[at + 2],
+            ];
+            assert_eq!(overview.rgba[at + 3], 255);
+            for channel in 0..3 {
+                assert!(
+                    gpu[channel].abs_diff(reference[channel]) <= 1,
+                    "({x}, {y}) channel {channel}: {} against {}",
+                    gpu[channel],
+                    reference[channel]
+                );
+            }
+            exact += usize::from(gpu == reference);
+        }
+    }
+    eprintln!(
+        "{test}: {exact} of {} overview pixels equal to the f64 reference's codes",
+        size.0 * size.1
+    );
+    // Not an overview's size: refused alone; the picture is drawn and counted as before.
+    let refused = GpuRest {
+        version: 3,
+        overview: Some(RestReduction {
+            view: (300, 1),
+            across: axis(&coverage(WIDTH, 300.min(WIDTH))),
+            down: axis(&coverage(HEIGHT, 1)),
+        }),
+        ..plain
+    };
+    let drawn = drawn_whole(&device, &queue, &mut pipeline, &primitive(&refused), 3);
+    assert_eq!(drawn, without);
+    assert_eq!(
+        rest_overview(&device, &pipeline, 3),
+        luxforge_gpu::OverviewOutcome::Failed(luxforge_gpu::OverviewError::Invalid)
+    );
+    // Let go, every part retires, the overview's and its staging copy's among them.
+    paint(&device, &queue, &mut pipeline, &handing_none());
+    settle(&pipeline);
+    assert_eq!(diagnostics(&pipeline, ID).gpu_rest, None);
 }

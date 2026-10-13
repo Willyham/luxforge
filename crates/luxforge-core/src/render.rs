@@ -30,6 +30,7 @@ pub(crate) mod limits;
 pub(crate) mod linear;
 mod locate;
 pub(crate) mod map;
+mod overview;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
@@ -79,6 +80,9 @@ pub use linear::{LinearSettings, WhiteBalanceApproximation};
 pub use locate::{ContentPoint, Sample, stage_transform};
 pub(crate) use locate::{locate, transform_of};
 pub use map::{GeometryMap, MapError, MappingDescriptor, MappingShape, StageSize};
+pub use overview::{
+    OVERVIEW_BAND_BYTES, OVERVIEW_BOUNDS, OVERVIEW_CPU_BYTES, overview_size, reduce_overview,
+};
 pub(crate) use pipeline::{Evaluation, PixelDomain, RowScratch, SpatialMode};
 use pipeline::{SegmentRows, SpatialEntry, Taps, segment_pass, spatial_entry};
 pub use raster::Raster;

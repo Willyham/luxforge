@@ -383,8 +383,14 @@ impl Evaluation {
     /// a new identity each time the draft is evaluated, so two jobs of one draft revision would
     /// otherwise name the same pixels differently.
     fn stack_key(&self, keep: impl Fn(&Mask) -> bool) -> Result<u64, Error> {
+        self.stack_key_of(self.recipe().layers.len(), keep)
+    }
+
+    /// [`Self::stack_key`] of the first `count` layers alone.
+    fn stack_key_of(&self, count: usize, keep: impl Fn(&Mask) -> bool) -> Result<u64, Error> {
         self.compiled()?;
         let recipe = self.recipe();
+        let layers = &recipe.layers[..count.min(recipe.layers.len())];
         let mut hasher = DefaultHasher::new();
         std::fmt::write(
             &mut Sink(&mut hasher),
@@ -392,8 +398,8 @@ impl Evaluation {
         )
         .map_err(|_| Error::internal("a source identity could not be formatted"))?;
         recipe.format.hash(&mut hasher);
-        recipe.layers.len().hash(&mut hasher);
-        for layer in &recipe.layers {
+        layers.len().hash(&mut hasher);
+        for layer in layers {
             hash_json(
                 &mut hasher,
                 &(
@@ -414,12 +420,59 @@ impl Evaluation {
     /// A process-local identity of the photograph's pixels. Unbound masks and draft/history
     /// bookkeeping do not change pixels. Bound masks, source development and every layer do.
     pub fn pixel_content_key(&self) -> Result<u64, Error> {
+        self.prefix_content_key(self.recipe().layers.len())
+    }
+
+    /// [`Self::pixel_content_key`] of the stack's first `count` layers alone: the identity of the
+    /// pixels a truncated job, a crop draft's input stage, renders. Layers after them, and the
+    /// masks only they bind, do not enter it.
+    pub fn prefix_content_key(&self, count: usize) -> Result<u64, Error> {
         let layers = &self.recipe().layers;
-        self.stack_key(|mask| {
+        let layers = &layers[..count.min(layers.len())];
+        self.stack_key_of(count, |mask| {
             layers
                 .iter()
                 .any(|layer| layer.mask.as_ref() == Some(&mask.id))
         })
+    }
+
+    /// A process-local identity of where the pixels of the stack's first `count` layers lie in the
+    /// source: the source's own geometry — its fingerprint and size, or a RAW's view, and its
+    /// orientation, but not a RAW's development — and every geometry layer among them, or any layer
+    /// whose stage the registry does not know. Colour, detail, repair, masks and white balance
+    /// leave it as it is; a crop, a turn, a straightening, a warp or another photograph changes it.
+    /// What a minimap overview of one stack may stand in for while another of the same geometry is
+    /// made (`docs/design/minimap.md`). `O(layers)`; reads no pixel.
+    pub fn geometry_key(&self, count: usize) -> Result<u64, Error> {
+        let mut hasher = DefaultHasher::new();
+        match self.source().identity() {
+            crate::ProxyIdentity::Jpeg {
+                fingerprint,
+                width,
+                height,
+                orientation,
+            } => (0u8, fingerprint, width, height, orientation).hash(&mut hasher),
+            crate::ProxyIdentity::Raw {
+                fingerprint,
+                development: _,
+                crop,
+                orientation,
+            } => (1u8, fingerprint, crop, orientation).hash(&mut hasher),
+        }
+        let registry = self.registry();
+        let layers = &self.recipe().layers;
+        for layer in &layers[..count.min(layers.len())] {
+            if matches!(
+                registry.effect_stage(&layer.effect_id),
+                None | Some(crate::EffectStage::Geometry)
+            ) {
+                hash_json(
+                    &mut hasher,
+                    &(&layer.effect_id, layer.effect_format, &layer.payload),
+                )?;
+            }
+        }
+        Ok(hasher.finish())
     }
 
     /// The exact dependencies that must stay fixed while accepted revisions of one edited mask

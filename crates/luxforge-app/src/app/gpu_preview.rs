@@ -214,6 +214,8 @@ impl RestVariants {
                 stages: picture.stages.clone(),
                 light_sweeps: Arc::clone(&picture.light_sweeps),
                 reduction: None,
+                // The overview is the tiles', whichever variant draws them.
+                overview: picture.overview.clone(),
             },
             None => picture.clone(),
         };
@@ -251,6 +253,7 @@ fn same_tiles(held: &luxforge_core::RestTiles, new: &luxforge_core::RestTiles) -
         light_sweeps,
         output,
         reduction: _,
+        overview: _,
         source,
         format,
     } = new;
@@ -446,6 +449,14 @@ fn rest_over(
                 view: reduction.view,
                 across: axis(reduction.across.clone()),
                 down: axis(reduction.down.clone()),
+            }),
+        overview: tiles
+            .overview
+            .as_ref()
+            .map(|overview| luxforge_gpu::RestReduction {
+                view: overview.view,
+                across: axis(overview.across.clone()),
+                down: axis(overview.down.clone()),
             }),
     })
 }
