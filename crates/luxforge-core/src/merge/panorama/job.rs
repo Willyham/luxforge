@@ -38,7 +38,10 @@ use super::{
     frames::{FrameDeveloper, FrameRequest, LensBake, LensChoice, read_frame},
     proxy::MAX_PROXY_SIDE,
     register_with_progress,
-    stitching::{ChunkWindow, OutputLimits, StitchPlan, StitchRequest, Stitcher},
+    stitching::{
+        ChunkStats, FrameWindows, MAX_WINDOW_PIXELS, OutputLimits, StitchPlan, StitchRequest,
+        Stitcher,
+    },
     suitability,
 };
 use crate::{
@@ -69,12 +72,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-
-/// The largest frame window a chunk is assumed to read when the scratch is preflighted: a chunk
-/// widened for a stitch's resampling and turned by up to 45°.
-const WINDOW_SIDE: u64 = CHUNK_SIDE as u64 * 3 / 2;
-/// The frames a chunk is assumed to read at once when the scratch is preflighted.
-const WINDOW_FRAMES: u64 = 4;
 
 /// Everything one panorama job needs, moved to the worker.
 pub(crate) struct PanoramaSpec {
@@ -192,7 +189,7 @@ pub(crate) fn fits(
         + FrameFeatures::scratch_bytes_for(pw, ph) as u64;
     let reading = colour + features + detection + super::frames::band_bytes(width);
     let matching = colour + features + super::registration::scratch_bytes_for(inputs) as u64;
-    let stitching = WINDOW_FRAMES * WINDOW_SIDE * WINDOW_SIDE * SPOOL_PIXEL
+    let stitching = MAX_WINDOW_PIXELS * SPOOL_PIXEL
         + read_band_bytes(width)
         + u64::from(CHUNK_SIDE) * u64::from(CHUNK_SIDE) * 2 * RESULT_PIXEL;
     let mut probe = Accounting {
@@ -273,10 +270,36 @@ pub(crate) fn stack_order(registration: &PanoramaRegistration) -> Vec<usize> {
 }
 
 /// Every frame's window of one chunk, read back from the spools.
+/// The frames' spools as a stitch reads them back: one window at a time into one buffer.
 struct ChunkReader {
     files: Vec<File>,
-    windows: Vec<Window>,
+    window: Window,
     width: u32,
+    height: u32,
+}
+
+impl FrameWindows for ChunkReader {
+    fn read(
+        &mut self,
+        frame: usize,
+        bounds: PixelRect,
+    ) -> Result<crate::merge::hdr::SourceWindow<'_>, Error> {
+        let file = self
+            .files
+            .get_mut(frame)
+            .ok_or_else(|| Error::internal("a stitch named an unknown frame"))?;
+        if bounds.is_empty()
+            || bounds.pixels() > MAX_WINDOW_PIXELS
+            || u64::from(bounds.x) + u64::from(bounds.width) > u64::from(self.width)
+            || u64::from(bounds.y) + u64::from(bounds.height) > u64::from(self.height)
+        {
+            return Err(Error::internal(
+                "a stitch asked for a window outside its frame or past the bound",
+            ));
+        }
+        self.window.read(file, self.width, bounds)?;
+        Ok(self.window.source(bounds))
+    }
 }
 
 impl PanoramaSpec {
@@ -558,7 +581,7 @@ impl PanoramaSpec {
         accounting.take(plan.plan_bytes, "the stitch's plan")?;
         let source = self.write(&prepared, plan, control, &mut accounting);
         accounting.give(plan.plan_bytes);
-        let source = source?;
+        let (source, stats) = source?;
 
         // Saving: the source is durable; the frames must still be the files that were read.
         control.checkpoint()?;
@@ -570,7 +593,7 @@ impl PanoramaSpec {
         control.set_progress(Some(1.0), "Saving");
         accounting.temp_bytes = 0;
         let order = stack_order(&analysis.registration);
-        let provenance = self.provenance(&prepared, analysis, &order)?;
+        let provenance = self.provenance(&prepared, analysis, &order, stats)?;
         let mut volumes: Vec<Volume> = Vec::new();
         for developed in &prepared.inputs {
             if !volumes
@@ -594,21 +617,20 @@ impl PanoramaSpec {
         Ok(merged)
     }
 
-    /// Write the result chunk by chunk.
+    /// Write the result chunk by chunk; answer it and what rendering measured.
     fn write(
         &self,
         prepared: &PanoramaPrepared,
         plan: &StitchPlan,
         control: &JobControl,
         accounting: &mut Accounting,
-    ) -> Result<PublishedSource, Error> {
+    ) -> Result<(PublishedSource, ChunkStats), Error> {
         let cancel = control.render_cancel();
         let mut reader = ChunkReader {
             files: Vec::with_capacity(prepared.inputs.len()),
-            windows: (0..prepared.inputs.len())
-                .map(|_| Window::default())
-                .collect(),
+            window: Window::default(),
             width: prepared.width,
+            height: prepared.height,
         };
         for path in &prepared.spool.files {
             reader
@@ -616,12 +638,15 @@ impl PanoramaSpec {
                 .push(File::open(path).map_err(|error| spool_error(error.kind()))?);
         }
         let chunks = crate::artifacts::derived_source::grid_of(plan.width, plan.height).len();
+        // The spool's band buffer, the one frame window, the stitch's own and the writer's chunk.
         let fixed = read_band_bytes(prepared.width)
+            + MAX_WINDOW_PIXELS * SPOOL_PIXEL
             + plan.chunk_bytes
             + u64::from(CHUNK_SIDE) * u64::from(CHUNK_SIDE) * 2 * RESULT_PIXEL;
         accounting.take(fixed, "one chunk of the panorama")?;
         report(control, Stage::Stitching(0), accounting);
         let mut done = 0;
+        let mut stats = ChunkStats::default();
         #[cfg(test)]
         if let Some(step) = self.hooks.writer_fails {
             crate::artifacts::derived_source::fail::at(step);
@@ -641,33 +666,10 @@ impl PanoramaSpec {
                     width: chunk.width,
                     height: chunk.height,
                 };
-                let wanted = self.stitcher.windows(plan, rect)?;
-                let bytes: u64 = wanted
-                    .iter()
-                    .map(|(_, bounds)| bounds.pixels() * SPOOL_PIXEL)
-                    .sum();
-                accounting.take(bytes, "the frames' windows of one chunk")?;
-                let rendered = (|| {
-                    for (frame, bounds) in &wanted {
-                        let (frame, bounds) = (*frame, *bounds);
-                        let window = reader
-                            .windows
-                            .get_mut(frame)
-                            .ok_or_else(|| Error::internal("a stitch named an unknown frame"))?;
-                        window.read(&mut reader.files[frame], reader.width, bounds)?;
-                    }
-                    let windows: Vec<ChunkWindow<'_>> = wanted
-                        .iter()
-                        .map(|(frame, bounds)| ChunkWindow {
-                            frame: *frame,
-                            window: reader.windows[*frame].source(*bounds),
-                        })
-                        .collect();
+                let measured =
                     self.stitcher
-                        .render_chunk(plan, rect, &windows, planes, cancel)
-                })();
-                accounting.give(bytes);
-                rendered?;
+                        .render_chunk(plan, rect, &mut reader, planes, cancel)?;
+                stats = stats.and(measured);
                 if let Some(sample) = planes.iter().find(|sample| !sample.is_finite()) {
                     return Err(Error::render(format!(
                         "the stitch rendered a sample that is not finite ({sample})"
@@ -685,17 +687,19 @@ impl PanoramaSpec {
             },
         );
         accounting.give(fixed);
-        // The windows are dropped with the reader.
+        // The window is dropped with the reader.
         drop(reader);
-        written
+        written.map(|source| (source, stats))
     }
 
-    /// The merge's provenance in the stack's order (`order[k]` the request position at `k`).
+    /// The merge's provenance in the stack's order (`order[k]` the request position at `k`), with
+    /// what rendering measured.
     fn provenance(
         &self,
         prepared: &PanoramaPrepared,
         analysis: &PanoramaAnalysis,
         order: &[usize],
+        stats: ChunkStats,
     ) -> Result<MergeProvenance, Error> {
         let n = order.len();
         let mut at = vec![0; n];
@@ -774,7 +778,12 @@ impl PanoramaSpec {
                 },
                 rms_residual_px: registration.rms_residual_px,
                 max_residual_px: registration.max_residual_px,
-                stitch: analysis.plan.record.permuted(order),
+                stitch: {
+                    let mut stitch = analysis.plan.record.permuted(order);
+                    stitch.seams.clipped_px = stats.clipped_pixels;
+                    stitch.seams.max_overshoot = f64::from(stats.max_overshoot);
+                    stitch
+                },
             })),
         };
         provenance.validate()?;
