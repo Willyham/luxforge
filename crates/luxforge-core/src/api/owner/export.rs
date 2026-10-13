@@ -125,8 +125,8 @@ host_params! {
 /// nothing: the output stage from the compiled recipe and the output size the settings give it,
 /// the physical size at their density, the suggested destination in their folder (at most 64 names
 /// read), the encoder's held-memory estimate and the notices, and the stale frozen patches an
-/// export must acknowledge. A derived photograph has no original file to name a destination after,
-/// so nothing is suggested for it.
+/// export must acknowledge. A merge's result, which has no original file, is named after its
+/// stack's first input ([`export_stem`]).
 pub(in crate::api) fn plan(
     owner: &mut Owner,
     _: &Call<'_>,
@@ -142,17 +142,22 @@ pub(in crate::api) fn plan(
     let output = settings.output_size(stage);
     let folder = settings.folder.resolve(original);
     let notices = settings.notices(output, folder.as_deref());
-    let suggested = match (
-        folder.as_deref().filter(|folder| folder.is_dir()),
-        original
-            .and_then(std::path::Path::file_stem)
-            .and_then(|stem| stem.to_str()),
-    ) {
+    let stem = export_stem(owner, &params.asset_id, original)?;
+    let suggested = match (folder.as_deref().filter(|folder| folder.is_dir()), &stem) {
         (Some(directory), Some(stem)) => {
             publish::suggest(directory, stem, &settings.suffix, settings.format())
         }
         _ => None,
     };
+    // The name the rule gives first, before counting past taken names, and the stem it starts
+    // with, as a file name has them: no spaces.
+    let name = stem.as_deref().map(|stem| {
+        format!(
+            "{}.{}",
+            publish::spaceless(&format!("{stem}{}", settings.suffix)),
+            settings.format().extension()
+        )
+    });
     // The frozen patches the planned entry would export stale, which an export must acknowledge.
     let (_, stale) = owner
         .service
@@ -165,6 +170,8 @@ pub(in crate::api) fn plan(
         "output": {"width": output.0, "height": output.1},
         // A name that is not UTF-8 is not suggested rather than suggested wrongly.
         "suggested": suggested.as_deref().and_then(|path| path.to_str()),
+        "stem": stem.as_deref().map(publish::spaceless),
+        "name": name,
         "estimate": settings.held_bytes(output),
         "notices": notices,
         "stale": stale,
@@ -173,6 +180,24 @@ pub(in crate::api) fn plan(
         answer["physical"] = physical(output, density);
     }
     Ok(answer)
+}
+
+/// The file stem an export of `asset` is named from: its `original`'s, or for a merge's result,
+/// which has none, its stack's first input's with the kind's suffix (`LXF_0005-pano`,
+/// `LXF_0011-hdr`). `None` for a name that is not UTF-8, which is not suggested rather than
+/// suggested wrongly.
+pub(super) fn export_stem(
+    owner: &Owner,
+    asset: &AssetId,
+    original: Option<&std::path::Path>,
+) -> Result<Option<String>, Error> {
+    match original {
+        Some(original) => Ok(original
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_owned)),
+        None => crate::library::merge::export_stem(&owner.service.connection, asset),
+    }
 }
 
 /// The physical size of an `output` at `density` pixels per inch, in inches and centimetres, each

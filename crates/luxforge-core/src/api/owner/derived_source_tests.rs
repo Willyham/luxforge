@@ -218,7 +218,7 @@ fn a_derived_source_opens_samples_analyses_and_exports_through_the_owner() {
         "export.plan",
         json!({"asset_id": opened.asset, "settings": crate::export::settings::baseline_json_in(&opened.dir)}),
     );
-    // A derived photograph has no original to name the file after.
+    // A derived source no merge made has no original or first input to name the file after.
     assert_eq!(plan["suggested"], Value::Null);
     assert_eq!(plan["output"], json!({"width": WIDTH, "height": HEIGHT}));
     let destination = opened.dir.join("merge-edited.jpg");
