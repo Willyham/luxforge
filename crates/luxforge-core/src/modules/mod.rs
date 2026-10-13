@@ -94,7 +94,8 @@ pub use corrections::{
     CORRECTIONS_EFFECT, RepairInput, SourceFit, StaleCorrection, StaleReason, fit_correction_source,
 };
 pub(crate) use corrections::{
-    CorrectionsModule, RepairCarrier, source_identity as corrections_source_identity,
+    CorrectionsModule, RepairCarrier, selection_prefix as corrections_selection_prefix,
+    source_identity as corrections_source_identity,
 };
 pub(crate) use corrections::{
     new_top_input as corrections_top_input, repair_stage as corrections_repair_stage,

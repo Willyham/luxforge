@@ -996,6 +996,13 @@ pub(crate) fn component_artifact(component: &Component) -> Option<ArtifactId> {
         .and_then(|artifact| (artifact.of)(component))
 }
 
+/// A stored model selection's payload, when `component` is one and its payload parses.
+pub fn model_selection(component: &Component) -> Option<ModelSelection> {
+    (component.kind == model::KIND)
+        .then(|| model::parse(component).ok())
+        .flatten()
+}
+
 /// Every derived artifact `masks` reference, in mask and component order, repeats included.
 pub(crate) fn mask_artifacts(masks: &[Mask]) -> impl Iterator<Item = ArtifactId> + '_ {
     masks

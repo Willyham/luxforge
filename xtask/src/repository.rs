@@ -637,8 +637,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // its token, and everything else asks a table (`component_geometry_is_drawn`, `stroke_kind`,
     // `paintable`, `painted_kind`). The names are the constants those files declare a kind's token
     // in, and the two range tokens no other vocabulary spells. The bare words `"linear"`,
-    // `"radial"` and `"brush"` are not matched: they also name a colour domain, a fixture's seed
-    // and the panel's Brush section in the state capture.
+    // `"radial"`, `"brush"` and `"model"` are not matched: they also name a colour domain, a
+    // fixture's seed, the panel's Brush section in the state capture and a generative candidate's
+    // provenance.
     SourceRule {
         name: "component-kind",
         tokens: &[
@@ -659,6 +660,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/mask/radial.rs",
             "crates/luxforge-core/src/mask/brush.rs",
             "crates/luxforge-core/src/mask/range.rs",
+            "crates/luxforge-core/src/mask/model.rs",
             "crates/luxforge-app/src/mask_draft/editor.rs",
             "crates/luxforge-app/src/mask_draft/linear.rs",
             "crates/luxforge-app/src/mask_draft/radial.rs",
