@@ -913,7 +913,11 @@ fn sharpened_cuts_read_their_neighbours_across_every_cut_edge() {
     let (width, height) = (160u32, 120u32);
     let value = |channel: usize, x: u32, y: u32| {
         // Stripes and a ramp: edges for the sharpening to find, and saturated corners.
-        let stripe = if (x / 7 + y / 5) % 2 == 0 { 0.6 } else { 0.1 };
+        let stripe = if (x / 7 + y / 5).is_multiple_of(2) {
+            0.6
+        } else {
+            0.1
+        };
         (stripe + 0.002 * x as f32 * (channel as f32 + 1.0) - 0.003 * y as f32).clamp(-0.1, 1.2)
     };
     let plane = (width * height) as usize;

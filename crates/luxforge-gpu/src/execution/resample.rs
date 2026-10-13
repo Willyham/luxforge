@@ -25,7 +25,7 @@
 //!   it by the core's Gaussian weights across and down, a coordinate past the extended cut clamped
 //!   to its edge (which is the output's edge wherever it matters), and adds
 //!   `round(a · (Y′ − blur))`, held so no channel clips, to all three codes, in `f32`, as the
-//!   core's reference does in whole numbers (`luxforge_core::tiles::sharpen`). Only the interior
+//!   core's reference sharpening does in whole numbers. Only the interior
 //!   is read back.
 //! - **Bounds.** A cut's window is at most the device's largest texture side, at most 8,192, either
 //!   way, and at most [`RESAMPLE_SCRATCH_TEXELS`] texels, so one output pixel's taps span at most
