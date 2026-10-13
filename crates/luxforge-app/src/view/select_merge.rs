@@ -7,10 +7,11 @@ use crate::{
     app::message::{Message, select::SelectMessage, select_merge::MergeMessage},
     layout::DIVIDER_WIDTH,
     state::select_merge::{
-        MenuModel, MergeAction, PutBackModel, SheetModel, StackBand, Toggle,
+        KindIcon, MenuModel, MergeAction, PutBackModel, SheetModel, StackBand, Toggle,
         sheet::{
             EXPOSURE_HINT, FRAMES_HINT, FileId, FrameRow, LAST_SETTINGS_HINT, OVERLAY_HINT,
-            PanoramaSettings, Picture, Region, StitchOverlay, Tint, WARP_HINT, fit, hatch, stepped,
+            PanoramaSettings, Picture, Region, StitchOverlay, Tint, WARP_HINT, WARP_MAX, fit,
+            hatch, projection_at, stepped,
         },
     },
 };
@@ -21,7 +22,6 @@ use iced::{
         opaque, progress_bar, row, scrollable, text, tooltip,
     },
 };
-use luxforge_core::catalog_types::{MAX_BOUNDARY_WARP, PanoramaProjection};
 use luxforge_ui::{
     ButtonSize, ButtonTone, Element, FilterOption, FilterSegmentsModel, Icon, IconButtonModel,
     LabelledButtonModel, MenuEntry, MenuItem, NoticeCardModel, SliderModel, Token,
@@ -512,23 +512,18 @@ fn panorama_settings<'a>(
 ) -> Element<'a, Message> {
     let projection = filter_segments(
         &FilterSegmentsModel {
-            options: PanoramaProjection::ALL
-                .map(|projection| FilterOption {
-                    label: crate::state::select_merge::projection_name(projection).into(),
+            options: settings
+                .projections
+                .iter()
+                .map(|label| FilterOption {
+                    label: (*label).into(),
                     count: None,
                 })
-                .to_vec(),
-            selected: PanoramaProjection::ALL
-                .iter()
-                .position(|projection| *projection == settings.projection)
-                .unwrap_or(0),
+                .collect(),
+            selected: settings.projection_at,
             enabled: true,
         },
-        |index| {
-            act(MergeAction::Projection(
-                PanoramaProjection::ALL[index.min(PanoramaProjection::ALL.len() - 1)],
-            ))
-        },
+        |index| act(projection_at(index)),
     );
     let mut column = Column::new()
         .spacing(theme::SPACING * 1.5)
@@ -537,7 +532,7 @@ fn panorama_settings<'a>(
     if let Some(resolved) = &settings.resolved {
         column = column.push(caption(resolved.clone()));
     }
-    let max = f64::from(MAX_BOUNDARY_WARP);
+    let max = f64::from(WARP_MAX);
     let warp = slider(
         &SliderModel {
             id: None,
@@ -720,6 +715,14 @@ fn foot(model: &SheetModel) -> Element<'_, Message> {
         );
     }
     foot.into()
+}
+
+/// A merge kind's icon.
+pub(crate) fn icon(kind: KindIcon) -> Icon {
+    match kind {
+        KindIcon::Bracket => Icon::Bracket,
+        KindIcon::Panorama => Icon::Panorama,
+    }
 }
 
 /// A legend chip's swatch: the crop's accent square, the dimmed outside, a frame's circle.

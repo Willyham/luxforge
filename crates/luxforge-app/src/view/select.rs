@@ -737,9 +737,9 @@ fn cell_view<'a>(
         row.and_then(|row| row.stack.as_ref()),
         row.and_then(|row| row.reason.as_deref()),
     );
-    let icon = stack.icon;
+    let icon = stack.icon.map(crate::view::select_merge::icon);
     let badge = stack.badge.map(|(label, short, expanded)| CellStack {
-        icon: icon.unwrap_or(luxforge_ui::Icon::Bracket),
+        icon: icon.unwrap_or(Icon::Bracket),
         label,
         short,
         expanded,

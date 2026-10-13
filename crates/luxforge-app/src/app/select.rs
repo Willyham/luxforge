@@ -329,7 +329,9 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                 action,
                 failed,
             } => GridBlock::Pending(PendingRow {
-                icon: crate::state::select_merge::words(*kind).icon,
+                icon: crate::view::select_merge::icon(
+                    crate::state::select_merge::words(*kind).icon,
+                ),
                 title: title.clone(),
                 detail: detail.clone(),
                 progress: *progress,
