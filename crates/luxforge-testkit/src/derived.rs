@@ -11,10 +11,22 @@ use sha2::{Digest, Sha256};
 /// blocks; a little deterministic noise; and patches out of the sRGB gamut, whose red is negative.
 /// Pure arithmetic in `f32`, so every host makes the same bits.
 pub fn planes(width: u32, height: u32) -> Vec<f32> {
-    let plane = width as usize * height as usize;
-    let mut values = vec![0.0_f32; 3 * plane];
+    let mut values = vec![0.0_f32; 3 * width as usize * height as usize];
+    fill(width, height, [0, 0, width, height], &mut values);
+    values
+}
+
+/// The planes of [`planes`] over the rectangle `[x, y, columns, rows]` of a `width` × `height`
+/// frame, written into `out` in the same layout — the rectangle's red values row by row, then
+/// green, then blue — without the frame: the same bits as the whole frame's there, for a writer
+/// streaming a source too large to hold whole in chunks.
+pub fn fill(width: u32, height: u32, rect: [u32; 4], out: &mut [f32]) {
+    let [x0, y0, columns, rows] = rect;
+    let plane = columns as usize * rows as usize;
+    assert_eq!(out.len(), 3 * plane, "three planes of the rectangle");
+    let values = out;
     let (w, h) = (width.max(2) as f32 - 1.0, height.max(2) as f32 - 1.0);
-    for y in 0..height {
+    for y in y0..y0 + rows {
         let v = y as f32 / h;
         // Hues turn down the frame: a chroma direction from a quarter-turn polynomial, no
         // transcendental functions, so the bits do not depend on a platform's maths library.
@@ -26,7 +38,7 @@ pub fn planes(width: u32, height: u32) -> Vec<f32> {
             2 => (-(1.0 - phase), -phase),
             _ => (phase, -(1.0 - phase)),
         };
-        for x in 0..width {
+        for x in x0..x0 + columns {
             let u = x as f32 / w;
             // Exposure: 2^-7 at the left edge to 4 at the right, by a cubic through the stops,
             // and a pedestal a little below zero in the darkest columns, as a merge's noise floor.
@@ -52,13 +64,31 @@ pub fn planes(width: u32, height: u32) -> Vec<f32> {
             if (x / 64) % 23 == 5 && (y / 64) % 9 == 4 {
                 rgb = [-0.06 * base - 0.02, 0.55 * base + 0.05, 0.9 * base + 0.02];
             }
-            let at = y as usize * width as usize + x as usize;
+            let at = (y - y0) as usize * columns as usize + (x - x0) as usize;
             for (channel, value) in rgb.into_iter().enumerate() {
                 values[channel * plane + at] = value;
             }
         }
     }
-    values
+}
+
+/// The SHA-256 of [`planes`] of a `width` × `height` frame, as [`sha256`] gives it, streamed a row
+/// at a time: a frame too large to hold whole is hashed in a row's memory.
+pub fn sha256_streamed(width: u32, height: u32) -> String {
+    let mut digest = Sha256::new();
+    let mut row = vec![0.0_f32; 3 * width as usize];
+    let mut bytes = Vec::with_capacity(4 * width as usize);
+    for channel in 0..3 {
+        for y in 0..height {
+            fill(width, height, [0, y, width, 1], &mut row);
+            bytes.clear();
+            for value in &row[channel * width as usize..(channel + 1) * width as usize] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            digest.update(&bytes);
+        }
+    }
+    hex(digest)
 }
 
 /// The SHA-256 of `planes` as little-endian binary32 samples, in their order: what the corpus
@@ -68,6 +98,10 @@ pub fn sha256(planes: &[f32]) -> String {
     for value in planes {
         digest.update(value.to_le_bytes());
     }
+    hex(digest)
+}
+
+fn hex(digest: Sha256) -> String {
     digest
         .finalize()
         .iter()
@@ -91,5 +125,29 @@ mod tests {
             sha256(&planes),
             "313919d2de36ef6b4c531ad2e3ca3516bb2301ec1fb8dd8722826223bf692d4d"
         );
+    }
+
+    /// A rectangle filled alone holds the whole frame's bits there, and the streamed digest is
+    /// the whole frame's.
+    #[test]
+    fn derived_source_chunks_and_streamed_digest_are_the_whole_frames() {
+        let (width, height) = (300, 200);
+        let whole = planes(width, height);
+        let rect = [37, 50, 101, 77];
+        let mut part = vec![0.0; 3 * 101 * 77];
+        fill(width, height, rect, &mut part);
+        for channel in 0..3 {
+            for row in 0..77 {
+                for column in 0..101 {
+                    let ours = part[channel * 101 * 77 + row * 101 + column];
+                    let theirs = whole[channel * (width * height) as usize
+                        + (50 + row) * width as usize
+                        + 37
+                        + column];
+                    assert_eq!(ours.to_bits(), theirs.to_bits());
+                }
+            }
+        }
+        assert_eq!(sha256_streamed(width, height), sha256(&whole));
     }
 }

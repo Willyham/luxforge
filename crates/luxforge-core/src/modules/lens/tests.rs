@@ -497,8 +497,6 @@ fn export_of_warped_entry_matches_exact_render_and_dimensions_are_fixed() {
     assert_eq!((plan.identity.width, plan.identity.height), (600, 400));
     let exported = plan
         .evaluation
-        .whole()
-        .unwrap()
         .exact(&crate::Cancel::never())
         .unwrap()
         .frame(plan.identity.snapshot_id.clone())
@@ -509,8 +507,6 @@ fn export_of_warped_entry_matches_exact_render_and_dimensions_are_fixed() {
     assert_eq!(
         frozen
             .evaluation
-            .whole()
-            .unwrap()
             .exact(&crate::Cancel::never())
             .unwrap()
             .frame(frozen.identity.snapshot_id.clone())

@@ -68,6 +68,11 @@ pub struct GpuPlanRequest {
     /// its geometry in the tail — and a stack with no content layer, or no layer at all, has one
     /// too ([`Self::from_source`]). `boundary` is then 0, the layer it is reported under.
     pub source: bool,
+    /// The stage of the source the GPU holds, when it is a reduction of `full`: a paged derived
+    /// source's resident level (`docs/design/panorama-merge.md`, "Rendering, samples and export"),
+    /// over which every light is computed in place of `full` ([`Self::holding`]). `None` where the
+    /// GPU holds the source at `full`.
+    pub held: Option<Stage>,
 }
 
 impl GpuPlanRequest {
@@ -82,6 +87,7 @@ impl GpuPlanRequest {
             drafted: None,
             linear: false,
             source: false,
+            held: None,
         }
     }
 
@@ -96,7 +102,15 @@ impl GpuPlanRequest {
             drafted: None,
             linear: false,
             source: false,
+            held: None,
         }
+    }
+
+    /// The same request over a source the GPU holds at `held`, a reduction of the full content
+    /// stage ([`Self::held`]).
+    pub fn holding(mut self, held: Stage) -> Self {
+        self.held = Some(held);
+        self
     }
 
     /// The same request planned from the source itself ([`Self::source`]): the boundary is the
