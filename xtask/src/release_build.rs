@@ -1,11 +1,12 @@
 //! Versioned build candidates. Native qualification and distribution approval are separate gates.
 use crate::*;
+use xtask_cli::release_candidate;
 use xtask_cli::release_tag::ReleaseTag;
 
 pub use xtask_cli::release_artifacts::{
     TARGETS, archive_name, archive_record, disk_image_name, platform, verify_record,
 };
-pub const EXECUTABLES: &[&str] = &["luxforge", "luxforge-json", "luxforge-ctl"];
+pub use xtask_cli::release_candidate::EXECUTABLES;
 /// `LSMinimumSystemVersion`, which `target.json` also records for the update feed.
 pub const MACOS_MINIMUM_SYSTEM_VERSION: &str = "14.0";
 
@@ -147,44 +148,17 @@ pub fn create_disk_image(out: &Path, tag: &ReleaseTag) -> Result<PathBuf> {
     Ok(image)
 }
 
-fn build_number(value: &str) -> Result {
-    ensure(
-        !value.is_empty()
-            && value.len() <= 18
-            && value.bytes().all(|b| b.is_ascii_digit())
-            && !value.starts_with('0'),
-        "Build number must be a positive decimal integer, at most 18 digits",
-    )
-}
-
 pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool) -> Result {
     let tag = ReleaseTag::parse(tag)?;
-    build_number(number)?;
+    release_candidate::check_build_number(number)?;
     let target = host(root)?;
-    platform(&target)?;
-    ensure(!out.exists(), "Release build output must be new")?;
-    let revision = output(root, "git", &["rev-parse", "HEAD"])?
-        .trim()
-        .to_owned();
-    let dirty = !output(root, "git", &["status", "--porcelain"])?
-        .trim()
-        .is_empty();
-    ensure(
-        allow_dirty || !dirty,
-        "Release builds require a clean checkout; --allow-dirty is a local rehearsal only",
-    )?;
-    if !allow_dirty {
-        let tagged = output(
-            root,
-            "git",
-            &["rev-parse", &format!("refs/tags/{}^{{commit}}", tag.tag)],
-        )?;
-        ensure(
-            tagged.trim() == revision,
-            "Release tag does not name the checked-out commit",
-        )?;
-    }
-    let lock = hash(&root.join("Cargo.lock"))?;
+    let release_candidate::Source {
+        revision,
+        dirty,
+        lock_sha256: lock,
+    } = release_candidate::check_source(root, out, &tag, &target, allow_dirty)?;
+    let toolchain = release_candidate::toolchain(root, allow_dirty)?;
+    let environment = release_candidate::build_environment(root, &target)?;
     // A clean tag build embeds its revision, so its usage statistics release is
     // `<version>+<revision>`; a dirty rehearsal embeds none and is ineligible to report.
     let embedded = package::embedded_revision(&revision, dirty);
@@ -263,7 +237,12 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
             tag.version, tag.tag, target
         ),
     )?;
-    let metadata = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":number,"catalog_format":luxforge_core::CATALOG_FORMAT,"revision":revision,"target":target,"profile":"release","working_tree_dirty":dirty,"usage_release":luxforge_core::usage::BuildIdentity::new(&tag.version,embedded).release(),"rehearsal":allow_dirty,"lock_sha256":lock,"rustc":output(root,"rustc",&["--version"])?.trim(),"executable_hash_kind":"before-signing","executables":executable_hashes,"release_ready":false});
+    // The build's identity, inside the payload as `build.json` and beside it as `target.json`. It
+    // names executables, never the archive or bundle that holds it.
+    let mut metadata = json!({"schema_version":release_candidate::SCHEMA_VERSION,"tag":tag.tag,"version":tag.version,"build_number":number,"catalog_format":luxforge_core::CATALOG_FORMAT,"revision":revision,"target":target,"platform":platform(&target)?,"profile":"release","working_tree_dirty":dirty,"usage_release":luxforge_core::usage::BuildIdentity::new(&tag.version,embedded).release(),"rehearsal":allow_dirty,"lock_sha256":lock,"toolchain":toolchain,"build_environment":environment,"executables":release_candidate::executables(&target,executable_hashes),"release_ready":false});
+    if target == TARGETS[0].0 {
+        metadata["minimum_system_version"] = json!(MACOS_MINIMUM_SYSTEM_VERSION);
+    }
     write_json(&resource_root.join("build.json"), &metadata)?;
     let archive = archive_payload(out, &tag, &target)?;
     let disk_image = if target == TARGETS[0].0 {
@@ -276,18 +255,15 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
             && output(root, "git", &["rev-parse", "HEAD"])?.trim() == revision,
         "Source identity changed during packaging",
     )?;
-    let dirty_after = !output(root, "git", &["status", "--porcelain"])?
-        .trim()
-        .is_empty();
+    let dirty_after = release_candidate::working_tree_dirty(root)?;
     ensure(
         allow_dirty || !dirty_after,
         "Source files changed during packaging",
     )?;
     let mut record = metadata;
     record["working_tree_dirty"] = json!(dirty || dirty_after);
-    record["signing"] = json!({"status":"not-applicable"});
+    record["signing"] = json!({"status":release_candidate::NOT_APPLICABLE});
     if target == TARGETS[0].0 {
-        record["minimum_system_version"] = json!(MACOS_MINIMUM_SYSTEM_VERSION);
         record["signing"] = json!({"status":"unsigned","disk_image":{"status":"unsigned"}});
     }
     record["archive"] = archive_record(&archive)?;
@@ -295,6 +271,7 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
         record["disk_image"] = archive_record(image)?;
     }
     write_json(&out.join("target.json"), &record)?;
+    verify_record(out, &tag, &target)?;
     println!("Build candidate: {}", archive.display());
     if let Some(image) = disk_image {
         println!("Disk image (unsigned): {}", image.display());

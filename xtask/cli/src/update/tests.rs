@@ -1,5 +1,6 @@
 use super::*;
-use crate::release_artifacts::{archive_record, disk_image_name};
+use crate::release_artifacts::archive_record;
+use crate::release_candidate::fixture_record;
 use luxforge_update::{Appcast, PublicKey, Signature};
 use serde_json::json;
 
@@ -31,7 +32,9 @@ fn builds(dir: &Path, tag: &str, build: &str, mac_status: &str) -> std::path::Pa
     let input = dir.join(format!("builds-{}", tag.version));
     for &(rust_target, platform) in TARGETS {
         let directory = input.join(platform);
-        fs::create_dir_all(&directory).unwrap();
+        // A complete record, with the disk image download beside the macOS update archive; the
+        // update record never signs the image.
+        let mut record = fixture_record(&directory, &tag, rust_target, mac_status);
         let archive = directory.join(archive_name(&tag, rust_target).unwrap());
         let mac = rust_target == TARGETS[0].0;
         fs::write(
@@ -43,15 +46,8 @@ fn builds(dir: &Path, tag: &str, build: &str, mac_status: &str) -> std::path::Pa
             },
         )
         .unwrap();
-        let mut record = json!({"schema_version":1,"tag":tag.tag,"version":tag.version,"build_number":build,"catalog_format":1,"target":rust_target,"profile":"release","working_tree_dirty":false,"rehearsal":false,"release_ready":false,"signing":{"status":if mac {mac_status} else {"not-applicable"}},"archive":archive_record(&archive).unwrap()});
-        if mac {
-            record["minimum_system_version"] = json!("14.0");
-            // The download beside the update archive; the update record never signs it.
-            let image = directory.join(disk_image_name(&tag, rust_target).unwrap().unwrap());
-            fs::write(&image, b"disk image download").unwrap();
-            record["disk_image"] = archive_record(&image).unwrap();
-            record["signing"]["disk_image"] = json!({"status": mac_status});
-        }
+        record["archive"] = archive_record(&archive).unwrap();
+        record["build_number"] = json!(build);
         fs::write(
             directory.join("target.json"),
             serde_json::to_vec_pretty(&record).unwrap(),

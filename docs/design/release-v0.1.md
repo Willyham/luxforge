@@ -16,7 +16,7 @@ The release does not add stores, accounts, telemetry, a website, package-manager
 
 | Area | Current implementation | Preparation needed |
 | --- | --- | --- |
-| Identity | Developer workspace version `0.0.0`; tag builds compile one normalized version into all three executables and bundle/build records | Extend build environment/source/qualification records for the final distribution packet |
+| Identity | Developer workspace version `0.0.0`; tag builds compile one normalized version into all three executables, logs, reports and bundle/build records. Build records name the source, pinned toolchain, build environment and before-signing/final executable hashes; `release.json` binds both targets and lists every distribution and platform gate | Fill the source archive and gate results as later tasks produce them; readiness verification |
 | Packaging | Development `package` stays unsigned; `release-build` creates versioned tag archives with all three executables, resources, notices, identity and final hashes, plus the macOS drag-to-Applications disk image, refusing dirty input outside labelled rehearsal | Final installation/source/native qualification and release-ready validation |
 | macOS bundle | Tag builds include build number, CLI helpers, resources, notices and help inside `org.luxforge.app`; configured floor 14.0 | Application icon and actual advertised-floor/installation qualification |
 | Linux distribution | Tag builds produce an x86-64 Ubuntu-baseline tarball with editor, both CLIs, resources, notices and help; hosted/native run remains unclaimed | Desktop/icon integration, inspected runtime requirements and native Wayland/X11/GPU installation verification |
@@ -30,7 +30,7 @@ These findings come from [package.rs](../../xtask/src/package.rs), [dependency p
 
 ## Identity and candidate inputs
 
-Ordinary developer builds use `workspace.package.version`, currently `0.0.0`. A tag build uses its validated normalized SemVer as the shared compile-time application version, without changing manifests or `Cargo.lock`; `v0.1` normalizes to `0.1.0`. All three executables and archive/build metadata agree on it. The workflow supplies a numeric macOS build number from its run number. Keep `org.luxforge.app` as the bundle identifier. Recipe/catalog/module format markers change only when their own shapes change.
+Ordinary developer builds use `workspace.package.version`, currently `0.0.0`. A tag build uses its validated normalized SemVer as the shared compile-time application version, without changing manifests or `Cargo.lock`; `v0.1` normalizes to `0.1.0`. All three executables and archive/build metadata agree on it. The core's `APPLICATION_VERSION` is its one definition: `--version`, editor logs and evidence, the lens report, network requests' user agent, usage statistics and `update.status` all state it. The workflow supplies a numeric macOS build number from its run number. Keep `org.luxforge.app` as the bundle identifier. Recipe/catalog/module format markers change only when their own shapes change.
 
 The editor, `luxforge-json` and `luxforge-ctl` each support a non-launching `--version` that reports that application version. Reuse existing build-version reporting; do not add an About screen or duplicate authoritative version state in widgets. Any new service-visible build information follows the command registry/schema rules.
 
@@ -39,6 +39,31 @@ A candidate names a clean, full commit SHA, target triple, application version, 
 For macOS, the target is `aarch64-apple-darwin`. macOS 14 is the intended engineering floor, **not currently verified support**. Check the executable's actual deployment target and runtime imports, and record execution on the oldest advertised OS before publishing that support claim. A hosted build on macOS 14 is not native installation or GPU evidence. A missing floor test remains an open release input; changing the advertised floor needs a focused scope update.
 
 For Linux, use `x86_64-unknown-linux-gnu`, built on Ubuntu 24.04 with glibc 2.39 as the existing baseline. Inspect actual ELF imports and symbol-version requirements. Require native x86-64 Linux desktop/GPU evidence on that baseline, including GNOME Wayland and X11, before claiming support. The owner's ARM64 Omarchy VM and hosted lavapipe runs supplement this evidence; neither replaces it. Other distributions, Linux ARM64 and Intel macOS are outside the initial supported download matrix.
+
+## Candidate records
+
+`release-build` writes one record per target: `build.json` inside the payload and `target.json` beside the downloads. `release-assemble` binds the two targets' records into `release.json`. All three have schema version 2, and only that shape is read ([release_candidate.rs](../../xtask/cli/src/release_candidate.rs)).
+
+Before compiling, a build refuses an unsupported target, an existing output directory and a HEAD without a full commit ID. Unless `--allow-dirty` labels it a local rehearsal, it also refuses a dirty tree (tracked changes or untracked files; ignored build and evidence output does not count), a missing tag, a tag naming another commit and a Rust toolchain other than the `rust-toolchain.toml` pin. A rehearsal records its dirty state and toolchain and is never assembled for publication. After packaging, the lockfile, commit and cleanliness are checked again.
+
+A target record holds:
+
+- **Identity:** `tag`, normalized `version`, `build_number`, full `revision`, `target`, `platform`, `profile` (`release`), `lock_sha256`, `catalog_format`, `usage_release`, `working_tree_dirty`, `rehearsal` and, on macOS, `minimum_system_version`.
+- **`toolchain`:** the `pinned` channel and the `rustc` and `cargo` versions the build used.
+- **`build_environment`:** `os`, `native_compiler` (`cc --version`) and the macOS `sdk` or the Linux `libc`; the field that does not apply to the target is `not-applicable`.
+- **`executables`:** each executable's SHA-256. macOS records `before_signing` when it builds; `release-sign` adds `final`, measured from the signed and stapled app, and each must differ from its before-signing hash. A macOS app that is not notarized has no `final`. Linux executables are not signed, so the built hashes are `final` and there is no `before_signing`.
+- **In `target.json` only:** `archive` and the macOS `disk_image`, each the final file's name, size and SHA-256, and `signing`. macOS signing is `unsigned`, `pending`, `failed` or `notarized`, and only `unsigned` or `notarized` builds are assembled. Linux signing is exactly `not-applicable`, so a Linux record never stands in for a macOS signing result.
+- `release_ready: false`.
+
+`build.json` names executables, never the archive or bundle that contains it; archive and disk image hashes exist only outside them.
+
+`release.json` holds the common `tag`, `version`, `revision`, `lock_sha256` and `build_number`, `status: build-candidate`, `release_ready: false` and both target records in [target order](../../xtask/cli/src/release_artifacts.rs), each matching the common identity. `source_archive` is null until the complete source archive `luxforge-VERSION-source.tar.gz` exists, then its name, size and SHA-256. Each gate is an object whose `status` is `not-run`, `passed`, `failed` or `incomplete`:
+
+- `distribution`: `source_and_notices_review` and `advisory_disposition`.
+- `qualification.macos-arm64`: `native_full_verification`, `gpu_corpus_gate`, `minimum_os` and `clean_installation`.
+- `qualification.linux-x86_64`: `native_rendered_verification`, `gpu_corpus_gate`, `wayland_and_x11`, `baseline_os` and `clean_installation`.
+
+Every listed gate applies to its platform, so `not-applicable` is refused there; Apple signing lives in the target records. Assembly writes every gate as `not-run`. The tasks that run a gate add its result, with its evidence and scope (such as the background test bundle) beside the status; the readiness verifier decides release readiness. `SHA256SUMS` is written last and covers `release.json`, which never contains its own hash. The field and gate names, the status vocabulary and the toolchain refusal are implementation choices the plan delegated.
 
 ## Deliverables
 
@@ -57,7 +82,7 @@ Alongside both downloads, prepare `luxforge-0.1.0-source.tar.gz`, `SHA256SUMS`, 
 
 Review native static linking, selected licences and the ability to modify/rebuild/relink the LGPL components, alongside Rust and bundled font/theme/Lensfun/RawSpeed/GeoNames assets. Inventory is input to that review, not its conclusion. Supply applicable licence texts and attribution/change notices. Exclude private photographs, the licensed test corpus, catalogs, grants/secrets, credentials, developer paths, caches and verification output. Include only redistributable assets needed to build/run the shipped product; document any test-only omissions. GitHub's automatically generated repository archive does not substitute for this complete source deliverable.
 
-`release.json` lives outside the signed app. It records both targets' final filenames, sizes and SHA-256 hashes, the common commit/version/lock identity, per-target executable and build identities, source archive identity, macOS signing/notarization results and per-platform qualification. Linux Apple-notarization fields are explicitly not applicable, not a skipped required macOS gate. A one-platform packet remains incomplete for this joint release. Keep private raw evidence separate from a sanitized public summary. Do not embed a hash of an archive inside that archive, or a bundle hash inside the bundle it describes. Label any pre-signing binary hash as pre-signing; final signed hashes are measured after signing. Generate `SHA256SUMS` only after final packaging and metadata are complete.
+`release.json` lives outside the signed app; its fields are the [candidate records](#candidate-records). It records both targets' final filenames, sizes and SHA-256 hashes, the common commit/version/lock identity, per-target executable and build identities, source archive identity, macOS signing/notarization results and per-platform qualification. Linux Apple-notarization fields are explicitly not applicable, not a skipped required macOS gate. A one-platform packet remains incomplete for this joint release. Keep private raw evidence separate from a sanitized public summary. Do not embed a hash of an archive inside that archive, or a bundle hash inside the bundle it describes. Label any pre-signing binary hash as pre-signing; final signed hashes are measured after signing. Generate `SHA256SUMS` only after final packaging and metadata are complete.
 
 ## Signing and notarization
 
