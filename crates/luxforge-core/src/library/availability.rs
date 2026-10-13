@@ -10,7 +10,9 @@
 //!   ([`record`]). A volume whose mount point is gone, or is another volume now, makes all of its
 //!   photographs offline with one look ([`mounted`]); otherwise each locator is looked at: the
 //!   recorded file (its length and file identity) is available, another file there is changed, no
-//!   file is missing. A photograph whose file moved within its volume is found again by its file
+//!   file is missing. Known integrity failures survive offline or missing observations; only a
+//!   streamed fingerprint verification can make those originals available again. A photograph
+//!   whose file moved within its volume is found again by its file
 //!   identity in the index and confirmed by its fingerprint ([`Found`]), and one whose own file
 //!   is still at its locator under another identity (a volume mounted again under another device
 //!   number) is confirmed by its fingerprint too; each is relinked by the owner as one library
@@ -56,6 +58,9 @@ pub(crate) struct Subject {
     pub fingerprint: String,
     /// The availability the catalog holds for it.
     pub stored: FileAvailability,
+    /// A byte mismatch remains known through temporary Missing or Offline observations.
+    pub fingerprint_mismatch: bool,
+    pub integrity_generation: i64,
 }
 
 /// The photographs of one volume a check looks at, with the volume as the catalog records it when
@@ -79,8 +84,11 @@ pub(crate) struct Plan {
 pub(crate) struct Observation {
     pub asset_id: AssetId,
     pub availability: FileAvailability,
-    /// What the catalog held before, so the owner knows whether anything changed.
-    pub stored: FileAvailability,
+    /// The locator this observation belongs to; a later Locate must not inherit its result.
+    pub source: AssetSourceValue,
+    /// A verified original at that locator, checked again before recording Available.
+    pub verified: Option<SourceSignature>,
+    pub integrity_generation: i64,
 }
 
 /// A photograph whose file a check found again elsewhere on its volume, by its file identity,
@@ -115,7 +123,7 @@ pub(crate) fn plan(
     let mut statement = connection.prepare_cached(
         "SELECT a.locator, a.source_folder, a.volume_id, a.file_identity, a.byte_len,
              a.fingerprint, a.availability, v.mount_point, v.label, v.removable, v.platform_id,
-             v.last_seen_ms, a.source_kind
+             v.last_seen_ms, a.source_kind, a.fingerprint_mismatch, a.integrity_generation
          FROM assets a LEFT JOIN volumes v ON v.id = a.volume_id WHERE a.row_id = ?1",
     )?;
     let mut plan = Plan::default();
@@ -137,6 +145,8 @@ pub(crate) fn plan(
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<i64>>(11)?,
                     row.get::<_, String>(12)?,
+                    row.get::<_, bool>(13)?,
+                    row.get::<_, i64>(14)?,
                 ))
             })
             .optional()?
@@ -155,6 +165,8 @@ pub(crate) fn plan(
             platform_id,
             last_seen_ms,
             kind,
+            fingerprint_mismatch,
+            integrity_generation,
         ) = read;
         // A merged photograph's derived locator names no file: there is nothing to look at, and
         // its availability is the merge's durable source's, never an original's.
@@ -184,6 +196,8 @@ pub(crate) fn plan(
             byte_len: byte_len as u64,
             fingerprint,
             stored: FileAvailability::parse(&stored).unwrap_or_default(),
+            fingerprint_mismatch,
+            integrity_generation,
         };
         let group = *groups.entry(volume_id).or_insert_with(|| {
             plan.groups.push(VolumeGroup {
@@ -230,11 +244,22 @@ pub(crate) fn observe(
         control.checkpoint()?;
         let offline = group.volume.as_ref().is_some_and(|volume| !mounted(volume));
         for subject in group.subjects {
+            let mut verified = None;
             let availability = if offline {
                 FileAvailability::Offline
             } else {
                 control.checkpoint()?;
-                let (availability, moved) = look(&subject);
+                let (mut availability, moved) = look(&subject);
+                // Metadata cannot disprove a fingerprint mismatch. Only these known-changed
+                // files pay for an integrity read; ordinary checks remain presence checks.
+                if availability == FileAvailability::Available
+                    && (subject.fingerprint_mismatch || subject.stored == FileAvailability::Changed)
+                {
+                    verified = verify_recovery(&subject, control, pause)?;
+                    if verified.is_none() {
+                        availability = FileAvailability::Changed;
+                    }
+                }
                 if moved {
                     let again = match renumbered(&subject, control, pause)? {
                         Some(again) => Some(again),
@@ -250,7 +275,9 @@ pub(crate) fn observe(
             rows.push(Observation {
                 asset_id: subject.asset_id,
                 availability,
-                stored: subject.stored,
+                source: subject.source,
+                verified,
+                integrity_generation: subject.integrity_generation,
             });
             if rows.len() % PROGRESS_EVERY == 0 {
                 report(rows.len());
@@ -263,6 +290,30 @@ pub(crate) fn observe(
         rows,
         found,
     })
+}
+
+fn verify_recovery(
+    subject: &Subject,
+    control: &JobControl,
+    pause: &dyn Fn(Phase),
+) -> Result<Option<SourceSignature>, Error> {
+    let path = &subject.source.locator;
+    let Ok(metadata) = path.metadata() else {
+        return Ok(None);
+    };
+    let signature = source_signature(path, &metadata);
+    match locate::verify_file(
+        path,
+        &signature,
+        &subject.fingerprint,
+        control,
+        pause,
+        &|_, _| {},
+    ) {
+        Ok(signature) => Ok(Some(signature)),
+        Err(error) if error.kind == ErrorKind::Cancelled => Err(error),
+        Err(_) => Ok(None),
+    }
 }
 
 /// What is at a photograph's locator, and whether its file may have moved: nothing there, or
@@ -456,8 +507,12 @@ pub(crate) fn relink_label(rows: &[LibraryChangeRow]) -> String {
 
 /// Record what a check observed, with the time it looked, each photograph's row as it is now.
 pub(crate) fn record(tx: &Transaction<'_>, rows: &[AvailabilityRow]) -> Result<(), Error> {
-    let mut statement =
-        tx.prepare_cached("UPDATE assets SET availability = ?1, checked_ms = ?2 WHERE id = ?3")?;
+    let mut statement = tx.prepare_cached(
+        "UPDATE assets SET availability = ?1, checked_ms = ?2,
+         integrity_generation = integrity_generation + CASE WHEN ?1 = 'changed' THEN 1 ELSE 0 END,
+         fingerprint_mismatch = CASE WHEN ?1 = 'changed' THEN 1
+           WHEN ?1 = 'available' THEN 0 ELSE fingerprint_mismatch END WHERE id = ?3",
+    )?;
     for row in rows {
         statement.execute(params![
             row.availability.as_str(),
@@ -468,9 +523,54 @@ pub(crate) fn record(tx: &Transaction<'_>, rows: &[AvailabilityRow]) -> Result<(
     Ok(())
 }
 
+/// Admit a worker observation against the current locator and integrity generation. Neither
+/// metadata nor an old verified answer can clear a newer fingerprint refusal. A verified answer must still name the bytes
+/// it verified; a relink has already passed the same checks in `relinks`.
+pub(crate) fn checked_row(
+    tx: &Transaction<'_>,
+    observation: &Observation,
+    checked_ms: i64,
+    relinked: bool,
+) -> Result<Option<(AvailabilityRow, bool)>, Error> {
+    if library_rows::asset_source(tx, &observation.asset_id)?.as_ref() != Some(&observation.source)
+    {
+        return Ok(None);
+    }
+    let (current, mismatch, generation): (String, bool, i64) = tx.query_row(
+        "SELECT availability, fingerprint_mismatch, integrity_generation FROM assets WHERE id = ?1",
+        [observation.asset_id.as_str()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if generation != observation.integrity_generation {
+        return Ok(None);
+    }
+    let current = FileAvailability::parse(&current).unwrap_or_default();
+    let availability = if relinked {
+        FileAvailability::Available
+    } else if observation.availability == FileAvailability::Available
+        && (((mismatch || current == FileAvailability::Changed) && observation.verified.is_none())
+            || observation.verified.as_ref().is_some_and(|signature| {
+                !locate::unchanged(&observation.source.locator, signature)
+            }))
+    {
+        FileAvailability::Changed
+    } else {
+        observation.availability
+    };
+    Ok(Some((
+        AvailabilityRow {
+            asset_id: observation.asset_id.clone(),
+            availability,
+            checked_ms,
+        },
+        availability != current,
+    )))
+}
+
 /// Record one observation made on the way — a refusal, a preparation — when it differs from what
-/// the catalog holds; an unchanged one writes nothing, so a client that keeps asking for a missing
-/// original costs no write per request.
+/// the catalog holds. An unchanged missing original costs no write per request. Each Changed
+/// refusal advances the integrity generation, so a previously verified worker answer cannot clear
+/// a later refusal even when the filesystem signature is unchanged.
 pub(crate) fn observed(
     connection: &Connection,
     asset: &AssetId,
@@ -479,8 +579,13 @@ pub(crate) fn observed(
 ) -> Result<(), Error> {
     connection
         .prepare_cached(
-            "UPDATE assets SET availability = ?1, checked_ms = ?2
-             WHERE id = ?3 AND availability <> ?1",
+            "UPDATE assets SET availability = ?1, checked_ms = ?2,
+         integrity_generation = integrity_generation + CASE WHEN ?1 = 'changed' THEN 1 ELSE 0 END,
+             fingerprint_mismatch = CASE WHEN ?1 = 'changed' THEN 1
+               WHEN ?1 = 'available' THEN 0 ELSE fingerprint_mismatch END
+             WHERE id = ?3 AND (availability <> ?1 OR
+               ?1 = 'changed' OR
+               (?1 = 'available' AND fingerprint_mismatch = 1))",
         )?
         .execute(params![availability.as_str(), checked_ms, asset.as_str()])?;
     Ok(())
@@ -566,3 +671,7 @@ fn name_of(path: &Path) -> String {
         |name| name.to_string_lossy().into_owned(),
     )
 }
+
+#[cfg(test)]
+#[path = "availability_tests.rs"]
+mod tests;

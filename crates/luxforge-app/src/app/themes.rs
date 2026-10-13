@@ -383,7 +383,10 @@ impl Editor {
                         ));
                         self.outcome(Outcome::ThemesAnswered { failure: None });
                     }
-                    Err(error) => self.theme_refused(error),
+                    Err(error) => {
+                        self.theme_refused(error);
+                        return self.list_themes();
+                    }
                 }
             }
             ThemeMessage::ImportOmarchy => {
@@ -420,7 +423,10 @@ impl Editor {
                 self.themes.pending = false;
                 match result {
                     Ok(import) => return self.adopt_folder_import(*import),
-                    Err(error) => self.theme_refused(error),
+                    Err(error) => {
+                        self.theme_refused(error);
+                        return self.list_themes();
+                    }
                 }
             }
             ThemeMessage::Export(id) => {
@@ -481,7 +487,10 @@ impl Editor {
                         self.outcome(Outcome::ThemesAnswered { failure: None });
                     }
                     // The active theme's refusal names it and says to choose another first.
-                    Err(error) => self.theme_refused(error),
+                    Err(error) => {
+                        self.theme_refused(error);
+                        return self.list_themes();
+                    }
                 }
             }
         }

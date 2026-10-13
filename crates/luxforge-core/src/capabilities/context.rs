@@ -94,6 +94,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// A module's capability context for one job. `Send`, so it moves to the worker with the job.
 pub struct ModuleContext {
+    permission: Option<super::permission_watch::PermissionGuard>,
     module_id: String,
     /// The effective, valid, non-secret module-level setting values. None is an endpoint: a job
     /// reaches its profile's endpoint only through the capability that names it.
@@ -144,6 +145,7 @@ impl ModuleContext {
         control: Arc<JobControl>,
     ) -> Self {
         Self {
+            permission: None,
             module_id: module_id.to_owned(),
             values: Map::new(),
             secret_fields: Vec::new(),
@@ -159,6 +161,21 @@ impl ModuleContext {
             read: None,
             control,
         }
+    }
+
+    pub(crate) fn with_permission(
+        mut self,
+        permission: super::permission_watch::PermissionGuard,
+    ) -> Self {
+        self.permission = Some(permission);
+        self
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), Error> {
+        if let Some(permission) = &self.permission {
+            permission.validate()?;
+        }
+        self.checkpoint()
     }
 
     /// The model a `local-runtime` capability `capability_id` the task uses holds.
@@ -313,21 +330,23 @@ impl ModuleContext {
         let timeout = Duration::from_millis(adapter.timeout_ms);
         let control = &self.control;
         let mut response = Vec::new();
-        let sent = granted.transport.send(
-            &request,
-            SendOptions {
-                max_request_bytes: adapter.max_request_bytes,
-                max_response_bytes: adapter.max_response_bytes,
-                connect_timeout: timeout,
-                read_timeout: timeout,
-                total_timeout: timeout,
-                redirects: RedirectPolicy::default(),
-                control,
-                progress: &mut |_, _| {},
-                head: None,
-            },
-            &mut response,
-        );
+        let sent = self.revalidate().and_then(|()| {
+            granted.transport.send(
+                &request,
+                SendOptions {
+                    max_request_bytes: adapter.max_request_bytes,
+                    max_response_bytes: adapter.max_response_bytes,
+                    connect_timeout: timeout,
+                    read_timeout: timeout,
+                    total_timeout: timeout,
+                    redirects: RedirectPolicy::default(),
+                    control,
+                    progress: &mut |_, _| {},
+                    head: None,
+                },
+                &mut response,
+            )
+        });
         // The credential was copied into this header, which is zeroed as soon as the request is
         // done. That is best effort: the transport's prepared request and its HTTP client's buffers
         // hold further copies, which are freed without being zeroed.

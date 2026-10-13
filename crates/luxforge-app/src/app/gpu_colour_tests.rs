@@ -934,6 +934,84 @@ fn gpu_colour_grade_meets_the_pointwise_limits() {
     );
 }
 
+/// A circle crossing exact pixel centres exposes f32/f64 classification differences that a
+/// large random colour grid can dilute. Keep the real shader, reference and pointwise limits.
+#[test]
+#[slow]
+fn gpu_colour_vignette_boundary_white_twenty_by_twenty() {
+    use luxforge_reference::vignette::{VignetteParams, vignette_pixel};
+
+    let Some(qualifier) =
+        super::gpu_qualification::headless("gpu_colour_vignette_boundary_white_twenty_by_twenty")
+    else {
+        return;
+    };
+    eprintln!("vignette boundary: adapter {}", qualifier.adapter());
+    let registry = registry();
+    let mut missed = Vec::new();
+    for feather in [0.0, 0.0001, 0.01, 0.1, 1.0] {
+        let params = VignetteParams {
+            amount: -100.0,
+            midpoint: 65.0,
+            roundness: 0.0,
+            feather,
+        };
+        let layer = Layer::new(
+            VIGNETTE_EFFECT,
+            json!({"amount": params.amount, "midpoint": params.midpoint,
+                "roundness": params.roundness, "feather": feather}),
+        );
+        let plan = planned(
+            &registry,
+            &recipe(vec![layer]),
+            GpuPlanRequest::exact(0, stage(20, 20)).qualifying(),
+        );
+        let input = boundary(20, 20, 0x7669_676e, &[[1.0; 3]; 400]).unwrap();
+        let plan = surface_plan(&plan, input).expect("a runnable vignette plan");
+        let gpu = qualifier.evaluate(&plan).expect("actual shader readback");
+        let drawn = qualifier.evaluate_codes(&plan).expect("actual drawn codes");
+        let reference: Vec<u8> = (0..400)
+            .flat_map(|i| {
+                vignette_pixel(i % 20, i / 20, 20, 20, [1.0; 3], &params).map(|value| {
+                    luxforge_reference::srgb::quantize(luxforge_reference::srgb::encode_clamped(
+                        value,
+                    ))
+                })
+            })
+            .collect();
+        let program = codes(gpu.iter().map(|pixel| [pixel[0], pixel[1], pixel[2]]));
+        let drawn: Vec<u8> = drawn
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .collect();
+        let compare = |bytes: &[u8]| {
+            preview_error::compare(
+                Rgb8::new(20, 20, bytes).unwrap(),
+                Rgb8::new(20, 20, &reference).unwrap(),
+                [0, 0, 20, 20],
+            )
+            .unwrap()
+        };
+        let program = compare(&program);
+        let drawn = compare(&drawn);
+        let finite = gpu
+            .iter()
+            .all(|pixel| pixel[..3].iter().all(|value| value.is_finite()));
+        eprintln!(
+            "vignette boundary feather {feather}: program {} | drawn {} | finite {finite}",
+            figures(&program),
+            figures(&drawn)
+        );
+        if !finite || !preview_error::verdict(&program, Class::Pointwise).passed() {
+            missed.push(feather);
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "vignette boundary misses at feathers {missed:?}"
+    );
+}
+
 #[test]
 #[slow]
 fn gpu_colour_vignette_meets_the_pointwise_limits() {

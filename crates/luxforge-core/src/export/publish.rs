@@ -172,13 +172,14 @@ impl Staged {
             }
         }
 
-        // The final name now holds the whole, synced file, so the export has happened: reporting a
-        // failure from here on would leave a finished file behind a refusal. Removing the temporary
-        // name and syncing the directory entry are best effort.
+        // The final file is already visible. Keep it even if its directory sync fails, and
+        // report that precise publication phase so a retry cannot pretend nothing was written.
         self.published = true;
         let _ = fs::remove_file(&self.temp_path);
         if let Some(directory) = self.final_path.parent() {
-            let _ = sync_dir(directory);
+            sync_dir(directory).map_err(|error| {
+                crate::atomic_file::durability_error(&self.final_path, error.kind())
+            })?;
         }
         Ok(bytes)
     }
@@ -383,6 +384,29 @@ mod tests {
         fs::hard_link(&original, &path).unwrap();
         let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn directory_sync_failure_retains_the_export_and_reports_visible_publication() {
+        let dir = scratch();
+        let path = dir.join("visible.jpg");
+        let mut staged = Destination::check(&path, ExportFormat::Jpeg)
+            .unwrap()
+            .stage()
+            .unwrap();
+        staged.write_all(b"whole export").unwrap();
+        crate::atomic_file::sync_faults::inject(&dir);
+        let error = staged.publish().unwrap_err();
+        assert_eq!(fs::read(&path).unwrap(), b"whole export");
+        assert_eq!(error.data.as_deref().unwrap()["published"], true);
+        assert_eq!(error.data.as_deref().unwrap()["durable"], false);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(
+            Destination::check(&path, ExportFormat::Jpeg)
+                .unwrap_err()
+                .kind,
+            crate::ErrorKind::Conflict
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@ use crate::{
     Error, MutationRequest,
     api::{methods::value, params::NoParams},
     catalog_types::{
-        CatalogFolder, CollectionAnswer, CollectionId, CollectionKind, CollectionValue,
-        FolderAnswer, FolderValue, LibraryAnswer, LibraryChange, LibraryItem, ViewQuery,
+        CatalogFolder, CollectionAnswer, CollectionId, CollectionKind, FolderAnswer, LibraryAnswer,
+        ViewQuery,
         api::{
             AssetMove, CollectionCreate, CollectionCreateSmart, CollectionDelete,
             CollectionMembers, CollectionMove, CollectionRename, CollectionUpdateSmart,
@@ -17,14 +17,8 @@ use crate::{
         },
     },
     editor::now_ms,
-    library::{
-        collections, folders,
-        journal::{self, Outcome, Request},
-        targets,
-        tree::Planned,
-    },
+    library::{collections, folders, journal::Request, targets, tree::Planned},
 };
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// `folder.list`.
@@ -44,23 +38,24 @@ pub(in crate::api) fn folder_create(
     params: FolderCreate,
 ) -> Result<Value, Error> {
     let request = Request::new(&call.request.method, &params.mutation);
-    let (folder, change): (FolderValue, _) = match first(owner, request)? {
-        Some((change, folder)) => (folder, change),
-        None => {
-            let (folder, planned) = folders::create(
-                &owner.service.connection,
-                &params.name,
-                params.parent_id.as_ref(),
-                now_ms(),
-            )?;
-            (folder, record(owner, call, request, planned)?)
-        }
-    };
-    value(FolderAnswer {
-        deduplicated: change.deduplicated,
-        change,
-        folder: CatalogFolder::from(folder),
-    })
+    let (folder, planned) = folders::create(
+        &owner.service.connection,
+        &params.name,
+        params.parent_id.as_ref(),
+        now_ms(),
+    )?;
+    super::change_answer(
+        owner,
+        &call.origin,
+        |tx| planned.apply(tx, request),
+        |change| {
+            value(FolderAnswer {
+                deduplicated: change.deduplicated,
+                change,
+                folder: CatalogFolder::from(folder),
+            })
+        },
+    )
 }
 
 /// `folder.rename`.
@@ -279,25 +274,26 @@ fn create_collection(
     query: Option<ViewQuery>,
 ) -> Result<Value, Error> {
     let request = Request::new(&call.request.method, mutation);
-    let (collection, change): (CollectionValue, _) = match first(owner, request)? {
-        Some((change, collection)) => (collection, change),
-        None => {
-            let (collection, planned) = collections::create(
-                &owner.service.connection,
-                name,
-                kind,
-                parent,
-                query,
-                now_ms(),
-            )?;
-            (collection, record(owner, call, request, planned)?)
-        }
-    };
-    value(CollectionAnswer {
-        deduplicated: change.deduplicated,
-        change,
-        collection: collections::answered(collection),
-    })
+    let (collection, planned) = collections::create(
+        &owner.service.connection,
+        name,
+        kind,
+        parent,
+        query,
+        now_ms(),
+    )?;
+    super::change_answer(
+        owner,
+        &call.origin,
+        |tx| planned.apply(tx, request),
+        |change| {
+            value(CollectionAnswer {
+                deduplicated: change.deduplicated,
+                change,
+                collection: collections::answered(collection),
+            })
+        },
+    )
 }
 
 /// A method that answers the library change it records: a retry is answered from the journal
@@ -325,43 +321,4 @@ fn record(
     planned: Planned,
 ) -> Result<LibraryAnswer, Error> {
     change(owner, &call.origin, |tx| planned.apply(tx, request))
-}
-
-/// A create's first attempt, when this request is a retry of one: its answer and the value it made
-/// (the `after` of its one row), read back from the journal, after a restart too.
-fn first<T: DeserializeOwned>(
-    owner: &Owner,
-    request: Request<'_>,
-) -> Result<Option<(LibraryAnswer, T)>, Error> {
-    let Some(change) = journal::find(&owner.service.connection, request)? else {
-        return Ok(None);
-    };
-    let made = made(owner, &change)?;
-    Ok(Some((Outcome::deduplicated(change).answer(), made)))
-}
-
-fn made<T: DeserializeOwned>(owner: &Owner, change: &LibraryChange) -> Result<T, Error> {
-    let detail = journal::inspect(&owner.service.connection, change.sequence.0)?;
-    let after = detail
-        .rows
-        .into_iter()
-        .find(|row| {
-            matches!(
-                row.item,
-                LibraryItem::CatalogFolder { .. } | LibraryItem::Collection { .. }
-            )
-        })
-        .and_then(|row| row.after)
-        .ok_or_else(|| {
-            Error::internal(format!(
-                "library change {} made nothing to answer",
-                change.sequence.0
-            ))
-        })?;
-    serde_json::from_value(after).map_err(|error| {
-        Error::incompatible(format!(
-            "library change {} holds a value this build cannot read: {error}",
-            change.sequence.0
-        ))
-    })
 }

@@ -35,6 +35,8 @@ mod worker_tests;
 pub(in crate::api) mod develop;
 #[cfg(test)]
 mod develop_picks_tests;
+#[cfg(test)]
+mod durable_requests_tests;
 /// Opening a file as every client does — develop, prepare, adopt — for the core's tests.
 #[cfg(test)]
 pub(in crate::api) mod opening;
@@ -111,6 +113,17 @@ impl JobContext<'_> {
         if let Some(hold) = self.hold {
             hold(phase);
         }
+    }
+
+    /// Reconcile a file already made visible. Cancellation cannot erase a publication fact;
+    /// this carries no catalog mutation and therefore does not bypass the ordinary commit gate.
+    pub(super) fn published(&self, origin: Origin, error: Option<Error>) {
+        self.poster
+            .post(self.lane.message(LibraryMessage::Published {
+                job_id: self.job_id.clone(),
+                origin,
+                error,
+            }));
     }
 
     /// Run `commit` on the owner now, before the job ends, and answer what it answered: a job that
@@ -240,10 +253,22 @@ pub(super) struct LibraryLane {
     // Resolving missing originals: the files finished finds verified, which
     // `source.relink` commits.
     verified: crate::library::missing::Verifications,
+    /// Worker-start failures returned while dispatching; recorded before the owner answers.
+    endings: Vec<(JobId, Error)>,
+    /// A visible publication failure wins over cancellation that arrives after the file appeared.
+    publication_failure: Option<(JobId, Error)>,
+    #[cfg(test)]
+    start_failure: Option<Error>,
 }
 
 /// What the library lane's worker posts back.
 pub(super) enum LibraryMessage {
+    /// A file already exists on disk, whether or not its durability was confirmed.
+    Published {
+        job_id: JobId,
+        origin: Origin,
+        error: Option<Error>,
+    },
     /// The worker finished a job's work: the owner runs its commit and records the result.
     Done { job_id: JobId, commit: Commit },
     /// The running job commits part of its result now and waits for the answer
@@ -276,6 +301,10 @@ impl LibraryLane {
             worker: None,
             hold: None,
             verified: Default::default(),
+            endings: Vec::new(),
+            publication_failure: None,
+            #[cfg(test)]
+            start_failure: None,
         }
     }
 
@@ -428,6 +457,7 @@ impl LibraryLane {
             let sender = match self.worker() {
                 Ok(sender) => sender,
                 Err(error) => {
+                    self.endings.push((queued.job_id.clone(), error.clone()));
                     jobs.finish(&queued.job_id, Err(error));
                     continue;
                 }
@@ -445,13 +475,9 @@ impl LibraryLane {
             // The worker is idle, so its one-slot channel is empty and this never blocks.
             if sender.send(dispatch).is_err() {
                 self.worker = None;
-                jobs.finish(
-                    &queued.job_id,
-                    Err(Error::internal(format!(
-                        "the {} lane stopped",
-                        self.kind.name()
-                    ))),
-                );
+                let error = Error::internal(format!("the {} lane stopped", self.kind.name()));
+                self.endings.push((queued.job_id.clone(), error.clone()));
+                jobs.finish(&queued.job_id, Err(error));
                 continue;
             }
             self.running = Some((queued.job_id, queued.control));
@@ -460,6 +486,10 @@ impl LibraryLane {
 
     /// The worker's channel, its thread started on first use.
     fn worker(&mut self) -> Result<SyncSender<Dispatch>, Error> {
+        #[cfg(test)]
+        if let Some(error) = self.start_failure.take() {
+            return Err(error);
+        }
         if let Some(sender) = &self.worker {
             return Ok(sender.clone());
         }
@@ -539,16 +569,33 @@ pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage)
                 }
                 _ => None,
             };
+            let publication_failure = kind
+                .of(owner)
+                .publication_failure
+                .take()
+                .filter(|(job, _)| *job == job_id)
+                .map(|(_, error)| error);
             // A cancel the owner took before the result arrived wins: nothing is committed.
             let first = owner.announced.len();
-            let result = match control {
-                Some(control) if control.is_cancelled() => Err(control.cancelled_error()),
-                _ => panic::catch_unwind(AssertUnwindSafe(|| commit(owner))).unwrap_or_else(|_| {
-                    Err(Error::internal("the job's result could not be recorded"))
-                }),
-            };
+            owner.service.catalog_terminal_job = Some(job_id.clone());
+            let result =
+                panic::catch_unwind(AssertUnwindSafe(|| match (publication_failure, control) {
+                    (Some(error), _) => Err(error),
+                    (_, Some(control)) if control.is_cancelled() => Err(control.cancelled_error()),
+                    _ => commit(owner),
+                }))
+                .unwrap_or_else(|_| Err(Error::internal("the job's result could not be recorded")));
+            owner.service.catalog_terminal_job = None;
             name_the_job(owner, first, &job_id);
             announce_end(owner, &job_id);
+            let result = match crate::editor::catalog_requests::finish(
+                &owner.service.connection,
+                &job_id,
+                &result,
+            ) {
+                Ok(()) => result,
+                Err(error) => Err(error),
+            };
             owner.jobs.finish(&job_id, result.map(Output::Value));
             if kind != LaneKind::Library {
                 super::merge::ended(owner, &job_id);
@@ -563,6 +610,42 @@ pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage)
                 LaneKind::Library => catalog.library.dispatch(jobs),
                 LaneKind::Merge => catalog.merge.lane.dispatch(jobs),
                 LaneKind::Preview => catalog.merge.updates.dispatch(jobs),
+            }
+            let _ = record_endings(owner, kind);
+        }
+        LibraryMessage::Published {
+            job_id,
+            origin,
+            error,
+        } => {
+            if kind
+                .of(owner)
+                .running
+                .as_ref()
+                .is_some_and(|(running, _)| *running == job_id)
+            {
+                announce_once(&mut owner.announced, &origin.job(job_id.clone()));
+                if let Some(error) = error {
+                    let recorded = crate::editor::catalog_requests::finish(
+                        &owner.service.connection,
+                        &job_id,
+                        &Err(error.clone()),
+                    );
+                    // Keep the publication detail even if the catalog write itself fails. The
+                    // admission still prevents a restart from repeating the file publication.
+                    let error = match recorded {
+                        Ok(()) => error,
+                        Err(recording) => {
+                            let mut data = error.data.as_deref().cloned().unwrap_or_else(
+                                || serde_json::json!({"published":true,"durable":false}),
+                            );
+                            data["request_recording_error"] = serde_json::json!(recording.detail);
+                            recording.with_data(data)
+                        }
+                    };
+                    kind.of(owner).publication_failure = Some((job_id, error));
+                }
+                owner.record_announced();
             }
         }
         LibraryMessage::Partial {
@@ -599,6 +682,11 @@ pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage)
 /// is announced now; a running one's is announced when its worker posts back.
 pub(super) fn cancelled(owner: &mut Owner, kind: LaneKind, job_id: &JobId) {
     if kind.of(owner).unqueue(job_id) {
+        let _ = crate::editor::catalog_requests::finish(
+            &owner.service.connection,
+            job_id,
+            &Err(Error::cancelled("the queued job was cancelled")),
+        );
         announce_end(owner, job_id);
         if kind != LaneKind::Library {
             super::merge::ended(owner, job_id);
@@ -640,7 +728,27 @@ pub(super) fn change(
     origin: &crate::api::Origin,
     change: impl FnOnce(&Transaction<'_>) -> Result<Outcome, Error>,
 ) -> Result<LibraryAnswer, Error> {
-    let outcome = owner.service.library_write(change)?;
+    let (outcome, _) = owner.service.library_write_answer(change, |outcome| {
+        crate::api::methods::value(outcome.answer())
+    })?;
+    changed(owner, origin, &outcome);
+    Ok(outcome.answer())
+}
+
+pub(super) fn change_answer(
+    owner: &mut Owner,
+    origin: &crate::api::Origin,
+    change: impl FnOnce(&Transaction<'_>) -> Result<Outcome, Error>,
+    answer: impl FnOnce(LibraryAnswer) -> Result<Value, Error>,
+) -> Result<Value, Error> {
+    let (outcome, answer) = owner
+        .service
+        .library_write_answer(change, |outcome| answer(outcome.answer()))?;
+    changed(owner, origin, &outcome);
+    Ok(answer)
+}
+
+pub(super) fn changed(owner: &mut Owner, origin: &crate::api::Origin, outcome: &Outcome) {
     if let Some(sequence) = outcome.announced() {
         let mut announced = origin.clone().library(sequence);
         let mut sources = outcome.sources();
@@ -650,13 +758,15 @@ pub(super) fn change(
         announce_once(&mut owner.announced, &announced);
         owner.library_changed(origin, outcome.items());
     }
-    Ok(outcome.answer())
 }
 
 /// The answer a request's first attempt recorded, when it recorded a change: a retry is answered
 /// before its targets are resolved again, so it neither reads the disk nor fails on a file that has
 /// moved since.
 pub(super) fn retried(owner: &Owner, request: Request<'_>) -> Result<Option<LibraryAnswer>, Error> {
+    if owner.service.catalog_request.is_some() {
+        return Ok(None);
+    }
     Ok(
         library_journal::answered(&owner.service.connection, request)?
             .map(|answered| answered.answer()),
@@ -666,4 +776,149 @@ pub(super) fn retried(owner: &Owner, request: Request<'_>) -> Result<Option<Libr
 /// The items selected in the calling client's view.
 fn selected(owner: &Owner, client: ClientId) -> Result<Vec<ViewItem>, Error> {
     owner.catalog.views.selected(client)
+}
+
+/// The common durable gate precedes selection, presets, source verification and journal replay.
+pub(super) fn durable_retry(
+    owner: &mut Owner,
+    key: &crate::editor::catalog_requests::Key,
+    request: &crate::ApiRequest,
+    client: ClientId,
+) -> Result<Option<Value>, Error> {
+    let Some(recorded) = crate::editor::catalog_requests::lookup(&owner.service.connection, key)?
+    else {
+        return Ok(None);
+    };
+    let Some(job_id) = recorded.job_id else {
+        let mut answer = recorded
+            .answer
+            .ok_or_else(|| Error::incompatible("catalog request has no answer"))?;
+        super::requests::mark(&mut answer, true);
+        if key.method == "index.add-folder" {
+            forget_stale_listing(owner, &mut answer);
+        }
+        return Ok(Some(answer));
+    };
+    static COLLECT: crate::catalog_types::jobs::CatalogJob =
+        crate::catalog_types::jobs::CatalogJob {
+            kind: crate::jobs::JobKind::Collect,
+            job_kind: "collect",
+            activity: "artifact.collect",
+            label: "Collecting artifacts",
+        };
+    let job = crate::catalog_types::jobs::CATALOG_JOBS
+        .iter()
+        .chain(std::iter::once(&COLLECT))
+        .find(|job| Some(job.job_kind) == recorded.job_kind.as_deref())
+        .ok_or_else(|| Error::incompatible("catalog request names an unknown job kind"))?;
+    if let Some(live) = owner.jobs.read(&job_id) {
+        if job.kind == crate::jobs::JobKind::Collect {
+            owner.jobs.join_source(&job_id, client);
+        }
+        return super::super::methods::value(JobStarted {
+            job_id,
+            status: live.status,
+            deduplicated: true,
+        })
+        .map(Some);
+    }
+    let origin = Origin::new(&request.method, &request.id);
+    let interrupted = recorded.answer.is_none() && recorded.error.is_none();
+    let result = match recorded.answer {
+        Some(mut answer) => {
+            mark_existing_retry(&mut answer);
+            Ok(answer)
+        },
+        None => Err(recorded.error.unwrap_or_else(|| Error::cancelled("the admitted request was interrupted when Luxforge stopped; already committed work is retained; use a new request_id to start new work").with_data(serde_json::json!({"reason":"interrupted"})))),
+    };
+    if interrupted {
+        crate::editor::catalog_requests::finish(&owner.service.connection, &job_id, &result)?;
+    }
+    let started = if job.kind == crate::jobs::JobKind::Collect {
+        let id = JobId::new();
+        owner.jobs.open(crate::jobs::Opened {
+            job_id: id.clone(),
+            kind: job.kind,
+            client: Some(client),
+            key: None,
+            asset_id: None,
+            control: JobControl::new(),
+        });
+        owner.jobs.forget_usage(&id);
+        owner.jobs.finish(&id, result.map(Output::Value));
+        JobStarted {
+            status: owner
+                .jobs
+                .read(&id)
+                .expect("newly finished collection")
+                .status,
+            job_id: id,
+            deduplicated: true,
+        }
+    } else {
+        match result {
+            Ok(answer) => {
+                LibraryLane::answered(&mut owner.jobs, job, recorded.asset_id, origin, answer)
+            }
+            Err(error) => LibraryLane::ended(&mut owner.jobs, job, origin, error),
+        }
+    };
+    super::super::methods::value(started).map(Some)
+}
+
+/// Admit fully resolved immutable work before making it visible to the worker.
+pub(super) fn admit(owner: &Owner, task: &Task, resolved: &Value) -> Result<(), Error> {
+    if let Some(key) = &owner.service.catalog_request {
+        crate::editor::catalog_requests::admit(
+            &owner.service.connection,
+            key,
+            &task.job_id,
+            task.job.job_kind,
+            task.asset_id.as_ref(),
+            resolved,
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn queue(owner: &mut Owner, task: Task, resolved: Value) -> Result<JobStarted, Error> {
+    if owner.catalog.library.is_full() {
+        return Err(Error::resource_limit(format!(
+            "{LANE_QUEUE} library jobs already wait"
+        )));
+    }
+    admit(owner, &task, &resolved)?;
+    let started = owner.catalog.library.queue(&mut owner.jobs, task)?;
+    record_endings(owner, LaneKind::Library)?;
+    Ok(started)
+}
+
+pub(super) fn record_endings(owner: &mut Owner, kind: LaneKind) -> Result<(), Error> {
+    let endings = std::mem::take(&mut kind.of(owner).endings);
+    for (job, error) in endings {
+        crate::editor::catalog_requests::finish(&owner.service.connection, &job, &Err(error))?;
+    }
+    Ok(())
+}
+
+fn mark_existing_retry(answer: &mut Value) {
+    if let Value::Object(fields) = answer {
+        if let Some(deduplicated) = fields.get_mut("deduplicated") {
+            *deduplicated = Value::Bool(true);
+        }
+        if let Some(change) = fields.get_mut("change") {
+            mark_existing_retry(change);
+        }
+    }
+}
+
+/// Listing identities are disposable; only still-readable jobs belong in a replayed folder answer.
+pub(super) fn forget_stale_listing(owner: &Owner, answer: &mut Value) {
+    if let Some(id) = answer.get("job_id").cloned()
+        && let Ok(id) = serde_json::from_value::<JobId>(id)
+        && owner.jobs.read(&id).is_none()
+        && let Value::Object(fields) = answer
+    {
+        fields.remove("job_id");
+    }
 }

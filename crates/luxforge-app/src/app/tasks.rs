@@ -385,6 +385,15 @@ pub(crate) struct CallError {
     pub(crate) job_id: Option<String>,
 }
 
+impl CallError {
+    /// The owner already changed visible state and is reporting unconfirmed durability.
+    pub(crate) fn published(&self) -> bool {
+        self.data
+            .as_ref()
+            .is_some_and(|data| data["published"] == true)
+    }
+}
+
 impl std::fmt::Display for CallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.code, self.message)

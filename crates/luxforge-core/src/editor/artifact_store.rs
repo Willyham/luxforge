@@ -569,6 +569,14 @@ impl EditorService {
     /// other object file. A referenced row is never removed; the foreign keys refuse it even if
     /// this query were wrong.
     pub(crate) fn plan_collection(&mut self) -> Result<Collection, Error> {
+        self.plan_collection_for(None)
+    }
+
+    pub(crate) fn plan_collection_for(
+        &mut self,
+        job: Option<&crate::JobId>,
+    ) -> Result<Collection, Error> {
+        let key = self.catalog_request.clone();
         let live = &self.live_artifacts;
         let live_sources = &self.live_sources;
         let (removed, keep, (source_rows, keep_sources)) = write(&mut self.connection, |tx| {
@@ -578,6 +586,16 @@ impl EditorService {
             }
             let keep = recorded_artifact_ids(tx)?;
             let sources = super::derived_source::plan_source_collection(tx, live_sources)?;
+            if let (Some(key), Some(job)) = (key.as_ref(), job) {
+                crate::editor::catalog_requests::admit(
+                    tx,
+                    key,
+                    job,
+                    "collect",
+                    None,
+                    &json!({"rows":removed.len(),"source_rows":sources.0}),
+                )?;
+            }
             Ok((removed, keep, sources))
         })?;
         let mut cache = self.prepared_artifacts.borrow_mut();

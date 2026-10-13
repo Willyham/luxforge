@@ -80,7 +80,7 @@ struct Granted<'a> {
     capability: &'a CapabilityDescriptor,
     scope: GrantScope,
     endpoint: Option<Endpoint>,
-    grant_id: String,
+    grant: crate::capabilities::grants::Grant,
 }
 
 /// A declared adapter of a module's profile block.
@@ -387,7 +387,7 @@ impl CapabilityHost {
                 capability,
                 scope,
                 endpoint,
-                grant_id: grant.grant_id,
+                grant,
             });
         }
 
@@ -462,15 +462,34 @@ impl CapabilityHost {
                 reads: self.reads.clone(),
             });
         }
+        let permission = (!granted.is_empty()).then(|| {
+            let mut permission = super::super::permission_watch::PermissionGuard::new(
+                self.grants.as_ref().expect("admitted grants").clone(),
+                self.settings.as_ref().expect("admitted settings").clone(),
+                descriptor.clone(),
+                granted.iter().map(|entry| entry.grant.clone()).collect(),
+                run.control.clone(),
+            );
+            for entry in &granted {
+                if let (GrantScope::Remote(scope), Some(endpoint)) = (&entry.scope, &entry.endpoint)
+                {
+                    permission = permission.pin_endpoint(&scope.profile_id, endpoint);
+                }
+            }
+            permission
+        });
+        if let Some(permission) = &permission {
+            context = context.with_permission(permission.clone());
+        }
         let mut grant_ids = Vec::with_capacity(granted.len());
         for Granted {
             capability,
             scope,
             endpoint,
-            grant_id,
+            grant,
         } in granted
         {
-            grant_ids.push(grant_id);
+            grant_ids.push(grant.grant_id);
             context = match (scope, endpoint) {
                 (GrantScope::Remote(scope), Some(endpoint)) => {
                     // The disclosed data is the asset's current entry as it is now, bound here and
@@ -513,6 +532,7 @@ impl CapabilityHost {
                 let result = module.run_task(&task_id, &checked, &context)?;
                 // A task asked to stop as it finished counts as cancelled: what it published is
                 // not recorded.
+                context.revalidate()?;
                 context.checkpoint()?;
                 Ok(json!({"result": result, "artifacts": outcome.published_ids()}))
             })
@@ -522,20 +542,25 @@ impl CapabilityHost {
             jobs.read(job_id)
                 .is_some_and(|record| !record.status.is_finished())
         });
-        let job = jobs.submit(
-            NewJob {
-                job_id,
-                kind: JobKind::Task,
-                module_id: Some(module_id.to_owned()),
-                resource_id: None,
-                asset_id,
-                origin: Some(origin.clone()),
-                grants: grant_ids,
-                activity: None,
-            },
-            run.control.clone(),
-            work,
-        )?;
+        if let Some(permission) = permission {
+            self.permissions.register(job_id.clone(), permission)?;
+        }
+        let job = jobs
+            .submit(
+                NewJob {
+                    job_id: job_id.clone(),
+                    kind: JobKind::Task,
+                    module_id: Some(module_id.to_owned()),
+                    resource_id: None,
+                    asset_id,
+                    origin: Some(origin.clone()),
+                    grants: grant_ids,
+                    activity: None,
+                },
+                run.control.clone(),
+                work,
+            )
+            .inspect_err(|_| self.permissions.remove(&job_id))?;
         self.tasks.insert(job.job_id.clone(), run);
         Ok(json!({"job_id": job.job_id, "status": job.status}))
     }

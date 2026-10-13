@@ -71,7 +71,7 @@ Paths are under `crates/luxforge-core/src`.
 | `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, every type a public item's signature carries so a consumer can name whatever it receives, and the modules consumers name items through (`activity`, `analysis`, `capabilities`, `catalog_types`, `colour`, `jobs`, `latest`, `mask`, `path`, `resources` and `seed`). It keeps one marked section per lane of the catalog work for that lane's exports. Every other item is `pub(crate)` or narrower, so the compiler reports what nothing uses |
 | `editor.rs` | The editor service: the `EditorService` struct, opening a catalog, and the types its API speaks |
 | `editor/catalog.rs` | The lock and the journal, the schema, the format marker, row mapping, and the entry, stroke and request rows |
-| `editor/catalog_rows.rs` | The format-13 catalog tables' row writers and readers, which a Develop, the seeder and the library share: volumes, catalog folders, an asset's catalog columns and capture row, collections and members, picks and indexed folders |
+| `editor/catalog_rows.rs` | The catalog tables' row writers and readers, which a Develop, the seeder and the library share: volumes, catalog folders, an asset's catalog columns and capture row, collections and members, picks and indexed folders |
 | `editor/entries.rs` | The cache of hydrated history entries and each asset's head, and the one `mutate` every write that moves a head goes through |
 | `editor/history.rs` | Admission, commits, undo, redo, restore, versions, lineage and request deduplication |
 | `editor/source.rs` | Source preparation and cache, the one writer of a new photograph a Develop uses, file identity and RAW settings |
@@ -106,7 +106,7 @@ Paths are under `crates/luxforge-core/src`.
 
 ### The transport's files
 
-`luxforge-net` holds `HttpTransport` and the macOS Keychain store (`secrets.rs`, `keychain.rs`). `transport.rs` holds the redirects, bounds and refused framing, and `transport/` the rest: `agent.rs`, one `ureq` agent per request on the transport's own resolver, socket and TLS; `connect.rs`, resolving once and connecting only to checked addresses; `address.rs`, the addresses each endpoint class may reach; and `tls.rs`, rustls with the ring provider and the platform verifier. The transport's TLS, protocol and address tests live here, against `luxforge-testbase`'s test server with its `tls` feature.
+`luxforge-net` holds `HttpTransport` and the macOS Keychain store (`secrets.rs`, `keychain.rs`). `transport.rs` holds the redirects, bounds and refused framing, and `transport/` the rest: `agent.rs`, one `ureq` agent per request on the transport's own resolver, socket and TLS; `connect.rs`, resolving once and connecting only to checked addresses; `resolver.rs`, a lazy fixed service of four DNS workers, 16 queued lookups and 20 retained admissions, with at most 256 addresses per answer and cancellable/deadline-bounded caller waiting; `address.rs`, the addresses each endpoint class may reach; and `tls.rs`, rustls with the ring provider and the platform verifier. The transport's TLS, protocol and address tests live here, against `luxforge-testbase`'s test server with its `tls` feature.
 
 ### The JPEG codec
 

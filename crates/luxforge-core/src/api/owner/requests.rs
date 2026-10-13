@@ -1,22 +1,8 @@
-//! The owner's request table: the first answer of every mutation whose method table entry declares
-//! that the owner answers its retries (`Retries::Owner`). That is every method with the `request`
-//! envelope, which changes nothing with a revision — the preset library, versions, the catalog's
-//! import and artifact collection, module permissions, resources and capability jobs —
-//! a module's settings writes, whose revision the settings file holds without a request log, and
-//! `draft.commit`, whose first answer ends the draft its retry names, so the retry cannot reach the
-//! catalog's log for the asset that draft edited.
-//!
-//! A retry, the same `request_id` in the same scope with the same method and parameters, is
-//! answered with the first answer marked `deduplicated: true`, and its handler does not run, so it
-//! changes nothing and emits no event. The same `request_id` with a different input is a
-//! `conflict`. An asset's edits and history are deduplicated by the catalog, durably and in the same
-//! write as the change, because a retry after a restart must be answered rather than refused as
-//! stale. This bounded owner table is not a durable request log: its guarantees end on
-//! eviction or restart. Asset mutations have durable matching separately, and recorded library
-//! changes have journal matching, but catalog-only no-op navigation and permanent deletion can
-//! run again on a cache miss. Those methods need durable catalog-level request results before
-//! clients can safely retry them across this boundary. A draft does not outlive the owner, so a
-//! commit's retry after a restart is refused as naming no draft.
+//! Bounded retry answers for mutations whose persistence lives outside the catalog.
+//! Catalog mutations declare `Retries::Durable` and use the independent catalog request table;
+//! ordinary asset edits keep their existing transactional asset-scoped request log. Session-only
+//! and external-store mutations use this 256-entry, 8-MiB optimization, whose guarantees end on
+//! eviction or restart. Keys and canonical input matching are shared by both stores.
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{Error, Mutation, MutationRequest, capabilities::redact::redacted};
@@ -32,15 +18,19 @@ const REQUESTS: usize = 256;
 const REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 /// One request's identity: its scope, its envelope's `request_id` and a hash of its input.
-pub(super) struct RequestKey {
+#[derive(Clone, Debug)]
+pub(crate) struct RequestKey {
     /// The method's family: its name without the last segment, so `preset.create` and
     /// `preset.delete` share `preset`.
-    scope: String,
-    request_id: String,
+    pub(crate) scope: String,
+    pub(crate) request_id: String,
     /// SHA-256 of the method name and every parameter, the envelope included, with a secret's value
     /// redacted: the table never holds a hash of a secret, so a secret write's retry is matched by
     /// the setting alone.
-    input: [u8; 32],
+    pub(crate) input: [u8; 32],
+    pub(crate) method: String,
+    /// Dispatch's cache policy, carried through deferred handlers; not part of request identity.
+    pub(super) cache: bool,
 }
 
 impl RequestKey {
@@ -59,9 +49,20 @@ impl RequestKey {
         hash.update(serde_json::to_vec(&redacted(method, params)).ok()?);
         Some(Self {
             scope: scope.to_owned(),
+            method: method.to_owned(),
             request_id,
             input: hash.finalize().into(),
+            cache: true,
         })
+    }
+
+    pub(super) fn durable(&self) -> crate::editor::catalog_requests::Key {
+        crate::editor::catalog_requests::Key {
+            scope: self.scope.clone(),
+            request_id: self.request_id.clone(),
+            input: self.input,
+            method: self.method.clone(),
+        }
     }
 
     fn names(&self, other: &Self) -> bool {
@@ -83,6 +84,11 @@ pub(super) struct RequestTable {
 }
 
 impl RequestTable {
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.answered.len()
+    }
+
     /// The first answer to this request, marked `deduplicated`, when it was answered before.
     /// `O(REQUESTS)`, on the owner thread, once per mutation whose retries the owner answers.
     pub(super) fn answered(&self, key: &RequestKey) -> Result<Option<Value>, Error> {
@@ -104,8 +110,9 @@ impl RequestTable {
     /// this process started (the library journal answers a library change's retry after a
     /// restart), which is a retry however new it is to this table.
     pub(super) fn record(&mut self, key: RequestKey, answer: &mut Value) {
-        if answer.get("deduplicated") != Some(&Value::Bool(true)) {
-            mark(answer, false);
+        mark_first(answer);
+        if !key.cache {
+            return;
         }
         let bytes = serde_json::to_vec(&*answer).map_or(usize::MAX, |encoded| encoded.len())
             + key.scope.len()
@@ -127,9 +134,19 @@ impl RequestTable {
     }
 }
 
-fn mark(answer: &mut Value, deduplicated: bool) {
+/// First answers acquire their marker without serializing or cloning an already durable result.
+pub(super) fn mark_first(answer: &mut Value) {
+    if answer.get("deduplicated") != Some(&Value::Bool(true)) {
+        mark(answer, false);
+    }
+}
+
+pub(super) fn mark(answer: &mut Value, deduplicated: bool) {
     if let Value::Object(fields) = answer {
         fields.insert("deduplicated".into(), Value::Bool(deduplicated));
+        if let Some(change) = fields.get_mut("change") {
+            mark(change, deduplicated);
+        }
     }
 }
 

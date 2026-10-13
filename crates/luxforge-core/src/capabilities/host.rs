@@ -362,6 +362,7 @@ pub(crate) struct CapabilityHost {
     runtime: Runtime,
     /// The admission of tasks' stage readers.
     reads: Arc<ModuleReads>,
+    permissions: super::permission_watch::PermissionObserver,
 }
 
 impl CapabilityHost {
@@ -380,7 +381,28 @@ impl CapabilityHost {
                 config.runtime_budget_bytes,
             ),
             reads: Arc::default(),
+            permissions: super::permission_watch::PermissionObserver::new(
+                config.config_dir.clone(),
+            ),
             config,
+        }
+    }
+
+    pub(crate) fn set_permission_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.permissions.set_wake(wake);
+    }
+
+    /// Drain retained invalidations on every owner turn. A full owner channel cannot lose them.
+    pub(crate) fn reconcile_permissions(&mut self, jobs: &mut Jobs, announce: &mut Vec<Origin>) {
+        for job_id in self.permissions.take_invalidated() {
+            let origin = jobs.origin(&job_id).cloned();
+            self.cancel_job(
+                jobs,
+                &job_id,
+                crate::jobs::PERMISSION_REVOKED,
+                origin.as_ref(),
+                announce,
+            );
         }
     }
 
@@ -452,7 +474,20 @@ impl CapabilityHost {
         result: Result<Value, Error>,
         announce: &mut Vec<Origin>,
     ) {
+        let permission = self.permissions.validate_job(job_id);
+        let visibly_published = result
+            .as_ref()
+            .err()
+            .and_then(|error| error.data.as_deref())
+            .is_some_and(|data| data["published"] == true);
+        let visible_install = jobs.kind(job_id) == Some(JobKind::Install) && jobs.published(job_id);
+        let result = if visibly_published || visible_install {
+            result
+        } else {
+            permission.and(result)
+        };
         let result = self.task_result(jobs, service, job_id, result);
+        self.permissions.remove(job_id);
         let Some(done) = jobs.complete(job_id, result) else {
             return;
         };
@@ -463,7 +498,18 @@ impl CapabilityHost {
             candidates.finished(job_id, done.record.status == JobStatus::Cancelled);
         }
         candidates.retain(|job_id| jobs.kind(job_id).is_some());
-        if done.record.status == JobStatus::Ready
+        let changed = done.record.kind != JobKind::Remove
+            || done.record.result.as_ref().is_some_and(|value| {
+                value["removed"] == true || value["discarded_partial"] == true
+            });
+        if (done.record.status == JobStatus::Ready && changed
+            || (matches!(done.record.kind, JobKind::Install | JobKind::Remove)
+                && done
+                    .record
+                    .error
+                    .as_ref()
+                    .and_then(|error| error.data.as_ref())
+                    .is_some_and(|data| data["published"] == true)))
             && let Some(origin) = &done.origin
         {
             announce_once(announce, origin);
@@ -609,8 +655,11 @@ impl CapabilityHost {
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
         let mut value = encode(&write.result)?;
+        let mut effect_error = None;
         if write.result.outcome == WriteOutcome::Committed {
             announce_once(announce, origin);
+            self.permissions.reconcile();
+            self.reconcile_permissions(jobs, announce);
             // The write is committed whatever follows, so a grants file that cannot be updated is
             // reported beside the result rather than as the write's failure. Nothing it leaves
             // behind can be used: a grant names its endpoint origin, which the settings no longer
@@ -627,8 +676,20 @@ impl CapabilityHost {
                 }
                 Err(error) => {
                     value["revocation_error"] = json!(JobError::from(&error));
+                    effect_error = Some(error);
                 }
             }
+        }
+        let effect_publication_error = effect_error.filter(|error| {
+            error
+                .data
+                .as_deref()
+                .is_some_and(|data| data["published"] == true)
+        });
+        if let Some(mut error) = write.durability_error.or(effect_publication_error) {
+            let data = error.data.get_or_insert_with(|| Box::new(json!({})));
+            data["result"] = value;
+            return Err(error);
         }
         value["settings"] = encode(self.settings()?.read(descriptor, self.secrets())?)?;
         Ok(value)
@@ -649,7 +710,7 @@ impl CapabilityHost {
     ) -> Result<Vec<Grant>, Error> {
         let module_id = descriptor.id.as_str();
         let result = &write.result;
-        let Some(grants) = &self.grants else {
+        let Some(grants) = self.grants.clone() else {
             return Ok(Vec::new());
         };
         let Some(settings) = &descriptor.settings else {
@@ -659,50 +720,37 @@ impl CapabilityHost {
             grant.module_id == module_id
                 && matches!(&grant.scope, GrantScope::Remote(scope) if scope.profile_id == profile)
         };
-        let mut revoked = Vec::new();
-        match method {
-            SET => {
-                if let Some(profile) = &result.profile_id {
-                    let endpoint = result.changed.iter().any(|id| {
-                        settings
-                            .profiles
-                            .as_ref()
-                            .and_then(|profiles| profiles.field(id))
-                            .is_some_and(SettingDescriptor::is_endpoint)
-                    });
-                    if endpoint {
-                        revoked.extend(grants.revoke_matching(
-                            |grant| remote_of(profile, grant),
-                            ENDPOINT_CHANGED,
-                        )?);
-                    }
-                }
-            }
-            REMOVE_PROFILE => {
-                for profile in &write.removed {
-                    revoked.extend(
-                        grants.revoke_matching(
-                            |grant| remote_of(&profile.id, grant),
-                            PROFILE_REMOVED,
-                        )?,
-                    );
-                }
-            }
+        let selected = |grant: &Grant| match method {
+            SET => result.profile_id.as_ref().is_some_and(|profile| {
+                result.changed.iter().any(|id| {
+                    settings
+                        .profiles
+                        .as_ref()
+                        .and_then(|profiles| profiles.field(id))
+                        .is_some_and(SettingDescriptor::is_endpoint)
+                }) && remote_of(profile, grant)
+            }),
+            REMOVE_PROFILE => write
+                .removed
+                .iter()
+                .any(|profile| remote_of(&profile.id, grant)),
             RESET => {
-                revoked.extend(grants.revoke_matching(
-                    |grant| {
-                        grant.module_id == module_id
-                            && matches!(grant.kind, GrantKind::RemoteImageRequest)
-                    },
-                    SETTINGS_RESET,
-                )?);
+                grant.module_id == module_id && matches!(grant.kind, GrantKind::RemoteImageRequest)
             }
-            _ => {}
-        }
-        for grant in &revoked {
+            _ => false,
+        };
+        let reason = match method {
+            SET => ENDPOINT_CHANGED,
+            REMOVE_PROFILE => PROFILE_REMOVED,
+            _ => SETTINGS_RESET,
+        };
+        self.permissions.cancel_matching(selected);
+        self.reconcile_permissions(jobs, announce);
+        let published = grants.revoke_matching_published(selected, reason)?;
+        for grant in &published.value {
             self.cancel_dependents_of(jobs, &grant.grant_id, origin, announce);
         }
-        Ok(revoked)
+        published.finish()
     }
 
     // Jobs.
@@ -736,6 +784,7 @@ impl CapabilityHost {
     ) -> Option<JobRecord> {
         match jobs.cancel(job_id, reason)? {
             Cancelled::Removed(record) => {
+                self.permissions.remove(job_id);
                 // A task removed before it ran never reports back.
                 if record.kind == JobKind::Task {
                     self.forget_task(&record.job_id);
@@ -1379,5 +1428,320 @@ mod tests {
             ("validation", "value must be a string")
         );
         stop(owner, join);
+    }
+}
+
+#[cfg(test)]
+mod shared_settings_phase_tests {
+    use super::*;
+    use crate::{
+        AssetId, Mutation,
+        activity::ActivityBoard,
+        capabilities::{
+            descriptor::DataClass,
+            grants::{NewGrant, RemoteScope},
+            permission_watch::PermissionGuard,
+            secrets::MemorySecretStore,
+            testing::{ADAPTER, MODULE, capability_descriptor, temp},
+        },
+        jobs::NewJob,
+    };
+    use luxforge_testbase::Gate;
+    use serde_json::json;
+    use std::{
+        fs,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc::sync_channel,
+        },
+        time::Duration,
+    };
+
+    #[test]
+    fn same_origin_endpoint_change_cancels_queued_and_running_work_before_failed_grant_write() {
+        let root = temp("settings-same-origin-failed-grants");
+        let mut host = CapabilityHost::new(HostConfig {
+            config_dir: Some(root.clone()),
+            secrets: Arc::new(MemorySecretStore::new()),
+            ..HostConfig::unconfigured()
+        });
+        let descriptor = capability_descriptor();
+        let mutation = |expected_revision| Mutation {
+            expected_revision,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            actor: "test".into(),
+        };
+        let profile = host
+            .settings()
+            .unwrap()
+            .create_profile(&descriptor, ADAPTER, "provider", &mutation(0))
+            .unwrap()
+            .result
+            .profile_id
+            .unwrap();
+        host.settings()
+            .unwrap()
+            .set(
+                &descriptor,
+                Some(&profile),
+                json!({"endpoint": "http://127.0.0.1:9/old"})
+                    .as_object()
+                    .unwrap(),
+                &mutation(1),
+            )
+            .unwrap();
+        let endpoint = parse_endpoint(
+            "http://127.0.0.1:9/old",
+            &[super::super::endpoint::EndpointClass::Loopback],
+        )
+        .unwrap();
+        let grant = host
+            .grants()
+            .unwrap()
+            .grant(NewGrant {
+                module_id: MODULE,
+                capability: "echo",
+                scope: GrantScope::Remote(RemoteScope {
+                    profile_id: profile.clone(),
+                    adapter: ADAPTER.into(),
+                    origin: endpoint.origin(),
+                    data: DataClass::SampleGrid8,
+                    asset_id: AssetId::new(),
+                }),
+                actor: "test",
+                request_id: "allow",
+            })
+            .unwrap()
+            .grant;
+        let (completed, outcomes) = sync_channel(2);
+        let mut jobs = Jobs::new(
+            Arc::new(move |id, outcome| {
+                let _ = completed.send((id, outcome));
+            }),
+            ActivityBoard::new(),
+        );
+        let gate = Arc::new(Gate::new());
+        gate.shut();
+        let sends = Arc::new(AtomicUsize::new(0));
+        let mut ids = Vec::new();
+        let mut controls = Vec::new();
+        for _ in 0..2 {
+            let id = JobId::new();
+            let control = crate::jobs::JobControl::new();
+            let guard = PermissionGuard::new(
+                host.grants().unwrap().clone(),
+                host.settings().unwrap().clone(),
+                descriptor.clone(),
+                vec![grant.clone()],
+                control.clone(),
+            )
+            .pin_endpoint(&profile, &endpoint);
+            host.permissions
+                .register(id.clone(), guard.clone())
+                .unwrap();
+            let worker_control = control.clone();
+            let worker_gate = gate.clone();
+            let worker_sends = sends.clone();
+            jobs.submit(
+                NewJob {
+                    job_id: id.clone(),
+                    kind: JobKind::Task,
+                    module_id: Some(MODULE.into()),
+                    resource_id: None,
+                    asset_id: None,
+                    origin: Some(Origin::new("task.test", "send")),
+                    grants: vec![grant.grant_id.clone()],
+                    activity: None,
+                },
+                control.clone(),
+                Box::new(move || {
+                    worker_gate.pass_unless(|| worker_control.is_cancelled());
+                    guard.validate()?;
+                    worker_sends.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({}))
+                }),
+            )
+            .unwrap();
+            ids.push(id);
+            controls.push(control);
+        }
+        gate.wait_reached(1, "running send admission gate");
+        assert_eq!(jobs.read(&ids[1]).unwrap().status, JobStatus::Queued);
+        // Only the grant write fails before rename. The old live grant remains readable.
+        fs::create_dir(root.join("grants.json.tmp")).unwrap();
+        let write = host
+            .settings()
+            .unwrap()
+            .set(
+                &descriptor,
+                Some(&profile),
+                json!({"endpoint": "http://127.0.0.1:9/new"})
+                    .as_object()
+                    .unwrap(),
+                &mutation(2),
+            )
+            .unwrap();
+        let mut announced = Vec::new();
+        let result = host
+            .settings_written(
+                &mut jobs,
+                &descriptor,
+                SET,
+                write,
+                &Origin::new(SET, "replace"),
+                &mut announced,
+            )
+            .unwrap();
+        assert!(result.get("revocation_error").is_some());
+        assert!(host.grants().unwrap().list(None).unwrap().grants[0].is_live());
+        assert!(controls.iter().all(|control| control.is_cancelled()));
+        assert_eq!(jobs.read(&ids[1]).unwrap().status, JobStatus::Cancelled);
+        assert!(announced.iter().any(|origin| origin.method == SET));
+        gate.open();
+        let (_, outcome) = outcomes.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(outcome.is_err());
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
+        jobs.shutdown();
+        drop(host);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn published_install_keeps_its_ready_result_and_event_after_a_late_cancel_or_revoke() {
+        use crate::capabilities::{
+            resources::{INSTALL, InstallJob},
+            testing::{LifecycleModule, MemoryTransport, PALETTE, Probe, lifecycle_descriptor},
+        };
+        for revoke in [false, true] {
+            let root = temp("installed-late-cancel");
+            fs::create_dir_all(&root).unwrap();
+            let transport = MemoryTransport::new(|_, answer| answer.whole(200, PALETTE));
+            let descriptor =
+                lifecycle_descriptor("https://example.com/palette", "https://example.com/swatch");
+            let mut registry = ModuleRegistry::builtin();
+            registry
+                .register(LifecycleModule::shared(
+                    descriptor.clone(),
+                    Arc::new(Probe::default()),
+                ))
+                .unwrap();
+            let registry = Arc::new(registry);
+            let mut host = CapabilityHost::new(HostConfig {
+                config_dir: Some(root.join("config")),
+                resource_dir: Some(root.join("resources")),
+                secrets: Arc::new(MemorySecretStore::new()),
+                transport: transport.clone(),
+                ..HostConfig::unconfigured()
+            });
+            let resource = descriptor.resources[0].clone();
+            let grant = host
+                .grants()
+                .unwrap()
+                .grant(NewGrant {
+                    module_id: MODULE,
+                    capability: "palette",
+                    scope: GrantScope::Download(resources::download_scope(&resource).unwrap()),
+                    actor: "test",
+                    request_id: "allow",
+                })
+                .unwrap()
+                .grant;
+            let id = JobId::new();
+            let control = crate::jobs::JobControl::new();
+            let permission = PermissionGuard::new(
+                host.grants().unwrap().clone(),
+                host.settings().unwrap().clone(),
+                descriptor.clone(),
+                vec![grant.clone()],
+                control.clone(),
+            );
+            host.permissions
+                .register(id.clone(), permission.clone())
+                .unwrap();
+            let job = InstallJob {
+                store: host.resources().unwrap().clone(),
+                module_id: MODULE.into(),
+                resource: resource.clone(),
+                transport,
+                registry,
+                quota: 1 << 20,
+                actor: "test".into(),
+                control: control.clone(),
+                runtime: None,
+                permission: Some(permission),
+            };
+            let gate = Arc::new(Gate::new());
+            gate.shut();
+            let worker_gate = gate.clone();
+            let (completed, outcomes) = sync_channel(1);
+            let mut jobs = Jobs::new(
+                Arc::new(move |id, outcome| {
+                    let _ = completed.send((id, outcome));
+                }),
+                ActivityBoard::new(),
+            );
+            let mut service = EditorService::open(&root.join("catalog.sqlite")).unwrap();
+            jobs.submit(
+                NewJob {
+                    job_id: id.clone(),
+                    kind: JobKind::Install,
+                    module_id: Some(MODULE.into()),
+                    resource_id: Some(resource.id.clone()),
+                    asset_id: None,
+                    origin: Some(Origin::new(INSTALL, "install")),
+                    grants: vec![grant.grant_id.clone()],
+                    activity: None,
+                },
+                control.clone(),
+                Box::new(move || {
+                    let result = super::super::resources::install(job);
+                    worker_gate.pass();
+                    result
+                }),
+            )
+            .unwrap();
+            gate.wait_reached(1, "published resource waiting for owner completion");
+            assert!(
+                host.resources()
+                    .unwrap()
+                    .installed(MODULE, &resource)
+                    .is_some()
+            );
+            let mut announced = Vec::new();
+            if revoke {
+                host.grants()
+                    .unwrap()
+                    .revoke(&grant.grant_id, "late revoke")
+                    .unwrap();
+                host.cancel_dependents_of(
+                    &mut jobs,
+                    &grant.grant_id,
+                    &Origin::new(super::super::grants::REVOKE, "revoke"),
+                    &mut announced,
+                );
+            } else {
+                host.cancel_job(&mut jobs, &id, CANCELLED, None, &mut announced);
+            }
+            assert!(control.is_cancelled());
+            gate.open();
+            let (_, result) = outcomes.recv_timeout(Duration::from_secs(5)).unwrap();
+            host.finished(&mut jobs, &mut service, &id, result, &mut announced);
+            assert_eq!(jobs.read(&id).unwrap().status, JobStatus::Ready);
+            assert!(announced.iter().any(|origin| origin.method == INSTALL));
+            assert!(
+                host.resources()
+                    .unwrap()
+                    .installed(MODULE, &resource)
+                    .is_some()
+            );
+            assert_eq!(
+                fs::read(host.resources().unwrap().file_path(MODULE, &resource)).unwrap(),
+                PALETTE
+            );
+            jobs.shutdown();
+            drop(host);
+            drop(service);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 }

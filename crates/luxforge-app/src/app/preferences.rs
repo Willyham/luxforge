@@ -100,7 +100,6 @@ impl Editor {
             refused.is_some() && change.sets("mask_overlay_colour");
         self.apply_display_preferences();
         let mut read = Task::none();
-        let saved = refused.is_none();
         match refused {
             // Only a change the core announces has an event for the sync to skip; a remembered
             // field's request id would only crowd the bounded list of the desktop's own requests.
@@ -126,8 +125,7 @@ impl Editor {
         }
         // The update policy follows the Updates group's switches: the status they leave is read
         // again, as the event sync reads it for another client's change.
-        let updates = if saved
-            && (change.sets("update_checks") || change.sets("update_install_automatically"))
+        let updates = if change.sets("update_checks") || change.sets("update_install_automatically")
         {
             self.read_updates()
         } else {

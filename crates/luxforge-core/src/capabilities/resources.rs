@@ -464,6 +464,7 @@ pub(crate) struct InstallJob {
     /// names: the runtime is asked to derive what it needs for them from the installed model
     /// before the install is marked done.
     pub runtime: Option<(Arc<dyn InferenceRuntime>, Vec<String>)>,
+    pub permission: Option<super::permission_watch::PermissionGuard>,
 }
 
 /// A staged file that hashes and counts what it is given and refuses to grow past the declared
@@ -715,6 +716,17 @@ fn resumable(error: &Error) -> bool {
 /// place and write `installed.json` last. A failure keeps an interrupted transfer's staging and
 /// removes any other.
 pub(crate) fn install(job: InstallJob) -> Result<Value, Error> {
+    let _lock = transfer_lock(job.store.root(), &job.control)?;
+    job.revalidate()?;
+    if let Some(marker) = job.store.installed(&job.module_id, &job.resource) {
+        return Ok(serde_json::json!({
+            "resource_id": marker.resource_id, "version": marker.version,
+            "path": job.store.file_path(&job.module_id, &job.resource),
+            "bytes": job.resource.total_bytes(), "sha256": marker.sha256,
+            "files": marker.files, "derived": marker.derived,
+        }));
+    }
+    check_quota(&job.store, &job.resource, job.quota)?;
     clear_stale_staging(&job.store, &job.registry)?;
     let staging = job.store.staging_dir(&job.module_id, &job.resource);
     fs::create_dir_all(&staging).map_err(|error| write_failure(&staging, error.kind()))?;
@@ -770,7 +782,7 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
         hashes.push(sha256);
         before += file.bytes;
     }
-    job.control.checkpoint()?;
+    job.revalidate()?;
     job.control.set_progress(Some(1.0), "checking the format");
     let module = job
         .registry
@@ -779,7 +791,7 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
     for file in resource.pinned_files() {
         module.validate_resource(&resource.id, &staging.join(file.name))?;
     }
-    job.control.checkpoint()?;
+    job.revalidate()?;
     check_quota(&job.store, resource, job.quota)?;
     let partial = staging.join(PARTIAL_FILE);
     fs::remove_file(&partial).map_err(|error| write_failure(&partial, error.kind()))?;
@@ -837,7 +849,7 @@ fn fetch(
         download(job, file, &mut staged, path, offset, before, total)?;
     }
     let (length, sha256) = staged.finish().map_err(|kind| write_failure(path, kind))?;
-    job.control.checkpoint()?;
+    job.revalidate()?;
     if length != file.bytes {
         return Err(Error::validation(format!(
             "{} is {length} bytes; it is pinned at {} bytes",
@@ -934,6 +946,7 @@ fn download(
         before,
         total,
     };
+    job.revalidate()?;
     let sent = job.transport.send(
         &request,
         SendOptions {
@@ -1035,6 +1048,10 @@ fn publish(job: &InstallJob, staging: &Path) -> Result<Prepared, Error> {
             return Err(error);
         }
     };
+    if let Err(error) = job.revalidate() {
+        let _ = fs::remove_dir_all(&target);
+        return Err(error);
+    }
     let marker = InstalledMarker {
         module_id: job.module_id.clone(),
         resource_id: resource.id.clone(),
@@ -1052,11 +1069,20 @@ fn publish(job: &InstallJob, staging: &Path) -> Result<Prepared, Error> {
     // The transfer lane runs one job at a time, so the install is the marker's one writer.
     let written = atomic_file::sync_dir(&parent)
         .map_err(|error| write_failure(&parent, error.kind()))
-        .and_then(|()| InstalledMarker::document(&target).write(&marker));
-    if written.is_err() {
-        let _ = fs::remove_dir_all(&target);
+        .and_then(|()| InstalledMarker::document(&target).write_published(&marker));
+    match written {
+        Ok(publication) => {
+            job.control.mark_published();
+            publication.finish()?;
+            Ok(prepared)
+        }
+        Err(error) => {
+            // No installed marker is visible. A post-rename failure is instead an Ok
+            // Publication above, whose finish returns the explicit error without deleting data.
+            let _ = fs::remove_dir_all(&target);
+            Err(error)
+        }
     }
-    written.map(|()| prepared)
 }
 
 /// Remove one installed resource version on the transfer lane, with every file of it: its marker
@@ -1071,20 +1097,35 @@ pub(crate) fn remove(
     control: &JobControl,
     runtime: Option<&dyn InferenceRuntime>,
 ) -> Result<Value, Error> {
+    let _lock = transfer_lock(store.root(), control)?;
     control.checkpoint()?;
     let target = store.version_dir(module_id, resource);
     let marker = target.join(INSTALLED_FILE);
     let existed = target.exists();
-    match fs::remove_file(&marker) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+    let marker_removed = match fs::remove_file(&marker) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(error) => return Err(atomic_file::file_error(marker.display(), error.kind())),
+    };
+    #[cfg(test)]
+    if let Some(kind) = faults::take_remove(store.root()) {
+        return Err(removal_failure(
+            &target,
+            atomic_file::file_error(target.display(), kind),
+            marker_removed,
+        ));
     }
-    match fs::remove_dir_all(&target) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(atomic_file::file_error(target.display(), error.kind())),
-    }
+    let target_removed = match fs::remove_dir_all(&target) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(removal_failure(
+                &target,
+                atomic_file::file_error(target.display(), error.kind()),
+                marker_removed,
+            ));
+        }
+    };
     // Emptied parents go too; a parent that still holds another version stays.
     for parent in target.ancestors().skip(1).take(2) {
         if fs::remove_dir(parent).is_err() {
@@ -1093,8 +1134,13 @@ pub(crate) fn remove(
     }
     let staging = store.staging_dir(module_id, resource);
     let staged = staging.exists();
-    remove_path(&staging)
-        .map_err(|error| atomic_file::file_error(staging.display(), error.kind()))?;
+    remove_path(&staging).map_err(|error| {
+        removal_failure(
+            &target,
+            atomic_file::file_error(staging.display(), error.kind()),
+            marker_removed || target_removed,
+        )
+    })?;
     prune_empty(store, &staging);
     let mut answer = json!({
         "resource_id": resource.id,
@@ -1112,6 +1158,20 @@ pub(crate) fn remove(
     Ok(answer)
 }
 
+fn removal_failure(target: &Path, mut error: Error, visible: bool) -> Error {
+    if visible {
+        error.detail = format!(
+            "{}; the resource is visibly uninstalled, cleanup is incomplete and durability is unconfirmed",
+            error.detail
+        );
+        error.data = Some(Box::new(json!({
+            "published": true, "durable": false, "path": target,
+            "installed": false, "cleanup_complete": false,
+        })));
+    }
+    error
+}
+
 /// Injected write failures for tests, keyed by resource root so parallel tests never see each
 /// other's.
 #[cfg(test)]
@@ -1123,6 +1183,16 @@ pub(crate) mod faults {
     };
 
     static FAULTS: Mutex<Vec<(PathBuf, u64, io::ErrorKind)>> = Mutex::new(Vec::new());
+    static REMOVE: Mutex<Vec<(PathBuf, io::ErrorKind)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn inject_remove(root: &Path, kind: io::ErrorKind) {
+        REMOVE.lock().unwrap().push((root.to_owned(), kind));
+    }
+    pub(super) fn take_remove(root: &Path) -> Option<io::ErrorKind> {
+        let mut failures = REMOVE.lock().unwrap();
+        let index = failures.iter().position(|(path, _)| path == root)?;
+        Some(failures.swap_remove(index).1)
+    }
 
     /// Fail every staged write under `root` that would pass `after` bytes with `kind`.
     pub(crate) fn inject(root: &Path, after: u64, kind: io::ErrorKind) {
@@ -1134,6 +1204,7 @@ pub(crate) mod faults {
 
     pub(crate) fn clear(root: &Path) {
         FAULTS.lock().unwrap().retain(|(held, ..)| held != root);
+        REMOVE.lock().unwrap().retain(|(held, _)| held != root);
     }
 
     pub(super) fn find(root: &Path) -> Option<(u64, io::ErrorKind)> {
@@ -1143,5 +1214,147 @@ pub(crate) mod faults {
             .iter()
             .find(|(held, ..)| held == root)
             .map(|(_, after, kind)| (*after, *kind))
+    }
+}
+
+/// One transfer transaction at the shared root, across owners and processes. The permanent lock
+/// inode is never removed. No staging/quota/installed mutation happens until the lock is held.
+fn transfer_lock(root: &Path, control: &JobControl) -> Result<File, Error> {
+    control.checkpoint()?;
+    fs::create_dir_all(root)
+        .map_err(|error| atomic_file::file_error(root.display(), error.kind()))?;
+    let path = root.join(".transfer.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| atomic_file::file_error(path.display(), error.kind()))?;
+    loop {
+        control.checkpoint()?;
+        match file.try_lock() {
+            Ok(()) => {
+                control.checkpoint()?;
+                return Ok(file);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                shared_lock_tests::contended(root);
+                control.wait_cancelled(std::time::Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(atomic_file::file_error(path.display(), error.kind()));
+            }
+        }
+    }
+}
+
+impl InstallJob {
+    fn revalidate(&self) -> Result<(), Error> {
+        self.control.checkpoint()?;
+        if let Some(permission) = &self.permission {
+            permission.validate()?;
+        }
+        self.control.checkpoint()
+    }
+}
+
+#[cfg(test)]
+mod shared_lock_tests {
+    use super::*;
+    use luxforge_test_macros::slow;
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Command, Stdio},
+        sync::mpsc::sync_channel,
+        thread,
+    };
+
+    type Notices =
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::mpsc::SyncSender<()>>>;
+    fn notices() -> &'static Notices {
+        static NOTICES: std::sync::OnceLock<Notices> = std::sync::OnceLock::new();
+        NOTICES.get_or_init(Default::default)
+    }
+    pub(super) fn contended(root: &Path) {
+        if let Some(notice) = notices().lock().unwrap().get(root) {
+            let _ = notice.try_send(());
+        }
+    }
+
+    #[test]
+    fn lock_child() {
+        let Ok(root) = std::env::var("LUXFORGE_TRANSFER_LOCK_CHILD_ROOT") else {
+            return;
+        };
+        let _lock = transfer_lock(Path::new(&root), &JobControl::new()).unwrap();
+        println!("transfer-lock-acquired");
+        std::io::stdout().flush().unwrap();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+    }
+
+    #[test]
+    #[slow]
+    fn shared_root_subprocess_lock_wait_cancels_before_the_holder_releases_and_recovers() {
+        let root = crate::capabilities::testing::temp("process-transfer-lock");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "capabilities::resources::shared_lock_tests::lock_child",
+                "--nocapture",
+            ])
+            .env("LUXFORGE_TRANSFER_LOCK_CHILD_ROOT", &root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(stdout.read_line(&mut line).unwrap() > 0);
+            if line.contains("transfer-lock-acquired") {
+                break;
+            }
+        }
+        let control = JobControl::new();
+        let worker_control = control.clone();
+        let worker_root = root.clone();
+        let (result, received) = sync_channel(1);
+        let (notice, contended) = sync_channel(1);
+        notices().lock().unwrap().insert(root.clone(), notice);
+        let waiter = thread::spawn(move || {
+            result
+                .send(transfer_lock(&worker_root, &worker_control).map(drop))
+                .unwrap();
+        });
+        contended
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker reached the contended lock");
+        control.cancel("cancelled lock waiter");
+        assert_eq!(
+            received
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err()
+                .kind,
+            ErrorKind::Cancelled
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "holder has not been released"
+        );
+        assert!(!root.join(STAGING_DIR).exists());
+        waiter.join().unwrap();
+        notices().lock().unwrap().remove(&root);
+        child.stdin.take().unwrap().write_all(b"release\n").unwrap();
+        assert!(child.wait().unwrap().success());
+        drop(transfer_lock(&root, &JobControl::new()).unwrap());
+        assert!(
+            root.join(".transfer.lock").is_file(),
+            "the lock inode is retained"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -326,18 +326,28 @@ impl Payload {
         let text = std::str::from_utf8(&body)
             .map_err(|_| Error::MalformedAppcast("the feed is not UTF-8".into()))?;
         let parsed = Appcast::parse(text)?;
+        // Parsing removes unusable items; diagnostics still refer to the RSS document.
         let mut skipped = parsed.skipped;
+        let parser_skip_count = skipped.len();
+        let mut parser_skip = 0;
+        let mut original_index = 0;
         let mut items = Vec::with_capacity(parsed.appcast.items.len());
-        for (index, item) in parsed.appcast.items.into_iter().enumerate() {
+        for item in parsed.appcast.items {
+            while parser_skip < parser_skip_count && skipped[parser_skip].index == original_index {
+                parser_skip += 1;
+                original_index += 1;
+            }
             if item.catalog_format.is_some() {
                 items.push(item);
             } else {
                 skipped.push(SkippedItem {
-                    index,
+                    index: original_index,
                     reason: "no luxforge:catalogFormat".into(),
                 });
             }
+            original_index += 1;
         }
+        skipped.sort_by_key(|item| item.index);
         Ok(Checked {
             item: newest_eligible(&items, self.build.build, followed).cloned(),
             skipped,

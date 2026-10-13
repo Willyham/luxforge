@@ -3,7 +3,7 @@
 //! sheet says. Everything here is decided from the launch and the core's refusal; nothing reads or
 //! writes the refused catalog.
 use super::preferences::LaunchCatalog;
-use luxforge_core::{Error, ErrorKind};
+use luxforge_core::{CATALOG_FORMAT, Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
 /// Where earlier versions of Luxforge are published, opened through the checked HTTPS opener.
@@ -50,9 +50,7 @@ impl Refusal {
         Some(Self {
             path: launch.path.clone(),
             format: error.refused_catalog_format(),
-            expected: error
-                .expected_catalog_format()
-                .unwrap_or(CURRENT_CATALOG_FORMAT),
+            expected: error.expected_catalog_format().unwrap_or(CATALOG_FORMAT),
             marked: error.refused_catalog_marked(),
             detail: error.detail.clone(),
         })
@@ -78,10 +76,6 @@ impl Refusal {
         }
     }
 }
-
-/// The catalog format this build opens when a refusal does not name it: the format at the time of
-/// writing, which every refusal of a marker names anyway.
-const CURRENT_CATALOG_FORMAT: i64 = 1;
 
 /// Where Start a new catalog creates its catalog: beside the refused one, named after it and the
 /// format it is made in — `<stem> (format N).sqlite`, then `<stem> (format N) 2.sqlite` and so on —
@@ -331,7 +325,7 @@ mod tests {
             &Error::incompatible("catalog has no identity; choose a new catalog path"),
         )
         .unwrap();
-        assert_eq!((unnamed.format, unnamed.expected), (None, 1));
+        assert_eq!((unnamed.format, unnamed.expected), (None, CATALOG_FORMAT));
         assert!(unnamed.formats().contains("catalog has no identity"));
     }
 

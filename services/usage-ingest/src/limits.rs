@@ -3,9 +3,10 @@
 //! only identity it ever holds is the 16 bytes of a validated installation ID, in memory, for at
 //! most [`MAX_ID_TTL_SECS`] after that ID's last request.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::Notify;
 
 /// The longest an ID-keyed entry may outlive its last request.
 pub const MAX_ID_TTL_SECS: u64 = 15 * 60;
@@ -86,33 +87,50 @@ impl Bucket {
             Err((self.interval_ms - self.level).div_ceil(1000).max(1))
         }
     }
-
-    /// Whether the bucket is back at capacity as of `now_ms`, so forgetting it changes nothing.
-    fn full(&self, now_ms: u64) -> bool {
-        self.level
-            .saturating_add(now_ms.saturating_sub(self.last_ms))
-            >= self.capacity
-    }
 }
 
 /// The service-wide limit on statistics requests.
 pub struct Global {
-    bucket: Mutex<Bucket>,
+    bucket: Mutex<GlobalBucket>,
+}
+
+/// Fixed-point requests: each costs 1000 units, and every millisecond adds `per_second` units.
+/// This preserves the configured rate without truncating its reciprocal interval.
+struct GlobalBucket {
+    per_second: u64,
+    capacity: u64,
+    level: u64,
+    last_ms: u64,
 }
 
 impl Global {
     pub fn new(per_second: u32, burst: u32, now_ms: u64) -> Global {
-        let interval = 1000 / u64::from(per_second.clamp(1, 1000));
+        let capacity = u64::from(burst.max(1)) * 1000;
         Global {
-            bucket: Mutex::new(Bucket::new(interval, u64::from(burst), now_ms)),
+            bucket: Mutex::new(GlobalBucket {
+                per_second: u64::from(per_second.clamp(1, 1000)),
+                capacity,
+                level: capacity,
+                last_ms: now_ms,
+            }),
         }
     }
 
     pub fn admit(&self, now_ms: u64) -> Result<(), u64> {
-        self.bucket
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take(now_ms)
+        let mut bucket = self.bucket.lock().unwrap_or_else(|e| e.into_inner());
+        let refill = now_ms
+            .saturating_sub(bucket.last_ms)
+            .saturating_mul(bucket.per_second);
+        bucket.level = bucket.level.saturating_add(refill).min(bucket.capacity);
+        bucket.last_ms = bucket.last_ms.max(now_ms);
+        if bucket.level >= 1000 {
+            bucket.level -= 1000;
+            Ok(())
+        } else {
+            Err((1000 - bucket.level)
+                .div_ceil(bucket.per_second * 1000)
+                .max(1))
+        }
     }
 }
 
@@ -132,8 +150,36 @@ pub struct IdLimiter {
     burst: u64,
     ttl_ms: u64,
     max_entries: usize,
-    /// ID bytes to (bucket, last request time).
-    entries: Mutex<HashMap<[u8; 16], (Bucket, u64)>>,
+    state: Mutex<IdState>,
+    /// Wakes the deadline worker only when its next deadline changes.
+    pub(crate) changed: Notify,
+}
+
+#[derive(Default)]
+struct IdState {
+    /// ID bytes to (bucket, expiry).
+    entries: HashMap<[u8; 16], (Bucket, u64)>,
+    /// Exactly one deadline per retained ID; refreshing an ID replaces its old record.
+    deadlines: BTreeSet<(u64, [u8; 16])>,
+}
+
+impl IdState {
+    fn next_deadline(&self) -> Option<u64> {
+        self.deadlines.first().map(|(deadline, _)| *deadline)
+    }
+
+    fn expire(&mut self, now_ms: u64) {
+        while self
+            .next_deadline()
+            .is_some_and(|deadline| deadline <= now_ms)
+        {
+            let (_, key) = self
+                .deadlines
+                .pop_first()
+                .expect("the first deadline exists");
+            self.entries.remove(&key);
+        }
+    }
 }
 
 impl IdLimiter {
@@ -143,7 +189,8 @@ impl IdLimiter {
             burst,
             ttl_ms: ttl_secs.clamp(1, MAX_ID_TTL_SECS) * 1000,
             max_entries: max_entries.max(1),
-            entries: Mutex::new(HashMap::new()),
+            state: Mutex::new(IdState::default()),
+            changed: Notify::new(),
         }
     }
 
@@ -152,35 +199,57 @@ impl IdLimiter {
         let Some(key) = id_bytes(id) else {
             return IdVerdict::Admit;
         };
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if !entries.contains_key(&key) && entries.len() >= self.max_entries {
-            let ttl = self.ttl_ms;
-            entries.retain(|_, (_, seen)| now_ms.saturating_sub(*seen) < ttl);
-            if entries.len() >= self.max_entries {
-                return IdVerdict::TableFull;
-            }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let previous_deadline = state.next_deadline();
+        // Even an existing ID must expire before a request can refresh its retention.
+        state.expire(now_ms);
+        let verdict =
+            if !state.entries.contains_key(&key) && state.entries.len() >= self.max_entries {
+                IdVerdict::TableFull
+            } else {
+                let (mut bucket, old_deadline) = state
+                    .entries
+                    .remove(&key)
+                    .unwrap_or_else(|| (Bucket::new(self.interval_ms, self.burst, now_ms), now_ms));
+                state.deadlines.remove(&(old_deadline, key));
+                let deadline = now_ms.saturating_add(self.ttl_ms);
+                let verdict = match bucket.take(now_ms) {
+                    Ok(()) => IdVerdict::Admit,
+                    Err(retry) => IdVerdict::Refuse(retry),
+                };
+                state.entries.insert(key, (bucket, deadline));
+                state.deadlines.insert((deadline, key));
+                verdict
+            };
+        if state.next_deadline() != previous_deadline {
+            self.changed.notify_one();
         }
-        let (bucket, seen) = entries
-            .entry(key)
-            .or_insert_with(|| (Bucket::new(self.interval_ms, self.burst, now_ms), now_ms));
-        *seen = now_ms;
-        match bucket.take(now_ms) {
-            Ok(()) => IdVerdict::Admit,
-            Err(retry) => IdVerdict::Refuse(retry),
+        verdict
+    }
+
+    /// Forget entries at their retention deadline, independently of bucket refill.
+    pub fn sweep(&self, now_ms: u64) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let previous_deadline = state.next_deadline();
+        state.expire(now_ms);
+        if state.next_deadline() != previous_deadline {
+            self.changed.notify_one();
         }
     }
 
-    /// Forget entries idle for the TTL, and any whose bucket has refilled (forgetting a full bucket
-    /// changes nothing).
-    pub fn sweep(&self, now_ms: u64) {
-        let ttl = self.ttl_ms;
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries
-            .retain(|_, (bucket, seen)| now_ms.saturating_sub(*seen) < ttl && !bucket.full(now_ms));
+    pub(crate) fn next_deadline(&self) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .next_deadline()
     }
 
     pub fn len(&self) -> usize {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -224,6 +293,32 @@ mod tests {
     }
 
     #[test]
+    fn global_rates_preserve_fractional_intervals_and_burst_capacity() {
+        for rate in [3, 600, 1000] {
+            let global = Global::new(rate, 7, 0);
+            assert!((0..7).all(|_| global.admit(0).is_ok()));
+            assert_eq!(global.admit(0), Err(1));
+            let mut admitted = 0;
+            for now in 1..=1000 {
+                while global.admit(now).is_ok() {
+                    admitted += 1;
+                }
+            }
+            assert_eq!(admitted, rate);
+            assert!((0..7).all(|_| global.admit(u64::MAX).is_ok()));
+            assert_eq!(global.admit(u64::MAX), Err(1));
+        }
+        let global = Global::new(3, 1, 0);
+        assert_eq!(global.admit(0), Ok(()));
+        assert_eq!(global.admit(333), Err(1));
+        assert_eq!(global.admit(334), Ok(()));
+        assert_eq!(global.admit(666), Err(1));
+        // At 334 ms the full bucket discarded two excess fixed-point units.
+        assert_eq!(global.admit(667), Err(1));
+        assert_eq!(global.admit(668), Ok(()));
+    }
+
+    #[test]
     fn an_id_is_limited_alone_and_forgotten_within_fifteen_minutes() {
         let limiter = IdLimiter::new(30, 2, MAX_ID_TTL_SECS, 100);
         assert_eq!(limiter.admit(A, 0), IdVerdict::Admit);
@@ -246,6 +341,28 @@ mod tests {
         assert_eq!(limiter.len(), 1);
         limiter.sweep(MAX_ID_TTL_SECS * 1000);
         assert!(limiter.is_empty());
+    }
+
+    #[test]
+    fn expiry_precedes_refresh_and_retains_only_one_deadline_per_id() {
+        let limiter = IdLimiter::new(86_400, 1, 1, 2);
+        assert_eq!(limiter.admit(A, 0), IdVerdict::Admit);
+        // Even without a worker sweep, a request at expiry starts a fresh bucket.
+        assert_eq!(limiter.admit(A, 1000), IdVerdict::Admit);
+        for now in 1001..2000 {
+            assert!(matches!(limiter.admit(A, now), IdVerdict::Refuse(_)));
+            let state = limiter.state.lock().unwrap();
+            assert_eq!(state.entries.len(), 1);
+            assert_eq!(state.deadlines.len(), 1);
+            assert_eq!(state.next_deadline(), Some(now + 1000));
+        }
+        assert_eq!(limiter.admit(B, 1999), IdVerdict::Admit);
+        assert_eq!(limiter.state.lock().unwrap().deadlines.len(), 2);
+        limiter.sweep(2998);
+        assert_eq!(limiter.len(), 2);
+        limiter.sweep(2999);
+        assert_eq!(limiter.len(), 0);
+        assert!(limiter.state.lock().unwrap().deadlines.is_empty());
     }
 
     #[test]

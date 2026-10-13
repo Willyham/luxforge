@@ -1128,7 +1128,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: unsupported_catalog::SCENARIO,
-        about: "A remembered catalog another version made: the window opens on the unsupported-catalog sheet naming format 16 and format 1, the catalog unchanged and the releases page, then Start a new catalog creates and remembers catalog (format 1).sqlite beside it and the fixture opens in the editor over it; the refused catalog, its artifacts and its index keep every byte",
+        about: "A remembered catalog another version made: the window opens on the unsupported-catalog sheet naming format 16 and the current format, the catalog unchanged and the releases page, then Start a new catalog creates and remembers a new catalog beside it and the fixture opens in the editor over it; the refused catalog, its artifacts and its index keep every byte",
         // Its one launch names a catalog the run seeds before it.
         launches: &[],
         verify: unsupported_catalog::verify,
