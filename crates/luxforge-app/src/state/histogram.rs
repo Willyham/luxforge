@@ -41,6 +41,21 @@ pub(crate) struct Analysis {
     pub(crate) source: AnalysisSource,
 }
 
+impl Analysis {
+    /// The size the report counts when it counts a paged derived source's overview, the stack over
+    /// its resident level, rather than its output at full size (`docs/design/panorama-merge.md`,
+    /// "Rendering, samples and export"): a report of fewer pixels than its identity's output. A
+    /// gesture's tick counts the frame on screen and is never so labelled.
+    pub(crate) fn overview(&self) -> Option<(u32, u32)> {
+        let counted = (self.report.width, self.report.height);
+        let output = (self.identity.width, self.identity.height);
+        (self.source != AnalysisSource::Motion
+            && u64::from(counted.0) * u64::from(counted.1)
+                < u64::from(output.0) * u64::from(output.1))
+        .then_some(counted)
+    }
+}
+
 /// Which reduction gave a report (`docs/design/gpu-first.md`, stage 2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AnalysisSource {
@@ -193,6 +208,9 @@ pub(crate) struct HistogramModel {
     /// The shown counts are one generation behind the frame being rendered. The plot is dimmed,
     /// which is its stale label; no text row comes and goes with it.
     pub(crate) stale: bool,
+    /// The size counted when the counts are a paged derived source's overview
+    /// ([`Analysis::overview`]), which both tooltips state.
+    pub(crate) overview: Option<(u32, u32)>,
 }
 
 /// The default is the empty inspector, not an empty plot: pending, with no bins.
@@ -208,6 +226,7 @@ impl Default for HistogramModel {
             shadow: Triangle::default(),
             highlight: Triangle::default(),
             stale: false,
+            overview: None,
         }
     }
 }
@@ -269,19 +288,34 @@ impl HistogramModel {
         }
     }
 
-    /// The shadow triangle's tooltip: the overlay rule, then the code-0 counts in words.
+    /// The shadow triangle's tooltip: the overlay rule, then the code-0 counts in words, and what
+    /// they count when it is the overview.
     pub(crate) fn shadow_tooltip(&self) -> String {
-        format!("{SHADOW_RULE}\n{}", self.shadow_text())
+        format!(
+            "{SHADOW_RULE}\n{}{}",
+            self.shadow_text(),
+            self.overview_text()
+        )
     }
 
     /// The highlight triangle's tooltip: the overlay rule, then the code-255 counts and the pixels
-    /// at both endpoints at once, which is the magenta the rule names.
+    /// at both endpoints at once, which is the magenta the rule names, and what they count when it
+    /// is the overview.
     pub(crate) fn highlight_tooltip(&self) -> String {
         format!(
-            "{HIGHLIGHT_RULE}\n{}\n{}",
+            "{HIGHLIGHT_RULE}\n{}\n{}{}",
             self.highlight_text(),
-            self.both_text()
+            self.both_text(),
+            self.overview_text()
         )
+    }
+
+    /// The line saying the counts are the overview's, while they are; empty otherwise.
+    fn overview_text(&self) -> String {
+        match self.overview.filter(|_| self.counted()) {
+            Some(size) => format!("\n{}", overview_label(size)),
+            None => String::new(),
+        }
     }
 }
 
@@ -386,7 +420,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>, previous: &HistogramModel) -> Histogra
     model.highlight.tinted = counters.any_highlight > 0;
     model.counters = counters;
     model.identity = Some(identity);
+    model.overview = analysis.overview();
     model
+}
+
+/// What the histogram and the Info card say when the counts are a paged derived source's overview.
+pub(crate) fn overview_label(size: (u32, u32)) -> String {
+    format!("Counts the overview, {} \u{d7} {} px", size.0, size.1)
 }
 
 /// A render failure in the words the plot's notice uses. The kind carries the meaning; the detail is

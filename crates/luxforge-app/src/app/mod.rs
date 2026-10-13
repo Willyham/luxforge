@@ -70,6 +70,7 @@ mod gpu_light_tests;
 mod gpu_mask_tests;
 #[cfg(test)]
 mod gpu_notice_tests;
+pub(crate) mod gpu_paged;
 #[cfg(test)]
 mod gpu_presence_tests;
 pub(crate) mod gpu_preview;
@@ -1365,6 +1366,7 @@ impl Editor {
         }
         surfaces.gpu_warm = self.gpu.warm();
         surfaces.gpu_source = self.gpu_source_handed();
+        surfaces.gpu_window = self.gpu_window_handed();
         surfaces.gpu_rest = self.gpu_rest_handed();
         surfaces.stage_rest = self
             .gpu_stage_handed()
@@ -1403,6 +1405,7 @@ impl Editor {
                 surfaces.gpu = surfaces.compare_gpu;
                 surfaces.gpu_change = surfaces.compare_change;
                 surfaces.gpu_source = surfaces.compare_source;
+                surfaces.gpu_window = None;
                 surfaces.gpu_rest = surfaces.compare_rest;
                 surfaces.gpu_counts = None;
                 surfaces.gpu_hold = false;
