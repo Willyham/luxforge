@@ -10,7 +10,8 @@
 //! body, a RAW test camera, in this process; each editor launch is started with
 //! `LUXFORGE_TEST_CAMERAS=1`, without which the editor refuses it.
 //!
-//! The first launch, in [`first_plan`] order: `G`; the still bracket's folder, whose header offers
+//! The first launch opens the empty catalog, which starts in Select. Its frames, in [`first_plan`]
+//! order: the launch's own; the still bracket's folder, whose header offers
 //! Pick all and Merge HDR; Merge HDR, which opens the merge preview sheet, captured once it draws
 //! the preview; Deghosting turned Off, captured once the new revision is drawn; Show deghost
 //! overlay on; the sheet's Merge, captured while its pending row shows the job's progress; the
@@ -105,7 +106,6 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
     };
     Ok(Plan::new(vec![
         Step::opened("opened"),
-        key("select", "g"),
         select("still", SelectStep::Folder(folder(STILL)?)),
         merge("previewing", false),
         preview("deghosted", MergePreviewStep::Deghost(MergeToggle::Off)),
@@ -533,6 +533,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     ensure(
         plan["suitable"] == true && plan["inputs"].as_array().map(Vec::len) == Some(FRAMES),
         format!("The core plans the still bracket as {plan}"),
+    )?;
+
+    // The first launch's catalog is empty, so it starts in Select.
+    let opened = first.at("opened")?;
+    ensure(
+        select(opened)["shown"] == "select",
+        format!("The first launch showed {}", select(opened)["shown"]),
     )?;
 
     // The bracket: its header offers Merge HDR beside Pick all.
@@ -1015,7 +1022,7 @@ mod tests {
         let first = first_plan(&expected).unwrap();
         first.validate().unwrap();
         assert!(first.scripted());
-        assert_eq!(first.len(), 30);
+        assert_eq!(first.len(), 29);
         let second = second_plan(
             &json!({"reopen": {"path": "2026 \u{203a} Still \u{203a} 12 Jun", "position": 0}}),
         )
