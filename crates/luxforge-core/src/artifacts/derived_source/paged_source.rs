@@ -765,6 +765,12 @@ impl PagedSource {
         Ok(image)
     }
 
+    /// The resident level when it has been read ([`Self::resident_level`]), without reading it:
+    /// what a path on the owner asks, which never reads a level.
+    pub(crate) fn resident_now(&self) -> Option<LinearImage> {
+        lock(&self.resident).clone()
+    }
+
     /// Read a window of any level: `request`'s rectangle, which must lie within its level, grown
     /// by its halo as far as the level reaches, assembled from the chunks it touches through the
     /// chunk cache. Each chunk is verified when it is read; a damaged one fails this read, naming

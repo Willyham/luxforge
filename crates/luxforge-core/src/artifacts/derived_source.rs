@@ -38,7 +38,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod paged_source;
 
-pub(crate) use paged_source::PagedSource;
+pub(crate) use paged_source::{PagedSource, WindowRequest};
 
 use super::{
     lock,
