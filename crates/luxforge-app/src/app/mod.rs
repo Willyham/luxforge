@@ -101,6 +101,8 @@ mod gpu_white_balance_tests;
 mod gpu_window_tests;
 pub(crate) mod minimap;
 pub(crate) mod overview;
+#[cfg(test)]
+mod paged_source_render_tests;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
 pub(crate) mod copy_settings;
 pub(crate) mod corrections;

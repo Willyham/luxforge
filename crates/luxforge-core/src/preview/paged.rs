@@ -14,7 +14,7 @@ use crate::{
     Error, LinearImage, ProxyIdentity,
     artifacts::derived_source::{PagedSource, WindowRequest},
 };
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 
 /// A paged derived source a preview, a sample or an export reads: shared, `O(1)` to clone.
 #[derive(Clone)]
@@ -126,7 +126,7 @@ impl PagedPreview {
         &self,
         rect: [u32; 4],
         halo: u32,
-        cancel: &AtomicBool,
+        cancel: &crate::Cancel,
     ) -> Result<SourceWindow, Error> {
         let window = self.source.window(
             WindowRequest {
@@ -134,7 +134,7 @@ impl PagedPreview {
                 rect,
                 halo,
             },
-            cancel,
+            cancel.flag(),
         )?;
         Ok(SourceWindow {
             rect: window.rect,

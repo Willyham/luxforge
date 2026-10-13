@@ -84,9 +84,9 @@ use luxforge_core::{
     },
 };
 use luxforge_gpu::{
-    Derivation, GpuBoundary, GpuSource, tiles::GPU_TILE_BUDGET, tiles::TILES_IN_FLIGHT,
-    tiles::Ticket, tiles::TileEnd, tiles::TileFailure, tiles::TileFigures, tiles::TileInput,
-    tiles::TileOutput, tiles::TilePixels, tiles::TileRunner, tiles::TileTimes,
+    Derivation, GpuBoundary, GpuSource, SourceReader, tiles::GPU_TILE_BUDGET,
+    tiles::TILES_IN_FLIGHT, tiles::Ticket, tiles::TileEnd, tiles::TileFailure, tiles::TileFigures,
+    tiles::TileInput, tiles::TileOutput, tiles::TilePixels, tiles::TileRunner, tiles::TileTimes,
     tiles::TileUnavailable as RunnerUnavailable,
 };
 use serde_json::{Value, json};
@@ -538,8 +538,10 @@ impl TileService for GpuTiles {
         if let TileStatus::Reference(Some(reason)) = self.status() {
             return Err(reason);
         }
-        let (sides, sweep_sides) = (self.sides(), self.sweep_sides());
         let prepared = PreparedStream::of(evaluation)?;
+        // Every band of codes the stream sends within its cap: a wide output takes a shorter side.
+        let sides = prepared.band_sides(&self.sides());
+        let sweep_sides = self.sweep_sides();
         let plan = prepared.stream(sides[0])?;
         let taken = Arc::new(AtomicUsize::new(0));
         let wake = {
@@ -680,15 +682,18 @@ impl End {
 }
 
 /// A stream being drawn: the plan at the side chosen for it, the source its tiles' windows are cut
-/// from, a lens warp's grid of the whole output stage, each band's window of the source, which the
-/// runner uploads once for every tile of the band, and the tiles in flight.
+/// from, a lens warp's grid of the whole output stage, each band's windows of the source, which
+/// the runner uploads once for every tile of the window, and the tiles in flight.
 struct Drawing {
     plan: StreamPlan,
     source: GpuSource,
+    /// What reads a paged source's windows, which names a read that failed.
+    reader: Option<Arc<PagedReader>>,
     grid: Option<CoordinateGrid>,
-    /// Each band's window: every window of its tiles, joined.
+    /// Each band's windows: the windows of its tiles, joined as far as [`WINDOW_SIDE`] across.
     windows: Vec<Region>,
-    /// Each tile's band.
+    /// Each tile's window, and its band.
+    window_of: Vec<usize>,
     band_of: Vec<usize>,
     /// The tiles submitted and not yet read back, oldest first, with their index.
     pending: VecDeque<(Ticket, usize)>,
@@ -711,21 +716,22 @@ struct Staged {
     next: usize,
     /// That sweep's tiles in flight, oldest first.
     pending: VecDeque<Ticket>,
-    /// When it reads the source, each band's window and each tile's band, as a chained stream's.
+    /// When it reads the source, each band's windows and each tile's window, as a chained
+    /// stream's.
     windows: Vec<Region>,
-    band_of: Vec<usize>,
+    window_of: Vec<usize>,
 }
 
 impl Staged {
     fn new(sweeps: Box<GpuSweeps>) -> Self {
-        let (windows, band_of) = bands(&sweeps.sweeps[0].tiles);
+        let (windows, window_of, _) = bands(&sweeps.sweeps[0].tiles);
         Self {
             sweeps,
             sweep: 0,
             next: 0,
             pending: VecDeque::new(),
             windows,
-            band_of,
+            window_of,
         }
     }
 
@@ -782,13 +788,20 @@ impl LightSweeps {
 
 impl Drawing {
     /// `plan` drawn over `source`, its tiles grouped in bands by their row.
-    fn new(plan: StreamPlan, source: GpuSource, grid: Option<CoordinateGrid>, runner: u64) -> Self {
-        let (windows, band_of) = bands(&plan.tiles);
+    fn new(
+        plan: StreamPlan,
+        (source, reader): (GpuSource, Option<Arc<PagedReader>>),
+        grid: Option<CoordinateGrid>,
+        runner: u64,
+    ) -> Self {
+        let (windows, window_of, band_of) = bands(&plan.tiles);
         Self {
             plan,
             source,
+            reader,
             grid,
             windows,
+            window_of,
             band_of,
             pending: VecDeque::new(),
             staged: None,
@@ -805,30 +818,46 @@ impl Drawing {
     }
 }
 
-/// The bands of `tiles`, row by row: each band's window, every window of its tiles joined, and each
-/// tile's band.
-fn bands(tiles: &[RestTile]) -> (Vec<Region>, Vec<usize>) {
+/// The most a window of the source a stream's tiles share takes across: two of the device's
+/// 8,192-texel textures, as the runner holds a source. A band wider than that, of a paged derived
+/// source's level 0, is read and uploaded in windows of its tiles side by side.
+const WINDOW_SIDE: u32 = 2 * 8192;
+
+/// The bands of `tiles`, row by row: each band's windows, the windows of its tiles joined from the
+/// left as far as [`WINDOW_SIDE`] reaches across, each tile's window and each tile's band.
+fn bands(tiles: &[RestTile]) -> (Vec<Region>, Vec<usize>, Vec<usize>) {
     let mut windows: Vec<Region> = Vec::new();
+    let mut window_of = Vec::with_capacity(tiles.len());
     let mut band_of = Vec::with_capacity(tiles.len());
-    let mut row = None;
+    let (mut row, mut band) = (None, 0);
     for tile in tiles {
         let window = tile.window;
-        if row != Some(tile.rect.y0) {
-            row = Some(tile.rect.y0);
-            windows.push(window);
-        } else if let Some(joined) = windows.last_mut() {
+        let joined = windows.last().map(|joined| {
             let (x0, y0) = (joined.x0.min(window.x0), joined.y0.min(window.y0));
             let (x1, y1) = (joined.x1().max(window.x1()), joined.y1().max(window.y1()));
-            *joined = Region {
+            Region {
                 x0,
                 y0,
                 width: x1 - x0,
                 height: y1 - y0,
-            };
+            }
+        });
+        if row != Some(tile.rect.y0) {
+            if row.is_some() {
+                band += 1;
+            }
+            row = Some(tile.rect.y0);
+            windows.push(window);
+        } else {
+            match joined.filter(|joined| joined.width <= WINDOW_SIDE) {
+                Some(joined) => *windows.last_mut().expect("a window") = joined,
+                None => windows.push(window),
+            }
         }
-        band_of.push(windows.len() - 1);
+        window_of.push(windows.len() - 1);
+        band_of.push(band);
     }
-    (windows, band_of)
+    (windows, window_of, band_of)
 }
 
 impl Stream {
@@ -1392,7 +1421,7 @@ impl Worker {
             let (input, window) = match sweep.reads {
                 None => (
                     TileInput::Source,
-                    staged.windows[staged.band_of[staged.next]],
+                    staged.windows[staged.window_of[staged.next]],
                 ),
                 Some(k) => (TileInput::Stage(k), tile.window),
             };
@@ -1417,7 +1446,8 @@ impl Worker {
             staged.sweep += 1;
             staged.next = 0;
             if staged.drawing_stages() {
-                (staged.windows, staged.band_of) = bands(&staged.sweeps.sweeps[staged.sweep].tiles);
+                (staged.windows, staged.window_of, _) =
+                    bands(&staged.sweeps.sweeps[staged.sweep].tiles);
             }
         }
         Ok(())
@@ -1602,7 +1632,7 @@ impl Worker {
                         self.submit(
                             &plan,
                             &drawing.source,
-                            drawing.windows[band],
+                            drawing.windows[drawing.window_of[index]],
                             (TileInput::Source, output),
                         )
                     }),
@@ -1685,7 +1715,7 @@ impl Worker {
             .prepared
             .take()
             .ok_or_else(|| unplannable("the stream was begun twice"))?;
-        let source = gpu_source(self.version(), stream.stack.source())?;
+        let source = gpu_source(self.version(), stream.stack.source(), &stream.cancel)?;
         let grid = match first.warp() {
             Some(warp) => Some(stage_grid(warp)?),
             None => None,
@@ -1694,11 +1724,12 @@ impl Worker {
         // A stack whose layers together reach far is drawn in staged sweeps, the runner holding
         // their stage textures, charged before they are created, for as long as the stream is
         // drawn; any other is drawn chained.
-        let sides = stream.sweep_sides.as_deref().unwrap_or(&STREAM_TILE_SIDES);
+        let sides =
+            prepared.band_sides(stream.sweep_sides.as_deref().unwrap_or(&STREAM_TILE_SIDES));
         let (staging, lit) = if self.chains_streams() {
-            (None, prepared.light_sweeps(budget, sides)?)
+            (None, prepared.light_sweeps(budget, &sides)?)
         } else {
-            let (staging, lit) = prepared.strategy(budget, sides)?;
+            let (staging, lit) = prepared.strategy(budget, &sides)?;
             (Some(staging), lit)
         };
         if let Some(GpuStaging::Staged(mut sweeps)) = staging {
@@ -1734,7 +1765,7 @@ impl Worker {
             } else {
                 prepared.stream(side)?
             };
-            let charge = self.largest_charge(&plan, &source, grid.as_ref())?;
+            let charge = self.largest_charge(&plan, &source.0, grid.as_ref())?;
             if charge <= budget {
                 let mut drawing = Drawing::new(plan, source, grid, self.runners.get());
                 drawing.lit = (!lit.is_empty()).then(|| LightSweeps::new(lit));
@@ -1762,11 +1793,11 @@ impl Worker {
         grid: Option<&CoordinateGrid>,
     ) -> Result<u64, TileFallback> {
         let runner = self.runner()?;
-        let (windows, band_of) = bands(&plan.tiles);
+        let (windows, window_of, _) = bands(&plan.tiles);
         let mut largest = 0;
-        for (tile, band) in plan.tiles.iter().zip(band_of) {
+        for (tile, window) in plan.tiles.iter().zip(window_of) {
             let converted = self.convert(&plan.plan, source, grid, *tile)?;
-            let window = windows[band];
+            let window = windows[window];
             let charge = runner
                 .charge(
                     &converted,
@@ -1783,6 +1814,17 @@ impl Worker {
     /// End `stream` with `end`: everything held for it let go, and the end sent once its channel
     /// has room for it. Whether the stream waits for that room.
     fn end(&self, stream: &mut Stream, end: End) -> bool {
+        // A paged source's window that could not be read ends the stream with why, never with a
+        // fallback to a reference that has no whole frame of it.
+        let failed = stream
+            .drawing
+            .as_ref()
+            .and_then(|drawing| drawing.reader.as_ref())
+            .and_then(|reader| reader.failure());
+        let end = match (end, failed) {
+            (End::Fallback(_), Some(error)) => End::Error(error),
+            (end, _) => end,
+        };
         self.release_stream();
         stream.drawing = None;
         stream.open.clear();
@@ -1813,6 +1855,7 @@ impl TileReads for Worker {
             stack: evaluation,
             cancel,
             source: None,
+            reader: None,
             grids: Vec::new(),
             tiles: VecDeque::new(),
             fallback: None,
@@ -1828,8 +1871,9 @@ struct Session<'a> {
     stack: &'a Stack,
     cancel: &'a Cancel,
     /// The evaluation's prepared source as the runner cuts windows from it, built by the first
-    /// read the GPU draws.
+    /// read the GPU draws, and what reads a paged source's windows.
     source: Option<GpuSource>,
+    reader: Option<Arc<PagedReader>>,
     grids: Vec<(ReadStage, Arc<CoordinateGrid>)>,
     /// The tiles the call drew, oldest first, at most [`READ_WINDOWS`].
     tiles: VecDeque<Drawn>,
@@ -1945,8 +1989,9 @@ impl Session<'_> {
         if let Some(source) = &self.source {
             return Ok(source.clone());
         }
-        let source = gpu_source(self.worker.version(), self.stack.source())?;
+        let (source, reader) = gpu_source(self.worker.version(), self.stack.source(), self.cancel)?;
         self.source = Some(source.clone());
+        self.reader = reader;
         Ok(source)
     }
 
@@ -2004,7 +2049,14 @@ impl TileSession for Session<'_> {
                     self.worker.figures.borrow_mut().reads += 1;
                     return Ok(answer);
                 }
-                Err(fallback) => self.fallback = Some(fallback),
+                Err(fallback) => {
+                    // A paged source's window that could not be read answers why; the reference
+                    // has no whole frame of it to answer in its place.
+                    if let Some(error) = self.reader.as_ref().and_then(|reader| reader.failure()) {
+                        return Err(error);
+                    }
+                    self.fallback = Some(fallback);
+                }
             }
         }
         let (worker, stack, cancel) = (self.worker, self.stack, self.cancel);
@@ -2069,9 +2121,23 @@ impl AsRef<[f32]> for Planes {
 /// desktop hands the photo surface the source on screen (`app::gpu_preview`); or a paged derived
 /// source's level 0, which holds no pixels, each window of it filled with its own planes when it
 /// is read ([`Windows`]).
-fn gpu_source(version: u64, source: &PreviewSource) -> Result<GpuSource, TileFallback> {
+fn gpu_source(
+    version: u64,
+    source: &PreviewSource,
+    cancel: &Cancel,
+) -> Result<(GpuSource, Option<Arc<PagedReader>>), TileFallback> {
+    if let PreviewSource::Paged(paged) = source {
+        let reader = Arc::new(PagedReader {
+            paged: paged.clone(),
+            cancel: cancel.clone(),
+            failed: Mutex::new(None),
+        });
+        let source = GpuSource::reading(version, paged.dimensions(), reader.clone())
+            .ok_or_else(|| unplannable("the paged source has an empty stage"))?;
+        return Ok((source, Some(reader)));
+    }
     match source {
-        PreviewSource::Paged(paged) => GpuSource::paged(version, paged.dimensions()),
+        PreviewSource::Paged(_) => None,
         PreviewSource::Jpeg(image) => {
             GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
         }
@@ -2086,7 +2152,53 @@ fn gpu_source(version: u64, source: &PreviewSource) -> Result<GpuSource, TileFal
             )
         }
     }
+    .map(|source| (source, None))
     .ok_or_else(|| unplannable("the prepared source cannot be held on the GPU"))
+}
+
+/// A paged derived source's level 0 as the runner reads it, a window at a time through the
+/// source's verified chunk cache ([`luxforge_core::PagedPreview::window`]), on the worker's
+/// thread and cancelled with the stream or call it draws for. The first read that fails is kept,
+/// so the stream or call ends naming it — a damaged chunk by its name — rather than falling back.
+struct PagedReader {
+    paged: luxforge_core::PagedPreview,
+    cancel: Cancel,
+    failed: Mutex<Option<Error>>,
+}
+
+impl PagedReader {
+    /// The read that failed, if one has.
+    fn failure(&self) -> Option<Error> {
+        self.failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl SourceReader for PagedReader {
+    fn read(&self, rect: [u32; 4]) -> Option<Arc<dyn AsRef<[f32]> + Send + Sync>> {
+        let read = self.paged.window(rect, 0, &self.cancel).and_then(|window| {
+            if window.rect == rect {
+                Ok(window.planes)
+            } else {
+                Err(Error::internal(format!(
+                    "a window {rect:?} of a paged source read as {:?}",
+                    window.rect
+                )))
+            }
+        });
+        match read {
+            Ok(planes) => Some(planes),
+            Err(error) => {
+                self.failed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get_or_insert(error);
+                None
+            }
+        }
+    }
 }
 
 /// The runner's reason it cannot draw at all, as the core's contract names it.

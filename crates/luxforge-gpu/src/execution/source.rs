@@ -68,6 +68,19 @@ enum Pixels {
     Codes(Arc<dyn AsRef<[u8]> + Send + Sync>),
     /// Red, then green, then blue, each the base planes' size, row by row.
     Planes(Arc<dyn AsRef<[f32]> + Send + Sync>),
+    /// Planes read a window at a time: a paged derived source's level 0, which no whole frame of
+    /// is held, read when a slot over a window of it first uploads.
+    Reader(Arc<dyn SourceReader>),
+}
+
+/// The planes of `rect`, `[x, y, width, height]` of a source too large to hold whole, read when a
+/// slot over that window uploads: a paged derived source's level 0 read through its chunk cache.
+/// Worker work, which blocks its caller on the read; never handed to a surface, whose upload runs
+/// on the interface thread, which is handed windows already read ([`GpuSource::filled`]).
+pub trait SourceReader: Send + Sync {
+    /// Red, then green, then blue, each `rect`'s size, row by row; `None` when the read failed or
+    /// was cancelled, which the reader keeps for its caller to name.
+    fn read(&self, rect: [u32; 4]) -> Option<Arc<dyn AsRef<[f32]> + Send + Sync>>;
 }
 
 /// The prepared source a photograph's every picture on the GPU is derived from, as the caller
@@ -208,6 +221,16 @@ impl GpuSource {
             stage,
             window: [0, 0, stage.0, stage.1],
             map: [1, 0, 0, 0, 1, 0],
+        })
+    }
+
+    /// A source of `stage` pixels of three planes upright, read a window at a time through
+    /// `reader` when a slot over the window uploads ([`SourceReader`]): what a worker that draws a
+    /// paged derived source's level 0 in tiles holds. `None` for an empty stage.
+    pub fn reading(version: u64, stage: (u32, u32), reader: Arc<dyn SourceReader>) -> Option<Self> {
+        Self::paged(version, stage).map(|source| Self {
+            pixels: Some(Pixels::Reader(reader)),
+            ..source
         })
     }
 
@@ -424,6 +447,10 @@ pub struct SourceSlot {
     window: [u32; 4],
     /// It holds the whole content stage, not a window of it.
     whole: bool,
+    /// The held texels of a source read a window at a time ([`SourceReader`]), read on the first
+    /// upload and let go once every row is written; their origin in the source's planes.
+    read: Option<Arc<dyn AsRef<[f32]> + Send + Sync>>,
+    reads_from: Option<(u32, u32)>,
 }
 
 impl SourceSlot {
@@ -518,6 +545,12 @@ impl SourceSlot {
             }
         }
         let bindings = layouts.source_bindings(device, source.kind, &textures);
+        // A source read a window at a time is uploaded from the held texels alone, once read.
+        let reads_from = matches!(source.pixels, Some(Pixels::Reader(_))).then_some(source.crop);
+        let (base, crop) = match reads_from {
+            Some(_) => (source.held, (0, 0)),
+            None => (source.base, source.crop),
+        };
         Ok(Self {
             version: source.version,
             kind: source.kind,
@@ -528,11 +561,13 @@ impl SourceSlot {
             bindings,
             rows: 0,
             bytes,
-            base: source.base,
-            crop: source.crop,
+            base,
+            crop,
             map: source.map,
             window: source.window,
             whole: source.window == [0, 0, source.stage.0, source.stage.1],
+            read: None,
+            reads_from,
         })
     }
 
@@ -542,6 +577,22 @@ impl SourceSlot {
     pub fn upload(&mut self, queue: &wgpu::Queue, source: &GpuSource, limit: u64) -> u64 {
         let Some(pixels) = &source.pixels else {
             return 0;
+        };
+        // A source read a window at a time: its held texels, read once.
+        let read;
+        let pixels = match (pixels, self.reads_from) {
+            (Pixels::Reader(reader), Some((x, y))) => {
+                if self.read.is_none() {
+                    self.read = reader.read([x, y, self.held.0, self.held.1]);
+                }
+                let Some(planes) = &self.read else {
+                    return 0;
+                };
+                read = Pixels::Planes(Arc::clone(planes));
+                &read
+            }
+            (Pixels::Reader(_), None) => return 0,
+            (pixels, _) => pixels,
         };
         let (width, height) = self.held;
         let row_bytes = u64::from(width) * self.kind.pixel_bytes();
@@ -581,6 +632,7 @@ impl SourceSlot {
                             extent,
                         );
                     }
+                    Pixels::Reader(_) => unreachable!("a read source uploads its read planes"),
                     Pixels::Planes(planes) => {
                         let values: &[u8] = bytemuck::cast_slice((**planes).as_ref());
                         let plane = u64::from(self.base.0) * u64::from(self.base.1);
@@ -607,6 +659,10 @@ impl SourceSlot {
             }
             self.rows += rows;
             written += u64::from(rows) * row_bytes;
+        }
+        if self.ready() {
+            // Every row is on the GPU: the read texels go.
+            self.read = None;
         }
         written
     }
