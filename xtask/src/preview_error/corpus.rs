@@ -995,13 +995,8 @@ mod tests {
             );
         }
         // Only the developer recipes say so.
-        assert!(
-            corpus
-                .recipes
-                .iter()
-                .all(|recipe| recipe.developer
-                    == matches!(recipe.family.as_str(), "repair-patch" | "mask-model"))
-        );
+        assert!(corpus.recipes.iter().all(|recipe| recipe.developer
+            == matches!(recipe.family.as_str(), "repair-patch" | "mask-model")));
         let id = patches[0].id.clone();
         assert!(
             refused(|c| {

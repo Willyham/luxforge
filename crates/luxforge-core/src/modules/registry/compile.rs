@@ -449,13 +449,12 @@ impl ModuleRegistry {
                         // `Processing` — against the stage this layer receives, which for a
                         // content-stage layer is the content stage its geometry is normalized to. A
                         // module returned a plain operation and never saw the reference.
-                        let operation =
-                            match Self::compiled_mask(
-                                layer, masks, strokes, artifacts, stage, sampling,
-                            )? {
-                                Some(mask) => operation.with_mask(mask),
-                                None => operation,
-                            };
+                        let operation = match Self::compiled_mask(
+                            layer, masks, strokes, artifacts, stage, sampling,
+                        )? {
+                            Some(mask) => operation.with_mask(mask),
+                            None => operation,
+                        };
                         segment.has_color = true;
                         segment.operations.push(Processing::Color(operation));
                     }

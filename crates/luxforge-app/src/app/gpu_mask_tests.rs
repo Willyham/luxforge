@@ -17,9 +17,9 @@
 use super::gpu_plan::{coverage, surface_plan};
 use super::gpu_qualification::{figures, grid, held_to_whole, worst};
 use luxforge_core::{
-    ArtifactTable, BASIC_EFFECT, Cancel, Component, ComponentMode, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest,
-    GpuProgramKind, Layer, MASK_GPU_PROGRAMS, Mask, ModuleRegistry, Recipe, RenderContext,
-    RenderOptions, SnapshotId, SourceImage, Stage, gpu_plan,
+    ArtifactTable, BASIC_EFFECT, Cancel, Component, ComponentMode, GPU_PROGRAMS, GpuAnswer,
+    GpuPlanRequest, GpuProgramKind, Layer, MASK_GPU_PROGRAMS, Mask, ModuleRegistry, Recipe,
+    RenderContext, RenderOptions, SnapshotId, SourceImage, Stage, gpu_plan,
     mask::{BRUSH_GPU_BLOCK_WORDS_MAX, ColourLimit, CompiledMask, Stroke},
     path::StrokeTable,
     render,

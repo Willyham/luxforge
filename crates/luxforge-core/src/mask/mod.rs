@@ -256,8 +256,12 @@ struct ComponentKind {
 /// recorded artifact's metadata passes before a component may reference it.
 struct ArtifactUse {
     of: fn(&Component) -> Option<ArtifactId>,
-    check: fn(&str, Option<u32>, Option<u32>, u64) -> Result<(u32, u32), String>,
+    check: ArtifactCheck,
 }
+
+/// A recorded artifact's kind, dimensions and length checked against what a kind binds, answering
+/// the dimensions or why not.
+type ArtifactCheck = fn(&str, Option<u32>, Option<u32>, u64) -> Result<(u32, u32), String>;
 
 /// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
 /// it modulates, which is what makes it move under a reordering and makes the 100% view the only
@@ -984,6 +988,16 @@ fn kind_of(component: &Component) -> Result<&'static ComponentKind, Error> {
         .iter()
         .find(|entry| entry.kind == component.kind)
         .ok_or_else(|| rules::unknown_kind(&component.kind))
+}
+
+/// Whether `kind`'s coverage is a stored raster a task computed, bound as an artifact, rather than a
+/// rule a gesture or typed numbers describe: a model selection. Such a kind is made by its task and
+/// the generated `mask.create-<kind>` over the artifact the task published, never by a canvas
+/// gesture or a button, so a panel's New mask menu leaves it out until it offers the task.
+pub fn component_kind_is_stored(kind: &str) -> bool {
+    COMPONENT_KINDS
+        .iter()
+        .any(|entry| entry.kind == kind && entry.artifact.is_some())
 }
 
 /// The derived artifact one stored component references, when its kind binds one and its payload

@@ -110,8 +110,8 @@ fn assert_identical(side: u32, scale: u32) {
     }
     assert_eq!(production.codes.len(), codes.len());
     // Not vacuous: the case has a soft edge, a full inside and a zero outside.
-    assert!(codes.iter().any(|&code| code == 255));
-    assert!(codes.iter().any(|&code| code == 0));
+    assert!(codes.contains(&255));
+    assert!(codes.contains(&0));
     assert!(codes.iter().any(|&code| code > 0 && code < 255));
 }
 

@@ -215,9 +215,7 @@ pub fn check_alpha(
         ));
     }
     if bytes != u64::from(width) * u64::from(height) {
-        return Err(format!(
-            "holds {bytes} bytes for a {width}x{height} raster"
-        ));
+        return Err(format!("holds {bytes} bytes for a {width}x{height} raster"));
     }
     Ok((width, height))
 }

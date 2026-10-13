@@ -553,8 +553,8 @@ impl CapabilityModule for CapabilitiesProofModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Stage;
     use crate::ModuleRegistry;
+    use crate::Stage;
     use sha2::{Digest, Sha256};
 
     fn artifact(kind: &str, bytes: Vec<u8>) -> Arc<PreparedArtifact> {

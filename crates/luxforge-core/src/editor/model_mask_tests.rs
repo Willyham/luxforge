@@ -162,10 +162,20 @@ fn a_model_selection_commits_renders_samples_lists_and_survives_reopen() {
                 unchanged += 1;
             }
         }
-        assert!(brighter > 1000 && unchanged > 1000, "{brighter} {unchanged}");
+        assert!(
+            brighter > 1000 && unchanged > 1000,
+            "{brighter} {unchanged}"
+        );
         // A sampled byte is the rendered byte, inside, outside and across the edge.
         let row = rendered.height / 2;
-        for x in [0, width / 4, width / 2 - 2, width / 2, width / 2 + 1, width - 1] {
+        for x in [
+            0,
+            width / 4,
+            width / 2 - 2,
+            width / 2,
+            width / 2 + 1,
+            width - 1,
+        ] {
             assert_eq!(
                 Some(service.sample_entry(&asset, &entry, x, row).unwrap().rgba),
                 rendered.pixel(x, row),
@@ -202,7 +212,11 @@ fn a_model_selection_commits_renders_samples_lists_and_survives_reopen() {
             .clone()
             .expect("a model row");
         assert_eq!(
-            (model.class.as_str(), model.model.as_str(), model.model_version.as_str()),
+            (
+                model.class.as_str(),
+                model.model.as_str(),
+                model.model_version.as_str()
+            ),
             ("sky", MODEL, "1")
         );
         assert_eq!(model.artifact, artifact);
@@ -260,14 +274,30 @@ fn a_selection_is_stale_for_a_changed_repair_prefix_and_a_changed_model_version(
         .unwrap();
     assert_eq!(input_now(&service, &asset), input);
     // A declared model resource of another version is a third reason.
-    assert!(service.declared_model_version("generative-klein-4b").is_some());
+    assert!(
+        service
+            .declared_model_version("generative-klein-4b")
+            .is_some()
+    );
     let mut payload = selection(&artifact, &input);
     payload["model"] = json!("generative-klein-4b");
-    let component = service.state(&asset).unwrap().current_entry.snapshot.recipe.masks[0]
+    let component = service
+        .state(&asset)
+        .unwrap()
+        .current_entry
+        .snapshot
+        .recipe
+        .masks[0]
         .components[0]
         .id
         .clone();
-    let mask = service.state(&asset).unwrap().current_entry.snapshot.recipe.masks[0]
+    let mask = service
+        .state(&asset)
+        .unwrap()
+        .current_entry
+        .snapshot
+        .recipe
+        .masks[0]
         .id
         .clone();
     run(
@@ -398,7 +428,9 @@ fn a_missing_corrupt_unknown_or_foreign_raster_fails_by_name() {
     assert_eq!(refused.kind, ErrorKind::Validation);
     assert_eq!(
         refused.detail,
-        format!("artifact {foreign} of component Model 1 is a tint artifact, not a mask-alpha raster")
+        format!(
+            "artifact {foreign} of component Model 1 is a tint artifact, not a mask-alpha raster"
+        )
     );
     assert_eq!(service.state(&asset).unwrap().revision, 0);
 
@@ -539,6 +571,9 @@ fn a_stack_past_the_bind_budget_is_refused_at_add_model_by_name() {
             .starts_with("the stack binds 17 artifacts of 285212672 bytes"),
         "{refused}"
     );
-    assert_eq!(refused.data.as_deref().unwrap()["limit"], json!("artifacts"));
+    assert_eq!(
+        refused.data.as_deref().unwrap()["limit"],
+        json!("artifacts")
+    );
     assert_eq!(service.state(&asset).unwrap().current_entry.id, entry.id);
 }

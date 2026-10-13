@@ -856,9 +856,13 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
         .map(|kind| kind.kind.as_str())
         .collect();
     assert!(kinds.contains(&"linear"), "{kinds:?}");
+    // A stored kind, a model selection, is made by its task and the generated command over the
+    // artifact the task published; the panel offers no task yet, so it offers no such kind.
     assert_eq!(
         kinds,
-        luxforge_core::mask::component_kinds().collect::<Vec<_>>(),
+        luxforge_core::mask::component_kinds()
+            .filter(|kind| !luxforge_core::mask::component_kind_is_stored(kind))
+            .collect::<Vec<_>>(),
         "the kinds are the host's, in its table's order, not a list of the panel's own"
     );
     // And each is one the panel can act on. The brush is parsed, evaluated and retained but its
@@ -907,6 +911,18 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
         .collect();
     assert_eq!(panel, kinds, "every offered kind is drawn or typed");
     for kind in luxforge_core::mask::component_kinds() {
+        if luxforge_core::mask::component_kind_is_stored(kind) {
+            // Reachable through its generated command, which an agent sends with an artifact.
+            assert!(
+                luxforge_core::mask::commands::geometry(
+                    luxforge_core::mask::commands::GeometryOp::Create,
+                    kind
+                )
+                .is_some(),
+                "{kind} is stored but has no create command"
+            );
+            continue;
+        }
         assert!(
             kinds.contains(&kind),
             "{kind} is registered but reachable from nowhere"

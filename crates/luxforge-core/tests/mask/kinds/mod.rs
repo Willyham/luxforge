@@ -191,11 +191,8 @@ trait Kind {
     const RARE: usize = 0;
 
     /// A random legal payload, legal on every one of `stages`, and its reference falloff.
-    fn sample(
-        rng: &mut SplitMix64,
-        stages: &[(u32, u32)],
-        strokes: &mut Store,
-    ) -> (Value, Falloff);
+    fn sample(rng: &mut SplitMix64, stages: &[(u32, u32)], strokes: &mut Store)
+    -> (Value, Falloff);
     /// A case of [`Kind::sample`] the alone sweep must reach [`Kind::RARE`] times.
     fn rare(_payload: &Value) -> bool {
         false

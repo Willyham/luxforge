@@ -34,11 +34,7 @@ impl Kind for Linear {
 
     /// A stored position anywhere in the legal `[-1, 2]` range, so the widened range is swept rather
     /// than assumed, drawn again until its axis is legal on every stage it will be compiled on.
-    fn sample(
-        rng: &mut SplitMix64,
-        stages: &[(u32, u32)],
-        _: &mut Store,
-    ) -> (Value, Falloff) {
+    fn sample(rng: &mut SplitMix64, stages: &[(u32, u32)], _: &mut Store) -> (Value, Falloff) {
         loop {
             let linear = RefLinear {
                 x0: rng.next_range(-1.0, 2.0),
