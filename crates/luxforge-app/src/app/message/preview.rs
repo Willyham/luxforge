@@ -26,4 +26,7 @@ pub(crate) enum PreviewMessage {
     /// A lens warp's coordinate grid for a GPU boundary key, computed on the runtime's blocking
     /// pool. Handled in `app/gpu_preview.rs`.
     GridReady(Box<crate::app::gpu_preview::GridAnswer>),
+    /// The reference's frame of the content on the canvas reduced to the minimap's overview on the
+    /// runtime's blocking pool. Handled in `app/overview.rs`.
+    OverviewReduced(Box<crate::app::overview::ReferenceOverview>),
 }
