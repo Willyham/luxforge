@@ -2605,26 +2605,3 @@ fn a_superseded_reference_frame_returns_no_view_frame_or_report() {
     let current = answers[1].exact().unwrap();
     assert!(current.result.is_ok() && current.display.is_some() && current.report.is_some());
 }
-
-/// The overview shows from exactly 200% up, read from the stored value: 199.9% and Fit never, a
-/// fraction past 200 and the largest zoom always, whatever the status bar would round them to.
-#[test]
-fn the_overview_shows_from_two_hundred_percent_inclusive() {
-    assert!(!Zoom::Fit.shows_overview());
-    for (value, shows) in [
-        (199.9, false),
-        (199.99, false),
-        (f32::from_bits(200.0f32.to_bits() - 1), false),
-        (200.0, true),
-        (200.1, true),
-        (400.0, true),
-        (1600.0, true),
-        (100.0, false),
-    ] {
-        assert_eq!(
-            Zoom::Percent { value }.shows_overview(),
-            shows,
-            "{value}% (rounded {value:.0}%)"
-        );
-    }
-}

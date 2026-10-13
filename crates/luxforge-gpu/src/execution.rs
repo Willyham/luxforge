@@ -3899,11 +3899,6 @@ pub mod clipping;
 pub use clipping::ClipMarks;
 pub mod histogram;
 
-pub mod overview;
-pub use overview::{
-    OVERVIEW_GPU_BYTES, OVERVIEW_SIDE, OverviewError, OverviewOutcome, OverviewPixels,
-    OverviewReadback, RestOverview,
-};
 mod rest;
 pub use rest::{
     CountsOutcome, EvaluationFigures, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures,

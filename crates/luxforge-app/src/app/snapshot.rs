@@ -428,9 +428,6 @@ impl Editor {
                 // The settle hand-off: the dissolve the desktop hands the surface and the last settle.
                 "settle":self.gpu_settle.summary(),
             },
-            // The minimap's overview: what it may show, the content held and wanted, its bytes and
-            // what was made, reused and dropped.
-            "overview": self.overviews.summary(self.drafting()),
             "views": self.log.loop_timing.get().views,
         })
     }

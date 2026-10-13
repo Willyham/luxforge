@@ -178,22 +178,6 @@ impl Default for SurfaceFigures {
 struct HeldCounts {
     rest: Option<(u64, gpu_preview::RestCounts)>,
     tick: Option<gpu_preview::TickCounted>,
-    /// The last picture at rest handed an overview, by version, and its overview.
-    overview: Option<(u64, luxforge_gpu::RestOverview)>,
-}
-
-/// The overview the last picture at rest `surface` was handed with one reduced its tiles to
-/// (`docs/design/minimap.md`), by that picture's version, read now and without a wait: pending
-/// while its tiles are drawn and its pixels are on their way back, whose arrival wakes the
-/// desktop; `None` before any picture at rest with an overview.
-pub fn surface_overview(surface: SurfaceId) -> Option<(u64, luxforge_gpu::OverviewOutcome)> {
-    let held = process_figures()
-        .counts
-        .lock()
-        .expect("surface counts lock")
-        .get(&surface)
-        .and_then(|held| held.overview.clone())?;
-    Some((held.0, held.1.outcome()))
 }
 
 /// The histogram and clipping counts a surface's GPU stage took (`docs/design/gpu-first.md`, stage
@@ -1797,9 +1781,6 @@ impl shader::Primitive for PhotoPrimitive {
             let held = counts.entry(self.surface).or_default();
             if let Some(rest) = surface.rest.as_ref() {
                 held.rest = Some(rest.counts());
-                if let Some(overview) = rest.overview() {
-                    held.overview = Some(overview);
-                }
             }
             if let Some(tick) = surface.tick_counts.clone() {
                 held.tick = Some(tick);

@@ -141,7 +141,6 @@ pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
 mod overlay_tests;
-pub(crate) mod overview;
 mod palette;
 #[cfg(test)]
 mod palette_tests;
@@ -520,9 +519,6 @@ pub(crate) struct Editor {
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
     /// The open draft's ticks the GPU does not draw: held, or waiting for their reference frame.
     pub(crate) motion: motion::Motion,
-    /// The minimap's whole-stage overview: the one held, the one being made, and the content the
-    /// canvas wants one of ([`overview`]).
-    pub(crate) overviews: overview::Overviews,
     /// The surface's drawn frames as evidence logs them ([`drawn_frames`]).
     drawn_frames: drawn_frames::DrawnFrames,
     /// Which renderer draws the picture, as the desktop last told the owner ([`renderer`]).
@@ -590,7 +586,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 33] = [
+const AFTER_MESSAGE: [AfterMessage; 32] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -603,7 +599,6 @@ const AFTER_MESSAGE: [AfterMessage; 33] = [
     gpu_preview::after_message,
     gpu_settle::after_message,
     gpu_counts::after_message,
-    overview::after_message,
     motion::after_message,
     renderer::after_message,
     mask_panel::after_message,
@@ -772,7 +767,6 @@ impl Editor {
             gpu: Default::default(),
             gpu_settle: Default::default(),
             motion: Default::default(),
-            overviews: Default::default(),
             drawn_frames: Default::default(),
             renderer: renderer::RendererReport::new(config.launch_renderer()),
             workspace: Default::default(),

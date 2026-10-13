@@ -382,7 +382,7 @@ fn a_picture_at_rests_tiles_are_planned_within_its_share_by_shape() {
     };
     assert_eq!(tiles.share, Some(super::REST_SHARE_MAX));
     assert_eq!(tiles.tiles.len(), 1, "one tile of 2048 px");
-    let tiles = super::plan_rest_tiles(&stack, bounds, super::RestSizing::Side(64), false)
+    let tiles = super::plan_rest_tiles(&stack, bounds, super::RestSizing::Side(64))
         .unwrap()
         .expect("tiles at bounds smaller than the stage")
         .unwrap();
@@ -432,7 +432,7 @@ fn a_stack_reaching_far_before_a_spatial_layer_is_planned_in_staged_sweeps() {
         )
     };
     let one = evaluation(vec![layer()], vec![layer()], None);
-    let tiles = super::plan_rest_tiles(&one, bounds, super::RestSizing::Side(64), false)
+    let tiles = super::plan_rest_tiles(&one, bounds, super::RestSizing::Side(64))
         .unwrap()
         .expect("tiles")
         .unwrap();
@@ -442,7 +442,7 @@ fn a_stack_reaching_far_before_a_spatial_layer_is_planned_in_staged_sweeps() {
     );
     let detail = || Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 50.0}));
     let two = evaluation(vec![layer(), detail()], vec![layer(), detail()], None);
-    let tiles = super::plan_rest_tiles(&two, bounds, super::RestSizing::Side(64), false)
+    let tiles = super::plan_rest_tiles(&two, bounds, super::RestSizing::Side(64))
         .unwrap()
         .expect("tiles")
         .unwrap();
@@ -525,7 +525,7 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
 
     // Dehaze alone: over the source, one sweep, chained.
     let alone = evaluation(vec![dehaze()], vec![dehaze()], None);
-    let tiles = super::plan_rest_tiles(&alone, bounds, super::RestSizing::Side(64), false)
+    let tiles = super::plan_rest_tiles(&alone, bounds, super::RestSizing::Side(64))
         .unwrap()
         .expect("tiles")
         .unwrap();
@@ -538,7 +538,7 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
     // Behind Detail: staged, split before Dehaze whatever Detail's reach.
     let entry = vec![detail(), dehaze()];
     let rest = evaluation(entry.clone(), entry.clone(), None);
-    let tiles = super::plan_rest_tiles(&rest, bounds, super::RestSizing::Side(64), false)
+    let tiles = super::plan_rest_tiles(&rest, bounds, super::RestSizing::Side(64))
         .unwrap()
         .expect("tiles")
         .unwrap();
@@ -604,7 +604,7 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
 
     // Where the stage textures do not fit, a light sweep with none: Detail drawn over tiles of the
     // whole content stage, each reduced into the light, the tiles chained after reading it kept.
-    let free = super::plan_rest_tiles(&rest, bounds, super::RestSizing::StageFree(64), false)
+    let free = super::plan_rest_tiles(&rest, bounds, super::RestSizing::StageFree(64))
         .unwrap()
         .expect("tiles")
         .unwrap();
@@ -637,7 +637,6 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
         &rest,
         bounds,
         super::RestSizing::Beside(super::GPU_PREVIEW_BYTES),
-        false,
     )
     .unwrap()
     .expect("tiles");
@@ -645,94 +644,4 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
         Err(super::GpuFallback::LightStage { layer, .. }) => assert_eq!(layer, 1),
         other => panic!("{other:?}"),
     }
-}
-
-/// At a view that shows the minimap, 200% and more, the picture at rest's tiles are reduced to the
-/// whole-stage overview too: its coverage is the area average of the whole output stage to the
-/// overview's size, and the tiles and the backdrop's reduction are those of the same stack's tiles
-/// at 199.9%, which carry none. Fit carries none either.
-#[test]
-fn the_rest_tiles_carry_the_overview_from_two_hundred_percent() {
-    let crop = Layer::crop(fitted_crop(WIDTH, HEIGHT, 4.0, [0.1, 0.12, 0.6, 0.55]));
-    let layers = vec![basic(json!({"exposure": 0.3})), crop];
-    let stack = evaluation(layers.clone(), layers, None);
-    let region = |magnification: f64| GpuView::Region {
-        rect: crate::modules::Region {
-            x0: 20,
-            y0: 10,
-            width: 64,
-            height: 48,
-        },
-        magnification,
-    };
-    let tiles = |view: GpuView| {
-        plan_rest(&stack, view)
-            .unwrap()
-            .tiles
-            .expect("tiles")
-            .expect("tiles the GPU draws")
-    };
-    let shown = tiles(region(2.0));
-    let output = (shown.output.width, shown.output.height);
-    let overview = shown.overview.as_ref().expect("an overview at 200%");
-    let size = crate::overview_size(output).unwrap();
-    assert!(
-        size.0 < output.0 && size.1 < output.1,
-        "{output:?} is reduced"
-    );
-    assert_eq!(overview.view, size);
-    assert_eq!(overview.across, crate::area_coverage(output.0, size.0));
-    assert_eq!(overview.down, crate::area_coverage(output.1, size.1));
-    for magnification in [1.999, 1.0] {
-        let below = tiles(region(magnification));
-        assert!(below.overview.is_none(), "{magnification}");
-        assert_eq!(below.tiles, shown.tiles, "{magnification}: the same tiles");
-        assert_eq!(below.reduction, shown.reduction, "{magnification}");
-        assert_eq!(below.plan, shown.plan, "{magnification}");
-    }
-    assert!(tiles(region(16.0)).overview.is_some());
-    let fit = tiles(GpuView::Fit(ProxyBounds {
-        width: 160,
-        height: 120,
-    }));
-    assert!(fit.overview.is_none());
-}
-
-/// The geometry key changes with what moves pixels about and nothing else: an exposure change
-/// keeps it, a crop changes it, and a prefix before the crop has the key of the stack without it.
-#[test]
-fn the_geometry_key_follows_geometry_layers_alone() {
-    let crop = Layer::crop(fitted_crop(WIDTH, HEIGHT, 4.0, [0.1, 0.12, 0.6, 0.55]));
-    let other_crop = Layer::crop(fitted_crop(WIDTH, HEIGHT, 4.0, [0.2, 0.12, 0.6, 0.55]));
-    let key = |layers: Vec<Layer>, count: usize| {
-        evaluation(layers.clone(), layers, None)
-            .geometry_key(count)
-            .unwrap()
-    };
-    let lighter = vec![basic(json!({"exposure": 0.3})), crop.clone()];
-    let darker = vec![basic(json!({"exposure": -0.7})), crop];
-    let moved = vec![basic(json!({"exposure": 0.3})), other_crop];
-    assert_eq!(key(lighter.clone(), 2), key(darker.clone(), 2));
-    assert_ne!(key(lighter.clone(), 2), key(moved.clone(), 2));
-    assert_eq!(
-        key(lighter.clone(), 1),
-        key(moved, 1),
-        "the prefix before the crop"
-    );
-    assert_eq!(key(lighter.clone(), 1), key(Vec::new(), 0));
-    // The pixel content keys tell the exposures apart, and a prefix's ignores what follows it.
-    let content = |layers: Vec<Layer>, count: usize| {
-        evaluation(layers.clone(), layers, None)
-            .prefix_content_key(count)
-            .unwrap()
-    };
-    assert_ne!(content(lighter.clone(), 2), content(darker, 2));
-    assert_eq!(
-        content(lighter.clone(), 2),
-        evaluation(lighter.clone(), lighter.clone(), None)
-            .pixel_content_key()
-            .unwrap()
-    );
-    let uncropped = vec![basic(json!({"exposure": 0.3}))];
-    assert_eq!(content(lighter, 1), content(uncropped, 1));
 }

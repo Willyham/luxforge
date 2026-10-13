@@ -56,7 +56,14 @@ fn pinched_view(
             view
         }
         Zoom::Percent { value } => {
-            CanvasView::scrolled(value, scale_factor, stage, canvas.size(), pan)?
+            let mut view = CanvasView::percent(value, scale_factor)?;
+            let origin = |content: f32, available: f32, offset: f32| {
+                (available - content).max(0.0) / 2.0
+                    - offset.clamp(0.0, (content - available).max(0.0))
+            };
+            view.origin.x = origin(stage.0 as f32 * view.scale, canvas.width, pan.0);
+            view.origin.y = origin(stage.1 as f32 * view.scale, canvas.height, pan.1);
+            view
         }
     };
     let old_percent = match current.zoom {
