@@ -225,25 +225,16 @@ pub(crate) fn missing_folder(path: &Path) -> Error {
 }
 
 /// Where one photograph is exported in `folder`: the export's naming rule
-/// ([`publish::suggest`]) from its original's file stem and the settings' suffix and format,
-/// `<stem><suffix>.<extension>`, else `<stem><suffix>-2.<extension>` and so on, checked as
-/// `export.write` checks its destination. Named just before its file is written, one photograph at
-/// a time, so two originals of one name get two names. When all 64 names the rule reads are taken,
-/// `conflict`.
+/// ([`publish::suggest`]) from its file stem (its original's, or a merge result's first input's
+/// with the kind's suffix) and the settings' suffix and format, `<stem><suffix>.<extension>`, else
+/// `<stem><suffix>-2.<extension>` and so on, checked as `export.write` checks its destination.
+/// Named just before its file is written, one photograph at a time, so two originals of one name
+/// get two names. When all 64 names the rule reads are taken, `conflict`.
 pub(crate) fn destination(
     folder: &Path,
-    original: &Path,
+    stem: &str,
     settings: &ExportSettings,
 ) -> Result<Destination, Error> {
-    let stem = original
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or_else(|| {
-            Error::validation(format!(
-                "{} has no file name to export under",
-                original.display()
-            ))
-        })?;
     let (suffix, format) = (settings.suffix.as_str(), settings.format());
     let path = publish::suggest(folder, stem, suffix, format).ok_or_else(|| {
         Error::conflict(format!(
@@ -384,19 +375,19 @@ mod tests {
     fn a_batch_export_names_each_file_by_the_export_rule_in_its_folder() {
         use crate::export::settings::{ExportFormat, FormatSettings, MetadataLevel};
         let folder = luxforge_testbase::paths::temp_dir("batch-names");
-        let original = Path::new("/Volumes/Card/DCIM/DSC_0042.NEF");
+        let stem = "DSC_0042";
         let mut settings = ExportSettings::baseline(MetadataLevel::None);
         settings.suffix = "-web".into();
-        let first = destination(&folder, original, &settings).unwrap();
+        let first = destination(&folder, stem, &settings).unwrap();
         assert_eq!(first.path(), folder.join("DSC_0042-web.jpg"));
         fs::write(first.path(), b"x").unwrap();
-        let second = destination(&folder, original, &settings).unwrap();
+        let second = destination(&folder, stem, &settings).unwrap();
         assert_eq!(second.path(), folder.join("DSC_0042-web-2.jpg"));
         fs::write(second.path(), b"x").unwrap();
         for n in 3..=64 {
             fs::write(folder.join(format!("DSC_0042-web-{n}.jpg")), b"x").unwrap();
         }
-        let full = destination(&folder, original, &settings).unwrap_err();
+        let full = destination(&folder, stem, &settings).unwrap_err();
         assert_eq!(full.kind, crate::ErrorKind::Conflict);
         assert!(
             full.detail.starts_with("DSC_0042-web.jpg"),
@@ -409,7 +400,7 @@ mod tests {
         };
         settings.suffix.clear();
         assert_eq!(settings.format(), ExportFormat::Tiff);
-        let tiff = destination(&folder, original, &settings).unwrap();
+        let tiff = destination(&folder, stem, &settings).unwrap();
         assert_eq!(tiff.path(), folder.join("DSC_0042.tif"));
     }
 }
