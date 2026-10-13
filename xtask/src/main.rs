@@ -716,14 +716,17 @@ fn main_result() -> Result {
                 .value("--aspect")?
                 .map(|s| s.to_string_lossy().parse::<f64>())
                 .transpose()?;
-            let columns = a
-                .value("--columns")?
-                .map(|s| -> Result<[u32; 2]> {
-                    let text = s.to_string_lossy();
-                    let (left, right) = text
-                        .split_once(',')
-                        .ok_or("--columns expects LEFT,RIGHT physical pixels")?;
-                    Ok([left.trim().parse()?, right.trim().parse()?])
+            let canvas = a
+                .value("--canvas")?
+                .map(|s| -> Result<[u32; 4]> {
+                    let edges = s
+                        .to_string_lossy()
+                        .split(',')
+                        .map(|edge| edge.trim().parse::<u32>())
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    edges.try_into().map_err(|_| {
+                        "--canvas expects LEFT,TOP,RIGHT,BOTTOM physical pixels".into()
+                    })
                 })
                 .transpose()?;
             a.done()?;
@@ -733,7 +736,7 @@ fn main_result() -> Result {
                     &image::open(&path)?.to_rgb8(),
                     &scenario::Fixture {
                         aspect,
-                        columns,
+                        canvas,
                         ..scenario::Fixture::fit(orientation)
                     }
                 )?

@@ -18,8 +18,11 @@ pub struct Fixture {
     pub orientation: u8,
     /// The displayed ratio, or the fixture's own when `None`.
     pub aspect: Option<f64>,
-    /// The physical x range of the editor's photo surface; the whole width without it.
-    pub columns: Option<[u32; 2]>,
+    /// The canvas region the photograph is drawn in, `[left, top, right, bottom]` physical pixels
+    /// with the right and bottom edges exclusive, as a frame records it (`canvas_rect`); the whole
+    /// capture without it. Only it is measured, so the filmstrip's thumbnail of the same
+    /// photograph, under the canvas, is never taken for the picture.
+    pub canvas: Option<[u32; 4]>,
     /// How far the measured ratio may differ from the expected one.
     pub tolerance: f64,
     /// The smallest fraction of the capture height the image may occupy. A wide crop fills less of
@@ -37,7 +40,7 @@ impl Fixture {
         Self {
             orientation,
             aspect: None,
-            columns: None,
+            canvas: None,
             tolerance: 0.015,
             min_height: 0.5,
             centred: true,
@@ -54,19 +57,24 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
         "Orientation must be 1..8",
     )?;
     let (w, h) = img.dimensions();
-    let [surface_left, surface_right] = expect.columns.unwrap_or([0, w]);
+    let [canvas_left, canvas_top, canvas_right, canvas_bottom] =
+        expect.canvas.unwrap_or([0, 0, w, h]);
     ensure(
-        surface_left < surface_right && surface_right <= w,
-        "Invalid surface columns",
+        canvas_left < canvas_right
+            && canvas_right <= w
+            && canvas_top < canvas_bottom
+            && canvas_bottom <= h,
+        "Invalid canvas rectangle",
     )?;
-    let surface_width = surface_right - surface_left;
+    let canvas_width = canvas_right - canvas_left;
     let colors = crate::fixtures::ORDERS[(expect.orientation - 1) as usize]
         .map(|i| crate::fixtures::COLORS[i]);
     let matches = |p: &[u8], c: [u8; 3]| p.iter().zip(c).all(|(a, b)| a.abs_diff(b) <= 8);
     let (mut left, mut top, mut right, mut bottom) = (w, h, 0, 0);
     let mut counts = [0u32; 4];
-    for y in (0..h).step_by(4) {
-        for x in (0..w).step_by(4) {
+    // Sampled on the capture's own 4-pixel grid, so a reading does not move with the canvas edges.
+    for y in (canvas_top.next_multiple_of(4)..canvas_bottom).step_by(4) {
+        for x in (canvas_left.next_multiple_of(4)..canvas_right).step_by(4) {
             let pixel = &img.get_pixel(x, y).0;
             if let Some(index) = colors.iter().position(|c| matches(pixel, *c)) {
                 counts[index] += 1;
@@ -84,11 +92,7 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
     let width = right - left;
     let height = bottom - top;
     ensure(
-        left >= surface_left && right <= surface_right,
-        "Image outside the photo surface",
-    )?;
-    ensure(
-        width as f64 > surface_width as f64 * 0.2
+        width as f64 > canvas_width as f64 * 0.2
             && height as f64 > h as f64 * expect.min_height.max(0.0),
         "Fixture too small",
     )?;
@@ -105,7 +109,7 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
     )?;
     ensure(
         !expect.centred
-            || ((left + right) as f64 / 2.0 - (surface_left + surface_right) as f64 / 2.0).abs()
+            || ((left + right) as f64 / 2.0 - (canvas_left + canvas_right) as f64 / 2.0).abs()
                 <= 5.0,
         "Image not centered",
     )?;
@@ -131,7 +135,7 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
         )?;
     }
     Ok(
-        json!({"status":"passed","physical_size":[w,h],"surface_columns":[surface_left,surface_right],"image_bounds":[left,top,right,bottom],"measured_aspect":measured,"expected_aspect":aspect,"aspect_tolerance":expect.tolerance,"quadrant_sample_counts":counts,"corner_rgb":actual,"tolerance_per_channel":8,"scope":"Displayed geometry and sRGB interiors; not monitor calibration or native picker"}),
+        json!({"status":"passed","physical_size":[w,h],"canvas":[canvas_left,canvas_top,canvas_right,canvas_bottom],"image_bounds":[left,top,right,bottom],"measured_aspect":measured,"expected_aspect":aspect,"aspect_tolerance":expect.tolerance,"quadrant_sample_counts":counts,"corner_rgb":actual,"tolerance_per_channel":8,"scope":"Displayed geometry and sRGB interiors; not monitor calibration or native picker"}),
     )
 }
 
@@ -141,10 +145,10 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
 pub const CANVAS: [u8; 3] = [0x19, 0x19, 0x1b];
 
 impl Frame {
-    /// [`fixture`] over this frame's capture, inside the photo surface it records.
+    /// [`fixture`] over this frame's capture, inside the canvas region it records.
     pub fn fixture(&self, expect: Fixture) -> Result<Value> {
-        let columns = self.columns()?;
-        fixture(self.image()?, &Fixture { columns, ..expect })
+        let canvas = Some(self.canvas()?);
+        fixture(self.image()?, &Fixture { canvas, ..expect })
     }
 
     /// Where the editor drew the photograph in this frame, `[left, top, right, bottom]` physical
@@ -194,8 +198,7 @@ impl Frame {
     /// a drawn picture as [`Frame::photo`] requires.
     pub fn visible_photo(&self) -> Result<[u32; 4]> {
         let rect = self.photo_rect()?;
-        let canvas: [u32; 4] = serde_json::from_value(self["canvas_rect"].clone())
-            .map_err(|_| "The frame records no canvas rectangle")?;
+        let canvas = self.canvas()?;
         let [left, top, right, bottom] = [
             rect[0].max(i64::from(canvas[0])),
             rect[1].max(i64::from(canvas[1])),
@@ -532,13 +535,50 @@ mod tests {
             fixture(
                 &blank,
                 &Fixture {
-                    columns: Some([10, 5]),
+                    canvas: Some([10, 0, 5, 640]),
                     ..Fixture::fit(6)
                 }
             )
             .unwrap_err()
             .to_string()
-            .contains("surface columns")
+            .contains("canvas rectangle")
+        );
+    }
+
+    /// Develop's filmstrip draws a thumbnail of the open photograph under the canvas, in the same
+    /// quadrant colours: measured over the whole capture it stretches the picture's height, and
+    /// inside the canvas the frame records it is not seen.
+    #[test]
+    fn the_filmstrips_thumbnail_is_not_measured_as_the_picture() {
+        let colors = crate::fixtures::ORDERS[0].map(|i| crate::fixtures::COLORS[i]);
+        let mut capture = RgbImage::from_pixel(720, 500, image::Rgb(CANVAS));
+        let mut draw = |[left, top, right, bottom]: [u32; 4]| {
+            let (mid_x, mid_y) = ((left + right) / 2, (top + bottom) / 2);
+            for y in top..bottom {
+                for x in left..right {
+                    let quadrant = usize::from(x >= mid_x) + 2 * usize::from(y >= mid_y);
+                    capture.put_pixel(x, y, image::Rgb(colors[quadrant]));
+                }
+            }
+        };
+        // The picture at Fit, 3:2 and centred in the canvas, and the thumbnail under it.
+        draw([120, 40, 600, 360]);
+        draw([330, 440, 390, 480]);
+        let canvas = Some([0, 0, 720, 420]);
+        let measured = fixture(
+            &capture,
+            &Fixture {
+                canvas,
+                ..Fixture::fit(1)
+            },
+        )
+        .unwrap();
+        assert_eq!(measured["image_bounds"], json!([120, 40, 600, 360]));
+        assert!(
+            fixture(&capture, &Fixture::fit(1))
+                .unwrap_err()
+                .to_string()
+                .contains("Incorrect displayed aspect ratio")
         );
     }
 
