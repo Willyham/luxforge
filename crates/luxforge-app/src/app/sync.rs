@@ -268,6 +268,7 @@ impl Editor {
                             Task::none()
                         };
                         let flags = Task::batch([flags, updates]);
+                        self.develop_photos_moved(&sync.moved);
                         let strip = match sync.library {
                             Some(sequence) => self.develop_library_changed(sequence),
                             None => Task::none(),
