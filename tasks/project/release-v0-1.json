@@ -362,7 +362,7 @@
     {
       "id": "TASK-006",
       "description": "Complete the release-ready packet verifier over tag-build candidates, without duplicating the publication workflow.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -418,7 +418,7 @@
           "Inspect workflow permissions, pinned actions, inputs, candidate matching, tag-build candidate versus final-ready validation, automatic pre-release publication after uploads, and failure preservation. Actual remote upload is unnecessary for tooling tests."
         ],
         "commands": [
-          "tools/cargo-cached test -p xtask-cli release_artifacts"
+          "tools/cargo-cached test -p xtask-cli --lib release_"
         ],
         "expected_results": [
           "A published pre-release build candidate remains non-ready until all required final distribution gates pass."
