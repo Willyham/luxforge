@@ -169,6 +169,34 @@ fn lens_admission_requires_frozen_full_input_dimensions_and_accepts_quarter_turn
     let error = validate_source_recipe(&registry, &asset, &recipe).unwrap_err();
     assert_eq!(error.data.unwrap()["reason"], "lens-input-stage-changed");
 }
+/// A stored stack holds artifact identities and never their bytes, so a frozen patch before the
+/// lens is checked unbound: the lens input stage is its source and geometry layers', which still
+/// refuse a changed stage.
+#[test]
+fn lens_admission_reads_the_input_stage_of_a_stack_whose_patches_are_not_bound() {
+    use crate::modules::corrections_qualification::{QualPatch, QualStep, repair_stack};
+    let registry = ModuleRegistry::builtin();
+    let mut asset = asset(SourceKind::Jpeg);
+    let lens = recipe(&asset.source, profile(SourceOptics::jpeg_ledger()));
+    let mut stored = repair_stack(
+        vec![QualStep::Patch(QualPatch {
+            rect: [10, 10, 8, 8],
+            opacity: 100,
+            pixel: Box::new(|_, _| ([0.5; 3], 1.0)),
+        })],
+        lens.layers,
+    );
+    assert_eq!(
+        stored.layers[0].artifacts.len(),
+        1,
+        "the repair layer lists its patch"
+    );
+    stored.artifacts = Default::default();
+    validate_source_recipe(&registry, &asset, &stored).unwrap();
+    asset.height = 401;
+    let error = validate_source_recipe(&registry, &asset, &stored).unwrap_err();
+    assert_eq!(error.data.unwrap()["reason"], "lens-input-stage-changed");
+}
 
 #[test]
 fn applied_distortion_refuses_lens_drafts_commits_restore_reopen_and_export() {

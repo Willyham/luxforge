@@ -108,13 +108,14 @@
     {
       "id": "TASK-002",
       "description": "Assemble complete corresponding source and audit-ready notices with an offline rebuild check.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Reuse the existing inventory/native/font/theme/data/Lensfun notice collectors. Review runtime-used licences and native static linking, selected licences, patches and LGPL modification/relinking requirements; prepare a factual review artifact without claiming an audit from inventory.",
         "Generate a source archive from an exact clean revision with vendored Rust crates, bundled native sources/patches, required compiled-in assets, licence texts and build/install/relink instructions. Preserve Cargo aliases/deployment configuration while adding offline source replacement.",
         "Private originals, the licensed sample corpus, catalogs/secrets, caches, local paths and verification data are excluded. Explicitly document test-only omissions; do not omit any source needed to build the shipped product.",
-        "The source packer can be built independently of application-version changes and macOS selection; final archive naming uses the candidate identity. A GitHub repository auto-archive alone is insufficient."
+        "The source packer can be built independently of application-version changes and macOS selection; final archive naming uses the candidate identity. A GitHub repository auto-archive alone is insufficient.",
+        "The source archive and its offline rebuild check are implemented: `cargo xtask release-source` (xtask/src/release_source.rs, record checks in xtask/cli/src/release_source.rs) archives the exact commit's tracked tree with vendored crates, the preserved Cargo configuration plus offline source replacement and ORT_CACHE_DIR, the pinned prebuilt ONNX Runtime libraries, each shipping target's inventory and notices and BUILD/INSTALL/RELINK instructions, refusing tracked private/generated/secret paths and local machine paths; the tag workflow's secret-free `source` job builds it and release-assemble records it in release.json and SHA256SUMS. An offline rebuild of the editor and both CLIs from the extracted archive with an empty Cargo home passed on macOS arm64. Remaining: the offline rebuild on the Linux build host (hosted or native x86-64 Ubuntu 24.04) and the distribution licence and notice review (static LGPL relinking, fonts, themes, GeoNames, Lensfun/RawSpeed data, applicable licence texts and missing declarations), which the owner has not started; the archive's notices are inventory, not that review."
       ],
       "context_links": [
         {
@@ -362,7 +363,7 @@
     {
       "id": "TASK-006",
       "description": "Complete the release-ready packet verifier over tag-build candidates, without duplicating the publication workflow.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -418,7 +419,7 @@
           "Inspect workflow permissions, pinned actions, inputs, candidate matching, tag-build candidate versus final-ready validation, automatic pre-release publication after uploads, and failure preservation. Actual remote upload is unnecessary for tooling tests."
         ],
         "commands": [
-          "tools/cargo-cached test -p xtask-cli release_artifacts"
+          "tools/cargo-cached test -p xtask-cli --lib release_"
         ],
         "expected_results": [
           "A published pre-release build candidate remains non-ready until all required final distribution gates pass."

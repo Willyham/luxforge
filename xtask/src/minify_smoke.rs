@@ -1,16 +1,20 @@
 //! The `compare-zone-plate` smoke scenario: the photograph drawn at Fit from a full-resolution
 //! texture, judged on a generated zone plate.
 //!
-//! Before/After keeps the exact raster it displays as its After side, even at Fit, so the photo
-//! surface draws a 6000 × 4000 texture a little over a quarter of its size. Without mip levels the
-//! sampler skips source texels and folds the detail beyond the display's Nyquist limit into
-//! full-contrast replicas of the centre's rings. This scenario opens the generated zone plate at
-//! Fit, waits for its exact render, starts the comparison and reveals only After, then reads that
-//! capture with [`crate::zone_plate`]'s statistics over the pixels beyond the display's Nyquist
-//! limit: the mean and standard deviation of the capture beside those of an independent
-//! linear-light box downscale. The display proxy the open drew at Fit is judged the same way as the
-//! control, which must read as a box filter does. The state's resident photo-slot bytes must
-//! include the After texture's mip levels, and only once it is drawn below its size.
+//! The reference renderer draws a photograph at Fit from its exact raster, and Before/After keeps
+//! that raster as its After side, so the photo surface draws a 6000 × 4000 texture a little over a
+//! quarter of its size. Without mip levels the sampler skips source texels and folds the detail
+//! beyond the display's Nyquist limit into full-contrast replicas of the centre's rings. The launch
+//! refuses the GPU stage (`--no-gpu-render`): where the GPU draws the picture at rest, Compare's
+//! After at Fit is the GPU's retained picture at the view's size, and an exact raster is held only
+//! when the reference happened to render one before the GPU's tiles were ready. This scenario opens
+//! the generated zone plate at Fit, waits for its exact render, starts the comparison and reveals
+//! only After, then reads that capture with [`crate::zone_plate`]'s statistics over the pixels
+//! beyond the display's Nyquist limit: the mean and standard deviation of the capture beside those
+//! of an independent linear-light box downscale. The photograph at Fit before the comparison, the
+//! same exact raster, is judged the same way and must read as a box filter does. The state's
+//! resident photo-slot bytes must include the drawn texture's mip levels while it is drawn below
+//! its size, and none once the comparison has ended and the display-size frame is drawn.
 //!
 //! `compare-tiled` is the same journey over the generated 60 MP JPEG, 10000 pixels wide, which the
 //! device's 8192 pixel textures hold in tiles and so cannot give mip levels. There the comparison
@@ -177,13 +181,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let mut checks = Checks::new();
     let mut failures = Vec::new();
 
-    // The control: the photograph as the open drew it, a display proxy at about its own size.
+    // The control: the photograph as the open drew it, its exact raster below its size.
     let settled = launch.at("settled")?;
     let control = judged(
         &source,
         settled,
         &mut checks,
-        "the display-size photograph at Fit, judged as the comparison's After is",
+        "the photograph at Fit before the comparison, judged as the comparison's After is",
     )?;
     aliasing("Fit without a comparison", control, &mut failures);
 
@@ -238,9 +242,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ));
     }
     let control_mips = mips(settled, "settled", &mut failures);
-    if control_mips.is_some_and(|bytes| bytes != 0) {
+    if control_mips.is_some_and(|bytes| bytes != chain) {
         failures.push(format!(
-            "The display-size photograph holds {} bytes of mip levels, though it is drawn at its own size",
+            "The photograph at Fit holds {} bytes of mip levels, not the {chain} its exact raster drawn below its size has",
             control_mips.unwrap_or_default()
         ));
     }
