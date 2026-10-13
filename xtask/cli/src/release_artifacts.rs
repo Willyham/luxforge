@@ -128,9 +128,17 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
         records[0]["lock_sha256"] == hash(&root.join("Cargo.lock"))?,
         "Artifacts use another dependency lockfile",
     )?;
-    let release = release_candidate::release_record(&tag, &records);
+    let mut release = release_candidate::release_record(&tag, &records);
+    // The complete source archive, when the input holds one (`release-source`'s output in `source/`).
+    let source = crate::release_source::bind(input, &tag, &records[0])?;
+    if let Some((_, archive)) = &source {
+        release["source_archive"] = archive.clone();
+    }
     release_candidate::check_release(&release, &tag)?;
     fs::create_dir_all(out)?;
+    if let Some((path, _)) = &source {
+        fs::copy(path, out.join(release_candidate::source_archive_name(&tag)))?;
+    }
     for ((target, platform), record) in TARGETS.iter().zip(&records) {
         for name in asset_names(&tag, target)? {
             fs::copy(input.join(platform).join(&name), out.join(name))?;
