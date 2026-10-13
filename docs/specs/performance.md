@@ -33,7 +33,7 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 | Geometry input to presented preview | p95 < 50 ms once the source preview is ready |
 | Empty steady-state process memory | ≤ 150 MiB including helper processes |
 | 24 MP single-image edit working set | ≤ 600 MiB CPU-resident |
-| 60 MP import or export peak | ≤ 1 GiB process RSS, GPU memory reported separately |
+| 60 MP import peak | ≤ 1 GiB process RSS, GPU memory reported separately; an export may exceed it (owner, 2026-10-13) |
 | Idle CPU | < 1% of one core over 30 s after background work settles |
 | First page of a 100,000-row indexed filter | p95 < 100 ms warm (catalog qualification) |
 | Warm adjacent-image Fit preview | p95 < 150 ms on a cache hit (catalog qualification) |
@@ -5237,7 +5237,7 @@ Medians in milliseconds, GPU / reference; then peak additional memory in MB, GPU
 - **Limit file size.** Each limit is halfway between the unlimited files at qualities 10 and 90 on the GPU. The search took 7 encodes on the GPU and 8 on the reference for the generated JPEGs, whose two renderers' files differ by a few bytes, choosing qualities 64 and 65 at 24 MP and 62 and 65 at 60 MP; 8 on both for the Z 6, at quality 80. A search takes 4.3 to 5.7 times a single unlimited export on the GPU, and 1.9 to 7.0 times on the reference, whose share of rendering varies.
 - **Resampling's share.** On the reference, the `resampling` phase of a long edge of 2048 is 17 of 39 ms at 24 MP, 44 of 103 ms at 60 MP and 17 of 259 ms on the Z 6; Web's, which includes its sharpening, is 22, 41 and 25 ms. Print's, a full-size sharpening, is 38, 97 and 42 ms. On the GPU the resample is the stream's last sweep, inside `encoding`: the resized export costs about what the full-size baseline does (74 against 73 ms at 24 MP, 204 against 162 ms at 60 MP, 113 against 122 ms on the Z 6).
 - **The held output stage.** Print and Master on the GPU go through the held `Rgba32Float` stage at full size: on the generated JPEGs 3.2 to 3.7 times the reference's Print and 2.0 to 2.1 times its Master, whose render of a light stack takes 8 to 19 ms. On the Z 6 they are about as fast. The stage is the tile worker's peak of 1,313 MB at 60 MP, against 324 MB for the streamed baseline.
-- **Against the provisional 60 MP export budget** (at most 1 GiB of process memory): the reference's process peaks at 487 to 1,171 MiB, Optimise's being the highest; the GPU's at 952 to 1,706 MiB, of which the tile worker's charges are 309 to 1,253 MiB of GPU memory in the same footprint.
+- **Against 1 GiB of process memory**, which an export may exceed (owner, 2026-10-13): the reference's process peaks at 487 to 1,171 MiB, Optimise's being the highest; the GPU's at 952 to 1,706 MiB, of which the tile worker's charges are 309 to 1,253 MiB of GPU memory in the same footprint.
 
 Evidence: `target/task-008-measure/` in the `export-settings-task-008` worktree (`timing.jsonl`, `memory.jsonl`, `load.log`, `table.md`).
 
