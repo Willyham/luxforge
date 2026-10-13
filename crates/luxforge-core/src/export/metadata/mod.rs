@@ -1,6 +1,6 @@
 //! The original's capture metadata and the export's EXIF segment.
 //!
-//! Contract (`docs/design/export.md#keep-metadata`):
+//! Contract (`docs/design/export.md#supported-metadata`):
 //! - `CaptureMetadata::from_jpeg(bytes)` reads the APP1 EXIF of a whole JPEG file;
 //!   `CaptureMetadata::from_raw(bytes)` reads a TIFF-structured RAW (NEF, DNG) or the EXIF of the
 //!   JPEG a RAF embeds. Neither ever fails: malformed or absent EXIF is empty metadata.

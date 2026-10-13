@@ -94,12 +94,15 @@ pub(crate) enum PaletteAction {
     ReturnCurrent,
     Restore,
     Compare,
-    /// Export the displayed entry as a JPEG, choosing where in the save dialog; through the
-    /// reference renderer, `export.write`'s `reference: true`, when `reference` asks for it.
+    /// Open the Export sheet over the displayed entry; its Export goes through the reference
+    /// renderer, `export.write`'s `reference: true`, when `reference` asks for it.
     Export {
-        keep_metadata: bool,
         reference: bool,
     },
+    /// Export again with the last export's settings.
+    ExportAgain,
+    /// Export at once with a preset's settings, by its id.
+    ExportWithPreset(String),
     /// Open the Settings sheet at a tab.
     Settings(crate::state::settings::SettingsTab),
     /// Choose a theme, by its id, as its Appearance row does.
@@ -248,29 +251,34 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             PaletteAction::Restore,
         ),
     ]);
-    entries.extend(
-        crate::state::title::EXPORT_ITEMS
-            .iter()
-            .map(|(label, keep_metadata)| {
-                (
-                    (*label).to_owned(),
-                    "export.write".to_owned(),
-                    PaletteAction::Export {
-                        keep_metadata: *keep_metadata,
-                        reference: false,
-                    },
-                )
-            }),
-    );
-    // The reference renderer's export, which only the palette offers: `export.write` with
-    // `reference: true`, as an API client asks for it.
+    // The Export menu's entries: Export…, Export again once something has been exported, and one
+    // per preset, each exporting at once with that preset's settings.
+    entries.push((
+        "Export\u{2026}".to_owned(),
+        "export.plan \u{b7} export.write".to_owned(),
+        PaletteAction::Export { reference: false },
+    ));
+    let presets = inputs.export_presets.unwrap_or_default();
+    if let Some(again) = crate::state::title::export_again_label(inputs.export_last, presets) {
+        entries.push((
+            again,
+            "export.plan \u{b7} export.write".to_owned(),
+            PaletteAction::ExportAgain,
+        ));
+    }
+    entries.extend(presets.iter().map(|preset| {
+        (
+            format!("Export with preset: {}", preset.name),
+            "export.plan \u{b7} export.write".to_owned(),
+            PaletteAction::ExportWithPreset(preset.preset_id.clone()),
+        )
+    }));
+    // The reference renderer's export, which only the palette offers: the sheet, whose Export
+    // sends `export.write` with `reference: true`, as an API client asks for it.
     entries.push((
         REFERENCE_EXPORT.to_owned(),
         "export.write".to_owned(),
-        PaletteAction::Export {
-            keep_metadata: false,
-            reference: true,
-        },
+        PaletteAction::Export { reference: true },
     ));
     entries.extend([
         (

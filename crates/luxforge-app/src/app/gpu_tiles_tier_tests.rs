@@ -484,7 +484,11 @@ fn a_batch_export_names_each_files_renderer() {
         let started = tiers.call(
             "batch.export",
             json!({"targets": {"kind": "assets", "asset_ids": [tiers.asset]},
-                   "settings": crate::state::select_catalog::batch_settings(&out),
+                   "settings": luxforge_core::ExportSettings {
+                       folder: luxforge_core::ExportFolder::Path(out.clone()),
+                       suffix: "-edited".into(),
+                       ..luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)
+                   },
                    "mutation": {"request_id": "batch", "actor": "test"}}),
         );
         let record = tiers.settled(&started["job_id"]);

@@ -1701,12 +1701,151 @@ pub enum PaletteStep {
 /// `"reference": true` exports it as the palette's Export reference render… does. The step captures
 /// once the export has ended, or, with `"background": true`, once it has started, leaving it to run
 /// under the steps after it.
+///
+/// The Export sheet's gestures, each sent through the message its control sends:
+/// `{"sheet": {}}` opens it as `Cmd+E` does (`{"sheet": {"reference": true}}` as the palette's
+/// Export reference render… does), and a batch sheet is opened by Select's Export N…;
+/// `{"preset": "Print"}` presses a preset card; `{"edit": {...}}` changes settings
+/// ([`SheetEdit`]); `{"save_preset": "Name"}` saves the settings as a new preset,
+/// `{"update_preset": true}` presses Update "Name"…, `{"delete_preset": "Name"}` chooses Delete on
+/// that card's menu; `{"write": {}}` presses Export, capturing once the export ends (or, with
+/// `"background": true`, once the Performance section lists it running when the section is open,
+/// and once the status bar shows its progress bar when it is not); `{"close": true}` presses
+/// Cancel. `{"again": {}}` is Export again and `{"with_preset": {"name": "Web"}}` a menu preset row,
+/// each captured as `write` is. `{"bar": true}` presses the status bar's export progress,
+/// capturing once the Performance section it opens lists the export running.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportStep {
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Menu,
     File(ExportFile),
+    Sheet(SheetOpen),
+    Preset(String),
+    Edit(Box<SheetEdit>),
+    SavePreset(String),
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    UpdatePreset,
+    DeletePreset(String),
+    Write(ExportWrite),
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Close,
+    Again(ExportWrite),
+    WithPreset(PresetWrite),
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Bar,
+}
+
+/// Open the Export sheet.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetOpen {
+    /// As the palette's Export reference render… opens it: its Export sends `reference: true`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reference: bool,
+}
+
+/// How an export a step starts is captured.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportWrite {
+    /// Capture once the export shows running rather than once it ends: listed by the Performance
+    /// section when it is open, else as the status bar's progress bar. It runs on under the steps
+    /// after this one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background: bool,
+}
+
+/// Export with preset, by the preset's name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetWrite {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background: bool,
+}
+
+/// Where the sheet saves to: Original's folder, or Choose… answered in place of the native
+/// folder dialog with the run's evidence directory or with a folder by its path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SheetFolder {
+    Original,
+    Evidence,
+    Path(String),
+}
+
+/// Changes to the open sheet's settings, each sent as its control sends it, in the order the
+/// fields are declared. A field left out is not touched.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetEdit {
+    /// `jpeg`, `webp` or `tiff`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// `full`, `long_edge` or `within`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// Typed into the long edge, width and height fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_edge: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<String>,
+    /// Set print size on or off, then the density typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print_size: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimise: Option<bool>,
+    /// `full` or `half`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chroma: Option<String>,
+    /// Limit file size on or off, then the kilobytes typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_kb: Option<String>,
+    /// 8 or 16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u8>,
+    /// `none`, `copyright`, `no_location` or `all`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<SheetFolder>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+}
+
+impl SheetEdit {
+    fn validate(&self) -> Result<(), String> {
+        let one_of = |value: &Option<String>, field: &str, allowed: &[&str]| match value {
+            Some(value) if !allowed.contains(&value.as_str()) => {
+                Err(format!("export edit {field} takes one of {allowed:?}"))
+            }
+            _ => Ok(()),
+        };
+        one_of(&self.format, "format", &["jpeg", "webp", "tiff"])?;
+        one_of(&self.size, "size", &["full", "long_edge", "within"])?;
+        one_of(&self.chroma, "chroma", &["full", "half"])?;
+        one_of(
+            &self.metadata,
+            "metadata",
+            &["none", "copyright", "no_location", "all"],
+        )?;
+        if let Some(SheetFolder::Path(path)) = &self.folder {
+            text(path, "export edit folder path")?;
+        }
+        match self.bit_depth {
+            Some(8 | 16) | None => Ok(()),
+            Some(_) => Err("export edit bit_depth takes 8 or 16".into()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1728,7 +1867,18 @@ pub struct ExportFile {
 impl ExportStep {
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Menu => Ok(()),
+            Self::Menu
+            | Self::Sheet(_)
+            | Self::UpdatePreset
+            | Self::Write(_)
+            | Self::Close
+            | Self::Again(_)
+            | Self::Bar => Ok(()),
+            Self::Preset(name) | Self::SavePreset(name) | Self::DeletePreset(name) => {
+                text(name, "export preset name")
+            }
+            Self::WithPreset(write) => text(&write.name, "export preset name"),
+            Self::Edit(edit) => edit.validate(),
             Self::File(file) => {
                 text(&file.name, "export file name")?;
                 let plain = std::path::Path::new(&file.name)

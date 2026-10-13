@@ -26,10 +26,64 @@ pub(crate) const OPEN_TOOLTIP: &str = if cfg!(target_os = "macos") {
 
 /// Export's tooltip, with the shortcut the keymap gives its first item on this platform.
 pub(crate) const EXPORT_TOOLTIP: &str = if cfg!(target_os = "macos") {
-    "Export JPEG (\u{2318}E)"
+    "Export (\u{2318}E)"
 } else {
-    "Export JPEG (Ctrl+E)"
+    "Export (Ctrl+E)"
 };
+
+/// The shortcuts the Export menu names: Export… and Export again.
+pub(crate) const EXPORT_SHORTCUTS: (&str, &str) = if cfg!(target_os = "macos") {
+    ("\u{2318}E", "\u{21e7}\u{2318}E")
+} else {
+    ("Ctrl+E", "Shift+Ctrl+E")
+};
+
+/// The Export menu while it is open: Export…, Export again as the last export's preset (disabled
+/// until something has been exported) and one row per preset, by id, name and settings. The
+/// palette offers the same entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExportMenuModel {
+    /// `Export again as Web`, or none until something has been exported.
+    pub(crate) again: Option<String>,
+    pub(crate) presets: Vec<(String, String, String)>,
+}
+
+/// What Export again is called: as the preset the last export was, unchanged, or as the last
+/// export's own settings.
+pub(crate) fn export_again_label(
+    last: Option<&luxforge_core::preferences::ExportLast>,
+    presets: &[luxforge_core::ExportPreset],
+) -> Option<String> {
+    let last = last?;
+    let preset = last
+        .preset_id
+        .as_deref()
+        .and_then(|id| presets.iter().find(|preset| preset.preset_id == id));
+    Some(match preset {
+        Some(preset) => format!("Export again as {}", preset.name),
+        None => "Export again with the last settings".to_owned(),
+    })
+}
+
+/// The Export menu's entries for these presets and this last export.
+pub(crate) fn export_menu(
+    last: Option<&luxforge_core::preferences::ExportLast>,
+    presets: &[luxforge_core::ExportPreset],
+) -> ExportMenuModel {
+    ExportMenuModel {
+        again: export_again_label(last, presets),
+        presets: presets
+            .iter()
+            .map(|preset| {
+                (
+                    preset.preset_id.clone(),
+                    preset.name.clone(),
+                    crate::state::export_sheet::card_detail(&preset.settings),
+                )
+            })
+            .collect(),
+    }
+}
 
 /// Settings' tooltip, with the shortcut the keymap gives it on this platform.
 pub(crate) const SETTINGS_TOOLTIP: &str = if cfg!(target_os = "macos") {
@@ -37,13 +91,6 @@ pub(crate) const SETTINGS_TOOLTIP: &str = if cfg!(target_os = "macos") {
 } else {
     "Settings (Ctrl+,)"
 };
-
-/// The Export menu's two items, in order: what each is labelled and whether it keeps metadata.
-/// The palette offers the same two, under the same labels.
-pub(crate) const EXPORT_ITEMS: [(&str, bool); 2] = [
-    ("Export JPEG\u{2026}", false),
-    ("Export JPEG, keep metadata\u{2026}", true),
-];
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct TitleBarModel {
@@ -79,6 +126,8 @@ pub(crate) struct TitleBarModel {
     pub(crate) can_export: bool,
     /// The Export button's menu is open under it.
     pub(crate) export_menu_open: bool,
+    /// The Export menu's entries, while it is open.
+    pub(crate) export_menu: Option<ExportMenuModel>,
     pub(crate) can_undo: bool,
     pub(crate) can_redo: bool,
     pub(crate) state_panel_open: bool,
@@ -252,6 +301,14 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         can_export: inputs.can_export,
         export_menu_open: inputs.can_export
             && matches!(inputs.view_state.menu.as_ref(), Some(MenuTarget::Export)),
+        export_menu: (inputs.can_export
+            && matches!(inputs.view_state.menu.as_ref(), Some(MenuTarget::Export)))
+        .then(|| {
+            export_menu(
+                inputs.export_last,
+                inputs.export_presets.unwrap_or_default(),
+            )
+        }),
         // The core answers an undo with no parent entry, or a redo with nothing undone, as a no-op,
         // so neither is offered then.
         can_undo: navigable
