@@ -396,7 +396,7 @@
     {
       "id": "TASK-006",
       "description": "Build the desktop Export sheet, Export menu, Export again and Export with preset, and Select's batch sheet, with a rendered journey and current documentation.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -499,7 +499,7 @@
     {
       "id": "TASK-007",
       "description": "Add output sharpening (Screen, Matte, Glossy by Low, Standard, High) after resizing, with a CPU reference, a GPU final sweep, the declared spatial limit, the sheet row and preset values.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-006"
       ],
