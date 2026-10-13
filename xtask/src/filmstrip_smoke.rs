@@ -5,8 +5,8 @@
 //! the darkest, the brightest and the one between, by the middle of the picture, so each frame's
 //! picture can be told from its neighbours' — into a scratch folder, with a copy of the RAW file
 //! `--source` names when one is given (the user's file is hashed before and after, and never
-//! touched). It develops them into a new catalog with `pick.develop`, moves them into one catalog
-//! folder, `Filmstrip`, with `asset.move`, and asks the core for the view of that folder the
+//! touched). It makes one catalog folder, `Filmstrip`, in a new catalog with `folder.create`,
+//! develops them into it with `pick.develop`, and asks the core for the view of that folder the
 //! filmstrip reads — its photographs with its subfolders', captured oldest first — which the
 //! frames are checked against (`filmstrip-expected.json`). Without a RAW source
 //! the RAW photograph's steps are not run, and the run records them pending, never passed.
@@ -40,9 +40,9 @@ pub const SCENARIO: &str = "filmstrip";
 /// What `reproduce.md` says the run does before it launches.
 pub const NOTE: &str = "The run first generates real JPEGs with `cargo xtask generate-catalog \
     --images 120 --seed 1`, copies three of them, and a copy of the RAW file `--source` names when \
-    one is given, into a scratch folder, develops them into `generated/catalog.sqlite` with \
-    `pick.develop`, moves them into the catalog folder `Filmstrip` with `asset.move`, asks the \
-    core for the view of that folder the frames are checked against \
+    one is given, into a scratch folder, makes the catalog folder `Filmstrip` in \
+    `generated/catalog.sqlite` with `folder.create`, develops them into it with `pick.develop`, \
+    asks the core for the view of that folder the frames are checked against \
     (`filmstrip-expected.json`) and launches the editor over that catalog with `--catalog`; after \
     the run it reads each photograph's large preview from the cache (`filmstrip-after.json`). \
     Without a RAW source the RAW steps are recorded pending.";
@@ -224,6 +224,16 @@ pub(crate) fn make(generated: &Path, raw: Option<&Path>) -> Result<Value> {
     let catalog = generated.join(generate_catalog::CATALOG);
     drop(EditorService::open(&catalog).map_err(|error| format!("a new catalog: {error}"))?);
     with_owner(&catalog, |owner, client| {
+        // Develop files into Year › Place › Day unless told otherwise: name the folder, so no
+        // empty folder of the same name is left for Select's source row to find first.
+        let folder = ask(
+            owner,
+            client,
+            "folder.create",
+            json!({"name": FOLDER,
+                "mutation": {"request_id": "setup-folder", "actor": "setup"}}),
+        )?["folder"]["id"]
+            .clone();
         for (index, path) in files.iter().enumerate() {
             let started = ask(
                 owner,
@@ -231,7 +241,7 @@ pub(crate) fn make(generated: &Path, raw: Option<&Path>) -> Result<Value> {
                 "pick.develop",
                 json!({
                     "targets": {"kind": "paths", "paths": [path]},
-                    "into": [],
+                    "into": [{"folder": {"kind": "existing", "folder_id": folder}}],
                     "confirm_removable": true,
                     "mutation": {"request_id": format!("setup-develop-{index}"), "actor": "setup"},
                 }),
@@ -242,21 +252,6 @@ pub(crate) fn make(generated: &Path, raw: Option<&Path>) -> Result<Value> {
                 format!("The setup could not develop {}: {settled}", path.display()),
             )?;
         }
-        let folder = ask(
-            owner,
-            client,
-            "folder.create",
-            json!({"name": FOLDER,
-                "mutation": {"request_id": "setup-folder", "actor": "setup"}}),
-        )?["folder"]["id"]
-            .clone();
-        ask(
-            owner,
-            client,
-            "asset.move",
-            json!({"targets": {"kind": "paths", "paths": files}, "folder_id": folder,
-                "mutation": {"request_id": "setup-move", "actor": "setup"}}),
-        )?;
         // The folder's photographs as `sort` orders them: the filmstrip's order, and Select's.
         let read = |descending: bool| -> Result<Vec<Value>> {
             let view = ask(
