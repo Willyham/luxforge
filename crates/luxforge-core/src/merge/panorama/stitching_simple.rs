@@ -5,7 +5,7 @@
 //! seams are the nearest-centre boundaries, there is no blend and no warp mesh. `magnify` scales
 //! the output past 1 (never done by a real stitch) so a test can publish a large result from small
 //! frames, and `refuse` makes the plan refuse with a stitch refusal.
-use super::{ChunkWindow, PreviewStitch, StitchPlan, StitchRequest, Stitcher};
+use super::{ChunkStats, FrameWindows, PreviewStitch, StitchPlan, StitchRequest, Stitcher};
 use crate::{
     Cancel, Error,
     catalog_types::{
@@ -357,78 +357,18 @@ impl Stitcher for SimpleStitcher {
         })
     }
 
-    fn windows(
-        &self,
-        plan: &StitchPlan,
-        chunk: PixelRect,
-    ) -> Result<Vec<(usize, PixelRect)>, Error> {
-        let inner = inner(plan)?;
-        let lens = inner.lens;
-        let crop = inner.crop;
-        let (cw, ch) = (f64::from(chunk.width - 1), f64::from(chunk.height - 1));
-        let mut samples = Vec::new();
-        let steps = 16;
-        for row in 0..=steps {
-            for column in 0..=steps {
-                let x = f64::from(crop.x + chunk.x) + cw * column as f64 / steps as f64;
-                let y = f64::from(crop.y + chunk.y) + ch * row as f64 / steps as f64;
-                samples.push(inner.direction(x, y));
-            }
-        }
-        let mut windows = Vec::new();
-        for (frame, rotation) in inner.rotations.iter().enumerate() {
-            let mut low = (f64::MAX, f64::MAX);
-            let mut high = (f64::MIN, f64::MIN);
-            for &world in &samples {
-                let Some(at) = lens.world_project(rotation, world) else {
-                    continue;
-                };
-                if at.0 < -64.0
-                    || at.1 < -64.0
-                    || at.0 > f64::from(lens.width) + 64.0
-                    || at.1 > f64::from(lens.height) + 64.0
-                {
-                    continue;
-                }
-                low = (low.0.min(at.0), low.1.min(at.1));
-                high = (high.0.max(at.0), high.1.max(at.1));
-            }
-            if low.0 > high.0 {
-                continue;
-            }
-            let pad = 4.0 + (cw.max(ch) / steps as f64) * 0.5;
-            let clamp = |value: f64, limit: u32| value.clamp(0.0, f64::from(limit - 1)) as u32;
-            let (x0, y0) = (
-                clamp(low.0 - pad, lens.width),
-                clamp(low.1 - pad, lens.height),
-            );
-            let (x1, y1) = (
-                clamp(high.0 + pad + 1.0, lens.width),
-                clamp(high.1 + pad + 1.0, lens.height),
-            );
-            if x1 > x0 && y1 > y0 {
-                windows.push((
-                    frame,
-                    PixelRect {
-                        x: x0,
-                        y: y0,
-                        width: x1 - x0 + 1,
-                        height: y1 - y0 + 1,
-                    },
-                ));
-            }
-        }
-        Ok(windows)
-    }
-
     fn render_chunk(
         &self,
         plan: &StitchPlan,
         chunk: PixelRect,
-        windows: &[ChunkWindow<'_>],
+        source: &mut dyn FrameWindows,
         out: &mut [f32],
         cancel: &Cancel,
-    ) -> Result<(), Error> {
+    ) -> Result<ChunkStats, Error> {
+        let mut windows = Vec::new();
+        for (frame, bounds) in self.windows(plan, chunk)? {
+            windows.push(Window::of(frame, &source.read(frame, bounds)?));
+        }
         let inner = inner(plan)?;
         let crop = inner.crop;
         let width = chunk.width as usize;
@@ -470,7 +410,8 @@ impl Stitcher for SimpleStitcher {
                     blue[column] = rgb[2];
                 }
                 Ok::<(), Error>(())
-            })
+            })?;
+        Ok(ChunkStats::default())
     }
 
     fn preview(
@@ -553,6 +494,103 @@ impl Stitcher for SimpleStitcher {
     }
 }
 
+impl SimpleStitcher {
+    /// The rectangle of each frame the result's `chunk` reads, by request position.
+    fn windows(
+        &self,
+        plan: &StitchPlan,
+        chunk: PixelRect,
+    ) -> Result<Vec<(usize, PixelRect)>, Error> {
+        let inner = inner(plan)?;
+        let lens = inner.lens;
+        let crop = inner.crop;
+        let (cw, ch) = (f64::from(chunk.width - 1), f64::from(chunk.height - 1));
+        let mut samples = Vec::new();
+        let steps = 16;
+        for row in 0..=steps {
+            for column in 0..=steps {
+                let x = f64::from(crop.x + chunk.x) + cw * column as f64 / steps as f64;
+                let y = f64::from(crop.y + chunk.y) + ch * row as f64 / steps as f64;
+                samples.push(inner.direction(x, y));
+            }
+        }
+        let mut windows = Vec::new();
+        for (frame, rotation) in inner.rotations.iter().enumerate() {
+            let mut low = (f64::MAX, f64::MAX);
+            let mut high = (f64::MIN, f64::MIN);
+            for &world in &samples {
+                let Some(at) = lens.world_project(rotation, world) else {
+                    continue;
+                };
+                if at.0 < -64.0
+                    || at.1 < -64.0
+                    || at.0 > f64::from(lens.width) + 64.0
+                    || at.1 > f64::from(lens.height) + 64.0
+                {
+                    continue;
+                }
+                low = (low.0.min(at.0), low.1.min(at.1));
+                high = (high.0.max(at.0), high.1.max(at.1));
+            }
+            if low.0 > high.0 {
+                continue;
+            }
+            let pad = 4.0 + (cw.max(ch) / steps as f64) * 0.5;
+            let clamp = |value: f64, limit: u32| value.clamp(0.0, f64::from(limit - 1)) as u32;
+            let (x0, y0) = (
+                clamp(low.0 - pad, lens.width),
+                clamp(low.1 - pad, lens.height),
+            );
+            let (x1, y1) = (
+                clamp(high.0 + pad + 1.0, lens.width),
+                clamp(high.1 + pad + 1.0, lens.height),
+            );
+            if x1 > x0 && y1 > y0 {
+                windows.push((
+                    frame,
+                    PixelRect {
+                        x: x0,
+                        y: y0,
+                        width: x1 - x0 + 1,
+                        height: y1 - y0 + 1,
+                    },
+                ));
+            }
+        }
+        Ok(windows)
+    }
+}
+
+/// One frame's window, copied.
+struct Window {
+    frame: usize,
+    x: u32,
+    y: u32,
+    width: usize,
+    height: usize,
+    rgb: [Vec<f32>; 3],
+}
+
+impl Window {
+    fn of(frame: usize, source: &crate::merge::hdr::SourceWindow<'_>) -> Self {
+        let view = &source.frame;
+        let rgb = std::array::from_fn(|c| {
+            (0..view.height)
+                .flat_map(|y| view.rgb[c][y * view.stride..y * view.stride + view.width].iter())
+                .copied()
+                .collect()
+        });
+        Self {
+            frame,
+            x: source.x,
+            y: source.y,
+            width: view.width,
+            height: view.height,
+            rgb,
+        }
+    }
+}
+
 fn inner(plan: &StitchPlan) -> Result<&Plan, Error> {
     plan.inner
         .downcast_ref::<Plan>()
@@ -560,12 +598,11 @@ fn inner(plan: &StitchPlan) -> Result<&Plan, Error> {
 }
 
 /// The window's sample at frame point `at`, bilinear with taps clamped to the window.
-fn bilinear(window: &ChunkWindow<'_>, at: (f64, f64)) -> [f32; 3] {
-    let source = &window.window;
-    let frame = &source.frame;
+fn bilinear(window: &Window, at: (f64, f64)) -> [f32; 3] {
+    let frame = window;
     let (w, h) = (frame.width as f64, frame.height as f64);
-    let x = (at.0 - f64::from(source.x)).clamp(0.0, w - 1.0);
-    let y = (at.1 - f64::from(source.y)).clamp(0.0, h - 1.0);
+    let x = (at.0 - f64::from(window.x)).clamp(0.0, w - 1.0);
+    let y = (at.1 - f64::from(window.y)).clamp(0.0, h - 1.0);
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
     let (x0, y0) = (x0 as usize, y0 as usize);
@@ -574,7 +611,7 @@ fn bilinear(window: &ChunkWindow<'_>, at: (f64, f64)) -> [f32; 3] {
         (y0 + 1).min(frame.height - 1),
     );
     let tap =
-        |channel: usize, x: usize, y: usize| f64::from(frame.rgb[channel][y * frame.stride + x]);
+        |channel: usize, x: usize, y: usize| f64::from(frame.rgb[channel][y * frame.width + x]);
     std::array::from_fn(|channel| {
         let top = tap(channel, x0, y0) * (1.0 - fx) + tap(channel, x1, y0) * fx;
         let bottom = tap(channel, x0, y1) * (1.0 - fx) + tap(channel, x1, y1) * fx;

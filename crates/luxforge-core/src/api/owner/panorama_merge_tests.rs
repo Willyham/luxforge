@@ -3,14 +3,15 @@
 //! stage, refusing before wasted work, a restart mid-merge, rerunning with other options,
 //! inspecting, removing and restoring, stack claims across kinds, and the merge preview; then end
 //! to end, a result past the resident limits published paged and reopened with its frames moved
-//! away.
+//! away, and the production stitch's result against the reference.
 //!
-//! This build has no production stitch yet (`crate::merge::panorama::stitching::production`), so
-//! the lane stitches with the tests' [`SimpleStitcher`]; everything else — the frames' reads and
-//! spools, registration, the chunked durable writer, the publication — is the production path.
+//! The job tests stitch with the tests' [`SimpleStitcher`], which is quick and exact by
+//! construction; everything else — the frames' reads and spools, registration, the chunked durable
+//! writer, the publication — is the production path. One end-to-end test runs the production
+//! stitch (`crate::merge::panorama::stitching::production`) as the lane has it.
 //! The job tests read their frames through a synthetic camera (`luxforge_reference::panorama`):
 //! each file is real and read once, its SHA-256 is its identity, and its frame is the reference
-//! scene recorded at its pose. The end-to-end test writes the scene as JPEG files read through the
+//! scene recorded at its pose. The end-to-end tests write the scene as JPEG files read through the
 //! shared frame path.
 use super::*;
 use crate::{
@@ -1347,4 +1348,219 @@ fn panorama_merge_end_to_end_publishes_a_paged_result_that_reopens_without_its_f
         .collect();
     assert_eq!(moved, hashes, "no original's bytes change");
     let _ = fs::remove_dir_all(&directory);
+}
+
+/// A result's sample lies between the values the frames recording it hold there (the scene along
+/// each frame pixel's true ray, in 8-bit sRGB), to within this relative to the lower plus a floor
+/// of [`STITCHED_FLOOR`] on average, about two JPEG codes...
+const STITCHED_MEAN: f64 = 0.02;
+const STITCHED_FLOOR: f64 = 0.02;
+/// ...and within this at all but [`STITCHED_OUTLIERS`] of its pixels.
+const STITCHED_PIXEL: f64 = 0.1;
+const STITCHED_OUTLIERS: f64 = 0.001;
+
+/// A row of JPEG frames through the shared frame path, registration and the production stitch:
+/// the published result's size and crop are the reference's layout (`luxforge_reference::panorama`)
+/// of the registered geometry the provenance records, and each of its pixels shows what the frames
+/// recording that direction hold there.
+#[test]
+#[slow]
+fn panorama_merge_end_to_end_stitches_the_scene_through_the_production_stitch() {
+    let directory = luxforge_testbase::paths::temp_dir("panorama-merge-end-to-end-stitch")
+        .canonicalize()
+        .unwrap();
+    let row = directory.join("row");
+    fs::create_dir_all(&row).unwrap();
+    const SEED: u64 = 37;
+    let poses = reference::row(3, STEP, 0.0);
+    let paths: Vec<PathBuf> = poses
+        .iter()
+        .enumerate()
+        .map(|(at, &pose)| {
+            let path = row.join(format!("IMG_{:04}.JPG", at + 1));
+            write_jpeg(&path, &record(Frame { seed: SEED, pose }));
+            path
+        })
+        .collect();
+    let (catalog, _) = catalog_with_photograph(&directory);
+    // The owner as built: the production stitch and the shared frame path.
+    let (owner, join) = start_owner(&catalog);
+    let client = owner.register();
+    let call = |method: &str, params: Value| {
+        let response = owner
+            .call(
+                client,
+                ApiRequest {
+                    id: method.into(),
+                    method: method.into(),
+                    params,
+                    token: None,
+                },
+            )
+            .expect("the owner answered");
+        match response.error {
+            None => response.result.expect("a result"),
+            Some(error) => panic!("{method}: {}", serde_json::to_value(error).unwrap()),
+        }
+    };
+    let settled = |job: &Value| {
+        let read = luxforge_testbase::wait_for("the job to settle", || {
+            let read = call("job.read", json!({"job_id": job["job_id"]}));
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        });
+        assert_eq!(read["status"], "ready", "{read}");
+        read["result"].clone()
+    };
+    let plan = call(
+        "merge.plan",
+        json!({"kind": "panorama", "targets": {"kind": "paths", "paths": paths}}),
+    );
+    assert_eq!(plan["suitable"], true, "{plan}");
+    assert_eq!(plan["provider"]["available"], true, "{plan}");
+    let created = call(
+        "merge.create",
+        json!({"kind": "panorama", "targets": {"kind": "paths", "paths": paths},
+               "plan_id": plan["plan_id"], "mutation": envelope("create")}),
+    );
+    let result = settled(&created);
+    let asset = result["result_asset_id"].clone();
+    settled(&call("source.prepare", json!({"asset_id": asset})));
+    let inspected = call("merge.inspect", json!({"merge_id": result["merge_id"]}));
+    let provenance = &inspected["provenance"];
+    let resolved = &provenance["resolved"]["panorama"];
+    let stitch = &resolved["stitch"];
+    let id = AssetId::parse(asset.as_str().unwrap().to_owned()).unwrap();
+    let (answer, answered) = std::sync::mpsc::channel();
+    owner
+        .sender
+        .send(OwnerMessage::Catalog(CatalogMessage::Merge(
+            LibraryMessage::Run(Box::new(move |owner| {
+                let _ = answer.send(owner.service.derived_source_read(&id).unwrap());
+            })),
+        )))
+        .unwrap();
+    let read = answered.recv().unwrap();
+    let image = crate::artifacts::derived_source::read_derived_source(
+        &read,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    owner.stop();
+    join.join().unwrap();
+
+    // The registered geometry, as the provenance records it, in the stack's order.
+    let number = |value: &Value| value.as_f64().unwrap();
+    let lens = &resolved["lens"];
+    let registered_lens = reference::Lens {
+        width: lens["width"].as_u64().unwrap() as usize,
+        height: lens["height"].as_u64().unwrap() as usize,
+        focal_px: number(&lens["focal_px"]),
+        radial: number(&lens["radial"]),
+    };
+    let rotations: Vec<reference::Mat3> =
+        serde_json::from_value(resolved["rotations"].clone()).unwrap();
+    let registered: Vec<Pose> = rotations
+        .iter()
+        .map(|rotation| {
+            let m = reference::transpose(rotation);
+            Pose::new(
+                m[0][2].atan2(m[2][2]).to_degrees(),
+                (-m[1][2]).asin().to_degrees(),
+                m[1][0].atan2(m[1][1]).to_degrees(),
+            )
+        })
+        .collect();
+    let at = resolved["reference"].as_u64().unwrap() as usize;
+    let projection = match stitch["projection"].as_str().unwrap() {
+        "perspective" => reference::Projection::Rectilinear,
+        "cylindrical" => reference::Projection::Cylindrical,
+        _ => reference::Projection::Equirectangular,
+    };
+    let layout = reference::stitch_layout(
+        projection,
+        &registered_lens,
+        &registered,
+        at,
+        number(&stitch["scale"]),
+    );
+    assert_eq!(
+        (layout.width as u64, layout.height as u64),
+        (
+            stitch["bounds_width"].as_u64().unwrap(),
+            stitch["bounds_height"].as_u64().unwrap()
+        ),
+        "{stitch}"
+    );
+    let crop = &stitch["crop"];
+    let (x0, y0) = (crop["x"].as_u64().unwrap(), crop["y"].as_u64().unwrap());
+    assert_eq!(
+        (u64::from(image.width()), u64::from(image.height())),
+        (
+            crop["width"].as_u64().unwrap(),
+            crop["height"].as_u64().unwrap()
+        )
+    );
+    // Each frame's true orientation, in the stack's order.
+    let truths: Vec<Pose> = (0..registered.len())
+        .map(|k| {
+            let file = provenance["inputs"][k]["path"].as_str().unwrap();
+            poses[paths
+                .iter()
+                .position(|path| path.to_str().unwrap() == file)
+                .unwrap()]
+        })
+        .collect();
+    let scene = Scene::new(SEED, CELL);
+    let (width, height) = (image.width() as usize, image.height() as usize);
+    let planes = image.planes();
+    let plane = width * height;
+    let (mut sum, mut outliers, mut count) = (0.0, 0_usize, 0_usize);
+    for y in 0..height {
+        for x in 0..width {
+            let d = layout.direction((x0 as usize + x) as f64, (y0 as usize + y) as f64);
+            // What each frame recording this direction holds there: the scene along the true ray
+            // of that frame pixel, at the frames' gain, in 8-bit sRGB.
+            let mut low = [f64::INFINITY; 3];
+            let mut high = [f64::NEG_INFINITY; 3];
+            for (k, pose) in registered.iter().enumerate() {
+                let Some(q) = reference::stitch_frame_position(&registered_lens, pose, d) else {
+                    continue;
+                };
+                if !reference::stitch_records(&registered_lens, pose, d) {
+                    continue;
+                }
+                let ray = reference::apply(&truths[k].camera_to_world(), self::lens().ray(q));
+                let value = scene.radiance(ray);
+                for c in 0..3 {
+                    let t = in_jpeg(value[c] * GAIN);
+                    low[c] = low[c].min(t);
+                    high[c] = high[c].max(t);
+                }
+            }
+            assert!(low[0].is_finite(), "({x}, {y}) is covered");
+            let mut worst = 0.0_f64;
+            for c in 0..3 {
+                let o = f64::from(planes[c * plane + y * width + x]);
+                let e = (low[c] - o).max(o - high[c]).max(0.0) / (low[c] + STITCHED_FLOOR);
+                sum += e;
+                worst = worst.max(e);
+            }
+            outliers += usize::from(worst > STITCHED_PIXEL);
+            count += 1;
+        }
+    }
+    let mean = sum / (3 * count) as f64;
+    let outlying = outliers as f64 / count as f64;
+    eprintln!(
+        "{width} × {height} {}: mean {mean:.5}, outlying {outlying:.4}",
+        stitch["projection"]
+    );
+    assert!(mean <= STITCHED_MEAN, "mean {mean}");
+    assert!(outlying <= STITCHED_OUTLIERS, "outlying {outlying}");
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// The linear value an 8-bit sRGB code of `linear` decodes to.
+fn in_jpeg(linear: f64) -> f64 {
+    luxforge_reference::srgb::decode(luxforge_reference::srgb::code(linear))
 }
