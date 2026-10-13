@@ -65,6 +65,14 @@ The overview raster is aspect-fitted within **256 × 256 physical pixels**. Boun
 - The final measurement task covers 24 MP and 60 MP interaction costs; generic core `editor-performance` does not isolate minimap projection/presentation. Record that limit rather than claim a speed gain.
 - CPU reduction gets exact-buffer tests, GPU overview reduction gets declared-tolerance reference comparisons, and sharing/reservation/retirement tests prove allocation claims. Existing main-image and histogram output remain qualified.
 
+## Implementation choices
+
+Routine choices the implementation made within this contract:
+
+- **Geometry.** `crates/luxforge-app/src/view/minimap.rs` holds the placement, projection and navigation arithmetic over `CanvasView::scrolled`, the placement the scrollable, a pinch and the drawn photograph now share (`scrolled_origin`). The rectangle is the unsnapped geometric viewport: device-pixel snapping moves the photograph by under half a physical pixel, a quarter of a stage pixel at 200%. The threshold is core's `OVERVIEW_PERCENT` and `Zoom::shows_overview`.
+- **Layout.** The card is the 180 × 120 pt image area with 4 pt of padding, 12 pt (`CHROME_INSET`) from the viewport's right and bottom. It shrinks to at most 40% of the viewport's width and height, is withdrawn when its image area would be under 48 pt high, and lifts above the mode strip, an inset clear, where the two would overlap.
+- **Navigation.** A press on the rectangle grabs it without moving the view; a press elsewhere on the thumbnail centres there and continues as a drag from the centre. A fitting axis keeps whatever pan it holds, so navigation there sends no change. `view.set`'s schema states the pan's units and origin.
+
 ## Execution
 
 Four tasks, three dependency waves: shared placement/navigation projection and bounded overview rendering can start independently; the canvas widget integrates both; final qualification, measurements and documentation follow working delivery. Ordinary correctness and a targeted rendered integration check accompany the integrated widget. Extensive qualification and measurement do not hold up that useful delivery. Re-review against current `main` before implementation. The plan uses the roadmap's high-tier model minimum.
