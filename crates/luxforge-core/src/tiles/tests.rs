@@ -29,6 +29,7 @@ fn a_band_stream_is_the_shape_of_its_output() {
         width: 3,
         height: 5,
         depth: Depth::Sixteen,
+        sharpen: None,
     };
     let (sender, mut stream) = BandStream::channel(output, Answered::gpu());
     assert_eq!(stream.output(), output);

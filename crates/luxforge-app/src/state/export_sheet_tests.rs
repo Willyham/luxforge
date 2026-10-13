@@ -15,6 +15,7 @@ fn web() -> ExportPreset {
             },
             size: OutputSize::LongEdge { pixels: 2048 },
             optimise: true,
+            sharpen: None,
             metadata: MetadataLevel::Copyright,
             pixels_per_inch: None,
             folder: ExportFolder::Original,

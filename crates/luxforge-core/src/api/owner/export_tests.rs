@@ -2161,11 +2161,11 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
     );
 }
 
-/// `export.write` refuses by name the one value it cannot write yet, output sharpening, never
-/// ignoring it; a destination whose extension is not the format's and a chosen folder that is
-/// missing are refused too, and none of these writes anything. `export.jpeg` no longer exists.
+/// `export.write` refuses by name an output sharpening it does not know, never ignoring it; a
+/// destination whose extension is not the format's and a chosen folder that is missing are refused
+/// too, and none of these writes anything. `export.jpeg` no longer exists.
 #[test]
-fn export_write_refuses_sharpening_a_wrong_extension_and_a_missing_folder() {
+fn export_write_refuses_unknown_sharpening_a_wrong_extension_and_a_missing_folder() {
     let harness = Harness::start("not-yet");
     let state = harness.import("not-yet.jpg");
     let asset = state["asset"]["id"].clone();
@@ -2179,13 +2179,12 @@ fn export_write_refuses_sharpening_a_wrong_extension_and_a_missing_folder() {
         )
     };
     let sharpened = write(
-        settings_with(json!({"sharpen": {"medium": "screen", "amount": "standard"}})),
+        settings_with(json!({"sharpen": {"medium": "canvas", "amount": "standard"}})),
         "never.jpg",
     );
     assert_eq!(sharpened.code, "validation");
     assert!(
-        sharpened.message.starts_with("settings.sharpen")
-            && sharpened.message.contains("not yet available"),
+        sharpened.message.starts_with("settings.sharpen"),
         "{}",
         sharpened.message
     );

@@ -12,7 +12,14 @@
 //!
 //! Nothing here touches the file system: whether a chosen folder exists is the caller's to check,
 //! once, where it plans or writes.
-use crate::{Error, render::limits::MAX_FRAME_BYTES, tiles::output::Depth};
+use crate::{
+    Error,
+    render::limits::MAX_FRAME_BYTES,
+    tiles::{
+        output::Depth,
+        sharpen::{OutputSharpen, Sharpen, SharpenAmount, SharpenMedium},
+    },
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -243,6 +250,8 @@ pub struct ExportSettings {
     /// The format's slower, smaller encoding: progressive, optimised tables and trellis for JPEG,
     /// the slowest method for WebP, lossless Deflate for TIFF.
     pub optimise: bool,
+    /// Output sharpening after resizing, if any ([`crate::tiles::sharpen`]).
+    pub sharpen: Option<Sharpen>,
     pub metadata: MetadataLevel,
     /// The density the file names, if any.
     pub pixels_per_inch: Option<u16>,
@@ -295,6 +304,7 @@ impl ExportSettings {
             },
             size: OutputSize::Full,
             optimise: false,
+            sharpen: None,
             metadata,
             pixels_per_inch: None,
             folder: ExportFolder::Original,
@@ -351,13 +361,17 @@ impl ExportSettings {
         self.size.apply(stage)
     }
 
-    /// What the renderer is asked for: the output size at the output's depth.
+    /// What the renderer is asked for: the output size at the output's depth, sharpened for the
+    /// settings' medium at their density ([`OutputSharpen::new`]).
     pub fn output_spec(&self, stage: (u32, u32)) -> crate::tiles::output::OutputSpec {
         let (width, height) = self.output_size(stage);
         crate::tiles::output::OutputSpec {
             width,
             height,
             depth: self.depth(),
+            sharpen: self
+                .sharpen
+                .map(|sharpen| OutputSharpen::new(sharpen, self.pixels_per_inch)),
         }
     }
 
@@ -502,19 +516,13 @@ impl ExportSettings {
                 },
             },
         };
-        // Output sharpening is the plan's second delivery: until it lands, only `null` is a value.
-        if !field("sharpen").is_null() {
-            return Err(refused(
-                "sharpen",
-                "is not yet available: output sharpening has not been delivered; send null",
-            ));
-        }
         let settings = Self {
             format,
             size: parse_size(field("size"))?,
             optimise: field("optimise")
                 .as_bool()
                 .ok_or_else(|| refused("optimise", "must be true or false"))?,
+            sharpen: parse_sharpen(field("sharpen"))?,
             metadata: field("metadata")
                 .as_str()
                 .and_then(MetadataLevel::parse)
@@ -582,7 +590,12 @@ impl ExportSettings {
                 );
             }
         }
-        object.insert("sharpen".into(), Value::Null);
+        object.insert(
+            "sharpen".into(),
+            self.sharpen.map_or(Value::Null, |sharpen| {
+                json!({"medium": sharpen.medium.as_str(), "amount": sharpen.amount.as_str()})
+            }),
+        );
         object.insert("metadata".into(), json!(self.metadata.as_str()));
         object.insert("pixels_per_inch".into(), json!(self.pixels_per_inch));
         object.insert(
@@ -823,6 +836,32 @@ fn parse_size(value: &Value) -> Result<OutputSize, Error> {
     Ok(size)
 }
 
+fn parse_sharpen(value: &Value) -> Result<Option<Sharpen>, Error> {
+    let shape = || {
+        refused(
+            "sharpen",
+            "must be null or {medium: screen, matte or glossy, amount: low, standard or high}",
+        )
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::Object(object) if object.len() == 2 => {
+            let medium = object
+                .get("medium")
+                .and_then(Value::as_str)
+                .and_then(SharpenMedium::parse)
+                .ok_or_else(shape)?;
+            let amount = object
+                .get("amount")
+                .and_then(Value::as_str)
+                .and_then(SharpenAmount::parse)
+                .ok_or_else(shape)?;
+            Ok(Some(Sharpen { medium, amount }))
+        }
+        _ => Err(shape()),
+    }
+}
+
 fn parse_folder(value: &Value) -> Result<ExportFolder, Error> {
     let shape = || {
         refused(
@@ -865,7 +904,7 @@ pub(crate) fn schema() -> Value {
             "chroma": {"values": ["444", "420"], "applies": ["jpeg"]},
             "limit_bytes": {"range": [LIMIT_RANGE.start(), LIMIT_RANGE.end()], "nullable": true, "applies": ["jpeg", "webp"]},
             "bit_depth": {"values": [8, 16], "applies": ["tiff"]},
-            "sharpen": {"values": [null], "nullable": true, "applies": "all", "notes": "output sharpening is not yet available: only null is accepted"},
+            "sharpen": {"values": {"medium": SharpenMedium::ALL.map(SharpenMedium::as_str), "amount": SharpenAmount::ALL.map(SharpenAmount::as_str)}, "nullable": true, "applies": "all", "notes": "output sharpening, null for none: {medium, amount}, applied after resizing at the output's size to luminance only, on the encoded codes, adding no colour fringes; screen sharpens with a small fixed radius, matte and glossy with one from pixels_per_inch (300 ppi when it is null), matte the stronger; low, standard and high scale the amount"},
             "metadata": {"values": MetadataLevel::ALL.map(MetadataLevel::as_str), "applies": "all", "notes": "none: no EXIF; copyright: Artist and Copyright; no_location: every supported field but the GPS group; all: every supported field; every level but none also writes Orientation 1, ColorSpace sRGB, the output's pixel dimensions, ExifVersion and Software"},
             "pixels_per_inch": {"range": [DENSITY_RANGE.start(), DENSITY_RANGE.end()], "nullable": true, "applies": "all"},
             "folder": {"values": "\"original\" (each photograph's own original's folder) or {path}, an absolute path to an existing folder", "applies": "all"},

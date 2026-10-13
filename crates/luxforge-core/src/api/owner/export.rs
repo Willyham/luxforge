@@ -727,7 +727,8 @@ pub(super) fn write(
     } = plan;
     let capture = capture.at_level(settings.metadata);
     let output = settings.output_spec((identity.width, identity.height));
-    let resampled = !output.is_full(identity.width, identity.height);
+    // The reference's resampling phase also sharpens a full-size output.
+    let resampled = !output.is_full(identity.width, identity.height) || output.sharpen.is_some();
     let route = Route::of(settings);
     let encoding = Encoding {
         control,

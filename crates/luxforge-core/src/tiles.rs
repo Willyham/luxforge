@@ -62,6 +62,7 @@ pub(crate) mod grid;
 pub mod output;
 mod reference;
 pub mod region;
+pub mod sharpen;
 pub use crate::render::export_output::{LANCZOS_LOBES, RESAMPLE_BAND_ROWS, Taps, lanczos_taps};
 pub use analysis::ANALYSIS_QUEUE_CAPACITY;
 pub(crate) use analysis::AnalysisWorker;
@@ -69,6 +70,7 @@ pub use grid::{
     ClipDetection, GridRead, MAX_SIDE as GRID_MAX_SIDE, SampleGrid, SensorClip, read as read_grid,
 };
 pub use output::{Depth, OutputFrame, OutputSpec, PixelRows, Pixels, reference_output};
+pub use sharpen::{OutputSharpen, Sharpen, SharpenAmount, SharpenKernel, SharpenMedium};
 
 #[cfg(test)]
 pub(crate) use reference::Hold;
@@ -843,12 +845,14 @@ impl BandStream {
         &self.answered
     }
 
-    /// The output its bands make up: their width, the rows they add up to and their depth.
+    /// The output its bands make up: their width, the rows they add up to and their depth. Whether
+    /// its provider sharpened them is the request's, not the bands', so it names no sharpening.
     pub fn output(&self) -> OutputSpec {
         OutputSpec {
             width: self.width,
             height: self.height,
             depth: self.depth,
+            sharpen: None,
         }
     }
 

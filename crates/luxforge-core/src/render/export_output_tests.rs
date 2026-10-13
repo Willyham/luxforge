@@ -90,6 +90,7 @@ fn assert_resample_matches(terminal: &WideTerminal, width: u32, height: u32) {
         width,
         height,
         depth: Depth::Eight,
+        sharpen: None,
     };
     let Pixels::Eight(rgba) = resample(terminal, eight, &Cancel::never()).unwrap() else {
         panic!("an 8-bit output");
@@ -238,6 +239,7 @@ fn resample_reads_the_linear_terminal_as_its_codes() {
         width: 8,
         height: 5,
         depth: Depth::Sixteen,
+        sharpen: None,
     };
     assert_eq!(
         resample(
@@ -272,6 +274,7 @@ fn resample_clamps_the_ringing_of_a_hard_edge() {
         width: 13,
         height: 1,
         depth: Depth::Sixteen,
+        sharpen: None,
     };
     let Pixels::Sixteen(rgba) = resample(&terminal, output, &Cancel::never()).unwrap() else {
         panic!("a 16-bit output");
@@ -296,6 +299,7 @@ fn resample_stops_when_cancelled() {
         width: 10,
         height: 20,
         depth: Depth::Eight,
+        sharpen: None,
     };
     assert_eq!(
         resample(&terminal, output, &cancel)
@@ -431,6 +435,7 @@ fn tiles_reference_output_at_16_bits_encodes_the_frames_values_once() {
         width: 41,
         height: 29,
         depth: Depth::Sixteen,
+        sharpen: None,
     };
     let identity = evaluation(jpeg(41, 29), vec![]);
     let rgba = output(&identity, wide).unwrap();
@@ -502,6 +507,7 @@ fn tiles_reference_output_when_smaller_resamples_the_terminal() {
                 width: 16,
                 height: 11,
                 depth,
+                sharpen: None,
             },
         )
         .unwrap();
@@ -538,6 +544,7 @@ fn tiles_reference_output_refuses_an_enlarged_or_empty_output() {
                 width,
                 height,
                 depth,
+                sharpen: None,
             };
             assert_eq!(
                 output(&evaluation, spec).unwrap_err().kind.code(),
@@ -552,6 +559,7 @@ fn tiles_reference_output_refuses_an_enlarged_or_empty_output() {
         width: 6,
         height: 4,
         depth: Depth::Sixteen,
+        sharpen: None,
     };
     assert_eq!(
         reference_output(
