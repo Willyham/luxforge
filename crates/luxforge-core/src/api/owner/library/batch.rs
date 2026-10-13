@@ -305,6 +305,31 @@ fn apply(
     Ok(set.outcome(asset, result))
 }
 
+/// The batch export's catalog job, its activity label naming the format it writes, as a single
+/// export's does: `Exporting JPEG`, `Exporting WebP` or `Exporting TIFF`.
+fn batch_export_job(
+    format: crate::ExportFormat,
+) -> &'static crate::catalog_types::jobs::CatalogJob {
+    use crate::{ExportFormat, catalog_types::jobs::CatalogJob};
+    static JPEG: CatalogJob = CatalogJob {
+        label: "Exporting JPEG",
+        ..BATCH_EXPORT
+    };
+    static WEBP: CatalogJob = CatalogJob {
+        label: "Exporting WebP",
+        ..BATCH_EXPORT
+    };
+    static TIFF: CatalogJob = CatalogJob {
+        label: "Exporting TIFF",
+        ..BATCH_EXPORT
+    };
+    match format {
+        ExportFormat::Jpeg => &JPEG,
+        ExportFormat::Webp => &WEBP,
+        ExportFormat::Tiff => &TIFF,
+    }
+}
+
 /// `batch.export`: check the settings and a chosen folder, then start a `batch-export` job that
 /// exports each photograph `targets` names as `export.write` would, answering a
 /// [`BatchReport`](crate::catalog_types::BatchReport) with the files it wrote.
@@ -346,7 +371,7 @@ pub(in crate::api) fn batch_export(
     };
     let task = Task {
         job_id: JobId::new(),
-        job: &BATCH_EXPORT,
+        job: batch_export_job(settings.format()),
         asset_id: only(&assets),
         detail: Some(detail),
         origin: call.origin.clone(),

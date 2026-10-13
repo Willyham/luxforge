@@ -854,6 +854,10 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
     );
     let activity = harness.activity(&job);
     assert_eq!(activity["kind"], "batch.export");
+    assert_eq!(
+        activity["label"], "Exporting JPEG",
+        "the board names the format"
+    );
     assert_eq!(activity["phase"], "encoding");
     assert_eq!(activity["detail"], "3 photographs to out");
     let staged = names(&out);
@@ -948,6 +952,11 @@ fn a_mixed_webp_batch_reports_the_photograph_webp_cannot_hold_and_cancels_betwee
         json!({"targets": assets(&targets), "settings": settings, "mutation": envelope("webp-cancel")}),
     );
     gate.wait_reached(1, "the batch's second photograph");
+    assert_eq!(
+        harness.activity(&started["job_id"])["label"],
+        "Exporting WebP",
+        "the board names the format"
+    );
     harness.ok("job.cancel", json!({"job_id": started["job_id"]}));
     gate.open();
     let settled = harness.settle(&started["job_id"]);
