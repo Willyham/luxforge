@@ -70,6 +70,7 @@ pub enum Icon {
     Check,
     Stack,
     Bracket,
+    Panorama,
     Sliders,
     Warning,
     Drive,
@@ -96,7 +97,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 76] = [
+    pub const NAMED: [(&'static str, Icon); 77] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -157,6 +158,7 @@ impl Icon {
         ("check", Self::Check),
         ("stack", Self::Stack),
         ("bracket", Self::Bracket),
+        ("panorama", Self::Panorama),
         ("sliders", Self::Sliders),
         ("warning", Self::Warning),
         ("drive", Self::Drive),
@@ -1096,6 +1098,17 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             for bar in [&dark, &middle, &bright] {
                 frame.stroke(bar, stroke);
             }
+        }
+        // A panorama: a wide frame whose top and bottom curve in towards its middle, as a
+        // cylindrical stitch's edges do.
+        Icon::Panorama => {
+            let mut path = canvas::path::Builder::new();
+            path.move_to(p(1.5, 3.5));
+            path.quadratic_curve_to(p(8.0, 6.0), p(14.5, 3.5));
+            path.line_to(p(14.5, 12.5));
+            path.quadratic_curve_to(p(8.0, 10.0), p(1.5, 12.5));
+            path.close();
+            frame.stroke(&path.build(), stroke);
         }
         // Three sliders, each knob hollow over its rail: in the catalog, developed.
         Icon::Sliders => {

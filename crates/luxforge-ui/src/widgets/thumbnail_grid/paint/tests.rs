@@ -914,6 +914,7 @@ fn a_primary_action_draws_in_the_accent() {
 fn a_pending_row_draws_its_words_progress_and_button() {
     let metrics = GridMetrics::select(136.0);
     let row = PendingRow {
+        icon: crate::Icon::Bracket,
         title: "Merging HDR · 3 exposures".into(),
         detail: "Merging 2 of 3".into(),
         progress: Some(0.5),
@@ -987,6 +988,7 @@ fn a_stack_badge_fits_its_words_and_shows_its_disclosure() {
     let view = |expanded| CellView {
         picked: true,
         stack: Some(CellStack {
+            icon: Icon::Bracket,
             label: "HDR · 3 exposures",
             short: "HDR · 3",
             expanded,
@@ -1038,4 +1040,53 @@ fn a_stack_badge_fits_its_words_and_shows_its_disclosure() {
         .collect();
     assert_eq!(chevrons, [Icon::ChevronRight, Icon::ChevronDown]);
     assert!(recorder.texts().contains(&"−2 EV · outside the filter"));
+}
+
+/// A panorama's stack draws its own icon, a wide frame, on its badge, its originals' notes and its
+/// pending row, where an HDR stack draws a bracket.
+#[test]
+fn a_panorama_stack_draws_its_own_icon() {
+    let metrics = GridMetrics::select(200.0);
+    let row = PendingRow {
+        icon: Icon::Panorama,
+        title: "Merging panorama · 7 photos".into(),
+        detail: "Stitching".into(),
+        progress: None,
+        action: Some("Cancel".into()),
+        failed: false,
+    };
+    let layout = GridLayout::new(
+        vec![GridBlock::Pending(row), GridBlock::Singles(2)],
+        metrics,
+        700.0,
+    );
+    let cell = |grid: GridCell| CellView {
+        stack: (grid.item == 0).then_some(CellStack {
+            icon: Icon::Panorama,
+            label: "Panorama · 7 photos",
+            short: "Pano · 7",
+            expanded: true,
+        }),
+        note: (grid.item == 1).then_some("Outside the filter"),
+        note_icon: Some(Icon::Panorama),
+        ..CellView::default()
+    };
+    let mut recorder = Recorder::default();
+    paint(
+        &scene(&layout, 0.0, Size::new(700.0, 400.0)),
+        &cell,
+        &mut recorder,
+    );
+    let icons: Vec<Icon> = recorder
+        .ops
+        .iter()
+        .filter_map(|(_, op)| match op {
+            Op::Icon { icon, .. } if matches!(icon, Icon::Panorama | Icon::Bracket) => {
+                Some(*icon)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(icons, [Icon::Panorama; 3], "the row, the badge and the note");
+    assert!(recorder.texts().contains(&"Panorama · 7 photos"));
 }

@@ -521,6 +521,7 @@ fn pending(
     failed: bool,
 ) -> GridBlock {
     GridBlock::Pending(PendingRow {
+        icon: crate::Icon::Bracket,
         title: title.into(),
         detail: detail.into(),
         progress,
@@ -541,6 +542,7 @@ fn exposure(step: usize) -> CellView<'static> {
 /// A result's badge: "HDR · 3 exposures", or "HDR · 3" in a narrow cell.
 fn badge(expanded: bool) -> Option<CellStack<'static>> {
     Some(CellStack {
+        icon: crate::Icon::Bracket,
         label: "HDR \u{b7} 3 exposures",
         short: "HDR \u{b7} 3",
         expanded,
