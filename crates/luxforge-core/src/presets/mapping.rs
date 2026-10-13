@@ -6,7 +6,10 @@
 //! that Luxforge renders what Lightroom renders; `docs/research/lightroom/slider-parity.md` records
 //! why equal values do not mean equal pixels. A curve transfer carries Lightroom's composite point
 //! curve onto the Tone curve's points, rescaled from Lightroom's 0–255 to 0–1.
+//! A value transfer the Lightroom alignment has calibrated converts through its frozen map
+//! instead ([`super::calibration`]), and the report names that rule.
 //! A value that does not parse or lies outside the control's hard range is refused, never clamped.
+use super::calibration;
 use super::report::{DerivedSettings, ImportReport, MappedSetting, ReportedSetting};
 use super::value::{
     RawSetting, RawValue, boolean, identity_curve, json_number, number, report_text,
@@ -1341,13 +1344,42 @@ fn transfer_value(
     field: &str,
     value: &RawValue,
 ) -> Result<Value, String> {
+    let applied = json_number(value).ok_or_else(|| "not a number".to_owned())?;
+    checked(registry, action, field, applied)
+}
+
+/// A calibrated transfer: Lightroom's number through the frozen map `calibration` holds, refused
+/// at a range shortfall, then checked against the target as a value transfer is.
+fn calibrated_value(
+    registry: &ModuleRegistry,
+    action: &str,
+    field: &str,
+    value: &RawValue,
+    calibration: &calibration::Calibration,
+) -> Result<Value, String> {
+    // The written number is held to the control's range first, as a value transfer is, so an
+    // out-of-range value is refused for the same reason whether or not its setting is calibrated.
+    let written = json_number(value).ok_or_else(|| "not a number".to_owned())?;
+    let number = checked(registry, action, field, written)?
+        .as_f64()
+        .ok_or_else(|| "not a number".to_owned())?;
+    let converted = calibration.convert(number)?;
+    checked(registry, action, field, Value::from(converted))
+}
+
+/// `applied` checked against the presettable target `action.field`'s own parameter.
+fn checked(
+    registry: &ModuleRegistry,
+    action: &str,
+    field: &str,
+    applied: Value,
+) -> Result<Value, String> {
     let (_, descriptor) = registry
         .patch_action(action)
         .map_err(|refusal| refusal.detail)?;
     let Some(parameter) = descriptor.parameter(field) else {
         return Err(format!("{action} has no {field} field"));
     };
-    let applied = json_number(value).ok_or_else(|| "not a number".to_owned())?;
     check_value(parameter, &applied).map_err(|_| match &parameter.kind {
         ParameterKind::Number { min, max } => format!("outside Luxforge's range {min}..{max}"),
         ParameterKind::Integer { min, max } => {
@@ -1602,6 +1634,7 @@ pub(super) fn map(
                             action: "auto-tone".into(),
                             field: None,
                             applied: Value::Object(Map::new()),
+                            rule: None,
                         });
                     }
                     Err(error) => refused.push(reported(setting, Some(&error.detail))),
@@ -1636,10 +1669,17 @@ pub(super) fn map(
                     refused.push(reported(setting, Some(reason)));
                     continue;
                 }
-                let applied = match row.rule {
-                    Rule::CurveTransfer { .. } => {
+                // A value transfer the Lightroom alignment has calibrated converts through its
+                // frozen map instead of carrying the same number.
+                let calibrated = match row.rule {
+                    Rule::Transfer { .. } => calibration::calibrated(row.name, action, field),
+                    _ => None,
+                };
+                let applied = match (row.rule, calibrated) {
+                    (Rule::CurveTransfer { .. }, _) => {
                         curve_transfer_value(registry, action, field, value)
                     }
+                    (_, Some(map)) => calibrated_value(registry, action, field, value, map),
                     _ => transfer_value(registry, action, field, value),
                 };
                 match applied {
@@ -1652,6 +1692,7 @@ pub(super) fn map(
                             action: action.to_owned(),
                             field: Some(field.to_owned()),
                             applied,
+                            rule: calibrated.map(|_| calibration::rule()),
                         });
                     }
                     Err(reason) => refused.push(reported(setting, Some(&reason))),
@@ -1681,6 +1722,7 @@ pub(super) fn map(
                             action: RAW.to_owned(),
                             field: Some(field.to_owned()),
                             applied,
+                            rule: None,
                         });
                     }
                     Some(Err(reason)) => refused.push(reported(setting, Some(reason))),
@@ -1717,6 +1759,7 @@ pub(super) fn map(
                                     action: action.to_owned(),
                                     field: Some(field.to_owned()),
                                     applied,
+                                    rule: None,
                                 });
                             }
                         }

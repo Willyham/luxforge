@@ -42,8 +42,9 @@ pub struct DerivedSettings {
     pub refused: Option<String>,
 }
 
-/// One value transfer: the same number on the Luxforge control with the same name, range and
-/// direction. It is not a claim that Luxforge renders what Lightroom renders.
+/// One mapped setting: by its row's own rule (a value transfer, the same number on the Luxforge
+/// control with the same name, range and direction), or by the calibrated conversion `rule` names.
+/// It is not a claim that Luxforge renders what Lightroom renders.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MappedSetting {
@@ -55,6 +56,9 @@ pub struct MappedSetting {
     pub field: Option<String>,
     /// The value the field receives.
     pub applied: Value,
+    /// The calibrated conversion that gave `applied`, when one did; absent for the row's own rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
