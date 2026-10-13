@@ -6415,6 +6415,59 @@ fn a_percentage_mask_gesture_with_its_overlay_shown_is_kept_off_the_gpu_only_by_
     masking.draft(DraftMessage::Cancel);
 }
 
+/// Drawing or moving a mask no layer reads yet changes no pixel: each tick holds, naming
+/// `unchanged`, and the GPU's picture at rest of the committed stack stays the photograph, drawn in
+/// place of the CPU frame behind it, which for a stack the GPU presented is an earlier stack's or
+/// the instant preview, never shown for the drag.
+#[test]
+fn a_mask_gesture_no_layer_reads_keeps_the_gpu_picture_at_rest_on_screen() {
+    let mut masking = Masking::opened();
+    luxforge_testbase::wait_until("the opened stack at rest", || {
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
+        masking.editor.gpu_rest_plan().is_some() && !masking.editor.presentation.queue.is_busy()
+    });
+    masking.enter_mask_mode();
+    let rest = |editor: &Editor| {
+        let surfaces = editor.surfaces();
+        let (plan, _) = editor
+            .gpu_rest_plan()
+            .expect("the committed stack's view plan");
+        assert!(
+            surfaces.gpu.is_some_and(|drawn| std::ptr::eq(drawn, plan)),
+            "the view plan at rest is handed"
+        );
+        assert!(!surfaces.gpu_hold, "drawn in place of the CPU frame");
+        assert!(surfaces.gpu_tag.is_none(), "no gesture's revision");
+        (
+            plan.boundary.version(),
+            surfaces.gpu_rest.map(|picture| picture.version),
+        )
+    };
+    let at_rest = rest(&masking.editor);
+    masking.message(MaskMessage::New(RADIAL.to_owned()));
+    masking.open_gesture();
+    masking.sweep_held((0.4, 0.4), (0.6, 0.6));
+    for step in 0..=3 {
+        if step > 0 {
+            let offset = 0.02 * f64::from(step);
+            masking.message(MaskMessage::Handle(MaskPointer::Drag {
+                x: 0.6 + offset,
+                y: 0.6 + offset,
+            }));
+        }
+        assert!(masking.editor.core_gesture().is_some(), "the drag is open");
+        assert_eq!(masking.editor.gpu_plan_fallback(), Some("unchanged".into()));
+        assert_eq!(
+            rest(&masking.editor),
+            at_rest,
+            "tick {step}: the same picture at rest stays on screen"
+        );
+    }
+    masking.draft(DraftMessage::Cancel);
+}
+
 /// The owner's tile service, holding every call it is given until the test releases them, so a
 /// caller that waited on a pixel read would wait as long as the test likes.
 struct HeldTiles {
