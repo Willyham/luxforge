@@ -42,6 +42,7 @@ pub(crate) struct SimpleStitcher {
 }
 
 impl SimpleStitcher {
+    #[cfg(test)]
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             magnify: 1.0,
@@ -49,6 +50,7 @@ impl SimpleStitcher {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn magnified(magnify: f64) -> Arc<Self> {
         Arc::new(Self {
             magnify,

@@ -822,6 +822,7 @@ fn the_presets_scale_the_image_box_by_its_ratio() {
 fn a_pending_row_is_a_line_of_its_own() {
     let metrics = GridMetrics::select(136.0);
     let row = PendingRow {
+        icon: crate::Icon::Bracket,
         title: "Merging HDR".into(),
         detail: "".into(),
         progress: None,

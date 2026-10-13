@@ -84,6 +84,8 @@ impl HeaderAction {
 /// bar along its bottom and an action button at its right ("Cancel"). It consumes no items.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingRow {
+    /// The work's kind: a bracket for an HDR merge, a panorama for a panorama's.
+    pub icon: crate::Icon,
     pub title: String,
     pub detail: String,
     /// Done, from 0 to 1; `None` while unknown.

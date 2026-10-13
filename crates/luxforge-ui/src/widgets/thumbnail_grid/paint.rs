@@ -50,16 +50,30 @@ pub struct CellView<'a> {
     /// A short note over the photograph's bottom left: an original's exposure in an open stack,
     /// that it is outside the view's filter, or why it has no file.
     pub note: Option<&'a str>,
+    /// The note's icon: its stack's kind's; a bracket's when none is named.
+    pub note_icon: Option<Icon>,
 }
 
-/// A stack's badge: its words ("HDR · 3 exposures"), shorter words for a narrow cell ("HDR · 3")
-/// and whether the stack is open, which turns its chevron down. A press on it publishes
-/// [`crate::ThumbnailGrid::on_stack`].
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// A stack's badge: its kind's icon (a bracket, a panorama), its words ("HDR · 3 exposures"),
+/// shorter words for a narrow cell ("HDR · 3") and whether the stack is open, which turns its
+/// chevron down. A press on it publishes [`crate::ThumbnailGrid::on_stack`].
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellStack<'a> {
+    pub icon: Icon,
     pub label: &'a str,
     pub short: &'a str,
     pub expanded: bool,
+}
+
+impl Default for CellStack<'_> {
+    fn default() -> Self {
+        Self {
+            icon: Icon::Bracket,
+            label: "",
+            short: "",
+            expanded: false,
+        }
+    }
 }
 
 /// Whether a cell's file can be read.
@@ -663,7 +677,7 @@ fn paint_pending<'a>(
     let (icon, icon_ink) = if row.failed {
         (Icon::Warning, Ink::Fixed(theme::CLIPPING_HIGHLIGHT))
     } else {
-        (Icon::Bracket, Ink::Token(Token::TextIdentity))
+        (row.icon, Ink::Token(Token::TextIdentity))
     };
     painter.icon(icon, theme::MOMENT_ICON_SIZE, icon_ink, plan.icon);
     let clip = plan.rect;
@@ -1001,7 +1015,7 @@ pub(crate) fn plan_stack<'v>(
 
 fn stack_badge<'t>(stack: CellStack<'_>, text: &'t str) -> Badge<'t> {
     Badge {
-        icon: Icon::Bracket,
+        icon: stack.icon,
         text,
         style: BADGE,
         ink: Ink::Fixed(theme::PHOTO_LABEL),
@@ -1125,7 +1139,7 @@ fn paint_badges<'a>(
     }
     if let Some(note) = view.note {
         let mut badge = Badge {
-            icon: Icon::Bracket,
+            icon: view.note_icon.unwrap_or(Icon::Bracket),
             text: "",
             style: BADGE,
             ink: Ink::Fixed(theme::PHOTO_LABEL),

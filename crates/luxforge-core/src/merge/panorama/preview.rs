@@ -216,6 +216,11 @@ fn draw(
             crop_loss: record.crop_loss,
             reference: at[analysis.registration.reference] as u32,
             max_residual_px: analysis.registration.max_residual_px,
+            frames: order
+                .iter()
+                .filter_map(|&frame| prepared.inputs.get(frame))
+                .map(|input| input.path.clone())
+                .collect(),
         }),
         overlays: MergePreviewOverlays::Panorama(overlays),
         output: MergeOutput {
