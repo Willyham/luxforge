@@ -149,10 +149,10 @@ pub(crate) trait PixelDomain: Sync {
     /// An empty spatial frame of `stage`, inside the domain's frame limit.
     fn spatial_frame(stage: Stage, wide: bool) -> Result<Self::SpatialFrame, Error>;
 
-    /// An empty spatial frame of the window `area` of a stage, which the reference's banded mode
-    /// materializes ([`Evaluation::windowed`]): laid out as a frame of a stage of the area's size,
-    /// inside the domain's window limit. A domain without a banded mode holds it to its frame
-    /// limit.
+    /// An empty spatial frame of `area` of a stage, the whole stage or the window of it the
+    /// reference's banded mode materializes ([`Evaluation::windowed`]): laid out as a frame of a
+    /// stage of the area's size, inside the domain's window limit. A domain without a banded mode
+    /// holds it to its frame limit.
     fn area_frame(area: Region, wide: bool) -> Result<Self::SpatialFrame, Error> {
         Self::spatial_frame(
             Stage {
@@ -951,11 +951,9 @@ pub(super) fn spatial_entry<D: PixelDomain>(
             fill(region, planes, Parallelism::Serial)
         })
     })?;
-    let mut frame = if whole {
-        D::spatial_frame(stage, wide)?
-    } else {
-        D::area_frame(area, wide)?
-    };
+    // A frame over a window is bounded as one; so is a frame over the whole stage, which in the
+    // banded mode may be as wide as a paged source's stage.
+    let mut frame = D::area_frame(area, wide)?;
     let held = Stage {
         width: area.width,
         height: area.height,

@@ -428,12 +428,9 @@ pub(super) fn repair_frame<D: PixelDomain>(
     }
     cancel.check()?;
     let parallelism = repair_parallelism(stage);
-    let whole = area == Region::whole(stage);
-    let mut frame = if whole {
-        D::spatial_frame(stage, wide)?
-    } else {
-        D::area_frame(area, wide)?
-    };
+    // A frame over a window is bounded as one; so is a frame over the whole stage, which in the
+    // banded mode may be as wide as a paged source's stage.
+    let mut frame = D::area_frame(area, wide)?;
     let built;
     let store = match &entry.held {
         Some(store) => store.as_ref(),

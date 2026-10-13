@@ -85,11 +85,13 @@ pub(crate) trait BandSource: Sync {
 }
 
 /// A whole source's planes read as windows: the content stage through the source's own view.
+#[cfg(test)]
 pub(crate) struct WholeSource<'a> {
     pub(crate) image: &'a crate::LinearImage,
     pub(crate) settings: LinearSettings,
 }
 
+#[cfg(test)]
 impl BandSource for WholeSource<'_> {
     fn dimensions(&self) -> (u32, u32) {
         (self.image.width(), self.image.height())
@@ -531,7 +533,9 @@ impl<'a> Banded<'a> {
     }
 
     /// The output's own linear values over `rect`, row by row, as `f32`: what the reference tile
-    /// service answers a linear read with ([`crate::tiles::ReadValues::Linear`]).
+    /// service answers a linear read with ([`crate::tiles::ReadValues::Linear`]). For the paged
+    /// source's sample reads and its GPU qualification, which read it once their paths do.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn linear(&self, rect: Region) -> Result<Vec<[f32; 3]>, Error> {
         crate::Raster::expected_len(rect.width, rect.height)?;
         let last = self.compiled.segments.len() - 1;
@@ -588,7 +592,9 @@ impl<'a> Banded<'a> {
     /// The output reduced to fit `bounds` by the linear-light area average the reference frame is
     /// reduced by at a view smaller than the stage ([`super::reduce_to_view`]), band by band: the
     /// reduced frame of the whole render, byte for byte, without the whole frame. `None` when the
-    /// output already fits. What a reduced view of a paged source's output is held to.
+    /// output already fits. What a reduced view of a paged source's output is held to: the GPU's
+    /// overview tolerance is declared against it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reduced(
         &self,
         bounds: ProxyBounds,
@@ -613,11 +619,5 @@ impl<'a> Banded<'a> {
             source_fingerprint: source_fingerprint.to_owned(),
             snapshot_id,
         }))
-    }
-
-    /// The stack this mode evaluates, its first pass's statistics handed in.
-    #[cfg(test)]
-    pub(crate) fn compiled(&self) -> &Compiled {
-        &self.compiled
     }
 }

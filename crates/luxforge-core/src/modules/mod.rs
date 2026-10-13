@@ -183,9 +183,11 @@ pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_am
 pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
 pub(crate) use repair::{RepairKind, RepairOperation};
+#[cfg(any(test, feature = "qualification"))]
+pub(crate) use spatial::ESTIMATE_REDUCTION;
 pub(crate) use spatial::{
-    ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
-    PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit, estimate_reduction,
+    Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction,
+    SPATIAL_BUDGET_BYTES, SpatialUnit, estimate_reduction,
 };
 pub use spatial::{MAX_MASKED_SPATIAL_LAYERS, Region, SpatialOperation};
 pub use vignette::VIGNETTE_EFFECT;
