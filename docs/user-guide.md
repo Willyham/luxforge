@@ -726,6 +726,8 @@ Vignette is the last section of the tools panel, collapsed until you open it, an
 
 Amount 0 is the identity whatever the other three hold, so a layer with the amount at zero changes nothing. Each slider drafts and commits as Basic's do, labelled "Vignette amount −35" or "Vignette feather 80"; the reset returns all four to their defaults as one entry, "Reset Vignette". Only this one style is built: the highlight-priority, colour-priority and paint-overlay variants are not.
 
+A hard or almost-hard transition uses the reference renderer to keep its edge accurate, so very low Feather settings can render more slowly. The normal feathered vignette stays on the GPU where available; the app reports a reference fallback when it uses one.
+
 ### Module settings and consent
 
 A module that needs settings, a download or a network service shows a small block at the top of its section: each resource it can download, with its size, its state and Download, Cancel or Remove (AI editing shows its setup instead); its own settings, drawn like any other control; and one line saying what went wrong, if anything did. If another program changes the settings while you are typing, the block reads them again and says so on that line. Provider profiles and their keys are set through the API (`module.profile.create`, `module.settings.set` and `module.settings.set-secret`); a key is kept in the macOS Keychain, never in the catalog or a settings file, and is only ever reported as present or not.
