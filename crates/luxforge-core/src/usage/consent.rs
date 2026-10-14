@@ -252,7 +252,7 @@ impl Limits {
         window_events: 512,
         batch_bytes: 64 * 1024,
         attempt_interval_s: 60,
-        flush_after_s: 600,
+        flush_after_s: 120,
         window_age_s: 30 * 60,
     };
 }
