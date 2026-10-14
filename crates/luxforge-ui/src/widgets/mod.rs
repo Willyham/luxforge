@@ -88,7 +88,9 @@ pub use color_swatch::{ColorSwatchModel, color_swatch};
 pub use coverage_thumbnail::CoverageThumbnailModel;
 pub use curve_editor::{CurveEditorEvent, CurveEditorModel, CurvePointRow, curve_editor};
 pub use disclosure_heading::disclosure_heading;
-pub use dropdown::{DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list};
+pub use dropdown::{
+    DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list, menu_list_with_width,
+};
 pub use field_grid::{GridField, field_grid};
 pub use floating_bar::{
     DraftBarModel, DraftFinish, DraftSubject, draft_bar, draft_bar_with_controls,

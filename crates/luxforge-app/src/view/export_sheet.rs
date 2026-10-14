@@ -27,7 +27,7 @@ use iced::{
 use luxforge_ui::{
     ButtonSize, ButtonTone, Element, MenuEntry, MenuItem, RailDecoration, SegmentedModel,
     SliderModel, ToggleModel, Token, Tone, ValueEdit, boxed_input, caption, error_caption,
-    inline_notice, label, menu_list, popover, section_label, segmented, slider, switch,
+    inline_notice, label, menu_list_with_width, popover, section_label, segmented, slider, switch,
     text_button, theme, title, truncated_text,
 };
 
@@ -394,9 +394,7 @@ fn card_view(card: &CardModel) -> Element<'_, Message> {
                 reason: None,
             })
         }));
-        container(menu_list(entries))
-            .width(Length::Fixed(220.0))
-            .into()
+        menu_list_with_width(entries, 220.0)
     });
     popover(face, menu, sheet_message(SheetMessage::CardMenu(None)))
 }
