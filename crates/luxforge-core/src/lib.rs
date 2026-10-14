@@ -90,8 +90,9 @@ pub use api::{
     LocalServer, LocalSessionInfo, MASK_MODE, MAX_EVENT_WAIT_MS, MAX_REQUEST_BYTES,
     MAX_VIEW_SELECTIONS, MaskOverlayColour, MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED,
     POINTER_MODE, PROTOCOL, PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,
-    Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
-    WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
+    Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, SourceRelease,
+    ViewSelection, WorkspaceState, live_session_file, running_sessions, schemas,
+    serve_json_lines_with,
 };
 pub use artifacts::{
     ArtifactId, ArtifactTable, CandidatePart, CandidateRead, CandidateState, DerivedColour,

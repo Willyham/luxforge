@@ -588,6 +588,124 @@ impl MetalDevice {
     }
 }
 
+// The allocator's freed pages and the system's memory pressure (`crate::memory`).
+
+/// libSystem's `malloc_zone_t`, which is only ever passed by pointer here.
+#[repr(C)]
+struct MallocZone {
+    _opaque: [u8; 0],
+}
+
+/// libdispatch's `struct dispatch_source_type_s`, whose address names a kind of source.
+#[repr(C)]
+struct DispatchSourceType {
+    _opaque: [u8; 0],
+}
+
+/// `dispatch_object_t` and its subtypes, which are only ever passed by pointer here.
+type DispatchObject = *mut std::ffi::c_void;
+
+/// `DISPATCH_MEMORYPRESSURE_WARN` and `DISPATCH_MEMORYPRESSURE_CRITICAL`.
+const MEMORYPRESSURE_WARN: usize = 0x02;
+const MEMORYPRESSURE_CRITICAL: usize = 0x04;
+/// `QOS_CLASS_UTILITY`, the global queue the pressure handler runs on.
+const QOS_CLASS_UTILITY: isize = 0x11;
+
+unsafe extern "C" {
+    /// Return every free page of `zone`, or of every zone when it is null, up to `goal` bytes, or
+    /// all of them when `goal` is 0. Answers the bytes returned.
+    fn malloc_zone_pressure_relief(zone: *mut MallocZone, goal: usize) -> usize;
+    /// `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` is this symbol's address.
+    static _dispatch_source_type_memorypressure: DispatchSourceType;
+    fn dispatch_get_global_queue(identifier: isize, flags: usize) -> DispatchObject;
+    fn dispatch_source_create(
+        kind: *const DispatchSourceType,
+        handle: usize,
+        mask: usize,
+        queue: DispatchObject,
+    ) -> DispatchObject;
+    fn dispatch_set_context(object: DispatchObject, context: *mut std::ffi::c_void);
+    fn dispatch_source_set_event_handler_f(
+        source: DispatchObject,
+        handler: extern "C" fn(*mut std::ffi::c_void),
+    );
+    fn dispatch_source_get_data(source: DispatchObject) -> usize;
+    fn dispatch_resume(object: DispatchObject);
+}
+
+pub(crate) fn relieve_allocator() -> crate::memory::Relief {
+    // SAFETY: a null zone asks for every registered zone, and a goal of 0 for every free page; the
+    // call touches only the allocator's own state, under its own locks.
+    let returned = unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+    crate::memory::Relief::Returned(returned as u64)
+}
+
+/// The one pressure source and what it calls, kept for the life of the process.
+struct PressureWatch {
+    source: DispatchObject,
+    handler: Box<dyn Fn(crate::memory::MemoryPressure) + Send + Sync>,
+}
+
+// SAFETY: the source pointer is only ever passed to libdispatch, whose objects may be used from
+// any thread, and the handler is itself `Send + Sync`.
+unsafe impl Send for PressureWatch {}
+// SAFETY: as above; nothing in the watch is mutated after it is published.
+unsafe impl Sync for PressureWatch {}
+
+static PRESSURE: std::sync::OnceLock<&'static PressureWatch> = std::sync::OnceLock::new();
+
+extern "C" fn pressure_event(context: *mut std::ffi::c_void) {
+    // SAFETY: the context is the leaked watch this source was given before it was resumed, which
+    // lives for the rest of the process.
+    let watch = unsafe { &*context.cast::<PressureWatch>() };
+    // SAFETY: the source is the live source this handler belongs to.
+    let data = unsafe { dispatch_source_get_data(watch.source) };
+    let level = if data & MEMORYPRESSURE_CRITICAL != 0 {
+        crate::memory::MemoryPressure::Critical
+    } else if data & MEMORYPRESSURE_WARN != 0 {
+        crate::memory::MemoryPressure::Warning
+    } else {
+        return;
+    };
+    (watch.handler)(level);
+}
+
+pub(crate) fn watch_memory_pressure(
+    handler: Box<dyn Fn(crate::memory::MemoryPressure) + Send + Sync>,
+) -> Result<(), Unavailable> {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Err(Unavailable("memory pressure is already watched"));
+    }
+    // SAFETY: the global queue is a process-wide object that is never released; the source type
+    // is libdispatch's own static, named by its address.
+    let source = unsafe {
+        dispatch_source_create(
+            &raw const _dispatch_source_type_memorypressure,
+            0,
+            MEMORYPRESSURE_WARN | MEMORYPRESSURE_CRITICAL,
+            dispatch_get_global_queue(QOS_CLASS_UTILITY, 0),
+        )
+    };
+    if source.is_null() {
+        return Err(Unavailable(
+            "the memory-pressure source could not be created",
+        ));
+    }
+    // The watch is never freed: the source is never cancelled, so its handler may run at any time
+    // until the process exits.
+    let watch: &'static PressureWatch = Box::leak(Box::new(PressureWatch { source, handler }));
+    let _ = PRESSURE.set(watch);
+    // SAFETY: the source is live and not yet resumed, so no handler runs before its context and
+    // handler are set; the context outlives the source.
+    unsafe {
+        dispatch_set_context(source, std::ptr::from_ref(watch).cast_mut().cast());
+        dispatch_source_set_event_handler_f(source, pressure_event);
+        dispatch_resume(source);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

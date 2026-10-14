@@ -212,6 +212,18 @@ static DRAWN: std::sync::Mutex<DrawnCache> = std::sync::Mutex::new(DrawnCache {
     bytes: 0,
 });
 
+/// Let go of every patch the drawn-patch cache keeps, as a photograph's prepared source is let go
+/// ([`crate::OwnerHandle::release_source`]); a plan or frame that still holds one keeps it alive
+/// until it drops. Answers the bytes the cache held.
+pub(crate) fn release_drawn() -> u64 {
+    let mut cache = DRAWN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bytes = cache.bytes;
+    *cache = DrawnCache::default();
+    bytes
+}
+
 /// What `source` is drawn from at `stage` ([`Drawn`]), built once and kept in a bounded cache so a
 /// gesture's ticks and the reference's frames share it: `O(patch pixels)` the first time, a lookup
 /// after.
@@ -422,6 +434,23 @@ mod tests {
         (0..3 * len)
             .map(|index| (index as f32 * 0.37).sin() * 0.5 + 0.5)
             .collect()
+    }
+
+    /// Releasing the drawn-patch cache lets every patch it kept go: what it built is built again
+    /// on the next use, and a holder of the old one keeps its own.
+    #[test]
+    fn a_released_drawn_cache_builds_its_patches_again() {
+        let full = stage(64, 48);
+        let patch = source([5, 7, 17, 13], full, |x, y| {
+            [0.1, 0.2, 0.3, (x + y) as f32 / 40.0]
+        });
+        let reduced = stage(32, 24);
+        let first = drawn(&patch, reduced);
+        assert!(Arc::ptr_eq(&first, &drawn(&patch, reduced)), "kept");
+        assert!(release_drawn() >= first.bytes(), "the cache held it");
+        let again = drawn(&patch, reduced);
+        assert!(!Arc::ptr_eq(&first, &again), "built again");
+        assert_eq!(first.words, again.words);
     }
 
     #[test]

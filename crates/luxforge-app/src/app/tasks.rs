@@ -361,7 +361,7 @@ pub(crate) fn owner_work<T: Send + 'static>(work: impl FnOnce() -> T + Send + 's
 
 /// `work` on the runtime's blocking pool when a runtime is current, which it is whenever iced polls
 /// a task; inline otherwise, so a caller polling the future on its own still gets its answer.
-async fn off_loop<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+pub(crate) async fn off_loop<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => match handle.spawn_blocking(work).await {
             Ok(value) => value,
@@ -1877,6 +1877,33 @@ fn current_preview(
     })
 }
 
+/// [`current_preview`] for a displayed entry whose original may have to be prepared again first:
+/// its job waits on the owner's source job ([`ready_preview_job`]), as an open's does. What Develop
+/// asks for when it shows a photograph whose pixels were let go (`app/residency.rs`).
+pub(crate) fn prepared_preview(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    proxy: Drawn,
+) -> Result<PreviewPayload, String> {
+    let job = ready_preview_job(
+        owner,
+        proxy
+            .request(
+                PreviewRequest::new(client, asset_id)
+                    .entry(entry_id)
+                    .analyse(),
+            )
+            .map_err(|error| error.to_string())?,
+    )?;
+    let (session, _) = call(owner, client, "session.state", json!({}))?;
+    Ok(PreviewPayload {
+        job,
+        session: parse::<ClientSession>(session)?,
+    })
+}
+
 /// The identity-stamped geometry map of the displayed entry or rebased draft, read once when a
 /// mask gesture opens or is reapplied.
 /// Every later pointer position is mapped from it locally, so a drag costs no host call per move.
@@ -2105,7 +2132,10 @@ pub(crate) fn performance_task(owner: OwnerHandle, client: ClientId, epoch: u64)
     )
 }
 
-fn read_performance(owner: &OwnerHandle, client: ClientId) -> Result<PerformanceRead, String> {
+pub(crate) fn read_performance(
+    owner: &OwnerHandle,
+    client: ClientId,
+) -> Result<PerformanceRead, String> {
     let (resources, _) = call(owner, client, "resources.read", json!({}))?;
     let wall_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

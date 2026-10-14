@@ -382,6 +382,12 @@ impl Presentation {
         }
     }
 
+    /// Let go of the whole-stack plan a Fit resize reduces again, whose evaluation shares the
+    /// source's pixels: a resize then asks for a job of its own.
+    pub(crate) fn forget_reduction_job(&mut self) {
+        self.reduction_job = None;
+    }
+
     /// Forget what a job whose last phase has been taken up was asked for.
     pub(crate) fn forget(&mut self, generation: u64) {
         self.pending_bounds.remove(&generation);
@@ -2186,6 +2192,10 @@ impl Editor {
         let generation = frame.generation();
         self.presentation
             .show(&frame, stage, &entry, draft_revision);
+        if !zoom && frame.proxy().is_none() {
+            // The reference rendered this stage whole: heavy work at photo size.
+            self.residency_rendered(stage);
+        }
         if !zoom {
             self.presentation.presented_asset = self
                 .document

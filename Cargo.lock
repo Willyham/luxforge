@@ -2144,6 +2144,7 @@ dependencies = [
  "luxforge-install",
  "luxforge-net",
  "luxforge-onnx",
+ "luxforge-process",
  "luxforge-reference",
  "luxforge-sparkle",
  "luxforge-test-macros",

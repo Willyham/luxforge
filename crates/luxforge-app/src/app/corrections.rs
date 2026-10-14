@@ -1611,6 +1611,7 @@ impl Editor {
         });
         self.correction_reads.line = None;
         self.accept(refresh);
+        self.residency_heavy();
         Task::none()
     }
 

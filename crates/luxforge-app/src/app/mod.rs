@@ -183,6 +183,9 @@ mod remove_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
+pub(crate) mod residency;
+#[cfg(test)]
+mod residency_tests;
 // Consumed by the usage statistics supervisor, which a later task adds.
 #[cfg(test)]
 mod models_tests;
@@ -514,6 +517,8 @@ pub(crate) struct Editor {
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
+    /// What the open photograph keeps resident while nobody looks at it, and when it lets go.
+    pub(crate) residency: residency::Residency,
     pub(crate) visibility: visibility::WindowVisibility,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
@@ -603,7 +608,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 34] = [
+const AFTER_MESSAGE: [AfterMessage; 35] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -634,6 +639,7 @@ const AFTER_MESSAGE: [AfterMessage; 34] = [
     develop::after_message,
     long_work::after_message,
     drawn_frames::after_message,
+    residency::after_message,
     themes::after_message,
     usage::after_message,
     update::after_message,
@@ -652,7 +658,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 18] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 19] = [
     keymap::subscription,
     view_state::subscription,
     visibility::subscription,
@@ -660,6 +666,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 18] = [
     preview::subscription,
     sync::subscription,
     performance::subscription,
+    residency::subscription,
     evidence::subscription,
     capabilities::subscription,
     remove::subscription,
@@ -778,6 +785,7 @@ impl Editor {
             capability_started: Vec::new(),
             full_updates: 0,
             performance: performance::Sampler::new(expanded),
+            residency: residency::Residency::default(),
             visibility,
             export: Default::default(),
             select: Default::default(),
@@ -988,9 +996,7 @@ impl Editor {
             if self.performance.cancelling.is_empty()
                 && matches!(
                     &message,
-                    Message::Performance(
-                        PerformanceMessage::Tick | PerformanceMessage::Sampled { .. }
-                    )
+                    Message::Performance(PerformanceMessage::Sampled { .. })
                 )
             {
                 let task = self.dispatch(message);
@@ -1279,6 +1285,7 @@ impl Editor {
             Message::CopySettings(message) => self.copy_settings_update(message),
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
+            Message::Residency(message) => self.residency_update(message),
             Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
             Message::Usage(message) => self.usage_update(message),

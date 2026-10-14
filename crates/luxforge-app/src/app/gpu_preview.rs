@@ -2080,6 +2080,8 @@ impl Editor {
                     json!({"version": version, "width": stage.0, "height": stage.1,
                         "bytes": bytes, "why": "source-changed"})
                 });
+                // A new development or preparation was just made: heavy work.
+                self.residency_heavy();
             }
         }
         // A picture at rest waiting for this source is drawn from it now.
@@ -3346,6 +3348,45 @@ impl Editor {
                 .presentation
                 .displayed_draft_revision
                 .is_some_and(|displayed| displayed >= revision)
+    }
+
+    /// Let go of everything the desktop holds of the photograph on the GPU while no surface draws
+    /// it: its source, the boundary kept between drafts, the picture at rest's plan and tiles, a
+    /// window of a paged source and Compare's retained picture. The surfaces are handed none of
+    /// them, so the pipeline retires their textures, and the next job of the photograph hands its
+    /// source again ([`Self::gpu_hold_source`]). Each is logged with `why`.
+    pub(crate) fn gpu_release_photo(&mut self, why: &'static str) {
+        self.gpu_release_resident_boundary(why);
+        self.gpu.at_rest = None;
+        self.gpu.compare = None;
+        self.gpu.windows.clear();
+        self.gpu.window_rest = None;
+        self.gpu.counts = None;
+        self.gpu.rest_planned_at = None;
+        self.gpu.rest_compiling_since = None;
+        if let Some(rest) = self.gpu.rest.take() {
+            let version = rest.versions.picture;
+            self.event(
+                "gpu_rest_released",
+                || json!({"version": version, "why": why}),
+            );
+        }
+        if let Some(source) = self.gpu.source.take() {
+            let version = source.gpu.version();
+            let bytes = source.gpu.bytes();
+            self.event(
+                "gpu_source_released",
+                || json!({"version": version, "bytes": bytes, "why": why}),
+            );
+        }
+    }
+
+    /// Let go of the boundary kept on the GPU between drafts, which the next draft derives again.
+    pub(crate) fn gpu_release_resident_boundary(&mut self, why: &'static str) {
+        if let Some(resident) = self.gpu.resident.take() {
+            let version = resident.held.boundary.version();
+            self.log_release(version, why);
+        }
     }
 
     /// The evidence of a boundary let go.
