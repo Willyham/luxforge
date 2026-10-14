@@ -7164,7 +7164,7 @@ mod tests {
         editor.evidence.as_mut().expect("evidence").capture_pending = false;
         let _ = editor.next_step();
         assert!(editor.performance.expanded);
-        assert_eq!(editor.performance.requested, 1);
+        assert_eq!(editor.performance.requested(), 1);
         assert!(!evidence(&editor).capture_pending, "waits for the read");
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Performance));
         let (resources, _) =
@@ -7185,13 +7185,17 @@ mod tests {
         editor.evidence.as_mut().expect("evidence").capture_pending = false;
         let _ = editor.next_step();
         assert!(evidence(&editor).capture_pending);
-        assert_eq!(editor.performance.requested, 1);
+        assert_eq!(editor.performance.requested(), 1);
 
         editor.evidence.as_mut().expect("evidence").capture_pending = false;
         let _ = editor.next_step();
         assert!(!editor.performance.expanded);
         assert!(evidence(&editor).capture_pending);
-        assert_eq!(editor.performance.requested, 1, "closing asks for nothing");
+        assert_eq!(
+            editor.performance.requested(),
+            1,
+            "closing asks for nothing"
+        );
         finish(editor, catalog);
     }
 

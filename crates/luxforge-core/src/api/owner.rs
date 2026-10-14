@@ -157,6 +157,11 @@ enum OwnerMessage {
     AnalysisReady,
     JobChanges,
     JobMonitorStats(SyncSender<JobMonitorStats>),
+    /// The host lets one photograph's prepared pixels go ([`OwnerHandle::release_source`]).
+    ReleaseSource {
+        asset_id: AssetId,
+        reply: SyncSender<SourceRelease>,
+    },
     /// A report the desktop's preview worker already produced for this identity, so an API request
     /// for the same identity is a cache hit and no second render happens.
     AnalysisSubmitted {
@@ -251,6 +256,25 @@ pub type EventWake = Arc<dyn Fn() + Send + Sync>;
 /// result is committed. A test that panics in it proves the owner contains the panic.
 #[cfg(test)]
 type Fault = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// What [`OwnerHandle::release_source`] let go of one photograph's pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SourceRelease {
+    /// Whether the source cache held the photograph's prepared source and let it go.
+    pub released: bool,
+    /// The bytes it held: a decoded frame, or a RAW's mosaic with its developments.
+    pub source_bytes: u64,
+    /// Whether what a Develop kept of the photograph's file was let go too.
+    pub read: bool,
+    /// The bytes of the verified artifacts the owner kept ready, let go with it: a model mask's
+    /// raster, a repair patch. Read again by the next evaluation that references them.
+    pub artifact_bytes: u64,
+    /// The bytes the drawn-patch cache held, let go with it.
+    pub drawn_bytes: u64,
+    /// Nothing was let go: a preparation or development in flight would adopt a source into the
+    /// cache, so the release waits for a later moment instead.
+    pub busy: bool,
+}
 
 /// Job monitoring counters for correlated native evidence; no job results are retained here.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
@@ -1145,6 +1169,30 @@ impl OwnerHandle {
         self.runtime.release_all()
     }
 
+    /// The host's release of one photograph's prepared pixels while nobody is looking at them, or
+    /// under memory pressure: the source cache's decoded frame or RAW mosaic and developments, what
+    /// a Develop kept of its file, its sample grids, the verified artifacts kept ready and the
+    /// drawn-patch cache. The next evaluation
+    /// that needs them prepares the original again, as an open does; the recipe, history and
+    /// drafts are untouched. While any preparation or development is in flight nothing is let go
+    /// (`busy`), since its adoption would put a source back; messages reach the owner in order, so
+    /// an open asked for after this call prepares afresh. A desktop-internal path, not a JSON
+    /// method; it emits no event. Blocks until the owner answers: call it off the interface thread.
+    pub fn release_source(&self, asset_id: &AssetId) -> SourceRelease {
+        let (reply, answer) = sync_channel(1);
+        if self
+            .sender
+            .send(OwnerMessage::ReleaseSource {
+                asset_id: asset_id.clone(),
+                reply,
+            })
+            .is_err()
+        {
+            return SourceRelease::default();
+        }
+        answer.recv().unwrap_or_default()
+    }
+
     pub fn start(catalog: &Path) -> Result<(Self, JoinHandle<()>), Error> {
         Self::start_with(catalog, Arc::new(ModuleRegistry::builtin()))
     }
@@ -1820,6 +1868,17 @@ fn owner_loop(
                 OwnerMessage::SourceStarted(id) => owner.jobs.start(&id),
                 OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
                 OwnerMessage::JobChanges => {}
+                OwnerMessage::ReleaseSource { asset_id, reply } => {
+                    let release = if owner.source_release_waits(&asset_id) {
+                        SourceRelease {
+                            busy: true,
+                            ..SourceRelease::default()
+                        }
+                    } else {
+                        owner.service.release_source(&asset_id)
+                    };
+                    let _ = reply.send(release);
+                }
                 OwnerMessage::JobMonitorStats(reply) => {
                     let _ = reply.send(JobMonitorStats {
                         held: owner.job_waits.len(),
@@ -2810,6 +2869,22 @@ impl Owner {
     /// Forget a client's session. A gone client leaves every source, analysis and shared catalog
     /// job it wanted exactly as a cancel does, and the work nobody else wants is stopped; its
     /// capability and export jobs run on, since they belong to no client.
+    /// Whether letting `asset_id`'s prepared source go now would be undone or would undo an open:
+    /// a preparation or development is in flight, whose adoption puts a source in the cache, or a
+    /// client's preparation of it is finished and not yet adopted, whose `job.adopt` reads it.
+    fn source_release_waits(&self, asset_id: &AssetId) -> bool {
+        self.jobs.development_in_flight().is_some()
+            || self.latest_preparation.iter().any(|(client, job_id)| {
+                match self.jobs.outcome_for(job_id, *client) {
+                    Ok((JobStatus::Ready, Some(Output::Asset(state, _)), _)) => {
+                        state.asset.id == *asset_id
+                    }
+                    Ok((JobStatus::Queued | JobStatus::Running, ..)) => true,
+                    _ => false,
+                }
+            })
+    }
+
     fn disconnect(&mut self, client: ClientId) {
         self.sessions.remove(&client);
         for (job_id, kind) in self.jobs.disconnect(client) {
@@ -4601,6 +4676,97 @@ mod tests {
             .recv_timeout(luxforge_testbase::HANG)
             .expect("the worker finishing the job makes room")
             .unwrap();
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
+    /// The host's release lets a photograph's prepared source go, and its pixels are prepared
+    /// again by the next evaluation that needs them; while a preparation is in flight, whose
+    /// adoption would put a source back, nothing is let go.
+    #[test]
+    fn a_released_source_is_prepared_again_and_none_is_released_during_a_preparation() {
+        let catalog = temp("release-source.sqlite");
+        let photo = temp("release-source.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let hold = gate.clone();
+        let (owner, join) = OwnerHandle::start_observed(
+            &catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            ActivityBoard::new(),
+            Some(Arc::new(move || hold.pass())),
+        )
+        .unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &photo);
+        let asset = AssetId::parse(state["asset"]["id"].as_str().unwrap()).unwrap();
+        let readiness = || {
+            ok(
+                &owner,
+                client,
+                "inspect",
+                "source.inspect",
+                json!({"asset_id": asset}),
+            )["readiness"]
+                .clone()
+        };
+        assert_eq!(readiness(), "ready");
+        let (width, height) = (
+            state["asset"]["width"].as_u64().unwrap(),
+            state["asset"]["height"].as_u64().unwrap(),
+        );
+        let released = owner.release_source(&asset);
+        assert!(released.released && !released.busy, "{released:?}");
+        assert_eq!(
+            released.source_bytes,
+            width * height * 4,
+            "the decoded frame"
+        );
+        assert_eq!(readiness(), "preparation-required");
+        assert_eq!(
+            owner.release_source(&asset),
+            SourceRelease::default(),
+            "nothing more is held"
+        );
+
+        gate.shut();
+        let queued = ok(
+            &owner,
+            client,
+            "prepare",
+            "source.prepare",
+            json!({"asset_id": asset}),
+        );
+        let busy = owner.release_source(&asset);
+        assert!(busy.busy && !busy.released, "{busy:?}");
+        gate.open();
+        let record = luxforge_testbase::wait_for("the preparation to end", || {
+            let read = ok(
+                &owner,
+                client,
+                "read",
+                "job.read",
+                json!({"job_id": queued["job_id"]}),
+            );
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        });
+        assert_eq!(record["status"], "ready", "{record}");
+        assert!(
+            owner.release_source(&asset).busy,
+            "prepared and not yet adopted: the open reads it"
+        );
+        ok(
+            &owner,
+            client,
+            "adopt",
+            "job.adopt",
+            json!({"job_id": queued["job_id"]}),
+        );
+        assert_eq!(readiness(), "ready", "prepared again");
+        assert!(owner.release_source(&asset).released, "adopted, it can go");
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

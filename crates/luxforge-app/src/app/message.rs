@@ -30,6 +30,7 @@ pub(crate) mod preset;
 pub(crate) mod preview;
 pub(crate) mod remove;
 pub(crate) mod renderer;
+pub(crate) mod residency;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_merge;
@@ -75,6 +76,8 @@ pub(crate) enum Message {
     /// A module capability gesture or answer.
     Capability(capability::CapabilityMessage),
     Performance(performance::PerformanceMessage),
+    /// The open photograph's pixels let go while nobody looks at them, and taken back.
+    Residency(residency::ResidencyMessage),
     /// One Settings sheet gesture or answer.
     Settings(settings::SettingsMessage),
     /// Usage statistics: the startup notice and the Privacy tab.

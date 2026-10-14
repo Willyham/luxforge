@@ -1235,10 +1235,19 @@ impl Editor {
         let Some(switch) = &self.develop.switch else {
             return false;
         };
+        let asset = switch.asset.clone();
+        let name = self.develop.state.switching.clone();
+        self.present_cached_of(&asset, name)
+    }
+
+    /// [`Self::present_cached`] for `asset`, named `name` in the status line (its filmstrip name
+    /// when `None`): what a move draws, and what Develop draws of the open photograph when it takes
+    /// its pixels back after they were let go (`app/residency.rs`).
+    pub(crate) fn present_cached_of(&mut self, asset: &AssetId, name: Option<String>) -> bool {
         if self.develop.state.preview.is_some() {
             return false;
         }
-        let asset = switch.asset.clone();
+        let asset = asset.clone();
         let Some(held) = self
             .develop
             .frames
@@ -1263,7 +1272,17 @@ impl Editor {
         let Some(version) = self.presentation.show_cached(pixels, size) else {
             return false;
         };
-        let name = self.develop.state.switching.clone().unwrap_or_default();
+        let name = name
+            .or_else(|| {
+                self.develop.state.strip.as_ref().and_then(|strip| {
+                    strip
+                        .photos
+                        .iter()
+                        .find(|photo| photo.asset_id == asset)
+                        .map(|photo| photo.name.clone())
+                })
+            })
+            .unwrap_or_default();
         let preview = ShownPreview {
             asset: asset.clone(),
             entry,

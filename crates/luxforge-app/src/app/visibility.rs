@@ -286,10 +286,10 @@ mod tests {
     #[test]
     fn hiding_rejects_late_samples_and_restore_never_spans_hidden_time() {
         let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+        let _ = editor.performance_transition();
         let old_epoch = editor.performance.epoch;
         let late = answer(&editor);
-        let reads = editor.performance.requested;
+        let reads = editor.performance.requested();
         change(&mut editor, true, false);
         assert!(editor.performance.expanded, "disclosure is untouched");
         assert!(!editor.performance_sampling());
@@ -297,10 +297,15 @@ mod tests {
             editor.long_work.timers(),
             super::super::long_work::Timers::default()
         );
+        assert_eq!(
+            super::super::performance::subscription(&editor).units(),
+            0,
+            "hidden, there is no timer"
+        );
         for _ in 0..3 {
-            let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+            assert!(super::super::performance::timer_tick(&editor).is_none());
         }
-        assert_eq!(editor.performance.requested, reads);
+        assert_eq!(editor.performance.requested(), reads);
         let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch: old_epoch,
             result: Ok(late),
@@ -308,7 +313,7 @@ mod tests {
         assert_eq!(editor.performance.history.len(), 0);
         change(&mut editor, false, false);
         assert_eq!(
-            editor.performance.requested,
+            editor.performance.requested(),
             reads + 1,
             "restore reads immediately"
         );
@@ -350,13 +355,14 @@ mod tests {
         assert!(editor.performance_sampling());
         assert_ne!(old_epoch, editor.performance.epoch);
         assert_eq!(
-            editor.performance.requested, 1,
+            editor.performance.requested(),
+            1,
             "the previous read is not duplicated"
         );
         let fresh = answer(&editor);
         let _ = editor.performance_sampled(old_epoch, Ok(fresh));
         assert_eq!(editor.performance.history.len(), 0);
-        assert_eq!(editor.performance.requested, 2);
+        assert_eq!(editor.performance.requested(), 2);
         finish(editor, catalog);
     }
 
