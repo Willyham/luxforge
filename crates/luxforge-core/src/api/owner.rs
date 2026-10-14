@@ -7208,7 +7208,8 @@ mod tests {
             },
         )
         .unwrap();
-        let client = owner.register();
+        // Exercise the parsers of permission-only methods too; authorization has separate tests.
+        let client = owner.register_with(ClientAuthority::Permissions);
         let schema = ok(&owner, client, "schema", "schema.list", json!({}));
         let listed = schema["methods"].as_object().expect("the methods");
         assert!(listed.keys().any(|name| name.starts_with("task.")));

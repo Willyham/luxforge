@@ -36,6 +36,12 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     enabled: true,
 };
 
+/// Small falloff spans magnify the GPU's f32 radius error; at a hard step even its sign can
+/// change the result from white to black. Keep those settings on the existing f64 reference
+/// path. This admission floor leaves a tenfold margin over the first passing boundary span
+/// (1e-4); it is a qualification limit, not a claim of exact f32/f64 boundary equivalence.
+const GPU_MIN_SPAN: f64 = 1e-3;
+
 /// The shape family the roundness selects, with everything that does not vary per pixel already
 /// folded into the per-axis coefficients the column and row tables are built from. Both variants
 /// carry what one column or row entry needs, computed once in the constructor — an `O(1)` cost —
@@ -308,6 +314,9 @@ impl PointwiseColor for Vignette {
     /// `f64` as `apply_pixel` decides them: pure functions of the six values the description
     /// writes. Neither table is built.
     fn gpu(&self) -> Option<GpuDescription> {
+        if self.a != 0.0 && self.span < GPU_MIN_SPAN {
+            return None;
+        }
         let (shape, first, second) = match self.shape {
             Shape::Ellipse { a, b } => (0, a, b),
             Shape::Superellipse { p } => (1, p, 0.0),
@@ -706,7 +715,12 @@ mod tests {
             .collect();
         crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
         for unit in &first {
-            let words = unit.gpu().expect("the vignette has a program").words;
+            let Some(description) = unit.gpu() else {
+                assert!(unit.span < GPU_MIN_SPAN);
+                assert!(unit.columns.get().is_none() && unit.rows.get().is_none());
+                continue;
+            };
+            let words = description.words;
             let ellipse = matches!(unit.shape, Shape::Ellipse { .. });
             assert_eq!(words[0], u32::from(!ellipse));
             assert_eq!(f32::from_bits(words[3]), 320.0);
@@ -714,6 +728,56 @@ mod tests {
             assert_eq!(f32::from_bits(words[5]), unit.r0 as f32);
             assert_eq!(words[7], u32::from(unit.hard_step));
             assert_eq!(words[8], u32::from(unit.a >= 0.0));
+            assert!(unit.columns.get().is_none() && unit.rows.get().is_none());
+        }
+    }
+
+    #[test]
+    fn gpu_admission_keeps_near_hard_transitions_on_the_reference() {
+        let stage = Stage {
+            width: 20,
+            height: 20,
+        };
+        for amount in [-100.0, 100.0] {
+            for roundness in [-100.0, 0.0, 100.0] {
+                for (feather, supported) in [
+                    (0.0, false),
+                    (0.0001, false),
+                    (0.01, false),
+                    (GPU_MIN_SPAN * 100.0 * (1.0 - 1e-9), false),
+                    (GPU_MIN_SPAN * 100.0, true),
+                    (GPU_MIN_SPAN * 100.0 * (1.0 + 1e-9), true),
+                    (50.0, true),
+                ] {
+                    // Midpoint zero makes the computed span exactly feather / 100, so this
+                    // checks the actual admission boundary without changing private state.
+                    let unit = Vignette::new(amount, 0.0, roundness, feather, stage);
+                    assert_eq!(unit.gpu().is_some(), supported, "{unit:?}");
+                    assert!(unit.columns.get().is_none() && unit.rows.get().is_none());
+                }
+            }
+        }
+        // Admission uses the computed span, not the slider value. At Feather 0.1 the
+        // midpoint-50 subtraction rounds just below the floor; other midpoints do not.
+        for midpoint in [0.0, 50.0, 65.0, 100.0] {
+            for (feather, supported) in [(0.099, false), (0.1, midpoint != 50.0), (0.101, true)] {
+                let unit = Vignette::new(-100.0, midpoint, 0.0, feather, stage);
+                assert_eq!(unit.gpu().is_some(), supported, "{unit:?}");
+                assert!(unit.columns.get().is_none() && unit.rows.get().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn a_neutral_gpu_shape_needs_no_boundary_classification() {
+        let stage = Stage {
+            width: 20,
+            height: 20,
+        };
+        for feather in [0.0, 0.0001, 0.01] {
+            let unit = Vignette::new(0.0, 65.0, 0.0, feather, stage);
+            let description = unit.gpu().expect("a neutral draft remains a GPU identity");
+            assert_eq!(f32::from_bits(description.words[9]), 0.0);
             assert!(unit.columns.get().is_none() && unit.rows.get().is_none());
         }
     }
