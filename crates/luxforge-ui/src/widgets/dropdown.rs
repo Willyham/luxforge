@@ -90,8 +90,17 @@ pub fn dropdown_button<'a, M: Clone + 'a>(
         .into()
 }
 
-/// Renders a menu's list on its own lifted surface.
+/// Renders a menu's list on its own lifted surface, [`theme::MENU_WIDTH`] wide.
 pub fn menu_list<'a, M: Clone + 'a>(entries: Vec<MenuEntry<M>>) -> Element<'a, M> {
+    menu_list_with_width(entries, theme::MENU_WIDTH)
+}
+
+/// [`menu_list`] at another width, for a menu whose labels and trailing text need more room. The
+/// list sets its own width, so a container around it cannot widen it.
+pub fn menu_list_with_width<'a, M: Clone + 'a>(
+    entries: Vec<MenuEntry<M>>,
+    width: f32,
+) -> Element<'a, M> {
     let list = Column::with_children(entries.into_iter().map(|entry| {
         match entry {
             MenuEntry::Item(item) => menu_item(item),
@@ -136,7 +145,7 @@ pub fn menu_list<'a, M: Clone + 'a>(entries: Vec<MenuEntry<M>>) -> Element<'a, M
     }));
     container(list)
         .padding(theme::MENU_PADDING)
-        .width(Length::Fixed(theme::MENU_WIDTH))
+        .width(Length::Fixed(width))
         .style(theme::menu_surface)
         .into()
 }

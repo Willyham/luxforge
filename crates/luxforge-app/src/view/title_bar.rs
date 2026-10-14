@@ -28,7 +28,7 @@ use iced::{
 };
 use luxforge_ui::{
     ButtonSize, ButtonTone, Icon, IconButtonModel, MenuEntry, MenuItem, NotchedSliderModel,
-    StepKeys, chevron_segment, hover_panel, menu_list, notched_panel, popover, segment,
+    StepKeys, chevron_segment, hover_panel, menu_list_with_width, notched_panel, popover, segment,
     segment_track, text_button, theme, title_bar_icon_button,
 };
 use luxforge_ui::{Element, Token};
@@ -133,11 +133,7 @@ fn export(model: &TitleBarModel) -> Element<'_, Message> {
         },
         model.can_export.then_some(toggle),
     );
-    let menu = model.export_menu.as_ref().map(|menu| {
-        container(export_menu(menu))
-            .width(Length::Fixed(EXPORT_MENU_WIDTH))
-            .into()
-    });
+    let menu = model.export_menu.as_ref().map(export_menu);
     popover(button, menu, Message::View(ViewMessage::CloseMenu))
 }
 
@@ -183,7 +179,7 @@ fn export_menu(menu: &ExportMenuModel) -> Element<'_, Message> {
             })
         }));
     }
-    menu_list(entries)
+    menu_list_with_width(entries, EXPORT_MENU_WIDTH)
 }
 
 /// Fit, 100% and the effective percentage on one track, then Compare, Clipping and the Thirds and
