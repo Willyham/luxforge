@@ -56,7 +56,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 roxmltree = "=0.20.0"
 # The module transport's TLS: the `ring` provider only (no aws-lc-rs or CMake), TLS 1.2 and 1.3,
 # and the operating system's own certificate verifier for platform trust.
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.0"
 # The module transport's HTTP/1.1: `ureq`'s agent, one per request, on the transport's own
 # resolver, socket and rustls session. No features, so no TLS stack, gzip, cookies or SOCKS of its
