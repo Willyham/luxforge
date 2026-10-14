@@ -150,14 +150,14 @@ Reuse native [visibility](visibility-and-monitoring.md) and deliberate-operation
 | Limit | Initial contract |
 | --- | --- |
 | Destination | Production: only `https://api.luxforge.app/v1/usage/batches`, no query. Developer/test: exactly that URL with `?tenant=test`, or an explicit loopback test receiver. No cookies, authentication token or redirect following |
-| Normal flush | Ten minutes after the first event in a fresh window, or as soon as the window holds 512 events, plus 0–60 seconds jitter; no immediate startup/opt-in request |
+| Normal flush | Two minutes after the first event in a fresh window, or as soon as the window holds 512 events, plus 0–60 seconds jitter; no immediate startup/opt-in request |
 | Traffic | No hourly or daily request or byte cap (owner, 2026-10-09). Attempts are at least 60 seconds apart, so a flood of events fills windows rather than sending back to back |
 | Body | One JSON document, at most 64 KiB and 512 events; no compression or splitting into extra requests |
 | Concurrency | One background worker and one request in flight; no pending request queue |
 | Timeouts | Connect 2 s, idle 2 s, total 5 s, including resolution under the existing transport's bounded contract |
 | Response | At most 1 KiB of body; ignored. Existing transport header limits apply. |
 | Retention | In-memory only; discard a window once its oldest contribution exceeds 30 minutes. On resume, drop expired data before scheduling anything. No disk spool or crash recovery. |
-| Quit | Cancel and discard. No final upload, network wait or close delay, so a session's timeline normally lacks up to its last ten minutes. Ordinary preference persistence retains its existing close behavior. |
+| Quit | Cancel and discard. No final upload, network wait or close delay, so a session's timeline normally lacks up to its last two minutes. Ordinary preference persistence retains its existing close behavior. |
 
 Volume is bounded by the schedule, not a quota: one request at most every 60 seconds, each at most 64 KiB, with the failure cooldown and `429` below. Restarting does not replay data. A window that fills while the next attempt is not yet allowed drops further events, which become a sequence gap. If serialization would exceed 64 KiB, omit `process.sample` events first and then the newest events, count them as dropped, and send the rest. Never send a partial JSON document or manufacture success.
 

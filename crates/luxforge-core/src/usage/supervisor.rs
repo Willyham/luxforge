@@ -10,7 +10,7 @@
 //! nonempty or full, visibility, a device change, a consent change or quit. When consent ends the
 //! worker stops the collector, frees every buffer and exits.
 //!
-//! Scheduling follows [`super::sender`]: a nonempty window is due ten minutes after its first event,
+//! Scheduling follows [`super::sender`]: a nonempty window is due two minutes after its first event,
 //! or as soon as it holds 512 events, plus 0–60 s of jitter chosen once per window; attempts are at
 //! least 60 s apart and the first is at least 60 s after the session began; a window whose oldest
 //! event is 30 minutes old is discarded unsent; there is no hourly or daily cap. One request is in
