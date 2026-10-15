@@ -132,7 +132,7 @@ These are the Luxforge ranges and units, taken from the [Lightroom research](../
 
 | Group/control | Starting UI range | Required behavior |
 | --- | --- | --- |
-| Tone / Exposure — **implemented** | −5.00 to +5.00 EV, 0.01 step | Shift linear-light channels by the value in stops on the scene scale ([Basic on the scene scale](basic-scene.md)): the plain gain in the deepest shadows and past white, about 1.4 times the stops in the midtones, highlights rolled off towards white |
+| Tone / Exposure — **implemented** | −5.00 to +5.00 EV, 0.01 step | On a JPEG, shift linear-light channels by the value in stops on the scene scale ([Basic on the scene scale](basic-scene.md)): the plain gain in the deepest shadows and past white, about 1.4 times the stops in the midtones, highlights rolled off towards white. On a RAW photo, multiply the developed planes by `2^EV` before the Look renders them |
 | Tone / Contrast — **implemented** | −100 to +100, step 1 | Change midtone separation with a defined pivot and smooth monotone curve |
 | Tone / Highlights, Shadows — **implemented** | −100 to +100, step 1 | Smoothly change bright/dark ranges while retaining ordering and exposing retained detail |
 | Tone / Whites, Blacks — **implemented** | −100 to +100, step 1 | Control bright/dark endpoints separately from broad highlight/shadow shaping |

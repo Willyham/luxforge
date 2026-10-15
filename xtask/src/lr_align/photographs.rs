@@ -6,13 +6,14 @@
 //! against the manifest's SHA-256 before it is opened and again when the run ends; nothing in the
 //! round folder is written. A development is the service's: As Shot at import, a custom white
 //! balance through `set-raw` and its preparation, or the detected lens profile through
-//! `select-lens-profile`. Each is kept for the run, so the renders that share it run in parallel
+//! `select-lens-profile`. Every render keeps the Look the import gave the photograph, its starting
+//! rendering, so a family's settings land before it as they do in the editor. Each is kept for the run, so the renders that share it run in parallel
 //! over one set of planes; white balances are kept only a few at a time, which bounds the run's
 //! memory; the service itself is used by one caller at a time.
 use crate::*;
 use luxforge_core::{
-    AssetId, EditorService, EntryId, LENS_EFFECT, Layer, LinearImage, Mutation, PreviewSource,
-    Recipe,
+    AssetId, EditorService, EntryId, LENS_EFFECT, LOOK_EFFECT, Layer, LinearImage, Mutation,
+    PreviewSource, Recipe,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -40,8 +41,9 @@ impl Development {
     }
 }
 
-/// One development: its linear planes and the layers every render of it starts from (the RAW
-/// layer, and the lens layer for [`Development::Lens`]).
+/// One development: its linear planes and the layers every render of it starts from: the RAW
+/// layer, the Look the import gave it (the photograph's rendering, as the editor shows it), and the
+/// lens layer for [`Development::Lens`].
 pub struct Developed {
     pub image: LinearImage,
     pub base: Recipe,
@@ -154,7 +156,7 @@ impl Photo {
             Development::AsShot.key(),
             Arc::new(Developed {
                 image,
-                base: layers_of(&recipe, |_| false),
+                base: layers_of(&recipe, |layer| layer.effect_id == LOOK_EFFECT),
             }),
         );
         let query =
@@ -171,7 +173,9 @@ impl Photo {
                 Development::Lens.key(),
                 Arc::new(Developed {
                     image,
-                    base: layers_of(&recipe, |layer| layer.effect_id == LENS_EFFECT),
+                    base: layers_of(&recipe, |layer| {
+                        layer.effect_id == LENS_EFFECT || layer.effect_id == LOOK_EFFECT
+                    }),
                 }),
             );
         }
@@ -222,7 +226,7 @@ impl Photo {
             .map_err(|error| format!("developing {temperature} K, tint {tint}: {error}"))?;
         let done = Arc::new(Developed {
             image,
-            base: layers_of(&recipe, |_| false),
+            base: layers_of(&recipe, |layer| layer.effect_id == LOOK_EFFECT),
         });
         let mut developed = self.developed.lock().map_err(|_| "a poisoned cache")?;
         developed.insert(key.clone(), done.clone());

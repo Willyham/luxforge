@@ -365,6 +365,11 @@ impl ModuleRegistry {
         // and therefore a sequential full frame, which is the whole reason there is a cap.
         let mut masked_spatial = 0_usize;
         let mut starts = Vec::with_capacity(layers.len());
+        // A source-stage layer leads a RAW photo's stack: every later layer's input is
+        // scene-referred.
+        let scene_referred = layers
+            .first()
+            .is_some_and(|first| self.effect_stage(&first.effect_id) == Some(EffectStage::Source));
         for (index, layer) in layers.iter().enumerate() {
             starts.push((
                 segments.len() - 1,
@@ -416,7 +421,9 @@ impl ModuleRegistry {
             let processing = self.compile_layer(
                 module,
                 layer,
-                crate::CompileStage::sampled(stage, full).shaped(shaped == Some(index)),
+                crate::CompileStage::sampled(stage, full)
+                    .shaped(shaped == Some(index))
+                    .over_scene(index > 0 && scene_referred),
                 artifacts,
                 strokes,
             )?;

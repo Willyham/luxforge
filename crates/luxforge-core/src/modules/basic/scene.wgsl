@@ -3,7 +3,8 @@
 // unclamped. Zero and negative values take the plain gain. The CPU unit evaluates in f64; this
 // program in f32, held to it within the pointwise output limits.
 //
-// Words: 0 to 2 are red's, green's and blue's shift in stops, the CPU unit's narrowed to f32.
+// Words: 0 to 2 are red's, green's and blue's shift in stops, the CPU unit's narrowed to f32; 3 is
+// 1 when the input is scene-referred (a RAW photo's development), where the stops are plain gains.
 
 const lf_basic_scene_knots = array<f32, 33>(
     -9.0, -8.625, -8.25, -7.875, -7.5, -7.125, -6.75, -6.375, -6.0, -5.625, -5.25, -4.875, -4.5,
@@ -65,6 +66,10 @@ fn lf_basic_scene_shift(x: f32, stops: f32) -> f32 {
 }
 
 fn lf_basic_scene(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {
+    let stops = vec3<f32>(lf_f32(words), lf_f32(words + 1u), lf_f32(words + 2u));
+    if (lf_f32(words + 3u) > 0.5) {
+        return rgb * exp2(stops);
+    }
     return vec3<f32>(
         lf_basic_scene_shift(rgb.x, lf_f32(words)),
         lf_basic_scene_shift(rgb.y, lf_f32(words + 1u)),

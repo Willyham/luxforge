@@ -10,12 +10,13 @@
 use crate::modules::PointwiseColor;
 use crate::render::gpu::{GpuDescription, GpuProgram, GpuProgramKind};
 
-/// The scene unit's GPU program: each channel's shift in stops, three words.
+/// The scene unit's GPU program: each channel's shift in stops and whether its input is
+/// scene-referred, four words.
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_basic_scene",
     source: include_str!("scene.wgsl"),
     kind: GpuProgramKind::Colour,
-    words: 3,
+    words: 4,
     enabled: true,
 };
 
@@ -130,23 +131,27 @@ pub(super) fn scene_logs(rgb: [f64; 3]) -> [f64; 3] {
     rgb.map(scene_log)
 }
 
-/// Temperature, Tint and Exposure on each channel of linear sRGB, unclamped.
+/// Temperature, Tint and Exposure on each channel of linear sRGB, unclamped: shifts on the scene
+/// scale over a rendered source, plain gains of the same stops over a scene-referred one (a RAW
+/// photo's development, which its Look renders afterwards).
 #[derive(Debug)]
 pub(super) struct Scene {
     temperature: f64,
     tint: f64,
     exposure: f64,
+    scene_referred: bool,
     /// Each channel's shift in stops: its white-balance stops plus the Exposure.
     stops: [f64; 3],
 }
 
 impl Scene {
-    pub(super) fn new(temperature: f64, tint: f64, exposure: f64) -> Self {
+    pub(super) fn new(temperature: f64, tint: f64, exposure: f64, scene_referred: bool) -> Self {
         let balance = white_balance_stops(temperature, tint);
         Self {
             temperature,
             tint,
             exposure,
+            scene_referred,
             stops: balance.map(|s| s + exposure),
         }
     }
@@ -160,12 +165,22 @@ impl PointwiseColor for Scene {
                 self.temperature.to_bits(),
                 self.tint.to_bits(),
                 self.exposure.to_bits(),
+                u64::from(self.scene_referred),
             ],
         )
     }
 
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         if self.stops == [0.0; 3] {
+            return;
+        }
+        if self.scene_referred {
+            let gains = self.stops.map(|s| s.exp2() as f32);
+            for pixel in rgb {
+                for (channel, gain) in pixel.iter_mut().zip(gains) {
+                    *channel *= gain;
+                }
+            }
             return;
         }
         for pixel in rgb {
@@ -182,16 +197,22 @@ impl PointwiseColor for Scene {
     /// The stored values, exactly: the shifts are a pure function of them.
     fn describe(&self) -> String {
         format!(
-            "scene(temperature:{:+}, tint:{:+}, exposure:{:+})",
-            self.temperature, self.tint, self.exposure
+            "{}(temperature:{:+}, tint:{:+}, exposure:{:+})",
+            if self.scene_referred {
+                "scene-gain"
+            } else {
+                "scene"
+            },
+            self.temperature,
+            self.tint,
+            self.exposure
         )
     }
 
     fn gpu(&self) -> Option<GpuDescription> {
-        Some(GpuDescription::new(
-            &PROGRAM,
-            self.stops.map(|s| (s as f32).to_bits()).to_vec(),
-        ))
+        let mut words: Vec<u32> = self.stops.map(|s| (s as f32).to_bits()).to_vec();
+        words.push(if self.scene_referred { 1.0f32 } else { 0.0 }.to_bits());
+        Some(GpuDescription::new(&PROGRAM, words))
     }
 }
 
@@ -220,7 +241,7 @@ mod tests {
         for temperature in [-100.0, -33.0, 0.0, 41.0, 100.0] {
             for tint in [-100.0, 0.0, 57.0, 100.0] {
                 for exposure in [-5.0, -1.25, 0.0, 0.4, 5.0] {
-                    let unit = Scene::new(temperature, tint, exposure);
+                    let unit = Scene::new(temperature, tint, exposure, false);
                     for x in &inputs {
                         let mut row = [[*x, *x * 0.5, *x * 0.25]];
                         unit.apply_row(0, 0, &mut row);
@@ -249,11 +270,25 @@ mod tests {
     fn neutral_settings_are_the_identity_and_white_stays_white() {
         let mut row = [[0.0, 0.25, 1.0], [-0.5, 2.0, 0.18]];
         let input = row;
-        Scene::new(0.0, 0.0, 0.0).apply_row(0, 0, &mut row);
+        Scene::new(0.0, 0.0, 0.0, false).apply_row(0, 0, &mut row);
         assert_eq!(row, input);
         // White, warmed fully, keeps every channel within a few codes of white.
         let mut white = [[1.0f32; 3]];
-        Scene::new(100.0, 0.0, 0.0).apply_row(0, 0, &mut white);
+        Scene::new(100.0, 0.0, 0.0, false).apply_row(0, 0, &mut white);
         assert!(white[0].iter().all(|c| *c > 0.93), "{white:?}");
+    }
+
+    /// Over a scene-referred input the same stops are plain gains: Exposure -1 halves.
+    #[test]
+    fn a_scene_referred_input_takes_plain_gains() {
+        let mut row = [[0.5f32, 2.0, -0.25]];
+        Scene::new(0.0, 0.0, -1.0, true).apply_row(0, 0, &mut row);
+        assert_eq!(row, [[0.25, 1.0, -0.125]]);
+        let mut warm = [[0.5f32; 3]];
+        Scene::new(40.0, 0.0, 0.0, true).apply_row(0, 0, &mut warm);
+        let stops = white_balance_stops(40.0, 0.0);
+        for c in 0..3 {
+            assert!((f64::from(warm[0][c]) - 0.5 * stops[c].exp2()).abs() < 1e-6);
+        }
     }
 }
