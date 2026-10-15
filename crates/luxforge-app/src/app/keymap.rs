@@ -18,6 +18,7 @@ use crate::app::message::{
     preset::PresetMessage,
     settings::SettingsMessage,
     sync::SyncMessage,
+    theme::ThemeMessage,
     view::ViewMessage,
 };
 use crate::app::message::{
@@ -959,6 +960,11 @@ pub(super) fn raw_event(
         // Develop opens a file.
         iced::Event::Window(iced::window::Event::FileDropped(path)) => {
             Some(Message::Select(SelectMessage::Dropped(path.clone())))
+        }
+        // The window gaining focus is when the person may have switched Omarchy's theme meanwhile:
+        // Omarchy's current theme is read again then, so nothing watches or polls it.
+        iced::Event::Window(iced::window::Event::Focused) => {
+            Some(Message::Theme(ThemeMessage::Focused))
         }
         // A resize changes how large a fitted photograph is drawn, and so how fine a clipping
         // overlay's cells may be. It rides the subscription that is already listening; nothing new

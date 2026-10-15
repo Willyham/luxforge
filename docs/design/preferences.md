@@ -28,6 +28,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `mask_overlay_colour` | `green` or `white` | `green` | General: **Mask overlay colour**, and the Masks panel's colour control | at once |
 | `canvas_background` | `theme`, `dark`, `black` or `grey` | `theme` | General: **Canvas background** | at once |
 | `theme` | a theme id, or `null` | `null`: Luxforge Dark | Settings › Appearance ([UI themes](ui-themes.md)) | at once |
+| `theme_follows_omarchy` | boolean | `true` | Settings › Appearance: **Follow Omarchy's theme**, where Omarchy runs ([following Omarchy](ui-themes.md#following-omarchy)) | at once |
 | `interface_size` | `100`, `110`, `125` or `150` | `100` | General: **Interface size** | at once |
 | `catalog` | absolute path of a catalog file, or `null` | `null`: `catalog.sqlite` in the configuration directory | General: **Catalog** | next launch |
 | `workspace` | `{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}` | the workspace's defaults | remembered | next launch |
@@ -69,7 +70,7 @@ A path is not required to exist, since a drive can be unplugged. Its use checks 
 - `interface_size`
 - `catalog`
 
-and whenever `theme` changes.
+and whenever `theme` or `theme_follows_omarchy` changes.
 
 An open Settings sheet reads them again. The desktop applies the theme, the canvas background, the interface size and the mask overlay colour from what it reads, so an agent's change shows at once. Remembered state is the desktop's own bookkeeping and announces nothing.
 

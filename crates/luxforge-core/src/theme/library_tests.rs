@@ -1259,3 +1259,37 @@ fn the_22_built_in_omarchy_themes_become_the_recorded_figures() {
     );
     assert_eq!(control, ["last-horizon", "solitude"]);
 }
+
+/// A theme follows Omarchy's current one when its Omarchy folder names the same theme, whatever a
+/// cloned repository's prefix and suffix and the case; no other origin ever does.
+#[test]
+fn an_omarchy_folder_follows_the_slug_that_names_the_same_theme() {
+    let origin = |folder: &str| ThemeOrigin::Omarchy {
+        folder: folder.into(),
+        form: "omarchy4".into(),
+        commit: None,
+    };
+    for folder in [
+        "rose-pine",
+        "omarchy-rose-pine-theme",
+        "Rose-Pine",
+        "rose-pine-theme",
+    ] {
+        assert!(follows_omarchy(&origin(folder), "rose-pine"), "{folder}");
+    }
+    for (folder, slug) in [
+        ("rose-pine-dawn", "rose-pine"),
+        ("", "rose-pine"),
+        ("rose-pine", ""),
+        ("omarchy-", "omarchy-theme"),
+    ] {
+        assert!(!follows_omarchy(&origin(folder), slug), "{folder} {slug}");
+    }
+    assert!(!follows_omarchy(&ThemeOrigin::Luxforge {}, "rose-pine"));
+    assert!(!follows_omarchy(&ThemeOrigin::BuiltIn {}, "luxforge-dark"));
+    let nord = built_in_themes()
+        .iter()
+        .find(|theme| follows_omarchy(&theme.origin, "nord"))
+        .unwrap();
+    assert_eq!(nord.id(), "omarchy.nord");
+}

@@ -9,6 +9,12 @@
 //! cannot be shown leaves Luxforge Dark on screen and the status bar names it and the reason; the
 //! stored choice is not changed.
 //!
+//! While the person lets it, the active theme follows Omarchy's current one where Omarchy runs
+//! ([design](../../../../docs/design/ui-themes.md#following-omarchy)): the launch read draws it
+//! from the first frame, and [`after_message`] chooses it again, through the same writer, once
+//! Omarchy's theme has been read again on the window gaining focus, once the library is listed
+//! and once following turns on. Choosing a theme here turns following off.
+//!
 //! A theme changes no photograph: nothing here sends `asset.state`, `history.list` or a preview
 //! job, reads an asset or uploads a frame. The theme value Iced draws with is [`Editor::theme`];
 //! the view model holds only its identity and the library's rows ([`crate::state::themes`]).
@@ -20,6 +26,7 @@
 use super::{
     Before, Editor,
     message::{Message, theme::ThemeMessage},
+    omarchy_current::current_slug,
     outcome::Outcome,
     tasks::{call, call_detailed, call_own, owner_task, owner_work, request},
     theme_folder::{FolderImport, import_folder_now, picker_start},
@@ -27,12 +34,14 @@ use super::{
 use crate::state::{
     MenuTarget,
     preferences::PreferenceChange,
-    themes::{DrawnTheme, FolderOutcome, ThemeList, fallback_note, parse_list},
+    themes::{DrawnTheme, FolderOutcome, Omarchy, ThemeList, fallback_note, parse_list},
 };
 use iced::{Color, Task};
 use luxforge_core::{
     ErrorKind,
-    theme::{LUXFORGE_DARK_ID, LaunchTheme, MAX_THEME_FILE_BYTES, Mode, Palette as Tokens},
+    theme::{
+        LUXFORGE_DARK_ID, LaunchTheme, MAX_THEME_FILE_BYTES, Mode, OmarchyTheme, Palette as Tokens,
+    },
 };
 use serde_json::{Value, json};
 use std::{
@@ -288,6 +297,31 @@ fn export_task(
 }
 
 impl Editor {
+    /// Where Omarchy is looked for, and its current theme as the launch read found it. When the
+    /// active theme follows it and it is not the stored choice, the launch already draws it and
+    /// this stores it, before [`Self::launch_theme`] names what the drawing answers for.
+    pub(crate) fn launch_omarchy(
+        &mut self,
+        home: Option<PathBuf>,
+        current: Option<OmarchyTheme>,
+        follow: Option<String>,
+    ) -> Task<Message> {
+        self.themes.omarchy = Omarchy {
+            home,
+            slug: current.map(|current| current.slug),
+            following: self.preferences.applied_follows_omarchy().unwrap_or(true),
+            ..Omarchy::default()
+        };
+        let Some(id) = follow else {
+            return Task::none();
+        };
+        self.event(
+            "theme_follows_omarchy",
+            || json!({"slug": self.themes.omarchy.slug, "theme": id, "at": "launch"}),
+        );
+        self.store_preferences(choose_change(id))
+    }
+
     /// Draw the theme the launch read before the first frame, as Iced reads [`Self::theme`] before
     /// it opens the window. A chosen theme that cannot be shown leaves Luxforge Dark, and the status
     /// bar names it and the reason; the stored choice is not changed. `None` is a launch that read
@@ -339,7 +373,36 @@ impl Editor {
                 if self.preferences.applied_theme() == Some(id.as_str()) {
                     return Task::none();
                 }
-                return self.store_preferences(choose_change(id));
+                let mut change = choose_change(id);
+                // A theme chosen by hand where Omarchy runs stops following Omarchy's.
+                if self.themes.omarchy.slug.is_some()
+                    && self.preferences.applied_follows_omarchy().unwrap_or(true)
+                {
+                    change.theme_follows_omarchy = Some(false);
+                }
+                return self.store_preferences(change);
+            }
+            ThemeMessage::Focused => return self.read_omarchy(),
+            ThemeMessage::OmarchyRead(slug) => {
+                let omarchy = &mut self.themes.omarchy;
+                omarchy.reading = false;
+                omarchy.recheck = true;
+                if omarchy.slug != slug {
+                    omarchy.slug = slug;
+                    self.event(
+                        "omarchy_theme",
+                        || json!({"slug": self.themes.omarchy.slug}),
+                    );
+                }
+            }
+            ThemeMessage::Follow(on) => {
+                if self.preferences.applied_follows_omarchy() == Some(on) {
+                    return Task::none();
+                }
+                return self.store_preferences(PreferenceChange {
+                    theme_follows_omarchy: Some(on),
+                    ..PreferenceChange::default()
+                });
             }
             ThemeMessage::Read { id, result } => return self.theme_read(id, result),
             ThemeMessage::Import => {
@@ -597,6 +660,46 @@ impl Editor {
         }
         self.themes.list = Some(list);
         self.themes.error = None;
+        // The library may now hold Omarchy's theme, or no longer hold it.
+        self.themes.omarchy.recheck = true;
+    }
+
+    /// Read Omarchy's current theme off the update loop, where it is looked for and no read is in
+    /// flight.
+    fn read_omarchy(&mut self) -> Task<Message> {
+        let omarchy = &mut self.themes.omarchy;
+        let Some(home) = omarchy.home.clone().filter(|_| !omarchy.reading) else {
+            return Task::none();
+        };
+        omarchy.reading = true;
+        owner_task(
+            move || current_slug(&home),
+            |slug| Message::Theme(ThemeMessage::OmarchyRead(slug)),
+        )
+    }
+
+    /// Choose Omarchy's current theme through the writer, when the theme follows it, something
+    /// that decides it changed and the library holds that theme but it is not the active one.
+    /// Following turned on, by this desktop or another client, is noticed here. `None` when there
+    /// is nothing to write, so the common message costs two comparisons.
+    fn follow_omarchy(&mut self) -> Option<Task<Message>> {
+        let following = self.preferences.applied_follows_omarchy().unwrap_or(true);
+        let omarchy = &mut self.themes.omarchy;
+        let turned_on = following && !omarchy.following;
+        omarchy.following = following;
+        if !(std::mem::take(&mut omarchy.recheck) || turned_on) || !following {
+            return None;
+        }
+        let slug = self.themes.omarchy.slug.as_deref()?;
+        let id = self.themes.list.as_ref()?.omarchy(slug)?.id.clone();
+        if self.preferences.applied_theme() == Some(id.as_str()) {
+            return None;
+        }
+        self.event(
+            "theme_follows_omarchy",
+            || json!({"slug": slug, "theme": id, "at": "change"}),
+        );
+        Some(self.store_preferences(choose_change(id)))
     }
 
     fn adopt_theme_change(&mut self, change: ThemeChange) {
@@ -745,6 +848,13 @@ impl Editor {
             })),
             "reading": self.themes.reading,
             "pending": self.themes.pending,
+            "omarchy": {
+                "slug": self.themes.omarchy.slug,
+                "following": self.themes.omarchy.following,
+                "theme": self.themes.omarchy.slug.as_deref().and_then(|slug| {
+                    self.themes.list.as_ref()?.omarchy(slug).map(|theme| theme.id.as_str())
+                }),
+            },
         })
     }
 }
@@ -758,7 +868,12 @@ fn capitalised(text: &str) -> String {
     }
 }
 
-/// After every message: draw the theme the preferences now choose, whatever route changed them.
+/// After every message: choose Omarchy's current theme when the theme follows it and something
+/// that decides it changed, then draw the theme the preferences now choose, whatever route changed
+/// them.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
-    editor.follow_theme()
+    match editor.follow_omarchy() {
+        Some(chosen) => Task::batch([chosen, editor.follow_theme()]),
+        None => editor.follow_theme(),
+    }
 }

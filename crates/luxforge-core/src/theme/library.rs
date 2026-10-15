@@ -920,6 +920,48 @@ impl ThemeStore {
     }
 }
 
+/// Whether a theme read from an Omarchy folder is the Omarchy theme `slug` names
+/// (`docs/design/ui-themes.md#following-omarchy`): its folder and the slug give the same name,
+/// ignoring case, by [`omarchy::theme_name`], so a cloned repository's `omarchy-` prefix and
+/// `-theme` suffix do not matter. A bundled theme's folder is its slug.
+pub fn follows_omarchy(origin: &ThemeOrigin, slug: &str) -> bool {
+    let ThemeOrigin::Omarchy { folder, .. } = origin else {
+        return false;
+    };
+    match (omarchy::theme_name(folder), omarchy::theme_name(slug)) {
+        (Some(theme), Some(current)) => theme.to_lowercase() == current.to_lowercase(),
+        _ => false,
+    }
+}
+
+/// Omarchy's current theme, as the desktop found it at launch, and the library theme that is it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OmarchyTheme {
+    /// Omarchy's own name for it, its folder's slug.
+    pub slug: String,
+    /// The id of the first theme in the library's order that [`follows_omarchy`] the slug: a
+    /// bundled theme before an imported one. `None` when the library holds none.
+    pub theme: Option<String>,
+}
+
+impl OmarchyTheme {
+    /// The library theme under `dir` that is Omarchy's `slug`. A library that cannot be read
+    /// offers only the built-in themes; its own problem is the launch read's to report.
+    pub(crate) fn find(dir: Option<PathBuf>, slug: &str) -> Self {
+        let listing = ThemeStore::new(dir).list();
+        let themes = listing
+            .as_ref()
+            .map_or(built_in_themes(), |listing| listing.themes.as_slice());
+        Self {
+            slug: slug.to_owned(),
+            theme: themes
+                .iter()
+                .find(|theme| follows_omarchy(&theme.origin, slug))
+                .map(|theme| theme.id().to_owned()),
+        }
+    }
+}
+
 /// The theme the desktop draws from its first frame, read with its launch preferences.
 #[derive(Clone, Debug)]
 pub struct LaunchTheme {

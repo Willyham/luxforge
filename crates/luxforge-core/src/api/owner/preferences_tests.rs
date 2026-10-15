@@ -121,6 +121,7 @@ fn settable() -> Value {
         "hdr_merge": null,
         "panorama_merge": null,
         "theme": "luxforge.dark",
+        "theme_follows_omarchy": true,
         "update_checks": true,
         "update_install_automatically": false,
         "update_ask_to_move": true,
@@ -177,6 +178,7 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "hdr_merge": {"alignment": "off", "deghost": "auto"},
         "panorama_merge": {"projection": "cylindrical", "boundary_warp": 40},
         "theme": "luxforge.dark",
+        "theme_follows_omarchy": false,
         "update_checks": false,
         "update_install_automatically": true,
         "update_ask_to_move": false,
@@ -374,6 +376,8 @@ fn only_a_change_to_a_general_row_is_announced() {
         ("checks", json!({"update_checks": false})),
         ("automatic", json!({"update_install_automatically": true})),
         ("ask-to-move", json!({"update_ask_to_move": false})),
+        ("follow-default", json!({"theme_follows_omarchy": true})),
+        ("follow", json!({"theme_follows_omarchy": false})),
     ] {
         harness.ok(id, "preferences.set", params);
     }
@@ -390,7 +394,8 @@ fn only_a_change_to_a_general_row_is_announced() {
             "catalog-reset",
             "checks",
             "automatic",
-            "ask-to-move"
+            "ask-to-move",
+            "follow"
         ]
     );
 }

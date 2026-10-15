@@ -110,6 +110,9 @@ preferences! {
     /// The active theme's id, Luxforge Dark's when none is stored. The Appearance tab and the
     /// palette's theme entries set it; the desktop draws the theme it names.
     theme: String,
+    /// Where Omarchy runs, the active theme is Omarchy's current one whenever the library holds
+    /// it: the Appearance tab's switch, which choosing a theme there turns off.
+    theme_follows_omarchy: bool,
     /// A release build checks for updates at launch and then daily: Settings › General's Updates
     /// group.
     update_checks: bool,
@@ -122,9 +125,10 @@ preferences! {
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
-/// shows, the theme the Appearance tab chooses, the Updates group's two switches and the move
-/// question's Don't ask again. The rest are the desktop's own bookkeeping and announce nothing.
-pub(crate) const ANNOUNCED: [&str; 11] = [
+/// shows, the theme the Appearance tab chooses and whether it follows Omarchy's, the Updates
+/// group's two switches and the move question's Don't ask again. The rest are the desktop's own
+/// bookkeeping and announce nothing.
+pub(crate) const ANNOUNCED: [&str; 12] = [
     "auto_collapse_history",
     "auto_lens_profile",
     "raw_look",
@@ -133,6 +137,7 @@ pub(crate) const ANNOUNCED: [&str; 11] = [
     "interface_size",
     "catalog",
     "theme",
+    "theme_follows_omarchy",
     "update_checks",
     "update_install_automatically",
     "update_ask_to_move",
@@ -249,6 +254,20 @@ impl PreferenceWriter {
             .chain(&self.writing)
             .find_map(|change| change.theme.as_deref())
             .or_else(|| self.stored.as_ref().map(|stored| stored.theme.as_str()))
+    }
+
+    /// Whether the theme follows Omarchy's in [`Self::applied`], as [`Self::applied_theme`] reads
+    /// the theme.
+    pub(crate) fn applied_follows_omarchy(&self) -> Option<bool> {
+        self.waiting
+            .iter()
+            .chain(&self.writing)
+            .find_map(|change| change.theme_follows_omarchy)
+            .or_else(|| {
+                self.stored
+                    .as_ref()
+                    .map(|stored| stored.theme_follows_omarchy)
+            })
     }
 
     /// The last export [`Self::applied`] holds, without cloning the rest, as
@@ -735,6 +754,7 @@ mod tests {
             "hdr_merge": null,
             "panorama_merge": null,
             "theme": "luxforge.dark",
+            "theme_follows_omarchy": true,
             "update_checks": true,
             "update_install_automatically": false,
             "update_ask_to_move": true

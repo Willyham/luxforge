@@ -11,6 +11,7 @@ use super::{
         Message, palette::PaletteMessage, settings::SettingsMessage, sync::SyncMessage,
         theme::ThemeMessage,
     },
+    omarchy_current::current_slug,
     settings_tests::answer_preference,
     tasks::{self, call, owner_calls},
     themes::{
@@ -105,9 +106,26 @@ impl Host {
     /// `Config::resolve_launch` reads them, then the editor over them.
     pub(super) fn launch(&mut self) -> Editor {
         let config = crate::Config {
-            launch_theme: Some(LaunchPreferences::read(Some(self.config())).theme),
+            launch_theme: Some(LaunchPreferences::read(Some(self.config()), None).theme),
             ..crate::Config::default()
         };
+        self.launch_with(config)
+    }
+
+    /// The editor as a launch on Omarchy builds it, with Omarchy's state under `home`.
+    fn launch_on_omarchy(&mut self, home: &Path) -> Editor {
+        let slug = current_slug(home);
+        let launch = LaunchPreferences::read(Some(self.config()), slug.as_deref());
+        self.launch_with(crate::Config {
+            launch_theme: Some(launch.theme),
+            omarchy_home: Some(home.to_path_buf()),
+            launch_omarchy: launch.omarchy,
+            launch_follow: launch.follow,
+            ..crate::Config::default()
+        })
+    }
+
+    fn launch_with(&mut self, config: crate::Config) -> Editor {
         let (editor, _) = Editor::new(Boot {
             owner: self.owner.clone(),
             join: self.join.take().expect("one launch per host"),
@@ -801,5 +819,155 @@ fn published_theme_failure_lists_visible_changes_and_preserves_the_refusal() {
     answer_list(&mut editor);
     assert!(editor.themes.list.as_ref().unwrap().find(&id).is_none());
     assert_eq!(editor.status.text, reason);
+    finish(editor, host);
+}
+
+/// Omarchy switching its theme while the editor runs, as `omarchy theme set` does, and the window
+/// regaining focus: the read Omarchy's state answers is delivered as its task would.
+fn omarchy_switches(editor: &mut Editor, home: &Path, slug: &str) {
+    write_omarchy(home, slug);
+    let _ = editor.update(Message::Theme(ThemeMessage::Focused));
+    assert!(
+        editor.themes.omarchy.reading,
+        "the focus reads Omarchy's theme"
+    );
+    let _ = editor.update(Message::Theme(ThemeMessage::OmarchyRead(current_slug(
+        home,
+    ))));
+}
+
+fn write_omarchy(home: &Path, slug: &str) {
+    let name = home.join(".local/state/omarchy/current/theme.name");
+    std::fs::create_dir_all(name.parent().unwrap()).unwrap();
+    std::fs::write(name, format!("{slug}\n")).unwrap();
+}
+
+/// Where Omarchy runs, the first frame is drawn in Omarchy's current theme, which is stored as the
+/// active one; a switch in Omarchy is followed when the window regains focus, unless the library
+/// does not hold the theme. Choosing a theme by hand stops following, with the request an
+/// independent client sends, and turning it on again chooses Omarchy's theme at once.
+#[test]
+fn the_theme_follows_omarchys_until_one_is_chosen_by_hand() {
+    let mut host = Host::start("themes-omarchy");
+    let home = host.root.join("home");
+    write_omarchy(&home, "nord");
+    let mut editor = host.launch_on_omarchy(&home);
+    assert_eq!(
+        (
+            editor.themes.drawn.id.as_str(),
+            editor.themes.drawn.chosen.as_str()
+        ),
+        ("omarchy.nord", "omarchy.nord")
+    );
+    assert_eq!(
+        editor.preferences.writing().unwrap().params(),
+        json!({"theme": "omarchy.nord"})
+    );
+    answer_preference(&mut editor);
+    answer_list(&mut editor);
+    assert!(editor.preferences.idle() && editor.theme_settled());
+    assert_eq!(
+        editor.theme_summary()["omarchy"],
+        json!({"slug": "nord", "following": true, "theme": "omarchy.nord"})
+    );
+
+    omarchy_switches(&mut editor, &home, "everforest");
+    assert_eq!(
+        editor.preferences.writing().unwrap().params(),
+        json!({"theme": "omarchy.everforest"})
+    );
+    answer_read(&mut editor);
+    answer_preference(&mut editor);
+    assert_eq!(editor.themes.drawn.id, "omarchy.everforest");
+
+    // A theme the library does not hold changes nothing, and the switch says so.
+    omarchy_switches(&mut editor, &home, "rose-pine");
+    assert!(editor.preferences.idle());
+    assert_eq!(editor.themes.drawn.id, "omarchy.everforest");
+    let _ = editor.update(Message::Settings(SettingsMessage::Open(
+        SettingsTab::Appearance,
+    )));
+    answer_list(&mut editor);
+    let row = editor
+        .workspace
+        .settings
+        .appearance
+        .omarchy
+        .clone()
+        .unwrap();
+    assert!(row.following);
+    assert!(
+        row.caption.contains("Rose Pine, is not in the library"),
+        "{}",
+        row.caption
+    );
+
+    // Chosen by hand: following stops, and a later switch in Omarchy is not followed.
+    let _ = editor.update(Message::Theme(ThemeMessage::Choose("omarchy.nord".into())));
+    assert_eq!(
+        editor.preferences.writing().unwrap().params(),
+        json!({"theme": "omarchy.nord", "theme_follows_omarchy": false})
+    );
+    answer_read(&mut editor);
+    answer_preference(&mut editor);
+    assert!(
+        !editor
+            .workspace
+            .settings
+            .appearance
+            .omarchy
+            .as_ref()
+            .unwrap()
+            .following
+    );
+    omarchy_switches(&mut editor, &home, "everforest");
+    assert!(editor.preferences.idle());
+    assert_eq!(editor.themes.drawn.id, "omarchy.nord");
+
+    // The switch turned on again chooses Omarchy's theme behind its own write.
+    let _ = editor.update(Message::Theme(ThemeMessage::Follow(true)));
+    assert_eq!(
+        editor.preferences.writing().unwrap().params(),
+        json!({"theme_follows_omarchy": true})
+    );
+    assert_eq!(
+        editor.preferences.waiting().unwrap().params(),
+        json!({"theme": "omarchy.everforest"})
+    );
+    answer_read(&mut editor);
+    answer_preference(&mut editor);
+    answer_preference(&mut editor);
+    assert!(editor.preferences.idle() && editor.theme_settled());
+    assert_eq!(editor.themes.drawn.id, "omarchy.everforest");
+    let agent = editor.owner.register();
+    let (stored, _) = call(&editor.owner, agent, "preferences.read", json!({})).unwrap();
+    assert_eq!(
+        (&stored["theme"], &stored["theme_follows_omarchy"]),
+        (&json!("omarchy.everforest"), &json!(true))
+    );
+    finish(editor, host);
+}
+
+/// Away from Omarchy nothing is read, a chosen theme leaves following alone, and the Appearance
+/// tab shows no switch.
+#[test]
+fn following_omarchy_needs_omarchy() {
+    let mut host = Host::start("themes-no-omarchy");
+    let mut editor = host.launch();
+    answer_list(&mut editor);
+    let _ = editor.update(Message::Theme(ThemeMessage::Focused));
+    assert!(!editor.themes.omarchy.reading, "nothing is looked for");
+    let _ = editor.update(Message::Theme(ThemeMessage::Choose("omarchy.nord".into())));
+    assert_eq!(
+        editor.preferences.writing().unwrap().params(),
+        json!({"theme": "omarchy.nord"})
+    );
+    answer_read(&mut editor);
+    answer_preference(&mut editor);
+    let _ = editor.update(Message::Settings(SettingsMessage::Open(
+        SettingsTab::Appearance,
+    )));
+    answer_list(&mut editor);
+    assert_eq!(editor.workspace.settings.appearance.omarchy, None);
     finish(editor, host);
 }
