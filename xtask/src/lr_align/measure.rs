@@ -1529,17 +1529,6 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
     Ok(outcome)
 }
 
-/// Basic's Exposure value whose strength is `stops`, or the end of its range towards them.
-fn exposure_for_stops(stops: f64) -> f64 {
-    let response = luxforge_core::basic_response("exposure");
-    response.and_then(|r| r.value(stops)).unwrap_or_else(|| {
-        let ends = response.map_or((-5.0, 5.0), |r| {
-            (r.knots[0][0], r.knots[r.knots.len() - 1][0])
-        });
-        if stops < 0.0 { ends.0 } else { ends.1 }
-    })
-}
-
 /// How finely [`distance_table`] refines between dense values.
 const DISTANCE_REFINE: usize = 4;
 
@@ -2605,12 +2594,12 @@ fn lens(ctx: &Context, subjects: Vec<String>) -> Result<Outcome> {
         points.push(json!({"label": subject, "profile": key, "residual": residual}));
         sheet.push((
             subject.clone(),
-            vec![lux[1].thumb.clone(), None, rv.thumb.clone()],
+            vec![lux[1].thumb.clone(), rv.thumb.clone()],
         ));
     }
     report::contact_sheet(
         &ctx.out.join("sheets/lens-profile.png"),
-        &["Luxforge", "(no calibration)", "Lightroom"],
+        &["Luxforge", "Lightroom"],
         &sheet,
     )?;
     page += "\n![sheet](../sheets/lens-profile.png)\n";
@@ -2919,10 +2908,7 @@ fn curve(ctx: &Context, family: &Value) -> Result<Outcome> {
                 measures(ctx.subject(s), ln, lv),
             ));
             if *s == "patches" {
-                sheet.push((
-                    label.clone(),
-                    vec![lv.thumb.clone(), None, rv.thumb.clone()],
-                ));
+                sheet.push((label.clone(), vec![lv.thumb.clone(), rv.thumb.clone()]));
             }
         }
         if !complete {
@@ -2962,7 +2948,7 @@ fn curve(ctx: &Context, family: &Value) -> Result<Outcome> {
     }
     report::contact_sheet(
         &ctx.out.join("sheets/tone-curve.png"),
-        &["Luxforge", "(no calibration)", "Lightroom"],
+        &["Luxforge", "Lightroom"],
         &sheet,
     )?;
     page += "\n## Contact sheet\n\nColumns: Luxforge, an empty column (a curve has no fitted map), Lightroom; the patch grid; labels in `../sheets/tone-curve.txt`.\n\n![sheet](../sheets/tone-curve.png)\n";
@@ -3048,14 +3034,11 @@ fn crop(ctx: &Context) -> Result<Outcome> {
             if within { "yes" } else { "no" }
         );
         points.push(json!({"label": label, "lightroom_size": [lr.width, lr.height], "luxforge_size": [lx.width, lx.height], "dot_error": error, "unmatched": unmatched, "within_a_pixel": within}));
-        sheet.push((
-            label.clone(),
-            vec![lx.thumb.clone(), None, lr.thumb.clone()],
-        ));
+        sheet.push((label.clone(), vec![lx.thumb.clone(), lr.thumb.clone()]));
     }
     report::contact_sheet(
         &ctx.out.join("sheets/crop.png"),
-        &["Luxforge", "(no calibration)", "Lightroom"],
+        &["Luxforge", "Lightroom"],
         &sheet,
     )?;
     page += "\n![sheet](../sheets/crop.png)\n";
@@ -3268,13 +3251,19 @@ fn mask(ctx: &Context, family: &str, radial: bool) -> Result<Outcome> {
         })
         .collect();
     // Luxforge again at the exposure each export shows, so the geometry is compared apart from
-    // the strength: the Exposure value whose strength, a gain in stops, is the export's.
+    // the strength: the written Exposure scaled by the stops Lightroom's export applies where the
+    // effect is full over the stops Luxforge's identity render applies there.
     let matched_ev: Vec<f64> = lr_measures
         .iter()
         .zip(&settings)
-        .map(|(m, setting)| match m.as_ref().and_then(|m| m.ev) {
-            Some(stops) => exposure_for_stops(stops),
-            None => setting["local_exposure"].as_f64().unwrap_or(-1.0),
+        .enumerate()
+        .map(|(i, (m, setting))| {
+            let written = setting["local_exposure"].as_f64().unwrap_or(-1.0);
+            let identity = mask_measures(lux_neutral, &lux[i + 1], &geometries[i], radial).ev;
+            match (m.as_ref().and_then(|m| m.ev), identity) {
+                (Some(lr), Some(lx)) if lx.abs() > 1e-6 => written * lr / lx,
+                _ => written,
+            }
         })
         .collect();
     let matched_jobs: Vec<Job> = settings
