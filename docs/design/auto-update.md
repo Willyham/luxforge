@@ -375,6 +375,7 @@ The engine is `luxforge_update::payload`, in the leaf crate. It reaches the netw
 **When it can update in place.** All of these must hold:
 
 - the payload carries no package-manager marker, `Luxforge/.package-managed`, which a future distribution package writes to stand the updater down;
+- the payload does not lie at `omastore/apps/<app>/<version>/Luxforge`, where [OmaStore](../engineering/releases.md#omastore) installs a release. OmaStore keeps each version in its own directory and updates it itself, and it runs nothing from the package, so it cannot write the marker;
 - the person can write the payload and its parent;
 - a staging directory can be created beside the payload on the same filesystem. A launch probes this by creating and removing `.luxforge-update-probe-<pid>` in the parent.
 
