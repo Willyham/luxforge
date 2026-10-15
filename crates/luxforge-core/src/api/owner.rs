@@ -3341,6 +3341,7 @@ host_params! {
         hdr_merge: Option<Option<Value>> = json("{alignment, deghost}, each auto or off: the remembered settings of the last HDR merge, which the desktop's option-click merges with; null resets it to the defaults"),
         panorama_merge: Option<Option<Value>> = json("{projection, boundary_warp}: projection auto, perspective, cylindrical or spherical and boundary_warp within 0..=100, the remembered settings of the last panorama merge, which the desktop's option-click merges with; null resets it to the defaults"),
         theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
+        theme_follows_omarchy: Option<Option<bool>> = boolean().notes("where Omarchy runs, the desktop makes Omarchy's current theme the active one at launch, when its window gains focus and when this turns on, if the library holds a theme from that Omarchy folder; the desktop turns it off when the person chooses a theme there, and a client choosing a theme should too; null resets it to on"),
         update_checks: Option<Option<bool>> = boolean().notes("check for updates at launch and then daily; null resets it to on"),
         update_install_automatically: Option<Option<bool>> = boolean().notes("download an update in the background and install it at the next ordinary quit, only while update_checks is on and never for an update that changes the catalog format; null resets it to off"),
         update_ask_to_move: Option<Option<bool>> = boolean().notes("on macOS, a release build launched outside Applications asks to move itself there (update.move-to-applications); false is the question's Don't ask again; null resets it to on"),
@@ -3350,7 +3351,7 @@ host_params! {
 /// `preferences.set`: one checked write of the preferences named, where `null` removes a stored
 /// value. The lens and auto-collapse switches and the RAW look reach the catalog writer at once,
 /// for the next import and edit. A theme must be one the library holds, read before the write. A change to
-/// anything the Settings sheet's General rows show, or to the theme, is announced, so a client
+/// anything the Settings sheet's General rows show, to the theme or to following Omarchy's, is announced, so a client
 /// showing them reads them again; the desktop's remembered state announces nothing.
 pub(super) fn preferences_set(
     owner: &mut Owner,
@@ -3393,6 +3394,7 @@ pub(super) fn preferences_set(
             }
             theme => theme,
         },
+        theme_follows_omarchy: params.theme_follows_omarchy,
         update_checks: params.update_checks,
         update_install_automatically: params.update_install_automatically,
         update_ask_to_move: params.update_ask_to_move,
@@ -3416,7 +3418,10 @@ pub(super) fn preferences_set(
         .service
         .set_auto_lens_profile(stored.auto_lens_profile());
     owner.service.set_raw_look(stored.raw_look());
-    if before.general() != stored.general() || before.theme() != stored.theme() {
+    if before.general() != stored.general()
+        || before.theme() != stored.theme()
+        || before.theme_follows_omarchy() != stored.theme_follows_omarchy()
+    {
         announce_once(&mut owner.announced, &call.origin);
     }
     if let Some(error) = published.durability_error {

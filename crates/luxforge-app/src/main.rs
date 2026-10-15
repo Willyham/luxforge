@@ -50,6 +50,13 @@ struct Config {
     /// The active theme the first frame is drawn in, read with the catalog and the frame, and
     /// taken by the editor as it is built; `None` until [`Config::resolve_launch`] reads it.
     launch_theme: Option<luxforge_core::theme::LaunchTheme>,
+    /// Where Omarchy's current theme is looked for, at launch and when the window gains focus:
+    /// the home directory on Linux outside evidence and hidden launches, or `None`.
+    omarchy_home: Option<PathBuf>,
+    /// Omarchy's current theme as the launch found it, and the theme to store as the active one
+    /// because the active theme follows it; read with the launch theme.
+    launch_omarchy: Option<luxforge_core::theme::OmarchyTheme>,
+    launch_follow: Option<String>,
     diagnostics: Option<Diagnostics>,
     run_id: String,
     /// Serve the test modules and show the components gallery; the default workspace stays a photo
@@ -158,14 +165,21 @@ impl Config {
     }
 
     /// Read the launch preferences once, from this run's preferences: the catalog to open, the
-    /// window's remembered frame and the active theme. `--catalog` and an evidence run's own catalog take precedence
-    /// over the stored location, and a stored catalog whose folder is missing opens the default.
+    /// window's remembered frame and the active theme, Omarchy's current one while it follows it.
+    /// `--catalog` and an evidence run's own catalog take precedence over the stored location, and
+    /// a stored catalog whose folder is missing opens the default.
     /// `--window-size` and a hidden or evidence launch open at their own size, placed by the
     /// system. Reading creates nothing, and a file that cannot be read leaves the defaults.
     fn resolve_launch(&mut self) {
         use state::preferences::LaunchCatalog;
         let config = self.paths.as_ref().map(|paths| paths.config.clone());
-        let stored = luxforge_core::preferences::LaunchPreferences::read(config);
+        self.omarchy_home = app::omarchy_current::home(self.evidence.is_some(), self.hidden);
+        let omarchy = self
+            .omarchy_home
+            .as_deref()
+            .and_then(app::omarchy_current::current_slug);
+        let stored =
+            luxforge_core::preferences::LaunchPreferences::read(config, omarchy.as_deref());
         // An evidence run given a catalog of its own opens it as a remembered one, never the
         // person's stored location.
         let (evidence, stored_catalog) = match &self.evidence_catalog {
@@ -185,6 +199,8 @@ impl Config {
             .map(window_frame::Opening::new);
         self.interface_size = Some(stored.interface_size);
         self.launch_theme = Some(stored.theme);
+        self.launch_omarchy = stored.omarchy;
+        self.launch_follow = stored.follow;
     }
 
     /// The window's size at launch in the system's points: `--window-size`, the remembered
@@ -744,6 +760,10 @@ mod tests {
             let config = resolved(config);
             assert_eq!(config.opening, None);
             assert!(!config.remember_window);
+            assert_eq!(
+                config.omarchy_home, None,
+                "an automated launch never reads Omarchy's"
+            );
         }
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -753,8 +773,10 @@ mod tests {
     #[test]
     fn the_launch_reads_the_active_theme_with_the_other_launch_preferences() {
         let root = luxforge_testbase::paths::temp_path("launch-theme");
+        // Hidden, so a host running Omarchy does not choose the theme.
         let launch = || Config {
             data_root: Some(root.clone()),
+            hidden: true,
             ..Config::default()
         };
         let theme = resolved(launch()).launch_theme.expect("read at launch");

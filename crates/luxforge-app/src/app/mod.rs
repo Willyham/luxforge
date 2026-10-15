@@ -144,6 +144,9 @@ mod motion_tests;
 pub(crate) mod move_to_applications;
 #[cfg(test)]
 mod move_to_applications_tests;
+pub(crate) mod omarchy_current;
+#[cfg(test)]
+mod omarchy_current_tests;
 pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
@@ -845,6 +848,13 @@ impl Editor {
             editor.status.text = note;
         }
         editor.view_state.memory.remember = config.remember_window;
+        // Omarchy's current theme, which the launch read already drew when the theme follows it;
+        // stored here as the active theme when it is not already.
+        let omarchy = editor.launch_omarchy(
+            config.omarchy_home.take(),
+            config.launch_omarchy.take(),
+            config.launch_follow.take(),
+        );
         // The first frame is drawn in the stored theme, read with the launch preferences; one that
         // cannot be shown leaves Luxforge Dark, and the status bar says why.
         editor.launch_theme(config.launch_theme.take());
@@ -933,6 +943,7 @@ impl Editor {
                 modules,
                 presets,
                 themes,
+                omarchy,
                 flags,
                 updates,
                 first,

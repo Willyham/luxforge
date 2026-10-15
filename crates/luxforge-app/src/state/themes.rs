@@ -9,9 +9,13 @@
 //! desktop last built. The theme value Iced draws with lives in the update layer, not here.
 use super::{MenuTarget, palette::PaletteAction, preferences::PreferenceWriter};
 use crate::coalesce::Coalesce;
-use luxforge_core::theme::{LUXFORGE_DARK_ID, LUXFORGE_DARK_NAME, Mode, Rgba, ThemeOrigin};
+use luxforge_core::theme::{
+    LUXFORGE_DARK_ID, LUXFORGE_DARK_NAME, Mode, Rgba, ThemeOrigin, follows_omarchy,
+    omarchy::theme_name,
+};
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::PathBuf;
 
 /// A theme's five swatches, as `theme.list` answers them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -58,6 +62,14 @@ impl ThemeList {
     /// The listed theme `id` names.
     pub(crate) fn find(&self, id: &str) -> Option<&ListedTheme> {
         self.themes.iter().find(|theme| theme.id == id)
+    }
+
+    /// The listed theme that is Omarchy's theme `slug`: the first the core's rule finds, so a
+    /// bundled theme before an imported one, as the launch read finds it.
+    pub(crate) fn omarchy(&self, slug: &str) -> Option<&ListedTheme> {
+        self.themes
+            .iter()
+            .find(|theme| follows_omarchy(&theme.origin, slug))
     }
 }
 
@@ -249,6 +261,25 @@ pub(crate) struct FolderLine {
     pub(crate) failed: bool,
 }
 
+/// Omarchy's current theme as this desktop last read it
+/// ([design](../../../../docs/design/ui-themes.md#following-omarchy)).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Omarchy {
+    /// Where Omarchy is looked for: the home directory, on Linux outside evidence and hidden
+    /// launches. `None` never looks, so nothing here changes.
+    pub(crate) home: Option<PathBuf>,
+    /// Omarchy's current theme's slug, as last read; `None` where Omarchy records none.
+    pub(crate) slug: Option<String>,
+    /// A read of Omarchy's current theme is in flight.
+    pub(crate) reading: bool,
+    /// Whether the theme followed Omarchy's after the last message, so following turned on, by
+    /// this desktop or another client, is noticed.
+    pub(crate) following: bool,
+    /// Something that decides whether the active theme is Omarchy's changed — its slug, the
+    /// library, following turned on — so it is decided again after this message.
+    pub(crate) recheck: bool,
+}
+
 /// The library and the theme on screen.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Themes {
@@ -272,6 +303,8 @@ pub(crate) struct Themes {
     /// What the last Import Omarchy theme… made of each theme it found, shown in the tab until the
     /// next import or delete.
     pub(crate) folder: Option<FolderReport>,
+    /// Omarchy's current theme, which the active theme follows while the person lets it.
+    pub(crate) omarchy: Omarchy,
 }
 
 /// One theme as the Appearance tab draws it.
@@ -309,6 +342,38 @@ pub(crate) struct AppearanceModel {
     /// Import Omarchy theme… and Import theme file… can start: nothing else is in flight and no
     /// dialog is open.
     pub(crate) can_import: bool,
+    /// The Follow Omarchy's theme switch, shown only where Omarchy records a current theme.
+    pub(crate) omarchy: Option<OmarchyRow>,
+}
+
+/// The Follow Omarchy's theme switch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OmarchyRow {
+    /// The switch is on, with a change not yet answered laid over the stored value.
+    pub(crate) following: bool,
+    /// What the switch's caption says of Omarchy's current theme.
+    pub(crate) caption: String,
+}
+
+impl OmarchyRow {
+    /// The switch for Omarchy's theme `slug`, and the library theme that is it, if any.
+    fn new(slug: &str, theme: Option<&ListedTheme>, following: bool) -> Self {
+        let name = theme_name(slug).unwrap_or_else(|| slug.to_owned());
+        let caption = match theme {
+            Some(theme) if theme.name.to_lowercase() == name.to_lowercase() => {
+                format!("Omarchy\u{2019}s current theme is {name}.")
+            }
+            Some(theme) => format!(
+                "Omarchy\u{2019}s current theme is {name}, which is \u{201c}{}\u{201d} here.",
+                theme.name
+            ),
+            None => format!(
+                "Omarchy\u{2019}s current theme, {name}, is not in the library. Import it with Import \
+                 Omarchy theme\u{2026} to follow it."
+            ),
+        };
+        Self { following, caption }
+    }
 }
 
 /// What the Appearance tab's rows are for these inputs: Luxforge Dark first, then the other
@@ -370,6 +435,13 @@ pub(crate) fn appearance(
             .as_ref()
             .map(|report| (report.summary(), report.lines())),
         can_import: !themes.pending && !picker_open,
+        omarchy: themes.omarchy.slug.as_deref().map(|slug| {
+            OmarchyRow::new(
+                slug,
+                themes.list.as_ref().and_then(|list| list.omarchy(slug)),
+                preferences.applied_follows_omarchy().unwrap_or(true),
+            )
+        }),
     }
 }
 
@@ -671,6 +743,58 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// The switch shows only where Omarchy records a current theme, says whether the library holds
+    /// it, and shows a change before it is answered.
+    #[test]
+    fn the_omarchy_switch_names_omarchys_theme_and_whether_the_library_holds_it() {
+        assert_eq!(
+            appearance(&themes(), &preferences("luxforge.dark"), None, false).omarchy,
+            None
+        );
+        let current = |slug: &str| Themes {
+            omarchy: Omarchy {
+                slug: Some(slug.into()),
+                ..Omarchy::default()
+            },
+            ..themes()
+        };
+        let mut writer = preferences("luxforge.dark");
+        let caption = |slug: &str, writer: &PreferenceWriter| {
+            appearance(&current(slug), writer, None, false)
+                .omarchy
+                .unwrap()
+                .caption
+        };
+        assert_eq!(
+            caption("nord", &writer),
+            "Omarchy\u{2019}s current theme is Nord."
+        );
+        assert_eq!(
+            caption("omarchy-retro-82-theme", &writer),
+            "Omarchy\u{2019}s current theme is Retro 82."
+        );
+        assert_eq!(
+            caption("rose-pine", &writer),
+            "Omarchy\u{2019}s current theme, Rose Pine, is not in the library. Import it with Import \
+             Omarchy theme\u{2026} to follow it."
+        );
+        assert_eq!(
+            current("retro-82")
+                .list
+                .unwrap()
+                .omarchy("retro-82")
+                .unwrap()
+                .id,
+            "theme-b"
+        );
+        writer.offer(PreferenceChange {
+            theme_follows_omarchy: Some(false),
+            ..PreferenceChange::default()
+        });
+        let row = appearance(&current("nord"), &writer, None, false).omarchy;
+        assert!(!row.unwrap().following);
     }
 
     #[test]

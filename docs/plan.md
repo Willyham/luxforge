@@ -171,9 +171,10 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 
 **High-zoom minimap** ([design](design/minimap.md), [tasks](../tasks/interface/minimap.json)). Implemented in Develop at percentage zoom ≥200: a whole-image overview with the visible region's rectangle, click to centre and drag the rectangle to pan through the existing `view.set` path, within 4 MiB of GPU and 1 MiB of CPU overview storage; a background zoom journey on generated 24 MP and 60 MP JPEGs and native Metal device tests pass on the M4. Outstanding: the `gpu-qualification` corpus run of its `overview` kind, rendered coverage of RAW fixtures, resize, scaling, panels, history, warp, masks and recovery, photo-sized M4 measurements, and Windows and Linux.
 
-**UI themes** ([design](design/ui-themes.md)) are implemented, with Omarchy import and six bundled Omarchy themes ([feature status](features.md)). Outstanding:
+**UI themes** ([design](design/ui-themes.md)) are implemented, with Omarchy import, six bundled Omarchy themes and following Omarchy's current theme on Linux ([feature status](features.md)). Outstanding:
 - Owner review of the recorded defaults: which themes are bundled, the contrast floors, the Omarchy forms read, the canvas background's Theme default and the Appearance tab
-- Later, if the owner wants them: following Omarchy's current theme on Linux, following the system's light or dark appearance
+- A rendered check of following Omarchy on a host running Omarchy
+- Later, if the owner wants it: following the system's light or dark appearance
 
 ## Programmability
 

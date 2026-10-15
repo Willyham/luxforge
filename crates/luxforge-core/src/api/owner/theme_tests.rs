@@ -278,7 +278,8 @@ fn an_import_is_listed_chosen_announced_and_read_back_and_a_retry_changes_nothin
         harness.ok("list", "theme.list", json!({}))["active"],
         id.as_str()
     );
-    let launch = crate::preferences::LaunchPreferences::read(Some(harness.dir.join("config")));
+    let launch =
+        crate::preferences::LaunchPreferences::read(Some(harness.dir.join("config")), None);
     assert_eq!(launch.theme.id, id);
     assert_eq!(launch.theme.name, "Night");
     assert!(launch.theme.problem.is_none());
@@ -767,6 +768,71 @@ fn an_omarchy_import_is_listed_and_read_back_with_its_source_and_report() {
     assert_eq!(set["theme"], id.as_str());
 }
 
+/// While the theme follows Omarchy's, the launch draws the library theme that is Omarchy's current
+/// one, bundled before imported, and names it to store; a theme the library does not hold, a
+/// theme already stored, or following turned off leaves the stored choice.
+#[test]
+fn the_launch_draws_omarchys_current_theme_while_following_it() {
+    let harness = Harness::start("omarchy-follow");
+    let config = Some(harness.dir.join("config"));
+    let mut import = json!({"format": "omarchy", "files": synthetic("omarchy4"),
+                            "folder": "omarchy-deep-sea-theme"});
+    import["mutation"] = mutation("import");
+    let id = harness.ok("import", "theme.import", import)["theme"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let launch = crate::preferences::LaunchPreferences::read(config.clone(), Some("deep-sea"));
+    assert_eq!(launch.theme.id, id);
+    assert_eq!(launch.follow.as_deref(), Some(id.as_str()));
+    assert_eq!(
+        launch.omarchy,
+        Some(crate::theme::OmarchyTheme {
+            slug: "deep-sea".into(),
+            theme: Some(id.clone()),
+        })
+    );
+    let launch = crate::preferences::LaunchPreferences::read(config.clone(), Some("nord"));
+    assert_eq!(
+        (launch.theme.id.as_str(), launch.follow.as_deref()),
+        ("omarchy.nord", Some("omarchy.nord"))
+    );
+    // A theme the library does not hold leaves the stored choice.
+    let launch = crate::preferences::LaunchPreferences::read(config.clone(), Some("rose-pine"));
+    assert_eq!(
+        (
+            launch.theme.id.as_str(),
+            launch.follow,
+            launch.omarchy.unwrap().theme
+        ),
+        (LUXFORGE_DARK_ID, None, None)
+    );
+    // Already the stored choice: nothing to store.
+    harness.ok("choose", "preferences.set", json!({"theme": id}));
+    let launch = crate::preferences::LaunchPreferences::read(config.clone(), Some("deep-sea"));
+    assert_eq!(
+        (launch.theme.id.as_str(), launch.follow),
+        (id.as_str(), None)
+    );
+    // Not following: the stored choice is drawn, and Omarchy's theme is still found.
+    let set = harness.ok(
+        "unfollow",
+        "preferences.set",
+        json!({"theme_follows_omarchy": false}),
+    );
+    assert_eq!(set["theme_follows_omarchy"], false);
+    let launch = crate::preferences::LaunchPreferences::read(config, Some("nord"));
+    assert_eq!(
+        (launch.theme.id.as_str(), launch.follow),
+        (id.as_str(), None)
+    );
+    assert_eq!(
+        launch.omarchy.unwrap().theme.as_deref(),
+        Some("omarchy.nord")
+    );
+}
+
 #[test]
 fn the_bundled_themes_are_listed_after_luxforge_dark_and_can_be_chosen_but_not_taken() {
     let harness = Harness::start("bundled");
@@ -819,7 +885,8 @@ fn the_bundled_themes_are_listed_after_luxforge_dark_and_can_be_chosen_but_not_t
         harness.ok("list", "theme.list", json!({}))["active"],
         "omarchy.nord"
     );
-    let launch = crate::preferences::LaunchPreferences::read(Some(harness.dir.join("config")));
+    let launch =
+        crate::preferences::LaunchPreferences::read(Some(harness.dir.join("config")), None);
     assert_eq!(
         (launch.theme.id.as_str(), launch.theme.name.as_str()),
         ("omarchy.nord", "Nord")

@@ -10,7 +10,7 @@ use crate::{
     Error, MaskOverlayColour, WorkspaceState,
     capabilities::document::JsonDocument,
     mask::commands::ADD_STROKE,
-    theme::{LUXFORGE_DARK_ID, LaunchTheme, MAX_THEME_ID},
+    theme::{LUXFORGE_DARK_ID, LaunchTheme, MAX_THEME_ID, OmarchyTheme},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -228,6 +228,11 @@ pub(crate) struct Preferences {
     /// theme library holds, and Luxforge Dark's as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) theme: Option<String>,
+    /// Whether the desktop makes Omarchy's current theme the active one, where Omarchy runs and the
+    /// library holds that theme ([design](../../../docs/design/ui-themes.md#following-omarchy)).
+    /// On unless the person turned it off, which choosing a theme in the desktop does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) theme_follows_omarchy: Option<bool>,
     /// The protected usage statistics consent ([`crate::usage::consent`]). Only
     /// [`crate::usage::consent::Usage`] writes it, through [`PreferenceStore::update_usage`]: no
     /// [`PreferenceChange`] names it, so `preferences.set`, its `null` and every reset keep it.
@@ -314,6 +319,10 @@ impl Preferences {
     /// The active theme's id, Luxforge Dark's when none is stored.
     pub(crate) fn theme(&self) -> &str {
         self.theme.as_deref().unwrap_or(LUXFORGE_DARK_ID)
+    }
+
+    pub(crate) fn theme_follows_omarchy(&self) -> bool {
+        self.theme_follows_omarchy.unwrap_or(true)
     }
 
     /// The values the General rows show, defaults filled in.
@@ -466,6 +475,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) hdr_merge: Option<Option<HdrMergePreference>>,
     pub(crate) panorama_merge: Option<Option<PanoramaMergePreference>>,
     pub(crate) theme: Option<Option<String>>,
+    pub(crate) theme_follows_omarchy: Option<Option<bool>>,
     pub(crate) update_checks: Option<Option<bool>>,
     pub(crate) update_install_automatically: Option<Option<bool>>,
     pub(crate) update_ask_to_move: Option<Option<bool>>,
@@ -502,6 +512,10 @@ impl PreferenceChange {
         put(&mut preferences.hdr_merge, self.hdr_merge);
         put(&mut preferences.panorama_merge, self.panorama_merge);
         put(&mut preferences.theme, self.theme);
+        put(
+            &mut preferences.theme_follows_omarchy,
+            self.theme_follows_omarchy,
+        );
         put(&mut preferences.update_checks, self.update_checks);
         put(
             &mut preferences.update_install_automatically,
@@ -630,8 +644,9 @@ impl PreferenceStore {
 }
 
 /// The preferences the desktop needs before its catalog owner starts: which catalog to open, the
-/// window's frame, the interface size and the theme it draws from its first frame. Read once at
-/// launch, beside [`crate::flags::LaunchFlags::resolve`].
+/// window's frame, the interface size and the theme it draws from its first frame, which is
+/// Omarchy's current one when it follows it. Read once at launch, beside
+/// [`crate::flags::LaunchFlags::resolve`].
 #[derive(Clone, Debug)]
 pub struct LaunchPreferences {
     /// The stored catalog file, or `None` for the default catalog. Whether its folder exists is
@@ -645,6 +660,12 @@ pub struct LaunchPreferences {
     /// chosen, and in place of a chosen one that is missing or unreadable, whose own problem
     /// names it. The stored choice is not changed.
     pub theme: LaunchTheme,
+    /// Omarchy's current theme, when the desktop found one, and the library theme that is it.
+    pub omarchy: Option<OmarchyTheme>,
+    /// The theme to store as the active one because the active theme follows Omarchy's: the one
+    /// [`Self::omarchy`] found, when it is not already the stored choice. [`Self::theme`] is
+    /// already that theme; the stored choice is the desktop's to write.
+    pub follow: Option<String>,
     /// Why the preferences could not be read, when they could not: every field took its default,
     /// and nothing was written.
     pub problem: Option<Error>,
@@ -653,14 +674,25 @@ pub struct LaunchPreferences {
 impl LaunchPreferences {
     /// Read the launch preferences from `preferences.json` under `preferences_dir`, if any. A file
     /// that cannot be read leaves every field at its default and is kept as [`Self::problem`].
-    /// `themes.json` is read only when a theme other than Luxforge Dark is chosen.
-    pub fn read(preferences_dir: Option<PathBuf>) -> Self {
+    /// `omarchy` is Omarchy's current theme's slug, where the desktop found one: while the theme
+    /// follows Omarchy and the library holds that theme, it is drawn in place of the stored
+    /// choice. `themes.json` is read only when a theme other than Luxforge Dark is chosen, or to
+    /// find Omarchy's.
+    pub fn read(preferences_dir: Option<PathBuf>, omarchy: Option<&str>) -> Self {
         let (preferences, problem) = match PreferenceStore::new(preferences_dir.clone()).read() {
             Ok(preferences) => (preferences, None),
             Err(error) => (Preferences::default(), Some(error)),
         };
+        let omarchy = omarchy.map(|slug| OmarchyTheme::find(preferences_dir.clone(), slug));
+        let follow = omarchy
+            .as_ref()
+            .and_then(|omarchy| omarchy.theme.clone())
+            .filter(|id| preferences.theme_follows_omarchy() && id != preferences.theme());
+        let chosen = follow.as_deref().or(preferences.theme.as_deref());
         Self {
-            theme: LaunchTheme::read(preferences_dir, preferences.theme.as_deref()),
+            theme: LaunchTheme::read(preferences_dir, chosen),
+            omarchy,
+            follow,
             interface_size: preferences.interface_size(),
             catalog: preferences.catalog,
             window: preferences.window,
@@ -773,6 +805,7 @@ mod tests {
                 boundary_warp: 40,
             })),
             theme: Some(Some(STORED_THEME.to_owned())),
+            theme_follows_omarchy: Some(Some(false)),
             update_checks: Some(Some(false)),
             update_install_automatically: Some(Some(true)),
             update_ask_to_move: Some(Some(false)),
@@ -837,7 +870,7 @@ mod tests {
             assert!(store.set(PreferenceChange::default()).is_err());
             assert!(store.set(every_field()).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
-            let launch = LaunchPreferences::read(Some(root.clone()));
+            let launch = LaunchPreferences::read(Some(root.clone()), None);
             assert_eq!(
                 launch.problem.map(|problem| problem.kind),
                 Some(ErrorKind::Incompatible)
@@ -912,7 +945,7 @@ mod tests {
         assert_eq!(reopened.theme(), STORED_THEME);
         assert!(!reopened.update_checks() && reopened.update_install_automatically());
         assert!(!reopened.update_ask_to_move());
-        let launch = LaunchPreferences::read(Some(root.clone()));
+        let launch = LaunchPreferences::read(Some(root.clone()), None);
         assert!(launch.problem.is_none());
         assert_eq!(launch.catalog, reopened.catalog);
         assert_eq!(launch.window, reopened.window);
@@ -952,6 +985,7 @@ mod tests {
             hdr_merge: Some(None),
             panorama_merge: Some(None),
             theme: Some(None),
+            theme_follows_omarchy: Some(None),
             update_checks: Some(None),
             update_install_automatically: Some(None),
             update_ask_to_move: Some(None),
@@ -966,7 +1000,7 @@ mod tests {
                 .unwrap(),
             serde_json::json!({"format": 1})
         );
-        let launch = LaunchPreferences::read(Some(root.clone()));
+        let launch = LaunchPreferences::read(Some(root.clone()), None);
         assert_eq!(
             (launch.catalog, launch.window, launch.interface_size),
             (None, None, DEFAULT_INTERFACE_SIZE)
@@ -974,7 +1008,7 @@ mod tests {
         assert_eq!(launch.theme.id, LUXFORGE_DARK_ID);
         assert!(launch.theme.problem.is_none());
         std::fs::remove_dir_all(root).unwrap();
-        let unconfigured = LaunchPreferences::read(None);
+        let unconfigured = LaunchPreferences::read(None, None);
         assert!(unconfigured.problem.is_none() && unconfigured.catalog.is_none());
         assert_eq!(
             unconfigured.theme.resolved.tokens,
