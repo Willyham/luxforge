@@ -269,8 +269,9 @@ fn a_drag_from_neutral_keeps_one_program_sequence_and_one_boundary() {
     );
     assert_eq!(
         first.content[0].units.len(),
-        4,
-        "the drafted layer holds every unit, neutral ones as their identity"
+        3,
+        "the drafted layer holds every unit, neutral ones as their identity: the scene unit, tone \
+         and colour"
     );
     assert!(
         first.geometry.affine().is_some() && first.geometry.clamps,

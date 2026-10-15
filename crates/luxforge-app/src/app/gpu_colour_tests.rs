@@ -260,8 +260,7 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
     assert_eq!(
         entries,
         [
-            "lf_basic_white_balance",
-            "lf_basic_exposure",
+            "lf_basic_scene",
             "lf_basic_tone",
             "lf_basic_colour_adjust",
             "lf_look_look",
@@ -560,7 +559,7 @@ fn gpu_colour_exposure_meets_the_pointwise_limits() {
         .to_vec();
     qualify(
         "gpu_colour_exposure_meets_the_pointwise_limits",
-        "lf_basic_exposure",
+        "lf_basic_scene",
         cases,
         GRID,
     );
@@ -584,7 +583,7 @@ fn gpu_colour_white_balance_meets_the_pointwise_limits() {
     .to_vec();
     qualify(
         "gpu_colour_white_balance_meets_the_pointwise_limits",
-        "lf_basic_white_balance",
+        "lf_basic_scene",
         cases,
         GRID,
     );

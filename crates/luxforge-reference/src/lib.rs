@@ -39,6 +39,7 @@ pub mod preview_error;
 pub mod range;
 pub mod repair;
 mod rng;
+pub mod scene;
 pub mod srgb;
 pub mod tolerance;
 pub mod tone;

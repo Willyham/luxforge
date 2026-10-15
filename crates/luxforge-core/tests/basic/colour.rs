@@ -8,7 +8,7 @@
 
 use super::{basic_layer, strength};
 use luxforge_core::{ModuleRegistry, SnapshotId};
-use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
+use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
 use serde_json::json;
@@ -114,22 +114,10 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
         let rendered = render(&registry, &source, SnapshotId::new(), &stack)
             .expect("a rendered combined frame");
         // The references take the strengths the stored slider values apply.
-        let (ev, v, s) = (
-            strength("exposure", ev),
-            strength("vibrance", v),
-            strength("saturation", s),
-        );
+        let (v, s) = (strength("vibrance", v), strength("saturation", s));
         for (index, input) in pixels.iter().enumerate() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
-            let reference_bytes = evaluate_pixel(
-                *input,
-                &[
-                    RefOp::Exposure(ev),
-                    RefOp::Vibrance(v),
-                    RefOp::Saturation(s),
-                ],
-            );
             // The pre-quantization linear reference value, composed the same way, for the
             // boundary tolerance check.
             let mut channels = [
@@ -138,13 +126,12 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
                 srgb::decode(input[2]),
             ];
             for channel in &mut channels {
-                *channel = exposure(*channel, ev);
+                *channel = luxforge_reference::scene::shift(*channel, ev);
             }
             channels = luxforge_reference::colour::apply_vibrance(channels, v);
             channels = luxforge_reference::colour::apply_saturation(channels, s);
-            for (channel, (&reference_byte, &linear)) in
-                reference_bytes.iter().zip(channels.iter()).enumerate()
-            {
+            for (channel, &linear) in channels.iter().enumerate() {
+                let reference_byte = srgb::code(linear);
                 fixtures::assert_code_near_threshold(
                     pixel[channel],
                     reference_byte,

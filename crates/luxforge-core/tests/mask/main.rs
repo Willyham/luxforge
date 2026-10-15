@@ -57,12 +57,10 @@ const HEIGHT: u32 = 16;
 /// in a thousand is visible in the output codes rather than lost in the quantizer.
 const MASKED_EV: f64 = 2.0;
 
-/// The linear gain Basic's Exposure applies at slider value `ev`: two to the strength its frozen
-/// response gives the value.
-fn gain(ev: f64) -> f64 {
-    luxforge_core::basic_response("exposure")
-        .map_or(ev, |response| response.strength(ev))
-        .exp2()
+/// What Basic's Exposure at `ev` makes of one linear channel: the scene shift
+/// (`docs/design/basic-scene.md`).
+fn exposed(x: f64, ev: f64) -> f64 {
+    luxforge_reference::scene::shift(x, ev)
 }
 
 /// The stages the compiled gradients are held to the reference on: both 24 MP orientations, a

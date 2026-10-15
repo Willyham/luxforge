@@ -214,9 +214,9 @@ fn by_the_design_through(
     values
 }
 
-/// A dark neutral ramp: its first Exposure is the slider value applying the analytical strength
-/// `log2(t / m)` for the target median's linear value `t` and the input median `m`, rounded to the
-/// 0.01 grid, because Basic's Exposure scales linear light by its strength and a neutral ramp's
+/// A dark neutral ramp: its first Exposure is the analytical shift `S(t) - S(m)` on the scene
+/// scale for the target median's linear value `t` and the input median `m`, rounded to the 0.01
+/// grid, because Basic's Exposure moves a grey by its value on that scale and a neutral ramp's
 /// median is its middle sample; it has no chroma, so Vibrance applies its +25 bound and Saturation
 /// 0; and every value is the design's.
 #[test]
@@ -231,12 +231,11 @@ fn auto_tone_dark_neutral_ramp_equals_the_designs_steps_and_its_analytical_expos
     .unwrap();
     let middle = f64::from(input.rgb[511][0]);
     let linear_target = ((0.46_f64 + 0.055) / 1.055).powf(2.4);
-    let first =
-        (crate::modules::basic::response::value("exposure", (linear_target / middle).log2())
-            .unwrap()
-            * 100.)
-            .round()
-            / 100.;
+    let first = ((luxforge_reference::scene::scene_log(linear_target)
+        - luxforge_reference::scene::scene_log(middle))
+        * 100.)
+        .round()
+        / 100.;
     assert_eq!(
         report.bands,
         statistics(

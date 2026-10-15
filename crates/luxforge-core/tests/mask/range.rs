@@ -153,7 +153,7 @@ fn a_range_selection_reads_the_operations_input_and_renders_as_the_reference_com
                 }
                 let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                 for (channel, &code) in pixel.iter().enumerate().take(3) {
-                    let effect = input[channel] * gain(MASKED_EV);
+                    let effect = exposed(input[channel], MASKED_EV);
                     let blended = (1.0 - m) * input[channel] + m * effect;
                     assert_code(
                         code,
@@ -278,7 +278,7 @@ fn a_range_selection_reads_the_operations_input_on_the_raw_linear_path() {
                     "{kind}: a sampled byte differs from the rendered byte at ({x}, {y})"
                 );
                 for (channel, &code) in pixel.iter().enumerate().take(3) {
-                    let effect = input[channel] * gain(MASKED_EV);
+                    let effect = exposed(input[channel], MASKED_EV);
                     let blended = (1.0 - m) * input[channel] + m * effect;
                     assert_code(
                         code,
@@ -407,7 +407,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
             }
             let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
             for (channel, &code) in pixel.iter().enumerate().take(3) {
-                let effect = input[channel] * gain(MASKED_EV);
+                let effect = exposed(input[channel], MASKED_EV);
                 let blended = (1.0 - m) * input[channel] + m * effect;
                 assert_code(
                     code,

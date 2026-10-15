@@ -2036,26 +2036,15 @@ mod tests {
             LinearSettings::default(),
         )
         .unwrap();
-        // Exposure +1 applies its response's gain to the linear value; the second pixel's blue
-        // clips only at the encoding.
-        let gain = exposure_gain(1.0);
+        // Exposure +1 shifts each linear value on the scene scale, encoded only at the boundary.
+        let exposed = |x: f64| reference_srgb(luxforge_reference::scene::shift(x, 1.0));
         assert_eq!(
             raster.pixel(0, 0),
-            Some([
-                reference_srgb(0.1 * gain),
-                reference_srgb(0.2 * gain),
-                reference_srgb(0.3 * gain),
-                255
-            ])
+            Some([exposed(0.1), exposed(0.2), exposed(0.3), 255])
         );
         assert_eq!(
             raster.pixel(1, 0),
-            Some([
-                reference_srgb(0.05 * gain),
-                reference_srgb(0.4 * gain),
-                reference_srgb(0.6 * gain),
-                255
-            ])
+            Some([exposed(0.05), exposed(0.4), exposed(0.6), 255])
         );
     }
 
@@ -2091,8 +2080,8 @@ mod tests {
     }
 
     /// Basic's exposure on the developed planes is an `f64` read of the unclipped source, clipped
-    /// only at the terminal boundary: a value pushed past 1 by the gain encodes as white and a
-    /// negative one as black, exactly as the reference computes it.
+    /// only at the terminal boundary: a negative value encodes as black, and every value as the
+    /// scene reference computes it.
     #[test]
     fn basic_exposure_reads_unclipped_planes_before_terminal_clipping() {
         let source = image(1, 1, &[[0.18, -0.1, 0.6]]);
@@ -2107,18 +2096,11 @@ mod tests {
             LinearSettings::default(),
         )
         .unwrap();
+        let exposed = |x: f64| reference_srgb(luxforge_reference::scene::shift(x, 1.0));
         assert_eq!(
             raster.pixel(0, 0),
-            Some([reference_srgb(0.18 * exposure_gain(1.0)), 0, 255, 255])
+            Some([exposed(0.18), 0, exposed(0.6), 255])
         );
-    }
-
-    /// The linear gain Basic's Exposure applies at slider value `ev`, through its response.
-    fn exposure_gain(ev: f64) -> f64 {
-        crate::basic_response("exposure")
-            .expect("Exposure's response")
-            .strength(ev)
-            .exp2()
     }
 
     #[test]

@@ -6,12 +6,12 @@
 //! around a code threshold within which one code of difference is permitted is
 //! `1e-6 + 1e-6 · |threshold|`, because production decodes and multiplies in f32.
 
-use super::{basic_layer, mutation, strength, value_at};
+use super::{basic_layer, mutation};
 use luxforge_core::{
     BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, ModuleRegistry, MutationOutcome,
     ORIENTATION_EFFECT, Orientation, SnapshotId, SourceImage, Transform,
 };
-use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
+use luxforge_reference::{scene, srgb};
 use luxforge_testbase::paths;
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
@@ -34,16 +34,14 @@ fn exposure_layer(ev: f64) -> Layer {
 struct ExposureCase {
     input: [u8; 3],
     ev: f64,
-    expected: [u8; 3],
     #[serde(default)]
     #[allow(dead_code)]
     note: String,
 }
 
-/// Every case of `fixtures/basic/exposure-cases.json`, rendered through a real Basic layer at the
-/// exact input codes the corpus names, the case's EV stored as the slider's value and held to the
-/// reference at its strength. The corpus covers 0, ±0.5, ±1, ±2 and ±5 EV, the identity
-/// codes and the explicit clip and floor boundaries.
+/// Every input and EV of `fixtures/basic/exposure-cases.json`, rendered through a real Basic layer at
+/// the exact input codes the corpus names and held to the independent scene reference. The corpus
+/// covers 0, ±0.5, ±1, ±2 and ±5 EV, the identity codes and the explicit clip and floor boundaries.
 #[test]
 fn every_corpus_case_renders_through_a_real_basic_layer() {
     let raw = fs::read_to_string(paths::fixture("basic/exposure-cases.json")).expect("the corpus");
@@ -70,25 +68,16 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
         )
         .expect("a rendered exposure");
         assert_eq!((rendered.width, rendered.height), (inputs.len() as u32, 1));
-        // The layer stores the corpus's value as the slider's, which applies its strength.
-        let applied = strength("exposure", ev);
         for (index, case) in group.iter().enumerate() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
-            // The Rust reference agrees with the corpus (proved in `studies/exposure.rs`); this
-            // asserts against the committed file itself.
-            assert_eq!(
-                evaluate_pixel(case.input, &[RefOp::Exposure(ev)]),
-                case.expected,
-                "the reference disagrees with the corpus at {:?} {ev} EV",
-                case.input
-            );
-            let expected = evaluate_pixel(case.input, &[RefOp::Exposure(applied)]);
+            // Basic's Exposure is the scene shift (`basic-scene.md`), not the corpus's plain
+            // gain: each channel is held to the independent scene reference.
             for (channel, input) in case.input.iter().enumerate() {
-                let linear = exposure(srgb::decode(*input), applied);
+                let linear = scene::shift(srgb::decode(*input), ev);
                 fixtures::assert_code_near_threshold(
                     pixel[channel],
-                    expected[channel],
+                    srgb::code(linear),
                     linear,
                     CODE_BAND,
                     format_args!("input {:?} channel {channel} at {ev} EV", case.input),
@@ -123,11 +112,10 @@ struct MixedCase {
     #[allow(dead_code)]
     description: String,
     order: Vec<String>,
-    expected_rgba: Vec<u8>,
 }
 
-/// `fixtures/basic/mixed-order.json` through real layers: an exact mirror commutes with the colour
-/// operation.
+/// `fixtures/basic/mixed-order.json`'s two orders through real layers: an exact mirror commutes
+/// with the colour operation, and the exposure is the scene reference's on every pixel.
 #[test]
 fn mixed_order_cases_reproduce_exactly_through_real_layers() {
     let raw =
@@ -143,30 +131,43 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
     };
     let registry = ModuleRegistry::developer();
     assert_eq!(file.cases.len(), 2, "every committed case is exercised");
+    let mut rendered = BTreeMap::new();
     for (name, case) in &file.cases {
         let layers: Vec<Layer> = case
             .order
             .iter()
             .map(|step| match step.as_str() {
-                // The file records the gain's EV, the strength.
-                "exposure" => exposure_layer(value_at("exposure", file.ev)),
+                "exposure" => exposure_layer(file.ev),
                 "mirror" => Layer::orientation(Orientation::of(Transform::MirrorHorizontal)),
                 other => panic!("{name}: unknown step {other}"),
             })
             .collect();
-        let rendered = render(&registry, &source, SnapshotId::new(), &recipe(layers))
+        let frame = render(&registry, &source, SnapshotId::new(), &recipe(layers))
             .unwrap_or_else(|error| panic!("{name}: {error}"));
-        assert_eq!(
-            rendered.rgba.as_ref(),
-            case.expected_rgba.as_slice(),
-            "{name} did not reproduce its expected buffer"
-        );
+        rendered.insert(name.clone(), frame.rgba.to_vec());
     }
     assert_eq!(
-        file.cases["mirror_then_expose"].expected_rgba,
-        file.cases["expose_then_mirror"].expected_rgba,
+        rendered["mirror_then_expose"], rendered["expose_then_mirror"],
         "exact geometry commutes with pointwise colour"
     );
+    // The mirrored frame against the scene reference of the mirrored source.
+    let (w, h) = (file.width as usize, file.height as usize);
+    let frame = &rendered["expose_then_mirror"];
+    for y in 0..h {
+        for x in 0..w {
+            let from = (y * w + (w - 1 - x)) * 4;
+            for channel in 0..3 {
+                let linear = scene::shift(srgb::decode(file.base_rgba[from + channel]), file.ev);
+                fixtures::assert_code_near_threshold(
+                    frame[(y * w + x) * 4 + channel],
+                    srgb::code(linear),
+                    linear,
+                    CODE_BAND,
+                    format_args!("({x}, {y}) channel {channel}"),
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -39,7 +39,7 @@ pub use crate::render::map::{Mapping, RadialModel, WarpStep};
 pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &detail::DETAIL_PROGRAM,
     &basic::WHITE_BALANCE_PROGRAM,
-    &basic::EXPOSURE_PROGRAM,
+    &basic::SCENE_PROGRAM,
     &basic::TONE_PROGRAM,
     &basic::COLOUR_ADJUST_PROGRAM,
     &look::LOOK_PROGRAM,

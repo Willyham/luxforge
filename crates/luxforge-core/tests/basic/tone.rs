@@ -182,8 +182,8 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
     let stack = recipe(vec![basic_layer(payload)]);
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a rendered pixel");
     let actual = rendered.pixel(0, 0).expect("the pixel");
-    // The references take the strengths the stored slider values apply.
-    let ev = strength("exposure", ev);
+    // The references take the strengths the stored slider values apply; Exposure is the scene
+    // shift.
     let params = ToneParams {
         contrast: strength("contrast", params.contrast),
         highlights: strength("highlights", params.highlights),
@@ -200,9 +200,9 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
 
     // The declared order: exposure, then tone.
     let exposed = [
-        luxforge_reference::exposure(linear_in[0], ev),
-        luxforge_reference::exposure(linear_in[1], ev),
-        luxforge_reference::exposure(linear_in[2], ev),
+        luxforge_reference::scene::shift(linear_in[0], ev),
+        luxforge_reference::scene::shift(linear_in[1], ev),
+        luxforge_reference::scene::shift(linear_in[2], ev),
     ];
     let expected_in_order = luxforge_reference::tone::tone_pixel(exposed, params);
     for (channel, expected_linear) in expected_in_order.iter().enumerate() {
@@ -219,9 +219,9 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
     // above would hold vacuously (either order giving the same answer).
     let toned_first = luxforge_reference::tone::tone_pixel(linear_in, params);
     let reverse_order = [
-        luxforge_reference::srgb::code(luxforge_reference::exposure(toned_first[0], ev)),
-        luxforge_reference::srgb::code(luxforge_reference::exposure(toned_first[1], ev)),
-        luxforge_reference::srgb::code(luxforge_reference::exposure(toned_first[2], ev)),
+        luxforge_reference::srgb::code(luxforge_reference::scene::shift(toned_first[0], ev)),
+        luxforge_reference::srgb::code(luxforge_reference::scene::shift(toned_first[1], ev)),
+        luxforge_reference::srgb::code(luxforge_reference::scene::shift(toned_first[2], ev)),
     ];
     assert_ne!(
         [actual[0], actual[1], actual[2]],
