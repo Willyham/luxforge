@@ -26,8 +26,13 @@ pub const SCOPED_SECRETS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// The only write permissions granted: the workflow, the job and the permission.
-pub const WRITE_PERMISSIONS: &[(&str, &str, &str)] = &[("release.yml", "publish", "contents")];
+/// The only write permissions granted: the workflow, the job and the permission. Publication
+/// writes the release, and attests its downloads' build provenance with an OIDC token.
+pub const WRITE_PERMISSIONS: &[(&str, &str, &str)] = &[
+    ("release.yml", "publish", "contents"),
+    ("release.yml", "publish", "id-token"),
+    ("release.yml", "publish", "attestations"),
+];
 
 /// Constructs that hand a workflow's secrets or privileges to code it did not choose.
 const FORBIDDEN: &[(&str, &str)] = &[
@@ -385,6 +390,14 @@ jobs:
             ),
             FEEDS,
             "packages write permission in publish",
+        );
+        refused(
+            &RELEASE.replace(
+                "  build:\n    runs-on: ubuntu-24.04\n",
+                "  build:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n",
+            ),
+            FEEDS,
+            "id-token write permission in build",
         );
         for construct in ["secrets: inherit", "toJSON(secrets)", "pull_request_target"] {
             refused(

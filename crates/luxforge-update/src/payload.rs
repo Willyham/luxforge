@@ -51,6 +51,9 @@ pub const BUILD_FILE: &str = "build.json";
 /// A file in the payload that stands the updater down: a distribution package that installs the
 /// payload puts it there, and the installation is then offered as its release page only.
 pub const PACKAGE_MARKER: &str = ".package-managed";
+/// OmaStore's apps directory, `$XDG_DATA_HOME/omastore/apps`, whose last two components mark a
+/// payload OmaStore installed and updates: `omastore/apps/<owner>__<repo>/<version>/Luxforge`.
+const OMASTORE_APPS: [&str; 2] = ["omastore", "apps"];
 /// Staging directories beside the payload start with this: `.luxforge-update-<build>`.
 pub const STAGING_PREFIX: &str = ".luxforge-update-";
 /// The extracted payload inside a staging directory.
@@ -137,6 +140,8 @@ pub enum Mode {
 pub enum NotifyReason {
     /// The payload holds [`PACKAGE_MARKER`].
     PackageManaged,
+    /// OmaStore installed the payload in its apps directory and updates it.
+    OmaStoreManaged,
     /// The person cannot write the payload.
     PayloadNotWritable,
     /// The person cannot write the directory holding it.
@@ -152,6 +157,7 @@ impl NotifyReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PackageManaged => "package-managed",
+            Self::OmaStoreManaged => "omastore-managed",
             Self::PayloadNotWritable => "payload-not-writable",
             Self::ParentNotWritable => "parent-not-writable",
             Self::StagingUnavailable => "staging-unavailable",
@@ -267,12 +273,16 @@ impl Payload {
         self.parent().join(name)
     }
 
-    /// Whether this payload can replace itself: it carries no [`PACKAGE_MARKER`], the person can
-    /// write it and its parent, and a staging directory can be created beside it on the same
-    /// filesystem. The probe creates and removes `.luxforge-update-probe-<pid>`.
+    /// Whether this payload can replace itself: it carries no [`PACKAGE_MARKER`], OmaStore did not
+    /// install it, the person can write it and its parent, and a staging directory can be created
+    /// beside it on the same filesystem. The probe creates and removes
+    /// `.luxforge-update-probe-<pid>`.
     pub fn mode(&self) -> Mode {
         if self.dir.join(PACKAGE_MARKER).symlink_metadata().is_ok() {
             return Mode::Notify(NotifyReason::PackageManaged);
+        }
+        if self.omastore_managed() {
+            return Mode::Notify(NotifyReason::OmaStoreManaged);
         }
         if !writable(&self.dir) {
             return Mode::Notify(NotifyReason::PayloadNotWritable);
@@ -293,6 +303,18 @@ impl Payload {
             Some(false) => Mode::Notify(NotifyReason::CrossFilesystem),
             None => Mode::Notify(NotifyReason::StagingUnavailable),
         }
+    }
+
+    /// Whether the payload lies at `omastore/apps/<app>/<version>/<payload>`, where OmaStore installs
+    /// a release. OmaStore keeps each version in its own directory and moves between them itself,
+    /// so a swap in place would leave its record naming a version the directory no longer holds.
+    fn omastore_managed(&self) -> bool {
+        let mut apps = self.dir.ancestors().skip(3);
+        OMASTORE_APPS.iter().rev().all(|name| {
+            apps.next()
+                .and_then(Path::file_name)
+                .is_some_and(|found| found == *name)
+        })
     }
 
     /// Reads `<feed_base_url><target>/appcast.xml` and chooses the newest item with a higher build

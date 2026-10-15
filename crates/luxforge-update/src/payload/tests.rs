@@ -58,6 +58,21 @@ fn prepare(installation: &Installation, fetch: &MemoryFetch, item: &AppcastItem)
         .prepare(fetch, item, &key, &Cancel::new(), &mut |_, _| {})
 }
 
+#[test]
+fn a_payload_in_omastores_apps_directory_gives_notify_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let locate = |dir: PathBuf| {
+        Payload::locate(&testing::install_payload(&dir, "0.1.0", 1, TARGET)).unwrap()
+    };
+    let managed = locate(root.join("omastore/apps/Willyham__luxforge/v0.1.0/Luxforge"));
+    assert_eq!(managed.mode(), Mode::Notify(NotifyReason::OmaStoreManaged));
+    // Only OmaStore's own layout stands the updater down.
+    for other in ["omastore/apps/Luxforge", "other/apps/app/v0.1.0/Luxforge"] {
+        assert_eq!(locate(root.join(other)).mode(), Mode::Payload, "{other}");
+    }
+}
+
 #[cfg(unix)]
 fn mode(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt as _;
