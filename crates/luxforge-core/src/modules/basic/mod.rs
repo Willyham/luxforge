@@ -159,7 +159,7 @@ impl FieldPatch for Basic {
                 Field::slider(
                         EXPOSURE,
                         "Exposure",
-                        "shifts each linear-light channel by the value in stops on the scene scale measured from Lightroom Classic's Exposure: the deepest shadows and values past white take the plain gain, the midtones about 1.4 times the stops, and the highlights roll off towards white rather than clipping. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it shifts the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
+                        "on a JPEG shifts each linear-light channel by the value in stops on the scene scale measured from Lightroom Classic's Exposure: the deepest shadows and values past white take the plain gain, the midtones about 1.4 times the stops, and the highlights roll off towards white rather than clipping; the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds. On a RAW photo it multiplies the developed scene-linear planes by 2^EV, which stay unclipped until the terminal boundary, before the tone curve and the Look render them. It is the one exposure on every kind: the RAW development carries none",
                 )
                 .range(-5.0, 5.0)
                 .step(0.01)
@@ -279,7 +279,12 @@ impl FieldPatch for Basic {
         let tint = values.number(TINT);
         let exposure = values.number(EXPOSURE);
         if every || [temperature, tint, exposure] != [NEUTRAL; 3] {
-            units.push(Arc::new(Scene::new(temperature, tint, exposure)));
+            units.push(Arc::new(Scene::new(
+                temperature,
+                tint,
+                exposure,
+                at.scene_referred,
+            )));
         }
         let contrast = strength(CONTRAST);
         let highlights = strength(HIGHLIGHTS);
@@ -371,7 +376,10 @@ impl FieldPatch for Basic {
 
         let mean = white_balance::average_patch(&pixels)
             .map_err(|reason| Error::validation(reason.message()))?;
-        let (temperature, tint) = white_balance::neutral_values(mean)
+        // On a RAW photo the patch is the development's, scene-referred, where the stops are plain
+        // gains; elsewhere it is rendered, and the stops shift it on the scene scale.
+        let scene_referred = context.kind == crate::SourceTag::Raw;
+        let (temperature, tint) = white_balance::neutral_values(mean, scene_referred)
             .map_err(|reason| Error::validation(reason.message()))?;
         Ok(serde_json::json!({
             TEMPERATURE: temperature,

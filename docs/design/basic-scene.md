@@ -26,9 +26,11 @@ Basic's Temperature, Tint and Exposure compile to one unit, the first of the run
 out_c = S⁻¹(S(in_c) + stops_c)        stops_c = T_c(temperature) + N_c(tint) + exposure
 ```
 
-`T_c` and `N_c` are each channel's stops, red, green and blue, frozen at the slider values −100, −75, −50, −25, −10, 0, 10, 25, 50, 75 and 100 and read by linear interpolation; Temperature's and Tint's add. They were fitted per channel to Lightroom's exports of the wedge and the patch grid at each value, by the least mean code difference, through the frozen scale. Because shifts on one scale add, white balance before Exposure is one shift, which is their frozen order exactly; a neutral payload compiles no unit. Exposure, Temperature and Tint need no [slider response](lightroom-alignment.md#basic-realigned): the measured unit is the alignment.
+`T_c` and `N_c` are each channel's stops, red, green and blue, frozen at the slider values −100, −75, −50, −25, −10, 0, 10, 25, 50, 75 and 100 and read by linear interpolation; Temperature's and Tint's add. They were fitted per channel to Lightroom's exports of the wedge and the patch grid at each value, by the least mean code difference, through the frozen scale. Because shifts on one scale add, white balance before Exposure is one shift, which is their frozen order exactly; a neutral payload compiles no unit.
 
-The CPU unit evaluates in `f64` from the `f32` pixel and narrows once, within `1e-6 + 1e-6 × |reference|` of the reference; the WGSL program evaluates in `f32`, held to the CPU within the pointwise output limits. Its three uniform words are the channels' stops.
+On a RAW photo the input is already scene-referred: the development's linear planes, which the Look renders afterwards. There the unit applies the same stops as plain gains, `out_c = in_c × 2^stops_c`, as Lightroom's Exposure on a RAW file is a gain before its rendering; measured against Lightroom's exports with the Look kept, the scene shift there was about 1.4 times too strong. The registry tells the unit which: a source-stage layer (the RAW development) leading the stack makes every later layer's input scene-referred (`CompileStage::scene_referred`), and Auto tone's forward model compiles Basic the same way. The picker solves in plain stops over a RAW photo's patch. Exposure, Temperature and Tint need no [slider response](lightroom-alignment.md#basic-realigned): the measured unit is the alignment.
+
+The CPU unit evaluates in `f64` from the `f32` pixel and narrows once, within `1e-6 + 1e-6 × |reference|` of the reference; the WGSL program evaluates in `f32`, held to the CPU within the pointwise output limits. Its four uniform words are the channels' stops and whether the input is scene-referred.
 
 ## The neutral picker
 
@@ -42,4 +44,4 @@ Through the CPU reference renderer on the round 1 charts, the worst median CIEDE
 
 - At −2 EV and below the tones just below white stay brighter than Lightroom's, by up to 30 codes at −5: one monotone scale cannot follow Lightroom at both ends.
 - At Temperature's extremes the red channel's shift varies with level in Lightroom's exports, which one stop per channel cannot follow (up to 33 codes of mean red error at −100, against 3 to 8 for green and blue).
-- On RAW photographs the unit acts before the Look's own curve; the photographs' responses are measured separately.
+- A derived source (an HDR merge) has no source-stage layer, so it takes the scene shift though its values are scene-linear.

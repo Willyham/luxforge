@@ -127,15 +127,20 @@ pub(super) fn average_patch(pixels: &[[u8; 3]]) -> Result<[f64; 3], Reason> {
 }
 
 /// The Temperature and Tint, unrounded, whose stops make the patch's channels equal on the scene
-/// scale: Newton's method from neutral with a central-difference Jacobian.
-fn neutral_settings(mean_linear_rgb: [f64; 3]) -> Result<(f64, f64), Reason> {
+/// scale, or in plain stops over a scene-referred patch: Newton's method from neutral with a
+/// central-difference Jacobian.
+fn neutral_settings(mean_linear_rgb: [f64; 3], scene_referred: bool) -> Result<(f64, f64), Reason> {
     if mean_linear_rgb.iter().any(|value| !value.is_finite()) {
         return Err(Reason::NonFinite);
     }
     if mean_linear_rgb.iter().any(|value| *value <= 0.0) {
         return Err(Reason::NonFinite);
     }
-    let logs = super::scene::scene_logs(mean_linear_rgb);
+    let logs = if scene_referred {
+        mean_linear_rgb.map(f64::log2)
+    } else {
+        super::scene::scene_logs(mean_linear_rgb)
+    };
     let residual = |temperature: f64, tint: f64| {
         let stops = super::scene::white_balance_stops(temperature, tint);
         let z = [0, 1, 2].map(|c| logs[c] + stops[c]);
@@ -178,8 +183,11 @@ fn neutral_settings(mean_linear_rgb: [f64; 3]) -> Result<(f64, f64), Reason> {
 /// The neutral picker's answer: the Temperature and Tint that neutralize the patch, each rounded
 /// to the nearest whole step. A value outside the slider's range is reported as
 /// [`Reason::OutOfRange`] rather than clamped.
-pub(super) fn neutral_values(mean_linear_rgb: [f64; 3]) -> Result<(i64, i64), Reason> {
-    let (temperature, tint) = neutral_settings(mean_linear_rgb)?;
+pub(super) fn neutral_values(
+    mean_linear_rgb: [f64; 3],
+    scene_referred: bool,
+) -> Result<(i64, i64), Reason> {
+    let (temperature, tint) = neutral_settings(mean_linear_rgb, scene_referred)?;
     let (temperature, tint) = (temperature.round(), tint.round());
     if temperature.abs() > PARAMETER_RANGE {
         return Err(Reason::OutOfRange {
@@ -209,7 +217,7 @@ mod tests {
                 for tint in [-40.0, 0.0, 25.0] {
                     let cast = luxforge_reference::scene::apply(temperature, tint, 0.0, base);
                     let reference = luxforge_reference::scene::neutral_settings(cast);
-                    match (neutral_values(cast), reference) {
+                    match (neutral_values(cast, false), reference) {
                         (Ok((t, n)), Some((rt, rn))) => {
                             assert_eq!((t, n), (rt.round() as i64, rn.round() as i64));
                         }
@@ -234,7 +242,7 @@ mod tests {
         assert_eq!(average_patch(&[[8, 8, 8]]).unwrap_err(), Reason::NearBlack);
         assert_eq!(average_patch(&[]).unwrap_err(), Reason::NonFinite);
         assert_eq!(
-            neutral_values([f64::NAN, 0.5, 0.5]).unwrap_err(),
+            neutral_values([f64::NAN, 0.5, 0.5], false).unwrap_err(),
             Reason::NonFinite
         );
         for (reason, prefix) in [
@@ -261,7 +269,7 @@ mod tests {
     /// A patch no slider setting can neutralize is refused, never accepted at a clamped value.
     #[test]
     fn a_strongly_saturated_patch_is_refused_rather_than_clamped() {
-        let refused = neutral_values([0.8, 0.05, 0.05]).expect_err("no neutral correction");
+        let refused = neutral_values([0.8, 0.05, 0.05], false).expect_err("no neutral correction");
         assert!(
             matches!(refused, Reason::OutOfRange { .. } | Reason::DidNotConverge),
             "{refused:?}"

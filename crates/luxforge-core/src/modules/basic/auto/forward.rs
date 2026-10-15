@@ -71,6 +71,15 @@ pub fn forward_model<'a>(
     } else {
         vec![BASIC_EFFECT, LOOK_EFFECT]
     };
+    // Basic's scene unit applies plain gains over a RAW photo's scene-referred development, as
+    // the registry compiles it when a source-stage layer leads the stack.
+    let scene_referred = index > 0
+        && layers.first().is_some_and(|first| {
+            registry
+                .effect(&first.effect_id)
+                .is_some_and(|(_, effect)| effect.stage == crate::EffectStage::Source)
+        });
+    let stage = stage.over_scene(scene_referred);
     Ok(ForwardModel {
         registry,
         stage,

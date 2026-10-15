@@ -129,6 +129,7 @@ fn operation(p: [f64; 8], stage: Stage, scale: [f64; 2]) -> SpatialOperation {
             y: scale[1],
         },
         gpu_shape: false,
+        scene_referred: false,
     };
     let Processing::Spatial(op) = DetailModule::new()
         .compile(DETAIL_EFFECT, 1, &payload(p), at)
