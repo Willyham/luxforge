@@ -775,11 +775,13 @@ pub mod qualification {
         /// of the sums.
         #[test]
         fn the_twins_light_through_a_gain_is_the_exact_light_at_every_factor() {
-            let registry = ModuleRegistry::builtin();
+            // The render tests' linear gain, since Basic's Exposure is a shift on the scene scale,
+            // which does not commute with a mean.
+            let registry = crate::render::tests::colour_registry();
             let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
             let recipe = Recipe {
                 layers: vec![
-                    Layer::new(BASIC_EFFECT, json!({"exposure": -1.0})),
+                    crate::render::tests::exposure_layer(&[-1.0]),
                     Layer::new(PRESENCE_EFFECT, json!({"dehaze": 60})),
                 ],
                 ..Recipe::default()
@@ -861,7 +863,8 @@ pub mod qualification {
         #[test]
         #[slow]
         fn a_twin_light_reads_the_earlier_twin_light_and_can_leave_restoration_out() {
-            let registry = ModuleRegistry::builtin();
+            // The render tests' linear gain, which a mean commutes with, unlike Basic's Exposure.
+            let registry = crate::render::tests::colour_registry();
             let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
             let mut mask = crate::Mask::new("Mask 1");
             mask.components = vec![crate::Component::new(
@@ -872,7 +875,7 @@ pub mod qualification {
             )];
             let chained = Recipe {
                 layers: vec![
-                    Layer::new(BASIC_EFFECT, json!({"exposure": -1.0})),
+                    crate::render::tests::exposure_layer(&[-1.0]),
                     Layer::new(PRESENCE_EFFECT, json!({"dehaze": 40})),
                     Layer {
                         mask: Some(mask.id.clone()),
@@ -903,7 +906,7 @@ pub mod qualification {
                 layers,
                 ..Recipe::default()
             };
-            let gain = Layer::new(BASIC_EFFECT, json!({"exposure": -1.0}));
+            let gain = crate::render::tests::exposure_layer(&[-1.0]);
             let dehaze = Layer::new(PRESENCE_EFFECT, json!({"dehaze": 40}));
             let sharpened = stack(vec![
                 Layer::new(

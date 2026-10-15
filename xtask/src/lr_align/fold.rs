@@ -15,11 +15,9 @@ use crate::*;
 use luxforge_core::{BasicResponse, basic_response};
 use luxforge_reference::lr_align::{self as la, DistanceTable};
 
-/// The realigned Basic fields and their ranges, in the payload's order.
-const FIELDS: [(&str, (f64, f64)); 10] = [
-    ("temperature", (-100.0, 100.0)),
-    ("tint", (-100.0, 100.0)),
-    ("exposure", (-5.0, 5.0)),
+/// The Basic fields a response realigns and their ranges, in the payload's order. Exposure,
+/// Temperature and Tint act on the scene scale, measured directly (`basic-scene.md`), and have none.
+const FIELDS: [(&str, (f64, f64)); 7] = [
     ("contrast", (-100.0, 100.0)),
     ("highlights", (-100.0, 100.0)),
     ("shadows", (-100.0, 100.0)),

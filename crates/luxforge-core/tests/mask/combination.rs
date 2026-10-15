@@ -175,7 +175,7 @@ fn a_mixed_kind_mask_renders_exactly_as_the_reference_composes_it() {
                     let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                     for (channel, &code) in pixel.iter().enumerate().take(3) {
                         let input = srgb::decode(source.rgba[offset + channel]);
-                        let effect = input * gain(MASKED_EV);
+                        let effect = exposed(input, MASKED_EV);
                         let blended = blend(input, effect, m);
                         assert_code(
                             code,
@@ -282,7 +282,7 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
             let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
             for (channel, &code) in pixel.iter().enumerate().take(3) {
                 let input = srgb::decode(source.rgba[offset + channel]);
-                let effect = input * gain(MASKED_EV);
+                let effect = exposed(input, MASKED_EV);
                 let blended = blend(input, effect, m);
                 assert_code(
                     code,
@@ -819,7 +819,7 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
                 let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                 for (channel, &code) in pixel.iter().enumerate().take(3) {
                     let input = srgb::decode(source.rgba[offset + channel]);
-                    let effect = input * gain(MASKED_EV);
+                    let effect = exposed(input, MASKED_EV);
                     let blended = blend(input, effect, m);
                     assert_code(
                         code,

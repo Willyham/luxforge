@@ -44,13 +44,6 @@ fn strength(field: &str, value: f64) -> f64 {
     luxforge_core::basic_response(field).map_or(value, |response| response.strength(value))
 }
 
-/// The slider value of Basic's `field` that applies `strength`, for a fixture recorded in strengths.
-fn value_at(field: &str, strength: f64) -> f64 {
-    luxforge_core::basic_response(field)
-        .map_or(Some(strength), |response| response.value(strength))
-        .expect("a strength the slider reaches")
-}
-
 /// The mutation envelope of an in-process edit these tests make.
 fn mutation(revision: u64, request: &str) -> Mutation {
     fixtures::mutation(revision, request, "basic-test")

@@ -117,7 +117,6 @@ mod tests {
     #[test]
     fn each_response_spans_its_field_keeps_neutral_and_inverts() {
         let ranges = BTreeMap::from([
-            ("exposure", (-5.0, 5.0)),
             ("contrast", (-100.0, 100.0)),
             ("highlights", (-100.0, 100.0)),
             ("shadows", (-100.0, 100.0)),
@@ -125,8 +124,6 @@ mod tests {
             ("blacks", (-100.0, 100.0)),
             ("vibrance", (-100.0, 100.0)),
             ("saturation", (-100.0, 100.0)),
-            ("temperature", (-100.0, 100.0)),
-            ("tint", (-100.0, 100.0)),
         ]);
         assert!(!TABLE.responses.is_empty());
         for (field, response) in &TABLE.responses {
@@ -157,11 +154,11 @@ mod tests {
 
     /// Where a response extends a strength past its former ±100, the unit stays stable (A10): the
     /// Tone unit's curve stays nondecreasing on a dense grey ramp at every corner of the five
-    /// fields' end strengths, its Highlights and Shadows stage alone keeps a slope of at least 0.1,
-    /// and white balance stays finite at every corner of Temperature and Tint.
+    /// fields' end strengths, and its Highlights and Shadows stage alone keeps a slope of at least
+    /// 0.1.
     #[test]
     fn every_extended_strength_keeps_its_unit_stable() {
-        use super::super::{tone::Tone, white_balance::WhiteBalance};
+        use super::super::tone::Tone;
         use crate::modules::PointwiseColor;
         let luminance = |unit: &dyn PointwiseColor, grey: f32| {
             let mut row = [[grey; 3]];
@@ -200,28 +197,6 @@ mod tests {
                     "Highlights {highlights}, Shadows {shadows}: slope {least}"
                 );
             }
-        }
-        // White balance at every corner of the two end strengths and at each axis' ends alone:
-        // finite, with a positive luminance. A grey may leave the gamut there, as the pointwise
-        // contract allows; the host clamps once at the end of the run.
-        let temperatures = ends("temperature");
-        let tints = ends("tint");
-        let pairs = temperatures
-            .iter()
-            .flat_map(|t| tints.iter().map(move |n| (*t, *n)))
-            .chain(temperatures.iter().map(|t| (*t, 0.0)))
-            .chain(tints.iter().map(|n| (0.0, *n)));
-        for (temperature, tint) in pairs {
-            let unit = WhiteBalance::new(temperature, tint);
-            assert!(unit.is_finite(), "{temperature}, {tint}");
-            let mut row = [[0.5f32; 3]];
-            unit.apply_row(0, 0, &mut row);
-            let rgb = row[0];
-            let y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-            assert!(
-                rgb.iter().all(|c| c.is_finite()) && y > 0.0,
-                "{temperature}, {tint}: {rgb:?}"
-            );
         }
     }
 
