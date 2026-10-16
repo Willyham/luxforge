@@ -980,6 +980,32 @@ impl Editor {
                     );
             }
         }
+        // A draft that changes nothing, as a new mask or a refused correction, over a content the
+        // GPU presented with no CPU frame of its own: its reference job reuses the frame on
+        // screen, so no CPU frame of that content will come, and the GPU's picture stays the
+        // photograph — its picture at rest in tiles, behind which the gesture's tick is held, or
+        // else the resident boundary's untagged plan.
+        if self.presentation.gpu_presented == Some(self.presentation.presented_content) {
+            let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+            if surfaces.gpu_hold
+                && let Some(rest) = surfaces.gpu_rest
+            {
+                return label_current
+                    && compare_ready
+                    && drawn.drawn_rest == Some(rest.version)
+                    && drawn.drawn_rest_dissolve.is_none();
+            }
+            if surfaces.gpu.is_some()
+                && surfaces.gpu_tag.is_none()
+                && !surfaces.gpu_hold
+                && let Some(boundary) = self.gpu.held_version()
+                && drawn.gpu_ready_boundary == Some(boundary)
+            {
+                return label_current
+                    && compare_ready
+                    && photo_drawn(ExpectedPhotoDraw::Gpu { boundary }, drawn);
+            }
+        }
         // A gesture drawn on the GPU: the frame to capture is the GPU draw of its newest tick, once
         // its pipeline is ready. While the surface waits for something that passes — a sequence
         // still compiling (a light link's among them), a source or boundary still uploading — the
