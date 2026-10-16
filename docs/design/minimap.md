@@ -1,6 +1,6 @@
 # High-zoom minimap
 
-Status: **implemented**; the M4's rendered journeys and the corpus's overview kind pass, the paged derived source's overview excepted. The M4 measurements, unavailable originals, a lens or perspective warp, oversubscribed memory in a real window, panning under Compare and Windows/Linux remain open ([evidence](#acceptance-and-evidence)). The owner requested a minimap at zoom levels of 200% or more and chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below are the recorded defaults. [Tasks](../../tasks/interface/minimap.json) hold the plan.
+Status: **implemented and qualified on the M4**; the M4's rendered journeys and the corpus's overview kind pass, the paged derived source's overview excepted, and the M4 measurements are [recorded](../specs/performance.md#high-zoom-minimap). A 199.9% control, unavailable originals, a lens or perspective warp, oversubscribed memory in a real window, panning under Compare and Windows/Linux remain open ([evidence](#acceptance-and-evidence)). The owner requested a minimap at zoom levels of 200% or more and chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below are the recorded defaults. [Tasks](../../tasks/interface/minimap.json) hold the plan.
 
 ## Behavior and scope
 
@@ -75,12 +75,8 @@ Every item above has ordinary tests; the rendered and measured parts are partly 
   - Every frame correlates the card's placement, image area, stage and rectangle against geometry worked independently for its canvas, display and interface scale. It also checks each gesture's pan against the desktop's session and the overview's version and stage. Wherever the card shows a ready overview, the thumbnail's middle must agree in linear light with the photograph's, so another photograph's, entry's or edit's overview cannot pass.
   - The counters show navigation, layout and zoom above the threshold reusing the overview with no build, sweep or upload, and the hidden window doing no overview work.
   - Item 6's corpus comparison has run on the M4 as `gpu-qualification`'s `overview` kind. It passes within the declared display tolerance everywhere except the paged derived source, whose overview is an unrendered gap.
-- **Ready to measure.** `editor-latency --mode minimap` drives item 7's figures from one actual drag on the card:
-  - each move's pan to the draw of the view it asked for;
-  - the first overview, cold after the crossing and warm after Select and Develop;
-  - the overview's retained and peak GPU and CPU bytes;
-  - the lifecycle's build, sweep, upload and reuse counts over the drag and in all.
-- **Open.** Item 7's measurements; unavailable originals; a lens or perspective warp; oversubscribed memory in a real window; 1× display scale in a rendered window, where only the geometry's tests hold it; Windows and Linux. One main issue also leaves parts unrendered:
+- **Measured on the M4.** `editor-latency --mode minimap` takes item 7's figures from one actual drag on the card at 200% and 800% on the 24 MP and 60 MP JPEGs, on the GPU and on the reference: each move's pan to the draw that shows it, the first overview cold and warm, the overview's retained and peak bytes and its lifecycle counts ([performance](../specs/performance.md#high-zoom-minimap)). A move that cannot be matched to its own draw fails the run.
+- **Open.** Item 7's 199.9% control, which the minimap's own mode cannot take since the card is hidden there, and idle behaviour with the card shown; unavailable originals; a lens or perspective warp; oversubscribed memory in a real window; 1× display scale in a rendered window, where only the geometry's tests hold it; Windows and Linux. One main issue also leaves parts unrendered:
   - Panning under Compare at a percentage zoom leaves the evidence capture's photograph not ready. This reproduces at 150% with no card, so the journeys cover Compare with a letterbox press and a grab that does not move.
 
 ## Performance-rules review
@@ -93,7 +89,7 @@ The [checklist](../engineering/performance-rules.md#review-checklist), answered 
 - **Owner thread.** Only `view.set`'s session pan, as for any pan. Reductions run on the GPU or the blocking pool; the update loop handles plain data.
 - **Desktop messages.** A minimap press or drag sends `view.set` through the existing pan coalescer and moves the scrollable: no `asset.state`, history read, preview job or upload. A first overview may add one bounded sweep of the held tiles, or one reference reduction and upload, per content or stage change.
 - **Timers, polls and subscriptions.** None added. Overview completion wakes through the existing surface and retirement wakes; a hidden window starts no overview work.
-- **Reuse.** The overview is a two-entry cache (current and replacement) keyed by photograph, content or retained-frame version, stage and size, bounded by the caps above; pan, resize and zoom above 200% reuse it with no sweep, build or upload, which the journey's counters show. Its hit rate, rebuild cost and retained bytes are not measured.
+- **Reuse.** The overview is a two-entry cache (current and replacement) keyed by photograph, content or retained-frame version, stage and size, bounded by the caps above; pan, resize and zoom above 200% reuse it with no sweep, build or upload, which the journey's counters show. Its retained bytes and its reuse over a 40-move drag are [measured](../specs/performance.md#high-zoom-minimap); its rebuild cost is not isolated.
 - **`editor-performance`.** Not run, and it does not isolate minimap projection or presentation; no speed claim is made.
 - **Image tests.** Exact CPU reduction tests; declared-tolerance native device comparisons of the GPU overview; `gpu-qualification`'s `overview` kind on the M4's corpus; tests that the overview leaves the picture at rest's codes and counts unchanged, and that every overview byte is released.
 

@@ -42,34 +42,43 @@ A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-re
 
 ## Auto tone
 
-Native Apple M4 Pro (14 cores, 48 GiB) / Metal, optimized release, 2026-10-08, under the host-wide timing lock. This is not the owner's M4 MacBook Pro, and the host was shared with other agents' work: the one-minute load stayed between 3.90 and 7.96 during the run, below the 8.0 threshold, so the figures are recorded as reliable. Thirty samples per case use the prepared generated 24 MP and 60 MP JPEGs and a neutral Basic prefix. The engine timer covers the tile service's queue and grid read, then the solve after it off the tile service's thread (on the test's thread, as the analysis worker runs it; the hand-off itself is not timed); it excludes original decoding and preparation, catalog commit and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. The model is Basic alone, or Basic then the starting Look at amount 200, which is not monotonic in Exposure and takes the coarse-to-fine search ([design](../design/auto-tone.md#the-solve-auto-tone1)).
+Native Apple M4 Pro (14 cores, 48 GiB) / Metal, optimized release, 2026-10-16, generated 24 MP (6000 × 4000) and 60 MP (10000 × 6000) JPEGs. The host was shared with other sessions; each run's one-minute load is given with it, and a figure taken above 8.0 is not a baseline.
+
+**Click to entry.** `editor-latency --mode auto-tone --samples 30`, background evidence launches at Fit with a warm filesystem cache: from the input (the Auto button's action; `--shortcut` sends ⌘U through the key table) to the `analysis_action_answered` of the entry it committed, and to that entry's first exact frame. Warm samples reuse the photograph's sample grid, read once by an unmeasured first Auto in each launch; cold samples commit a slightly larger crop first, so each reads a new grid. On the GPU the frame is adopted with the answer; the reference's exact frame arrives reduced to the view after it.
+
+| Source | Renderer | Sample cache | To entry ms p50 / p95 | To frame ms p50 / p95 | Load at start |
+| --- | --- | --- | ---: | ---: | ---: |
+| 24mp | gpu | warm | 115.6 / 149.4 | 115.7 / 149.5 | 2.47 |
+| 24mp | gpu | cold | 554.7 / 649.2 | 554.8 / 649.3 | 1.86 |
+| 24mp | reference | warm | 289.6 / 299.7 | 648.2 / 660.8 | 2.75 |
+| 24mp | reference | cold | 513.8 / 566.8 | 883.6 / 944.6 | 2.79 |
+| 60mp | gpu | warm | 133.2 / 155.1 | 133.3 / 155.2 | 3.21 |
+| 60mp | gpu | cold | 732.0 / 803.4 | 732.1 / 803.5 | 2.69 |
+| 60mp | reference | warm | 542.9 / 558.4 | 1435.2 / 1463.0 | 3.56 |
+| 60mp | reference | cold | 658.5 / 745.1 | 1583.8 / 1724.9 | 4.15 |
+
+⌘U at 24 MP, cold, on the GPU over 10 samples: 376.5 / 393.2 ms to entry, under a load of 7.14. The warm GPU path meets the provisional 250 ms (24 MP) and 400 ms (60 MP) p95 budgets; a first Auto on a photograph, which reads its grid, and the reference renderer's path do not. Each sample retains 9,078,784 grid bytes at 24 MP and 8,173,568 at 60 MP.
+
+**The engine.** The ignored release test `auto_tone_measure_photo_sized_inputs`, thirty samples per case, a neutral Basic prefix; under a load of 5.46 to 8.52. Its timer covers the tile service's queue and grid read, then the solve after it off the tile service's thread (on the test's thread, as the analysis worker runs it; the hand-off itself is not timed); it excludes original decoding and preparation, catalog commit and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. The model is Basic alone, or Basic then the starting Look at amount 200, which is not monotonic in Exposure and takes the coarse-to-fine search ([design](../design/auto-tone.md#the-solve-auto-tone1)).
 
 | Source | Model | Renderer | Sample cache | Engine ms p50 / p95 | Grid read ms p95 | Solve ms p95 |
 | --- | --- | --- | --- | ---: | ---: | ---: |
-| 24mp | Basic | gpu | cold | 908.2 / 960.2 | 910.398 | 61.6 |
-| 24mp | Basic | gpu | warm | 39.4 / 40.5 | 0.016 | 40.4 |
-| 24mp | Basic | reference | cold | 50.6 / 54.4 | 11.427 | 43.1 |
-| 24mp | Basic | reference | warm | 39.4 / 40.3 | 0.015 | 40.3 |
-| 24mp | Look 200 | gpu | warm | 310.0 / 320.7 | 0.018 | 320.6 |
-| 24mp | Look 200 | reference | warm | 309.5 / 328.4 | 0.017 | 328.4 |
-| 60mp | Basic | gpu | cold | 2275.5 / 2342.6 | 2268.733 | 77.0 |
-| 60mp | Basic | gpu | warm | 53.7 / 54.7 | 0.016 | 54.6 |
-| 60mp | Basic | reference | cold | 63.8 / 70.8 | 10.136 | 60.9 |
-| 60mp | Basic | reference | warm | 53.6 / 55.7 | 0.015 | 55.7 |
-| 60mp | Look 200 | gpu | warm | 293.2 / 305.2 | 0.017 | 305.2 |
-| 60mp | Look 200 | reference | warm | 292.8 / 322.8 | 0.018 | 322.7 |
+| 24mp | Basic | gpu | cold | 341.7 / 383.7 | 259.877 | 137.7 |
+| 24mp | Basic | gpu | warm | 94.5 / 131.4 | 0.017 | 131.3 |
+| 24mp | Look 200 | gpu | warm | 455.7 / 496.6 | 0.015 | 496.5 |
+| 24mp | Basic | reference | cold | 107.7 / 110.0 | 11.553 | 98.7 |
+| 24mp | Basic | reference | warm | 96.3 / 97.1 | 0.011 | 97.1 |
+| 24mp | Look 200 | reference | warm | 453.9 / 469.6 | 0.017 | 469.5 |
+| 60mp | Basic | gpu | cold | 816.0 / 841.9 | 715.625 | 126.2 |
+| 60mp | Basic | gpu | warm | 121.7 / 122.8 | 0.015 | 122.8 |
+| 60mp | Look 200 | gpu | warm | 430.9 / 437.4 | 0.017 | 437.4 |
+| 60mp | Basic | reference | cold | 142.8 / 144.1 | 11.607 | 133.0 |
+| 60mp | Basic | reference | warm | 133.9 / 134.9 | 0.012 | 134.9 |
+| 60mp | Look 200 | reference | warm | 444.1 / 459.1 | 0.017 | 459.1 |
 
-On the same host, binary procedure and fixtures, the solver before the reduction and the analysis worker (solving on the tile thread, every search evaluating the whole sample) took 1,733.6 ms p95 warm at 24 MP and 1,566.6 ms at 60 MP through Basic alone, under a load of 1.79 to 6.28; through a Look above 100 it evaluated all 801 Exposure steps of the whole sample and was not measured. The committed values through Basic are identical before and after on both photographs, and through the Look at 200 they equal an exhaustive check of every Exposure, Whites and Blacks step on the same grids.
+The warm solve through Basic is about 95 ms at 24 MP and 122 ms at 60 MP, against 40 ms and 55 ms measured on 2026-10-08 under a similar load; the cause is not investigated. The pooled solve is the basis of the [parallelism rule](../engineering/performance-rules.md): on 2026-10-08, under a load of 1.84 to 5.45, the warm solve took 40.5 ms p95 at 24 MP pooled against 220.9 ms with the shared pool held to one thread (`RAYON_NUM_THREADS=1`), with the same values. The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's charged scratch is 6.24 / 5.71 MiB respectively. These scopes do not establish a total RSS/GPU memory budget.
 
-With the shared pool held to one thread (`RAYON_NUM_THREADS=1`), under a load of 1.84 to 5.45, the same binary's warm solve takes 220.9 ms p95 at 24 MP and 283.2 ms at 60 MP through Basic, and 2.13 s and 2.03 s through the Look at 200, with the same values in every case.
-
-The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's charged scratch (`auto_tone::scratch_bytes`: the whole sample's and the reduction's `f64` luminances and one 48 KiB RGB chunk for each of the pool's 14 threads) is 6.24 / 5.71 MiB respectively. These scopes do not establish a total RSS/GPU memory budget. Both source hashes are unchanged.
-
-The warm engine through Basic alone is within the provisional 250 ms / 400 ms click-to-entry budgets on this host with room for commit and preview, which are not measured here; through the Look above 100 the 24 MP solve alone exceeds 250 ms. The cold GPU grid read (0.91 s at 24 MP, 2.27 s at 60 MP) dominates a first Auto on a photograph. The owner's M4 click-to-entry qualification, reference spatial prefixes and non-neutral Looks at or below 100 remain unmeasured.
-
-Evidence: `artifacts/auto-tone-measure-02.json` contains every sample, `artifacts/auto-tone-measure-02-one-thread.json` the one-thread run, `artifacts/auto-tone-measure-02-baseline.json` the solver before, and `artifacts/auto-tone-measure-02-host.json` records the commits, binary and source hashes, scope and the load sampled every 10 to 20 s through each run. Reproduce with the ignored release test `auto_tone_measure_photo_sized_inputs`, setting `LUXFORGE_GENERATED_FIXTURES` and a fresh `LUXFORGE_AUTO_TONE_OUTPUT`, on an idle native host under the timing lock. [Auto tone](../design/auto-tone.md) records correctness and the remaining corpus/owner qualification.
-
-The separate standard timing tier last completed functionally with all four timing components marked unreliable (starting load 12.44–15.31); its figures are not a baseline.
+Evidence: `artifacts/qual-sweep/timing-3/auto-*` and `timing-2/auto-*-reference` (click to entry) and `artifacts/qual-sweep/timing-4/auto-engine.json` (the engine), each with its binary, source hashes, load and scope. Reproduce with `editor-latency --mode auto-tone` and the ignored test, setting `LUXFORGE_GENERATED_FIXTURES` and a fresh `LUXFORGE_AUTO_TONE_OUTPUT`. [Auto tone](../design/auto-tone.md) records correctness and the remaining owner qualification.
 
 ## Code structure consolidation
 
@@ -5806,7 +5815,18 @@ The drag fell within that merge's reading stage, the decoding and development of
 
 ## High-zoom minimap
 
-Not measured. The [minimap](../design/minimap.md) adds bounded storage and no timed claim: no latency, throughput or memory figure was taken for it, on the M4 or elsewhere, and none of the figures in this document cover it.
+Native Apple M4 Pro / Metal, optimized release, 2026-10-16, background evidence launches with a warm filesystem cache, generated 24 MP (6000 × 4000) and 60 MP (10000 × 6000) JPEGs at a 2× display scale. One-minute load 2.5 to 3.7 at each run's start, below the 8.0 threshold. `editor-latency --mode minimap` drags the card's viewport rectangle through 40 moves at the stated zoom and times each move from its pan to the first draw that shows it: on the GPU, the picture at rest planned for that view (`plan`); on the reference renderer (`--no-gpu-render`), the retained frame scrolled into place (`scroll`). 200% and 800% have different view windows, so the rows are not an isolated rendering comparison; the card is not shown below 200%, so a 199.9% control is not part of this mode and was not taken.
+
+| Source | Zoom | Renderer | Drawn | Pan to frame ms p50 / p95 | First overview ms, cold / warm | Overview GPU bytes, retained / peak |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| 24mp | 200% | gpu | plan | 17.2 / 17.4 | 65.0 / 77.0 | 175,200 / 1,289,376 |
+| 24mp | 800% | gpu | plan | 17.2 / 17.7 | 67.3 / 75.8 | 175,200 / 1,289,376 |
+| 24mp | 200% | reference | scroll | 8.3 / 8.3 | 62.7 / 55.4 | 175,200 / 175,200 |
+| 60mp | 200% | gpu | plan | 17.3 / 17.4 | 143.8 / 210.7 | 157,792 / 1,337,504 |
+| 60mp | 800% | gpu | plan | 17.3 / 17.6 | 147.1 / 209.8 | 157,792 / 1,337,504 |
+| 60mp | 200% | reference | scroll | 8.3 / 8.3 | 80.7 / 70.9 | 157,792 / 157,792 |
+
+Cold is the first overview after crossing 200%; warm the one made again after Select and Develop. In every run the 40 moves reuse the overview with no build, sweep or upload: the GPU runs make 2 GPU builds and 2 sweeps in all, the reference runs 2 reference builds and 2 uploads, both from the two first overviews; no CPU bytes are retained. The overview's peak, the accumulator and tables while one is built, is within the 4 MiB cap. Process memory and GPU allocation are recorded per run in the evidence (`artifacts/qual-sweep/timing-3/minimap-*`); they are the editor's at that zoom, not the minimap's, and make no total-memory claim. Idle behaviour is not measured separately.
 
 **Declared bounds** ([architecture](../design/architecture.md#limits)), each held by tests rather than measured:
 
@@ -5819,7 +5839,22 @@ Not measured. The [minimap](../design/minimap.md) adds bounded storage and no ti
 
 **Counted, not timed.** The background `zoom` journey on generated 24 MP and 60 MP JPEGs on the M4 Pro's Metal adapter (`artifacts/minimap-integration` in the integration worktree) records the overview's lifecycle counters in every frame's state: from the first ready overview through the 1600% pans, the 199.9% control and back to 200%, and every minimap click, drag, API pan, wheel and letterbox press, the GPU and reference builds, sweeps and uploads stay unchanged while the reuse count rises (24 MP: 1 GPU build and 1 sweep, reuses 1 to 11; 60 MP: 1 and 1, reuses 1 to 10); the crop draft's stage and Compare's After each add one reference build and one upload. The 6000 × 4000 stage's overview is 256 × 171. The journey's checks assert placement, rectangle, pan and pixels, not these counters, which are read from its record and are not a cost measurement.
 
-**Outstanding.** The plan's measurement step: first-overview latency warm and cold, pan input to presented frame p50 / p95 at 200% and 800% beside a 199.9% control (different zoom windows, so not an isolated rendering comparison), added retained and peak CPU and GPU bytes, reuse, rebuild and upload counts and idle behaviour, release-built on the M4 with the 24 MP and 60 MP JPEGs. The `editor-latency` tooling has no minimap drag yet.
+**Outstanding.** A 199.9% control, idle behaviour with the card shown, oversubscribed memory in a real window, and Windows and Linux.
+
+## Range picks, measured on the M4
+
+Native Apple M4 Pro / Metal, optimized release, 2026-10-16, background evidence launches with a warm filesystem cache, generated 24 MP and 60 MP JPEGs at Fit, with the range experiment on, Mask mode entered and one unbound colour range created from New mask. `editor-latency --mode pick --samples 30` alternates a whole-frame drag pick (the output stage's top-left pixel to its bottom-right one) and a click pick on the red quadrant, each timed from the press to the pick's command sent and to the first coverage overlay of the entry it committed. `--reference-renderer` launches with `--no-gpu-render`. The renderer is the one `mask.sample-input-area` names for the drag.
+
+| Source | Launch | Area read by | Drag ms p50 / p95 | Click ms p50 / p95 | Load at start |
+| --- | --- | --- | ---: | ---: | ---: |
+| 24mp | gpu | gpu | 222.3 / 245.6 | 18.2 / 27.7 | 10.79 (unreliable) |
+| 24mp | reference | reference | 266.9 / 273.7 | 18.1 / 18.4 | 8.86 (unreliable) |
+| 60mp | gpu | reference (`texture-limit`) | 642.2 / 647.2 | 25.4 / 29.5 | 6.92 |
+| 60mp | reference | reference | 644.6 / 660.5 | 18.3 / 34.5 | 5.17 |
+
+The 24 MP rows ran above the 8.0 load threshold in each of three runs that day; the three agree within 3 ms at p50 (GPU drag 222 to 225 ms), but they are not a baseline. Pressing to the command sent is at most 0.5 ms in every row: the time is the read and the commit. At 60 MP the whole frame's area plan is wider than the device's 8,192-pixel texture limit, so the GPU launch's drag is read by the reference, as its reason says; the GPU area read has no tiled path. A click reads a 1 × 1 area on either renderer. Evidence: `artifacts/qual-sweep/timing-3/pick-*` (and `timing`, `timing-2` for the earlier runs).
+
+**Outstanding.** A quiet-host 24 MP run; a tiled GPU area read for stages past the texture limit; Windows and Linux.
 
 ## Method
 
