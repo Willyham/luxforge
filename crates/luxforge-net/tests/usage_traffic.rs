@@ -18,7 +18,7 @@ use luxforge_core::usage::{
 };
 use luxforge_net::{HttpTransport, TlsTrust, TransportConfig};
 use luxforge_test_macros::slow;
-use luxforge_testbase::{Request, TestServer, paths::temp_dir, respond, wait_until};
+use luxforge_testbase::{Gate, Request, TestServer, paths::temp_dir, respond, wait_until};
 use serde_json::json;
 use std::{
     fs,
@@ -353,5 +353,249 @@ fn usage_a_loopback_capture_shows_a_request_a_minute_at_most_and_no_hourly_or_da
     assert!(recovered.len() > 2, "sending resumed");
     for pair in recovered.windows(2) {
         assert!(pair[1].at - pair[0].at >= 60, "no catch-up burst");
+    }
+}
+
+/// One request the slow-then-fast receiver saw, and how it ended.
+#[derive(Clone, Debug)]
+struct Held {
+    at: u64,
+    phase: &'static str,
+    body_bytes: usize,
+    events: usize,
+    /// The oldest event's time, in milliseconds since the session began.
+    oldest_ms: u32,
+    dropped: u32,
+    batch_seq: u32,
+    /// `holding` while the slow receiver holds the request, `held` once it let go at the run's
+    /// end, `answered` for an immediate `202`.
+    outcome: &'static str,
+}
+
+/// The same capture against the receivers a person's network can leave a request with: none at
+/// all (`offline`: nothing listens, so every attempt is refused at connection), one that holds
+/// every request open until the transport's timeout ends it (`slow`: its status line,
+/// then nothing until the run ends), then one that answers at once (`fast`),
+/// all on one loopback port the test reserved, under an event flood throughout. Each offline and
+/// slow attempt fails, is never retried, and takes the 20, 40, 80, 160 then 360-minute cooldown;
+/// the fast receiver then sees one request a minute at most, and no request carries an event older
+/// than the 30-minute retention, so the failed hours leave no backlog. With
+/// `LUXFORGE_USAGE_TRAFFIC_CAPTURE=FILE` this capture is written beside that file, its name ending
+/// `-receivers`.
+#[test]
+#[slow]
+fn usage_offline_slow_and_fast_receivers_on_the_wire_cool_down_and_leave_no_backlog() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let clock = Arc::new(ManualClock::new(WALL));
+    let captured: Arc<Mutex<Vec<Held>>> = Arc::default();
+    let phase: Arc<Mutex<&'static str>> = Arc::new(Mutex::new("offline"));
+    let dir = temp_dir("usage-receivers");
+    fs::write(
+        dir.join("preferences.json"),
+        format!(
+            r#"{{"format": 1, "usage_statistics": {{"prompt_shown": true, "enabled": true, "disclosure_version": 1, "installation_id": "c9a10716-1b78-4cbe-8d1c-b8309e5e7247", "image_key": "{}"}}}}"#,
+            "ab".repeat(32)
+        ),
+    )
+    .unwrap();
+    let usage = Arc::new(Usage::new(Eligibility::test(
+        TestReceiver::loopback(&format!("http://{port}{PATH}")).unwrap(),
+    )));
+    usage.launch(Some(dir.clone()));
+    let collector = Arc::new(Collector::new());
+    let supervisor = Supervisor::start(SupervisorConfig {
+        usage: usage.clone(),
+        collector: collector.clone(),
+        preferences_dir: Some(dir.clone()),
+        transport: Arc::new(HttpTransport::new(TransportConfig {
+            trust: TlsTrust::Roots(Vec::new()),
+            ..TransportConfig::default()
+        })),
+        release: Release::parse("0.0.0+9d4138ca1f2e"),
+        device: Box::new(DeviceFn(|| Ok(profile()))),
+        sampler: Box::new(NoSampling),
+        clock: clock.clone(),
+        randomness: Box::new(NoJitter),
+    });
+    supervisor.set_presented(true);
+    wait_until("the worker's session", || collector.session().is_some());
+    wait_until("the worker to wait", || clock.caught_up());
+    let image = ImageKey::from_bytes([3; 32]).image_id(&[4; 32]);
+    // Fifty events a second, every minute of `hours`.
+    let flood = |hours: u64| {
+        for _ in 0..hours * 60 {
+            for _ in 0..3000 {
+                collector.record(EventKind::ToolCommit {
+                    tool: Tool::Basic,
+                    image,
+                });
+            }
+            supervisor.interacted();
+            for by in [Duration::ZERO, MINUTE] {
+                clock.advance(by);
+                wait_until("the worker to act and wait again", || clock.caught_up());
+            }
+        }
+    };
+
+    // Offline: six hours with nothing listening.
+    flood(6);
+    let offline = usage.diagnostics();
+    // Then a receiver on the port nothing listened on: slow for twelve hours, then fast.
+    let hold = Arc::new(Gate::new());
+    hold.shut();
+    let server = {
+        let (clock, captured, phase, hold) =
+            (clock.clone(), captured.clone(), phase.clone(), hold.clone());
+        TestServer::http_on(port, move |request: &Request, out: &mut dyn Write| {
+            let batch = decode_batch(&request.body).expect("every body is a valid batch");
+            let phase = *phase.lock().unwrap();
+            // Recorded on arrival, so a request still held when the run ends is counted.
+            let index = {
+                let mut captured = captured.lock().unwrap();
+                captured.push(Held {
+                    at: luxforge_core::usage::Clock::monotonic(&*clock).as_secs(),
+                    phase,
+                    body_bytes: request.body.len(),
+                    events: batch.events.len(),
+                    oldest_ms: batch.events.first().map_or(0, |event| event.t),
+                    dropped: batch.dropped,
+                    batch_seq: batch.batch_seq,
+                    outcome: "holding",
+                });
+                captured.len() - 1
+            };
+            let outcome = if phase == "slow" {
+                // The status line, then nothing until the run ends: the client's own timeout is
+                // all that can end the request, and the run goes on without it meanwhile.
+                let _ = out
+                    .write_all(b"HTTP/1.1 202 Accepted\r\n")
+                    .and_then(|()| out.flush());
+                hold.pass();
+                let _ = out.write_all(b"Content-Length: 0\r\n\r\n");
+                "held"
+            } else {
+                respond(out, "202 Accepted", "", b"");
+                "answered"
+            };
+            captured.lock().unwrap()[index].outcome = outcome;
+        })
+        .unwrap()
+    };
+    *phase.lock().unwrap() = "slow";
+    flood(12);
+    let slow = usage.diagnostics();
+    *phase.lock().unwrap() = "fast";
+    flood(8);
+    let fast = usage.diagnostics();
+    supervisor.shutdown();
+    drop(server);
+    let _ = fs::remove_dir_all(&dir);
+
+    // Only now does the slow receiver let go of the requests it held.
+    hold.open();
+    wait_until("every held request to be let go", || {
+        captured
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| request.outcome != "holding")
+    });
+    let captured = captured.lock().unwrap().clone();
+    if let Some(file) = std::env::var_os("LUXFORGE_USAGE_TRAFFIC_CAPTURE") {
+        let file = std::path::PathBuf::from(file);
+        let named = format!(
+            "{}-receivers.jsonl",
+            file.file_stem().unwrap().to_string_lossy()
+        );
+        let mut lines: Vec<String> = captured
+            .iter()
+            .map(|request| {
+                json!({
+                    "at_s": request.at, "phase": request.phase, "outcome": request.outcome,
+                    "body_bytes": request.body_bytes, "events": request.events,
+                    "oldest_event_ms": request.oldest_ms, "dropped": request.dropped,
+                    "batch_seq": request.batch_seq,
+                })
+                .to_string()
+            })
+            .collect();
+        for (after, diagnostics) in [("offline", offline), ("slow", slow), ("fast", fast)] {
+            lines.push(
+                json!({
+                    "after": after, "attempts": diagnostics.attempts,
+                    "accepted": diagnostics.accepted, "recorded": diagnostics.recorded,
+                    "dropped": diagnostics.dropped, "sent": diagnostics.sent,
+                    "delivery": diagnostics.delivery.state(),
+                })
+                .to_string(),
+            );
+        }
+        fs::write(file.with_file_name(named), lines.join("\n") + "\n").unwrap();
+    }
+    let in_phase = |name: &str| -> Vec<&Held> {
+        captured
+            .iter()
+            .filter(|request| request.phase == name)
+            .collect()
+    };
+    let (held, answered) = (in_phase("slow"), in_phase("fast"));
+    println!(
+        "usage receivers: offline {} attempts in 6 h, {} accepted; slow {} attempts in 12 h at \
+         {:?} s, {:?}; fast {} requests in 8 h, the first at {:?} s; {} recorded, {} dropped, {} sent",
+        offline.attempts,
+        offline.accepted,
+        slow.attempts - offline.attempts,
+        held.iter().map(|request| request.at).collect::<Vec<_>>(),
+        held.iter()
+            .map(|request| request.outcome)
+            .collect::<Vec<_>>(),
+        answered.len(),
+        answered.first().map(|request| request.at),
+        fast.recorded,
+        fast.dropped,
+        fast.sent,
+    );
+
+    // Offline: the first attempt, then one after each cooldown, each refused at connection and
+    // none accepted; a refused connection cools down, never suspends sending for the launch.
+    assert!(
+        (4..=6).contains(&offline.attempts),
+        "{} attempts offline",
+        offline.attempts
+    );
+    assert_eq!(offline.accepted, 0);
+    assert_eq!(offline.delivery.state(), "cooldown");
+    // Slow: a 360-minute cooldown at a time, each request given up by the client at its timeout.
+    assert!(
+        (1..=3).contains(&held.len()),
+        "{} slow attempts in 12 hours",
+        held.len()
+    );
+    assert!(held.iter().all(|request| request.outcome == "held"));
+    assert_eq!(slow.attempts - offline.attempts, held.len() as u64);
+    assert_eq!(slow.accepted, 0, "a held request is never counted accepted");
+    // Fast: once the cooldown ends, a request a minute at most, with no catch-up burst.
+    assert!(answered.len() > 2, "sending resumed");
+    assert_eq!(fast.accepted, answered.len() as u64);
+    assert!(
+        captured
+            .windows(2)
+            .all(|pair| pair[1].at - pair[0].at >= 60),
+        "two requests less than a minute apart"
+    );
+    // No backlog: no body past its limits, and no event older than the 30-minute retention.
+    for request in &captured {
+        assert!(
+            request.body_bytes <= 64 * 1024 && request.events <= 512,
+            "{request:?}"
+        );
+        assert!(
+            u64::from(request.oldest_ms) + 31 * 60 * 1000 >= request.at * 1000,
+            "an event older than the retention: {request:?}"
+        );
     }
 }

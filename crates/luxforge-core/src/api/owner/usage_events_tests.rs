@@ -796,8 +796,10 @@ fn usage_collection_leaves_originals_recipes_and_exports_unchanged() {
 }
 
 /// [`usage_collection_leaves_originals_recipes_and_exports_unchanged`] over photo-sized inputs:
-/// the generated 24 MP and 60 MP JPEGs (`cargo xtask generate-fixtures`), and every file in
-/// `LUXFORGE_USAGE_PRESERVATION_RAW_DIR` when it is set.
+/// the generated 24 MP and 60 MP JPEGs (`cargo xtask generate-fixtures`), every file not starting
+/// with a dot in `LUXFORGE_USAGE_PRESERVATION_RAW_DIR` when it is set, and every source the private
+/// RAW manifest at `LUXFORGE_RAW_MANIFEST` lists when it is set, each checked against the
+/// manifest's SHA-256 before it is used.
 #[test]
 #[ignore = "photo-sized: set LUXFORGE_GENERATED_FIXTURES to the generated JPEGs"]
 fn usage_collection_leaves_photo_sized_originals_and_exports_unchanged() {
@@ -810,10 +812,33 @@ fn usage_collection_leaves_photo_sized_originals_and_exports_unchanged() {
         let mut raws: Vec<PathBuf> = fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| path.is_file())
+            .filter(|path| {
+                path.is_file()
+                    && !path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+            })
             .collect();
         raws.sort();
         sources.extend(raws);
+    }
+    if let Some(manifest) = std::env::var_os("LUXFORGE_RAW_MANIFEST") {
+        let manifest: Value = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
+        for entry in manifest["sources"]
+            .as_array()
+            .expect("the manifest's sources")
+        {
+            let path = PathBuf::from(entry["path"].as_str().expect("a source's path"));
+            assert_eq!(
+                Some(sha256_hex(&path).as_str()),
+                entry["sha256"].as_str(),
+                "{} is not the file the manifest lists",
+                path.display()
+            );
+            if !sources.contains(&path) {
+                sources.push(path);
+            }
+        }
     }
     for (index, source) in sources.iter().enumerate() {
         assert!(source.is_file(), "{} is missing", source.display());
