@@ -37,6 +37,13 @@ use unit::{Look, LookParameters};
 /// precedes the Tone curve's.
 pub const LOOK_EFFECT: &str = "luxforge.look.look";
 
+/// Whether `layer` renders a RAW photograph's scene: the Look, after which the host places a
+/// colour operation's rendered tail (`docs/design/basic-local-tone.md`), so no code outside this
+/// module names the effect.
+pub(crate) fn renders_scene(layer: &crate::Layer) -> bool {
+    layer.effect_id == LOOK_EFFECT
+}
+
 /// The look module's identity.
 const LOOK_MODULE: &str = "luxforge.look";
 

@@ -1,6 +1,6 @@
 # Basic tone that adapts to the picture
 
-Status: **proposal awaiting the owner's review**. This is the level C change ([A1, A8](lightroom-alignment.md#decided)) that the [Lightroom alignment](lightroom-alignment.md#round-1-photographs-and-round-2) recorded for Highlights and Shadows: Lightroom Classic's answer the charts and the photographs differently, and no single global curve meets both. A study measured why, and asked the same of Whites, Blacks and Contrast. It recommends a change that is not local. Highlights, Shadows and Whites act on a RAW photograph's scene values relative to the photograph's own scene white, and Blacks and Contrast act after the Look. Nothing in production has changed. The prototypes are study code (`luxforge_reference::local_tone`, `cargo xtask lr-align tone-study`), and the [task plan](../../tasks/lightroom/basic-local-tone.json) is not authorized.
+Status: **decided (owner, 2026-10-16) and implemented on the CPU reference and in WGSL**; the WGSL is unqualified, since this Linux host has no Metal. This is the level C change ([A1, A8](lightroom-alignment.md#decided)) that the [Lightroom alignment](lightroom-alignment.md#round-1-photographs-and-round-2) recorded for Highlights and Shadows: Lightroom Classic's answer the charts and the photographs differently, and no single global curve meets both. A study measured why, and asked the same of Whites, Blacks and Contrast. The change is not local. Highlights, Shadows and Whites act on a RAW photograph's scene values relative to the photograph's own scene white, and Blacks, Contrast, Vibrance and Saturation act after the Look. The owner took the four recommendations below ([decided](#decided)). The study's prototypes stay study code (`luxforge_reference::local_tone`, `cargo xtask lr-align tone-study`); the frozen operator is in `luxforge_reference::tone`. The [task plan](../../tasks/lightroom/basic-local-tone.json)'s TASK-001 to TASK-005 are complete; TASK-006, M4 qualification and the owner's review, remains.
 
 ## Why
 
@@ -120,19 +120,20 @@ Basic's tone unit becomes two parts, around the Look. The curves inside each par
 **The scene part.** Whites, then Shadows, then Highlights, acting on the input Basic's own Exposure and white balance leave. On a scene-referred input, a RAW photograph's development, each stage runs in a domain scaled to the photograph's **scene white** `W_e`:
 
 ```text
-W_e      = W × 2^exposure                              W: the development's scene white (below)
+W_e      = W × g                                        W: the development's scene white (below)
+                                                        g: Basic's scene gain on a neutral grey
 u_S      = L / (c_S × W_e)                              Shadows' domain, c_S = 2
 u_H      = L / (c_H × W_e)                              Whites' and Highlights' domain, c_H = 3
 whites(x), shadows(x), highlights(x) as frozen, on x = encode(u); L' = c × W_e × decode(x')
 ```
 
-Composed in that order, the result is rebuilt by the luminance ratio with the near-black rule. Values past the domain's white pass through, as Highlights and Shadows already do outside `[0, 1]`. On a rendered input (a JPEG, a derived source) there is no scene white: the domain is today's (`c × W_e` is 1), and the scene part is today's Whites, Shadows and Highlights.
+`g` is `Σ luma_c × 2^stops_c`, the luminance gain Basic's white balance and Exposure give a neutral grey; a later layer's white is also scaled by the gain of every unmasked Basic layer before it. Composed in that order, the result is rebuilt by the luminance ratio with the near-black rule. Values past the domain's white pass through, as Highlights and Shadows already do outside `[0, 1]`. On a rendered input (a JPEG, a derived source) there is no scene white: the domain is today's (`c × W_e` is 1), and the scene part is today's Whites, Shadows and Highlights.
 
 **The rendered part.** Blacks, then Contrast, then Vibrance and Saturation, acting after the Look on rendered values, on today's encoded luminance, unchanged. Vibrance and Saturation follow the tone, as Basic's frozen internal order has them. On a rendered input the rendered part follows the scene part directly.
 
-**The scene white** `W` is a property of a RAW photograph's development, not of the stage. It is the 0.999 quantile of linear luminance over the developed planes, reduced by block means to at most 0.25 MP. It is computed once on the source worker when the photograph is developed, and kept with that development. It depends on neither the crop nor any other layer, so cropping does not change tones. Exposure scales it exactly, because Exposure is a plain gain on RAW.
+**The scene white** `W` is a property of a RAW photograph's development, not of the stage. It is the 0.999 quantile of linear luminance over the developed planes, reduced by block means to at most 0.25 MP. The block side is the least `k` whose grid over the view holds at most 2¹⁸ blocks; `W` is the block means' order statistic at index `⌊0.999 (n − 1)⌋`, no less than 1/256, read over the development's view rectangle of the planes, unturned. It is computed once on the developing worker when the photograph is developed (`LinearImage::measured_scene_white`), kept with that development and by its proxies, and bound to the recipe wherever an evaluation reads that source. It depends on neither the crop nor any other layer, so cropping does not change tones. Exposure scales it exactly, because Exposure is a plain gain on RAW.
 
-The constants are the study's (`c_H` = 3 and `c_S` = 2 at a quarter of full size, measured on the study's quantile). The fold refits them at the frozen reduction, with the responses.
+The constants are the study's, `c_H` = 3 and `c_S` = 2, rechecked at the frozen reduction (see [the refit](#the-refit)).
 
 ### Order on RAW and JPEG
 
@@ -147,7 +148,7 @@ Exposure and white balance stay first, so the Look's shoulder still rolls off wh
 
 Basic stays one layer with one payload, one history entry per commit and one `edit.set-basic`. Placing its rendered part is the host's job:
 
-- A colour operation may carry a **rendered tail**. The registry, compiling a stack whose input is scene-referred, places a layer's tail directly after the stack's rendering layer (the Look) when one follows it, and otherwise directly after the layer's own units. On a JPEG, and on a RAW stack whose Look is neutral, the result is the same.
+- A colour operation may carry a **rendered tail**. The registry, compiling a stack whose input is scene-referred, places a layer's tail directly after the first Look that follows it with only colour and spatial layers between, and otherwise directly after the layer's own units. On a JPEG the tail always follows its layer. A prefix of the stack (the Before view, a layer's input, the neutral picker) holds only the tails the whole stack places before its cut, so a Basic layer's tail never appears in the stage a later Look reads.
 - The layer's mask, compiled against the stage the layer receives, applies to both parts. The Look keeps the stage, so one mask serves both.
 - The neutral picker still reads the stage before Basic; Auto tone's forward model compiles Basic and its tail around the Looks it already evaluates.
 
@@ -155,32 +156,46 @@ A second Basic layer for the tail was considered and rejected. One panel's value
 
 ### Cost and the performance rules
 
-Both parts are pointwise. They join the stack's colour run (the Look and the Tone curve are pointwise too), so the GPU still draws them in one fused pass with no new program boundary.
+Both parts are pointwise. They join the stack's colour run (the Look and the Tone curve are pointwise too), so the GPU still draws them in one fused pass with no new program boundary. Both parts are the one tone program, `lf_basic_tone`, whose uniform grows from 9 to 13 words: the domain's white, its inverse, and the carry into and out of Shadows' domain, skipped where the two domains are equal. A drafted Basic layer, whose units are all present so a drag keeps one program sequence, holds four units rather than three: the scene unit, the scene part, the rendered tail and colour.
 
 - **Halo, scratch, GPU window and staged sweeps:** none. The scene white is a compile-time constant like any slider value, so the unit has no global estimate, no light link and no plane.
 - **Point queries** stay `O(layers)` ([rule 4](../engineering/performance-rules.md#rules)).
 - **Drags:** a Highlights or Shadows drag changes uniform words. An Exposure drag changes `W_e` with the exposure it already carries.
-- **The statistic's own cost:** one reduction and quantile per development on the source worker. It is measured on the development path at 24 and 60 MP and charged to the development, never to the catalog owner or a drag.
+- **The statistic's own cost:** one pass over the view's pixels, the rows of blocks on the shared pool, and a selection over at most 2¹⁸ means, once per development on the developing worker, never on the catalog owner, the UI thread or a drag. Its scratch is the means, at most 2 MiB. Its time at 24 and 60 MP is measured with the next timing run.
+- **Compilation:** an evaluation over a RAW photograph binds its scene white and recompiles once when it first reads the development.
 
-### The local option, if chosen
+### The local option, not chosen
 
-If the owner wants Lightroom's surround locality as well (question 1), the base is the fast guided filter over the scene part's domain:
-
-- Its coefficients `(A, B)` come from the development's luminance reduced to at most 256 samples on its long side. In the scene-white domain they do not change with Exposure. They are kept with the development (at most 350 KiB at 256 samples, 87 KiB at 128) and read bilinearly at each pixel, so the unit stays pointwise with no halo.
-- On the GPU they are one small texture per development.
-- Point queries read one bilinear sample more.
-- The study's base is 10% of the long side with `eps` 0.04.
-
-It is not recommended: see the measured costs above.
+Lightroom's surround locality would need a fast guided base over the scene part's domain: coefficients from the development's luminance reduced to at most 256 samples on its long side, kept with the development (up to 350 KiB) and read bilinearly at each pixel, one small texture per development on the GPU. The owner chose the global operator ([decided](#decided)), for the measured costs above.
 
 ### Format, responses, Auto tone and imports
 
 - **Format.** Basic's payload format rises from 3 to 4: Highlights, Shadows, Whites, Blacks and Contrast mean something else on RAW. A layer or preset of format 3 is refused as incompatible, naming its format ([A6](lightroom-alignment.md#decided), current shapes only).
-- **Responses.** Rounds 1, 1b and 2 are measured again on a study build of the new operator with its ranges extended as before. `lr-align fold` then refits `response.json` for Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation, with the owner's Whites review kept. The study's joint strengths are the expected starting point: Highlights −111 and +86 at ±100; Shadows −20 and +21; Blacks −84 and +62 after the Look.
+- **Responses.** Refitted by `lr-align fold` from rounds 1 and 1b measured on a study build of this operator ([the refit](#the-refit)), with the owner's Whites review kept.
 - **Auto tone.** The forward model uses the same split, the same scene white and the same Looks. Searched fields (Exposure, Whites, Blacks) search through it unchanged in method. Ruled fields (Contrast, Highlights, Shadows) keep their picture-statistic triggers and bounds in picture terms, expressed through the refitted responses. On the corpus, Auto's per-photograph outputs are recorded beside today's.
 - **Preset import** keeps transferring Lightroom's Basic values as the same numbers ([A11](lightroom-alignment.md#decided)).
 
+## The refit
+
+Rounds 1 and 1b were measured on a study build of this operator whose responses stretched Contrast and Highlights to ±150 and Whites to ±200, every other field the identity, and folded into `response.json`. The fold's former greedy floor carried Shadows' slope at −10 outward and pushed every later knot past the floor, leaving Shadows at −40 and +37 where the charts and the photographs both want about −25 and +22, 3.1 to 3.4 jointly. The fold now chooses each side's knots together under the floor ([Basic realigned](lightroom-alignment.md#basic-realigned)). Strengths at the slider's ends: Contrast −144.4 and +99.4, Highlights −112.5 and +91.9, Shadows −25 and +22.5, Whites −42.5 and +100 (the owner's review; the joint fit puts +100 at 137.5), Blacks −83.8 and +60, Vibrance −98.8 and +88.8, Saturation −100 and +85.
+
+Measured again on the refitted build through the CPU reference renderer at full size, on rounds 1, 1b and 2, on this Linux host with no GPU output: the worst median CIEDE2000 at the identity, on the charts and on the photographs, at Lightroom values of ±25 and beyond.
+
+| Field | Charts | Photographs | Before (charts, photographs) |
+| --- | --- | --- | --- |
+| Highlights | 1.80 from −100 to +50; 2.21 at +75 and 2.96 at +100 | 1.03 | 2.99, 2.55 |
+| Shadows | 1.94 | 1.81 | 2.65, 3.29 |
+| Blacks | 1.22 from −50 to +100; 2.25 at −75 and 2.57 at −100 | 1.34 from −50 to +100; 2.64 at −100 | 3.61, 8.50 |
+| Whites | 1.67 to +50; 4.26 at +75 and 10.31 at +100 | 2.04 to +50; 4.95 at +100 | 10.31, 5.79 |
+| Contrast | 3.31 | not exported | 3.28 |
+| Vibrance | 4.71 | not exported | 4.71 |
+| Saturation | 1.83 | not exported | 1.81 |
+
+Round 2's photograph pairs, worst median: Exposure + Highlights 1.45 (4.95 before), Contrast + Blacks 3.75 (12.69), Contrast + Whites 5.87 (12.28), Exposure + Whites 6.13 (5.91), whose worst point is Whites +100 a stop darker, the re-stretch; its other points improved. Dehaze + Contrast on the photographs fell from 9.92 to 7.94. On the charts Contrast + Blacks fell from 4.60 to 3.85 and the other pairs are unchanged within 0.1.
+
 ## Acceptance
+
+Status against the criteria below, from the refit's measurements: 1 to 4 are met, with Blacks −75 and −100 and Highlights +75 within 0.05 of their floors; in 5, Contrast and Saturation on the charts are within 0.03 of before, inside the fit's 0.1 resolution, and a rendered payload without Blacks is the single curve to `1e-12` (`a_rendered_payload_without_blacks_is_the_single_curve`); 6 is met on the CPU, with the WGSL unqualified; 7 remains.
 
 Measured through the CPU reference renderer at full size with `lr-align measure` after the fold, on rounds 1, 1b and 2:
 
@@ -204,43 +219,41 @@ Measured through the CPU reference renderer at full size with `lr-align measure`
    - The performance checklist is answered with the development-path cost.
    - A confirming Lightroom round, which adds Contrast alone on the photographs, records the result.
 
-## Questions for the owner
+## Decided
 
-1. **Local or global.**
-   - *Recommended:* adopt the global scene-white adaptation, which fits charts and photographs within A8 apart from the curves' floors. Record Lightroom's edge-aware Highlights on the surround target as a remaining difference in kind.
-   - *Alternative:* add the fast guided base now. It matches that locality and the preserved fine detail, but photographs get five times Lightroom's tone locality, Exposure + Highlights worsens, and each development keeps up to 350 KiB of coefficients.
-2. **Blacks, Contrast, Vibrance and Saturation after the Look on RAW.**
-   - *Recommended:* move them, which brings the Contrast pairs from 12 to 13 down to 5 to 6 and Blacks from 7.3 to 2.6.
-   - *Alternative:* keep them before the Look and accept those residuals.
+The owner took each recommendation (2026-10-16):
 
-   Vibrance and Saturation follow only to keep tone before colour. Their RAW responses were never measured on photographs, and the fold and confirming round measure them.
-3. **Where the scene white comes from.**
-   - *Recommended:* the development's, so it is independent of the crop and of earlier layers, and Basic stays pointwise.
-   - *Alternative:* the stage Basic receives, so it follows the crop and any heal or detail layers before Basic. That makes it a global estimate with a GPU light link, and every read through Basic becomes a whole-stage read.
-4. **Whites' positive half.**
-   - *Recommended:* keep its endpoint remap, moved to the scene side, and give the re-stretch its own study once this lands.
-   - *Alternative:* widen this change to include it now. That would delay this change, since the study has no candidate for it yet.
+1. **Global, not local.** The global scene-white adaptation, with no edge-aware base. Lightroom's edge-aware Highlights on the surround target is recorded as a remaining difference in kind.
+2. **Blacks, Contrast, Vibrance and Saturation after the Look on RAW.** Vibrance and Saturation follow only to keep tone before colour; their RAW responses are refitted with the others.
+3. **The development's scene white**, independent of the crop and of earlier layers, so Basic stays pointwise.
+4. **Whites' positive half** keeps its endpoint remap, moved to the scene side; the re-stretch gets its own study later.
 
 ## Recorded choices, delegated to the implementer
 
 | Choice | Recorded |
 | --- | --- |
-| `c_H`, `c_S` | 3 and 2, the study's; refitted in the fold at the frozen reduction, each to a whole or half number |
-| The scene white's reduction and quantile | Block means to at most 0.25 MP, then the 0.999 quantile of linear luminance, from a fixed-bin histogram so the result is deterministic and tile-invariant |
+| `c_H`, `c_S` | 3 and 2, the study's, rechecked at the frozen reduction ([the refit](#the-refit)) |
+| The scene white's reduction and quantile | Block means to at most 0.25 MP, then the exact order statistic at `⌊0.999 (n − 1)⌋` of their linear luminance, each block summed in `f64` in row order: deterministic, and equal to the reference bit for bit. A fixed-bin histogram was not needed, since the selection over at most 2¹⁸ means is cheap |
 | White balance and `W_e` | Exposure scales `W` exactly; Basic's white balance on RAW scales it by its gain on a neutral grey |
-| Derived sources (HDR merges) | Take the rendered path, as they take the scene shift today ([Basic on the scene scale](basic-scene.md#limitations)) |
-| The GPU programs | One tone program with a mode word (scene part or rendered part), or two; whichever keeps the fused colour run's program count no larger |
+| Derived sources (HDR merges) | Take the rendered path: they have no source-stage layer, so they are not scene-referred, as for the scene shift ([Basic on the scene scale](basic-scene.md#limitations)) |
+| The GPU programs | One tone program for both parts, the domain in four uniform words; the fused colour run's program count is unchanged |
+| Tail placement | After the first Look past the layer with only colour and spatial layers between; a geometry or source layer between, or no Look, keeps the tail with its layer |
 
 ## Not in scope
 
 - Whites' positive-half re-stretch.
 - The shape at Highlights +75 and +100 and at Blacks −75 and −100.
-- Lightroom's surround locality (question 1).
+- Lightroom's surround locality ([decided](#decided), 1).
 - Dehaze with Contrast.
 - Masks' own alignment (TASK-009 of the [alignment plan](../../tasks/lightroom/lightroom-alignment.json)). A masked Basic layer takes this operator as a global one does.
 
 ## Files
 
+- [`crates/luxforge-reference/src/tone.rs`](../../crates/luxforge-reference/src/tone.rs): the frozen operator (`Domain`, `scene_tone`, `rendered_tone`, `scene_white`, `exposed_white`), its fixture [`tone-domain-cases.json`](../../fixtures/basic/tone-domain-cases.json) and, in `tests/studies/tone.rs`, the dense monotonicity proof of the scene part at every corner of its end strengths.
+- [`crates/luxforge-core/src/modules/basic/tone.rs`](../../crates/luxforge-core/src/modules/basic/tone.rs) and [`tone.wgsl`](../../crates/luxforge-core/src/modules/basic/tone.wgsl): the unit in either domain; `basic/mod.rs` compiles the scene part and the rendered tail.
+- [`crates/luxforge-core/src/modules/registry/compile.rs`](../../crates/luxforge-core/src/modules/registry/compile.rs): the tail's placement, the running scene white and prefixes (`compile_prefix`, `compile_range`).
+- [`crates/luxforge-core/src/source/linear.rs`](../../crates/luxforge-core/src/source/linear.rs): `measured_scene_white`, exact against the reference.
+- [`crates/luxforge-reference/src/lr_align.rs`](../../crates/luxforge-reference/src/lr_align.rs): `floored_joint_knots`, the fold's knot choice.
 - [`crates/luxforge-reference/src/local_tone.rs`](../../crates/luxforge-reference/src/local_tone.rs): the study's candidate operators (box, guided and fast guided bases, picture levels, both reconstructions) and their known-answer tests. None is frozen.
 - [`xtask/src/lr_align/tone_study.rs`](../../xtask/src/lr_align/tone_study.rs): `cargo xtask lr-align tone-study`, the fits, measures, observations, pairs and contact sheets.
 - [Task plan](../../tasks/lightroom/basic-local-tone.json).

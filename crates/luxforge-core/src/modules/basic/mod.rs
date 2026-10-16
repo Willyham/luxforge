@@ -50,11 +50,13 @@ pub(crate) use white_balance::PROGRAM as WHITE_BALANCE_PROGRAM;
 /// lives in one layer of this effect.
 pub const BASIC_EFFECT: &str = "luxforge.basic.adjust";
 
-/// The Basic effect's current payload format: 3 since its sliders follow Lightroom's responses
-/// (`response.rs`) and its white balance and exposure act on the scene scale (`scene.rs`), listed
-/// among [`super::BUILTIN_FORMATS`]. A stored Basic layer at any other
-/// format holds values of the earlier meaning and is refused as `incompatible`, never rewritten.
-pub(super) const BASIC_EFFECT_FORMAT: u32 = 3;
+/// The Basic effect's current payload format: 4 since Whites, Shadows and Highlights act on a RAW
+/// photograph's scene values relative to its scene white and Blacks, Contrast, Vibrance and
+/// Saturation after the Look (`docs/design/basic-local-tone.md`), with its sliders following
+/// Lightroom's responses (`response.rs`) and its white balance and exposure on the scene scale
+/// (`scene.rs`); listed among [`super::BUILTIN_FORMATS`]. A stored Basic layer at any other format
+/// holds values of an earlier meaning and is refused as `incompatible`, never rewritten.
+pub(super) const BASIC_EFFECT_FORMAT: u32 = 4;
 
 pub(super) const SET_BASIC: &str = "set-basic";
 /// The read-only query the neutral picker runs, in its own `query.<id>` namespace.
@@ -263,13 +265,18 @@ impl FieldPatch for Basic {
     /// Only a layer with a moved field reaches here; the shared field patch compiles a neutral one
     /// to no units.
     fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
-        // The frozen internal order: white balance, then exposure, then the tonal curve, then
-        // vibrance and saturation. Each unit is added only when its own field is not neutral, so a
-        // layer that moves one slider costs one unit. In the GPU shape every unit is added, a
-        // neutral one as its identity, so a drag that leaves or returns to neutral keeps one
-        // program sequence (`CompileStage::gpu_shape`); no CPU compile asks for it.
+        // The frozen internal order: white balance, then exposure, then Whites, Shadows and
+        // Highlights, then Blacks and Contrast, then vibrance and saturation
+        // (`docs/design/basic-local-tone.md`). On a scene-referred stack the last two groups are
+        // the layer's rendered tail, which the host places after the Look; the first three act on
+        // scene values relative to the scene white. Each unit is added only when its own fields
+        // are not neutral, so a layer that moves one slider costs one unit. In the GPU shape every
+        // unit is added, a neutral one as its identity, so a drag that leaves or returns to
+        // neutral keeps one program sequence (`CompileStage::gpu_shape`); no CPU compile asks for
+        // it.
         let every = at.gpu_shape;
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
+        let mut rendered: Vec<Arc<dyn PointwiseColor>> = Vec::new();
         // Each unit receives its fields' strengths, the slider values through their responses
         // (`response.rs`); a neutral value is a neutral strength exactly.
         let strength = |name| response::strength(name, values.number(name));
@@ -278,22 +285,35 @@ impl FieldPatch for Basic {
         let temperature = values.number(TEMPERATURE);
         let tint = values.number(TINT);
         let exposure = values.number(EXPOSURE);
+        let scene = Scene::new(temperature, tint, exposure, at.scene_referred);
+        // On a scene-referred input the scene unit is a plain gain of each channel, which scales
+        // the scene white by the gain a neutral grey takes.
+        let gain = scene.grey_gain();
         if every || [temperature, tint, exposure] != [NEUTRAL; 3] {
-            units.push(Arc::new(Scene::new(
-                temperature,
-                tint,
-                exposure,
-                at.scene_referred,
-            )));
+            units.push(Arc::new(scene));
         }
         let contrast = strength(CONTRAST);
         let highlights = strength(HIGHLIGHTS);
         let shadows = strength(SHADOWS);
         let whites = strength(WHITES);
         let blacks = strength(BLACKS);
-        if every || [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
+        let domain = match (at.scene_referred, at.scene_white) {
+            (true, Some(white)) => tone::scene_domain(white * gain),
+            _ => tone::RENDERED,
+        };
+        if every || [highlights, shadows, whites] != [NEUTRAL; 3] {
             units.push(Arc::new(Tone::new(
-                contrast, highlights, shadows, whites, blacks,
+                NEUTRAL, highlights, shadows, whites, NEUTRAL, domain,
+            )));
+        }
+        if every || [contrast, blacks] != [NEUTRAL; 2] {
+            rendered.push(Arc::new(Tone::new(
+                contrast,
+                NEUTRAL,
+                NEUTRAL,
+                NEUTRAL,
+                blacks,
+                tone::RENDERED,
             )));
         }
         // Colour runs last: vibrance and saturation compile into one fused `ColourAdjust` unit
@@ -303,9 +323,17 @@ impl FieldPatch for Basic {
         let vibrance = strength(VIBRANCE);
         let saturation = strength(SATURATION);
         if every || vibrance != NEUTRAL || saturation != NEUTRAL {
-            units.push(Arc::new(ColourAdjust::new(vibrance, saturation)));
+            rendered.push(Arc::new(ColourAdjust::new(vibrance, saturation)));
         }
-        Ok(Processing::Color(ColorOperation::new(units)))
+        if !at.scene_referred {
+            units.append(&mut rendered);
+        }
+        let operation = ColorOperation::new(units).with_tail(rendered);
+        Ok(Processing::Color(if at.scene_referred {
+            operation.with_scene_gain(gain)
+        } else {
+            operation
+        }))
     }
 
     /// The neutral picker, the one query this module declares.
@@ -704,21 +732,28 @@ mod tests {
         }
     }
 
-    /// A Basic layer stored before the sliders followed Lightroom's responses holds values of the
-    /// earlier meaning: it is refused, naming its format, rather than rendered at the new scale.
+    /// A Basic layer stored before its tone acted on the scene white, or before its sliders
+    /// followed Lightroom's responses, holds values of an earlier meaning: it is refused, naming its
+    /// format, rather than rendered at the new meaning.
     #[test]
     fn an_earlier_basic_layer_is_refused_naming_its_format() {
         let module = BasicModule::new();
-        let error = module
-            .compile(
-                BASIC_EFFECT,
-                1,
-                &json!({"exposure": 1.0}),
-                crate::CompileStage::exact(STAGE),
-            )
-            .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Incompatible);
-        assert!(error.detail.contains("format 1"), "{}", error.detail);
+        for format in [1, 3] {
+            let error = module
+                .compile(
+                    BASIC_EFFECT,
+                    format,
+                    &json!({"highlights": -50.0}),
+                    crate::CompileStage::exact(STAGE),
+                )
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert!(
+                error.detail.contains(&format!("format {format}")),
+                "{}",
+                error.detail
+            );
+        }
     }
 
     // -----------------------------------------------------------------------------------------

@@ -1166,81 +1166,160 @@ pub fn joint_fit(tables: &[DistanceTable], anchor: Option<(f64, f64)>, range: (f
     )
 }
 
-/// A fit's points as knots `[Lightroom, Luxforge]` through `neutral` (Lightroom's, Luxforge's),
-/// each point moved within its span, where any value is within [`TIE`] of the best, to the value
-/// nearest the slope of the point before it continued outward from neutral: a chart that
-/// saturates (a wedge clipped to white) cannot tell the values in its span apart, and the
-/// continued slope keeps the slider moving there rather than the span's first value.
-pub fn continued_within_ties(points: &[FitPoint], neutral: (f64, f64)) -> Vec<[f64; 2]> {
-    let mut sorted: Vec<&FitPoint> = points.iter().collect();
-    sorted.sort_by(|a, b| a.lightroom.total_cmp(&b.lightroom));
-    let mut knots: Vec<[f64; 2]> = sorted.iter().map(|p| [p.lightroom, p.luxforge]).collect();
-    let centre = knots.partition_point(|k| k[0] < neutral.0);
-    if knots
-        .get(centre)
-        .is_none_or(|k| (k[0] - neutral.0).abs() > 1e-9)
-    {
-        knots.insert(centre, [neutral.0, neutral.1]);
-    } else {
-        knots[centre][1] = neutral.1;
-    }
-    let span_of = |lightroom: f64| {
-        sorted
-            .iter()
-            .find(|p| (p.lightroom - lightroom).abs() < 1e-9)
-            .map(|p| p.span)
-    };
-    let continued = |inner: [f64; 2], before: [f64; 2], at: f64| {
-        let slope = (inner[1] - before[1]) / (inner[0] - before[0]);
-        inner[1] + slope * (at - inner[0])
-    };
-    for i in centre + 2..knots.len() {
-        if let Some([low, high]) = span_of(knots[i][0]) {
-            knots[i][1] = continued(knots[i - 1], knots[i - 2], knots[i][0]).clamp(low, high);
-        }
-    }
-    for i in (0..centre.saturating_sub(1)).rev() {
-        if let Some([low, high]) = span_of(knots[i][0]) {
-            knots[i][1] = continued(knots[i + 1], knots[i + 2], knots[i][0]).clamp(low, high);
-        }
-    }
-    knots
-}
-
-/// `knots`, `[Lightroom, Luxforge]` in Lightroom order, made strictly increasing with every step at
-/// least `floor` times its Lightroom step, moving outward from the knot at `neutral`, which is
-/// kept, and then inward from the ends wherever that passed `limits`: a flat run of a pooled map
-/// would otherwise leave a stretch of slider that changes nothing.
-pub fn with_slope_floor(
-    knots: &[[f64; 2]],
-    neutral: f64,
+/// The knots `[Lightroom, Luxforge]` of a joint fit of `tables` through `neutral` (Lightroom's,
+/// Luxforge's) with every step at least `floor` times its Lightroom step, so no stretch of slider
+/// is dead. On each side of neutral, the Luxforge values at the Lightroom values the tables hold,
+/// chosen on the union of their values inside the span they share and inside `limits`, minimise
+/// the sum of each point's squared mean distance, a distance within [`TIE`] of the point's best
+/// counting as its best; among equal sums, the knots whose slope changes least (the least sum of
+/// squared changes of slope from one step to the next). A chart that saturates cannot tell the
+/// values in its span apart, and the smoothest continues the slope there; a flat run of the
+/// pooled best spends the floor where it costs least rather than pushing every later knot out.
+/// `None` where no knots on the values meet the floor.
+pub fn floored_joint_knots(
+    tables: &[DistanceTable],
+    neutral: (f64, f64),
     floor: f64,
     limits: (f64, f64),
-) -> Vec<[f64; 2]> {
-    let mut out = knots.to_vec();
-    let Some(centre) = out.iter().position(|k| (k[0] - neutral).abs() < 1e-9) else {
-        return out;
+) -> Option<Vec<[f64; 2]>> {
+    let low = tables.iter().map(|t| t.values[0]).fold(limits.0, f64::max);
+    let high = tables
+        .iter()
+        .map(|t| t.values[t.values.len() - 1])
+        .fold(limits.1, f64::min);
+    let mut values: Vec<f64> = tables
+        .iter()
+        .flat_map(|t| t.values.iter().copied())
+        .filter(|v| *v >= low - 1e-9 && *v <= high + 1e-9)
+        .collect();
+    values.sort_by(f64::total_cmp);
+    values.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let mut lightroom: Vec<f64> = tables
+        .iter()
+        .flat_map(|t| t.rows.iter().map(|(v, _)| *v))
+        .filter(|v| (v - neutral.0).abs() > 1e-9)
+        .collect();
+    lightroom.sort_by(f64::total_cmp);
+    lightroom.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    // Each point's cost at each value: its mean distance, no better than its best plus the ties,
+    // squared.
+    let costs = |lr: f64| -> Vec<f64> {
+        let mean: Vec<f64> = values
+            .iter()
+            .map(|value| {
+                let found: Vec<f64> = tables.iter().filter_map(|t| t.at(lr, *value)).collect();
+                if found.is_empty() {
+                    f64::INFINITY
+                } else {
+                    found.iter().sum::<f64>() / found.len() as f64
+                }
+            })
+            .collect();
+        let best = mean.iter().copied().fold(f64::INFINITY, f64::min);
+        mean.iter().map(|d| d.max(best + TIE).powi(2)).collect()
     };
-    for i in centre + 1..out.len() {
-        let least = out[i - 1][1] + floor * (out[i][0] - out[i - 1][0]);
-        out[i][1] = out[i][1].max(least);
+    let below: Vec<f64> = lightroom
+        .iter()
+        .rev()
+        .copied()
+        .filter(|v| *v < neutral.0)
+        .collect();
+    let above: Vec<f64> = lightroom
+        .iter()
+        .copied()
+        .filter(|v| *v > neutral.0)
+        .collect();
+    let mut knots = Vec::new();
+    for (side, sign) in [(below, -1.0), (above, 1.0)] {
+        let chosen = floored_side(&values, &side, &costs, neutral, floor, sign)?;
+        let mut side_knots: Vec<[f64; 2]> = side.iter().zip(chosen).map(|(l, u)| [*l, u]).collect();
+        if sign < 0.0 {
+            side_knots.reverse();
+            knots.extend(side_knots);
+            knots.push([neutral.0, neutral.1]);
+        } else {
+            knots.extend(side_knots);
+        }
     }
-    for i in (0..centre).rev() {
-        let most = out[i + 1][1] - floor * (out[i + 1][0] - out[i][0]);
-        out[i][1] = out[i][1].min(most);
+    Some(knots)
+}
+
+/// One side of [`floored_joint_knots`]: the values at `points`, ordered outward from neutral,
+/// moving outward in the direction `sign`, by dynamic programming over the last two values.
+fn floored_side(
+    values: &[f64],
+    points: &[f64],
+    costs: &dyn Fn(f64) -> Vec<f64>,
+    neutral: (f64, f64),
+    floor: f64,
+    sign: f64,
+) -> Option<Vec<f64>> {
+    if points.is_empty() {
+        return Some(Vec::new());
     }
-    let n = out.len();
-    out[n - 1][1] = out[n - 1][1].min(limits.1);
-    for i in (centre + 1..n - 1).rev() {
-        let most = out[i + 1][1] - floor * (out[i + 1][0] - out[i][0]);
-        out[i][1] = out[i][1].min(most);
+    let n = values.len();
+    // State index `a * (n + 1) + b`: this point at `values[a]`, the one before at `values[b]`, or
+    // at neutral where `b == n`.
+    let width = n + 1;
+    let value_of = |i: usize| if i == n { neutral.1 } else { values[i] };
+    let lightroom_of = |k: usize| if k == 0 { neutral.0 } else { points[k - 1] };
+    let reaches = |from: usize, to: usize, k: usize| {
+        sign * (values[to] - value_of(from))
+            >= floor * (lightroom_of(k) - lightroom_of(k - 1)).abs() - 1e-9
+    };
+    let better =
+        |a: (f64, f64), b: (f64, f64)| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)).is_lt();
+    let first = costs(points[0]);
+    let mut state: Vec<Option<(f64, f64)>> = vec![None; n * width];
+    for a in 0..n {
+        if reaches(n, a, 1) && first[a].is_finite() {
+            state[a * width + n] = Some((first[a], 0.0));
+        }
     }
-    out[0][1] = out[0][1].max(limits.0);
-    for i in 1..centre {
-        let least = out[i - 1][1] + floor * (out[i][0] - out[i - 1][0]);
-        out[i][1] = out[i][1].max(least);
+    let mut parents: Vec<Vec<usize>> = Vec::new();
+    for k in 2..=points.len() {
+        let cost = costs(points[k - 1]);
+        let mut next: Vec<Option<(f64, f64)>> = vec![None; n * width];
+        let mut parent = vec![usize::MAX; n * width];
+        let step = lightroom_of(k) - lightroom_of(k - 1);
+        let step_before = lightroom_of(k - 1) - lightroom_of(k - 2);
+        for b in 0..n {
+            for c in 0..width {
+                let Some((sum, rough)) = state[b * width + c] else {
+                    continue;
+                };
+                let slope_before = (values[b] - value_of(c)) / step_before;
+                for a in 0..n {
+                    if !cost[a].is_finite() || !reaches(b, a, k) {
+                        continue;
+                    }
+                    let slope = (values[a] - values[b]) / step;
+                    let candidate = (sum + cost[a], rough + (slope - slope_before).powi(2));
+                    let at = a * width + b;
+                    if next[at].is_none_or(|held| better(candidate, held)) {
+                        next[at] = Some(candidate);
+                        parent[at] = c;
+                    }
+                }
+            }
+        }
+        state = next;
+        parents.push(parent);
     }
-    out
+    let (mut at, _) = state
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| v.map(|v| (i, v)))
+        .reduce(|x, y| if better(y.1, x.1) { y } else { x })?;
+    let mut chosen = vec![0.0; points.len()];
+    for k in (1..=points.len()).rev() {
+        let (a, b) = (at / width, at % width);
+        chosen[k - 1] = values[a];
+        if k >= 2 {
+            at = b * width + parents[k - 2][at];
+        }
+    }
+    Some(chosen)
 }
 
 /// `work` over every item on a bounded pool of scoped threads, the results in item order.

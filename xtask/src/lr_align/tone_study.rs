@@ -40,7 +40,9 @@ use luxforge_reference::look::{Look, LookTone, look_pixel};
 use luxforge_reference::lr_align::{self as la, Lab, Target};
 use luxforge_reference::preview_error::ciede2000;
 use luxforge_reference::srgb;
-use luxforge_reference::tone::{ToneParams, luminance};
+use luxforge_reference::tone::{
+    Domain, ToneParams, luminance, rendered_tone, scene_tone, scene_white,
+};
 use std::collections::BTreeMap;
 
 const CHART_SUBJECTS: [&str; 3] = ["wedge", "patches", "surround"];
@@ -192,6 +194,46 @@ enum Placement {
     BeforeLookWhite { quantile: f64, factor: f64 },
     /// On rendered values, after the Look.
     AfterLook,
+    /// The proposed operator as frozen in `luxforge_reference::tone`: Whites, Shadows and
+    /// Highlights before the Look over the photograph's scene white (`scene_white`) times
+    /// `highlights` and `shadows`, then Blacks and Contrast after it. A chart takes the rendered
+    /// domain, the scene part and then the rendered part.
+    Frozen { highlights: f64, shadows: f64 },
+}
+
+/// `frame` through the frozen split at `params`: the scene part in `domain`, then `look` when one
+/// is given, then the rendered part.
+fn frozen(frame: &Frame, params: ToneParams, domain: Domain, look: Option<&Option<Look>>) -> Frame {
+    let scene = Frame {
+        width: frame.width,
+        height: frame.height,
+        rgb: frame
+            .rgb
+            .iter()
+            .map(|p| scene_tone(*p, params, domain))
+            .collect(),
+    };
+    let looked = match look {
+        Some(look) => apply_look(look.as_ref(), &scene),
+        None => scene,
+    };
+    Frame {
+        rgb: looked
+            .rgb
+            .iter()
+            .map(|p| rendered_tone(*p, params))
+            .collect(),
+        ..looked
+    }
+}
+
+/// The frozen domain of a photograph's scene `frame` under `Placement::Frozen`.
+fn frozen_domain(frame: &Frame, highlights: f64, shadows: f64) -> Domain {
+    let white = scene_white(frame.width, frame.height, &frame.rgb);
+    Domain {
+        highlights: highlights * white,
+        shadows: shadows * white,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -248,6 +290,34 @@ impl Split {
 fn candidates() -> Vec<Candidate> {
     use Placement::*;
     use Reconstruction::*;
+    let mut frozen = Vec::new();
+    for (h, s) in [
+        (1.5, 1.5),
+        (2.0, 2.0),
+        (2.5, 2.5),
+        (3.0, 3.0),
+        (3.5, 3.5),
+        (4.0, 4.0),
+        (3.0, 2.0),
+        (3.5, 2.0),
+        (4.0, 2.0),
+    ] {
+        frozen.push(Candidate {
+            id: format!("frozen-h{h}-s{s}"),
+            describes: format!(
+                "the frozen split: Whites, Shadows and Highlights before the Look over {h} \
+                 (Shadows {s}) times the development's scene white, Blacks and Contrast after it"
+            ),
+            placement: Frozen {
+                highlights: h,
+                shadows: s,
+            },
+            operator: Operator::Global(LuminanceRatio),
+            adapt: (None, None),
+            split: None,
+            adapt_scene: true,
+        });
+    }
     let local = |reduction, radius, eps, detail| {
         Operator::Local(LocalConfig {
             smoother: Smoother::Guided {
@@ -635,6 +705,7 @@ fn candidates() -> Vec<Candidate> {
             });
         }
     }
+    out.extend(frozen);
     out
 }
 
@@ -1186,7 +1257,7 @@ fn shift_of(placement: Placement, scene: &Frame) -> f64 {
 
 fn prepare(subject: &Subject, candidate: &Candidate) -> Prepared {
     let frame = match (subject.class, candidate.placement) {
-        (Class::Photos, Placement::BeforeLook) => subject.input.clone(),
+        (Class::Photos, Placement::BeforeLook | Placement::Frozen { .. }) => subject.input.clone(),
         (
             Class::Photos,
             p @ (Placement::BeforeLookShifted(_) | Placement::BeforeLookWhite { .. }),
@@ -1224,6 +1295,21 @@ fn evaluate(
     prepared: &Prepared,
     params: ToneParams,
 ) -> Frame {
+    if let Placement::Frozen {
+        highlights,
+        shadows,
+    } = candidate.placement
+    {
+        return match subject.class {
+            Class::Photos => frozen(
+                &prepared.frame,
+                params,
+                frozen_domain(&prepared.frame, highlights, shadows),
+                Some(&subject.look),
+            ),
+            Class::Charts => frozen(&prepared.frame, params, Domain::RENDERED, None),
+        };
+    }
     let toned = match candidate.operator {
         Operator::Global(how) => lt::global_within(&prepared.frame, params, how, prepared.levels),
         Operator::Local(config) => lt::local_within(
@@ -1814,6 +1900,14 @@ fn evaluate_pair(
         return lt::global(&looked, rendered, Reconstruction::LuminanceRatio);
     }
     let exposed = scaled(&subject.input, 2f64.powf(exposure));
+    if let Placement::Frozen {
+        highlights,
+        shadows,
+    } = candidate.placement
+    {
+        let domain = frozen_domain(&exposed, highlights, shadows);
+        return frozen(&exposed, params, domain, Some(&subject.look));
+    }
     let tone = |frame: &Frame| {
         let encoded = frame.encoded_luminance();
         let levels = if candidate.placement != Placement::AfterLook && !candidate.adapt_scene {
@@ -1837,6 +1931,7 @@ fn evaluate_pair(
             apply_look(subject.look.as_ref(), &scaled(&toned, 2f64.powf(stops)))
         }
         Placement::AfterLook => tone(&apply_look(subject.look.as_ref(), &exposed)),
+        Placement::Frozen { .. } => unreachable!("the frozen operator returned above"),
     }
 }
 

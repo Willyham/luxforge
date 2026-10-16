@@ -790,6 +790,7 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
             masks: vec![mask],
             strokes: table,
             artifacts: Default::default(),
+            scene_white: None,
         };
         let rendered = render(&registry, &source, SnapshotId::new(), &stack)
             .unwrap_or_else(|error| panic!("round {round}: {error}"));

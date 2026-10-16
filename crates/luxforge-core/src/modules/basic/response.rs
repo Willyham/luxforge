@@ -152,10 +152,11 @@ mod tests {
         [knots[0][1], knots[knots.len() - 1][1]]
     }
 
-    /// Where a response extends a strength past its former ±100, the unit stays stable (A10): the
-    /// Tone unit's curve stays nondecreasing on a dense grey ramp at every corner of the five
-    /// fields' end strengths, and its Highlights and Shadows stage alone keeps a slope of at least
-    /// 0.1.
+    /// Where a response extends a strength past its former ±100, the unit stays stable (A10): each
+    /// part of Basic's tone, the scene part in the rendered domain and in scene domains over a dim
+    /// and a bright white, and the rendered part, stays nondecreasing on a dense grey ramp past its
+    /// domain's white at every corner of the five fields' end strengths, and the Highlights and
+    /// Shadows stage alone keeps a slope of at least 0.1.
     #[test]
     fn every_extended_strength_keeps_its_unit_stable() {
         use super::super::tone::Tone;
@@ -173,16 +174,39 @@ mod tests {
                 .enumerate()
                 .map(|(i, field)| ends(field)[(corner >> i) & 1])
                 .collect();
-            let unit = Tone::new(s[0], s[1], s[2], s[3], s[4]);
-            let out: Vec<f32> = ramp.iter().map(|g| luminance(&unit, *g)).collect();
-            assert!(
-                out.windows(2).all(|p| p[1] >= p[0] - 1e-6),
-                "the tone curve at {s:?} decreases"
-            );
+            let rendered = super::super::tone::RENDERED;
+            let parts = [
+                (Tone::new(0.0, s[1], s[2], s[3], 0.0, rendered), 1.0),
+                (Tone::new(s[0], 0.0, 0.0, 0.0, s[4], rendered), 1.0),
+            ]
+            .into_iter()
+            .chain([0.2, 2.5].map(|white| {
+                let domain = super::super::tone::scene_domain(white);
+                (Tone::new(0.0, s[1], s[2], s[3], 0.0, domain), domain[0])
+            }));
+            for (unit, scale) in parts {
+                let out: Vec<f32> = ramp
+                    .iter()
+                    .map(|g| luminance(&unit, g * 1.5 * scale as f32))
+                    .collect();
+                assert!(
+                    out.windows(2)
+                        .all(|p| p[1] >= p[0] - 1e-6 * (scale as f32).max(1.0)),
+                    "the tone part {} at {s:?} decreases",
+                    unit.describe()
+                );
+            }
         }
         for highlights in ends("highlights") {
             for shadows in ends("shadows") {
-                let unit = Tone::new(0.0, highlights, shadows, 0.0, 0.0);
+                let unit = Tone::new(
+                    0.0,
+                    highlights,
+                    shadows,
+                    0.0,
+                    0.0,
+                    super::super::tone::RENDERED,
+                );
                 let encoded = |g: f32| crate::colour::srgb::encode_f32(luminance(&unit, g));
                 let slopes = ramp.windows(2).map(|p| {
                     let (a, b) = (

@@ -147,6 +147,30 @@ impl<S> Evaluation<S> {
         self.kind
     }
 
+    /// This evaluation with its stack bound to the scene white `white` and compiled again against
+    /// the content stage `(width, height)`, when it does not already hold it.
+    fn with_scene_white(self, white: Option<f64>, (width, height): (u32, u32)) -> Self {
+        let std::borrow::Cow::Owned(recipe) = self.recipe().with_scene_white(white) else {
+            return self;
+        };
+        let bound = &self.bound;
+        #[cfg(test)]
+        bound.context.note_compile();
+        let compiled = bound.registry.compile(width, height, &recipe);
+        Self {
+            bound: Arc::new(Bound {
+                entry: bound.entry.clone(),
+                recipe: Some(recipe),
+                registry: bound.registry.clone(),
+                context: bound.context.clone(),
+                fingerprint: bound.fingerprint.clone(),
+                draft: bound.draft.clone(),
+                compiled,
+            }),
+            ..self
+        }
+    }
+
     /// This evaluation reading `source`.
     fn reading<T>(self, source: T) -> Evaluation<T> {
         Evaluation {
@@ -175,6 +199,10 @@ impl Evaluation {
         let (width, height) = source.dimensions();
         #[cfg(test)]
         context.note_compile();
+        let recipe = Recipe {
+            scene_white: source.scene_white(),
+            ..recipe
+        };
         let compiled = registry.compile(width, height, &recipe);
         let kind = match &source {
             PreviewSource::Jpeg(_) => crate::SourceTag::Jpeg,
@@ -521,7 +549,13 @@ impl EditorService {
                 "the prepared source is not the original the asset records",
             ));
         }
-        Ok((stack.evaluation.reading(source), capture))
+        // A RAW development's scene white is known only now, so the stack is compiled again with
+        // it bound ([`crate::Recipe::scene_white`]): `O(layers)`, no pixel read.
+        let evaluation = stack.evaluation.with_scene_white(
+            source.scene_white(),
+            (stack.asset.width, stack.asset.height),
+        );
+        Ok((evaluation.reading(source), capture))
     }
 
     /// [`Self::evaluation`] of `selection` under the strict rule, reading its source.

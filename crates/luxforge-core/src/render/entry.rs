@@ -48,6 +48,15 @@ impl RenderSource<'_> {
             Self::Linear { image, .. } => (image.width(), image.height()),
         }
     }
+
+    /// The development's scene white a recipe over this source is compiled with
+    /// ([`crate::Recipe::scene_white`]): a RAW development's, `None` for any other source.
+    pub(crate) fn scene_white(&self) -> Option<f64> {
+        match self {
+            Self::Byte(_) => None,
+            Self::Linear { image, .. } => image.scene_white(),
+        }
+    }
 }
 
 impl<'a> From<&'a SourceImage> for RenderSource<'a> {
@@ -175,12 +184,13 @@ pub fn render<'a>(
     let (width, height) = source.dimensions();
     #[cfg(test)]
     context.note_compile();
+    // The stack is compiled with the scene white of the development it reads.
     let compiled = registry.compile_sampled(
         width,
         height,
         width,
         height,
-        recipe,
+        &recipe.with_scene_white(source.scene_white()),
         options.phase.sampling(),
     )?;
     Render::compiled(source, compiled, options, context)
@@ -705,15 +715,12 @@ pub(crate) fn layer_input<'a>(
     layer: usize,
     context: &'a RenderContext,
 ) -> Result<(Stage, Box<dyn MaskInputPixel + 'a>), Error> {
-    let layers = crate::editor::prefix(&recipe.layers, layer)?;
     let (width, height) = source.dimensions();
-    let compiled = registry.compile_layers(
+    let compiled = registry.compile_prefix(
         width,
         height,
-        layers,
-        &recipe.masks,
-        &recipe.strokes,
-        &recipe.artifacts,
+        &recipe.with_scene_white(source.scene_white()),
+        layer,
     )?;
     let mode = MaskInputMode::for_layer(registry, recipe, layer);
     if compiled.evaluates_spatial() {
