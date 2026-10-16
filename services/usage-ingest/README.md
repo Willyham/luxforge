@@ -126,7 +126,11 @@ Environment variables; only the first is required. A bad value stops startup nam
 The service never reads a peer address (the accept loop discards it), sets no tracking state keyed by
 one, and reads no header but `Content-Type` and `Content-Length`. The per-installation limiter is
 in memory, keyed by the validated installation ID only, allocated after size, shape and global
-admission, and forgets an entry within 15 minutes. It logs two fixed messages and one line of
+admission, and forgets an entry within 15 minutes. A separate deadline worker enforces retention
+regardless of the statistics interval or refill rate; it has no timer when the ID table is empty.
+Each retained ID has exactly one expiry record, and an expired entry is removed before another
+request can refresh it. The global limiter uses fixed-point refill to preserve configured rates
+such as 3 and 600 requests per second along with the configured burst. It logs two fixed messages and one line of
 aggregate counters (`accepted`, `bad_request`, `payload_too_large`, `limited_global`, `feeds_served`,
 `feeds_missing`, and so on);
 no header, body, rejection reason, identifier or address. The tests capture the log and check this

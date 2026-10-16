@@ -109,6 +109,8 @@ pub use controls::{CONTROLS_EFFECT, controls_module};
 pub(crate) use corrections::patch_testing as corrections_patch_testing;
 #[cfg(feature = "qualification")]
 pub use corrections::qualification as corrections_qualification;
+#[cfg(all(test, not(feature = "qualification")))]
+pub(crate) use corrections::qualification as corrections_qualification;
 pub use corrections::{
     CORRECTIONS_EFFECT, RepairInput, SourceFit, StaleCorrection, StaleReason, fit_correction_source,
 };
@@ -409,6 +411,18 @@ pub trait StageQuestions {
         Ok(self.sample_before(index, x, y)?.map(|rgba| {
             crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]).map(f64::from)
         }))
+    }
+    /// The input of `site` in linear light, read as `site.mode` says rather than as whichever
+    /// layer holds `site.index` now: how a mask no layer is bound to reads where a first
+    /// adjustment through it would go ([`crate::mask::commands::input_site`]). Questions that
+    /// read no mask answer it as [`Self::input_before`]; the host's own read in the site's mode.
+    fn input_at(
+        &self,
+        site: crate::tiles::InputSite,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<[f64; 3]>, Error> {
+        self.input_before(site.index, x, y)
     }
     /// The mean pre-white-balance sensor values of a bounded patch at upright content coordinates,
     /// green-normalized, which a RAW neutral pick sets its gains from. Only a RAW original has a

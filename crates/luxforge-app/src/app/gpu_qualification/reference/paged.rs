@@ -17,6 +17,10 @@
 //! - **Export** is the GPU tile worker's stream of level 0, compared band by band with the banded
 //!   reference's bands as they come, the figures taken over every pixel but the worst block, which
 //!   is the worst within a band; the second worker's stream is held to the first by a digest.
+//! - **Resized, 16-bit and sharpened exports** hold their whole output stage on the GPU, which a
+//!   paged source's passes (2 × 8,192 a side, or the stream's budget): each records the GPU's
+//!   reason as a gap, and the banded reference's output (`PagedReference::output`) judges a
+//!   stream the GPU did draw.
 //! - **The histogram** counts the overview and **the minimap's overview** is not drawn for a paged
 //!   source here: each is a gap naming why, never a pass.
 use super::*;
@@ -77,6 +81,37 @@ pub(super) fn measure(
                     Some(exporters) => export(exporters, evaluation, reference, class)?,
                     None => gap("no adapter for the GPU tile workers"),
                 },
+                Kind::ExportResized | Kind::Export16 | Kind::ExportSharpened => {
+                    let output = export_output(*kind, stage);
+                    match exporters {
+                        // A paged source's held stage passes the GPU's limits, so this records
+                        // why the reference exports it; a stream the GPU did draw is judged
+                        // against the banded reference's output.
+                        Some(exporters) => match exported(exporters, evaluation, output) {
+                            Exported::Gap(reason) => export_kind(
+                                &Codes::empty(output.depth),
+                                output,
+                                Exported::Gap(reason),
+                                class,
+                            )?,
+                            drawn => {
+                                let never = Cancel::never();
+                                let mut expected = Codes::empty(output.depth);
+                                for band in reference
+                                    .output(output, &never)
+                                    .map_err(|error| format!("the banded reference: {error}"))?
+                                {
+                                    let (_, pixels) = band.map_err(|error| {
+                                        format!("the banded reference: {error}")
+                                    })?;
+                                    expected.extend(pixels.rows());
+                                }
+                                export_kind(&expected, output, drawn, kind.judged_class(class))?
+                            }
+                        },
+                        None => gap("no adapter for the GPU tile workers"),
+                    }
+                }
             };
             eprintln!("{cell}: {}: {measured}", kind.name());
             record["kinds"][kind.name()] = measured;
@@ -406,7 +441,8 @@ fn export(
 ) -> Result<Value, String> {
     let (width, height) = reference.stage();
     let [one, two] = &exporters.workers;
-    let mut stream = match one.stream(evaluation, &Cancel::new()) {
+    let output = OutputSpec::full(width, height);
+    let mut stream = match one.stream(evaluation, output, &Cancel::new()) {
         Ok(stream) => stream,
         Err(fallback) => return Ok(gap(refused(&fallback))),
     };
@@ -421,7 +457,10 @@ fn export(
             match stream.next() {
                 Some(Ok(drawn)) => {
                     drawn_bands += 1;
-                    let codes: Vec<u8> = rgb_of(&drawn.rgba).collect();
+                    let drawn = drawn
+                        .rgba8()
+                        .map_err(|error| format!("the GPU's stream: {error}"))?;
+                    let codes: Vec<u8> = rgb_of(drawn).collect();
                     digest.write(&codes);
                     pending.extend(codes);
                 }
@@ -448,8 +487,10 @@ fn export(
     }
     let first = digest.finish();
     let mut again = DefaultHasher::new();
-    if let Err(reason) = streamed(two, evaluation, |rgba| {
-        again.write(&rgb_of(rgba).collect::<Vec<u8>>());
+    if let Err(reason) = streamed(two, evaluation, output, |rows| {
+        if let PixelRows::Eight(rgba) = rows {
+            again.write(&rgb_of(rgba).collect::<Vec<u8>>());
+        }
     }) {
         return Ok(gap(format!("the second worker: {reason}")));
     }

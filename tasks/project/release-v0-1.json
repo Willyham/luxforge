@@ -108,13 +108,14 @@
     {
       "id": "TASK-002",
       "description": "Assemble complete corresponding source and audit-ready notices with an offline rebuild check.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Reuse the existing inventory/native/font/theme/data/Lensfun notice collectors. Review runtime-used licences and native static linking, selected licences, patches and LGPL modification/relinking requirements; prepare a factual review artifact without claiming an audit from inventory.",
         "Generate a source archive from an exact clean revision with vendored Rust crates, bundled native sources/patches, required compiled-in assets, licence texts and build/install/relink instructions. Preserve Cargo aliases/deployment configuration while adding offline source replacement.",
         "Private originals, the licensed sample corpus, catalogs/secrets, caches, local paths and verification data are excluded. Explicitly document test-only omissions; do not omit any source needed to build the shipped product.",
-        "The source packer can be built independently of application-version changes and macOS selection; final archive naming uses the candidate identity. A GitHub repository auto-archive alone is insufficient."
+        "The source packer can be built independently of application-version changes and macOS selection; final archive naming uses the candidate identity. A GitHub repository auto-archive alone is insufficient.",
+        "The source archive and its offline rebuild check are implemented: `cargo xtask release-source` (xtask/src/release_source.rs, record checks in xtask/cli/src/release_source.rs) archives the exact commit's tracked tree with vendored crates, the preserved Cargo configuration plus offline source replacement and ORT_CACHE_DIR, the pinned prebuilt ONNX Runtime libraries, each shipping target's inventory and notices and BUILD/INSTALL/RELINK instructions, refusing tracked private/generated/secret paths and local machine paths; the tag workflow's secret-free `source` job builds it and release-assemble records it in release.json and SHA256SUMS. An offline rebuild of the editor and both CLIs from the extracted archive with an empty Cargo home passed on macOS arm64. Remaining: the offline rebuild on the Linux build host (hosted or native x86-64 Ubuntu 24.04) and the distribution licence and notice review (static LGPL relinking, fonts, themes, GeoNames, Lensfun/RawSpeed data, applicable licence texts and missing declarations), which the owner has not started; the archive's notices are inventory, not that review."
       ],
       "context_links": [
         {
@@ -236,7 +237,7 @@
     {
       "id": "TASK-004",
       "description": "Build the self-contained macOS release bundle and metadata-preserving ZIP.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -246,7 +247,8 @@
         "Inspect actual Mach-O deployment target/runtime imports against the intended macOS 14 floor; the build configuration alone is not floor evidence. No universal/Intel Mac build or DMG is required by the macOS contract.",
         "Use existing Rust tooling plus system packaging tools where necessary to preserve permissions, bundle metadata and later stapling. Delegate routine icon/art and archive mechanics; no branding approval task.",
         "An unsigned assembled candidate is a useful rehearsal output and must never be labelled release-ready.",
-        "Existing notice/resource collectors already provide the bundle inputs: the independent source/distribution review is a final readiness dependency, not a prerequisite of usable macOS packaging. Reconcile any review findings before final assembly."
+        "Existing notice/resource collectors already provide the bundle inputs: the independent source/distribution review is a final readiness dependency, not a prerequisite of usable macOS packaging. Reconcile any review findings before final assembly.",
+        "Outcome: release-build bundles packaging/icon/luxforge.icns (CFBundleIconFile), refuses missing payload resources before compiling and refuses an executable whose Mach-O deployment target is later than LSMinimumSystemVersion, recording each as deployment_targets. The stated deployment target and the system-only runtime imports are not evidence of execution on macOS 14; that floor test, signing and installation remain with their own tasks (TASK-005, TASK-009)."
       ],
       "context_links": [
         {
@@ -297,7 +299,7 @@
     {
       "id": "TASK-005",
       "description": "Implement explicit Developer ID signing, notarization and stapling with credential-free failure tests.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
@@ -362,7 +364,7 @@
     {
       "id": "TASK-006",
       "description": "Complete the release-ready packet verifier over tag-build candidates, without duplicating the publication workflow.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -418,7 +420,7 @@
           "Inspect workflow permissions, pinned actions, inputs, candidate matching, tag-build candidate versus final-ready validation, automatic pre-release publication after uploads, and failure preservation. Actual remote upload is unnecessary for tooling tests."
         ],
         "commands": [
-          "tools/cargo-cached test -p xtask-cli release_artifacts"
+          "tools/cargo-cached test -p xtask-cli --lib release_"
         ],
         "expected_results": [
           "A published pre-release build candidate remains non-ready until all required final distribution gates pass."
@@ -428,7 +430,7 @@
     {
       "id": "TASK-007",
       "description": "Complete candidate installation/help/release documentation using actual built artifacts.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004"
       ],
@@ -437,7 +439,8 @@
         "Describe extraction/copy to Applications, CLI helpers, external catalog/settings/artifact paths, manual updates, closed-owner backups, data-preserving uninstall and current-format refusal without migration promises.",
         "Include issue-report steps with version/OS/adapter/recording mode, errors and sanitized logs; private originals/catalogs are optional, never requested as a default.",
         "Update README/user guide/platform/status/development packaging docs when implemented behavior exists. Until publication use candidate instructions and do not invent public download links. No updater, stores or placeholder controls.",
-        "Prepare shared notes and macOS help from the built macOS payload; Linux packaging supplies its actual installed layout/runtime instructions and final Linux qualification reconciles them with the shared docs. No artificial dependency on Linux native hardware for documentation preparation."
+        "Prepare shared notes and macOS help from the built macOS payload; Linux packaging supplies its actual installed layout/runtime instructions and final Linux qualification reconciles them with the shared docs. No artificial dependency on Linux native hardware for documentation preparation.",
+        "Progress 2026-10-13: the release notes draft, the user guide's macOS and Linux installation, the packaged README.txt and the Linux INSTALL.txt describe the current payloads, data locations, updates and issue reports. Remaining: reconcile them with an extracted clean tag candidate, and fill the release fields with real download, hash and evidence links at publication."
       ],
       "context_links": [
         {
@@ -632,7 +635,7 @@
     {
       "id": "TASK-010",
       "description": "Build the relocatable Linux x86-64 release tarball with CLI helpers and user-level desktop integration.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
@@ -641,7 +644,8 @@
         "Package Luxforge/luxforge, luxforge-json, luxforge-ctl, adjacent runtime resources, icon/desktop-entry template, notices/licence/help and build identity in luxforge-0.1.0-linux-x86_64.tar.gz. Reuse existing collectors and resource lookup; source/distribution review is a final gate, not a packaging prerequisite.",
         "Extraction/direct launch works without the checkout or source build tools. Provide explicit user-level desktop-entry/icon install/removal with paths quoted safely, including spaces/non-ASCII; no root, automatic PATH edit or vendor graphics driver bundling.",
         "Document needed shared libraries, Vulkan driver and XDG portal/file-chooser backend. Unsupported secrets remain not-ready rather than plaintext. AppImage/Flatpak/Snap/package repositories, Linux ARM64 and Windows are outside initial scope.",
-        "Use ordinary correctness/resource-preservation checks during implementation; native Wayland/X11 hardware qualification follows in TASK-011. Keep existing development tarballs labelled development."
+        "Use ordinary correctness/resource-preservation checks during implementation; native Wayland/X11 hardware qualification follows in TASK-011. Keep existing development tarballs labelled development.",
+        "Implemented: Luxforge/desktop-integration.sh install|uninstall (packaging/linux/, POSIX sh) writes luxforge.desktop and the hicolor icon into the user's data home with a quoted Exec/TryExec, refuses control characters, backslashes, % and non-UTF-8 paths and foreign entries, and removes only its own files; the payload carries desktop/luxforge.desktop.in and desktop/icons/hicolor from the committed packaging/icon PNGs and SVG (checked before compiling with the helper and template), INSTALL.txt with runtime requirements and data locations, and build.json/target.json elf_imports from readelf, refusing glibc above 2.39 or an undocumented linked library; the updater reads and writes the same Exec encoding and the Linux window's app ID is luxforge. A Linux container on the owner's Mac (aarch64 Ubuntu 24.04, dash, desktop-file-validate, GLib launch) is functional evidence only. Remaining: a hosted Ubuntu 24.04 x86-64 tag build whose recorded elf_imports pass, and the extracted-archive launch/install/uninstall check on native Linux, which TASK-011 covers."
       ],
       "context_links": [
         {
@@ -688,7 +692,9 @@
           "Build and run narrow functional smoke/CLI checks on baseline Linux; document actual prerequisites and retain original/data hashes."
         ],
         "commands": [
-          "tools/cargo-cached test -p xtask package::tests"
+          "tools/cargo-cached test -p xtask --bin xtask release_linux",
+          "tools/cargo-cached test -p xtask-cli --lib release_elf",
+          "tools/cargo-cached test -p luxforge-update --lib desktop_entry"
         ],
         "expected_results": [
           "Functional container/hosted packaging checks are labelled accurately, with no native Linux GPU/support claim until TASK-011 passes."

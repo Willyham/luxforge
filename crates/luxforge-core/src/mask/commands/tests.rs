@@ -19,7 +19,14 @@ pub(super) fn plan(
     parameters: &Map<String, Value>,
     registry: &ModuleRegistry,
 ) -> Result<MaskOutcome, Error> {
-    super::plan(command, recipe, target, parameters, registry, None)
+    super::plan(
+        command,
+        recipe,
+        target,
+        parameters,
+        registry,
+        super::HostRead::Nothing,
+    )
 }
 
 pub(super) fn linear(x0: f64, y0: f64, x1: f64, y1: f64) -> Map<String, Value> {

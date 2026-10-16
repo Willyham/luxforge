@@ -242,12 +242,16 @@ pub struct ViewSummary {
     /// Items whose file is offline or missing.
     pub unavailable: u32,
     /// Results in the view leading an HDR stack, and the originals a collapsed one hides: `count`
-    /// rows show photographs, results and the originals not hidden, `count + collapsed` items
-    /// match the query, as `browse.facets` counts them.
+    /// rows show photographs, results and the originals not hidden, `count + collapsed + paired`
+    /// items match the query, as `browse.facets` counts them.
     #[serde(default)]
     pub stacks: u32,
     #[serde(default)]
     pub collapsed: u32,
+    /// JPEG files shown as the row of the RAW file of the same shot beside them ([`RowPair`]):
+    /// `count + collapsed + paired` items match the query.
+    #[serde(default)]
+    pub paired: u32,
     pub groups: GroupLayout,
     /// The library journal and the index revision the view was evaluated at: a later library change
     /// or index change marks it stale ([`BrowseSession::stale`]).
@@ -350,6 +354,20 @@ pub struct ViewRow {
     /// Why an original's row is not available, for a provenance row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// A RAW file's row that also stands for the JPEG the camera recorded beside it: picks and
+    /// Develop take the RAW file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair: Option<RowPair>,
+}
+
+/// The JPEG of a RAW+JPEG pair, which a view shows as its RAW file's row: in the RAW file's
+/// folder, of its name but for the extension, and taken with it. A filter that leaves the RAW file
+/// out (JPEG only) shows the JPEG as a row of its own, and so does a JPEG that is picked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RowPair {
+    pub file_id: FileId,
+    pub file_name: String,
 }
 
 /// What `browse.rows` answers: rows `from..from + rows.len()` of the view at `revision`.
@@ -570,10 +588,18 @@ mod tests {
             preview: PreviewState::Thumbnail,
             stack: None,
             reason: None,
+            pair: Some(RowPair {
+                file_id: FileId(10),
+                file_name: "DSC_0001.JPG".into(),
+            }),
         };
         let json = serde_json::to_value(&row).unwrap();
         assert_eq!(json["item"], "file");
         assert!(json.get("stack").is_none());
+        assert_eq!(
+            json["pair"],
+            serde_json::json!({"file_id": 10, "file_name": "DSC_0001.JPG"})
+        );
         assert_eq!(json["file_id"], 9);
         assert_eq!(json["path"], "/card/DSC_0001.NEF");
         assert_eq!(serde_json::from_value::<ViewRow>(json).unwrap(), row);

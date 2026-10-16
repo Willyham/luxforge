@@ -128,12 +128,45 @@ jobs:
             artifacts/release/target.json
           if-no-files-found: error
           retention-days: 30
+  # The complete corresponding source of the same commit. This job receives no secrets.
+  source:
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.identity.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal
+      - name: Linux build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
+      - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          key: release-source
+      - name: Build the source archive
+        env:
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+        run: cargo xtask release-source --tag "$RELEASE_TAG" --output artifacts/source
+      - name: Retain the source archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: source
+          path: |
+            artifacts/source/luxforge-*-source.tar.gz
+            artifacts/source/source.json
+          if-no-files-found: error
+          retention-days: 30
   publish:
-    needs: [identity, build]
+    needs: [identity, build, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -144,7 +177,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts/downloads
-      - name: Verify and assemble both build candidates
+      - name: Verify and assemble both build candidates and the source archive
         env:
           RELEASE_TAG: ${{ needs.identity.outputs.tag }}
         run: cargo xtask release-assemble --tag "$RELEASE_TAG" --input artifacts/downloads --output dist
@@ -173,6 +206,14 @@ jobs:
           (umask 077 && printf '%s' "$LUXFORGE_UPDATE_SIGNING_KEY" > "$key_file")
           unset LUXFORGE_UPDATE_SIGNING_KEY
           target/debug/xtask-cli update-record --tag "$RELEASE_TAG" --input artifacts/downloads --output "dist/luxforge-$RELEASE_VERSION-updates.json" --key-file "$key_file"
+      # Signed by this repository's workflow through Sigstore; OmaStore shows it as build provenance.
+      - name: Attest the downloads' build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/luxforge-*.dmg
+            dist/luxforge-*.zip
+            dist/luxforge-*.tar.gz
       - name: Upload all assets and automatically publish the pre-release
         env:
           GH_TOKEN: ${{ github.token }}

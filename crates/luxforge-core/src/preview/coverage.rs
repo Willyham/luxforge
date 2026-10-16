@@ -183,11 +183,12 @@ fn mask_overlay_for_cached(
         Ok(compiled) => compiled,
         Err(error) => return refused(error),
     };
-    // A value-based component is answered on the pixel the masked operation receives, which is the
-    // input of the mask's **first bound layer** — the rule `mask::commands::input_layer_index`
-    // states once for everything that reads a pixel through a mask, and which the colour-constrained
-    // brush's seed and `mask.sample-input` already read, so the overlay and the seed cannot disagree
-    // about which pixel a mask reads. The prefix is compiled once and asked once per cell.
+    // A value-based component is answered on the pixel the masked operation receives: the input of
+    // the mask's **first bound layer**, or, for a mask no layer is bound to, of the position a first
+    // adjustment through it would take — the rule `mask::commands::input_site` states once for
+    // everything that reads a pixel through a mask, and which the colour-constrained brush's seed
+    // and `mask.sample-input` read too, so the overlay and the seed cannot disagree about which
+    // pixel a mask reads. The prefix is compiled once and asked once per cell.
     let (cells_w, cells_h) = (request.cells_w, request.cells_h);
     let region = region.unwrap_or(Region {
         x0: 0,
@@ -201,17 +202,18 @@ fn mask_overlay_for_cached(
     let pixels = if !compiled.reads_pixels() {
         MaskPixels::Unavailable("this mask reads no pixel")
     } else {
-        match crate::mask::commands::input_layer_index(recipe, &request.mask) {
+        match crate::mask::commands::input_site(registry, recipe, &request.mask) {
             Err(error) => {
                 unavailable = error.detail;
                 MaskPixels::Unavailable(&unavailable)
             }
-            Ok(layer) => match crate::render::grid_input(
+            Ok(site) => match crate::render::grid_input(
                 registry,
                 frame.source(),
                 recipe,
                 crate::render::GridRequest {
-                    layer,
+                    layer: site.index,
+                    mode: site.mode.into(),
                     transform: &transform,
                     region,
                     cells: (cells_w, cells_h),
@@ -230,7 +232,8 @@ fn mask_overlay_for_cached(
                         registry,
                         frame.source(),
                         recipe,
-                        layer,
+                        site.index,
+                        site.mode.into(),
                         context,
                     ) {
                         Ok((received, _)) if received != stage => {
@@ -612,16 +615,17 @@ impl Evaluation {
         (cells_w, cells_h).hash(&mut hasher);
         hash_json(&mut hasher, held)?;
         // A position-only mask is a function of its own geometry and the stage alone. A mask that
-        // reads pixels is also a function of the pixel its first bound layer receives: the stack
-        // before that layer, the masks that stack applies through and the settings a RAW source is
+        // reads pixels is also a function of the pixel its input site receives
+        // (`mask::commands::input_site`): the stack before that position, how the operation there
+        // receives it, the masks that stack applies through and the settings a RAW source is
         // evaluated under.
         compiled.reads_pixels().hash(&mut hasher);
         if compiled.reads_pixels() {
-            match crate::mask::commands::input_layer_index(recipe, mask) {
-                Ok(index) => {
+            match crate::mask::commands::input_site(self.registry(), recipe, mask) {
+                Ok(site) => {
+                    let index = site.index;
                     index.hash(&mut hasher);
-                    crate::render::MaskInputMode::for_layer(self.registry(), recipe, index)
-                        .hash(&mut hasher);
+                    site.mode.hash(&mut hasher);
                     // Later units determine a restoration boundary's byte precision. An
                     // unchanged prefix can therefore receive different values after its bound
                     // Basic layer becomes active (or a later replacement is added).
@@ -1028,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn value_based_overlay_preserves_the_exact_input_and_unbound_refusal() {
+    fn value_based_overlay_preserves_the_exact_input_and_reads_an_unbound_mask_as_basic_would() {
         let mut mask = Mask::new("Shadows");
         mask.components.push(Component::new(
             "Range 1",
@@ -1041,12 +1045,13 @@ mod tests {
             ..Recipe::default()
         };
         let held = evaluation(recipe.clone(), recipe.clone(), None);
-        let absent = held
+        // No layer is bound: the mask reads where a first Basic adjustment through it would.
+        let unbound = held
             .mask_overlay_coverage(&target(&mask), (28, 19), None, None, &Cancel::never())
             .unwrap()
             .outcome
             .unwrap();
-        assert!(absent.grid.is_none() && absent.absent.is_some());
+        assert!(unbound.grid.is_some() && unbound.absent.is_none());
         let mut recipe = recipe;
         recipe.layers.push(Layer {
             id: LayerId::new(),
@@ -1064,6 +1069,7 @@ mod tests {
             .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
             .unwrap();
         assert_eq!(overlay.outcome, thumbnail.outcome);
+        assert_eq!(overlay.outcome, Some(unbound));
         let mut spatial = held.recipe().clone();
         spatial.layers.insert(
             0,

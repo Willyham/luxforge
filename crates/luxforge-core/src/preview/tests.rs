@@ -2343,11 +2343,12 @@ fn a_mask_coverage_key_moves_only_with_what_its_grid_depends_on() {
     );
 }
 
-/// A mask that reads pixels is answered on its first bound layer's input, and has no thumbnail —
-/// with the host's own reason — while no layer is bound to it: the overlay's rule, not a grid read
-/// from anything else. A layer before the bound one is part of its key.
+/// A mask that reads pixels is answered on its first bound layer's input, and while no layer is
+/// bound to it, on the input a first Basic adjustment through it would receive: its thumbnail is
+/// already the one that adjustment's binding gives. A layer before the read position is part of its
+/// key.
 #[test]
-fn a_value_based_thumbnail_needs_the_masked_operation_input() {
+fn a_value_based_thumbnail_reads_the_masked_operation_input() {
     let mut mask = Mask::new("Shadows");
     let name = mask.next_component_name("luminance-range");
     mask.components.push(Component::new(
@@ -2356,15 +2357,14 @@ fn a_value_based_thumbnail_needs_the_masked_operation_input() {
         "luminance-range",
         json!({"low": 20.0, "low_feather": 10.0, "high": 80.0, "high_feather": 10.0}),
     ));
-    let unbound = stacked_with_masks(32, 24, Vec::new(), vec![mask.clone()], None);
-    let outcome = unbound
+    let unbound = stacked_with_masks(32, 24, Vec::new(), vec![mask.clone()], None)
         .evaluation
         .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
         .unwrap()
         .outcome
-        .unwrap();
-    assert_eq!(outcome.grid, None);
-    assert!(outcome.absent.is_some(), "the refusal is named");
+        .unwrap()
+        .grid
+        .expect("an unbound mask reads where a first adjustment would");
 
     let bound = stacked_with_masks(32, 24, masked_basic(&mask), vec![mask.clone()], None);
     let coverage = bound
@@ -2378,6 +2378,7 @@ fn a_value_based_thumbnail_needs_the_masked_operation_input() {
         .grid
         .expect("the input is available");
     assert_eq!(grid.coverage.len(), 28 * 19);
+    assert_eq!(grid.coverage, unbound.coverage);
     let mut before = vec![Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),

@@ -197,6 +197,26 @@ impl Step {
         Self::Export(ExportStep::Menu)
     }
 
+    /// Open the Export sheet, as `Cmd+E` does.
+    pub fn export_sheet() -> Self {
+        Self::Export(ExportStep::Sheet(crate::SheetOpen::default()))
+    }
+
+    /// Press the sheet's preset card named `name`.
+    pub fn export_preset(name: impl Into<String>) -> Self {
+        Self::Export(ExportStep::Preset(name.into()))
+    }
+
+    /// Change the open sheet's settings.
+    pub fn export_edit(edit: crate::SheetEdit) -> Self {
+        Self::Export(ExportStep::Edit(Box::new(edit)))
+    }
+
+    /// Press the sheet's Export, captured once the export ends.
+    pub fn export_write() -> Self {
+        Self::Export(ExportStep::Write(crate::ExportWrite::default()))
+    }
+
     /// Export the displayed entry to `name` in the run's evidence directory.
     pub fn export(name: impl Into<String>, keep_metadata: bool) -> Self {
         Self::Export(ExportStep::File(ExportFile {
@@ -234,7 +254,33 @@ impl Step {
     }
 
     pub fn pick(x: u32, y: u32) -> Self {
-        Self::Pick(PickStep { x, y })
+        Self::Pick(PickStep {
+            x,
+            y,
+            shift: false,
+            to: None,
+        })
+    }
+
+    /// A click with Shift held, which adds a colour sample rather than replacing the held ones.
+    pub fn pick_shift(x: u32, y: u32) -> Self {
+        Self::Pick(PickStep {
+            x,
+            y,
+            shift: true,
+            to: None,
+        })
+    }
+
+    /// A drag from `from` to `to`, which picks the rectangle between them; with `shift` a colour
+    /// pick adds its sample.
+    pub fn pick_drag(from: [u32; 2], to: [u32; 2], shift: bool) -> Self {
+        Self::Pick(PickStep {
+            x: from[0],
+            y: from[1],
+            shift,
+            to: Some(to),
+        })
     }
 
     pub fn reset(module: impl Into<String>, group: Option<&str>) -> Self {

@@ -803,6 +803,8 @@ pub struct PhotoSurface {
     window: Option<GpuSource>,
     /// The picture at rest the GPU stage draws in tiles; see [`PhotoSurface::gpu_rest`].
     rest: Option<GpuRest>,
+    /// Whether it stands in under a plan's output; see [`PhotoSurface::gpu_rest_under`].
+    rest_under: bool,
     /// The minimap overviews the surface may keep; see [`PhotoSurface::gpu_overview`].
     overview: Option<OverviewWant>,
     /// The time of the redraw this widget last saw, which its draw takes the dissolve's share at.
@@ -851,6 +853,7 @@ pub fn photo_surface(
         source: None,
         window: None,
         rest: None,
+        rest_under: false,
         overview: None,
         clock: None,
         width,
@@ -889,6 +892,7 @@ pub fn viewport_surface(
         source: None,
         window: None,
         rest: None,
+        rest_under: false,
         overview: None,
         clock: None,
         width,
@@ -920,6 +924,7 @@ pub fn stage_surface(
         source: None,
         window: None,
         rest: None,
+        rest_under: false,
         overview: None,
         clock: None,
         width,
@@ -1055,6 +1060,17 @@ impl PhotoSurface {
     /// the next frame.
     pub fn gpu_rest(mut self, rest: Option<&GpuRest>) -> Self {
         self.rest = rest.cloned();
+        self
+    }
+
+    /// The picture at rest handed ([`PhotoSurface::gpu_rest`]), drawn whole already, stands in
+    /// for the photograph's frame, which is an earlier picture than it: a whole-frame photograph
+    /// draws it only where no plan's output is drawn, under a gesture's frames rather than over
+    /// them, and a percentage view draws its backdrop in place of that frame wherever its region's
+    /// frame is not. Neither draws that frame while the picture can stand in for it, and no
+    /// picture at rest dissolves in over a plan's output.
+    pub fn gpu_rest_under(mut self, under: bool) -> Self {
+        self.rest_under = under;
         self
     }
 
@@ -1217,6 +1233,7 @@ impl PhotoSurface {
             source: self.source.clone(),
             window: self.window.clone(),
             rest: self.rest_drawn().cloned(),
+            rest_under: self.rest_under,
             overview: self.overview.clone(),
             overview_draw: None,
             offset: visible.offset,
@@ -1424,6 +1441,8 @@ pub struct PhotoPrimitive {
     window: Option<GpuSource>,
     /// A whole-frame photograph's picture at rest on the GPU ([`PhotoSurface::gpu_rest`]).
     rest: Option<GpuRest>,
+    /// The picture at rest stands in under a plan's output ([`PhotoSurface::gpu_rest_under`]).
+    rest_under: bool,
     /// The minimap overviews the surface keeps ([`PhotoSurface::gpu_overview`]).
     overview: Option<OverviewWant>,
     /// An overview widget's primitive: the overview version it draws of the surface, and nothing
@@ -1828,8 +1847,9 @@ impl shader::Primitive for PhotoPrimitive {
         let done = surface.rest_output().map(|output| output.version);
         let now = Instant::now();
         // A percentage view's picture at rest is the backdrop under its region, never drawn in
-        // place of it, so it dissolves in over nothing.
-        let replaces_output = self.viewport.is_none();
+        // place of it, so it dissolves in over nothing; nor does one standing in under a
+        // gesture's frames.
+        let replaces_output = self.viewport.is_none() && !self.rest_under;
         surface.rest_dissolve = match (done, surface.gpu_output().filter(|_| replaces_output)) {
             (Some(version), Some(output)) if was_done != Some(version) => {
                 Some(gpu_preview::Dissolve::start(output.version, version))
@@ -2043,17 +2063,20 @@ impl shader::Primitive for PhotoPrimitive {
                 gpu_clock = surface.gpu_clock();
                 drawn_dissolve = Some(frame.drawn(output.version));
             }
+            // A deferred upload must leave a coherent previous photograph on screen: the whole
+            // picture the slot still holds, never composited with other content; or, with no
+            // dissolve running, the backdrop, the committed stack's picture at rest, in its place.
+            let stand_in = backdrop.filter(|_| dissolved.is_none());
+            // A frame an earlier picture than the backdrop is never drawn while the backdrop can
+            // stand in for it ([`PhotoSurface::gpu_rest_under`]), nor its overlays.
             let matching_full = surface.slots[Layer::Photo.index()]
                 .as_ref()
                 .filter(|picture| {
                     picture.content_id == Some(view.current_content)
                         && picture.region_key.is_none()
                         && (picture.width, picture.height) == view.full_stage
-                });
-            // A deferred upload must leave a coherent previous photograph on screen: the whole
-            // picture the slot still holds, never composited with other content; or, with no
-            // dissolve running, the backdrop, the committed stack's picture at rest, in its place.
-            let stand_in = backdrop.filter(|_| dissolved.is_none());
+                })
+                .filter(|_| !(self.rest_under && stand_in.is_some()));
             let full = matching_full.or_else(|| {
                 surface.slots[Layer::Photo.index()]
                     .as_ref()
@@ -2117,8 +2140,10 @@ impl shader::Primitive for PhotoPrimitive {
                 // The picture at rest, once its last tile is in, in place of the photograph's
                 // frame and of a plan's output, unless the desktop's dissolve into the CPU frame
                 // runs; its own dissolve lays it over the plan's output it replaces, at the share.
+                // Standing in under a gesture's frames, it is drawn only where no plan's output is.
                 if *layer == Layer::Photo
                     && surface.dissolving.is_none()
+                    && !(self.rest_under && surface.gpu_output().is_some())
                     && let Some(rest) = surface.rest_output()
                 {
                     if let Some(frame) = surface.rest_frame
@@ -4414,6 +4439,7 @@ mod gpu_surface_tests {
             source: None,
             window: None,
             rest: None,
+            rest_under: false,
             overview: None,
             overview_draw: None,
             offset: Vector::new(0.0, 0.0),
@@ -4444,6 +4470,7 @@ mod gpu_surface_tests {
             source: None,
             window: None,
             rest: None,
+            rest_under: false,
             overview: None,
             overview_draw: None,
             offset: Vector::new(0.0, 0.0),

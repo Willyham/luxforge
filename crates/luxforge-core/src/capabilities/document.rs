@@ -4,7 +4,7 @@
 //! `{format: <marker>, ...T}`, of at most `max_bytes`. Every call reads the file again, so two
 //! processes never act on a stale copy. A file of another format, or one that is not the current shape, is refused with
 //! `incompatible` and never rewritten. A change is one locked read-modify-write through the shared
-//! durable write, so a failure at any point leaves the previous file. See
+//! durable write; a failure after rename leaves the replacement visible with unconfirmed durability. See
 //! `docs/design/module-capabilities.md#settings-store`.
 use crate::{Error, atomic_file};
 use serde::{Serialize, de::DeserializeOwned};
@@ -128,7 +128,14 @@ impl<T: Serialize + DeserializeOwned> JsonDocument<T> {
     /// directly; everyone else changes a document through [`Self::transact`].
     pub(crate) fn write(&self, document: &T) -> Result<(), Error> {
         let bytes = self.encode(document)?;
-        self.save(&bytes)
+        self.save(&bytes)?.finish()
+    }
+
+    pub(crate) fn write_published(
+        &self,
+        document: &T,
+    ) -> Result<atomic_file::Publication<()>, Error> {
+        self.save(&self.encode(document)?)
     }
 
     /// The bytes [`Self::write`] would write, for a writer that places them itself.
@@ -140,7 +147,7 @@ impl<T: Serialize + DeserializeOwned> JsonDocument<T> {
         .map_err(|error| Error::internal(error.to_string()))
     }
 
-    fn save(&self, bytes: &[u8]) -> Result<(), Error> {
+    fn save(&self, bytes: &[u8]) -> Result<atomic_file::Publication<()>, Error> {
         if bytes.len() as u64 > self.max_bytes {
             return Err(Error::resource_limit(format!(
                 "{} would be {} bytes; the file is at most {}",
@@ -157,19 +164,32 @@ impl<T: Serialize + DeserializeOwned + Default> JsonDocument<T> {
     /// One read-modify-write under the writers' lock: read the file again (an absent file is the
     /// empty document), let `apply` change it, and write it back only when it changed. An `apply`
     /// that fails writes nothing, so a refused change leaves the file exactly as it was.
+    #[cfg(test)]
     pub(crate) fn transact<R>(
         &self,
         apply: impl FnOnce(&mut T) -> Result<R, Error>,
     ) -> Result<R, Error> {
+        self.transact_published(apply)?.finish()
+    }
+
+    pub(crate) fn transact_published<R>(
+        &self,
+        apply: impl FnOnce(&mut T) -> Result<R, Error>,
+    ) -> Result<atomic_file::Publication<R>, Error> {
         let _lock = atomic_file::lock(&self.dir, &format!("{}.lock", self.name()))?;
         let mut document = self.read()?.unwrap_or_default();
         let before = self.encode(&document)?;
         let answer = apply(&mut document)?;
         let after = self.encode(&document)?;
-        if after != before {
-            self.save(&after)?;
-        }
-        Ok(answer)
+        let durability_error = if after != before {
+            self.save(&after)?.durability_error
+        } else {
+            None
+        };
+        Ok(atomic_file::Publication {
+            value: answer,
+            durability_error,
+        })
     }
 }
 

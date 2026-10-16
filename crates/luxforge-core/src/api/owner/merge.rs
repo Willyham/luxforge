@@ -1174,18 +1174,44 @@ pub(in crate::api) fn merge_create(
         .iter()
         .find(|(_, live)| live.key.as_ref() == Some(&key))
     {
-        return value(same_job(owner, job_id));
+        let job_id = job_id.clone();
+        if let Some(key) = &owner.service.catalog_request {
+            crate::editor::catalog_requests::admit(
+                &owner.service.connection,
+                key,
+                &job_id,
+                job.job_kind,
+                None,
+                &json!({"shared_job":job_id}),
+            )?;
+        }
+        return value(same_job(owner, &job_id));
     }
     if let Some(existing) = matching(&owner.service.connection, &key)? {
         if existing.state == MergeState::Active {
             let answer = recorded_answer(&owner.service.connection, &existing.merge_id, true)?;
-            return value(LibraryLane::answered(
+            let response = encode(&answer)?;
+            let started = LibraryLane::answered(
                 &mut owner.jobs,
                 job,
                 None,
                 call.origin.clone(),
-                encode(&answer)?,
-            ));
+                response.clone(),
+            );
+            if let Some(key) = owner.service.catalog_request.clone() {
+                crate::editor::write(&mut owner.service.connection, |tx| {
+                    crate::editor::catalog_requests::admit(
+                        tx,
+                        &key,
+                        &started.job_id,
+                        job.job_kind,
+                        None,
+                        &json!({"reused":existing.merge_id}),
+                    )?;
+                    crate::editor::catalog_requests::finish(tx, &started.job_id, &Ok(response))
+                })?;
+            }
+            return value(started);
         }
         return Err(Error::conflict(format!(
             "this exact merge is in Removed as {}; put it back (merge.restore) rather than \
@@ -1716,6 +1742,10 @@ fn start(
             job::named_result(&started.inputs[reference].path, kind)
         ),
     };
+    let resolved = json!({
+        "inputs":started.inputs.iter().map(|input| json!({"path":input.path,"asset_id":input.asset_id,"fingerprint":input.fingerprint,"planned":input.planned})).collect::<Vec<_>>(),
+        "parameters":started.parameters,"provider":started.provider,"folder":started.folder,"replaces":started.replaces,
+    });
     let spec = Spec::new(
         lane,
         started.inputs,
@@ -1763,6 +1793,7 @@ fn start(
             }
         }),
     };
+    super::library::admit(owner, &task, &resolved)?;
     // The preview is the merge's from now: its spool no longer counts as a preview's, so the
     // merge's own preflight counts it once, and an update it had is stale.
     if let Some(continuation) = &continuation {
@@ -1776,6 +1807,7 @@ fn start(
             .queue_after(&mut owner.jobs, task, &after)),
         None => owner.catalog.merge.lane.queue(&mut owner.jobs, task),
     };
+    super::library::record_endings(owner, super::library::LaneKind::Merge)?;
     match started {
         Ok(started) => {
             owner.catalog.merge.live.insert(
@@ -1974,7 +2006,9 @@ impl Publish {
         let request = Request::new(&self.method, &self.mutation);
         #[cfg(test)]
         let fails = owner.catalog.merge.publish_fails.take();
-        let published = owner.service.publish_merge(
+        let replaces = self.replaces.clone();
+        let accounting = serde_json::to_value(merged.accounting).ok();
+        let (published, response) = owner.service.publish_merge_answer(
             request,
             &Publication {
                 provenance: &merged.provenance,
@@ -1993,14 +2027,17 @@ impl Publish {
                 }
                 Ok(Vec::new())
             },
+            |connection, published| {
+                let mut answer = recorded_answer(connection, &published.merge_id, false)?;
+                answer.change = published.outcome.answer().change;
+                answer.deduplicated = published.outcome.announced().is_none();
+                answer.replaced = replaces.filter(|_| answer.change.is_some());
+                answer.accounting = accounting;
+                encode(&answer)
+            },
         )?;
         announce(owner, &self.origin, &published);
-        let mut answer = recorded_answer(&owner.service.connection, &published.merge_id, false)?;
-        answer.change = published.outcome.answer().change;
-        answer.deduplicated = published.outcome.announced().is_none();
-        answer.replaced = self.replaces.filter(|_| answer.change.is_some());
-        answer.accounting = serde_json::to_value(merged.accounting).ok();
-        encode(&answer)
+        Ok(response)
     }
 }
 
@@ -2186,6 +2223,9 @@ fn retried(
     call: &Call<'_>,
     request: Request<'_>,
 ) -> Result<Option<crate::catalog_types::JobStarted>, Error> {
+    if owner.service.catalog_request.is_some() {
+        return Ok(None);
+    }
     if let Some(published) = published_by(&owner.service.connection, request)? {
         let mut answer = recorded_answer(&owner.service.connection, &published.merge_id, false)?;
         answer.change = published.outcome.answer().change;

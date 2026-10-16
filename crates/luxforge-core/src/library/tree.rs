@@ -88,6 +88,39 @@ pub(crate) fn parent_in(
         .flatten())
 }
 
+/// Admit a stored tree value against the tree as it stands now. Undo and redo restore values
+/// through the item writer, without running the original create or move planner, so they must
+/// check the parent and Unicode sibling-name invariants here too. The schema covers missing
+/// parents and ordinary ASCII name clashes; these are the invariants it cannot enforce.
+pub(crate) fn check_placement(
+    connection: &Connection,
+    table: &'static str,
+    id: &str,
+    name: &str,
+    parent: Option<&str>,
+) -> Result<(), Error> {
+    if let Some(parent) = parent
+        && within(parent, id, |node| parent_in(connection, table, node))?
+    {
+        return Err(Error::conflict(format!(
+            "{name} cannot be placed inside itself or one of its descendants"
+        )));
+    }
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT name FROM {table} WHERE parent_id IS ?1 AND id <> ?2"
+    ))?;
+    let mut siblings = statement.query(rusqlite::params![parent, id])?;
+    while let Some(sibling) = siblings.next()? {
+        let existing: String = sibling.get(0)?;
+        if same_name(name, &existing) {
+            return Err(Error::conflict(format!(
+                "{name} cannot be placed here: a sibling is already named {existing}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The English short names of the months, as day folders and event names write them.
 pub(crate) const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

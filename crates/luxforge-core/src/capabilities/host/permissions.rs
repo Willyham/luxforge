@@ -71,15 +71,20 @@ impl CapabilityHost {
         let capability = declared_capability(descriptor, &request.capability)?;
         let scope = GrantScope::parse(GrantKind::of(capability)?, &request.scope)?;
         self.check_usable(service, descriptor, capability, &scope)?;
-        let outcome = self.grants()?.grant(NewGrant {
+        let outcome = self.grants()?.grant_published(NewGrant {
             module_id: &descriptor.id,
             capability: &capability.id,
             scope,
             actor: &request.mutation.actor,
             request_id: &request.mutation.request_id,
         })?;
+        let publication_error = outcome.durability_error;
+        let outcome = outcome.value;
         if outcome.outcome == WriteOutcome::Committed {
             announce_once(announce, origin);
+        }
+        if let Some(error) = publication_error {
+            return Err(error);
         }
         encode(outcome)
     }
@@ -159,14 +164,14 @@ impl CapabilityHost {
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;
         let scope = GrantScope::parse(GrantKind::of(capability)?, &request.scope)?;
-        let denial = self.grants()?.deny(
+        let denial = self.grants()?.deny_published(
             &descriptor.id,
             &capability.id,
             scope,
             &request.mutation.actor,
         )?;
         announce_once(announce, origin);
-        Ok(json!({"denial": denial}))
+        Ok(json!({"denial": denial.finish()?}))
     }
 
     /// `module.permission.revoke`: mark the grant revoked and cancel the jobs running under it.
@@ -184,13 +189,18 @@ impl CapabilityHost {
                 "a revocation reason is 1..={MAX_REASON} characters"
             )));
         }
-        let (grant, changed) = self.grants()?.revoke(&request.grant_id, &reason)?;
-        let cancelled = if changed {
+        let published = self
+            .grants()?
+            .revoke_published(&request.grant_id, &reason)?;
+        let (grant, changed) = published.value;
+        if changed {
             announce_once(announce, origin);
-            self.cancel_dependents_of(jobs, &grant.grant_id, origin, announce)
-        } else {
-            Vec::new()
-        };
+        }
+        // Even a retry of an already visible revocation enforces its consequences.
+        let cancelled = self.cancel_dependents_of(jobs, &grant.grant_id, origin, announce);
+        if let Some(error) = published.durability_error {
+            return Err(error);
+        }
         Ok(json!({
             "outcome": if changed { WriteOutcome::Committed } else { WriteOutcome::NoOp },
             "grant": grant,

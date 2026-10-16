@@ -45,10 +45,11 @@ pub(in crate::api) fn claim(
         ));
     }
     let usage = owner.host.usage_consent();
-    let show_prompt = usage.claim(&owner.host.preferences)?;
-    if show_prompt {
+    let show_prompt = usage.claim_published(&owner.host.preferences)?;
+    if show_prompt.value {
         announce_once(&mut owner.announced, &call.origin);
     }
+    let show_prompt = show_prompt.finish()?;
     Ok(json!({
         "show_prompt": show_prompt,
         "state": usage.read(&owner.host.preferences),
@@ -62,16 +63,17 @@ pub(in crate::api) fn set(
     params: UsageSet,
 ) -> Result<Value, Error> {
     let authority = owner.authority(call.client);
-    let outcome = owner.host.usage_consent().set(
+    let outcome = owner.host.usage_consent().set_published(
         &owner.host.preferences,
         authority,
         params.enabled,
         params.disclosure_version,
         &params.mutation.request_id,
     )?;
-    if outcome.changed {
+    if outcome.value.changed {
         announce_once(&mut owner.announced, &call.origin);
     }
+    let outcome = outcome.finish()?;
     Ok(json!({
         "outcome": if outcome.changed { "applied" } else { "no-op" },
         "state": outcome.state,

@@ -118,7 +118,7 @@ The imported file's text is kept in `source_text`, bounded by the request limit.
 
 ### Methods
 
-Every method is a host method listed by `schema.list`. The four mutating methods take the `{request_id, actor}` mutation envelope, and create, update and import record its `actor` as the record's last writer. The library has no revision, so the envelope carries none. A retry of the same request returns the first answer marked `deduplicated: true` from the owner's request table and changes nothing twice; the same `request_id` with other input is a `conflict` ([host dispatch](modules-and-api.md#host-dispatch)). Each mutating method emits an event named after the method unless it is a no-op or a retry. Names are compared ignoring case across all of Unicode, not only ASCII.
+Every method is a host method listed by `schema.list`. The four mutating methods take the `{request_id, actor}` mutation envelope, and create, update and import record its `actor` as the record's last writer. The library has no revision, so the envelope carries none. A retry of the same request returns the first answer marked `deduplicated: true` from the durable catalog request table and changes nothing twice, including after restart or cache eviction; the complete answer is recorded with the mutation, no-ops included; the same `request_id` with other input is a `conflict` ([host dispatch](modules-and-api.md#host-dispatch)). Each mutating method emits an event named after the method unless it is a no-op or a retry. Names are compared ignoring case across all of Unicode, not only ASCII.
 
 | Method | Mutates | Parameters | Returns |
 | --- | --- | --- | --- |

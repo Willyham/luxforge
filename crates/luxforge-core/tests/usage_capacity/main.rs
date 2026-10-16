@@ -252,7 +252,7 @@ fn usage_statistics_storage_stays_within_256_kib_however_long_and_hard_it_runs()
         }
     };
 
-    // Typical editing: an event every five seconds for an hour, a window sent every ten minutes.
+    // Typical editing: an event every five seconds for an hour, a window sent every two minutes.
     for _ in 0..720 {
         tick(5 * SECOND, 1);
     }
@@ -347,7 +347,7 @@ fn usage_statistics_storage_stays_within_256_kib_however_long_and_hard_it_runs()
         "the opt-out left {after_live} bytes behind"
     );
     assert!(
-        (5..=6).contains(&typical),
+        (29..=30).contains(&typical),
         "{typical} windows in an hour of editing"
     );
     assert!(

@@ -11,7 +11,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
@@ -42,6 +42,11 @@ pub fn live_session_file(catalog: &Path) -> PathBuf {
     catalog.with_extension("live-session.json")
 }
 
+struct Connection {
+    socket: Arc<TcpStream>,
+    join: JoinHandle<()>,
+}
+
 pub struct LocalServer {
     info: LocalSessionInfo,
     session_file: PathBuf,
@@ -50,6 +55,8 @@ pub struct LocalServer {
     stopping: Arc<AtomicBool>,
     /// The same counter the accept loop keeps, so the status bar can report live clients.
     clients: Arc<AtomicUsize>,
+    /// Sockets and workers still served by this listener, stopped and joined before it drops.
+    connections: Arc<Mutex<Vec<Connection>>>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -72,6 +79,8 @@ impl LocalServer {
         let token = info.token.clone();
         let clients = Arc::new(AtomicUsize::new(0));
         let connected = clients.clone();
+        let connections = Arc::new(Mutex::new(Vec::<Connection>::new()));
+        let served = connections.clone();
         // Blocking accept keeps the idle listener asleep; Drop wakes it with one loopback connection.
         let join = std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -79,18 +88,36 @@ impl LocalServer {
                     break;
                 }
                 let Ok(stream) = stream else { break };
-                if clients.fetch_add(1, Ordering::AcqRel) >= MAX_CLIENTS {
-                    clients.fetch_sub(1, Ordering::AcqRel);
+                // Completed workers keep no socket or thread handle across further accepts.
+                let mut connections = served
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                connections.retain(|connection| !connection.join.is_finished());
+                // The display counter reaches zero just before a worker returns. Admission uses
+                // retained handles instead, so even that finish race keeps the shutdown set bounded.
+                if connections.len() >= MAX_CLIENTS {
+                    drop(connections);
                     refuse(stream);
                     continue;
                 }
+                clients.fetch_add(1, Ordering::AcqRel);
+                let Ok(socket) = stream.try_clone() else {
+                    clients.fetch_sub(1, Ordering::AcqRel);
+                    continue;
+                };
+                let socket = Arc::new(socket);
+                let closing = socket.clone();
                 let owner = owner.clone();
                 let token = token.clone();
                 let clients = clients.clone();
-                std::thread::spawn(move || {
+                let join = std::thread::spawn(move || {
                     let _ = serve_stream(stream, &owner, Some(&token));
+                    // The listener retains a clone for shutdown; it must not keep a completed
+                    // connection open until the next accept reaps its worker.
+                    let _ = closing.shutdown(std::net::Shutdown::Both);
                     clients.fetch_sub(1, Ordering::AcqRel);
                 });
+                connections.push(Connection { socket, join });
             }
         });
         Ok(Self {
@@ -99,6 +126,7 @@ impl LocalServer {
             registration: None,
             stopping,
             clients: connected,
+            connections,
             join: Some(join),
         })
     }
@@ -155,6 +183,20 @@ impl Drop for LocalServer {
             && TcpStream::connect_timeout(&self.info.address, Duration::from_millis(250)).is_ok()
         {
             let _ = join.join();
+        }
+        let connections = std::mem::take(
+            &mut *self
+                .connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        // EOF wakes both idle readers and connections parked on an owner reply. Shutdown also
+        // releases a writer whose client stopped reading, before any worker is joined.
+        for connection in &connections {
+            let _ = connection.socket.shutdown(std::net::Shutdown::Both);
+        }
+        for connection in connections {
+            let _ = connection.join.join();
         }
         // The registry entry goes first, so no reader finds an entry whose session file is gone.
         drop(self.registration.take());
@@ -748,6 +790,108 @@ mod monitoring_transport_tests {
     use luxforge_test_macros::slow;
     use luxforge_testbase::paths::temp_path;
     use serde_json::json;
+
+    #[test]
+    #[slow]
+    fn dropping_the_local_server_closes_and_joins_an_idle_connection() {
+        let catalog = temp_path("server-drop-idle.sqlite");
+        let session_file = temp_path("server-drop-idle-session.json");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let server = LocalServer::start(owner.clone(), &session_file).unwrap();
+        let mut stream = TcpStream::connect(server.info().address).unwrap();
+        stream
+            .set_read_timeout(Some(luxforge_testbase::HANG))
+            .unwrap();
+        writeln!(
+            stream,
+            "{}",
+            json!({"id":"idle", "method":"catalog.info", "params":{}, "token":server.info().token})
+        )
+        .unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let response: ApiResponse = serde_json::from_str(&line).unwrap();
+        assert!(response.error.is_none());
+        let connected = server.clients.clone();
+        assert_eq!(connected.load(Ordering::Acquire), 1);
+
+        drop(server);
+
+        assert_eq!(
+            connected.load(Ordering::Acquire),
+            0,
+            "the worker has joined"
+        );
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0, "the peer has closed");
+        assert!(!session_file.exists());
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    #[slow]
+    fn dropping_the_local_server_releases_a_held_request() {
+        let dir = luxforge_testbase::paths::temp_dir("server-drop-wait")
+            .canonicalize()
+            .unwrap();
+        let catalog = temp_path("server-drop-wait.sqlite");
+        let session_file = temp_path("server-drop-wait-session.json");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let gate = Arc::new(luxforge_testbase::Gate::new());
+        gate.shut();
+        owner.hold_listings(gate.clone(), dir.clone());
+        let invoke = |method: &str, params: serde_json::Value| {
+            owner
+                .call(
+                    client,
+                    ApiRequest {
+                        id: method.into(),
+                        method: method.into(),
+                        params,
+                        token: None,
+                    },
+                )
+                .unwrap()
+                .result
+                .unwrap()
+        };
+        let refreshed = invoke(
+            "index.refresh",
+            json!({"source":{"kind":"folder", "path":dir}}),
+        );
+        let job = refreshed["job_id"].clone();
+        gate.wait_reached(1, "held index listing");
+        let observed = invoke("job.wait", json!({"job_id":job}));
+        let server = LocalServer::start(owner.clone(), &session_file).unwrap();
+        let mut stream = TcpStream::connect(server.info().address).unwrap();
+        stream
+            .set_read_timeout(Some(luxforge_testbase::HANG))
+            .unwrap();
+        writeln!(stream, "{}", json!({"id":"held", "method":"job.wait", "params":{"job_id":job, "after":observed["change"]}, "token":server.info().token})).unwrap();
+        luxforge_testbase::wait_until("one held request", || owner.job_monitor_stats().held == 1);
+        let connected = server.clients.clone();
+
+        drop(server);
+
+        assert_eq!(
+            connected.load(Ordering::Acquire),
+            0,
+            "the worker has joined"
+        );
+        luxforge_testbase::wait_until("the server's held request released", || {
+            owner.job_monitor_stats().held == 0
+        });
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0, "the peer has closed");
+        gate.open();
+        owner.disconnect(client);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
 
     #[test]
     #[slow]

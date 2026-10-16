@@ -280,15 +280,40 @@ pub(super) fn start_refresh(
     detail: String,
     origin: &Origin,
 ) -> Result<JobStarted, Error> {
+    let prepared = prepare_refresh(owner, source, roots, detail, origin)?;
+    let job_id = prepared.job_id.clone();
+    let deduplicated = prepared.queued.is_none();
+    enqueue_refresh(owner, prepared);
+    dispatch(owner);
+    let status = owner
+        .jobs
+        .read(&job_id)
+        .map_or(crate::JobStatus::Queued, |record| record.status);
+    Ok(JobStarted {
+        job_id,
+        status,
+        deduplicated,
+    })
+}
+
+/// A listing identity reserved before a catalog transaction. It owns no job or lane work until
+/// the transaction commits, so a refused folder mutation never queues a listing.
+pub(super) struct PreparedRefresh {
+    pub job_id: JobId,
+    queued: Option<Queued>,
+}
+
+pub(super) fn prepare_refresh(
+    owner: &Owner,
+    source: IndexSource,
+    roots: Vec<RootPlan>,
+    detail: String,
+    origin: &Origin,
+) -> Result<PreparedRefresh, Error> {
     if let Some(job_id) = owner.catalog.files.live_job(&source) {
-        let status = owner
-            .jobs
-            .read(&job_id)
-            .map_or(crate::JobStatus::Queued, |record| record.status);
-        return Ok(JobStarted {
+        return Ok(PreparedRefresh {
             job_id,
-            status,
-            deduplicated: true,
+            queued: None,
         });
     }
     if owner.catalog.files.waiting.len() >= MAX_WAITING {
@@ -298,33 +323,39 @@ pub(super) fn start_refresh(
     }
     let job_id = JobId::new();
     let control = JobControl::new();
-    owner.jobs.open_catalog(CatalogOpened {
+    Ok(PreparedRefresh {
         job_id: job_id.clone(),
-        kind: JobKind::IndexRefresh,
-        asset_id: None,
-        origin: Some(origin.clone()),
-        control: control.clone(),
-    });
-    owner.catalog.files.waiting.push_back(Queued {
-        task: Task::Refresh {
-            job_id: job_id.clone(),
-            control,
-            source,
-            roots,
-            detail,
-        },
-        origin: origin.clone(),
-    });
-    dispatch(owner);
-    let status = owner
-        .jobs
-        .read(&job_id)
-        .map_or(crate::JobStatus::Queued, |record| record.status);
-    Ok(JobStarted {
-        job_id,
-        status,
-        deduplicated: false,
+        queued: Some(Queued {
+            task: Task::Refresh {
+                job_id,
+                control,
+                source,
+                roots,
+                detail,
+            },
+            origin: origin.clone(),
+        }),
     })
+}
+
+/// Queue a reserved identity after its catalog change commits. Dispatch is separate so the
+/// ordinary library notification can find this very job before any worker-start failure ends it.
+pub(super) fn enqueue_refresh(owner: &mut Owner, prepared: PreparedRefresh) {
+    if let Some(queued) = prepared.queued {
+        if let Task::Refresh {
+            job_id, control, ..
+        } = &queued.task
+        {
+            owner.jobs.open_catalog(CatalogOpened {
+                job_id: job_id.clone(),
+                kind: JobKind::IndexRefresh,
+                asset_id: None,
+                origin: Some(queued.origin.clone()),
+                control: control.clone(),
+            });
+        }
+        owner.catalog.files.waiting.push_back(queued);
+    }
 }
 
 /// `job.cancel` cancelled one of this lane's jobs in the job table: a waiting one leaves the queue

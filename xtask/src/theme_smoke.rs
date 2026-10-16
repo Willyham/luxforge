@@ -209,9 +209,14 @@ fn difference(a: [u8; 3], b: [u8; 3]) -> f64 {
     )
 }
 
+/// The status bar's height in points, its rule over it included: the window's bottom strip
+/// (`STATUS_BAR_HEIGHT` and `DIVIDER_WIDTH` in `crates/luxforge-app/src/layout.rs`). Develop's
+/// filmstrip, when shown, lies between it and the canvas.
+const STATUS_BAR_POINTS: u32 = 26;
+
 /// The workspace's regions in a frame with the sheet closed: the title bar above the canvas, the
-/// status bar under it, the state panel to its left and the tools panel to its right, each inset
-/// from its edges.
+/// status bar at the window's bottom, the state panel to the canvas's left and the tools panel to
+/// its right, each inset from its edges.
 struct Regions {
     title_bar: [u32; 4],
     status_bar: [u32; 4],
@@ -223,16 +228,18 @@ fn regions(frame: &Frame) -> Result<Regions> {
     let [left, top, right, bottom] = canvas_rect(frame)?;
     let (width, height) = frame.image()?.dimensions();
     let inset = 4 * scale(frame)?;
+    let status_top = height.saturating_sub(STATUS_BAR_POINTS * scale(frame)?);
     ensure(
         left > 2 * inset
             && top > 2 * inset
-            && bottom + 2 * inset < height
+            && bottom <= status_top
+            && status_top + 2 * inset < height
             && right + 2 * inset < width,
         "The canvas leaves no room for the panels and the bars",
     )?;
     Ok(Regions {
         title_bar: [left + inset, inset, right - inset, top - inset],
-        status_bar: [inset, bottom + inset, width - inset, height - inset],
+        status_bar: [inset, status_top + inset, width - inset, height - inset],
         state_panel: [inset, top + inset, left - inset, bottom - inset],
         tools_panel: [right + inset, top + inset, width - inset, bottom - inset],
     })

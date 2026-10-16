@@ -515,15 +515,17 @@ impl Editor {
         self.open_sheet(request, context)
     }
 
-    /// A moment header's button: Pick all, or a merge of the bracket's frames.
+    /// A moment header's button: Pick all, or a merge of the moment's frames, a bracket's HDR and
+    /// a panorama's panorama.
     fn moment_action(&mut self, number: u32, action: u32) -> Task<Message> {
         let state = &self.select.state;
         let Some((index, action)) = state.content.action(number, action) else {
             return Task::none();
         };
-        if let MomentAction::PickAll(_) = action {
-            return self.pick_all(number);
-        }
+        let kind = match action {
+            MomentAction::PickAll(_) => return self.pick_all(number),
+            MomentAction::Merge(kind) => kind,
+        };
         let Some((summary, moment)) = state
             .summary
             .as_ref()
@@ -536,9 +538,8 @@ impl Editor {
             self.status.text = "Reading the frames\u{2026}".into();
             return Task::none();
         };
-        // A bracket's header merges are HDR's.
         let request = MergeRequest {
-            kind: MergeKind::Hdr,
+            kind,
             targets: Targets::Files { file_ids: files },
             options: self.last_options(),
             source: Some(summary.query.source.clone()),

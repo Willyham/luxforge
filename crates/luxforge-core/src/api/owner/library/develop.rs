@@ -3,9 +3,7 @@
 //! ([`LibraryLane`](super::LibraryLane)), one at a time, and committed back here in batches
 //! ([`JobContext::commit`]), each one library change announced as one event. The library side is
 //! `crate::library::develop`.
-use super::{
-    Call, ClientId, Commit, JobContext, LibraryLane, Owner, Task, change, retried, selected,
-};
+use super::{Call, ClientId, Commit, JobContext, Owner, Task, change, retried, selected};
 use crate::{
     Error, ErrorKind, JobId, MutationRequest,
     api::{Origin, methods::value},
@@ -55,19 +53,6 @@ pub(in crate::api) fn pick_develop(
     call: &Call<'_>,
     params: PickDevelop,
 ) -> Result<Value, Error> {
-    let request = Request::new(&call.request.method, &params.mutation);
-    let parts = journal::parts(&owner.service.connection, request)?;
-    if !parts.is_empty() {
-        return value(LibraryLane::answered(
-            &mut owner.jobs,
-            &DEVELOP_PICKS,
-            None,
-            call.origin.clone(),
-            encode(&develop::recorded_report(&parts, |asset| {
-                develop::folder_of(&owner.service.connection, asset)
-            })?)?,
-        ));
-    }
     let in_view = match params.targets {
         Some(_) => Vec::new(),
         None => super::super::views::current_items(owner, call.client)?,
@@ -87,6 +72,7 @@ pub(in crate::api) fn pick_develop(
     }
     let count = plan.files.len();
     let origin = call.origin.clone();
+    let resolved = json!({"files":plan.files,"destinations":destinations,"of_event":of_event,"use_copies":use_copies,"confirm_removable":confirm_removable});
     let job = DevelopJob {
         files: plan.files,
         of_event,
@@ -105,7 +91,7 @@ pub(in crate::api) fn pick_develop(
         origin,
         work: Box::new(move |context| job.run(context)),
     };
-    value(owner.catalog.library.queue(&mut owner.jobs, task)?)
+    value(super::queue(owner, task, resolved)?)
 }
 
 /// `asset.send-back`: send the photographs `targets` names back as one library change — each
@@ -393,9 +379,4 @@ fn commit(
         ),
     }
     value(report)
-}
-
-fn encode(report: &DevelopReport) -> Result<Value, Error> {
-    serde_json::to_value(report)
-        .map_err(|error| Error::internal(format!("cannot encode a report: {error}")))
 }

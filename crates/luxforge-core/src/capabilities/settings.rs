@@ -117,11 +117,12 @@ pub(crate) struct WriteResult {
 
 /// A write as the host sees it: the result a client receives, and the removed profiles whose
 /// grants the host revokes.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct SettingsWrite {
     pub result: WriteResult,
     /// Profiles the write removed, with the values they held.
     pub removed: Vec<StoredProfile>,
+    pub durability_error: Option<Error>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,6 +620,46 @@ impl SettingsStore {
         Ok(settings_read(descriptor, settings, &loaded, secrets))
     }
 
+    /// Current non-secret profile destination, read without consulting the secure store.
+    pub(crate) fn profile_destination(
+        &self,
+        descriptor: &ModuleDescriptor,
+        profile_id: &str,
+    ) -> Result<Option<(String, super::endpoint::Endpoint)>, Error> {
+        let settings = declared(descriptor)?;
+        let document = self.document.read()?.unwrap_or_default();
+        let loaded = load_entry(document.modules.get(&descriptor.id), settings.schema);
+        if let Some(reason) = loaded.incompatible {
+            return Err(Error::incompatible(reason));
+        }
+        let Some(profile) = loaded
+            .entry
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+        else {
+            return Ok(None);
+        };
+        let Some(fields) = settings.profiles.as_ref() else {
+            return Ok(None);
+        };
+        let Some((field, classes)) = fields.fields.iter().find_map(|field| match field.kind() {
+            ParameterKind::Endpoint { classes } => Some((field, classes)),
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let value = profile
+            .values
+            .get(field.id())
+            .or(field.parameter.default.as_ref());
+        let Some(Value::String(url)) = value else {
+            return Ok(None);
+        };
+        let endpoint = parse_endpoint(url, classes)?;
+        Ok(Some((profile.adapter.clone(), endpoint)))
+    }
+
     /// `module.settings.set`: validate every named non-secret field of one scope and commit them
     /// together; `null` returns a field to its default.
     pub(crate) fn set(
@@ -893,7 +934,7 @@ impl SettingsStore {
         apply: impl FnOnce(&mut ModuleEntry) -> Result<Applied, Error>,
     ) -> Result<SettingsWrite, Error> {
         let settings = declared(descriptor)?;
-        self.document.transact(|document| {
+        let published = self.document.transact_published(|document| {
             let Loaded {
                 mut entry,
                 incompatible,
@@ -936,8 +977,12 @@ impl SettingsStore {
                     changed: applied.changed,
                 },
                 removed: applied.removed,
+                durability_error: None,
             })
-        })
+        })?;
+        let mut write = published.value;
+        write.durability_error = published.durability_error;
+        Ok(write)
     }
 }
 

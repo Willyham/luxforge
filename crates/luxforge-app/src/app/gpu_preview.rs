@@ -251,6 +251,10 @@ struct HeldRest {
 /// One settled resource's handoff. Crop, retained Compare content and warming remain independent.
 enum RestPresentation<'a> {
     Picture(&'a luxforge_gpu::GpuRest),
+    /// Below 100%, through a gesture's frames: the picture at rest, drawn whole already, standing
+    /// in for the photograph's frame, an earlier stack's, wherever no plan's output is drawn
+    /// ([`Editor::gpu_rest_under`]).
+    StandIn(&'a luxforge_gpu::GpuRest),
     Counts(&'a luxforge_gpu::GpuRest),
     /// At 100% and above: the tiles reduced, the backdrop the percentage view's region is drawn
     /// over where it does not cover the view, and counted as they are drawn.
@@ -1228,6 +1232,9 @@ pub(crate) struct GpuPreviews {
     /// test compiles.
     #[cfg(test)]
     pub(crate) programs_warm: Option<bool>,
+    /// The picture at rest a test reports the surface has drawn whole, which no test draws.
+    #[cfg(test)]
+    pub(crate) rest_done: Option<u64>,
 }
 
 /// What a tick, or a displayed entry's job, asks the owner to plan its GPU picture for, with its
@@ -1491,6 +1498,15 @@ impl GpuPreviews {
 
     pub(crate) fn warm(&self) -> Option<&GpuWarm> {
         self.warm.as_ref()
+    }
+
+    /// The plan the drag keeps the surface's slot with while its newest tick has no plan of its
+    /// own: the resident boundary's last plan, or the drag's own last one.
+    fn standby(&self) -> Option<&Handed> {
+        self.drag
+            .as_ref()
+            .filter(|drag| drag.surface.is_none())
+            .and_then(|drag| drag.standby.as_ref())
     }
 
     /// The draft whose plan the surface is handed, open or ended and not yet released.
@@ -2064,6 +2080,8 @@ impl Editor {
                     json!({"version": version, "width": stage.0, "height": stage.1,
                         "bytes": bytes, "why": "source-changed"})
                 });
+                // A new development or preparation was just made: heavy work.
+                self.residency_heavy();
             }
         }
         // A picture at rest waiting for this source is drawn from it now.
@@ -2431,13 +2449,101 @@ impl Editor {
     /// draft is open or its plan still drawn, no crop draft is shown, and no evidence hook hands a
     /// plan of its own.
     pub(crate) fn gpu_at_rest(&self) -> bool {
+        self.gpu_rest_drawable() && self.core_gesture().is_none() && self.gpu.drag.is_none()
+    }
+
+    /// Whether the committed stack's picture at rest — its view plan and its tiles, handed as at
+    /// rest — is the photograph on screen: at rest, or through a gesture's tick whose frame is the
+    /// committed stack's ([`Self::gpu_rest_holds_tick`]).
+    fn gpu_rest_shown(&self) -> bool {
+        self.gpu_rest_drawable()
+            && ((self.core_gesture().is_none() && self.gpu.drag.is_none())
+                || self.gpu_rest_holds_tick())
+    }
+
+    /// Whether a gesture's tick holds the committed stack's picture at rest on screen, as at rest:
+    /// the gesture has no plan of its own for the surface to draw — before its first tick, or its
+    /// newest tick held or rendered with none (`unchanged`, `boundary-pending`, a layer the GPU
+    /// has no program for, …) — its own last plan is not the GPU frame on screen, no frame of its
+    /// draft is presented, and the picture at rest is drawn over the boundary the drag holds, if it
+    /// holds one, so the slot keeps it. Such a tick's frame on screen is the committed stack's: the
+    /// GPU's picture of it stays, never the CPU frame behind it, which for a stack the GPU
+    /// presented is an earlier stack's, an open's empty frame or its instant preview.
+    fn gpu_rest_holds_tick(&self) -> bool {
+        let Some(drag) = &self.gpu.drag else {
+            return self.core_gesture().is_some();
+        };
+        drag.surface.is_none()
+            && self.presentation.displayed_draft_id.as_ref() != Some(&drag.draft)
+            && !self.gpu_standby_shown()
+            && match (&drag.held, &self.gpu.at_rest) {
+                (Some(held), Some(at_rest)) => {
+                    held.boundary.version() == at_rest.boundary.version()
+                }
+                _ => true,
+            }
+    }
+
+    /// Whether the GPU frame on screen is the drag's standby plan's: its own last plan, which the
+    /// surface drew before the newest tick, which has none of its own. That frame stays drawn,
+    /// unheld, until a frame of the draft as new replaces it ([`Self::gpu_held`]).
+    fn gpu_standby_shown(&self) -> bool {
+        let Some(standby) = self.gpu.standby() else {
+            return false;
+        };
+        let report = self.surface_report();
+        report.evaluated == Some(standby.change.serial)
+            && report.drawn == Some((standby.plan.boundary.version(), standby.revision))
+    }
+
+    /// Whether the committed stack's picture at rest stands in for the photograph's frame under a
+    /// gesture's frames, open or released and still drawn, that the picture at rest does not hold
+    /// ([`Self::gpu_rest_holds_tick`]): the GPU presents the content on screen, so the CPU frame
+    /// behind its picture is an earlier stack's, and no comparison is shown. A tick the surface
+    /// does not draw — its plan's boundary or source still uploading, its sequence compiling over
+    /// another boundary, a fallback that lets its slot go — then shows the committed stack's
+    /// picture, never that frame.
+    fn gpu_rest_stands_in(&self) -> bool {
+        (self.core_gesture().is_some() || self.gpu.drag.is_some())
+            && !self.gpu_rest_holds_tick()
+            && self.presentation.frame_behind()
+            && self.presentation.compare_after.is_none()
+    }
+
+    /// Whether the surface has drawn the picture at rest of `version` whole, its last tile in and
+    /// no fallback: what it may be handed as in motion, where no tile is drawn.
+    fn gpu_rest_drawn_whole(&self, version: u64) -> bool {
+        #[cfg(test)]
+        if let Some(done) = self.gpu.rest_done {
+            return done == version;
+        }
+        luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+            .gpu_rest
+            .is_some_and(|figures| {
+                figures.version == version && figures.done && figures.fallback.is_none()
+            })
+    }
+
+    /// Whether the picture at rest handed to the surface stands in for the photograph's frame, an
+    /// earlier stack's, under a gesture's frames ([`Self::gpu_rest_stands_in`]): a whole frame draws
+    /// it wherever no plan's output is drawn, and a percentage view draws its backdrop in place of
+    /// that frame wherever its region's frame is not.
+    pub(crate) fn gpu_rest_under(&self) -> bool {
+        self.gpu_rest_stands_in()
+            && matches!(
+                self.rest_presentation(),
+                Some(RestPresentation::StandIn(_) | RestPresentation::Backdrop(_))
+            )
+    }
+
+    /// Whether the GPU may draw the committed stack's picture at rest at all: the gate lets the GPU
+    /// stage draw, no crop draft is shown, and no evidence hook hands a plan of its own.
+    fn gpu_rest_drawable(&self) -> bool {
         #[cfg(test)]
         if self.gpu.rest_off {
             return false;
         }
         self.gpu_preview_allowed().is_ok()
-            && self.core_gesture().is_none()
-            && self.gpu.drag.is_none()
             && !self.drafting()
             && self
                 .evidence
@@ -2445,13 +2551,14 @@ impl Editor {
                 .is_none_or(|evidence| evidence.gpu_identity.is_none())
     }
 
-    /// The committed stack's view plan the surface draws at rest ([`AtRest`]), where the view
-    /// shows it: its whole frame at Fit and below 100%, its region at 100% and above while that
-    /// region holds the view.
+    /// The committed stack's view plan the surface draws at rest ([`AtRest`]), and through a
+    /// gesture's tick that holds it ([`Self::gpu_rest_holds_tick`]), where the view shows it: its
+    /// whole frame at Fit and below 100%, its region at 100% and above while that region holds the
+    /// view.
     pub(crate) fn gpu_rest_plan(
         &self,
     ) -> Option<(&luxforge_gpu::GpuPlan, luxforge_gpu::GpuChange)> {
-        if !self.gpu_at_rest() {
+        if !self.gpu_rest_shown() {
             return None;
         }
         let at_rest = self.gpu.at_rest.as_ref()?;
@@ -2462,7 +2569,7 @@ impl Editor {
     /// Whether the picture at rest in tiles handed to the surface has not been drawn whole yet:
     /// while it is still to land, the photograph is marked rendering.
     pub(crate) fn gpu_rest_landing(&self) -> bool {
-        let Some(rest) = self.gpu_rest_handed() else {
+        let Some(RestPresentation::Picture(rest)) = self.rest_presentation() else {
             return false;
         };
         let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
@@ -2669,10 +2776,14 @@ impl Editor {
     /// the tiles are drawn, to dissolve in over it — and no crop draft or clipping overlay is shown,
     /// the overlay's marks being the view plan's; Compare's Before side among them. None at 100%
     /// and above, where the tiles are the backdrop ([`Self::gpu_counts_handed`]), while the gate
-    /// refuses the GPU stage or while an evidence hook hands a plan of its own.
+    /// refuses the GPU stage or while an evidence hook hands a plan of its own. Through a gesture's
+    /// frames, the picture drawn whole already while it stands in for an earlier stack's frame
+    /// ([`Self::gpu_rest_under`]).
     pub(crate) fn gpu_rest_handed(&self) -> Option<&luxforge_gpu::GpuRest> {
         match self.rest_presentation()? {
-            RestPresentation::Picture(picture) => Some(picture),
+            RestPresentation::Picture(picture) | RestPresentation::StandIn(picture) => {
+                Some(picture)
+            }
             RestPresentation::Counts(_) | RestPresentation::Backdrop(_) => None,
         }
     }
@@ -2688,13 +2799,16 @@ impl Editor {
     pub(crate) fn gpu_counts_handed(&self) -> Option<&luxforge_gpu::GpuRest> {
         match self.rest_presentation()? {
             RestPresentation::Counts(counts) | RestPresentation::Backdrop(counts) => Some(counts),
-            RestPresentation::Picture(_) => None,
+            RestPresentation::Picture(_) | RestPresentation::StandIn(_) => None,
         }
     }
 
     /// One eligibility decision for the picture, the backdrop and the tiles for counts alone. A
     /// released gesture may still have its last plan on screen; an active gesture or crop draft
-    /// owns it, keeping at most a backdrop already drawn.
+    /// owns it, keeping at most a picture or backdrop already drawn: the backdrop, and the picture
+    /// where it stands in for an earlier stack's frame ([`Self::gpu_rest_stands_in`]). A gesture
+    /// whose tick the picture at rest holds ([`Self::gpu_rest_holds_tick`]) is handed it as at
+    /// rest.
     fn rest_presentation(&self) -> Option<RestPresentation<'_>> {
         self.gpu_preview_allowed().ok()?;
         #[cfg(test)]
@@ -2709,34 +2823,30 @@ impl Editor {
         {
             return None;
         }
-        let moving = self.core_gesture().is_some();
+        // A tick the picture at rest holds keeps it as it is.
+        let moving = self.core_gesture().is_some() && !self.gpu_rest_holds_tick();
         let held = self.gpu.rest.as_ref()?;
         let ready = held.conversion.ready()?;
+        // In motion only once drawn whole: the gesture's ticks own the frames.
+        let drawn = || self.gpu_rest_drawn_whole(ready.picture.version);
         // At 100% and above the view's region plan is the picture at rest, and the tiles' reduction
         // its backdrop; a comparison draws neither.
         let region = matches!(self.session.preview.view.zoom,
             luxforge_core::Zoom::Percent { value } if value >= 100.0);
         if region && self.presentation.compare_after.is_none() && ready.picture.reduction.is_some()
         {
-            // In motion only once drawn whole: the gesture's ticks own the frames.
-            let drawn = || {
-                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
-                    .gpu_rest
-                    .is_some_and(|figures| {
-                        figures.version == ready.picture.version
-                            && figures.done
-                            && figures.fallback.is_none()
-                    })
-            };
             return (!moving || drawn()).then_some(RestPresentation::Backdrop(&ready.picture));
+        }
+        let picture = ready.picture.reduction.is_some()
+            && !region
+            && super::gpu_settle::clip_flags(&self.session.workspace).is_none();
+        if picture && self.gpu_rest_stands_in() && drawn() {
+            return Some(RestPresentation::StandIn(&ready.picture));
         }
         if moving {
             return None;
         }
-        if ready.picture.reduction.is_some()
-            && !region
-            && super::gpu_settle::clip_flags(&self.session.workspace).is_none()
-        {
+        if picture {
             Some(RestPresentation::Picture(&ready.picture))
         } else if held.wanted
             || held
@@ -2831,6 +2941,12 @@ impl Editor {
             .with_overview(luxforge_core::OVERVIEW_BOUNDS);
         self.overviews.swept();
         self.gpu_rest_from(Some(tiles), true);
+        // The same content's tiles, drawn again under new versions: its counts still to come are
+        // theirs, since the tiles they were wanted under are drawn no more.
+        if let Some(held) = self.gpu.rest.as_ref() {
+            let versions = [held.versions.picture, held.versions.counts];
+            self.gpu_counts_reswept(content, versions);
+        }
         match self.gpu.rest.as_mut() {
             Some(held) if held.overview == Some(version) => {
                 held.content = content;
@@ -3220,8 +3336,10 @@ impl Editor {
         let Some((_, revision)) = self.gpu.surface_plan() else {
             return false;
         };
-        // The resident boundary's plan is always held: between drafts the CPU frame is drawn.
-        if self.gpu.resident_plan() {
+        // The resident boundary's plan is held: between drafts the CPU frame is drawn. A drag's own
+        // last plan, the GPU frame on screen when its newest tick has none of its own, stays drawn
+        // as its plan would until a CPU frame of the draft as new is presented.
+        if self.gpu.resident_plan() && !self.gpu_standby_shown() {
             return true;
         }
         let draft = self.gpu.drag.as_ref().map(|drag| &drag.draft);
@@ -3230,6 +3348,45 @@ impl Editor {
                 .presentation
                 .displayed_draft_revision
                 .is_some_and(|displayed| displayed >= revision)
+    }
+
+    /// Let go of everything the desktop holds of the photograph on the GPU while no surface draws
+    /// it: its source, the boundary kept between drafts, the picture at rest's plan and tiles, a
+    /// window of a paged source and Compare's retained picture. The surfaces are handed none of
+    /// them, so the pipeline retires their textures, and the next job of the photograph hands its
+    /// source again ([`Self::gpu_hold_source`]). Each is logged with `why`.
+    pub(crate) fn gpu_release_photo(&mut self, why: &'static str) {
+        self.gpu_release_resident_boundary(why);
+        self.gpu.at_rest = None;
+        self.gpu.compare = None;
+        self.gpu.windows.clear();
+        self.gpu.window_rest = None;
+        self.gpu.counts = None;
+        self.gpu.rest_planned_at = None;
+        self.gpu.rest_compiling_since = None;
+        if let Some(rest) = self.gpu.rest.take() {
+            let version = rest.versions.picture;
+            self.event(
+                "gpu_rest_released",
+                || json!({"version": version, "why": why}),
+            );
+        }
+        if let Some(source) = self.gpu.source.take() {
+            let version = source.gpu.version();
+            let bytes = source.gpu.bytes();
+            self.event(
+                "gpu_source_released",
+                || json!({"version": version, "bytes": bytes, "why": why}),
+            );
+        }
+    }
+
+    /// Let go of the boundary kept on the GPU between drafts, which the next draft derives again.
+    pub(crate) fn gpu_release_resident_boundary(&mut self, why: &'static str) {
+        if let Some(resident) = self.gpu.resident.take() {
+            let version = resident.held.boundary.version();
+            self.log_release(version, why);
+        }
     }
 
     /// The evidence of a boundary let go.

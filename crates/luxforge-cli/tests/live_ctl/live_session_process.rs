@@ -396,11 +396,12 @@ fn live_session_process_edits_join_history_and_export_through_a_waited_job() {
     );
     // An export, a job any client may read, followed to its end with --wait.
     let destination = live.scratch.join("exported.jpg");
-    let params = json!({"asset_id": asset, "destination": destination});
+    let params = json!({"asset_id": asset, "destination": destination,
+                         "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)});
     let exported = live
         .ctl(&[
             "call",
-            "export.jpeg",
+            "export.write",
             "--params",
             &params.to_string(),
             "--wait",
@@ -548,11 +549,12 @@ fn live_session_process_leaves_a_catalog_job_running_when_it_disconnects() {
     };
     let (_, asset) = live.develop();
     let destination = live.scratch.join("left-running.jpg");
-    let params = json!({"asset_id": asset, "destination": destination});
+    let params = json!({"asset_id": asset, "destination": destination,
+                         "settings": luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)});
     // Without --wait the process ends, closing its connection, as soon as the job is accepted. An
     // export belongs to the catalog, so nothing warns that it will be released.
     let started = live
-        .ctl(&["call", "export.jpeg", "--params", &params.to_string()])
+        .ctl(&["call", "export.write", "--params", &params.to_string()])
         .printed();
     let job = started["job_id"].as_str().unwrap();
     let finished = wait_for("the export after its client left", || {

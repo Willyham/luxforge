@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Luxforge
+GenericName=Photo Editor
+Comment=Develop photographs without changing the originals
+Exec=@EXEC@
+TryExec=@TRYEXEC@
+Icon=luxforge
+Terminal=false
+StartupNotify=true
+StartupWMClass=luxforge
+Categories=Graphics;Photography;
+Keywords=photo;photograph;raw;develop;editor;
+X-Luxforge-Installed-By=desktop-integration.sh
+X-Luxforge-Version=@VERSION@
+X-Luxforge-Build=@BUILD@

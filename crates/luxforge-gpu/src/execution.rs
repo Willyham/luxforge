@@ -4056,6 +4056,7 @@ pub use rest::{
 pub use rest::{RestCounts, RestSlot, TickCounted};
 pub mod staged;
 
+pub mod resample;
 pub mod tiles;
 
 #[cfg(any(test, feature = "qualification"))]

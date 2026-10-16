@@ -105,7 +105,7 @@ pub(in crate::api) fn import(
     call: &Call<'_>,
     params: ThemeImport,
 ) -> Result<Value, Error> {
-    let theme = owner.host.themes.import(
+    let theme = owner.host.themes.import_published(
         ThemeInput {
             format: params.format,
             content: params.content.as_deref(),
@@ -116,6 +116,7 @@ pub(in crate::api) fn import(
         &params.mutation.actor,
     )?;
     announce_once(&mut owner.announced, &call.origin);
+    let theme = theme.finish()?;
     Ok(json!({"theme": theme.record(false), "report": theme.resolved.report}))
 }
 
@@ -139,9 +140,10 @@ pub(in crate::api) fn delete(
     let outcome = owner
         .host
         .themes
-        .delete(&params.theme_id, preferences.theme())?;
-    if outcome == MutationOutcome::Applied {
+        .delete_published(&params.theme_id, preferences.theme())?;
+    if outcome.value == MutationOutcome::Applied {
         announce_once(&mut owner.announced, &call.origin);
     }
+    let outcome = outcome.finish()?;
     Ok(json!({"outcome": outcome, "deleted": outcome == MutationOutcome::Applied}))
 }

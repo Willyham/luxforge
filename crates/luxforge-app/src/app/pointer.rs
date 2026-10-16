@@ -33,14 +33,6 @@ pub(super) enum PickTarget {
         y: String,
         action: String,
     },
-    /// The host's own pair: a `mask.*` read answers the pixel the masked operation receives and a
-    /// `mask.*` command receives it, addressed to the mask and component the panel has open.
-    HostSample {
-        query: String,
-        x: String,
-        y: String,
-        action: String,
-    },
 }
 
 impl PickTarget {
@@ -63,17 +55,6 @@ impl PickTarget {
                 y,
                 action,
             } => Some(Self::Sample {
-                query: query.to_owned(),
-                x: x.to_owned(),
-                y: y.to_owned(),
-                action: action.to_owned(),
-            }),
-            tools::CanvasPick::HostSample {
-                query,
-                x,
-                y,
-                action,
-            } => Some(Self::HostSample {
                 query: query.to_owned(),
                 x: x.to_owned(),
                 y: y.to_owned(),
@@ -272,45 +253,6 @@ impl Editor {
                             (x, y),
                         );
                     }
-                    // The host's own pick: the same two steps, reaching the host's declarations
-                    // instead of a module's. The mask travels in the envelope because it is an
-                    // identity, and the component the answer lands on is the one the panel has
-                    // open — a pick fills the swatch list a person is looking at.
-                    PickTarget::HostSample {
-                        query,
-                        x: x_parameter,
-                        y: y_parameter,
-                        action,
-                    } => {
-                        let Some(state) = &self.document.state else {
-                            return Task::none();
-                        };
-                        let asset = state.asset.id.clone();
-                        let Some(mask) = self.mask_panel.selected_mask.clone() else {
-                            self.status.text = "Open a mask to pick a colour into it".into();
-                            self.outcome(Outcome::PickEnded);
-                            return Task::none();
-                        };
-                        let mut envelope = Map::new();
-                        envelope.insert("mask".into(), json!(mask.as_str()));
-                        self.event(
-                            "canvas_pick",
-                            || json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
-                        );
-                        self.status.text = format!("Sampling ({x}, {y})…");
-                        return query_task(
-                            self.owner.clone(),
-                            self.client,
-                            asset,
-                            entry,
-                            picked_for.clone(),
-                            query,
-                            action,
-                            (x_parameter, y_parameter),
-                            envelope,
-                            (x, y),
-                        );
-                    }
                 }
             }
             PointerMessage::SampleQueried {
@@ -346,15 +288,8 @@ impl Editor {
                 };
                 // Every top-level number the query answered that the action declares as a
                 // parameter, and nothing else: the answer may carry metadata the action knows
-                // nothing about, and an unknown field would be refused by the generic check. The
-                // declaration is read from whichever table owns the action — a module's or the
-                // host's command family — so one rule covers both kinds of pick.
-                let host = luxforge_core::mask::commands::find(&action);
-                let declared = match host {
-                    Some(command) => Some(&command.action),
-                    None => tools::declared_action(&self.modules, &action),
-                };
-                let fields = declared
+                // nothing about, and an unknown field would be refused by the generic check.
+                let fields = tools::declared_action(&self.modules, &action)
                     .zip(answer.as_object())
                     .map(|(declared, answer)| {
                         answer
@@ -384,23 +319,6 @@ impl Editor {
                     self.outcome(Outcome::PickEnded);
                     return Task::none();
                 }
-                // A host command addresses the objects it edits by its declared identities, which
-                // the one request builder fills from the panel. The pick fills the component the
-                // panel has open, and a pick with nothing open is refused with its reason rather
-                // than sent.
-                if host.is_some() {
-                    if self.mask_panel.selected_mask.is_none() {
-                        self.status.text = "Open a mask to pick a colour into it".into();
-                        self.outcome(Outcome::PickEnded);
-                        return Task::none();
-                    }
-                    if self.mask_panel.selected_component.is_none() {
-                        self.status.text =
-                            "Select the component this pick fills before picking".into();
-                        self.outcome(Outcome::PickEnded);
-                        return Task::none();
-                    }
-                }
                 let (method, request) = match self.request(&action, &fields) {
                     Ok(request) => request,
                     Err(message) => {
@@ -421,12 +339,7 @@ impl Editor {
                 self.outcome(Outcome::PickCommitting);
                 // One command for the whole pick: one history entry, labelled by its own family.
                 let command = self.command(method, request);
-                // A host pick fills a swatch list a person may go on adding to, so it stays.
-                return if host.is_some() {
-                    command
-                } else {
-                    self.leave_pick(command)
-                };
+                return self.leave_pick(command);
             }
         }
         Task::none()

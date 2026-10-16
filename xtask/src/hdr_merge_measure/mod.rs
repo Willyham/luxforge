@@ -783,7 +783,7 @@ fn warm_rows(name: &str, result: &Value) -> Result<Vec<Value>> {
                         "browse_rows" => "browse.rows of 200 over a view of 1,000 JPEGs",
                         "render_sample" => "render.sample of one pixel of a prepared 24 MP JPEG photograph",
                         "commit" => "edit.set-basic of its exposure, the request to its answer",
-                        _ => "export.jpeg of it, the request to the job's end",
+                        _ => "export.write of it, the request to the job's end",
                     }, if when == "idle" { "no merge running" } else { "only the samples that ended while a merge still ran" }),
                 ));
             }
@@ -804,7 +804,7 @@ fn warm_rows(name: &str, result: &Value) -> Result<Vec<Value>> {
 
 fn reopen_rows(name: &str, created: &Value, reopened: &Value) -> Vec<Value> {
     let scope = format!(
-        "{name}: a merge of copies of the bracket; undo and redo in its process; then, the copies moved away, the catalog reopened in a new process: merge.inspect reports every input missing, undo and redo again, source.prepare and export.jpeg of the result"
+        "{name}: a merge of copies of the bracket; undo and redo in its process; then, the copies moved away, the catalog reopened in a new process: merge.inspect reports every input missing, undo and redo again, source.prepare and export.write of the result"
     );
     let mut checked = row(
         &format!("{name}.reopen.merge_activity"),
@@ -870,7 +870,7 @@ fn reopen_rows(name: &str, created: &Value, reopened: &Value) -> Vec<Value> {
             &format!("{name}.reopen.export"),
             "ms",
             reopened["export_ms"].as_f64(),
-            &format!("{scope}; export.jpeg of the result, the reference renderer"),
+            &format!("{scope}; export.write of the result, the reference renderer"),
         ),
     ]
 }

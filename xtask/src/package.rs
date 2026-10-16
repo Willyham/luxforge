@@ -64,6 +64,29 @@ fn native_jpeg_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the WebP codec's native provenance (`luxforge-webp`'s) and libwebp's licence and patent
+/// grant beside the other native notices. The `libwebp-sys` package keeps them under `vendor/`,
+/// which the package loop in [`inventory`] does not read, so the crate carries copies.
+fn native_webp_notices(root: &Path, out: &Path) -> Result {
+    let source = root.join("crates/luxforge-webp");
+    let notices = [
+        ("THIRD_PARTY.md", "luxforge-webp/THIRD_PARTY.md"),
+        ("notices/libwebp-1.6.0/COPYING", "libwebp-1.6.0/COPYING"),
+        ("notices/libwebp-1.6.0/PATENTS", "libwebp-1.6.0/PATENTS"),
+    ];
+    for (from, to) in notices {
+        let input = source.join(from);
+        ensure(
+            input.is_file(),
+            format!("Missing WebP codec notice: {}", input.display()),
+        )?;
+        let destination = out.join("native").join(to);
+        fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+        fs::copy(input, destination)?;
+    }
+    Ok(())
+}
+
 /// Copies the linked ONNX Runtime's provenance (`luxforge-onnx`'s), its MIT licence and the notices
 /// of the libraries it builds in beside the other native notices. The prebuilt archive carries no
 /// notice of its own; these are the upstream tag's.
@@ -214,7 +237,9 @@ fn bundled_data_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
-const LENS_FILES: &[&str] = &[
+/// The bundled Lensfun resource's directory, relative to the repository root.
+pub(crate) const LENS_DIRECTORY: &str = "crates/luxforge-core/data/lensfun";
+pub(crate) const LENS_FILES: &[&str] = &[
     "index.json",
     "provenance.json",
     "LICENSE-CC-BY-SA-3.0.txt",
@@ -224,7 +249,7 @@ const LENS_FILES: &[&str] = &[
 pub(crate) fn lens_resources(root: &Path, destination: &Path) -> Result {
     fs::create_dir_all(destination)?;
     for name in LENS_FILES {
-        let source = root.join("crates/luxforge-core/data/lensfun").join(name);
+        let source = root.join(LENS_DIRECTORY).join(name);
         ensure(
             source.is_file(),
             format!("Missing bundled Lensfun resource: {}", source.display()),
@@ -235,7 +260,13 @@ pub(crate) fn lens_resources(root: &Path, destination: &Path) -> Result {
 }
 
 pub fn inventory(root: &Path, out: &Path) -> Result {
-    let target = host(root)?;
+    inventory_for(root, out, &host(root)?)
+}
+
+/// [`inventory`] for `target`'s dependency graph rather than the host's, as the source archive
+/// collects the notices of each shipping target.
+pub(crate) fn inventory_for(root: &Path, out: &Path, target: &str) -> Result {
+    let target = target.to_owned();
     let data: Value = serde_json::from_str(&output(
         root,
         "cargo",
@@ -284,6 +315,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     }
     native_raw_notices(root, out)?;
     native_jpeg_notices(root, out)?;
+    native_webp_notices(root, out)?;
     native_onnxruntime_notices(root, out)?;
     native_diffusion_notices(root, out)?;
     let macos = target == crate::release_build::TARGETS[0].0;
@@ -338,6 +370,15 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                 "notices":"licenses/mozjpeg-sys-2.2.3",
                 "provenance":"native/luxforge-jpeg/THIRD_PARTY.md",
                 "build":"Crate-bundled source built with cc; with_simd (NEON on aarch64, portable C on x86_64 without NASM) and unwinding only"
+            },
+            {
+                "name":"libwebp (libwebp-sys)",
+                "version":"libwebp 1.6.0, libwebp-sys 0.14.4",
+                "revision":"3a40281fd97537b693174acb7375d64d3b471a56",
+                "selected_license":"BSD-3-Clause (with Google's patent grant); bindings MIT",
+                "notices":"native/libwebp-1.6.0",
+                "provenance":"native/luxforge-webp/THIRD_PARTY.md",
+                "build":"Crate-vendored source built with cc, no default features (no threads); NEON on aarch64, SSE2 on x86_64; no bindgen, no system library"
             },
             {
                 "name":"ONNX Runtime",
@@ -504,10 +545,11 @@ pub fn package(root: &Path, out: &Path) -> Result {
         fs::create_dir_all(app.join("MacOS"))?;
         fs::copy(&binary, app.join("MacOS/luxforge"))?;
         lens_resources(root, &app.join("Resources/lensfun"))?;
+        crate::icon::copy_icns(root, &app.join("Resources").join(crate::icon::ICNS))?;
         fs::write(
             app.join("Info.plist"),
             format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{}</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
+                r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>luxforge</string><key>CFBundleShortVersionString</key><string>{}</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
                 env!("CARGO_PKG_VERSION")
             ),
         )?;
@@ -593,6 +635,19 @@ mod tests {
         let provenance =
             fs::read_to_string(tmp.path().join("native/luxforge-jpeg/THIRD_PARTY.md")).unwrap();
         assert!(provenance.contains("based in part on the work of the Independent JPEG Group"));
+    }
+    #[test]
+    fn copies_the_webp_codec_licence_and_provenance() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        native_webp_notices(root, tmp.path()).unwrap();
+        let native = tmp.path().join("native");
+        let licence = fs::read_to_string(native.join("libwebp-1.6.0/COPYING")).unwrap();
+        assert!(licence.contains("Copyright (c) 2010, Google Inc."));
+        let patents = fs::read_to_string(native.join("libwebp-1.6.0/PATENTS")).unwrap();
+        assert!(patents.contains("Additional IP Rights Grant (Patents)"));
+        let provenance = fs::read_to_string(native.join("luxforge-webp/THIRD_PARTY.md")).unwrap();
+        assert!(provenance.contains("not a completed audit"));
     }
     #[test]
     fn copies_the_onnx_runtime_licence_and_notices() {

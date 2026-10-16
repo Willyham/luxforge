@@ -1,6 +1,7 @@
 //! Small, safe wrappers around platform FFI: process CPU and memory counters, GPU counters where
-//! reported, the Windows file change time used to verify source signatures, and a volume's free
-//! space ([`disk::available_bytes`]).
+//! reported, the Windows file change time used to verify source signatures, a volume's free
+//! space ([`disk::available_bytes`]), and the allocator's freed pages and the system's memory
+//! pressure ([`memory`]).
 //!
 //! The platform code is FFI, so it lives in this leaf crate, the second one allowed `unsafe` after
 //! `luxforge-raw`. Every `unsafe` block sits beside a `SAFETY:` comment and nothing unsafe crosses
@@ -19,6 +20,7 @@ pub mod disk;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod memory;
 mod procfs;
 pub mod system_info;
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]

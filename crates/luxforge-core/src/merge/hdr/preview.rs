@@ -507,6 +507,7 @@ pub fn encode_preview_jpeg(picture: &PreviewPicture, cancel: &Cancel) -> Result<
         &mut out,
         (width as u32, picture.height as u32),
         bands,
+        &crate::export::encode::BASELINE_90,
         None,
         None,
         &mut |_| {},

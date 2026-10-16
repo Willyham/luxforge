@@ -339,8 +339,36 @@ fn question(files: &FilesLane, ask: Ask) -> Job {
 /// unless its client has left, then hand the thread the next question.
 pub(super) fn answered(owner: &mut Owner, resume: Resume) {
     if let Some(Some(parked)) = owner.catalog.files.queries.running.take() {
-        let result = catch_unwind(AssertUnwindSafe(|| resume(owner)))
-            .unwrap_or_else(|_| Err(Error::internal("the call could not be answered")));
+        owner.service.catalog_request = parked
+            .key
+            .as_ref()
+            .filter(|key| {
+                matches!(
+                    key.method.as_str(),
+                    "index.add-folder" | "index.remove-folder"
+                )
+            })
+            .map(RequestKey::durable);
+        let prior = owner
+            .service
+            .catalog_request
+            .as_ref()
+            .map(|key| crate::editor::catalog_requests::lookup(&owner.service.connection, key))
+            .transpose();
+        let result = match prior {
+            Ok(Some(Some(recorded))) => {
+                let mut answer = recorded
+                    .answer
+                    .expect("indexed folder requests have synchronous answers");
+                super::super::requests::mark(&mut answer, true);
+                super::super::library::forget_stale_listing(owner, &mut answer);
+                Ok(answer)
+            }
+            Err(error) => Err(error),
+            _ => catch_unwind(AssertUnwindSafe(|| resume(owner)))
+                .unwrap_or_else(|_| Err(Error::internal("the call could not be answered"))),
+        };
+        owner.service.catalog_request = None;
         answer(owner, parked, result);
     }
     dispatch(owner);
@@ -360,7 +388,11 @@ fn answer(owner: &mut Owner, parked: Parked, result: Result<Value, Error>) {
     let reply = match result {
         Ok(mut value) => {
             if let Some(key) = key {
-                owner.requests.record(key, &mut value);
+                if key.cache {
+                    owner.requests.record(key, &mut value);
+                } else {
+                    super::super::requests::mark_first(&mut value);
+                }
             }
             ApiResponse::value(id, owner.log.sequence, value)
         }

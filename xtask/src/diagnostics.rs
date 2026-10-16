@@ -335,7 +335,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                             state["phase"] == "ready" && state["displayed_generation"] == i + 1,
                             "Stale displayed measurement",
                         )?;
-                        let columns = scenario::columns(frame)?;
+                        let canvas = Some(scenario::canvas(frame)?);
                         pixel_checks.push(scenario::pixels::fixture(
                             &image::open(
                                 evidence.join(frame["file"].as_str().ok_or("Missing frame")?),
@@ -343,7 +343,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                             .to_rgb8(),
                             &scenario::Fixture {
                                 aspect: Some(if name == "24mp" { 1.5 } else { 5.0 / 3.0 }),
-                                columns,
+                                canvas,
                                 ..scenario::Fixture::fit(1)
                             },
                         )?);

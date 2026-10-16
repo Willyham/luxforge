@@ -33,6 +33,10 @@ pub(crate) fn title_bar_leading(fullscreen: bool) -> f32 {
     }
 }
 
+/// The window's application ID on Linux: the user-level desktop entry's name without `.desktop`.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) const LINUX_APPLICATION_ID: &str = "luxforge";
+
 /// The window's settings: its logical size, whether it is ever shown, and its frame.
 ///
 /// A full-size content view makes the window's content the whole window, so `size` is the whole
@@ -56,6 +60,13 @@ pub(crate) fn settings(
             title_hidden: true,
             titlebar_transparent: true,
             fullsize_content_view: true,
+        },
+        // The Wayland app ID and X11 class: the desktop entry `desktop-integration.sh` installs,
+        // `luxforge.desktop`, so the desktop shows the window under that entry and its icon.
+        #[cfg(target_os = "linux")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: LINUX_APPLICATION_ID.to_owned(),
+            override_redirect: false,
         },
         ..iced::window::Settings::default()
     }
@@ -265,6 +276,16 @@ mod tests {
         } else {
             assert_eq!(TITLE_BAR_LEADING, theme::TITLE_BAR_INSET);
         }
+        // On Linux the window names the entry the desktop integration installs.
+        assert_eq!(
+            format!("{LINUX_APPLICATION_ID}.desktop"),
+            luxforge_update::payload::DESKTOP_ENTRY_FILE
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            settings.platform_specific.application_id,
+            LINUX_APPLICATION_ID
+        );
         assert_eq!(title_bar_leading(false), TITLE_BAR_LEADING);
         assert_eq!(title_bar_leading(true), theme::TITLE_BAR_INSET);
     }

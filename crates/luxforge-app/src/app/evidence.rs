@@ -22,12 +22,26 @@ use crate::{
         Editor, export,
         gesture::Starting,
         message::{
-            Message, action::ActionMessage, control::ControlMessage, crop::CropMessage,
-            crop::CropPointer, draft::DraftMessage, evidence::EvidenceMessage,
-            history::HistoryMessage, mask::BrushEdit, mask::MaskMessage, mask::PaintTarget,
-            mask::RowEdit, palette::PaletteMessage, performance::PerformanceMessage,
-            pointer::PointerMessage, preset::PresetMessage, settings::SettingsMessage,
-            theme::ThemeMessage, view::ViewMessage,
+            Message,
+            action::ActionMessage,
+            control::ControlMessage,
+            crop::CropMessage,
+            crop::CropPointer,
+            draft::DraftMessage,
+            evidence::EvidenceMessage,
+            export::{ExportMessage, SheetMessage},
+            history::HistoryMessage,
+            mask::BrushEdit,
+            mask::MaskMessage,
+            mask::PaintTarget,
+            mask::RowEdit,
+            palette::PaletteMessage,
+            performance::PerformanceMessage,
+            pointer::PointerMessage,
+            preset::PresetMessage,
+            settings::SettingsMessage,
+            theme::ThemeMessage,
+            view::ViewMessage,
         },
         performance,
         tasks::{
@@ -136,6 +150,8 @@ pub(crate) struct Evidence {
     pub(crate) usage_await: Option<usage::UsageAwaiting>,
     /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) warm_wait: Option<WarmWait>,
+    /// A running export `progressed` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) export_progress: Option<ExportProgressWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
     /// when the run finishes.
     pub(crate) agent: Option<ClientId>,
@@ -145,6 +161,9 @@ pub(crate) struct Evidence {
     pub(crate) agent_host: Option<AgentHostWait>,
     /// What a running long-running-work step still waits for.
     pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
+    /// A `sheet` step sent while a request was in flight opens the sheet once none is: whether it
+    /// is the reference render's.
+    pub(crate) sheet_when_quiet: Option<bool>,
     /// What a running HDR merge step still waits for.
     pub(crate) merge_wait: Option<select_merge::MergeWait>,
     /// A running loupe `arrows` step's presses still to send. Its timer exists only
@@ -172,7 +191,7 @@ pub(crate) struct Recorded {
     /// The requested entry once a frame rendered for it is the photograph, until a failure
     /// withdraws it: the entry the stack summary reports as displayed.
     pub(crate) rendered_entry: Option<Arc<HistoryEntry>>,
-    /// What `export.plan` and `export.jpeg` answered for the export in progress.
+    /// What `export.plan` and `export.write` answered for the export in progress.
     pub(crate) export_plan: Option<Value>,
     pub(crate) export_queued: Option<Value>,
     /// The Performance section's last two `resources.read` answers exactly as the owner sent them,
@@ -186,6 +205,15 @@ pub(crate) struct Recorded {
 pub(crate) struct WarmWait {
     started: Instant,
     quiet_until: Instant,
+    deadline: Instant,
+}
+
+/// A running export `progressed` step: the status bar's export progress when it began, and the
+/// latest it may end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExportProgressWait {
+    started: Instant,
+    from: f32,
     deadline: Instant,
 }
 
@@ -243,10 +271,12 @@ impl Evidence {
             wait_until: None,
             usage_await: None,
             warm_wait: None,
+            export_progress: None,
             agent: None,
             agent_wait: None,
             agent_host: None,
             long_work_wait: None,
+            sheet_when_quiet: None,
             merge_wait: None,
             loupe_arrows: None,
             grid_scroll: None,
@@ -323,6 +353,20 @@ pub(crate) struct CaptureSync {
     /// arriving during the asynchronous screenshot invalidates that request just as a newer photo
     /// does.
     pub(crate) clipping_version: Option<u64>,
+    /// The layout the canvas had when readback was requested: the state panel, the tools panel and
+    /// the filmstrip. A file's open hides the strip until its folder is read, so the strip can come
+    /// back during the screenshot; the frame read back would then sit in another canvas than the
+    /// one recorded beside it, and is retaken.
+    pub(crate) layout: Option<CaptureLayout>,
+}
+
+/// What the canvas a frame is drawn in depends on besides the window: which side panels are open
+/// and whether Develop's filmstrip sits under the canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CaptureLayout {
+    pub(crate) state_panel: bool,
+    pub(crate) tools_panel: bool,
+    pub(crate) filmstrip: bool,
 }
 
 impl Default for CaptureSync {
@@ -333,6 +377,7 @@ impl Default for CaptureSync {
             drawn: Arc::new(AtomicU64::new(u64::MAX)),
             state: None,
             clipping_version: None,
+            layout: None,
         }
     }
 }
@@ -546,6 +591,10 @@ pub(crate) enum Settle {
     /// A background export step's job is running and the Performance section's read lists it past
     /// the section's half-second threshold, so the frame shows it as long work.
     ExportListed,
+    /// A background export step's job is running and the status bar shows its progress bar.
+    ExportBar,
+    /// The Export sheet's plan for its newest settings has answered, or a preset change has.
+    ExportSheet,
     /// An agent step's edit has answered, and the event sync's refresh brought the frame of the
     /// entry it committed to the screen: see [`AgentWait`].
     Agent,
@@ -613,6 +662,8 @@ impl Settle {
             Self::Capability => "capability",
             Self::Export => "export",
             Self::ExportListed => "export_listed",
+            Self::ExportBar => "export_bar",
+            Self::ExportSheet => "export_sheet",
             Self::Agent => "agent",
             Self::AgentHost => "agent_host",
             Self::Select => "select",
@@ -697,7 +748,115 @@ fn export_listed(board: &luxforge_core::ActivitySnapshot) -> bool {
     })
 }
 
+/// The messages an export edit step sends, in its fields' order, each as its control sends it:
+/// a segment's press, a switch's flip, a field's text, and Choose… answered with the run's
+/// evidence directory in place of the native folder dialog.
+fn edit_messages(edit: &luxforge_evidence::SheetEdit, dir: &std::path::Path) -> Vec<SheetMessage> {
+    use crate::state::export_sheet::{Field, Fit};
+    use luxforge_core::{Chroma, ExportFormat, MetadataLevel, tiles::Depth};
+    let mut messages = Vec::new();
+    if let Some(format) = &edit.format {
+        messages.push(SheetMessage::Format(match format.as_str() {
+            "webp" => ExportFormat::Webp,
+            "tiff" => ExportFormat::Tiff,
+            _ => ExportFormat::Jpeg,
+        }));
+    }
+    if let Some(size) = &edit.size {
+        messages.push(SheetMessage::Fit(match size.as_str() {
+            "long_edge" => Fit::LongEdge,
+            "within" => Fit::Within,
+            _ => Fit::Full,
+        }));
+    }
+    for (text, field) in [
+        (&edit.long_edge, Field::LongEdge),
+        (&edit.width, Field::Width),
+        (&edit.height, Field::Height),
+    ] {
+        if let Some(text) = text {
+            messages.push(SheetMessage::Text(field, text.clone()));
+        }
+    }
+    if let Some(on) = edit.print_size {
+        messages.push(SheetMessage::Density(on));
+    }
+    if let Some(density) = &edit.density {
+        messages.push(SheetMessage::Text(Field::Density, density.clone()));
+    }
+    if let Some(quality) = edit.quality {
+        messages.push(SheetMessage::Quality(quality));
+    }
+    if let Some(on) = edit.optimise {
+        messages.push(SheetMessage::Optimise(on));
+    }
+    if let Some(chroma) = &edit.chroma {
+        messages.push(SheetMessage::Chroma(if chroma == "half" {
+            Chroma::Half
+        } else {
+            Chroma::Full
+        }));
+    }
+    if let Some(on) = edit.limit {
+        messages.push(SheetMessage::Limit(on));
+    }
+    if let Some(kb) = &edit.limit_kb {
+        messages.push(SheetMessage::Text(Field::LimitKb, kb.clone()));
+    }
+    if let Some(depth) = edit.bit_depth {
+        messages.push(SheetMessage::BitDepth(if depth == 8 {
+            Depth::Eight
+        } else {
+            Depth::Sixteen
+        }));
+    }
+    if let Some(medium) = &edit.sharpen {
+        messages.push(SheetMessage::Sharpen(luxforge_core::SharpenMedium::parse(
+            medium,
+        )));
+    }
+    if let Some(amount) = edit
+        .sharpen_amount
+        .as_deref()
+        .and_then(luxforge_core::SharpenAmount::parse)
+    {
+        messages.push(SheetMessage::SharpenAmount(amount));
+    }
+    if let Some(level) = &edit.metadata {
+        let level = MetadataLevel::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == level)
+            .unwrap_or(MetadataLevel::None);
+        messages.push(SheetMessage::Metadata(level));
+    }
+    match &edit.folder {
+        Some(luxforge_evidence::SheetFolder::Original) => {
+            messages.push(SheetMessage::OriginalFolder);
+        }
+        Some(luxforge_evidence::SheetFolder::Evidence) => {
+            messages.push(SheetMessage::FolderChosen(Some(dir.to_path_buf())));
+        }
+        Some(luxforge_evidence::SheetFolder::Path(path)) => {
+            messages.push(SheetMessage::FolderChosen(Some(PathBuf::from(path))));
+        }
+        None => {}
+    }
+    if let Some(suffix) = &edit.suffix {
+        messages.push(SheetMessage::Text(Field::Suffix, suffix.clone()));
+    }
+    messages
+}
+
 impl Editor {
+    /// The layout the canvas is drawn in now, as a capture records it.
+    pub(super) fn capture_layout(&self) -> CaptureLayout {
+        CaptureLayout {
+            state_panel: self.workspace.title.state_panel_open,
+            tools_panel: self.workspace.title.tools_panel_open,
+            filmstrip: self.filmstrip_shown(),
+        }
+    }
+
     /// A scripted screenshot waits for the intended photograph's actual GPU draw. The capture
     /// sync marker proves the widget tree is current; this checks the texture when its write was
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
@@ -1067,7 +1226,9 @@ impl Editor {
                 self.follow_timing();
                 let recorded = (self.snapshot(), self.activity.requested, self.drawn_photo());
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
+                let layout = self.capture_layout();
                 if let Some(evidence) = &mut self.evidence {
+                    evidence.sync.layout = Some(layout);
                     evidence.sync.state = Some((
                         recorded.0,
                         recorded.1,
@@ -1102,11 +1263,13 @@ impl Editor {
                     || self.evidence.as_ref().is_some_and(|evidence| {
                         evidence.sync.clipping_version
                             != self.overlay_surface().map(luxforge_ui::Frame::version)
+                            || evidence.sync.layout != Some(self.capture_layout())
                     });
                 if stale {
                     if let Some(evidence) = &mut self.evidence {
                         evidence.sync.state = None;
                         evidence.sync.clipping_version = None;
+                        evidence.sync.layout = None;
                         evidence.saving = false;
                         evidence.capture_pending = true;
                     }
@@ -1115,6 +1278,7 @@ impl Editor {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.capture_overlay = false;
                     evidence.sync.clipping_version = None;
+                    evidence.sync.layout = None;
                 }
                 self.event(
                     "frame_captured",
@@ -1136,11 +1300,13 @@ impl Editor {
                     });
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
-                // The photo surface spans the window minus padding, the sidebar and their spacing.
-                let (state_panel, tools_panel) = (
-                    self.workspace.title.state_panel_open,
-                    self.workspace.title.tools_panel_open,
-                );
+                // The photo surface spans the window minus padding, the sidebar and their spacing,
+                // laid out as it was when the screenshot was asked for and still is.
+                let CaptureLayout {
+                    state_panel,
+                    tools_panel,
+                    filmstrip,
+                } = self.capture_layout();
                 let columns =
                     crate::layout::surface_columns(logical_width, scale, state_panel, tools_panel);
                 let canvas = crate::layout::canvas_rect(
@@ -1148,7 +1314,7 @@ impl Editor {
                     scale,
                     state_panel,
                     tools_panel,
-                    self.filmstrip_shown(),
+                    filmstrip,
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);
@@ -1464,46 +1630,279 @@ impl Editor {
     /// section's half-second threshold ([`Settle::ExportListed`]): an export that ends first fails
     /// the step, and the section must be open to read.
     fn export_step(&mut self, step: ExportStep) -> Task<Message> {
-        if let Some(reason) = self.export_refusal() {
+        let sheet_step = matches!(
+            step,
+            ExportStep::Preset(_)
+                | ExportStep::Edit(_)
+                | ExportStep::SavePreset(_)
+                | ExportStep::UpdatePreset
+                | ExportStep::DeletePreset(_)
+                | ExportStep::Write(_)
+                | ExportStep::Close
+                | ExportStep::ScrollEnd
+        );
+        if sheet_step && self.export.sheet.is_none() {
+            return self.fail_step("the Export sheet is not open");
+        }
+        // A batch sheet's Export starts a batch, which Select's own refusal answers.
+        let batch = self
+            .export
+            .sheet
+            .as_ref()
+            .is_some_and(|sheet| sheet.target.batch());
+        if !sheet_step
+            && !matches!(
+                step,
+                ExportStep::Sheet(_) | ExportStep::Bar | ExportStep::Progressed(_)
+            )
+            && let Some(reason) = self.export_refusal()
+        {
             return self.fail_step(reason);
         }
-        if let ExportStep::File(file) = &step
-            && file.background
-            && !self.performance.expanded
-        {
-            return self.fail_step(
-                "a background export waits for the Performance section's read: open the section",
-            );
-        }
+        let background = match &step {
+            ExportStep::File(file) => file.background,
+            ExportStep::Write(write) | ExportStep::Again(write) => write.background,
+            ExportStep::WithPreset(write) => write.background,
+            _ => false,
+        };
+        let sheet = |message: SheetMessage| Message::Export(ExportMessage::Sheet(message));
         match step {
             ExportStep::Menu => {
-                let task = self.update(Message::View(ViewMessage::OpenMenu(MenuTarget::Export)));
+                let task = self.update(Message::Export(ExportMessage::Menu));
                 self.capture_next_frame();
                 task
             }
             ExportStep::File(file) => {
-                let Some(dir) = self.evidence.as_ref().map(|evidence| evidence.dir.clone()) else {
+                let Some(dir) = self.evidence_dir() else {
                     return Task::none();
                 };
-                let dir = std::path::absolute(&dir).unwrap_or(dir);
                 self.note_step(json!({"destination":file.name, "background":file.background}));
-                self.await_step(if file.background {
-                    Settle::ExportListed
-                } else {
-                    Settle::Export
-                });
-                let task = self.export_start(
-                    file.keep_metadata,
-                    file.reference,
-                    Some(dir.join(&file.name)),
-                );
-                if !self.export.active() {
-                    return self
-                        .fail_step(format!("the export was not started: {}", self.status.text));
+                self.await_export(background);
+                let task =
+                    self.export_file(file.keep_metadata, file.reference, dir.join(&file.name));
+                self.export_started(task)
+            }
+            // A person presses ⌘E once the photograph they opened has settled: while a request
+            // is in flight the step waits for none to be, then opens the sheet.
+            ExportStep::Sheet(open) => {
+                if self.busy {
+                    if let Some(evidence) = &mut self.evidence {
+                        evidence.sheet_when_quiet = Some(open.reference);
+                    }
+                    return Task::none();
                 }
+                self.open_sheet_step(open.reference)
+            }
+            ExportStep::Preset(name) => match self.preset_id_named(&name) {
+                Ok(id) => {
+                    let task = self.update(sheet(SheetMessage::Preset(id)));
+                    self.await_sheet();
+                    task
+                }
+                Err(reason) => self.fail_step(reason),
+            },
+            ExportStep::Edit(edit) => {
+                let Some(dir) = self.evidence_dir() else {
+                    return Task::none();
+                };
+                let tasks: Vec<Task<Message>> = edit_messages(&edit, &dir)
+                    .into_iter()
+                    .map(|message| self.update(sheet(message)))
+                    .collect();
+                self.await_sheet();
+                Task::batch(tasks)
+            }
+            ExportStep::SavePreset(name) => {
+                let mut tasks = vec![
+                    self.update(sheet(SheetMessage::Name(
+                        crate::state::export_sheet::NamingTarget::New,
+                    ))),
+                    self.update(sheet(SheetMessage::NameText(name))),
+                ];
+                tasks.push(self.update(sheet(SheetMessage::NameSubmit)));
+                self.await_sheet();
+                Task::batch(tasks)
+            }
+            ExportStep::UpdatePreset => {
+                if self
+                    .workspace
+                    .export_sheet
+                    .as_ref()
+                    .is_none_or(|model| model.update.is_none())
+                {
+                    return self.fail_step("the sheet offers no Update");
+                }
+                let task = self.update(sheet(SheetMessage::Update));
+                self.await_sheet();
                 task
             }
+            ExportStep::DeletePreset(name) => match self.preset_id_named(&name) {
+                Ok(id) => {
+                    let _ = self.update(sheet(SheetMessage::CardMenu(Some(id.clone()))));
+                    let offered = self
+                        .workspace
+                        .export_sheet
+                        .as_ref()
+                        .and_then(|model| model.cards.iter().find(|card| card.preset_id == id))
+                        .and_then(|card| card.menu.clone())
+                        .is_some_and(|menu| {
+                            menu.contains(&crate::state::export_sheet::CardChoice::Delete)
+                        });
+                    if !offered {
+                        return self.fail_step(format!("{name:?}'s menu offers no Delete"));
+                    }
+                    let task = self.update(sheet(SheetMessage::Card(
+                        id,
+                        crate::state::export_sheet::CardChoice::Delete,
+                    )));
+                    self.await_sheet();
+                    task
+                }
+                Err(reason) => self.fail_step(reason),
+            },
+            ExportStep::Write(_) => {
+                if self
+                    .workspace
+                    .export_sheet
+                    .as_ref()
+                    .is_none_or(|model| !model.can_export)
+                {
+                    return self.fail_step("the sheet's Export is disabled");
+                }
+                if batch {
+                    let task = self.update(sheet(SheetMessage::Export));
+                    self.await_step(Settle::Select);
+                    return task;
+                }
+                self.await_export(background);
+                let task = self.update(sheet(SheetMessage::Export));
+                self.export_started(task)
+            }
+            ExportStep::Close => {
+                let task = self.update(sheet(SheetMessage::Close));
+                self.capture_next_frame();
+                task
+            }
+            ExportStep::ScrollEnd => {
+                self.capture_next_frame();
+                iced::widget::operation::snap_to(
+                    crate::view::export_sheet::scroll_id(),
+                    iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+                )
+            }
+            ExportStep::Again(_) => {
+                self.await_export(background);
+                let task = self.update(Message::Export(ExportMessage::Again));
+                self.export_started(task)
+            }
+            ExportStep::Progressed(progressed) => {
+                let Some(bar) = &self.workspace.long_work.export else {
+                    return self.fail_step("the status bar shows no export progress");
+                };
+                let from = bar.fraction.unwrap_or_default();
+                if let Some(evidence) = &mut self.evidence {
+                    let started = Instant::now();
+                    evidence.export_progress = Some(ExportProgressWait {
+                        started,
+                        from,
+                        deadline: started + Duration::from_millis(progressed.ms),
+                    });
+                }
+                Task::none()
+            }
+            ExportStep::Bar => {
+                if self.workspace.long_work.export.is_none() {
+                    return self.fail_step("the status bar shows no export progress");
+                }
+                let task = self.update(Message::LongWork(
+                    crate::app::message::long_work::LongWorkMessage::OpenPerformance,
+                ));
+                self.await_step(Settle::ExportListed);
+                task
+            }
+            ExportStep::WithPreset(write) => {
+                self.list_export_presets();
+                match self.preset_id_named(&write.name) {
+                    Ok(id) => {
+                        self.await_export(background);
+                        let task = self.update(Message::Export(ExportMessage::WithPreset(id)));
+                        self.export_started(task)
+                    }
+                    Err(reason) => self.fail_step(reason),
+                }
+            }
         }
+    }
+
+    fn open_sheet_step(&mut self, reference: bool) -> Task<Message> {
+        let task = self.update(Message::Export(ExportMessage::OpenSheet { reference }));
+        if self.export.sheet.is_none() {
+            return self.fail_step(format!("the sheet did not open: {}", self.status.text));
+        }
+        self.await_sheet();
+        task
+    }
+
+    /// A `sheet` step that waited for this client's requests opens the sheet once none is in
+    /// flight.
+    pub(crate) fn export_sheet_when_quiet(&mut self) -> Task<Message> {
+        if self.busy {
+            return Task::none();
+        }
+        match self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.sheet_when_quiet.take())
+        {
+            Some(reference) => self.open_sheet_step(reference),
+            None => Task::none(),
+        }
+    }
+
+    /// The run's evidence directory, absolute.
+    fn evidence_dir(&self) -> Option<std::path::PathBuf> {
+        let dir = self.evidence.as_ref()?.dir.clone();
+        Some(std::path::absolute(&dir).unwrap_or(dir))
+    }
+
+    /// The preset listed with this name.
+    fn preset_id_named(&self, name: &str) -> Result<String, String> {
+        let presets = self.export.presets.as_deref().unwrap_or_default();
+        presets
+            .iter()
+            .find(|preset| preset.name == name)
+            .map(|preset| preset.preset_id.clone())
+            .ok_or_else(|| {
+                let listed: Vec<&str> = presets.iter().map(|preset| preset.name.as_str()).collect();
+                format!("no export preset is named {name:?}: {listed:?}")
+            })
+    }
+
+    /// A sheet step is captured once its plan answers, or at once when it asked for none.
+    fn await_sheet(&mut self) {
+        if self.sheet_planning() {
+            self.await_step(Settle::ExportSheet);
+        } else {
+            self.capture_next_frame();
+        }
+    }
+
+    /// A background export is captured once the Performance section lists it, when the section is
+    /// open, or once the status bar shows its progress bar.
+    fn await_export(&mut self, background: bool) {
+        self.await_step(match (background, self.performance.expanded) {
+            (false, _) => Settle::Export,
+            (true, true) => Settle::ExportListed,
+            (true, false) => Settle::ExportBar,
+        });
+    }
+
+    /// The export a step pressed for has started, or the step fails with why it did not.
+    fn export_started(&mut self, task: Task<Message>) -> Task<Message> {
+        if !self.export.active() {
+            return self.fail_step(format!("the export was not started: {}", self.status.text));
+        }
+        task
     }
 
     /// What a Masks-panel step waits for: the coverage grid's own texture when the overlay is on —
@@ -2377,14 +2776,13 @@ impl Editor {
                     },
                 )
             }
-            // The host's own pick, entered and left the way the panel's button does: one
-            // `workspace.set` and nothing committed, so the frame after it shows the mode.
+            // The row's Pick, arming the eyedropper or putting it down as the button does. It
+            // stays in Mask mode and commits nothing, so the frame is the next redraw rather than a
+            // preview that will never arrive.
             MaskStep::Pick => {
                 if self.mask_panel.selected_component.is_none() {
                     return self.fail_step("a pick step needs a selected component to fill");
                 }
-                // Entering or leaving a pick mode commits nothing and changes no pixel, so the
-                // frame is the next redraw rather than a preview that will never arrive.
                 (Message::Mask(MaskMessage::Pick), Expect::Redraw)
             }
             // With only a brush in hand, Done and Cancel put it down: nothing is sent, so the frame
@@ -3683,9 +4081,44 @@ impl Editor {
         self.capture_next_frame();
     }
 
+    /// Called by every evidence tick: an export `progressed` step captures its frame once the
+    /// status bar's export progress stands above where it stood when the step began, or at its
+    /// deadline. An export that ended meanwhile ends the wait too, its bar gone.
+    fn export_progress_elapsed(&mut self) {
+        let Some(wait) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.export_progress)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let fraction = self
+            .workspace
+            .long_work
+            .export
+            .as_ref()
+            .map(|bar| bar.fraction.unwrap_or_default());
+        let rose = fraction.is_some_and(|fraction| fraction > wait.from);
+        if fraction.is_some() && !rose && now < wait.deadline {
+            return;
+        }
+        if let Some(evidence) = &mut self.evidence {
+            evidence.export_progress = None;
+        }
+        self.note_step(json!({"export_progressed": {
+            "from": wait.from,
+            "to": fraction,
+            "finished": rose,
+            "waited_ms": now.duration_since(wait.started).as_secs_f64() * 1000.0,
+        }}));
+        self.capture_next_frame();
+    }
+
     /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
     pub(crate) fn wait_elapsed(&mut self) {
         self.warm_wait_elapsed();
+        self.export_progress_elapsed();
         let due = self.evidence.as_ref().is_some_and(|evidence| {
             evidence
                 .wait_until
@@ -3805,13 +4238,52 @@ impl Editor {
     }
 
     /// One click on the photograph, at a pixel of the raster on screen, exactly as the canvas
-    /// publishes it. What the click means is the active canvas mode's own declared pick: a point
-    /// pick fills that mode's coordinate fields, or commits them when it declares `commit`, and a
-    /// sample-apply pick runs its module's query and submits the answer once. Nothing here names
-    /// any of them.
+    /// publishes it. With the range picker armed it is that picker's click; otherwise what it means
+    /// is the active canvas mode's own declared pick: a point pick fills that mode's coordinate
+    /// fields, or commits them when it declares `commit`, and a sample-apply pick runs its module's
+    /// query and submits the answer once. Nothing here names any of them.
     fn pick_step(&mut self, step: PickStep) -> Task<Message> {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
+        }
+        // In Mask mode with the eyedropper armed, the pick is the range picker's pointer: a press
+        // and a release at the pixel's centre is a click, with Shift read at the release, and a
+        // press, a move and a release at `to` is a drag over the rectangle between them. The
+        // canvas measures its click threshold in points, so a script's pixels stand for points
+        // here, and the step's own validation keeps a drag longer than the threshold. The pick
+        // waits for the map's answer and its turn like a person's.
+        if self.mask_panel.picker.is_some() {
+            use crate::app::message::mask::PickPointer;
+            self.await_step(Settle::Pick);
+            let centre = |x: u32, y: u32| (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let point = |x: u32, y: u32| (x as f32, y as f32);
+            let at = centre(step.x, step.y);
+            let mut tasks = vec![self.update(Message::Mask(MaskMessage::PickPointer(
+                PickPointer::Press {
+                    view: point(step.x, step.y),
+                    at,
+                },
+            )))];
+            let [x, y] = step.to.unwrap_or([step.x, step.y]);
+            if step.to.is_some() {
+                tasks.push(self.update(Message::Mask(MaskMessage::PickPointer(
+                    PickPointer::Move {
+                        view: point(x, y),
+                        at: centre(x, y),
+                    },
+                ))));
+            }
+            tasks.push(self.update(Message::Mask(MaskMessage::PickPointer(
+                PickPointer::Release {
+                    view: point(x, y),
+                    at: centre(x, y),
+                    shift: step.shift,
+                },
+            ))));
+            return Task::batch(tasks);
+        }
+        if step.shift || step.to.is_some() {
+            return self.fail_step("pick shift and to belong to the armed range eyedropper");
         }
         let mode = self.session.workspace.mode.clone();
         if crate::state::tools::canvas_pick(&self.modules, &mode).is_none() {
@@ -4573,8 +5045,18 @@ impl Editor {
                 self.await_step(Settle::Session)
             }
             PaletteAction::Reveal(_) => self.capture_next_frame(),
-            // An evidence run opens no save dialog, so the entry only closes the palette.
-            PaletteAction::Export { .. } => self.capture_next_frame(),
+            // The sheet is captured with its first plan; an export the entry starts once it ends.
+            PaletteAction::Export { .. } if self.can_export() => {
+                self.await_step(Settle::ExportSheet)
+            }
+            PaletteAction::ExportAgain | PaletteAction::ExportWithPreset(_)
+                if self.can_export() =>
+            {
+                self.await_step(Settle::Export)
+            }
+            PaletteAction::Export { .. }
+            | PaletteAction::ExportAgain
+            | PaletteAction::ExportWithPreset(_) => self.capture_next_frame(),
         }
     }
 
@@ -5404,6 +5886,12 @@ impl Editor {
                 }
                 self.settle_step(Settle::Themes, by);
             }
+            Outcome::SheetPlanned => self.settle_step(Settle::ExportSheet, by),
+            Outcome::ExportPresetChanged => {
+                if !self.sheet_planning() {
+                    self.settle_step(Settle::ExportSheet, by);
+                }
+            }
             Outcome::ExportPlanned(plan) => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.export_plan = Some(plan.clone());
@@ -5414,9 +5902,20 @@ impl Editor {
                     evidence.recorded.export_queued = Some(answer.clone());
                 }
             }
+            // A background step with the section closed is captured on the first read the status
+            // bar shows the export's progress bar for.
+            Outcome::ExportProgress => {
+                if self.export_progress().is_some() {
+                    self.settle_step(Settle::ExportBar, by);
+                }
+            }
             // A waiting export step captures its frame with what the plan, the queue and the job
             // answered, and a failed one is recorded as failed.
-            Outcome::ExportEnded { record, failure } => {
+            Outcome::ExportEnded {
+                record,
+                failure,
+                bar,
+            } => {
                 let Some(evidence) = &mut self.evidence else {
                     return;
                 };
@@ -5428,6 +5927,12 @@ impl Editor {
                     );
                     return;
                 }
+                if evidence.awaiting == Some(Settle::ExportBar) {
+                    let _ = self.fail_step(
+                        "the background export ended before the status bar showed its progress",
+                    );
+                    return;
+                }
                 if evidence.awaiting != Some(Settle::Export) {
                     return;
                 }
@@ -5436,6 +5941,7 @@ impl Editor {
                     "queued": queued,
                     "record": record,
                     "status": self.status.text,
+                    "bar": bar,
                 }}));
                 if let Some(reason) = failure {
                     self.refuse_step(reason);
@@ -5877,7 +6383,8 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 
 /// After every message: a step waiting for quiet settles once this client has nothing in flight,
 /// a capability step once its module's round trips and jobs have, a loupe `arrows` step presses its
-/// first arrow once the look-ahead is warm, and the GPU identity hook follows the photograph at
+/// first arrow once the look-ahead is warm, a `sheet` step sent while a request was in flight
+/// opens the sheet once none is, and the GPU identity hook follows the photograph at
 /// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let minimap = editor.minimap_step_when_navigable();
@@ -5887,6 +6394,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_capability();
     editor.settle_agent_host();
     let arrows = editor.loupe_arrows_when_warm();
+    let sheet = editor.export_sheet_when_quiet();
     // The GPU identity hook follows the photograph at Fit, the one view it draws.
     let fit = matches!(editor.session.preview.view.zoom, luxforge_core::Zoom::Fit);
     let photo = editor
@@ -5901,7 +6409,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         Some(hook) if fit => hook.follow(photo),
         _ => Task::none(),
     };
-    Task::batch([minimap, arrows, identity])
+    Task::batch([minimap, arrows, sheet, identity])
 }
 
 #[cfg(test)]
@@ -6460,10 +6968,12 @@ mod tests {
             wait_until: None,
             usage_await: None,
             warm_wait: None,
+            export_progress: None,
             agent: None,
             agent_wait: None,
             agent_host: None,
             long_work_wait: None,
+            sheet_when_quiet: None,
             merge_wait: None,
             loupe_arrows: None,
             grid_scroll: None,
@@ -6622,6 +7132,29 @@ mod tests {
         crate::app::testing::finish(editor, catalog);
     }
 
+    /// Shift and a drag belong to the armed range eyedropper: anywhere else they are refused by
+    /// name, rather than read as the plain click of whatever mode is on screen.
+    #[test]
+    fn a_scripted_shift_or_drag_pick_is_refused_without_an_armed_eyedropper() {
+        for script in [
+            r#"[{"pick":{"x":7,"y":9,"shift":true}}]"#,
+            r#"[{"pick":{"x":7,"y":9,"to":[70,90]}}]"#,
+        ] {
+            let (mut editor, catalog, _, _) = scripted(script);
+            let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(
+                crate::app::testing::descriptors(),
+            ))));
+            let _ = editor.next_step();
+            assert!(evidence(&editor).had_errors, "{script}");
+            assert!(
+                editor.status.text.contains("armed range eyedropper"),
+                "{}",
+                editor.status.text
+            );
+            crate::app::testing::finish(editor, catalog);
+        }
+    }
+
     #[test]
     fn a_scripted_draft_change_records_its_step_and_arms_one_capture() {
         let (mut editor, catalog, _, _) = scripted(
@@ -6692,7 +7225,7 @@ mod tests {
         editor.evidence.as_mut().expect("evidence").capture_pending = false;
         let _ = editor.next_step();
         assert!(editor.performance.expanded);
-        assert_eq!(editor.performance.requested, 1);
+        assert_eq!(editor.performance.requested(), 1);
         assert!(!evidence(&editor).capture_pending, "waits for the read");
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Performance));
         let (resources, _) =
@@ -6713,38 +7246,43 @@ mod tests {
         editor.evidence.as_mut().expect("evidence").capture_pending = false;
         let _ = editor.next_step();
         assert!(evidence(&editor).capture_pending);
-        assert_eq!(editor.performance.requested, 1);
+        assert_eq!(editor.performance.requested(), 1);
 
         editor.evidence.as_mut().expect("evidence").capture_pending = false;
         let _ = editor.next_step();
         assert!(!editor.performance.expanded);
         assert!(evidence(&editor).capture_pending);
-        assert_eq!(editor.performance.requested, 1, "closing asks for nothing");
+        assert_eq!(
+            editor.performance.requested(),
+            1,
+            "closing asks for nothing"
+        );
         finish(editor, catalog);
     }
 
     /// A background export step is captured on the first Performance read whose board (long
-    /// work's) lists the export running past the section's half-second threshold, not before; one that ends before any read
-    /// lists it fails, and with the section closed, which reads nothing, the step fails at once.
+    /// work's) lists the export running past the section's half-second threshold, not before; one
+    /// that ends before any read lists it fails. With the section closed it is captured once the
+    /// status bar shows the export's progress bar, and one that ends first fails.
     #[test]
     #[slow]
     fn a_background_export_step_is_captured_once_the_section_lists_it_running() {
+        // The section's read takes in long work's board and then reports the answer. The board is
+        // the one the read took in, set here as the read would have, and the answer is reported as
+        // the read reports it: the board read itself is long work's to test.
         let read = |editor: &mut Editor, elapsed_ms: u64| {
             let (resources, _) =
                 crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
                     .unwrap();
-            // The board the section's read takes its rows from: long work's.
             editor.long_work.state.observe(
                 serde_json::from_value(json!({"sequence":1,"active":[{"id":3,"kind":"export","label":"Exporting JPEG","detail":"a.jpg","phase":"rendering","elapsed_ms":elapsed_ms}],"recent":[],"untracked":0})).unwrap(),
             );
-            let epoch = editor.performance.epoch;
-            let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
-                epoch,
-                result: Ok(Box::new(crate::app::tasks::PerformanceRead {
+            editor.outcome(Outcome::PerformanceRead(Some(Box::new(
+                crate::app::tasks::PerformanceRead {
                     resources,
                     wall_ms: 0,
-                })),
-            }));
+                },
+            ))));
         };
         let script = r#"[{"export":{"file":{"name":"a.jpg","reference":true,"background":true}}}]"#;
         let (mut editor, catalog, _, _) = scripted(script);
@@ -6763,6 +7301,7 @@ mod tests {
         editor.outcome(Outcome::ExportEnded {
             record: None,
             failure: None,
+            bar: false,
         });
         assert!(evidence(&editor).capture_pending && evidence(&editor).had_errors);
         finish(editor, catalog);
@@ -6770,7 +7309,26 @@ mod tests {
         let (mut editor, catalog, _, _) = scripted(script);
         editor.performance.expanded = false;
         let _ = editor.next_step();
-        assert!(!editor.export.active(), "nothing started");
+        assert!(editor.export.active(), "the export started");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::ExportBar));
+        editor.outcome(Outcome::ExportProgress);
+        assert!(!evidence(&editor).capture_pending, "no bar yet");
+        if let Some(run) = &mut editor.export.run {
+            run.bar = true;
+        }
+        editor.outcome(Outcome::ExportProgress);
+        assert!(evidence(&editor).capture_pending, "the bar shows");
+        assert!(!evidence(&editor).had_errors);
+        finish(editor, catalog);
+
+        let (mut editor, catalog, _, _) = scripted(script);
+        editor.performance.expanded = false;
+        let _ = editor.next_step();
+        editor.outcome(Outcome::ExportEnded {
+            record: None,
+            failure: None,
+            bar: false,
+        });
         assert!(evidence(&editor).capture_pending && evidence(&editor).had_errors);
         finish(editor, catalog);
     }

@@ -430,11 +430,13 @@ impl PreparedArtifacts {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn clear(&mut self) {
+    /// Let every entry go, as a photograph's prepared pixels are let go
+    /// ([`crate::OwnerHandle::release_source`]); a holder of one keeps it alive until it drops.
+    /// Answers the bytes it held.
+    pub(crate) fn clear(&mut self) -> u64 {
         self.entries.clear();
         self.order.clear();
-        self.bytes = 0;
+        std::mem::take(&mut self.bytes)
     }
 
     #[cfg(test)]
@@ -539,7 +541,8 @@ mod tests {
         assert!(cache.get(&a.id, &changed).is_none());
         assert!(cache.get(&a.id, &signature).is_none());
         assert_eq!(cache.len(), 3);
-        cache.clear();
+        let held = cache.bytes();
+        assert_eq!(cache.clear(), held, "a release answers what it let go");
         assert_eq!((cache.len(), cache.bytes()), (0, 0));
         std::fs::remove_file(path).unwrap();
     }

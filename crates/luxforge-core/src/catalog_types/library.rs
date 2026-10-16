@@ -809,13 +809,16 @@ pub struct BatchSettingsSkipped {
 }
 
 /// A file a batch export wrote: the photograph, the file, and the renderer that rendered it, as
-/// `export.jpeg`'s result names it.
+/// `export.write`'s result names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchWritten {
     pub asset_id: AssetId,
     pub path: PathBuf,
     pub renderer: super::RenderedBy,
+    /// The quality the file was encoded at, a size limit's choice included; none for a TIFF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u8>,
 }
 
 /// A `batch.apply-settings` or `batch.export` job's result.

@@ -561,7 +561,7 @@ fn usage_nothing_runs_before_consent_or_in_an_ineligible_launch() {
 }
 
 #[test]
-fn usage_the_first_window_is_sent_ten_minutes_after_its_first_event_plus_jitter() {
+fn usage_the_first_window_is_sent_two_minutes_after_its_first_event_plus_jitter() {
     let mut harness = Harness::off("first-window");
     harness.jitter.permille.store(500, Ordering::SeqCst);
     harness.enable("on");
@@ -569,22 +569,22 @@ fn usage_the_first_window_is_sent_ten_minutes_after_its_first_event_plus_jitter(
     harness.step();
     let session = harness.session().expect("a session started on opt-in");
     assert_eq!(harness.read()["session_id"], session_id(&session));
-    // Due 10 minutes after the session's first event, plus half of the 60-second jitter range,
+    // Due 2 minutes after the session's first event, plus half of the 60-second jitter range,
     // which is chosen once for the window.
-    assert_eq!(harness.deadline, Some(10 * MINUTE + 30 * SECOND));
+    assert_eq!(harness.deadline, Some(2 * MINUTE + 30 * SECOND));
     assert_eq!(
         *harness.jitter.asked.lock().unwrap(),
         [sender::FLUSH_JITTER]
     );
-    harness.clock.advance(4 * MINUTE);
+    harness.clock.advance(MINUTE);
     harness.record(3);
-    harness.run_until(10 * MINUTE + 29 * SECOND);
+    harness.run_until(2 * MINUTE + 29 * SECOND);
     assert_eq!(harness.transport.count(), 0, "no request before it is due");
-    harness.run_until(11 * MINUTE);
+    harness.run_until(3 * MINUTE);
     let sent = harness.transport.sent();
     assert_eq!(sent.len(), 1);
     let first = &sent[0];
-    assert_eq!(first.at, 10 * MINUTE + 30 * SECOND);
+    assert_eq!(first.at, 2 * MINUTE + 30 * SECOND);
     assert_eq!(first.url, RECEIVER);
     assert_eq!(
         first.headers,
@@ -620,13 +620,13 @@ fn usage_the_first_window_is_sent_ten_minutes_after_its_first_event_plus_jitter(
             trigger: Trigger::OptIn
         }
     );
-    assert_eq!(batch.events[1].t, 4 * 60_000);
+    assert_eq!(batch.events[1].t, 60_000);
     // The next window has its own jitter: the whole range, this time.
     harness.jitter.permille.store(1000, Ordering::SeqCst);
     harness.clock.advance(MINUTE);
     harness.record(1);
     harness.step();
-    assert_eq!(harness.deadline, Some(12 * MINUTE + 10 * MINUTE + MINUTE));
+    assert_eq!(harness.deadline, Some(4 * MINUTE + 2 * MINUTE + MINUTE));
     let read = harness.read();
     assert_eq!(read["diagnostics"]["attempts"], json!(1));
     assert_eq!(read["diagnostics"]["accepted"], json!(1));
@@ -1216,7 +1216,7 @@ fn usage_another_processs_opt_out_is_caught_before_detaching_and_before_the_hand
 fn usage_a_system_sleep_starts_a_new_session() {
     let mut harness = Harness::new("sleep");
     let first = harness.session().unwrap().id();
-    harness.clock.advance(2 * MINUTE);
+    harness.clock.advance(MINUTE);
     harness.record(3);
     harness.step();
     // A short wall-clock step is not a sleep.
@@ -1233,7 +1233,7 @@ fn usage_a_system_sleep_starts_a_new_session() {
     assert_eq!(harness.read()["session_id"], session_id(&second));
     assert_eq!(second.window().len, 1, "only its own session.start");
     harness.record(2);
-    harness.run_until(harness.now() + 12 * MINUTE);
+    harness.run_until(harness.now() + 3 * MINUTE);
     let sent = harness.transport.sent();
     assert_eq!(sent.len(), 1);
     let batch = &sent[0].batch;
@@ -1251,7 +1251,7 @@ fn usage_a_system_sleep_starts_a_new_session() {
     );
     assert_eq!(
         batch.session_start.unix_seconds(),
-        (WALL + 2 * MINUTE + 5 * SECOND + 2 * HOUR).as_secs()
+        (WALL + MINUTE + 5 * SECOND + 2 * HOUR).as_secs()
     );
     assert_eq!(batch.events.len(), 3);
     assert_eq!(harness.read()["diagnostics"]["dropped"], json!(5));
@@ -1412,7 +1412,7 @@ fn usage_visibility_changes_and_a_minute_without_interaction_are_recorded_in_ord
     assert!(harness.shared.lock().idle, "idle at its own deadline");
     assert_eq!(
         harness.deadline,
-        Some(10 * MINUTE),
+        Some(2 * MINUTE),
         "idle: only the window's send time is left, no sampling or idle timer"
     );
     harness.clock.advance(5 * SECOND);
@@ -1480,7 +1480,8 @@ fn usage_read_answers_the_release_the_batches_carry() {
 fn usage_a_host_without_a_window_records_no_visibility_or_idleness() {
     let mut harness = Harness::new("windowless");
     harness.shared.interacted();
-    harness.run_until(5 * MINUTE);
+    // Past the idle minute, before the window is due.
+    harness.run_until(sender::FLUSH_AFTER - SECOND);
     assert!(!harness.shared.lock().idle);
     assert_eq!(
         harness.session().unwrap().window().len,

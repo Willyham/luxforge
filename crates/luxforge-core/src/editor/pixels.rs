@@ -22,9 +22,9 @@ use super::{
     source::RawSettingsMode,
 };
 use crate::{
-    AssetId, Cancel, DraftId, EntryId, Error, MaskId, PixelInput, PreviewSource, Recipe, Region,
+    AssetId, Cancel, DraftId, EntryId, Error, MaskId, PreviewSource, Recipe, Region,
     modules::{QueryRef, Stage, StageContext, StageQuestions, check_parameters},
-    tiles::{Answered, ReadAnswer, ReadStage, ReadValues, Step, TileReads, TileSession},
+    tiles::{Answered, InputSite, ReadAnswer, ReadValues, Step, TileReads, TileSession},
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -95,11 +95,8 @@ impl Replay {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PixelRead {
-    Point {
-        index: usize,
-        x: u32,
-        y: u32,
-    },
+    /// One pixel of the stage `site` receives, its codes and its linear value in the site's mode.
+    Point { site: InputSite, x: u32, y: u32 },
     Query {
         id: String,
         parameters: Map<String, Value>,
@@ -107,9 +104,7 @@ pub(crate) enum PixelRead {
     /// A bounded region of a stage ([`crate::tiles::region`]), which only a query reads, and only
     /// on the tile service: deferring one defers the query that asked, which its dispatcher then
     /// asks of the tile service whole. It is never answered on its own.
-    Region {
-        index: usize,
-    },
+    Region { site: InputSite },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -260,15 +255,17 @@ impl DeferredRead {
             PixelRead::Region { .. } => Err(Error::internal(
                 "a region read is answered inside the query that asked for it",
             )),
-            PixelRead::Point { index, x, y } => {
+            PixelRead::Point { site, x, y } => {
                 let stage = TileStage::new(&evaluation, reads, cancel);
                 let value = PixelValue::Point {
-                    rgba: stage.sample_before(index, x, y)?,
-                    linear: stage.input_before(index, x, y)?,
+                    rgba: stage
+                        .read(site, x, y, ReadValues::Codes)?
+                        .and_then(|answer| answer.code(x, y)),
+                    linear: stage.input_at(site, x, y)?,
                 };
                 Ok(Step::Done(PixelAnswer {
                     key,
-                    read: PixelRead::Point { index, x, y },
+                    read: PixelRead::Point { site, x, y },
                     value,
                 }))
             }
@@ -379,11 +376,13 @@ impl EditorService {
     }
 
     /// Whether `draft`'s plan reads a pixel when it is planned: a stroke drafted with a colour
-    /// limit, whose seed it reads. `draft.set` plans such a draft, so its read is parked once,
+    /// limit, whose seed it reads, or a drafted pick. `draft.set` plans such a draft, so its read is parked once,
     /// off the owner, before the draft is accepted, and every preview of it finds the pixel in the
     /// session's memo. Reads the draft's fields alone.
     pub(crate) fn draft_reads_pixels(&self, draft: &crate::Draft) -> bool {
         crate::mask::commands::asks_colour_limit(&draft.fields)
+            || crate::mask::commands::find(&draft.action)
+                .is_some_and(|command| matches!(command.op, crate::mask::commands::MaskOp::Pick(_)))
     }
 
     /// Whether the current stack of `asset` holds a spatial layer, whose drafts `draft.set` plans
@@ -443,11 +442,17 @@ impl EditorService {
         }
         let head = self.head(&asset.id)?;
         let entry = self.shared_entry(&asset.id, &head.current)?;
-        let index = match &read {
-            PixelRead::Point { index, .. } => *index,
-            PixelRead::Query { .. } => recipe.layers.len(),
-            PixelRead::Region { index } => (*index).min(recipe.layers.len()),
+        let site = match &read {
+            PixelRead::Point { site, .. } => *site,
+            PixelRead::Query { .. } => {
+                InputSite::of_layer(&self.registry, recipe, recipe.layers.len())
+            }
+            PixelRead::Region { site } => InputSite {
+                index: site.index.min(recipe.layers.len()),
+                ..*site
+            },
         };
+        let index = site.index;
         let prefix = super::prefix(&recipe.layers, index)?;
         let mut hash = Sha256::new();
         let prefix_recipe = Recipe {
@@ -462,7 +467,7 @@ impl EditorService {
             draft: self.pixel_reads.borrow().draft.clone(),
             prefix_hash: hash.finalize().into(),
             input_wide,
-            input_mode: crate::render::MaskInputMode::for_layer(&self.registry, recipe, index),
+            input_mode: site.mode.into(),
             source: source.identity(),
         };
         if let Some(answer) = self.pixel_reads.borrow().memo.find(&key, &read) {
@@ -683,39 +688,16 @@ impl QueryPlan {
                 }
                 Ok(answer)
             }
-            QueryRef::Host(_) if self.query == crate::mask::commands::SAMPLE_INPUT => {
-                let mask: MaskId = serde_json::from_value(self.parameters["mask"].clone())
-                    .map_err(|e| Error::validation(e.to_string()))?;
-                let layer = crate::mask::commands::input_layer_index(recipe, &mask)?;
-                let x = self.parameters["x"].as_u64().unwrap() as u32;
-                let y = self.parameters["y"].as_u64().unwrap() as u32;
-                let stage = questions.stage_before(layer)?;
-                let outside = || {
-                    Error::validation(format!(
-                        "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked \
-                         layer receives",
-                        stage.width, stage.height
-                    ))
-                };
-                if x >= stage.width || y >= stage.height {
-                    return Err(outside());
-                }
-                let [r, g, b] = questions.input_before(layer, x, y)?.ok_or_else(outside)?;
-                let renderer = answered()
-                    .ok_or_else(|| Error::internal("the sample input was read by no renderer"))?;
-                serde_json::to_value(PixelInput {
-                    r,
-                    g,
-                    b,
-                    x,
-                    y,
-                    width: stage.width,
-                    height: stage.height,
-                    renderer: (&renderer).into(),
-                })
-                .map_err(|e| Error::internal(e.to_string()))
-            }
-            _ => Err(Error::internal("this query cannot be deferred")),
+            // The host's pixel reads about a mask, answered by the one implementation the host's
+            // own questions answer them with too.
+            QueryRef::Host(_) => super::masks::input_read(
+                registry,
+                recipe,
+                &self.query,
+                &self.parameters,
+                questions,
+                answered,
+            ),
         }
     }
 }
@@ -786,29 +768,26 @@ impl<'a> TileStage<'a> {
         self
     }
 
+    /// The input of the layer at `index` of this call's stack, as that layer receives it.
+    fn site_of(&self, index: usize) -> InputSite {
+        InputSite::of_layer(self.evaluation.registry(), self.evaluation.recipe(), index)
+    }
+
     /// The renderer that drew the latest read, once one was made.
     pub(crate) fn answered(&self) -> Option<Answered> {
         self.answered.borrow().clone()
     }
 
-    /// One pixel of the stage layer `index` receives, as `values`: `None` outside that stage.
+    /// One pixel of the stage `site` receives, as `values`: `None` outside that stage.
     fn read(
         &self,
-        index: usize,
+        site: InputSite,
         x: u32,
         y: u32,
         values: ReadValues,
     ) -> Result<Option<ReadAnswer>, Error> {
-        let mode = crate::render::MaskInputMode::for_layer(
-            self.evaluation.registry(),
-            self.evaluation.recipe(),
-            index,
-        );
         let answer = self.session.borrow_mut().read(
-            ReadStage::Before {
-                layer: index,
-                mode: mode.into(),
-            },
+            site.stage(),
             Region {
                 x0: x,
                 y0: y,
@@ -855,12 +834,15 @@ impl StageQuestions for TileStage<'_> {
     }
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         Ok(self
-            .read(index, x, y, ReadValues::Codes)?
+            .read(self.site_of(index), x, y, ReadValues::Codes)?
             .and_then(|answer| answer.code(x, y)))
     }
     fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        self.input_at(self.site_of(index), x, y)
+    }
+    fn input_at(&self, site: InputSite, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         Ok(self
-            .read(index, x, y, ReadValues::Linear)?
+            .read(site, x, y, ReadValues::Linear)?
             .and_then(|answer| answer.linear(x, y))
             .map(|value| value.map(f64::from)))
     }
@@ -955,6 +937,12 @@ mod tests {
             },
         }
     }
+    fn site(index: usize) -> InputSite {
+        InputSite {
+            index,
+            mode: crate::tiles::MaskInputMode::Boundary,
+        }
+    }
     #[test]
     fn pixel_memo_is_bounded_keeps_other_prefixes_and_evicts_changed_states() {
         let key = key();
@@ -962,7 +950,11 @@ mod tests {
         for x in 0..33 {
             memo.insert(PixelAnswer {
                 key: key.clone(),
-                read: PixelRead::Point { index: 1, x, y: 0 },
+                read: PixelRead::Point {
+                    site: site(1),
+                    x,
+                    y: 0,
+                },
                 value: PixelValue::Point {
                     rgba: None,
                     linear: None,
@@ -974,7 +966,7 @@ mod tests {
             memo.find(
                 &key,
                 &PixelRead::Point {
-                    index: 1,
+                    site: site(1),
                     x: 0,
                     y: 0
                 }
@@ -987,7 +979,7 @@ mod tests {
         memo.insert(PixelAnswer {
             key: prefix.clone(),
             read: PixelRead::Point {
-                index: 2,
+                site: site(2),
                 x: 0,
                 y: 0,
             },
@@ -1001,7 +993,7 @@ mod tests {
             memo.find(
                 &prefix,
                 &PixelRead::Point {
-                    index: 2,
+                    site: site(2),
                     x: 0,
                     y: 0
                 }
@@ -1013,7 +1005,7 @@ mod tests {
         memo.insert(PixelAnswer {
             key: changed.clone(),
             read: PixelRead::Point {
-                index: 1,
+                site: site(1),
                 x: 32,
                 y: 0,
             },
@@ -1027,7 +1019,7 @@ mod tests {
             memo.find(
                 &key,
                 &PixelRead::Point {
-                    index: 1,
+                    site: site(1),
                     x: 32,
                     y: 0
                 }
@@ -1038,7 +1030,7 @@ mod tests {
             memo.find(
                 &changed,
                 &PixelRead::Point {
-                    index: 1,
+                    site: site(1),
                     x: 32,
                     y: 0
                 }

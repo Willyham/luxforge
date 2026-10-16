@@ -593,6 +593,31 @@ fn gpu_colour_white_balance_meets_the_pointwise_limits() {
 #[slow]
 fn gpu_colour_tone_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
+    for contrast in [
+        -0.1,
+        0.1,
+        -0.18,
+        0.18,
+        -0.3,
+        0.3,
+        -1.6,
+        1.6,
+        -1.7,
+        1.7,
+        -1e-4,
+        1e-4,
+        -1e-6,
+        1e-6,
+        -1e-20,
+        1e-20,
+        -f64::from_bits(1),
+        f64::from_bits(1),
+    ] {
+        cases.push((
+            format!("small contrast {contrast:+}"),
+            basic(json!({"contrast": contrast})),
+        ));
+    }
     for field in ["contrast", "highlights", "shadows", "whites", "blacks"] {
         for value in [-100.0, 100.0] {
             cases.push((format!("{field} {value:+}"), basic(json!({ field: value }))));
@@ -908,13 +933,185 @@ fn gpu_colour_grade_meets_the_pointwise_limits() {
     );
 }
 
+/// The settings whose f32 boundaries cannot be qualified take the declared reference path,
+/// including qualification requests. Check the whole-frame reference against the independent
+/// oracle without requiring an adapter: a missing GPU cannot conceal admission mistakes.
+#[test]
+fn gpu_colour_vignette_near_hard_boundaries_route_to_the_reference() {
+    use luxforge_reference::vignette::{VignetteParams, vignette_pixel};
+
+    let registry = registry();
+    let source = luxforge_core::LinearImage::new(20, 20, vec![1.0; 400 * 3]).unwrap();
+    let context = luxforge_core::RenderContext::new();
+    // The recipe holds slider values; the oracle takes the strengths they apply.
+    let strength = |field: &str, value: f64| {
+        luxforge_core::slider_response("set-vignette", field).map_or(value, |r| r.strength(value))
+    };
+    for feather in [0.0, 0.0001, 0.01] {
+        let params = VignetteParams {
+            amount: strength("amount", -100.0),
+            midpoint: strength("midpoint", 65.0),
+            roundness: 0.0,
+            feather,
+        };
+        let recipe = recipe(vec![Layer::new(
+            VIGNETTE_EFFECT,
+            json!({"amount": -100.0, "midpoint": 65.0, "roundness": 0.0, "feather": feather}),
+        )]);
+        for request in [
+            GpuPlanRequest::exact(0, stage(20, 20)),
+            GpuPlanRequest::exact(0, stage(20, 20)).qualifying(),
+        ] {
+            let answer = gpu_plan(&registry, &recipe, request).expect("a valid recipe");
+            let fallback = answer.fallback().expect("an explicit reference fallback");
+            assert_eq!(fallback.code(), "no-program");
+            assert_eq!(fallback.layer(), Some(0));
+            assert!(fallback.to_string().contains("vignette("));
+        }
+        let reference = luxforge_core::render(
+            &registry,
+            luxforge_core::RenderSource::Linear {
+                image: &source,
+                settings: Default::default(),
+            },
+            &recipe,
+            luxforge_core::RenderOptions::default(),
+            &context,
+        )
+        .expect("the whole-frame reference renders every edit")
+        .frame(luxforge_core::SnapshotId::new())
+        .expect("the reference frame encodes");
+        for (i, pixel) in reference.rgba.chunks_exact(4).enumerate() {
+            let expected =
+                vignette_pixel((i % 20) as u32, (i / 20) as u32, 20, 20, [1.0; 3], &params).map(
+                    |value| {
+                        luxforge_reference::srgb::quantize(
+                            luxforge_reference::srgb::encode_clamped(value),
+                        )
+                    },
+                );
+            assert_eq!(&pixel[..3], &expected, "feather {feather}, pixel {i}");
+        }
+    }
+}
+
+/// A circle crossing exact pixel centres exposes f32/f64 classification differences that a
+/// large random colour grid can dilute. Qualify the supported spans with actual readback.
+#[test]
+#[slow]
+fn gpu_colour_vignette_boundary_white_twenty_by_twenty() {
+    use luxforge_reference::vignette::{VignetteParams, vignette_pixel};
+
+    let Some(qualifier) =
+        super::gpu_qualification::headless("gpu_colour_vignette_boundary_white_twenty_by_twenty")
+    else {
+        return;
+    };
+    eprintln!("vignette boundary: adapter {}", qualifier.adapter());
+    let registry = registry();
+    let mut missed = Vec::new();
+    // The layer holds slider values; the oracle takes the strengths they apply.
+    let strength = |field: &str, value: f64| {
+        luxforge_core::slider_response("set-vignette", field).map_or(value, |r| r.strength(value))
+    };
+    for feather in [0.1, 0.101, 1.0] {
+        let params = VignetteParams {
+            amount: strength("amount", -100.0),
+            midpoint: strength("midpoint", 65.0),
+            roundness: 0.0,
+            feather,
+        };
+        let layer = Layer::new(
+            VIGNETTE_EFFECT,
+            json!({"amount": -100.0, "midpoint": 65.0, "roundness": 0.0, "feather": feather}),
+        );
+        let plan = planned(
+            &registry,
+            &recipe(vec![layer]),
+            GpuPlanRequest::exact(0, stage(20, 20)).qualifying(),
+        );
+        let input = boundary(20, 20, 0x7669_676e, &[[1.0; 3]; 400]).unwrap();
+        let plan = surface_plan(&plan, input).expect("a runnable vignette plan");
+        let gpu = qualifier.evaluate(&plan).expect("actual shader readback");
+        let drawn = qualifier.evaluate_codes(&plan).expect("actual drawn codes");
+        let reference: Vec<u8> = (0..400)
+            .flat_map(|i| {
+                vignette_pixel(i % 20, i / 20, 20, 20, [1.0; 3], &params).map(|value| {
+                    luxforge_reference::srgb::quantize(luxforge_reference::srgb::encode_clamped(
+                        value,
+                    ))
+                })
+            })
+            .collect();
+        let program = codes(gpu.iter().map(|pixel| [pixel[0], pixel[1], pixel[2]]));
+        let drawn: Vec<u8> = drawn
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .collect();
+        let compare = |bytes: &[u8]| {
+            preview_error::compare(
+                Rgb8::new(20, 20, bytes).unwrap(),
+                Rgb8::new(20, 20, &reference).unwrap(),
+                [0, 0, 20, 20],
+            )
+            .unwrap()
+        };
+        let program = compare(&program);
+        let drawn = compare(&drawn);
+        let finite = gpu
+            .iter()
+            .all(|pixel| pixel[..3].iter().all(|value| value.is_finite()));
+        eprintln!(
+            "vignette boundary feather {feather}: program {} | drawn {} | finite {finite}",
+            figures(&program),
+            figures(&drawn)
+        );
+        if !finite || !preview_error::verdict(&program, Class::Pointwise).passed() {
+            missed.push(feather);
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "vignette boundary misses at feathers {missed:?}"
+    );
+
+    // A neutral GPU-shaped draft remains an exact identity even at the unsupported boundary
+    // settings; its shader returns before computing the mask or taking an encode/decode trip.
+    for feather in [0.0, 0.0001, 0.01] {
+        let layer = Layer::new(
+            VIGNETTE_EFFECT,
+            json!({"amount": 0, "midpoint": 65, "roundness": 0, "feather": feather}),
+        );
+        let plan = planned(
+            &registry,
+            &recipe(vec![layer]),
+            GpuPlanRequest::exact(0, stage(20, 20)).drafted(0),
+        );
+        assert!(plan.operations().any(|operation| {
+            operation
+                .units
+                .iter()
+                .any(|unit| unit.program.entry == "lf_vignette_vignette")
+        }));
+        let pixel = [0.25, 0.5, 0.75];
+        let input = boundary(20, 20, 0x7669_676e, &[pixel; 400]).unwrap();
+        let plan = surface_plan(&plan, input).expect("a runnable neutral vignette plan");
+        let gpu = qualifier
+            .evaluate(&plan)
+            .expect("actual neutral shader readback");
+        for output in gpu {
+            assert_eq!(&output[..3], &pixel, "neutral feather {feather}");
+        }
+    }
+}
+
 #[test]
 #[slow]
 fn gpu_colour_vignette_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
     for amount in [-100, 100] {
         for roundness in [-100, 0, 100] {
-            for (midpoint, feather) in [(0, 0), (50, 0), (50, 100), (100, 100), (0, 100)] {
+            for (midpoint, feather) in [(0, 1), (50, 1), (50, 100), (100, 100), (0, 100)] {
                 cases.push((
                     format!(
                         "amount {amount:+} roundness {roundness:+} midpoint {midpoint} feather \

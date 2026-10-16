@@ -121,10 +121,10 @@ impl Host {
         }
     }
 
-    /// Let the first window fall due (ten minutes plus at most a minute of jitter) and wait for
+    /// Let the first window fall due (two minutes plus at most a minute of jitter) and wait for
     /// its one attempt to end.
     fn first_attempt(&self) {
-        self.clock.advance(Duration::from_secs(12 * 60));
+        self.clock.advance(Duration::from_secs(4 * 60));
         wait_until("the attempt's outcome", || {
             let counts = self.usage.diagnostics();
             counts.accepted == 1 || counts.delivery != Delivery::Ready

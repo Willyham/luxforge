@@ -173,8 +173,13 @@ impl TileService for ReferenceTiles {
     }
 
     /// The reference renders no bands: it answers `no-adapter`, there being no GPU here to render
-    /// them on, and the export lane renders its own reference frame.
-    fn stream(&self, _: &Evaluation, _: &Cancel) -> Result<BandStream, TileFallback> {
+    /// them on, and the export lane renders its own reference output ([`super::reference_output`]).
+    fn stream(
+        &self,
+        _: &Evaluation,
+        _: super::OutputSpec,
+        _: &Cancel,
+    ) -> Result<BandStream, TileFallback> {
         Err(TileFallback::Unavailable(TileUnavailable::NoAdapter))
     }
 

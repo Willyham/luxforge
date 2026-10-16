@@ -135,6 +135,7 @@ fn encode(width: u32, height: u32, rgba: &[u8], segments: &[(u8, &[u8])]) -> Vec
         &luxforge_jpeg::Settings {
             quality: 95,
             chroma: (1, 1),
+            optimise: false,
             segments,
             icc: None,
             pixels_per_inch: None,

@@ -1,19 +1,20 @@
 //! What one command does to a stack: the family's behaviour, matched on each command's [`MaskOp`],
 //! and the history label it commits.
 use super::{
-    GeometryMethod, GeometryOp, MaskCommand, MaskOp, MaskTarget, RemovedLayer, SampleMethod,
-    SampleOp, spoken,
+    GeometryMethod, GeometryOp, MaskCommand, MaskOp, MaskTarget, PickMethod, RemovedLayer,
+    SampleMethod, SampleOp, spoken,
 };
 use crate::mask::{
-    SAMPLES_FIELD, component_geometry_is_drawn, component_parameters, component_sample_limit,
-    component_sample_parameters, knows_component_kind, rules, stroke_kind,
+    Picked, SAMPLES_FIELD, component_geometry_is_drawn, component_parameters, component_pick,
+    component_sample_limit, component_sample_parameters, knows_component_kind, rules, stroke_kind,
 };
 use crate::{
-    Component, ComponentId, ComponentMode, Error, Layer, LayerId, Mask, MaskId, ModuleRegistry,
-    Recipe,
+    Component, ComponentId, ComponentMode, EffectStage, Error, Layer, LayerId, Mask, MaskId,
+    ModuleRegistry, Recipe,
     mask::{ColourLimit, Stroke},
     model::MASKS_PER_RECIPE,
     path::{self, StrokeId},
+    tiles::InputSite,
 };
 use serde_json::{Map, Value, json};
 
@@ -51,24 +52,41 @@ struct Planned {
     removed_layers: Vec<RemovedLayer>,
 }
 
+/// What the host read for one command before it is planned, because [`plan`] reads no pixel: the
+/// pixel a colour-limited stroke is seeded on, as the three sRGB codes read at the site and position
+/// [`colour_limit_request`] named, or what a pick read at the site and place [`pick_request`] named.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum HostRead<'a> {
+    /// The command reads nothing.
+    #[default]
+    Nothing,
+    Seed([u8; 3]),
+    Picked(Picked<'a>),
+}
+
 /// What one command would do to this stack: the whole family's behaviour in one place.
 ///
 /// Pure — it reads the recipe it is handed and returns a new one — so the same function answers a
 /// commit and a drafted preview, and a drafted gesture therefore previews exactly the stack
-/// committing it would write. It reads no pixels and costs `O(masks + components + layers)`.
+/// committing it would write. It reads no pixels and costs `O(masks + components + layers)`, plus a
+/// pick's `O(points)` over at most [`super::AREA_POINTS`].
 ///
-/// `seed` is the pixel a limited stroke was seeded on, as the three sRGB codes the host read at the
-/// layer and position [`colour_limit_request`] named. It arrives as an argument rather than being
-/// read here because this function reads no pixels — that is what lets a drafted gesture preview
-/// exactly the stack its release commits, through the same call.
+/// `read` is what the host read for the command beforehand: a limited stroke's seed or a pick's
+/// pixels. It arrives as an argument rather than being read here because this function reads no
+/// pixels — that is what lets a drafted gesture preview exactly the stack its release commits,
+/// through the same call.
 pub(crate) fn plan(
     command: &MaskCommand,
     recipe: &Recipe,
     target: &MaskTarget,
     parameters: &Map<String, Value>,
     registry: &ModuleRegistry,
-    seed: Option<[u8; 3]>,
+    read: HostRead<'_>,
 ) -> Result<MaskOutcome, Error> {
+    let seed = match read {
+        HostRead::Seed(seed) => Some(seed),
+        HostRead::Nothing | HostRead::Picked(_) => None,
+    };
     let mut next = recipe.clone();
     // Each arm produces what the command touched and its base label. The mask prefix is applied
     // once, below, so there is one label rule.
@@ -80,6 +98,7 @@ pub(crate) fn plan(
     let planned = match command.op {
         MaskOp::Geometry(geometry) => plan_geometry(geometry, &mut next, target, parameters)?,
         MaskOp::Sample(samples) => plan_sample(samples, &mut next, target, parameters)?,
+        MaskOp::Pick(pick) => plan_pick(pick, &mut next, target, parameters, read)?,
         MaskOp::AddStroke => plan_add_stroke(&mut next, target, parameters, seed)?,
         MaskOp::DeleteStroke => plan_delete_stroke(&mut next, target)?,
         MaskOp::Delete => {
@@ -653,32 +672,76 @@ pub(super) fn strokes_payload(strokes: &[StrokeId]) -> Value {
     json!({ path::STROKES_FIELD: strokes })
 }
 
-/// Which layer's input a mask's value-based parts read, and the refusal when there is none.
+/// Where a mask's value-based parts read the pixel the operation it modulates receives: the
+/// position in the stack, and how the operation there receives its input.
 ///
-/// **The rule, stated once for everything that reads a pixel through a mask:** the pixel is taken at
-/// the stage the **first layer bound to this mask in evaluation order** receives. A mask several
-/// layers at different stages share therefore has one answer and not several, and that answer is the
-/// earliest operation the mask modulates — the one its components were drawn against first.
+/// **The rule, stated once for everything that reads a pixel through a mask** — the coverage
+/// overlay and thumbnail, `mask.sample-input` and a colour-limited stroke's seed:
 ///
-/// A mask no layer is bound to is **refused by name** rather than answered from the source or from
-/// the finished frame. It has no operation to be the input of: a colour sampled anywhere else would
-/// be in a different domain from the one the selection is evaluated in, and the
-/// [range study](../../../../../docs/design/range-study.md) measures what that costs — a `+0.75 EV` layer
-/// ahead of a band takes a sky from fully selected to not selected at all. Refusing says so; seeding
-/// from the wrong stage would silently select nothing.
-pub(crate) fn input_layer_index(recipe: &Recipe, mask: &MaskId) -> Result<usize, Error> {
+/// - A mask a layer is bound to reads the input of the **first layer bound to it in evaluation
+///   order**, as that layer receives it. A mask several layers at different stages share therefore
+///   has one answer, the earliest operation it modulates.
+/// - A mask no layer is bound to reads where **a first adjustment through it would go**: the
+///   earliest position a maskable colour effect — Basic's, in practice — would take for this mask
+///   by the placement rule a commit uses ([`ModuleRegistry::insertion_index_for_target`]), read as
+///   a colour operation receives it. The mode is stated rather than asked of the layer that holds
+///   that position now, which may be a spatial layer or none at all. So a range drawn before any
+///   adjustment selects what it selects once Basic is applied through it; a first Curve, Mixer,
+///   Presence or Detail adjustment may move the selection, because the first bound layer then
+///   decides. Only colour effects are asked, on purpose: Detail, at the restoration stage, would
+///   place itself ahead of a global Basic layer, and binding a first Basic adjustment would then
+///   move the site past that layer and the selection with it. A host that registers no maskable
+///   colour effect reads where its earliest maskable effect would go, as that effect receives its
+///   input.
+/// - A mask the stack does not hold yet — the mask a stroke is about to draw — sorts after every
+///   mask it does hold, as a new last mask does.
+///
+/// Only a host with no maskable effect at all is refused ([`rules::maskable_operation`]). Reading
+/// the source or the finished frame instead would put the pixel in a different domain from the
+/// one the selection is evaluated in: the [range study](../../../../../docs/design/range-study.md)
+/// measures a `+0.75 EV` layer ahead of a band taking a sky from fully selected to not selected at
+/// all.
+///
+/// `O(layers · (maskable effects + masks))`; reads no pixels.
+pub fn input_site(
+    registry: &ModuleRegistry,
+    recipe: &Recipe,
+    mask: &MaskId,
+) -> Result<InputSite, Error> {
+    if let Some(index) = recipe
+        .layers
+        .iter()
+        .position(|layer| layer.mask.as_ref() == Some(mask))
+    {
+        return Ok(InputSite::of_layer(registry, recipe, index));
+    }
+    let earliest = |colour: bool| {
+        registry
+            .maskable_effects()
+            .filter(|effect| !colour || effect.stage == EffectStage::Color)
+            .map(|effect| {
+                let index = registry.insertion_index_for_target(
+                    &recipe.layers,
+                    &effect.id,
+                    Some(mask),
+                    &recipe.masks,
+                );
+                (index, effect.stage)
+            })
+            .min_by_key(|(index, _)| *index)
+    };
+    let found = earliest(true).or_else(|| earliest(false));
     let name = recipe
         .masks
         .iter()
         .find(|held| &held.id == mask)
-        .map(|held| held.name.clone())
-        .unwrap_or_else(|| mask.as_str().to_owned());
-    let index = recipe
-        .layers
-        .iter()
-        .position(|layer| layer.mask.as_ref() == Some(mask));
-    rules::bound_layer(&name, index.is_some())?;
-    Ok(index.unwrap_or_default())
+        .map_or_else(|| mask.as_str().to_owned(), |held| held.name.clone());
+    rules::maskable_operation(&name, found.is_some())?;
+    let (index, stage) = found.unwrap_or((recipe.layers.len(), EffectStage::Color));
+    Ok(InputSite {
+        index,
+        mode: crate::render::MaskInputMode::for_stage(Some(stage)).into(),
+    })
 }
 
 /// What one `mask.add-stroke` needs read before it can be planned, when it asks for a colour limit:
@@ -695,8 +758,8 @@ pub(crate) fn input_layer_index(recipe: &Recipe, mask: &MaskId) -> Result<usize,
 /// path and an agent's raw copy of it seed from the same pixel exactly as they store the same bytes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LimitRequest {
-    /// The layer whose input stage the seed is read from, by [`input_layer_index`].
-    pub layer: usize,
+    /// Where the seed is read, by [`input_site`].
+    pub site: InputSite,
     /// The stroke's first stored position, in the content stage's normalized coordinates.
     pub x: f64,
     pub y: f64,
@@ -721,14 +784,22 @@ pub(crate) fn colour_limit_request(
     recipe: &Recipe,
     target: &MaskTarget,
     parameters: &Map<String, Value>,
+    registry: &ModuleRegistry,
 ) -> Result<Option<LimitRequest>, Error> {
     if command.op != MaskOp::AddStroke || !boolean(parameters, "limit_to_colour")? {
         return Ok(None);
     }
-    let Some(mask) = target.mask.as_ref() else {
-        return Err(rules::limit_on_new_mask());
+    // A stroke with no mask draws a new one, which no layer is bound to and which joins the list
+    // last: an identity the stack does not hold is placed exactly so.
+    let drawn;
+    let mask = match target.mask.as_ref() {
+        Some(mask) => mask,
+        None => {
+            drawn = MaskId::new();
+            &drawn
+        }
     };
-    let layer = input_layer_index(recipe, mask)?;
+    let site = input_site(registry, recipe, mask)?;
     // The stored first position, which is what makes the seed a property of the stroke the store
     // holds rather than of the raw path one client happened to post.
     let stroke = captured_stroke(parameters)?;
@@ -737,11 +808,121 @@ pub(crate) fn colour_limit_request(
         .next()
         .ok_or_else(|| Error::validation("a stroke has no position to read a colour at"))?;
     Ok(Some(LimitRequest {
-        layer,
+        site,
         x,
         y,
         refine: number(parameters, "colour_refine")?,
     }))
+}
+
+/// What one `mask.pick-<kind>` needs read before it can be planned: the mask's input site, the
+/// picked point in the content stage's normalized coordinates, and the dragged rectangle's size when
+/// the pick is a drag.
+///
+/// The component it fills is checked first — that it exists, that this build knows its kind and
+/// that the kind is the one the method was generated for — so a pick that would be refused is
+/// refused before anything is read.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PickRequest {
+    pub mask: MaskId,
+    pub site: InputSite,
+    pub x: f64,
+    pub y: f64,
+    /// `(width, height)` of a drag; `None` for a click.
+    pub area: Option<(f64, f64)>,
+}
+
+/// Whether this request is a pick, and what the host reads to plan it.
+pub(crate) fn pick_request(
+    command: &MaskCommand,
+    recipe: &Recipe,
+    target: &MaskTarget,
+    parameters: &Map<String, Value>,
+    registry: &ModuleRegistry,
+) -> Result<Option<PickRequest>, Error> {
+    let MaskOp::Pick(pick) = command.op else {
+        return Ok(None);
+    };
+    let (mask_index, index) = component_at(recipe, target)?;
+    picked_component(&recipe.masks[mask_index].components[index], pick)?;
+    let mask = recipe.masks[mask_index].id.clone();
+    let area = match (parameters.get("width"), parameters.get("height")) {
+        (None, None) => None,
+        (Some(_), Some(_)) => Some((number(parameters, "width")?, number(parameters, "height")?)),
+        _ => {
+            return Err(Error::validation(
+                "a dragged area names both width and height; a click names neither",
+            ));
+        }
+    };
+    Ok(Some(PickRequest {
+        site: input_site(registry, recipe, &mask)?,
+        mask,
+        x: number(parameters, "x")?,
+        y: number(parameters, "y")?,
+        area,
+    }))
+}
+
+/// A component `pick` may fill: one of a kind this build knows, and the kind the method was
+/// generated for. An unknown kind is `incompatible`, as rendering it is; another kind is refused
+/// naming the method that does pick it, when there is one.
+fn picked_component(component: &Component, pick: PickMethod) -> Result<(), Error> {
+    if !knows_component_kind(&component.kind) {
+        return Err(rules::unknown_kind(&component.kind));
+    }
+    if component.kind != pick.kind {
+        let remedy = match super::declare::pick(&component.kind) {
+            Some(command) => format!("; pick it with {}", command.method),
+            None => format!(
+                "; a {} component is not picked from the photograph",
+                spoken(&component.kind)
+            ),
+        };
+        return Err(Error::validation(format!(
+            "component {} is a {} component, not a {}{remedy}",
+            component.name,
+            spoken(&component.kind),
+            spoken(pick.kind)
+        )));
+    }
+    Ok(())
+}
+
+/// The generated pick method, over whichever kind it was generated for: the kind's own pick rule
+/// turns what the host read into the component's new payload. One entry, `Pick` and the component's
+/// name; a pick that leaves the payload as it was — a colour already held — writes none.
+fn plan_pick(
+    pick: PickMethod,
+    next: &mut Recipe,
+    target: &MaskTarget,
+    parameters: &Map<String, Value>,
+    read: HostRead<'_>,
+) -> Result<Planned, Error> {
+    let HostRead::Picked(picked) = read else {
+        return Err(Error::validation(
+            "a pick needs the pixels the masked operation receives, and none were read",
+        ));
+    };
+    let rule = component_pick(pick.kind).ok_or_else(|| rules::unknown_kind(pick.kind))?;
+    let (mask_index, index) = component_at(next, target)?;
+    let mask = &mut next.masks[mask_index];
+    let component = &mut mask.components[index];
+    picked_component(component, pick)?;
+    let add = parameters
+        .get("add")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    component.payload = rule(component, picked, add)?;
+    let label = format!("Pick {}", component.name);
+    let component_id = component.id.clone();
+    mask.validate()?;
+    Ok(Planned {
+        label,
+        mask: Some(mask.id.clone()),
+        component: Some(component_id),
+        ..Planned::default()
+    })
 }
 
 /// The stroke one `mask.add-stroke` posted, captured on the stored grid.

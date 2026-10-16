@@ -11,28 +11,41 @@
 //! a tick that finds one still out does nothing, so a slow owner stretches the interval rather than
 //! queueing reads behind itself.
 //!
+//! **One frame a sample.** Every message the editor handles redraws the whole window, so the timer
+//! is not a message: the sampler's stream waits out the interval, asks the owner itself and yields
+//! only the answer ([`samples`]). A sample costs one update and one presented frame, and a tick
+//! that finds a read still out yields nothing at all.
+//!
 //! **One board.** The section's job rows are drawn from the board long-running work holds
-//! (`app/long_work.rs`), the snapshot the status bar's job comes from: the sampler reads it at each
-//! tick, on the update loop through long work's watch (what `activity.list` answers, without an
-//! owner round trip), and every read long work takes when the board wakes it refreshes the rows
-//! too. So the rows follow a catalog job's begin, progress and end between samples, and they and
-//! the status bar never show two reads of the board.
+//! (`app/long_work.rs`), the snapshot the status bar's job comes from: the sampler reads it as each
+//! sample lands, on the update loop through long work's watch (what `activity.list` answers,
+//! without an owner round trip), and every read long work takes when the board wakes it refreshes
+//! the rows too. So the rows follow a catalog job's begin, progress and end between samples, and
+//! they and the status bar never show two reads of the board.
 use crate::app::Before;
-use crate::coalesce::Coalesce;
 use crate::{
     app::{
         Editor,
         message::{Message, performance::PerformanceMessage},
         outcome::Outcome,
-        tasks::{PerformanceRead, performance_task},
+        tasks::{PerformanceRead, off_loop, performance_task, read_performance},
     },
     state::{performance::PerformanceHistory, preferences::PreferenceChange},
 };
+use iced::futures::{
+    Stream, StreamExt,
+    stream::{self, BoxStream},
+};
 use iced::{Subscription, Task};
-use luxforge_core::{JobId, resources::ResourceReport};
+use luxforge_core::{ClientId, JobId, OwnerHandle, resources::ResourceReport};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 /// The sampler's interval, which is the sparklines' resolution: sixty points span a minute.
@@ -53,19 +66,60 @@ pub(crate) struct Sampler {
     pub(crate) expanded: bool,
     pub(crate) cancelling: BTreeSet<JobId>,
     pub(crate) history: PerformanceHistory,
-    /// The one read in flight: a read is never duplicated beside it.
-    pub(crate) read: Coalesce<()>,
+    /// The one read in flight, and the reads asked for, shared with the timer's stream, which
+    /// asks the owner without a message of its own.
+    pub(crate) reads: Arc<Reads>,
+    /// The slot of a read the update loop sent, held until its answer is handled. The timer's
+    /// reads hold their own slot, beside the read.
+    asked: Option<ReadSlot>,
     /// The gate as the sampler last acted on it. Holding it here, rather than comparing the gate
     /// before and after each message, makes a message handled inside another — an evidence step
     /// runs its own update from within one — start sampling once rather than twice.
     pub(crate) running: bool,
     /// Moves whenever sampling starts or stops; a read carries the epoch it was asked under.
     pub(crate) epoch: u64,
-    /// Reads asked of the owner since launch, for evidence: a run proves the section asleep by this
-    /// staying put while it is collapsed.
-    pub(crate) requested: u64,
     /// Why the last read could not be used, until one can.
     pub(crate) error: Option<String>,
+}
+
+/// The sampler's reads, shared by the update loop and the timer's stream: at most one in flight,
+/// whichever of them asked for it, and how many have been asked for since launch.
+#[derive(Debug, Default)]
+pub(crate) struct Reads {
+    in_flight: AtomicBool,
+    requested: AtomicU64,
+}
+
+/// One read in flight: let go when the read has its answer, wherever that is, so the next read can
+/// go out even if whatever asked for this one has gone.
+#[derive(Debug)]
+pub(crate) struct ReadSlot(Arc<Reads>);
+
+impl Drop for ReadSlot {
+    fn drop(&mut self) {
+        self.0.in_flight.store(false, Ordering::Release);
+    }
+}
+
+impl Reads {
+    /// The slot for one read, counted as asked for, unless a read is already out.
+    pub(crate) fn begin(self: &Arc<Self>) -> Option<ReadSlot> {
+        self.in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        self.requested.fetch_add(1, Ordering::Relaxed);
+        Some(ReadSlot(Arc::clone(self)))
+    }
+
+    pub(crate) fn in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire)
+    }
+
+    /// Reads asked of the owner since launch, for evidence: a run proves the section asleep by this
+    /// staying put while it is collapsed.
+    pub(crate) fn requested(&self) -> u64 {
+        self.requested.load(Ordering::Relaxed)
+    }
 }
 
 impl Sampler {
@@ -76,6 +130,11 @@ impl Sampler {
             expanded,
             ..Self::default()
         }
+    }
+
+    /// Reads asked of the owner since launch ([`Reads::requested`]).
+    pub(crate) fn requested(&self) -> u64 {
+        self.reads.requested()
     }
 
     /// Start a fresh window: nothing read before the section last stopped sampling is kept.
@@ -155,9 +214,8 @@ impl Editor {
                     Err(reason) => format!("Could not cancel background job: {reason}"),
                 };
                 self.outcome(Outcome::PerformanceCancelled { failed });
-                self.performance_tick()
+                self.performance_read_now()
             }
-            PerformanceMessage::Tick => self.performance_tick(),
             PerformanceMessage::Sampled { epoch, result } => {
                 self.performance_sampled(epoch, result)
             }
@@ -194,26 +252,22 @@ impl Editor {
         self.performance_read()
     }
 
-    /// Read the board and ask the owner for the counters, unless a read is already out. A read
-    /// still in flight from an earlier epoch is not duplicated: it is dropped when it lands, and
-    /// that is when the new epoch's first read goes out. The board is long work's, read here on
-    /// the update loop, so the job rows age with the section's own cadence while nothing wakes
-    /// long work.
+    /// Ask the owner for the counters, unless a read is already out. A read still in flight from
+    /// an earlier epoch is not duplicated: it is dropped when it lands, and that is when the new
+    /// epoch's first read goes out. Only a message the editor is already handling asks here — the
+    /// start of sampling and a cancellation's answer — so the read adds the one frame its answer
+    /// draws; the timer's reads are its stream's own ([`samples`]).
     fn performance_read(&mut self) -> Task<Message> {
-        self.performance.read.offer(());
-        if self.performance.read.start().is_none() {
+        let Some(slot) = self.performance.reads.begin() else {
             return Task::none();
-        }
-        self.performance.requested += 1;
-        Task::batch([
-            self.section_reads_board(),
-            performance_task(self.owner.clone(), self.client, self.performance.epoch),
-        ])
+        };
+        self.performance.asked = Some(slot);
+        performance_task(self.owner.clone(), self.client, self.performance.epoch)
     }
 
-    /// One tick of the sampler's timer. The timer exists only while the section samples, so the
-    /// gate here only guards against a tick already queued as the gate closed.
-    pub(crate) fn performance_tick(&mut self) -> Task<Message> {
+    /// A read now, outside the timer's cadence, while the section samples: a cancellation's answer
+    /// shows the job's row as it is.
+    pub(crate) fn performance_read_now(&mut self) -> Task<Message> {
         if !self.performance_sampling() {
             return Task::none();
         }
@@ -222,12 +276,15 @@ impl Editor {
 
     /// A read answered. One asked under an earlier epoch, or landing after the section stopped
     /// sampling, is dropped; if the section is sampling again by then, its first read goes out now.
+    /// One that belongs is taken up with a read of the board, so the counters and the job rows are
+    /// drawn in the same frame.
     pub(crate) fn performance_sampled(
         &mut self,
         epoch: u64,
         result: Result<Box<PerformanceRead>, String>,
     ) -> Task<Message> {
-        self.performance.read.answered();
+        // With one read out at a time, an answer while the update loop holds a slot is that read's.
+        self.performance.asked = None;
         if epoch != self.performance.epoch || !self.performance_sampling() {
             return if self.performance_sampling() {
                 self.performance_read()
@@ -235,6 +292,7 @@ impl Editor {
                 Task::none()
             };
         }
+        let board = self.section_reads_board();
         let adopted = result.and_then(|read| self.performance.adopt(&read).map(|()| read));
         let read = match adopted {
             Ok(read) => Some(read),
@@ -246,7 +304,7 @@ impl Editor {
         };
         // The answer is reported with the read it took up, which only evidence keeps.
         self.outcome(Outcome::PerformanceRead(read));
-        Task::none()
+        board
     }
 
     /// The section as a captured frame records it: the flag, the reads asked for, the raw counter
@@ -264,8 +322,8 @@ impl Editor {
         json!({
             "expanded": self.performance.expanded,
             "sampling": self.performance_sampling(),
-            "reads_requested": self.performance.requested,
-            "in_flight": self.performance.read.in_flight(),
+            "reads_requested": self.performance.requested(),
+            "in_flight": self.performance.reads.in_flight(),
             "samples": self.performance.history.len(),
             "pid": std::process::id(),
             "wall_ms": raw.and_then(|raw| raw.back()).map(|(wall_ms, _)| wall_ms),
@@ -317,12 +375,103 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
 }
 
 /// The sampler's timer, gated on the section being expanded with the state panel on screen.
-/// Collapsed or hidden, there is no timer at all, in evidence runs too.
+/// Collapsed or hidden, there is no timer at all, in evidence runs too. Its identity is the epoch,
+/// so each start of sampling has its own timer, and one that stopped is dropped with the gate.
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     if !editor.performance_sampling() {
         return Subscription::none();
     }
-    iced::time::every(INTERVAL).map(|_| Message::Performance(PerformanceMessage::Tick))
+    Subscription::run_with(
+        Timer {
+            epoch: editor.performance.epoch,
+            owner: editor.owner.clone(),
+            client: editor.client,
+            reads: Arc::clone(&editor.performance.reads),
+        },
+        timer,
+    )
+}
+
+/// What the timer's stream needs to ask the owner itself. Only the epoch is its identity.
+pub(super) struct Timer {
+    epoch: u64,
+    owner: OwnerHandle,
+    client: ClientId,
+    reads: Arc<Reads>,
+}
+
+impl Hash for Timer {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.epoch.hash(state);
+    }
+}
+
+/// The interval's ticks, the first a whole interval after the start, since sampling's first read
+/// goes out with the message that started it. A tick missed while the stream waits on a read is
+/// skipped rather than made up.
+fn timer(timer: &Timer) -> BoxStream<'static, Message> {
+    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + INTERVAL, INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let ticks = stream::unfold(interval, |mut interval| async move {
+        interval.tick().await;
+        Some(((), interval))
+    });
+    let (owner, client) = (timer.owner.clone(), timer.client);
+    samples(ticks, Arc::clone(&timer.reads), timer.epoch, move || {
+        read_performance(&owner, client)
+    })
+    .boxed()
+}
+
+/// The sampler's messages for a stream of ticks: at each tick, unless a read is already out, one
+/// read off the update loop and then one message with its answer. A tick yields no message of its
+/// own, so a sample costs the window one frame, and a skipped tick none.
+fn samples(
+    ticks: impl Stream<Item = ()> + Send + 'static,
+    reads: Arc<Reads>,
+    epoch: u64,
+    read: impl Fn() -> Result<PerformanceRead, String> + Clone + Send + 'static,
+) -> impl Stream<Item = Message> + Send + 'static {
+    ticks.filter_map(move |()| {
+        let slot = reads.begin();
+        let read = read.clone();
+        async move {
+            let slot = slot?;
+            let result = off_loop(move || {
+                let result = read();
+                // The slot is let go with the answer, even if this stream has gone by then.
+                drop(slot);
+                result
+            })
+            .await;
+            Some(Message::Performance(PerformanceMessage::Sampled {
+                epoch,
+                result: result.map(Box::new),
+            }))
+        }
+    })
+}
+
+/// One tick of the timer, through the stream the subscription runs, for a test that has no
+/// runtime: the read goes out inline, so the message it yields is the answer. `None` when the
+/// section is not sampling, which is when there is no timer, or while a read is already out.
+#[cfg(test)]
+pub(crate) fn timer_tick(editor: &Editor) -> Option<Message> {
+    use iced::futures::FutureExt;
+    if subscription(editor).units() == 0 {
+        return None;
+    }
+    let (owner, client) = (editor.owner.clone(), editor.client);
+    let mut stream = std::pin::pin!(samples(
+        stream::iter([()]),
+        Arc::clone(&editor.performance.reads),
+        editor.performance.epoch,
+        move || read_performance(&owner, client),
+    ));
+    stream
+        .next()
+        .now_or_never()
+        .expect("an inline read answers at once")
 }
 
 #[cfg(test)]
@@ -467,11 +616,15 @@ mod tests {
             "a user preference requires no photo or history"
         );
         finish(editor, catalog.clone());
-        let mut reopened = launch(&catalog);
+        let reopened = launch(&catalog);
         assert!(!reopened.performance.expanded);
-        let _ = reopened.update(Message::Performance(PerformanceMessage::Tick));
+        assert!(
+            timer_tick(&reopened).is_none(),
+            "collapsed, there is no timer"
+        );
         assert_eq!(
-            reopened.performance.requested, 0,
+            reopened.performance.requested(),
+            0,
             "a saved collapse creates no timer/read"
         );
         finish(reopened, catalog);
@@ -522,7 +675,7 @@ mod tests {
         let (mut editor, catalog) = boot();
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(!editor.performance.expanded);
-        assert_eq!(editor.performance.requested, 0);
+        assert_eq!(editor.performance.requested(), 0);
         (editor, catalog)
     }
 
@@ -576,16 +729,17 @@ mod tests {
         assert!(editor.performance.expanded);
         assert_eq!(editor.performance.history.len(), 0, "a fresh window");
         assert_eq!(
-            editor.performance.requested, 1,
+            editor.performance.requested(),
+            1,
             "read at once, not a second later"
         );
-        assert!(editor.performance.read.in_flight());
+        assert!(editor.performance.reads.in_flight());
         // A message that carried the toggle inside it — an evidence step's own update — sees the
         // gate already acted on and starts nothing again.
         let epoch = editor.performance.epoch;
         let _ = editor.performance_transition();
         assert_eq!(editor.performance.epoch, epoch);
-        assert_eq!(editor.performance.requested, 1);
+        assert_eq!(editor.performance.requested(), 1);
 
         let epoch = editor.performance.epoch;
         let answer = read(&editor);
@@ -593,7 +747,7 @@ mod tests {
             epoch,
             result: Ok(answer),
         }));
-        assert!(!editor.performance.read.in_flight());
+        assert!(!editor.performance.reads.in_flight());
         assert_eq!(editor.performance.history.len(), 1);
         let rows = &editor.workspace.performance.metrics;
         assert_eq!(rows.len(), 3);
@@ -610,9 +764,10 @@ mod tests {
 
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(!editor.performance_sampling());
-        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+        assert!(timer_tick(&editor).is_none());
         assert_eq!(
-            editor.performance.requested, 1,
+            editor.performance.requested(),
+            1,
             "collapsed, nothing is asked"
         );
         assert_eq!(
@@ -624,16 +779,71 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// Every message redraws the whole window, so the sampler's cost is its messages. Collapsed,
+    /// there is no timer to send any; expanded, a tick sends none of its own, a tick that finds a
+    /// read out sends nothing, and each read sends one message, its answer.
+    #[test]
+    fn collapsed_there_is_no_timer_and_expanded_each_sample_is_one_message() {
+        use iced::futures::{FutureExt, channel::mpsc};
+        let (mut editor, catalog) = boot_collapsed();
+        assert_eq!(subscription(&editor).units(), 0, "no timer while collapsed");
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
+        assert_eq!(subscription(&editor).units(), 1, "one timer while expanded");
+
+        let reads = Arc::new(Reads::default());
+        let answered = Arc::new(AtomicU64::new(0));
+        let (ticks, timer) = mpsc::unbounded();
+        let read = {
+            let answered = Arc::clone(&answered);
+            move || {
+                answered.fetch_add(1, Ordering::Relaxed);
+                Err("stand-in".to_owned())
+            }
+        };
+        let mut messages = std::pin::pin!(samples(timer, Arc::clone(&reads), 7, read));
+        // A read already out — the one the start of sampling sent — makes a tick send nothing.
+        let out = reads.begin().expect("nothing is out yet");
+        ticks.unbounded_send(()).unwrap();
+        assert!(
+            messages.next().now_or_never().is_none(),
+            "a skipped tick is no message"
+        );
+        assert_eq!(
+            (reads.requested(), answered.load(Ordering::Relaxed)),
+            (1, 0)
+        );
+        drop(out);
+        for sample in 1..=3 {
+            ticks.unbounded_send(()).unwrap();
+            let message = messages.next().now_or_never().flatten();
+            assert!(
+                matches!(
+                    message,
+                    Some(Message::Performance(PerformanceMessage::Sampled {
+                        epoch: 7,
+                        ..
+                    }))
+                ),
+                "one message, the answer: {message:?}"
+            );
+            assert!(messages.next().now_or_never().is_none(), "and nothing more");
+            assert_eq!(answered.load(Ordering::Relaxed), sample);
+            assert!(!reads.in_flight(), "the slot goes with the answer");
+        }
+        finish(editor, catalog);
+    }
+
     #[test]
     fn a_tick_while_a_read_is_in_flight_does_nothing() {
         let (mut editor, catalog) = boot_collapsed();
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
-        assert_eq!(editor.performance.requested, 1);
+        assert_eq!(editor.performance.requested(), 1);
         for _ in 0..3 {
-            let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+            assert!(timer_tick(&editor).is_none(), "a tick yields no message");
         }
         assert_eq!(
-            editor.performance.requested, 1,
+            editor.performance.requested(),
+            1,
             "one read in flight at a time"
         );
         let epoch = editor.performance.epoch;
@@ -642,8 +852,10 @@ mod tests {
             epoch,
             result: Ok(answer),
         }));
-        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
-        assert_eq!(editor.performance.requested, 2, "the next tick reads again");
+        let sampled = timer_tick(&editor).expect("the next tick reads again");
+        assert_eq!(editor.performance.requested(), 2);
+        let _ = editor.update(sampled);
+        assert_eq!(editor.performance.history.len(), 2);
         finish(editor, catalog);
     }
 
@@ -665,9 +877,10 @@ mod tests {
             0,
             "dropped after collapsing"
         );
-        assert!(!editor.performance.read.in_flight());
+        assert!(!editor.performance.reads.in_flight());
         assert_eq!(
-            editor.performance.requested, 1,
+            editor.performance.requested(),
+            1,
             "and nothing asked in its place"
         );
 
@@ -677,7 +890,7 @@ mod tests {
         let stale = editor.performance.epoch;
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
-        assert_eq!(editor.performance.requested, 2);
+        assert_eq!(editor.performance.requested(), 2);
         let answer = read(&editor);
         let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch: stale,
@@ -685,10 +898,11 @@ mod tests {
         }));
         assert_eq!(editor.performance.history.len(), 0);
         assert_eq!(
-            editor.performance.requested, 3,
+            editor.performance.requested(),
+            3,
             "the new epoch's first read"
         );
-        assert!(editor.performance.read.in_flight());
+        assert!(editor.performance.reads.in_flight());
         let current = editor.performance.epoch;
         let answer = read(&editor);
         let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
@@ -710,7 +924,7 @@ mod tests {
             result: Err("owner stopped".into()),
         }));
         assert_eq!(editor.performance.error.as_deref(), Some("owner stopped"));
-        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+        let _ = editor.performance_read_now();
         let mut answer = read(&editor);
         answer.resources = json!({"monotonic_ns": "soon"});
         let epoch = editor.performance.epoch;
@@ -751,7 +965,7 @@ mod tests {
                 epoch,
                 result: Ok(answer),
             }));
-            let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+            let _ = editor.performance_read_now();
         }
         let summary = &editor.snapshot()["performance"];
         assert_eq!(summary["expanded"], json!(true));
@@ -797,7 +1011,7 @@ mod tests {
         assert!(index(&editor, "Hide performance").is_none());
         let _ = editor.update(Message::Palette(PaletteMessage::RunIndex(show)));
         assert!(editor.performance.expanded);
-        assert_eq!(editor.performance.requested, 1);
+        assert_eq!(editor.performance.requested(), 1);
         let _ = editor.update(Message::Palette(PaletteMessage::Open));
         assert!(index(&editor, "Hide performance").is_some());
         finish(editor, catalog);
