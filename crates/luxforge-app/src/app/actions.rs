@@ -27,6 +27,16 @@ impl Editor {
                     return Task::none();
                 }
                 self.controls.ui.analysis_pending = None;
+                // The answer as it reaches the desktop: the entry the action committed and the
+                // report it carried, so a measurement reads input to committed entry from the log.
+                self.event("analysis_action_answered", || match &result {
+                    Ok(refresh) => json!({
+                        "action": action,
+                        "entry_id": refresh.state.current_entry.id,
+                        "report": refresh.analysis.get(&query),
+                    }),
+                    Err(error) => json!({"action": action, "error": error}),
+                });
                 // The explanation is the report the action's own answer carried, pinned to the
                 // entry it left current: the analysis is not run again for the tooltip.
                 let explained = result

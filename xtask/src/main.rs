@@ -561,6 +561,10 @@ fn main_result() -> Result {
                     return Err(format!("--control is slider, curve or wheel, not {other}").into());
                 }
             };
+            let auto = editor_latency::AutoTone {
+                cold: a.flag("--cold"),
+                shortcut: a.flag("--shortcut"),
+            };
             let mode = match a.value("--mode")?.as_deref().and_then(OsStr::to_str) {
                 None | Some("drag") => editor_latency::Mode::Drag,
                 Some("commit") => editor_latency::Mode::Commit,
@@ -570,13 +574,17 @@ fn main_result() -> Result {
                 Some("hover") => editor_latency::Mode::Hover,
                 Some("crop-start") => editor_latency::Mode::CropStart,
                 Some("pick") => editor_latency::Mode::Pick,
+                Some("auto-tone") => editor_latency::Mode::AutoTone(auto),
                 Some(other) => {
                     return Err(format!(
-                        "--mode is drag, commit, burst, paint, corrections, hover, crop-start or pick, not {other}"
+                        "--mode is drag, commit, burst, paint, corrections, hover, crop-start, pick or auto-tone, not {other}"
                     )
                     .into());
                 }
             };
+            if (auto.cold || auto.shortcut) && !matches!(mode, editor_latency::Mode::AutoTone(_)) {
+                return Err("--cold and --shortcut require --mode auto-tone".into());
+            }
             // A paint run's samples are the stroke's positions, and it paints hundreds by default;
             // a corrections run's are each of its two gestures' positions.
             let samples = samples(

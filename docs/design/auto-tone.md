@@ -259,7 +259,12 @@ Final quick and full headless checks pass on M2. All 58 components before the re
 
 **Background journeys on the owner's M4.** The `auto-tone` scenario passes on its generated JPEG and on each of the three supplied RAWs: all eight committed and displayed values match the independent query; the busy button, the tooltip's report taken from the action's answer, Cmd+U, repeat, undo, history and Compare refusals and the per-photo preset form are correlated with captures and logs. A separate RAW preset test proves that changing white balance and running Auto together equals changing white balance first and then running Auto, with other layers and original bytes preserved.
 
-**Outstanding.** Click-to-entry latency (24 and 60 MP, warm and cold, GPU and reference) has no harness yet: the existing release measurement, `auto_tone_measure_photo_sized_inputs`, covers the engine only. Auto on a paged derived source with the reference renderer is refused.
+**Outstanding.** Click-to-entry latency (24 and 60 MP, warm and cold, GPU and reference) is unmeasured. Its harness is `editor-latency --mode auto-tone`, which times the Auto button's action (or `⌘U` through the key table with `--shortcut`) from its script step to the desktop's `analysis_action_answered` event, which carries the committed entry and the report. It also times the first exact frame of that entry, and records each report's grid points and sample bytes. Before each sample, Auto's fields return to zero.
+- Warm samples set Tint per sample, so the grid stays cached and the stack is new.
+- `--cold` samples commit a further-inset crop, so each sample needs a new grid.
+- `--reference-renderer` launches with the reference renderer.
+
+The desktop cannot see solve time, so read and solve time come from the engine measurement `auto_tone_measure_photo_sized_inputs` on the same sources. Auto on a paged derived source with the reference renderer is refused.
 
 Generated half/float GPU samples with Detail plus crop, straighten, lens and perspective stay within the declared display tolerance and Auto value bounds. Exact CPU grids, cache identities, solver oracles, stale-client refusal, batch per-photo analysis and imports have focused tests. The fitting rig passes synthetic and repository-fixture stand-ins; these are not Lightroom calibration. Native Windows/Linux GPU qualification remains unrun.
 
