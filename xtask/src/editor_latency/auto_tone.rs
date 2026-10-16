@@ -9,7 +9,8 @@
 //! - **entry**: to `analysis_action_answered`, the action's answer reaching the desktop with the
 //!   entry it committed and the report it carried;
 //! - **frame**: to the first exact frame of that entry on screen, a `preview_displayed` (neither
-//!   reduced, a proxy nor a draft) or a `preview_pixels_reused` naming it.
+//!   a draft, a proxy nor a zoom's hand-over; at Fit the reference's exact frame is reduced to the
+//!   view) or a `preview_pixels_reused` naming it.
 //!
 //! The report's own sample (grid points, and the 13 bytes a point retains: RGB as three `f32` and
 //! one source-clipped flag, as `GridSample::bytes` counts them) and the renderer that read it are
@@ -163,6 +164,18 @@ struct Sample {
     record: Value,
 }
 
+/// Whether a `preview_displayed` is an exact frame of `entry`: the committed stack's own frame,
+/// not a drag's draft or display-size proxy, a zoom's hand-over or a drafted RAW white balance.
+/// A reduced frame counts: at Fit the reference's exact frame reaches the screen reduced to the
+/// view's bounds, labelled exact, and is never followed by an unreduced one.
+fn exact_frame_of(detail: &Value, entry: &str) -> bool {
+    detail["entry_id"] == entry
+        && detail["draft_revision"].is_null()
+        && detail["proxy"] != json!(true)
+        && detail["reason"].is_null()
+        && detail["approximate_white_balance"] != json!(true)
+}
+
 /// The input sent by `step`, read from `events`: its answer, its exact frame and its report.
 fn sample(events: &[Value], step: usize, gpu: bool) -> Result<Sample> {
     let sent = events
@@ -194,12 +207,7 @@ fn sample(events: &[Value], step: usize, gpu: bool) -> Result<Sample> {
     let frame = later
         .iter()
         .find(|event| match event["event"].as_str() {
-            Some("preview_displayed") => {
-                event["detail"]["entry_id"] == entry
-                    && event["detail"]["reduced"] != json!(true)
-                    && event["detail"]["proxy"] != json!(true)
-                    && event["detail"]["draft_revision"].is_null()
-            }
+            Some("preview_displayed") => exact_frame_of(&event["detail"], entry),
             Some("preview_pixels_reused") => event["detail"]["identity"]["entry_id"] == entry,
             _ => false,
         })
@@ -219,6 +227,7 @@ fn sample(events: &[Value], step: usize, gpu: bool) -> Result<Sample> {
             "input_to_adopted_frame_ms":frame_ms,
             "frame_event":frame["event"],
             "frame_path":frame["detail"]["path"],
+            "frame_reduced":frame["detail"]["reduced"],
             "renderer":report["renderer"],
             "sample":report["sample"],
             "sample_bytes":bytes,
@@ -355,6 +364,43 @@ fn measure(run: &mut Run, options: &Options, auto: AutoTone) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reference's frame at Fit is its exact frame reduced to the view: it is the sample's
+    /// frame, while a drag's proxy and a draft of the same entry before it are not.
+    #[test]
+    fn the_reference_frame_reduced_to_the_view_is_the_exact_frame() {
+        let entry = "entry-1";
+        let displayed = |at: f64, detail: Value| {
+            let mut detail = detail;
+            detail["entry_id"] = json!(entry);
+            json!({"event":"preview_displayed","elapsed_ms":at,"detail":detail})
+        };
+        let events = [
+            json!({"event":"script_step","elapsed_ms":100.0,"detail":{"step":6}}),
+            json!({"event":"analysis_action_answered","elapsed_ms":380.0,"detail":{
+                "action":"auto-tone","entry_id":entry,"error":null,
+                "report":{"renderer":{"record":"reference"},"sample":{"count":10}}}}),
+            displayed(
+                400.0,
+                json!({"draft_revision":3,"proxy":false,"reduced":true,"reason":null}),
+            ),
+            displayed(
+                420.0,
+                json!({"draft_revision":null,"proxy":true,"reduced":true,"reason":null}),
+            ),
+            displayed(
+                730.0,
+                json!({"draft_revision":null,"proxy":false,"reduced":true,"reason":null,
+                    "approximate_white_balance":false,"path":"surface"}),
+            ),
+        ];
+        let measured = sample(&events, 6, false).unwrap();
+        assert_eq!(
+            (measured.entry_ms, measured.frame_ms, measured.bytes),
+            (280.0, 630.0, Some(130))
+        );
+        assert!(sample(&events, 6, true).is_err());
+    }
 
     #[test]
     fn auto_tone_launches_fit_the_script_bound_and_number_their_inputs() {

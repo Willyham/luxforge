@@ -47,7 +47,8 @@ fn auto_tone_grid_reads_exact_nearest_input_pixels_after_crop_on_jpeg_and_raw() 
         );
         let evaluation = evaluation(&registry, &context, &source, &recipe);
         let cancel = Cancel::never();
-        let actual = super::grid::read(&evaluation, 0, &ReferenceReads, &cancel).unwrap();
+        let actual =
+            super::grid::read(&evaluation, 0, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
         assert_eq!(actual.sample.grid, [32, 24]);
         let independent = ReferenceReads
             .session(&evaluation, &cancel)
@@ -77,7 +78,7 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
     let base_recipe = recipe_of(vec![basic()], vec![]);
     let base = evaluation(&registry, &context, &source, &base_recipe);
     let cancel = Cancel::never();
-    let first = super::grid::read(&base, 0, &ReferenceReads, &cancel).unwrap();
+    let first = super::grid::read(&base, 0, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
     let mut changed = base_recipe.clone();
     changed.layers[0].payload = json!({"exposure": -2.});
     changed
@@ -93,7 +94,14 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
             None,
         )
     };
-    let second = super::grid::read(&next(changed.clone()), 0, &ReferenceReads, &cancel).unwrap();
+    let second = super::grid::read(
+        &next(changed.clone()),
+        0,
+        BASIC_EFFECT,
+        &ReferenceReads,
+        &cancel,
+    )
+    .unwrap();
     assert!(Arc::ptr_eq(&first.sample, &second.sample));
     changed.layers.push(Layer::crop(CropPayload {
         angle: 0.,
@@ -102,7 +110,8 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
         width: 0.5,
         height: 0.5,
     }));
-    let cropped = super::grid::read(&next(changed), 0, &ReferenceReads, &cancel).unwrap();
+    let cropped =
+        super::grid::read(&next(changed), 0, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &cropped.sample));
     assert_eq!(cropped.sample.rgb.len(), 32 * 24);
     let input_recipe = recipe_of(
@@ -115,19 +124,68 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
         ],
         vec![],
     );
-    let input =
-        super::grid::read(&next(input_recipe.clone()), 1, &ReferenceReads, &cancel).unwrap();
+    let input = super::grid::read(
+        &next(input_recipe.clone()),
+        1,
+        BASIC_EFFECT,
+        &ReferenceReads,
+        &cancel,
+    )
+    .unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &input.sample));
     let mut replay = input_recipe;
     replay.layers[0].id = crate::LayerId::new();
-    let replay = super::grid::read(&next(replay), 1, &ReferenceReads, &cancel).unwrap();
+    let replay =
+        super::grid::read(&next(replay), 1, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
     assert!(
         Arc::ptr_eq(&input.sample, &replay.sample),
         "intermediate composite layer ids are not pixel identity"
     );
     context.release_grids(&base.entry().asset_id);
-    let reopened = super::grid::read(&base, 0, &ReferenceReads, &cancel).unwrap();
+    let reopened = super::grid::read(&base, 0, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &reopened.sample));
+}
+
+/// Auto's first press on a photograph with no Basic layer reads the stage a Basic layer inserted
+/// there would receive, so the grid is the one every later press, on the Basic layer it committed,
+/// finds again: same values, same retained grid. The position Basic would take holds nothing (a
+/// photograph as opened) or a layer of another stage (a crop).
+#[test]
+fn a_grid_before_an_absent_layer_is_the_one_its_layer_receives_once_inserted() {
+    let registry = Arc::new(ModuleRegistry::developer());
+    let context = RenderContext::new();
+    let source = PreviewSource::Jpeg(gradient(64, 48));
+    let crop = Layer::crop(CropPayload {
+        angle: 0.,
+        x: 0.25,
+        y: 0.25,
+        width: 0.5,
+        height: 0.5,
+    });
+    let cancel = Cancel::never();
+    for layers in [vec![], vec![crop]] {
+        let without = evaluation(&registry, &context, &source, &recipe_of(layers, vec![]));
+        let index = registry.insertion_index_for(&without.recipe().layers, BASIC_EFFECT);
+        let first =
+            super::grid::read(&without, index, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
+        let mut inserted = without.recipe().clone();
+        inserted.layers.insert(index, basic());
+        let with = Evaluation::new(
+            registry.clone(),
+            context.clone(),
+            source.clone(),
+            without.entry().clone(),
+            inserted,
+            None,
+        );
+        let again =
+            super::grid::read(&with, index, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
+        assert_eq!(first.sample.rgb, again.sample.rgb);
+        assert!(
+            Arc::ptr_eq(&first.sample, &again.sample),
+            "the grid before an absent Basic layer is read again once it is inserted"
+        );
+    }
 }
 
 /// A sensor stand-in saturated on a fixed lattice of upright content pixels.
@@ -170,6 +228,7 @@ fn a_grids_clipped_flags_read_the_source_under_each_point_through_the_crop() {
     let read = super::grid::read(
         &evaluation(&registry, &context, &PreviewSource::Jpeg(jpeg), &recipe),
         0,
+        BASIC_EFFECT,
         &ReferenceReads,
         &cancel,
     )
@@ -188,7 +247,7 @@ fn a_grids_clipped_flags_read_the_source_under_each_point_through_the_crop() {
     };
     let without = evaluation(&registry, &context, &raw, &recipe);
     let with = without.clone().with_sensor(Some(Arc::new(Lattice)));
-    let sensed = super::grid::read(&with, 0, &ReferenceReads, &cancel).unwrap();
+    let sensed = super::grid::read(&with, 0, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
     assert_eq!(
         sensed.sample.source_clipped,
         points
@@ -197,7 +256,7 @@ fn a_grids_clipped_flags_read_the_source_under_each_point_through_the_crop() {
             .collect::<Vec<_>>()
     );
     assert_eq!(sensed.clipping, super::ClipDetection::RawSensorWhite);
-    let unsensed = super::grid::read(&without, 0, &ReferenceReads, &cancel).unwrap();
+    let unsensed = super::grid::read(&without, 0, BASIC_EFFECT, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&sensed.sample, &unsensed.sample));
     assert!(unsensed.sample.source_clipped.iter().all(|&flag| !flag));
     assert_eq!(unsensed.clipping, super::ClipDetection::Unavailable);

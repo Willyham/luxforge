@@ -222,16 +222,19 @@ pub(crate) fn content_hash(recipe: &Recipe) -> Result<[u8; 32], Error> {
     )
 }
 
-/// The grid of the stage the layer at `index` receives, at most [`MAX_SIDE`] points on the output
-/// frame's long side, each the input pixel nearest the point mapped back through the stack's
-/// geometry. Its identity is the source, the content of the layers before `index`, the output
-/// geometry, the grid's dimensions, the input mode, how clipping is detected and the renderer:
-/// the layers from `index` on change nothing but the geometry. A point's clipped flag reads the
-/// source under its content position: a JPEG's code, or a RAW's sensor when the evaluation holds
-/// it ([`ClipDetection`]).
+/// The grid of the stage a layer of `effect_id` at `index` receives, at most [`MAX_SIDE`] points on
+/// the output frame's long side, each the input pixel nearest the point mapped back through the
+/// stack's geometry. The layer may be the one at `index` or one not yet inserted there: the
+/// effect, not whatever layer holds `index` now, decides the input mode, so the grid read before a
+/// layer exists is the one read again once it does. Its identity is the source, the content of
+/// the layers before `index`, the output geometry, the grid's dimensions, the input mode, how
+/// clipping is detected and the renderer: the layers from `index` on change nothing but the
+/// geometry. A point's clipped flag reads the source under its content position: a JPEG's code, or
+/// a RAW's sensor when the evaluation holds it ([`ClipDetection`]).
 pub fn read(
     evaluation: &Evaluation,
     index: usize,
+    effect_id: &str,
     reads: &dyn TileReads,
     cancel: &Cancel,
 ) -> Result<GridRead, Error> {
@@ -266,7 +269,8 @@ pub fn read(
             ((u64::from(n) * u64::from(MAX_SIDE)) / u64::from(longest)).max(1) as u32
         }
     });
-    let mode = crate::render::MaskInputMode::for_layer(evaluation.registry(), recipe, index);
+    let mode =
+        crate::render::MaskInputMode::for_stage(evaluation.registry().effect_stage(effect_id));
     let clipping = ClipDetection::of(evaluation);
     let mut digest = Sha256::new();
     digest.update(content_hash(&prefix)?);

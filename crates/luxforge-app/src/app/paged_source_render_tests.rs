@@ -251,7 +251,13 @@ fn paged_source_render_exports_and_samples_level_0_through_windows_bit_for_bit()
         client,
         Cancel::new(),
         move |reads, cancel| {
-            let read = luxforge_core::tiles::read_grid(&held, 0, reads, cancel)?;
+            let read = luxforge_core::tiles::read_grid(
+                &held,
+                0,
+                luxforge_core::BASIC_EFFECT,
+                reads,
+                cancel,
+            )?;
             let _ = sender.send(read);
             Ok(serde_json::Value::Null)
         },

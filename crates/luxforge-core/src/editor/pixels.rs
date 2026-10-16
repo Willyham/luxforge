@@ -802,8 +802,9 @@ impl<'a> TileStage<'a> {
 }
 
 impl StageQuestions for TileStage<'_> {
-    fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
-        let read = crate::tiles::grid::read(self.evaluation, index, self.reads, self.cancel)?;
+    fn grid_before(&self, index: usize, effect_id: &str) -> Result<crate::tiles::GridRead, Error> {
+        let read =
+            crate::tiles::grid::read(self.evaluation, index, effect_id, self.reads, self.cancel)?;
         *self.answered.borrow_mut() = Some(read.answered.clone());
         if self.holding {
             *self.held.borrow_mut() = Some(Held::Grid(index, read));
@@ -877,7 +878,7 @@ struct HeldGrid<'a> {
 }
 
 impl StageQuestions for HeldGrid<'_> {
-    fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
+    fn grid_before(&self, index: usize, _effect_id: &str) -> Result<crate::tiles::GridRead, Error> {
         match self.held.take() {
             Some(Held::Grid(read, grid)) if read == index => Ok(grid),
             _ => Err(Error::internal(

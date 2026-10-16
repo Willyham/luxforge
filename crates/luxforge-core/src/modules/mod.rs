@@ -349,9 +349,14 @@ pub trait StageQuestions {
         Err(Error::internal("this stage cannot defer a query"))
     }
 
-    /// The bounded nearest-point sample grid of this input stage over the output geometry
-    /// ([`crate::tiles::read_grid`]), read off the catalog owner by the tile service.
-    fn grid_before(&self, _index: usize) -> Result<crate::tiles::GridRead, Error> {
+    /// The bounded nearest-point sample grid over the output geometry of the stage a layer of
+    /// `effect_id` at `index` receives, whether it holds `index` already or would be inserted
+    /// there ([`crate::tiles::grid::read`]), read off the catalog owner by the tile service.
+    fn grid_before(
+        &self,
+        _index: usize,
+        _effect_id: &str,
+    ) -> Result<crate::tiles::GridRead, Error> {
         Err(Error::internal("this stage cannot read a sample grid"))
     }
 
