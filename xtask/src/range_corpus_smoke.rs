@@ -1,5 +1,5 @@
 //! The `range-corpus` smoke scenario: range selections picked on a real photograph, which they had
-//! never been before ([range masks](../../docs/design/range-masks.md#outstanding-work)).
+//! never been before ([range masks](../../docs/design/range-masks.md#verification-and-acceptance)).
 //!
 //! One launch over the `--source` photograph. With the experiment on and Mask mode entered, each
 //! pick is a new mask of its kind, created from New mask with the eyedropper armed and nothing

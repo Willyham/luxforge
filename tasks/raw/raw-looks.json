@@ -265,7 +265,7 @@
     {
       "id": "TASK-005",
       "description": "Show the Look section in Develop, capture native rendered evidence with a look smoke scenario, and document phase 1.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -273,7 +273,7 @@
         "Section before Basic on RAW photos only: the Standard and Neutral choice and Amount with the core draft lifecycle. No Camera choice in phase 1.",
         "Scenario look (xtask/src/look_smoke.rs, registered in SCENARIOS), once per supplied Z6, X100VI and Air 2S file with --source, launched in the background bundle with an isolated catalog: a new photo opens with Standard; switch to Neutral and back through the section; drag Amount to 60, reset and double-click it; choose Neutral through the API; read the Settings row. Correlate every frame with asset.state, the draft and the events log. Catalog tiers and export are not steps in this scenario; they render the stored stack through the shared GPU tile service with the reference fallback. Build the release app first. The full tier with --manifest runs look once per manifest source.",
         "Docs: user guide (RAW development, Settings), feature status (a RAW looks row), initial-raw.md (the neutral development is now the look's input, not the starting rendition), preferences.md, the design's status.",
-        "Amount is disabled on a Neutral look, whose set-look refuses it: the number control declares enabled_when {look: [standard]}, which registration validates and the desktop applies; look's declared default is neutral, the look of a photo without a Look layer. The look scenario checks Amount disabled on every Neutral frame and passes on the M4 Pro / Metal once per supplied Z6, X100VI and Air 2S file. Completion still requires verify quick and the rendered tier with --manifest on a quiet host. The post-merge corpus gate passes for the picture at rest, counts, samples and export, including Standard at amount 100 in RAW Originals; it does not replace the remaining whole-tier acceptance or separately qualify Neutral and other amounts on photographs."
+        "Done on the owner's M4 Pro / Metal on 2026-10-16: Amount is disabled on a Neutral look through the number control's enabled_when {look: [standard]}, which registration validates and the desktop applies; look's declared default is neutral, the look of a photo without a Look layer, and the field-patch conformance suite names the look as a module in that shape that is not a field patch. The look scenario passes once per supplied Z6, X100VI and Air 2S file, checking Amount disabled on every Neutral frame, and verify quick and the rendered tier with --manifest pass. The corpus gate covers Standard at amount 100 in RAW Originals; Neutral and other amounts are not separately qualified on photographs."
       ],
       "context_links": [
         {

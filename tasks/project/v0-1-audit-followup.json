@@ -283,7 +283,8 @@
       ],
       "extra_context": [
         "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
-        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery."
+        "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery.",
+        "On the owner's M4 Pro / Metal on 2026-10-16: the vignette scenario passes with correlated state, logs and captures, and the native Contrast readback is not separately recorded; the macOS native-watcher gate passes; the full tier ran with the private manifest (the GPU gate incomplete only on the paged derived source's known gaps) and its timing components started below the load threshold. Remaining: Windows watcher delivery, macOS signing extraction on its target system, and Linux native GPU evidence."
       ],
       "context_links": [
         {

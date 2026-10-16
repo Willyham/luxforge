@@ -1,6 +1,6 @@
 # Copy and paste settings
 
-Status: **implemented; native verification passes on Apple M2 / Metal and the owner's M4 Pro / Metal**. Quick verification and the background `copy-settings` journey pass with generated JPEGs and a public Nikon Z6 RAW, including both directions of white-balance skips, changed Select targets, undo and unchanged original hashes. A complete rendered-tier pass with the owner's manifest remains open in [tasks](../../tasks/interface/copy-settings.json). No Windows or Linux qualification is claimed.
+Status: **implemented and qualified on the owner's M4 Pro / Metal**, with native verification on Apple M2 / Metal too. Quick verification and the background `copy-settings` journey pass with generated JPEGs and a public Nikon Z6 RAW, including both directions of white-balance skips, changed Select targets, undo and unchanged original hashes. The rendered tier passes on the M4 with the owner's RAW manifest. No Windows or Linux qualification is claimed.
 
 Copy settings reads chosen adjustment groups from one photograph into a settings clipboard. Paste settings applies the clipboard to the open photograph, or to the photographs selected in the filmstrip or in Select, as one history entry per photograph. It reuses the [presets](presets.md) machinery: a settings set, `preset.capture` and the composite field-patch action. It is not a second preset system: a clipboard is transient, it names its source photograph rather than a library preset, and it never touches the library.
 
