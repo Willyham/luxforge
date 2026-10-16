@@ -14,6 +14,7 @@ use luxforge_gpu::{
 use luxforge_reference::{preview_error::Statistics, srgb};
 use serde_json::{Value, json};
 
+mod auto_tone;
 mod reference;
 
 // ---- The synthetic grid -----------------------------------------------------------------------
@@ -448,6 +449,17 @@ impl Opened {
         steps: &[Value],
         catalog: &std::path::Path,
     ) -> Result<Self, String> {
+        Self::with_tiles(source, steps, catalog, None)
+    }
+
+    /// [`Self::new`] with `tiles` as the host's tile service, as the desktop gives its owner the GPU
+    /// tile worker; `None` keeps the reference renderer's service.
+    pub(crate) fn with_tiles(
+        source: &CorpusSource,
+        steps: &[Value],
+        catalog: &std::path::Path,
+        tiles: Option<std::sync::Arc<dyn luxforge_core::tiles::TileService>>,
+    ) -> Result<Self, String> {
         let derived = source
             .derived
             .map(|(width, height)| {
@@ -477,6 +489,7 @@ impl Opened {
             std::sync::Arc::new(registry),
             luxforge_core::HostConfig {
                 launch_flags: crate::app::testing::range_masks_config().launch_flags,
+                tiles,
                 ..luxforge_core::HostConfig::unconfigured()
             },
         )
