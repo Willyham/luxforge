@@ -2,8 +2,7 @@
 
 Status: implemented and verified with quick and the separate native gate on macOS. Native
 Windows/Linux and hosted CI execution are unrun. The owner requested cheap deterministic watcher
-coverage in quick and a separate native integration gate required for watcher changes and releases. The
-[task plan](../../tasks/project/watcher-verification.json) records the implementation work.
+coverage in quick and a separate native integration gate required for watcher changes and releases.
 
 ## Contract
 
