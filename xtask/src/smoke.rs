@@ -18,8 +18,8 @@ use crate::{
     minify_smoke as minify, mixer_smoke as mixer,
     move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
     panorama_merge_smoke as panorama_merge, performance_smoke as performance,
-    presence_smoke as presence, presets_smoke as presets, raw_panel_smoke as raw_panel,
-    resolve_missing_smoke as resolve_missing,
+    presence_smoke as presence, presets_smoke as presets, range_corpus_smoke as range_corpus,
+    raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_smoke as select, settings_smoke as settings, theme_smoke as theme,
     unsupported_catalog_smoke as unsupported_catalog, usage_backend_smoke as usage_backend,
@@ -1325,6 +1325,19 @@ pub static SCENARIOS: &[Scenario] = &[
         own: Some(raw_corrections::run),
     },
     Scenario {
+        name: range_corpus::SCENARIO,
+        about: "Luminance and colour range picks through the API on a supplied photograph, aimed at the skies, skin, foliage and neutrals of the corpus photographs, each with its area read and its coverage drawn on black",
+        launches: &[LaunchSpec {
+            plan: range_corpus::plan,
+            ..APP
+        }],
+        verify: range_corpus::verify,
+        source: Source::Supplied { listed: false },
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
         name: look::SCENARIO,
         about: "The RAW look over a supplied RAW file: Standard in the new photograph's Original, Neutral and Standard through the Look section above Basic, an Amount drag, the reset and a double-click, Neutral through the API",
         launches: &[LaunchSpec {
@@ -2379,6 +2392,7 @@ mod tests {
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
         assert!(find("look").is_ok_and(|look| !look.rendered()));
+        assert!(find("range-corpus").is_ok_and(|corpus| !corpus.rendered()));
         assert!(find("raw-corrections").is_ok_and(|raw| !raw.rendered()));
         assert!(find(usage_backend::SCENARIO).is_ok_and(|backend| !backend.rendered()));
         assert!(
@@ -2399,6 +2413,7 @@ mod tests {
                 "filmstrip",
                 "raw-panel",
                 "raw-corrections",
+                "range-corpus",
                 "look",
                 "raw-editor"
             ]

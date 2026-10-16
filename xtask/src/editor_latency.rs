@@ -48,6 +48,7 @@ use std::{
 };
 
 mod corrections;
+mod pick;
 pub use corrections::CORRECTION_POSITIONS;
 
 /// The Basic module's patch action and the field the gesture drags, named as the module declares
@@ -1258,6 +1259,10 @@ pub enum Mode {
     /// screen, and from the Performance section the memory and GPU figures while each draft is
     /// open.
     CropStart,
+    /// A range pick ([`pick`]): `--samples` pairs of a whole-frame drag and a click with the
+    /// eyedropper armed on an unbound colour range, each from its press to the pick's command sent
+    /// and to the overlay adopted for the entry it committed.
+    Pick,
 }
 
 impl Mode {
@@ -1270,6 +1275,7 @@ impl Mode {
             Self::Corrections => "corrections",
             Self::Hover => "hover",
             Self::CropStart => "crop-start",
+            Self::Pick => "pick",
         }
     }
 }
@@ -3227,9 +3233,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         !options.no_gpu_render
             || matches!(
                 options.mode,
-                Mode::Drag | Mode::Commit | Mode::Paint | Mode::Corrections
+                Mode::Drag | Mode::Commit | Mode::Paint | Mode::Corrections | Mode::Pick
             ),
-        "--reference-renderer measures a drag, a commit or a stroke; pass --mode drag, commit, paint or corrections",
+        "--reference-renderer measures a drag, a commit, a stroke or a pick; pass --mode drag, commit, paint, corrections or pick",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
@@ -3273,6 +3279,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     }
     if options.mode == Mode::CropStart {
         return run_crop_start(root, out, bin, &options);
+    }
+    if options.mode == Mode::Pick {
+        return pick::run(root, out, bin, &options);
     }
     ensure(
         (1..=60).contains(&options.samples),

@@ -402,16 +402,16 @@
     {
       "id": "TASK-006",
       "description": "Qualify the GPU area read on the M4, run the corpus over range stacks and measure a whole-frame drag pick.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "Last, with no dependency back into delivery: the working feature is TASK-001 to TASK-005.",
-        "Native Metal device test on the M4: the tile service's mask.sample-input-area answer for bound and unbound range masks, at click and whole-frame sizes, within the declared tolerance of the reference. Run gpu-qualification with a selection of the masked stacks touched; a selection never counts as the gate's pass.",
-        "Range selections have never had a photographic corpus: run picks on corpus photographs (skies, skin, foliage, neutrals) through the API and record coverage captures. Missing private manifests stay unavailable evidence, not passes.",
-        "Measure once on a quiet host: a whole-frame drag pick at 24 MP and 60 MP on the GPU and on the reference, and a click pick, input to adopted overlay. Record scope and load in the evidence; the design states only budgets.",
-        "Run the rewritten mask-range scenario in the background on the M4 first: it has parsed, validated and planned on Linux only, never launched, and its rendered pass, with the final quick and rendered tiers, is part of this qualification. The picks no longer log the reader that answered, so read the GPU's attribution from mask.sample-input-area's renderer record.",
+        "Done on the M4 (native Metal): the device test gpu_tiles_area_tests holds the tile service's mask.sample-input-area answer for bound and unbound luminance and colour range masks, at a click's size and over the whole frame, over a pointwise and a Detail-led stack, within the declared tolerance of the reference, each naming the GPU. A gpu-qualification selection of mask-luminance-range, mask-colour-range and the two range-masked grading recipes over the presence fixture, the 24 MP JPEG and the three corpus RAWs at Fit and 100% passed every gated kind; a selection never counts as the gate's pass.",
+        "Done: the mask-range scenario launches and passes in the background, its area reads naming the GPU. Picking in a launch that refused the GPU failed on the reference's `refused` reason and is fixed; the pick now reads only the colour or points of the answer.",
+        "Done: the range-corpus scenario recorded picks and coverage captures on the Nikon Z 6 (sky, skin, neutral, foliage), the Fujifilm X100VI (petals, foliage, neutral; no sky or skin) and the DJI Air 2S (foliage, water; no sky, skin or neutral). Unavailable: skin and skies beyond the Z 6's, any portrait, and the sample corpus.",
+        "Open, the measurement, once on a quiet host: a whole-frame drag pick at 24 MP and 60 MP on the GPU and on the reference, and a click pick, press to adopted overlay, p50/p95 over 30 pairs, with `editor-latency --mode pick --samples 30 --source fixtures/generated/24mp.jpg` and `60mp.jpg`, each also with `--reference-renderer`. Record scope and load in the evidence; the design states only budgets. Then the final quick and rendered tiers.",
         "Windows and Linux evidence stays open unless run natively."
       ],
       "context_links": [

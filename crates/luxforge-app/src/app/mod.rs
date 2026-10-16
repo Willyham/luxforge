@@ -90,6 +90,8 @@ mod gpu_rest_tests;
 mod gpu_source_tests;
 pub(crate) mod gpu_tiles;
 #[cfg(test)]
+mod gpu_tiles_area_tests;
+#[cfg(test)]
 mod gpu_tiles_tests;
 #[cfg(test)]
 mod gpu_tiles_tier_tests;

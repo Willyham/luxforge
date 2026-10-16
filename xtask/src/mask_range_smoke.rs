@@ -81,10 +81,12 @@ const PASSING_EV: f64 = -0.5;
 
 /// The exposure of the **global** layer the scenario puts ahead of the masked one, in EV.
 ///
-/// It is the study's own figure. A `+0.75 EV` lift takes the fixture's sky from `47.29` on the
+/// It is the study's own figure. A pure `+0.75 EV` lift takes the fixture's sky from `47.29` on the
 /// luminance axis to `60.06`, which is past the band's own shoulder at `55`, so the band that selected
 /// it fully selects it not at all — measured by `the_selection_follows_the_operations_input_not_the_
-/// finished_frame` and reproduced here in the pixels of a render.
+/// finished_frame` and reproduced here in the pixels of a render. Basic's exposure follows
+/// Lightroom's response rather than a pure lift, and takes the sky further past the shoulder, which
+/// the band's own input read (`global-area`) shows.
 const GLOBAL_EV: f64 = 0.75;
 
 /// The fixture's sky on the band's own `0..100` axis, which a click on it sets the band around, and
@@ -285,6 +287,26 @@ fn pick_area(name: &str, patch: &str) -> Step {
     )
 }
 
+/// `mask.sample-input-area` of Mask 1 over the middle half of the named patch, each way: the input
+/// its masked operation receives there, which names the renderer that read it. A query, so nothing
+/// is committed.
+fn area_read(name: &str, patch: &str) -> Step {
+    let [x, y] = at(patch);
+    let (half_x, half_y) = (
+        0.25 / f64::from(RANGE_COLUMNS),
+        0.25 / f64::from(RANGE_ROWS),
+    );
+    Step::new(
+        name,
+        script::Step::call(
+            "mask.sample-input-area",
+            json!({"mask": {"name": "Mask 1"}, "x": x - half_x, "y": y - half_y,
+                   "width": 2.0 * half_x, "height": 2.0 * half_y}),
+        ),
+    )
+    .commits(0)
+}
+
 /// Half the side of a dragged pick, in output-stage pixels: a patch is 360 by 320 of them.
 const PICK_AREA: u32 = 60;
 /// A patch's shorter side, in output pixels: the dragged square stays within its middle half.
@@ -338,6 +360,9 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
             .commits(1)
             .label("Pick Luminance range 1")
             .picker(Some(LUMINANCE_RANGE)),
+        // The area a drag over the sky would read, asked through the API: the input at the unbound
+        // mask's site, answered by the renderer of record, which its answer names.
+        area_read("band-area", "sky-top").picker(Some(LUMINANCE_RANGE)),
         // The band typed, one declared field at a time, each its own entry, so the rest of the
         // scenario reads a band of known edges. `low` before `high` because the payload refuses a
         // crossed band rather than rendering an empty selection. The fields stay editable while the
@@ -411,7 +436,7 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // A **global** exposure layer, from JSON with no mask in the request, which the host places
         // ahead of the masked one: the stack's first Basic layer is this one. **This is the
         // input-dependence frame**: the band reads the pixel its own operation receives, that pixel
-        // is now 12.8 units further up the axis, and the sky is outside the band — so the masked
+        // is now well past the band's upper shoulder, and the sky is outside the band — so the masked
         // layer stops applying to it entirely.
         Step::new(
             "global",
@@ -420,6 +445,8 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         .commits(1)
         .label("Exposure +0.75 EV")
         .payload(BASIC_EFFECT, json!({ EXPOSURE: GLOBAL_EV })),
+        // The same area read again: the bound mask's input is now behind the global layer.
+        area_read("global-area", "sky-top"),
         // Undone, and the selection comes back with the input it was drawn against. An undo moves
         // the revision on like any commit, to the entry the pick made, and the masked layer is the
         // stack's first Basic layer again.
@@ -694,6 +721,39 @@ fn unbound(frame: &Frame) -> Result {
         bound.is_empty(),
         format!("The frame binds adjustments to masks: {bound:?}"),
     )
+}
+
+/// A `mask.sample-input-area` step's answer over a flat patch: read by the GPU, the renderer of
+/// record, and every point's tone on the band's own axis within [`TONE_TOLERANCE`] of their mean,
+/// which is the answer. The patch is flat, so the tolerance is the sampled tone's own error.
+fn area_tone(frame: &Frame, what: &str) -> Result<f64> {
+    let answer = &frame["step"]["result"];
+    ensure(
+        answer["renderer"] == json!({"record": "gpu", "reason": null}),
+        format!(
+            "{what}: mask.sample-input-area was not the GPU's: {}",
+            answer["renderer"]
+        ),
+    )?;
+    let points: Vec<[f64; 3]> = serde_json::from_value(answer["points"].clone())
+        .map_err(|error| format!("{what}: unreadable points: {error}"))?;
+    ensure(!points.is_empty(), format!("{what}: no points"))?;
+    let tones: Vec<f64> = points
+        .iter()
+        .map(|[r, g, b]| {
+            100.0 * luxforge_reference::srgb::encode_extended(0.2126 * r + 0.7152 * g + 0.0722 * b)
+        })
+        .collect();
+    let mean = tones.iter().sum::<f64>() / tones.len() as f64;
+    let worst = tones
+        .iter()
+        .map(|value| (value - mean).abs())
+        .fold(0.0, f64::max);
+    ensure(
+        worst <= TONE_TOLERANCE,
+        format!("{what}: a point's tone is {worst} from the area's mean {mean}"),
+    )?;
+    Ok(mean)
 }
 
 /// One component's own declared geometry, as the **open row's number fields** report it. It is what a
@@ -1098,6 +1158,17 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         &opened,
     )?;
 
+    // The area under the click, asked through the API: the sky's own tone, read by the GPU.
+    let area = launch.at("band-area")?;
+    let what = "the sky's area at the unbound band's input site";
+    checks.compare(
+        area,
+        what,
+        area_tone(area, what)?,
+        SKY_TONE,
+        Tolerance::Within(TONE_TOLERANCE),
+    )?;
+
     // The band typed, one field per entry — four entries, which the plan counts — and four numbers,
     // nothing dragged.
     let band = fields(launch.at("band-typed")?, 0)?;
@@ -1178,7 +1249,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
     same(checks, done, "after Done", &remedy)?;
 
     // A **global** exposure layer, placed ahead of the masked one. The band reads the pixel its own
-    // operation receives, that pixel has moved 12.8 units up the axis, and the sky is outside the
+    // operation receives, that pixel has moved past the band's upper shoulder, and the sky is outside the
     // band: the masked layer stops reaching it. Read as an equality against the control patch of the
     // identical colour, so nothing here is a predicted output code.
     let global = launch.at("global")?;
@@ -1201,6 +1272,23 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         reading(&reordered, "sky-top")?,
         reading(&remedy, "sky-top")?,
         Tolerance::Apart(MOVED),
+    )?;
+
+    // The band's input, read over the sky again: the global layer is ahead of it now, and the sky's
+    // tone there is past the band's upper shoulder.
+    let lifted = launch.at("global-area")?;
+    let what = "the sky's area at the bound band's input behind the global layer";
+    let tone = area_tone(lifted, what)?;
+    ensure(
+        tone > BAND_HIGH + BAND_FEATHER,
+        format!("{what}: the sky's tone {tone} is not past the band's upper shoulder"),
+    )?;
+    checks.compare(
+        lifted,
+        what,
+        tone,
+        SKY_TONE,
+        Tolerance::Apart(BAND_HIGH + BAND_FEATHER - SKY_TONE),
     )?;
 
     // Undone. The selection is back with the input it was drawn against, byte for byte the picture
