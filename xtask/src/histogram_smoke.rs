@@ -285,15 +285,15 @@ fn displayed_recipe(frame: &Value) -> Result<Recipe> {
         layers: layers
             .iter()
             .map(|layer| -> Result<Layer> {
+                let effect = layer["effect"]
+                    .as_str()
+                    .ok_or("A displayed layer has no effect")?;
                 Ok(Layer {
                     id: luxforge_core::LayerId::parse(
                         layer["id"].as_str().ok_or("A displayed layer has no id")?,
                     )?,
-                    effect_id: layer["effect"]
-                        .as_str()
-                        .ok_or("A displayed layer has no effect")?
-                        .to_owned(),
-                    effect_format: luxforge_core::EFFECT_FORMAT,
+                    effect_id: effect.to_owned(),
+                    effect_format: luxforge_core::current_effect_format(effect),
                     payload: layer["payload"].clone(),
                     mask: None,
                     artifacts: Vec::new(),

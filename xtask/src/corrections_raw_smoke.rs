@@ -126,7 +126,17 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         Step::new("restore-undone", script::Step::api("history.undo"))
             .commits(1)
             .label("New source Clone 3"),
-        Step::new("planned", script::Step::api("export.plan")).commits(0),
+        // Today's baseline settings, into the original's folder: planning writes nothing.
+        Step::new(
+            "planned",
+            script::Step::call(
+                "export.plan",
+                json!({"settings": luxforge_core::ExportSettings::baseline(
+                    luxforge_core::MetadataLevel::None
+                )}),
+            ),
+        )
+        .commits(0),
         Step::new("exported", export(GPU_EXPORT, false)).commits(0),
         Step::new("exported-reference", export(REFERENCE_EXPORT, true)).commits(0),
         Step::new("leave", key("q")).commits(0).mode("pointer"),
