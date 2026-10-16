@@ -3415,10 +3415,10 @@
             "notes": "sets the RAW photo's look in its one Look layer, after Basic and before the Tone curve, adding the layer on the first set that is not Neutral. A field not sent keeps the look in force; a set that changes nothing is a reported no-op",
             "parameters": [
               {
-                "default": null,
+                "default": "neutral",
                 "kind": "enum",
                 "name": "look",
-                "notes": "standard writes the current Standard look's resolved knots, chroma gain and knee into the layer, keeping the amount in force (100 from Neutral); neutral writes the Neutral look, the bare RAW development. Match camera is not available yet",
+                "notes": "standard writes the current Standard look's resolved knots, chroma gain and knee into the layer, keeping the amount in force (100 from Neutral); neutral writes the Neutral look, the bare RAW development, which a photo without a Look layer holds. Match camera is not available yet",
                 "options": [
                   "standard",
                   "neutral"
@@ -3472,6 +3472,12 @@
           },
           {
             "action": "set-look",
+            "enabled_when": {
+              "parameter": "look",
+              "values": [
+                "standard"
+              ]
+            },
             "kind": "number",
             "label": "Amount",
             "parameter": "amount"
@@ -7657,14 +7663,14 @@
         "notes": "sets the RAW photo's look in its one Look layer, after Basic and before the Tone curve, adding the layer on the first set that is not Neutral. A field not sent keeps the look in force; a set that changes nothing is a reported no-op",
         "optional": {
           "amount": "how much of the look applies, blended with the look's input in linear light: 0 none, 100 the look, past 100 extrapolated. A Neutral look has no amount, so an amount beside look neutral, or alone on a Neutral look, is refused",
-          "look": "standard writes the current Standard look's resolved knots, chroma gain and knee into the layer, keeping the amount in force (100 from Neutral); neutral writes the Neutral look, the bare RAW development. Match camera is not available yet"
+          "look": "standard writes the current Standard look's resolved knots, chroma gain and knee into the layer, keeping the amount in force (100 from Neutral); neutral writes the Neutral look, the bare RAW development, which a photo without a Look layer holds. Match camera is not available yet"
         },
         "parameters": [
           {
-            "default": null,
+            "default": "neutral",
             "kind": "enum",
             "name": "look",
-            "notes": "standard writes the current Standard look's resolved knots, chroma gain and knee into the layer, keeping the amount in force (100 from Neutral); neutral writes the Neutral look, the bare RAW development. Match camera is not available yet",
+            "notes": "standard writes the current Standard look's resolved knots, chroma gain and knee into the layer, keeping the amount in force (100 from Neutral); neutral writes the Neutral look, the bare RAW development, which a photo without a Look layer holds. Match camera is not available yet",
             "options": [
               "standard",
               "neutral"
