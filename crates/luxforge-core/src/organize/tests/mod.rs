@@ -52,6 +52,8 @@ pub(super) struct Shot {
     pub camera: Option<CameraBody>,
     pub position: Option<GeoPosition>,
     pub exposure: Exposure,
+    /// The file's name, when not the default `F00001.JPG` … by the order it was added.
+    pub name: Option<String>,
 }
 
 pub(super) fn shot(folder: &str, at: Option<i64>) -> Shot {
@@ -61,6 +63,7 @@ pub(super) fn shot(folder: &str, at: Option<i64>) -> Shot {
         camera: None,
         position: None,
         exposure: Exposure::default(),
+        name: None,
     }
 }
 
@@ -83,9 +86,15 @@ impl Shot {
         self.exposure = exposure;
         self
     }
+
+    pub fn named(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
+    }
 }
 
-/// Frames and their tables, each frame named `F00001.JPG` … by the order it was added.
+/// Frames and their tables, each frame named `F00001.JPG` … by the order it was added unless its
+/// shot names it.
 #[derive(Default)]
 pub(super) struct Frames {
     pub tables: FrameTables,
@@ -100,7 +109,7 @@ impl Frames {
             merged: false,
             item,
             folder: self.tables.folder(shot.folder.into()),
-            name: format!("F{id:05}.JPG").into(),
+            name: shot.name.unwrap_or_else(|| format!("F{id:05}.JPG")).into(),
             instant_ms: shot.at,
             local_day: shot.at.map(|at| LocalDay(at.div_euclid(DAY) as i32)),
             position: shot.position,
@@ -810,13 +819,31 @@ fn moments_of(
     thresholds: &Thresholds,
     probe: &dyn MomentProbe,
 ) -> Vec<Moment> {
+    moments_named(
+        offsets,
+        exposures,
+        |at| format!("F{:05}.JPG", at + 1),
+        thresholds,
+        probe,
+    )
+}
+
+/// [`moments_of`] with frame `at` named `name(at)`.
+fn moments_named(
+    offsets: &[i64],
+    exposures: &[Exposure],
+    name: impl Fn(usize) -> String,
+    thresholds: &Thresholds,
+    probe: &dyn MomentProbe,
+) -> Vec<Moment> {
     let start = midnight(2026, 9, 12) + 10 * HOUR;
     let mut frames = Frames::default();
-    for (offset, exposure) in offsets.iter().zip(exposures) {
+    for (at, (offset, exposure)) in offsets.iter().zip(exposures).enumerate() {
         frames.add(
             shot("/c", Some(start + offset))
                 .by(&z8())
-                .exposed(*exposure),
+                .exposed(*exposure)
+                .named(name(at)),
         );
     }
     frames.group(thresholds, probe).moments
@@ -1192,10 +1219,21 @@ fn organize_a_panorama_folder_is_one_panorama() {
 /// every link pans on from the last is a panorama, over a burst's pace or a bracket's metadata,
 /// turning a corner as a panorama's rows do but not turning back. Fewer than three frames, a burst
 /// at 10 fps, another focal length, exposures more than 3 EV apart and links the previews cannot
-/// measure are not one.
+/// measure are not one. The frames' numbers skip, as a card's do with frames deleted between
+/// them, so no numbered sweep joins them.
 #[test]
 fn organize_panoramas_from_previews_come_through_the_probe() {
     let t = Thresholds::default();
+    let moments_of =
+        |offsets: &[i64], exposures: &[Exposure], t: &Thresholds, probe: &dyn MomentProbe| {
+            moments_named(
+                offsets,
+                exposures,
+                |at| format!("DSC_{:04}.NEF", at * 2 + 1),
+                t,
+                probe,
+            )
+        };
     let same = exposure(1.0 / 250.0, Some(0.0));
     let every = |gap: i64, count: i64| -> Vec<i64> { (0..count).map(|at| at * gap).collect() };
     let previews = Some(MomentEvidence::Previews);
@@ -1268,6 +1306,150 @@ fn organize_panoramas_from_previews_come_through_the_probe() {
         kinds(&moments_of(&every(500, 3), &stepped, &t, &NoProbe)),
         [(MomentKind::Bracket, Some(MomentEvidence::Metadata), 0, 3)]
     );
+}
+
+/// A numbered sweep (`moments.rs`): frames numbered one after another need less of the previews.
+/// A 20-frame sweep whose previews miss two links, which frames whose numbers skip split into
+/// stretches, is one panorama; so are two rows shot left to right, whose row change shares no view,
+/// and rows that turn back. Two unmeasured links in a row end one, a skipped number ends one, and
+/// numbered frames whose previews never show two pans in a row are none.
+#[test]
+fn organize_numbered_frames_are_one_sweep() {
+    let t = Thresholds::default();
+    let same = exposure(1.0 / 250.0, Some(0.0));
+    let every = |count: usize| -> Vec<i64> { (0..count as i64).map(|at| at * 2500).collect() };
+    let previews = Some(MomentEvidence::Previews);
+    let numbered = |at: usize| format!("DSC_{:04}.NEF", at + 1);
+    let skipping = |at: usize| format!("DSC_{:04}.NEF", at * 2 + 1);
+    // Twenty frames panning right, the links from frames 6 and 13 unmeasured.
+    let probe = Pans(|id| (id != 7 && id != 14).then_some(RIGHT), Cell::new(0));
+    assert_eq!(
+        kinds(&moments_named(
+            &every(20),
+            &[same; 20],
+            numbered,
+            &t,
+            &probe
+        )),
+        [(MomentKind::Panorama, previews, 0, 20)]
+    );
+    assert_eq!(probe.1.get(), 1, "one chain, asked once");
+    assert_eq!(
+        kinds(&moments_named(
+            &every(20),
+            &[same; 20],
+            skipping,
+            &t,
+            &probe
+        )),
+        [
+            (MomentKind::Panorama, previews, 0, 7),
+            (MomentKind::Panorama, previews, 7, 7),
+            (MomentKind::Panorama, previews, 14, 6),
+        ]
+    );
+    // Two rows of six left to right: the last frame of the first and the first of the second
+    // share no view.
+    let probe = Pans(|id| (id != 6).then_some(RIGHT), Cell::new(0));
+    assert_eq!(
+        kinds(&moments_named(
+            &every(12),
+            &[same; 12],
+            numbered,
+            &t,
+            &probe
+        )),
+        [(MomentKind::Panorama, previews, 0, 12)]
+    );
+    assert_eq!(
+        kinds(&moments_named(
+            &every(12),
+            &[same; 12],
+            skipping,
+            &t,
+            &probe
+        )),
+        [
+            (MomentKind::Panorama, previews, 0, 6),
+            (MomentKind::Panorama, previews, 6, 6),
+        ]
+    );
+    // Right, right, then back left twice, as a second row shot the other way.
+    let probe = Pans(
+        |id| Some([RIGHT, RIGHT, LEFT, LEFT][id as usize - 1]),
+        Cell::new(0),
+    );
+    assert_eq!(
+        kinds(&moments_named(&every(5), &[same; 5], numbered, &t, &probe)),
+        [(MomentKind::Panorama, previews, 0, 5)]
+    );
+    // Two unmeasured links in a row end a sweep: frame 5 joins neither.
+    let probe = Pans(|id| (id != 5 && id != 6).then_some(RIGHT), Cell::new(0));
+    assert_eq!(
+        kinds(&moments_named(&every(9), &[same; 9], numbered, &t, &probe)),
+        [
+            (MomentKind::Panorama, previews, 0, 5),
+            (MomentKind::Panorama, previews, 6, 3),
+        ]
+    );
+    // A skipped number ends one too: the unmeasured link across it is not bridged.
+    let probe = Pans(|id| (id != 5).then_some(RIGHT), Cell::new(0));
+    let skipped = |at: usize| format!("DSC_{:04}.NEF", at + 1 + usize::from(at >= 5));
+    assert_eq!(
+        kinds(&moments_named(
+            &every(10),
+            &[same; 10],
+            numbered,
+            &t,
+            &probe
+        )),
+        [(MomentKind::Panorama, previews, 0, 10)]
+    );
+    assert_eq!(
+        kinds(&moments_named(&every(10), &[same; 10], skipped, &t, &probe)),
+        [
+            (MomentKind::Panorama, previews, 0, 5),
+            (MomentKind::Panorama, previews, 5, 5),
+        ]
+    );
+    // Right, then straight back left: no sweep to carry on.
+    let probe = Pans(|id| Some([RIGHT, LEFT][id as usize - 1]), Cell::new(0));
+    assert!(moments_named(&every(3), &[same; 3], numbered, &t, &probe).is_empty());
+    // Pairs that pan, each apart from the next: no sweep the previews show, numbered or not.
+    let probe = Pans(|id| (id % 2 == 1).then_some(RIGHT), Cell::new(0));
+    assert!(moments_named(&every(8), &[same; 8], numbered, &t, &probe).is_empty());
+}
+
+/// File names number their files one after the other with the same prefix and suffix around their
+/// last digits, either way round, in any case and whatever the extension, and across a counter's
+/// wrap.
+#[test]
+fn organize_file_numbers_follow_one_another() {
+    use super::moments::numbered;
+    for (a, b) in [
+        ("DSC_0019.NEF", "DSC_0020.NEF"),
+        ("DSC_0020.NEF", "DSC_0019.NEF"),
+        ("IMG_0999.CR3", "img_1000.jpg"),
+        ("DSCF9.RAF", "DSCF10.RAF"),
+        ("DSC_9999.NEF", "DSC_0001.NEF"),
+        ("DSC_9999.NEF", "DSC_0000.NEF"),
+        ("2026-10-16 Pano 7-edit.tif", "2026-10-16 Pano 8-edit.tif"),
+        ("0041", "0042"),
+    ] {
+        assert!(numbered(a, b), "{a} {b}");
+    }
+    for (a, b) in [
+        ("DSC_0019.NEF", "DSC_0021.NEF"),
+        ("DSC_0019.NEF", "DSC_0019.NEF"),
+        ("DSC_0019.NEF", "_DSC0020.NEF"),
+        ("DSC_0019.NEF", "DSC_0020-2.NEF"),
+        ("DSC_9999.NEF", "DSC_0002.NEF"),
+        ("DSC_999.NEF", "DSC_0001.NEF"),
+        ("Lake.JPG", "Lake.JPG"),
+        ("DSC_0019.NEF", "Lake.JPG"),
+    ] {
+        assert!(!numbered(a, b), "{a} {b}");
+    }
 }
 
 /// A view sorted newest first has the same moments, their frames and steps in its own order.

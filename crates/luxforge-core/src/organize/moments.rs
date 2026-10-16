@@ -12,6 +12,13 @@
 //!   and [`PANORAMA_MIN_FRAMES`] or more frames whose every link is a measured pan, each carrying
 //!   on the sweep of the last ([`Pan::continued_by`]), are a panorama. A panorama found decides
 //!   its frames: the runs below are found in the frames between panoramas.
+//! - **Numbered sweeps.** Frames whose file names number them one after another ([`numbered`]:
+//!   `DSC_0019.NEF`, `DSC_0020.NEF`) were shot with nothing between them, so the chain's frames
+//!   they join need less of the previews: a stretch of them holding a sweep of
+//!   [`PANORAMA_MIN_FRAMES`] as above is a panorama, carried on through every further pan in any
+//!   direction, as a panorama of several rows turns from one to the next, and across a link the
+//!   previews cannot measure between two that are pans, as a row's last frame and the next row's
+//!   first share no view and a sweep's plain sky places no shift. Two such links in a row end it.
 //! - **Runs.** Consecutive frames less than `run_gap_ms` apart are one run, and so are frames less
 //!   than `matched_run_gap_ms` apart whose aperture, ISO and focal length match
 //!   ([`Exposure::settings_match`](crate::catalog_types::Exposure::settings_match)), since a
@@ -181,9 +188,10 @@ impl<'a> Finder<'a> {
         }
     }
 
-    /// Appends to `found` the sweeps of a chain of linked frames, which starts at `offset`: each
-    /// longest stretch of [`PANORAMA_MIN_FRAMES`] or more whose every link the probe measures as a
-    /// pan carrying on the last.
+    /// Appends to `found` the sweeps of a chain of linked frames, which starts at `offset`: its
+    /// numbered sweeps ([`numbered_sweeps`]), then in the frames between them each longest stretch
+    /// of [`PANORAMA_MIN_FRAMES`] or more whose every link the probe measures as a pan carrying on
+    /// the last ([`sweeps_within`]).
     fn sweeps(
         &mut self,
         chain: &[FrameFacts],
@@ -196,29 +204,16 @@ impl<'a> Finder<'a> {
         if pans.len() + 1 != chain.len() {
             return;
         }
-        let mut start = 0;
-        let mut last: Option<Pan> = None;
-        for at in 1..=chain.len() {
-            // The link from frame `at - 1` to frame `at`, when there is one.
-            let carried = (at < chain.len())
-                .then(|| pans[at - 1])
-                .flatten()
-                .filter(|pan| last.is_none_or(|last| last.continued_by(pan)));
-            match carried {
-                Some(pan) => last = Some(pan),
-                None => {
-                    let swept = at - start >= PANORAMA_MIN_FRAMES;
-                    if swept {
-                        found.push((offset + start..offset + at, MomentEvidence::Previews));
-                    }
-                    // A pan that turns back starts the next stretch at its first frame, unless
-                    // that frame ended a sweep.
-                    let turned = (at < chain.len() && !swept).then(|| pans[at - 1]).flatten();
-                    start = if turned.is_some() { at - 1 } else { at };
-                    last = turned;
-                }
-            }
+        let mut from = 0;
+        for numbered in numbered_sweeps(chain, &pans) {
+            sweeps_within(&pans, from..numbered.start, offset, found);
+            from = numbered.end;
+            found.push((
+                offset + numbered.start..offset + numbered.end,
+                MomentEvidence::Previews,
+            ));
         }
+        sweeps_within(&pans, from..chain.len(), offset, found);
     }
 
     /// Appends to `moments` the bursts and brackets of `frames`, which start at `offset`.
@@ -286,6 +281,128 @@ fn names_panoramas(name: &str) -> bool {
     name.as_bytes()
         .windows(4)
         .any(|window| window.eq_ignore_ascii_case(b"pano"))
+}
+
+/// Appends to `found` each longest stretch of [`PANORAMA_MIN_FRAMES`] or more of a chain's
+/// `frames`, which starts at `offset`, whose every link `pans` measures as a pan carrying on the
+/// last; `pans[at]` is the link from frame `at` to frame `at + 1`.
+fn sweeps_within(
+    pans: &[Option<Pan>],
+    frames: Range<usize>,
+    offset: usize,
+    found: &mut Vec<(Range<usize>, MomentEvidence)>,
+) {
+    let mut start = frames.start;
+    let mut last: Option<Pan> = None;
+    for at in frames.start + 1..=frames.end {
+        // The link from frame `at - 1` to frame `at`, when there is one.
+        let carried = (at < frames.end)
+            .then(|| pans[at - 1])
+            .flatten()
+            .filter(|pan| last.is_none_or(|last| last.continued_by(pan)));
+        match carried {
+            Some(pan) => last = Some(pan),
+            None => {
+                let swept = at - start >= PANORAMA_MIN_FRAMES;
+                if swept {
+                    found.push((offset + start..offset + at, MomentEvidence::Previews));
+                }
+                // A pan that turns back starts the next stretch at its first frame, unless
+                // that frame ended a sweep.
+                let turned = (at < frames.end && !swept).then(|| pans[at - 1]).flatten();
+                start = if turned.is_some() { at - 1 } else { at };
+                last = turned;
+            }
+        }
+    }
+}
+
+/// The numbered sweeps of a chain of linked frames, in order, as ranges of its frames (see the
+/// module documentation); `pans[at]` is the link from frame `at` to frame `at + 1`.
+fn numbered_sweeps(chain: &[FrameFacts], pans: &[Option<Pan>]) -> Vec<Range<usize>> {
+    let joined = |link: usize| numbered(&chain[link].name, &chain[link + 1].name);
+    let pan = |link: usize| joined(link) && pans[link].is_some();
+    let mut found = Vec::new();
+    let mut link = 0;
+    while link < pans.len() {
+        if !pan(link) {
+            link += 1;
+            continue;
+        }
+        // Links `start..end`, the longest run of pans among them each carrying on the last, and
+        // the current one.
+        let (start, mut end, mut longest, mut run) = (link, link + 1, 1, 1);
+        loop {
+            if end < pans.len() && pan(end) {
+                let carried = pans[end - 1]
+                    .zip(pans[end])
+                    .is_some_and(|(last, pan)| last.continued_by(&pan));
+                run = if carried { run + 1 } else { 1 };
+                end += 1;
+            } else if end + 1 < pans.len() && joined(end) && pans[end].is_none() && pan(end + 1) {
+                end += 2;
+                run = 1;
+            } else {
+                break;
+            }
+            longest = longest.max(run);
+        }
+        if longest + 1 >= PANORAMA_MIN_FRAMES {
+            found.push(start..end + 1);
+        }
+        link = end;
+    }
+    found
+}
+
+/// Whether two file names number their files one after the other, either way round (a view
+/// sorted newest first lists them counting down): the same prefix and suffix, in any case, around
+/// the last digits of each name less its extension, the second's number one more than the
+/// first's, or a counter of all nines wrapping to `0000` or `0001` as cameras do
+/// (`DSC_9999.NEF`, `DSC_0001.NEF`).
+pub(super) fn numbered(a: &str, b: &str) -> bool {
+    match (FileNumber::of(a), FileNumber::of(b)) {
+        (Some(a), Some(b)) => a.followed_by(&b) || b.followed_by(&a),
+        _ => false,
+    }
+}
+
+/// A file name's last number: the text before and after it, less the extension, and its digits.
+struct FileNumber<'a> {
+    prefix: &'a str,
+    suffix: &'a str,
+    width: usize,
+    value: u64,
+}
+
+impl<'a> FileNumber<'a> {
+    fn of(name: &'a str) -> Option<Self> {
+        let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+        let end = stem.rfind(|c: char| c.is_ascii_digit())? + 1;
+        let start = stem[..end]
+            .rfind(|c: char| !c.is_ascii_digit())
+            .map_or(0, |at| at + 1);
+        let digits = &stem[start..end];
+        // Longer than any camera's counter, and past what a `u64` holds.
+        if digits.len() > 18 {
+            return None;
+        }
+        Some(Self {
+            prefix: &stem[..start],
+            suffix: &stem[end..],
+            width: digits.len(),
+            value: digits.parse().ok()?,
+        })
+    }
+
+    fn followed_by(&self, next: &Self) -> bool {
+        let wrapped = self.width == next.width
+            && self.value + 1 == 10u64.pow(self.width as u32)
+            && next.value <= 1;
+        self.prefix.eq_ignore_ascii_case(next.prefix)
+            && self.suffix.eq_ignore_ascii_case(next.suffix)
+            && (next.value == self.value + 1 || wrapped)
+    }
 }
 
 /// Two dated frames' gap in milliseconds, and whether both clocks record whole seconds only.

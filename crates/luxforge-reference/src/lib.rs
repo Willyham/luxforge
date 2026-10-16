@@ -29,6 +29,7 @@ pub mod grade_response;
 pub mod guided;
 pub mod hdr;
 pub mod hdr_align;
+pub mod local_tone;
 pub mod look;
 pub mod lr_align;
 pub mod mask;

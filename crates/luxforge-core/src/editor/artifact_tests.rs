@@ -793,6 +793,7 @@ fn a_stack_that_cannot_be_held_ready_at_once_is_a_resource_limit() {
         masks: Vec::new(),
         strokes: Default::default(),
         artifacts: Default::default(),
+        scene_white: None,
     };
     let error = service.bind_artifacts(&mut recipe).unwrap_err();
     assert_eq!(error.kind, ErrorKind::ResourceLimit);

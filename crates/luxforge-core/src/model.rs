@@ -554,10 +554,21 @@ pub struct Recipe {
     /// Compiling a layer whose artifact is not in it is refused by name.
     #[serde(skip)]
     pub artifacts: crate::artifacts::ArtifactTable,
+    /// The scene white of the RAW development this recipe is evaluated over
+    /// (`docs/design/basic-local-tone.md`): what Basic's Highlights, Shadows and Whites act
+    /// relative to on a scene-referred stack.
+    ///
+    /// **Never serialized.** It is measured from the developed pixels, not edited, and bound where
+    /// an evaluation reads its source, as the artifacts are bound where a recipe enters
+    /// evaluation; `None` on every recipe read out of a catalog and on every source but a RAW
+    /// development, where Basic's scene part takes the rendered domain.
+    #[serde(skip)]
+    pub scene_white: Option<f64>,
 }
 
 /// Equality on the stored recipe, which is what two recipes being the same means: the format, the
-/// layers and the mask table. The resolved stroke table and the bound artifacts are excluded
+/// layers and the mask table. The resolved stroke table, the bound artifacts and the scene white are
+/// excluded
 /// because they are not stored — they are what the addresses and identities in those layers
 /// resolved to, so two recipes that compare equal reference the same strokes and artifacts by
 /// construction, and a hydrated or bound recipe must not compare unequal to the recipe it was
@@ -578,11 +589,24 @@ impl Default for Recipe {
             masks: Vec::new(),
             strokes: crate::path::StrokeTable::default(),
             artifacts: crate::artifacts::ArtifactTable::default(),
+            scene_white: None,
         }
     }
 }
 
 impl Recipe {
+    /// This recipe with `white` as its scene white ([`Self::scene_white`]): itself, borrowed, when
+    /// it already holds it, otherwise a copy of its stack bound with it. `O(layers)`.
+    pub(crate) fn with_scene_white(&self, white: Option<f64>) -> std::borrow::Cow<'_, Recipe> {
+        if self.scene_white.map(f64::to_bits) == white.map(f64::to_bits) {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        std::borrow::Cow::Owned(Recipe {
+            scene_white: white,
+            ..self.clone()
+        })
+    }
+
     /// Structural validation of the stack's layers: the format marker, unique layer identities, each
     /// layer's own structure and every layer's mask reference, `O(layers · masks)` identity checks.
     /// It reads no pixels, asks no provider anything and does not read the mask table itself, so a

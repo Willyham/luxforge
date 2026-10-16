@@ -130,6 +130,7 @@ pub(super) fn run(
         masks: whole.masks.clone(),
         strokes: whole.strokes.clone(),
         artifacts: whole.artifacts.clone(),
+        scene_white: whole.scene_white,
     });
     let recipe = prefix.as_ref().unwrap_or(whole);
 

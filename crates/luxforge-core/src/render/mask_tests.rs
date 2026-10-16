@@ -1398,6 +1398,7 @@ fn masked_brush_cost_on_photo_sized_frames() {
                 masks: vec![mask.clone()],
                 strokes: table.clone(),
                 artifacts: Default::default(),
+                scene_white: None,
             };
             measure(&format!("{count}-stroke brush mask"), &recipe);
 
