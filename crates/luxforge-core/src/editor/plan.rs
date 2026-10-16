@@ -1182,14 +1182,17 @@ impl HostStage<'_> {
         if let Some(compiled) = self.sample_prefixes.borrow().get(&index) {
             return Ok(compiled.clone());
         }
-        let recipe = self.recipe;
-        let compiled = self.service.registry.compile_layers(
+        // Compiled as the whole stack compiles it, with the development's scene white: a sample
+        // reads the source this stage prepares anyway.
+        let white = match self.source() {
+            Ok(PreparedSource::Raw(raw)) => raw.linear.as_ref().and_then(LinearImage::scene_white),
+            _ => None,
+        };
+        let compiled = self.service.registry.compile_prefix(
             self.asset.width,
             self.asset.height,
-            prefix(&recipe.layers, index)?,
-            &recipe.masks,
-            &recipe.strokes,
-            &recipe.artifacts,
+            &self.recipe.with_scene_white(white),
+            index,
         )?;
         #[cfg(test)]
         count_sample_compile();

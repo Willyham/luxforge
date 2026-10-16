@@ -3,16 +3,16 @@
   "plan_id": "basic-local-tone",
   "title": "Basic tone that adapts to the picture",
   "objective": "Make Basic's Highlights, Shadows and Whites act on a RAW photograph's scene values relative to its development's scene white, and Blacks, Contrast, Vibrance and Saturation after the Look, so one strength per value fits Lightroom Classic's charts and photographs within A8, as docs/design/basic-local-tone.md specifies.",
-  "context_summary": "Planned from docs/design/basic-local-tone.md, a level C change (A1, A8) of the Lightroom alignment plan's TASK-006, whose study (cargo xtask lr-align tone-study) measured Lightroom's exports only (A4). The design is a proposal: the owner's four questions are open and no task is authorized. The plan follows the design's recommended answers (global scene-white operator, Blacks/Contrast/Vibrance/Saturation after the Look on RAW, the development's scene white, Whites' re-stretch left to a later study); a different answer changes TASK-002 to TASK-004 and is a focused plan update. Basic stays one layer and one payload; its format rises from 3 to 4 and format 3 layers and presets are refused. Both parts are pointwise in the fused colour run: no halo, scratch, GPU window or staged sweep changes. This Linux host has no Metal; GPU evidence comes from the M4 in TASK-006. Rounds and originals are read-only.",
+  "context_summary": "Planned from docs/design/basic-local-tone.md, a level C change (A1, A8) of the Lightroom alignment plan's TASK-006, whose study (cargo xtask lr-align tone-study) measured Lightroom's exports only (A4). The owner took the design's four recommended answers on 2026-10-16 (global scene-white operator, Blacks/Contrast/Vibrance/Saturation after the Look on RAW, the development's scene white, Whites' re-stretch left to a later study) and authorized the plan. Basic stays one layer and one payload; its format rises from 3 to 4 and format 3 layers and presets are refused. Both parts are pointwise in the fused colour run: no halo, scratch, GPU window or staged sweep changes. This Linux host has no Metal; GPU evidence comes from the M4 in TASK-006. Rounds and originals are read-only.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Freeze the reference for the split Basic tone: the scene part (Whites, Shadows, Highlights in the scene-white domain c x W_e, with c_H = 3 and c_S = 2) and the rendered part (Blacks, Contrast, then Vibrance and Saturation), the scene white's definition, and the JPEG path, with exact fixtures and a dense monotonicity proof for each part.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Promote the study's curves from crates/luxforge-reference/src/local_tone.rs into the frozen Basic tone reference; the base, guided and Levels prototypes stay study code unless the owner chooses the local option.",
-        "The scene white: block means to at most 0.25 MP, then the 0.999 quantile of linear luminance read from a fixed-bin histogram, deterministic and tile-invariant (recorded choice). W_e is W scaled by Exposure's gain and by Basic's white balance gain on a neutral grey.",
+        "The scene white: block means to at most 0.25 MP, then the exact order statistic at floor(0.999 (n - 1)) of their linear luminance, deterministic and equal to the reference bit for bit (recorded choice). W_e is W scaled by Exposure's gain and by Basic's white balance gain on a neutral grey.",
         "Whites and Blacks no longer share one endpoint remap or its gap clamp; each part is monotone on its own, proved densely as basic-tone.md does today, and values past the domain's white pass through.",
         "On a rendered input the domain is today's (c x W_e = 1) and the order is Whites, Shadows, Highlights, Blacks, Contrast, Vibrance/Saturation."
       ],
@@ -57,12 +57,12 @@
     {
       "id": "TASK-002",
       "description": "Compute the development's scene white once on the source worker when a RAW photograph is developed, keep it with the prepared development, and pass it to colour compilation through CompileStage.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "It is a property of the development, not of the stage: independent of the crop and of every layer, never recomputed on a drag, never on the catalog owner or UI thread.",
         "A rendered or derived source (JPEG, HDR merge) has none; compilation then takes the rendered path.",
-        "Charge its cost to the development path and measure it at 24 and 60 MP when timing runs are due; until then answer the performance checklist with its bounds (one reduction, a fixed histogram)."
+        "Charge its cost to the development path and measure it at 24 and 60 MP when timing runs are due; until then answer the performance checklist with its bounds (one pass and a selection over at most 2^18 means)."
       ],
       "context_links": [
         {
@@ -106,7 +106,7 @@
     {
       "id": "TASK-003",
       "description": "Let a colour operation carry a rendered tail that the registry places directly after the stack's rendering layer (the Look) when one follows on a scene-referred stack, and otherwise directly after the layer's own units, with the layer's mask on both parts, in the same fused colour run on the CPU and the GPU plan.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "One layer, one payload, one history entry: no second Basic layer (rejected in the design).",
@@ -154,7 +154,7 @@
     {
       "id": "TASK-004",
       "description": "Compile Basic as the scene part and a rendered tail, exact against TASK-001's reference on the CPU and within the declared tolerance in WGSL, raise BASIC_EFFECT_FORMAT from 3 to 4 and refuse format 3 layers and presets, and move Auto tone's forward model to the same split and scene white.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -215,7 +215,7 @@
     {
       "id": "TASK-005",
       "description": "Measure rounds 1, 1b and 2 on a study build of the new operator with extended ranges, refit response.json with lr-align fold (Contrast, Highlights, Shadows, Whites, Blacks, Vibrance, Saturation; c_H and c_S at the frozen reduction), and record the figures, sheets and acceptance results in the design.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],

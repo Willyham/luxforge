@@ -5,9 +5,9 @@
 //! Each `DIR` is an `lr-align measure` output. Every family fitted on a Basic field there carries
 //! its distance table: each Lightroom value's distance at every Luxforge value of a refined grid.
 //! The fold fits each field's families together, the targets and the photographs, each family
-//! weighted equally ([`la::joint_fit`]), with knots at the measured values, a saturated point
-//! continuing its neighbour's slope within its ties ([`la::continued_within_ties`]) and every
-//! slider step moving the picture ([`la::with_slope_floor`]), and composes the map with the responses the measured build applied,
+//! weighted equally, with knots at the measured values chosen together so every slider step moves
+//! the picture and a saturated point continues its neighbour's slope within its ties
+//! ([`la::floored_joint_knots`]), and composes the map with the responses the measured build applied,
 //! so the new response gives each slider value the strength whose response was closest to
 //! Lightroom's at that value. It writes `response.json`, the table Basic's `response.rs` freezes,
 //! with `fold.json` and `fold.md`, every figure, into `NEW`, and reads nothing else.
@@ -155,13 +155,14 @@ fn fold(measured: &[PathBuf], out: &Path) -> Result {
         let fit = la::joint_fit(&tables, Some((0.0, 0.0)), range);
         // Knots at the measured values themselves, so the response passes through each fitted
         // point rather than a resampling of them.
-        let knots = la::continued_within_ties(&fit.points, (0.0, 0.0));
+        let floored = la::floored_joint_knots(&tables, (0.0, 0.0), SLOPE_FLOOR, range).ok_or(
+            format!("{field}: no knots on the measured grid meet the slope floor"),
+        )?;
         ensure(
-            knots.first().map(|k| k[0]) == Some(range.0)
-                && knots.last().map(|k| k[0]) == Some(range.1),
+            floored.first().map(|k| k[0]) == Some(range.0)
+                && floored.last().map(|k| k[0]) == Some(range.1),
             format!("{field}: the measured values do not reach both ends of its range"),
         )?;
-        let floored = la::with_slope_floor(&knots, 0.0, SLOPE_FLOOR, range);
         let strengths: Vec<[f64; 2]> = floored
             .iter()
             .map(|[lr, u]| {

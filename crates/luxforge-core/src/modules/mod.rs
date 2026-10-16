@@ -146,7 +146,7 @@ pub use detail::qualification as detail_qualification;
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::{LENS_MODULE, LensModule};
 pub use look::LOOK_EFFECT;
-pub(crate) use look::LookModule;
+pub(crate) use look::{LookModule, renders_scene};
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
 pub(crate) use models_proof::ModelsProofModule;

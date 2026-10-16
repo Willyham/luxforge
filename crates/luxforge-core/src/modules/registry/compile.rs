@@ -7,8 +7,8 @@ use crate::{
     artifacts::ArtifactTable,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Mapping, Processing, Provider,
-        Resample, Stage, WarpStep,
+        ColorOperation, EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Mapping,
+        Processing, Provider, Resample, Stage, WarpStep,
     },
     render::{
         Compiled, Entry, Segment,
@@ -269,10 +269,7 @@ impl ModuleRegistry {
         self.compile_layers_sampled(
             source_width,
             source_height,
-            &recipe.layers,
-            &recipe.masks,
-            &recipe.strokes,
-            &recipe.artifacts,
+            Stack::whole(recipe),
             sampling,
             Some(&self.stages(exact_width, exact_height, recipe)),
             shaped,
@@ -280,10 +277,7 @@ impl ModuleRegistry {
     }
 
     /// Compile an ordered layer slice whose recipe format is already known good, against the mask
-    /// table its layers reference. Asking for the stage one layer receives compiles the prefix
-    /// before it through here, so it copies no part of the stack; a prefix carries the whole mask
-    /// table, because the masks a prefix layer names are the recipe's and not the prefix's, and
-    /// the recipe's bound artifacts for the same reason.
+    /// table its layers reference, as a whole stack with no scene white.
     pub(crate) fn compile_layers(
         &self,
         source_width: u32,
@@ -296,31 +290,126 @@ impl ModuleRegistry {
         self.compile_layers_sampled(
             source_width,
             source_height,
-            layers,
-            masks,
-            strokes,
-            artifacts,
+            Stack {
+                layers,
+                from: 0,
+                cut: layers.len(),
+                masks,
+                strokes,
+                artifacts,
+                scene_white: None,
+            },
             MaskSampling::Point,
             None,
             None,
         )
     }
 
+    /// The prefix of `recipe` before layer `cut`, compiled as the whole stack compiles it: what
+    /// asking for the stage one layer receives evaluates. It copies no part of the stack and
+    /// carries the whole mask table, the bound artifacts and the scene white, because a prefix
+    /// layer's masks and artifacts are the recipe's; and a layer's rendered tail that the whole
+    /// stack places at or after `cut` is not in it, so the prefix is exactly the operations the
+    /// whole stack evaluates before layer `cut` (`docs/design/basic-local-tone.md`). A cut past the
+    /// stack is refused.
+    pub(crate) fn compile_prefix(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        recipe: &Recipe,
+        cut: usize,
+    ) -> Result<Compiled, Error> {
+        self.compile_range(source_width, source_height, recipe, 0, cut)
+    }
+
+    /// Layers `from..cut` of `recipe` compiled as the whole stack compiles them, from an input of
+    /// the source's dimensions: [`Self::compile_prefix`] of a run that starts after `from`, which
+    /// keeps the stack's scene-referred input and scene white, and the rendered tails the whole
+    /// stack places inside the run. The layers before `from` may hold no colour layer, whose scene
+    /// gain or rendered tail the run would need; such a range, and one outside the stack, is
+    /// refused.
+    pub(crate) fn compile_range(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        recipe: &Recipe,
+        from: usize,
+        cut: usize,
+    ) -> Result<Compiled, Error> {
+        crate::editor::prefix(&recipe.layers, cut)?;
+        if from > cut {
+            return Err(Error::validation(format!(
+                "layer range {from}..{cut} is empty"
+            )));
+        }
+        if recipe.layers[..from]
+            .iter()
+            .any(|layer| self.effect_stage(&layer.effect_id) == Some(EffectStage::Color))
+        {
+            return Err(Error::internal(format!(
+                "layer range {from}..{cut} starts after a colour layer"
+            )));
+        }
+        self.compile_layers_sampled(
+            source_width,
+            source_height,
+            Stack {
+                from,
+                cut,
+                ..Stack::whole(recipe)
+            },
+            MaskSampling::Point,
+            None,
+            None,
+        )
+    }
+
+    /// Where each layer's rendered tail goes on a scene-referred stack: after layer `j`, the first
+    /// rendering layer ([`crate::modules::renders_scene`]) after it with only colour and spatial
+    /// layers between, which keep the stage the tail's mask was compiled against; `None`, directly
+    /// after the layer's own units. On a stack that is not scene-referred every tail stays with its
+    /// layer. `O(layers)` descriptor lookups.
+    fn tail_places(&self, layers: &[Layer], scene_referred: bool) -> Vec<Option<usize>> {
+        let mut places = vec![None; layers.len()];
+        if !scene_referred {
+            return places;
+        }
+        let mut next = None;
+        for (index, layer) in layers.iter().enumerate().rev() {
+            places[index] = next;
+            if crate::modules::renders_scene(layer) {
+                next = Some(index);
+            } else if !matches!(
+                self.effect_stage(&layer.effect_id),
+                Some(EffectStage::Color | EffectStage::Spatial)
+            ) {
+                next = None;
+            }
+        }
+        places
+    }
+
     /// [`Self::compile_layers`] with the mask sampling of the render being compiled, and the one
     /// layer, if any, compiled in its GPU shape ([`Self::compile_shaped`]).
-    #[allow(clippy::too_many_arguments)]
     fn compile_layers_sampled(
         &self,
         source_width: u32,
         source_height: u32,
-        layers: &[Layer],
-        masks: &[Mask],
-        strokes: &crate::path::StrokeTable,
-        artifacts: &ArtifactTable,
+        stack: Stack<'_>,
         sampling: MaskSampling,
         full_stages: Option<&[Stage]>,
         shaped: Option<usize>,
     ) -> Result<Compiled, Error> {
+        let Stack {
+            layers: whole,
+            from,
+            cut,
+            masks,
+            strokes,
+            artifacts,
+            scene_white,
+        } = stack;
+        let layers = &whole[from..cut];
         #[cfg(test)]
         stack_compiles::count();
         let has_warp = layers.iter().any(|l| {
@@ -367,10 +456,29 @@ impl ModuleRegistry {
         let mut starts = Vec::with_capacity(layers.len());
         // A source-stage layer leads a RAW photo's stack: every later layer's input is
         // scene-referred.
-        let scene_referred = layers
+        let scene_referred = whole
             .first()
             .is_some_and(|first| self.effect_stage(&first.effect_id) == Some(EffectStage::Source));
+        // Each layer's rendered tail is placed by the whole stack, so a prefix holds exactly the
+        // tails the whole stack evaluates before its cut; a tail placed at or after the cut is
+        // dropped with the layers it follows.
+        let places = self.tail_places(whole, scene_referred);
+        let mut pending: Vec<(usize, ColorOperation)> = Vec::new();
+        // The scene white each layer receives: the development's, through every global scene gain
+        // before it.
+        let mut white = scene_white.filter(|_| scene_referred);
         for (index, layer) in layers.iter().enumerate() {
+            if index > 0 {
+                let segment = segments.last_mut().expect("one segment always exists");
+                pending.retain(|(after, tail)| {
+                    if *after != index - 1 {
+                        return true;
+                    }
+                    segment.has_color = true;
+                    segment.operations.push(Processing::Color(tail.clone()));
+                    false
+                });
+            }
             starts.push((
                 segments.len() - 1,
                 segments
@@ -423,7 +531,8 @@ impl ModuleRegistry {
                 layer,
                 crate::CompileStage::sampled(stage, full)
                     .shaped(shaped == Some(index))
-                    .over_scene(index > 0 && scene_referred),
+                    .over_scene(from + index > 0 && scene_referred)
+                    .white(white.filter(|_| from + index > 0)),
                 artifacts,
                 strokes,
             )?;
@@ -437,10 +546,10 @@ impl ModuleRegistry {
                     segment.operations.push(Processing::ExactGeometry(step));
                 }
                 Processing::Color(operation) => {
-                    if operation.len() > MAX_COLOR_UNITS {
+                    if operation.len().max(operation.tail().len()) > MAX_COLOR_UNITS {
                         return Err(Error::validation(format!(
                             "a colour operation declares {} units, more than the {MAX_COLOR_UNITS} the host evaluates",
-                            operation.len()
+                            operation.len().max(operation.tail().len())
                         )));
                     }
                     if !operation.is_finite() {
@@ -460,10 +569,25 @@ impl ModuleRegistry {
                             layer, masks, strokes, artifacts, stage, sampling,
                         )? {
                             Some(mask) => operation.with_mask(mask),
-                            None => operation,
+                            None => {
+                                // A global layer's scene gains reach every later layer's input.
+                                white = white.map(|white| white * operation.scene_gain());
+                                operation
+                            }
                         };
-                        segment.has_color = true;
-                        segment.operations.push(Processing::Color(operation));
+                        let (operation, tail) = operation.split_tail();
+                        if !operation.is_empty() {
+                            segment.has_color = true;
+                            segment.operations.push(Processing::Color(operation));
+                        }
+                        match (tail, places[from + index]) {
+                            (Some(tail), Some(after)) => pending.push((after - from, tail)),
+                            (Some(tail), None) => {
+                                segment.has_color = true;
+                                segment.operations.push(Processing::Color(tail));
+                            }
+                            (None, _) => {}
+                        }
                     }
                 }
                 Processing::Spatial(operation) => {
@@ -572,6 +696,16 @@ impl ModuleRegistry {
                         output.width,
                         output.height,
                     ));
+                }
+            }
+        }
+        // The tails placed after the last compiled layer; any placed past the cut are dropped.
+        if let Some(last) = layers.len().checked_sub(1) {
+            let segment = segments.last_mut().expect("one segment always exists");
+            for (after, tail) in pending {
+                if after == last {
+                    segment.has_color = true;
+                    segment.operations.push(Processing::Color(tail));
                 }
             }
         }
@@ -738,6 +872,33 @@ impl ModuleRegistry {
                 Ok(stage)
             }
             _ => Ok(stage),
+        }
+    }
+}
+
+/// The layers a compile reads and what it reads them against: the whole stack, the run `from..cut`
+/// it compiles, the mask table, the resolved strokes and bound artifacts, and the scene white.
+#[derive(Clone, Copy)]
+struct Stack<'a> {
+    layers: &'a [Layer],
+    from: usize,
+    cut: usize,
+    masks: &'a [Mask],
+    strokes: &'a crate::path::StrokeTable,
+    artifacts: &'a ArtifactTable,
+    scene_white: Option<f64>,
+}
+
+impl<'a> Stack<'a> {
+    fn whole(recipe: &'a Recipe) -> Self {
+        Self {
+            layers: &recipe.layers,
+            from: 0,
+            cut: recipe.layers.len(),
+            masks: &recipe.masks,
+            strokes: &recipe.strokes,
+            artifacts: &recipe.artifacts,
+            scene_white: recipe.scene_white,
         }
     }
 }

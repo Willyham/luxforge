@@ -21,12 +21,13 @@ use crate::{
     render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 
-/// The Tone unit's GPU program (`tone.wgsl`): Contrast's branch and the eight coefficients below.
+/// The Tone unit's GPU program (`tone.wgsl`): Contrast's branch, the eight coefficients below and
+/// the four of its domain.
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_basic_tone",
     source: include_str!("tone.wgsl"),
     kind: GpuProgramKind::Colour,
-    words: 9,
+    words: 13,
     enabled: true,
 };
 
@@ -49,8 +50,12 @@ const K_HS: f64 = 1.5;
 
 /// Contrast, Highlights, Shadows, Whites and Blacks, composed Whites/Blacks, then
 /// Highlights/Shadows, then Contrast (the frozen order) on encoded sRGB luminance, with RGB
-/// reconstructed by the luminance ratio. All five parameters are stored in the agreed -100..100 UI
-/// range; the module never constructs this unit when every one of them is neutral.
+/// reconstructed by the luminance ratio, in a domain: the linear luminances the curve's white
+/// stands for (`docs/design/basic-local-tone.md`). Basic compiles two of these, its scene part
+/// (Whites, Shadows, Highlights) in the scene white's domain and its rendered part (Blacks,
+/// Contrast) in the rendered domain, where the curve's white is linear 1 and this is the frozen
+/// curve exactly. All five parameters are strengths; the module never constructs this unit when
+/// every one of them is neutral, except in the GPU shape.
 #[derive(Debug)]
 pub(super) struct Tone {
     contrast: f64,
@@ -75,15 +80,41 @@ pub(super) struct Tone {
     /// intercept (`bp`, after the crossing-prevention clamp) and an inverse gap.
     blacks_bp: f32,
     whites_blacks_inv_gap: f32,
+    /// The domain in `f64`, as stored: Whites/Blacks, Highlights and Contrast's white, and
+    /// Shadows'.
+    domain: [f64; 2],
+    /// The domain's coefficients: the highlights white and its reciprocal, and the ratios that
+    /// carry a luminance into Shadows' domain and back. Equal domains skip the carry.
+    white: f32,
+    inv_white: f32,
+    to_shadows: f32,
+    from_shadows: f32,
+}
+
+/// The rendered domain: the curve's white is linear 1 for every stage.
+pub(super) const RENDERED: [f64; 2] = [1.0, 1.0];
+
+/// Highlights' and Whites' domain over a scene-referred input, in multiples of the scene white.
+pub(super) const C_HIGHLIGHTS: f64 = 3.0;
+/// Shadows' domain over a scene-referred input, in multiples of the scene white.
+pub(super) const C_SHADOWS: f64 = 2.0;
+
+/// The domain over a scene-referred input whose scene white, after every gain before the curve, is
+/// `white`.
+pub(super) fn scene_domain(white: f64) -> [f64; 2] {
+    [C_HIGHLIGHTS * white, C_SHADOWS * white]
 }
 
 impl Tone {
+    /// The unit over `domain`, the linear luminances `[highlights, shadows]` the curve's white
+    /// stands for: [`RENDERED`] on a rendered input and for the rendered part.
     pub(super) fn new(
         contrast: f64,
         highlights: f64,
         shadows: f64,
         whites: f64,
         blacks: f64,
+        domain: [f64; 2],
     ) -> Self {
         // Contrast: a logistic S-curve normalized to fix (0, 0) and (1, 1), built from the
         // slider's magnitude. Negative Contrast reflects its deviation from the identity, scaled by
@@ -134,6 +165,11 @@ impl Tone {
             highlights_exp_neg_k: highlights_exp_neg_k as f32,
             blacks_bp: bp as f32,
             whites_blacks_inv_gap: (1.0 / (wp - bp)) as f32,
+            domain,
+            white: domain[0] as f32,
+            inv_white: (1.0 / domain[0]) as f32,
+            to_shadows: (domain[0] / domain[1]) as f32,
+            from_shadows: (domain[1] / domain[0]) as f32,
         }
     }
 
@@ -204,9 +240,19 @@ impl Tone {
     /// before Contrast).
     fn tone_curve(&self, x: f32) -> f32 {
         let x = self.whites_blacks(x);
-        let x = self.shadows_stage(x);
+        let x = if self.to_shadows == 1.0 {
+            self.shadows_stage(x)
+        } else {
+            let over = encode_f32(decode_f32(x) * self.to_shadows);
+            encode_f32(decode_f32(self.shadows_stage(over)) * self.from_shadows)
+        };
         let x = self.highlights_stage(x);
         self.contrast_stage(x)
+    }
+
+    /// The curve on a linear luminance, in the unit's domain.
+    fn tone_luminance(&self, l: f32) -> f32 {
+        self.white * decode_f32(self.tone_curve(encode_f32(l * self.inv_white)))
     }
 }
 
@@ -220,6 +266,8 @@ impl PointwiseColor for Tone {
                 self.shadows,
                 self.whites,
                 self.blacks,
+                self.domain[0],
+                self.domain[1],
             ]
             .map(f64::to_bits),
         )
@@ -233,6 +281,10 @@ impl PointwiseColor for Tone {
                 self.highlights_exp_neg_k,
                 self.blacks_bp,
                 self.whites_blacks_inv_gap,
+                self.white,
+                self.inv_white,
+                self.to_shadows,
+                self.from_shadows,
             ]
             .map(|v| u64::from(v.to_bits())),
         )
@@ -241,7 +293,7 @@ impl PointwiseColor for Tone {
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             let l_in = luma::rec709(*pixel);
-            let l_out = decode_f32(self.tone_curve(encode_f32(l_in)));
+            let l_out = self.tone_luminance(l_in);
             *pixel = luma::reconstruct(*pixel, l_in, l_out);
         }
     }
@@ -262,20 +314,33 @@ impl PointwiseColor for Tone {
             && self.highlights_exp_neg_k.is_finite()
             && self.blacks_bp.is_finite()
             && self.whites_blacks_inv_gap.is_finite()
+            && self.domain.iter().all(|d| d.is_finite() && *d > 0.0)
+            && [
+                self.white,
+                self.inv_white,
+                self.to_shadows,
+                self.from_shadows,
+            ]
+            .iter()
+            .all(|c| c.is_finite() && *c > 0.0)
     }
 
-    /// The five stored values. The host compares compiled operations by this string, so two units
-    /// that describe themselves identically must process identically: every coefficient above is a
-    /// pure function of these five numbers.
+    /// The five stored values and, outside the rendered domain, the domain. Every coefficient above
+    /// is a pure function of these.
     fn describe(&self) -> String {
+        let domain = if self.domain == RENDERED {
+            String::new()
+        } else {
+            format!(", domain={}/{}", self.domain[0], self.domain[1])
+        };
         format!(
-            "tone(contrast={:+}, highlights={:+}, shadows={:+}, whites={:+}, blacks={:+})",
+            "tone(contrast={:+}, highlights={:+}, shadows={:+}, whites={:+}, blacks={:+}{domain})",
             self.contrast, self.highlights, self.shadows, self.whites, self.blacks
         )
     }
 
     /// Contrast's branch, decided by the stored value's sign as `contrast_stage` decides it, then
-    /// the eight `f32` coefficients the CPU unit holds: all pure functions of the five values the
+    /// the twelve `f32` coefficients the CPU unit holds: all pure functions of the values the
     /// description writes.
     fn gpu(&self) -> Option<GpuDescription> {
         let branch: u32 = if self.contrast == 0.0 {
@@ -296,6 +361,10 @@ impl PointwiseColor for Tone {
                 self.highlights_exp_neg_k,
                 self.blacks_bp,
                 self.whites_blacks_inv_gap,
+                self.white,
+                self.inv_white,
+                self.to_shadows,
+                self.from_shadows,
             ]
             .map(f32::to_bits),
         );
@@ -361,6 +430,7 @@ mod tests {
                 case.params.shadows,
                 case.params.whites,
                 case.params.blacks,
+                RENDERED,
             );
             let mut row = [[
                 case.input_linear_rgb[0] as f32,
@@ -383,31 +453,102 @@ mod tests {
         println!("maximum observed error against the frozen fixture: {max_error}");
     }
 
+    #[derive(Deserialize)]
+    struct DomainCase {
+        label: String,
+        input_linear_rgb: [f64; 3],
+        params: FixtureParams,
+        domain: [f64; 2],
+        expected_linear_rgb: [f64; 3],
+    }
+
+    /// The production unit in the scene white's domain against every case of the frozen oracle
+    /// fixture `fixtures/basic/tone-domain-cases.json` (`docs/design/basic-local-tone.md`): the
+    /// scene part over dim, clipping and bright developments, and the rendered part.
+    #[test]
+    fn production_matches_the_frozen_domain_fixture_within_tolerance() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/basic/tone-domain-cases.json");
+        let raw = fs::read_to_string(path).expect("the tone domain fixture");
+        let cases: Vec<DomainCase> = serde_json::from_str(&raw).expect("valid JSON");
+        assert!(
+            cases.len() >= 200,
+            "the committed fixture has {} cases",
+            cases.len()
+        );
+        for case in &cases {
+            let p = &case.params;
+            let unit = Tone::new(
+                p.contrast,
+                p.highlights,
+                p.shadows,
+                p.whites,
+                p.blacks,
+                case.domain,
+            );
+            let mut row = [case.input_linear_rgb.map(|c| c as f32)];
+            unit.apply_row(0, 0, &mut row);
+            for (channel, expected) in case.expected_linear_rgb.iter().enumerate() {
+                let actual = f64::from(row[0][channel]);
+                let error = (actual - expected).abs();
+                assert!(
+                    error <= tolerance(*expected),
+                    "{}: channel {channel} actual {actual} expected {expected} error {error}",
+                    case.label
+                );
+            }
+        }
+    }
+
+    /// Equal domains are one scaled curve with no carry into Shadows' domain; unequal ones carry.
+    #[test]
+    fn the_domain_words_follow_the_domain() {
+        let rendered = Tone::new(0.0, -50.0, 30.0, 0.0, 0.0, RENDERED);
+        assert_eq!(
+            [
+                rendered.white,
+                rendered.inv_white,
+                rendered.to_shadows,
+                rendered.from_shadows
+            ],
+            [1.0; 4]
+        );
+        let scene = Tone::new(0.0, -50.0, 30.0, 0.0, 0.0, scene_domain(0.5));
+        assert_eq!(scene.domain, [1.5, 1.0]);
+        assert_eq!(scene.to_shadows, 1.5);
+        assert!(
+            scene.describe().ends_with("domain=1.5/1)"),
+            "{}",
+            scene.describe()
+        );
+        assert!(!Tone::new(0.0, -50.0, 0.0, 0.0, 0.0, [0.0, 1.0]).is_finite());
+    }
+
     #[test]
     fn finiteness_follows_the_stored_values_and_their_coefficients() {
-        assert!(Tone::new(50.0, -50.0, 25.0, -25.0, 10.0).is_finite());
-        assert!(Tone::new(100.0, 100.0, 100.0, 100.0, 100.0).is_finite());
-        assert!(Tone::new(-100.0, -100.0, -100.0, -100.0, -100.0).is_finite());
-        assert!(!Tone::new(f64::NAN, 0.0, 0.0, 0.0, 0.0).is_finite());
-        assert!(!Tone::new(0.0, f64::INFINITY, 0.0, 0.0, 0.0).is_finite());
-        assert!(!Tone::new(0.0, 0.0, f64::NEG_INFINITY, 0.0, 0.0).is_finite());
+        assert!(Tone::new(50.0, -50.0, 25.0, -25.0, 10.0, RENDERED).is_finite());
+        assert!(Tone::new(100.0, 100.0, 100.0, 100.0, 100.0, RENDERED).is_finite());
+        assert!(Tone::new(-100.0, -100.0, -100.0, -100.0, -100.0, RENDERED).is_finite());
+        assert!(!Tone::new(f64::NAN, 0.0, 0.0, 0.0, 0.0, RENDERED).is_finite());
+        assert!(!Tone::new(0.0, f64::INFINITY, 0.0, 0.0, 0.0, RENDERED).is_finite());
+        assert!(!Tone::new(0.0, 0.0, f64::NEG_INFINITY, 0.0, 0.0, RENDERED).is_finite());
     }
 
     #[test]
     fn the_description_lists_all_five_values() {
-        let unit = Tone::new(20.0, -10.0, 5.0, 0.0, -100.0);
+        let unit = Tone::new(20.0, -10.0, 5.0, 0.0, -100.0, RENDERED);
         assert_eq!(
             unit.describe(),
             "tone(contrast=+20, highlights=-10, shadows=+5, whites=+0, blacks=-100)"
         );
         assert_ne!(
-            Tone::new(1.0, 0.0, 0.0, 0.0, 0.0).describe(),
-            Tone::new(1.001, 0.0, 0.0, 0.0, 0.0).describe(),
+            Tone::new(1.0, 0.0, 0.0, 0.0, 0.0, RENDERED).describe(),
+            Tone::new(1.001, 0.0, 0.0, 0.0, 0.0, RENDERED).describe(),
             "a value below the display precision still describes itself apart"
         );
         assert_ne!(
-            Tone::new(1.0, 0.0, 0.0, 0.0, 0.0).describe(),
-            Tone::new(2.0, 0.0, 0.0, 0.0, 0.0).describe(),
+            Tone::new(1.0, 0.0, 0.0, 0.0, 0.0, RENDERED).describe(),
+            Tone::new(2.0, 0.0, 0.0, 0.0, 0.0, RENDERED).describe(),
             "two different stored values never describe themselves the same way"
         );
     }
@@ -418,7 +559,7 @@ mod tests {
     /// extended sRGB encode/decode round trip's float noise, not an approximation of the algorithm.
     #[test]
     fn all_neutral_parameters_are_the_identity_up_to_float_noise() {
-        let unit = Tone::new(0.0, 0.0, 0.0, 0.0, 0.0);
+        let unit = Tone::new(0.0, 0.0, 0.0, 0.0, 0.0, RENDERED);
         let input = [[0.0_f32, 0.25, 1.0], [0.5, 0.02, 0.9], [2.0, -0.1, 0.003]];
         let mut row = input;
         unit.apply_row(0, 0, &mut row);
@@ -434,7 +575,7 @@ mod tests {
     /// three equal channels.
     #[test]
     fn grey_pixels_stay_grey_for_a_combined_parameter_set() {
-        let unit = Tone::new(40.0, -30.0, 20.0, 10.0, -15.0);
+        let unit = Tone::new(40.0, -30.0, 20.0, 10.0, -15.0, RENDERED);
         let mut row: Vec<[f32; 3]> = (0..=64)
             .map(|i| {
                 let l = i as f32 / 64.0;
@@ -468,7 +609,7 @@ mod tests {
         let build = || -> Vec<Tone> {
             values
                 .iter()
-                .map(|[c, h, s, w, b]| Tone::new(*c, *h, *s, *w, *b))
+                .map(|[c, h, s, w, b]| Tone::new(*c, *h, *s, *w, *b, RENDERED))
                 .collect()
         };
         let (first, second) = (build(), build());

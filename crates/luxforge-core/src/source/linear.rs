@@ -185,9 +185,41 @@ pub struct LinearImage {
     /// source is a new number even when the allocator hands its planes the address the old ones
     /// had, which is why a cache keys on this and never on an address.
     development: u64,
+    /// The development's scene white (`docs/design/basic-local-tone.md`): the linear luminance a
+    /// RAW photograph's scene reaches, measured once when its planes were developed and kept by
+    /// every view, clone and proxy of them, so a crop or a reduced stage reads the development's
+    /// own. `None` for every other source: a JPEG's decoded frame, a derived source's planes.
+    scene_white: Option<f64>,
     /// The source worker's hold on these planes ([`crate::source::PlaneGate`]), shared by every
     /// view and clone. Declared after `planes`, so the planes are freed before it is released.
     held: PlanesHeld,
+}
+
+/// The most block means [`LinearImage::measured_scene_white`] reads: 0.25 MP.
+pub(crate) const SCENE_WHITE_SAMPLES: usize = 1 << 18;
+/// The order statistic of the block means' luminance that is the scene white.
+pub(crate) const SCENE_WHITE_QUANTILE: f64 = 0.999;
+/// The least scene white, so a black development's domain never collapses.
+pub(crate) const SCENE_WHITE_FLOOR: f64 = 1.0 / 256.0;
+
+/// The least block side whose grid over `width` by `height` holds at most [`SCENE_WHITE_SAMPLES`].
+fn scene_white_block(width: usize, height: usize) -> usize {
+    let mut k = 1;
+    while width.div_ceil(k) * height.div_ceil(k) > SCENE_WHITE_SAMPLES {
+        k += 1;
+    }
+    k
+}
+
+/// The [`SCENE_WHITE_QUANTILE`] order statistic of `means`, index `floor(q * (n - 1))` ascending,
+/// no less than [`SCENE_WHITE_FLOOR`].
+fn select_quantile(mut means: Vec<f64>) -> f64 {
+    if means.is_empty() {
+        return SCENE_WHITE_FLOOR;
+    }
+    let index = (SCENE_WHITE_QUANTILE * (means.len() - 1) as f64).floor() as usize;
+    let (_, value, _) = means.select_nth_unstable_by(index, f64::total_cmp);
+    value.max(SCENE_WHITE_FLOOR)
 }
 
 /// The source of every [`LinearImage::development`] number. It is a development's identity, not
@@ -285,6 +317,7 @@ impl LinearImage {
                 orientation: 1,
             },
             development: NEXT_DEVELOPMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            scene_white: None,
             held: PlanesHeld::default(),
         })
     }
@@ -333,6 +366,7 @@ impl LinearImage {
             fingerprint: self.fingerprint.clone(),
             view,
             development: self.development,
+            scene_white: self.scene_white,
             held: self.held.clone(),
         })
     }
@@ -356,6 +390,62 @@ impl LinearImage {
             [self.view.x, self.view.y, self.view.width, self.view.height],
             self.view.orientation,
         )
+    }
+
+    /// The development's scene white ([`Self::measured_scene_white`]), or `None` when this source is
+    /// not a RAW development.
+    pub(crate) fn scene_white(&self) -> Option<f64> {
+        self.scene_white
+    }
+
+    /// This image with `white` as its scene white: a proxy keeps the development's.
+    pub(crate) fn with_scene_white(mut self, white: Option<f64>) -> Self {
+        self.scene_white = white;
+        self
+    }
+
+    /// This development with its scene white measured over its view's rectangle of the base planes,
+    /// unturned: `luxforge_reference::tone::scene_white`'s block means, at most
+    /// [`SCENE_WHITE_SAMPLES`] of them, and their [`SCENE_WHITE_QUANTILE`] order statistic, no
+    /// less than [`SCENE_WHITE_FLOOR`]. Each block's luminance is summed in `f64` in row order, the
+    /// rows of blocks on the shared pool; one pass over the view's pixels and a selection over the
+    /// means, run once by whoever developed the planes.
+    pub(crate) fn measured_scene_white(self) -> Self {
+        use rayon::prelude::*;
+        let View {
+            x: left,
+            y: top,
+            width,
+            height,
+            ..
+        } = self.view;
+        let (width, height) = (width as usize, height as usize);
+        let base = self.base_width as usize;
+        let plane = base * self.base_height as usize;
+        let k = scene_white_block(width, height);
+        let (columns, rows) = (width.div_ceil(k), height.div_ceil(k));
+        let planes = &self.planes;
+        let means: Vec<f64> = (0..rows)
+            .into_par_iter()
+            .flat_map_iter(|by| {
+                (0..columns).map(move |bx| {
+                    let (x0, y0) = (bx * k, by * k);
+                    let (x1, y1) = ((x0 + k).min(width), (y0 + k).min(height));
+                    let mut sum = 0.0;
+                    for y in y0..y1 {
+                        let row = (top as usize + y) * base + left as usize;
+                        for x in x0..x1 {
+                            let i = row + x;
+                            let rgb = [planes[i], planes[plane + i], planes[2 * plane + i]];
+                            sum += crate::colour::luma::rec709_f64(rgb.map(f64::from));
+                        }
+                    }
+                    sum / ((x1 - x0) * (y1 - y0)) as f64
+                })
+            })
+            .collect();
+        let white = select_quantile(means);
+        self.with_scene_white(Some(white))
     }
 
     /// The development these planes belong to: equal for every view over the same adopted planes,
@@ -914,6 +1004,47 @@ mod tests {
             if offset == 6 { Err(offset) } else { Ok(()) }
         });
         assert_eq!((error, visited), (Err(6), 7));
+    }
+
+    /// The measured scene white is the reference's, bit for bit, over the view's rectangle of the
+    /// base planes and unturned: one block per pixel on a small view, and blocks of two over a
+    /// view past [`SCENE_WHITE_SAMPLES`], whose last row and column of blocks are partial.
+    #[test]
+    fn the_scene_white_is_the_reference_over_the_unturned_view() {
+        let (width, height) = (1100u32, 700u32);
+        let n = (width * height) as usize;
+        let mut state = 0x9e37_79b9_u32;
+        let planes: Vec<f32> = (0..3 * n)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state >> 8) as f32 / (1 << 24) as f32 * 4.0
+            })
+            .collect();
+        let source = LinearImage::new(width, height, planes.clone()).unwrap();
+        assert_eq!(source.scene_white(), None);
+        for (crop, orientation) in [([3, 5, 40, 30], 1), ([13, 7, 1031, 611], 6)] {
+            let [x, y, w, h] = crop.map(|v: u32| v as usize);
+            let rgb: Vec<[f64; 3]> = (y..y + h)
+                .flat_map(|row| (x..x + w).map(move |column| row * width as usize + column))
+                .map(|i| [planes[i], planes[n + i], planes[2 * n + i]].map(f64::from))
+                .collect();
+            let expected = luxforge_reference::tone::scene_white(w, h, &rgb);
+            let measured = source
+                .with_view(crop, orientation)
+                .unwrap()
+                .measured_scene_white();
+            assert_eq!(
+                measured.scene_white().map(f64::to_bits),
+                Some(expected.to_bits()),
+                "{crop:?}"
+            );
+            assert_eq!(
+                measured.with_view(crop, orientation).unwrap().scene_white(),
+                measured.scene_white()
+            );
+        }
     }
 
     /// A frame's planes read through [`ViewReader::over`] are the frame's pixels where they lie.

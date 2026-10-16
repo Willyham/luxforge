@@ -720,3 +720,164 @@ fn the_look_choice_labels_its_options() {
         .expect("the look choice");
     assert_eq!(labels, ["Standard", "Neutral"]);
 }
+
+/// The colour operations a compiled stack evaluates, in order, by their units' descriptions: the
+/// RAW development's identity geometry is left out.
+fn colour_operations(compiled: &crate::render::Compiled) -> Vec<Vec<String>> {
+    compiled
+        .segments
+        .iter()
+        .flat_map(|segment| &segment.operations)
+        .filter_map(|operation| match operation {
+            Processing::Color(colour) => {
+                Some(colour.units().iter().map(|unit| unit.describe()).collect())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A RAW photograph's stack: its development, Basic moving a field of each part, and the Look.
+fn raw_stack(basic: Value, look: bool) -> crate::Recipe {
+    let raw = crate::RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.5; 3]; 4]).unwrap();
+    let mut layers = vec![
+        raw.layer(crate::LayerId::new()),
+        Layer::new(BASIC_EFFECT, basic),
+    ];
+    if look {
+        layers.push(look_layer(standard_payload(100.0)));
+    }
+    crate::Recipe {
+        layers,
+        scene_white: Some(0.5),
+        ..crate::Recipe::default()
+    }
+}
+
+/// On a RAW photograph's stack Basic's Whites, Shadows and Highlights act before the Look in the
+/// scene white's domain, and its rendered tail — Blacks and Contrast, then Vibrance and Saturation —
+/// is placed directly after the Look (`docs/design/basic-local-tone.md`).
+#[test]
+fn basic_s_rendered_tail_follows_the_look_on_a_raw_stack() {
+    let registry = ModuleRegistry::builtin();
+    let recipe = raw_stack(
+        json!({"exposure": 1.0, "highlights": -50, "contrast": 30, "saturation": 20}),
+        true,
+    );
+    let compiled = registry.compile(16, 8, &recipe).unwrap();
+    let operations = colour_operations(&compiled);
+    assert_eq!(operations.len(), 3, "{operations:?}");
+    // Basic's own operation: the scene unit, then its scene part over the exposed scene white, 3
+    // and 2 times 0.5 lifted a stop.
+    assert!(operations[0][0].contains("exposure:+1"), "{operations:?}");
+    assert!(
+        operations[0][1].contains("highlights=-") && operations[0][1].ends_with("domain=3/2)"),
+        "{operations:?}"
+    );
+    assert!(operations[1][0].starts_with(LOOK_EFFECT), "{operations:?}");
+    // The tail after the Look: Contrast in the rendered domain, then Saturation.
+    assert!(
+        operations[2][0].starts_with("tone(contrast=+") && !operations[2][0].contains("domain"),
+        "{operations:?}"
+    );
+    assert_eq!(operations[2].len(), 2, "{operations:?}");
+}
+
+/// A masked Basic layer's mask covers both its parts: the scene part before the Look and the
+/// rendered tail after it carry the layer's mask, and the Look between them none.
+#[test]
+fn a_masked_basic_layer_s_mask_covers_both_parts() {
+    let registry = ModuleRegistry::builtin();
+    let mut mask = crate::Mask::new("Sky");
+    let component = mask.next_component_name("linear");
+    mask.components.push(crate::Component::new(
+        component,
+        crate::ComponentMode::Add,
+        "linear",
+        json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}),
+    ));
+    let mut recipe = raw_stack(json!({"highlights": -50, "contrast": 30}), true);
+    recipe.layers[1].mask = Some(mask.id.clone());
+    recipe.masks = vec![mask];
+    let compiled = registry.compile(16, 8, &recipe).unwrap();
+    let masked: Vec<bool> = compiled
+        .segments
+        .iter()
+        .flat_map(|segment| &segment.operations)
+        .filter_map(|operation| match operation {
+            Processing::Color(colour) => Some(colour.mask().is_some()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(masked, [true, false, true]);
+}
+
+/// Without a Look the tail follows Basic's own units; and a stack compiled without its source's
+/// scene white takes the rendered domain.
+#[test]
+fn without_a_look_the_tail_follows_basic_and_without_a_white_the_domain_is_rendered() {
+    let registry = ModuleRegistry::builtin();
+    let recipe = raw_stack(json!({"highlights": -50, "blacks": 20}), false);
+    let operations = colour_operations(&registry.compile(16, 8, &recipe).unwrap());
+    assert_eq!(operations.len(), 2, "{operations:?}");
+    assert!(
+        operations[0][0].ends_with("domain=1.5/1)"),
+        "{operations:?}"
+    );
+    assert!(operations[1][0].contains("blacks=+"), "{operations:?}");
+    let unbound = crate::Recipe {
+        scene_white: None,
+        ..recipe
+    };
+    let operations = colour_operations(&registry.compile(16, 8, &unbound).unwrap());
+    assert!(!operations[0][0].contains("domain"), "{operations:?}");
+}
+
+/// A prefix holds exactly what the whole stack evaluates before its cut: the stage the Look receives
+/// has no Basic tail, and the stage after it has.
+#[test]
+fn a_prefix_holds_only_the_tails_the_whole_stack_places_before_its_cut() {
+    let registry = ModuleRegistry::builtin();
+    let recipe = raw_stack(json!({"shadows": 40, "contrast": -20}), true);
+    let before_look = colour_operations(&registry.compile_prefix(16, 8, &recipe, 2).unwrap());
+    assert_eq!(before_look.len(), 1, "{before_look:?}");
+    assert!(before_look[0][0].contains("shadows=+"), "{before_look:?}");
+    let whole = registry.compile(16, 8, &recipe).unwrap();
+    let after_look = registry.compile_prefix(16, 8, &recipe, 3).unwrap();
+    assert_eq!(colour_operations(&after_look), colour_operations(&whole));
+    // A range after the development keeps the stack's scene-referred input and its white.
+    let range = registry.compile_range(16, 8, &recipe, 1, 2).unwrap();
+    assert_eq!(colour_operations(&range), before_look);
+}
+
+/// On a JPEG nothing is scene-referred: Basic is one operation in the frozen order, Whites,
+/// Shadows and Highlights, then Blacks and Contrast, then Vibrance and Saturation, all in the
+/// rendered domain.
+#[test]
+fn on_a_rendered_stack_basic_is_one_operation_in_the_frozen_order() {
+    let registry = ModuleRegistry::builtin();
+    let recipe = crate::Recipe {
+        layers: vec![Layer::new(
+            BASIC_EFFECT,
+            json!({"whites": 30, "blacks": -20, "vibrance": 10}),
+        )],
+        scene_white: Some(0.5),
+        ..crate::Recipe::default()
+    };
+    let operations = colour_operations(&registry.compile(16, 8, &recipe).unwrap());
+    assert_eq!(operations.len(), 1, "{operations:?}");
+    let units = &operations[0];
+    assert_eq!(units.len(), 3, "{units:?}");
+    assert!(
+        units[0].contains("whites=+") && units[0].contains("blacks=+0"),
+        "{units:?}"
+    );
+    assert!(
+        units[1].contains("blacks=-") && units[1].contains("whites=+0"),
+        "{units:?}"
+    );
+    assert!(
+        units.iter().all(|unit| !unit.contains("domain")),
+        "{units:?}"
+    );
+}

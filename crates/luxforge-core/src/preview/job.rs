@@ -46,6 +46,15 @@ impl PreviewSource {
         matches!(self, Self::Raw { settings, .. } if settings.white_balance.is_some())
     }
 
+    /// The development's scene white a recipe over this source is compiled with
+    /// ([`crate::Recipe::scene_white`]): a RAW development's, `None` for any other source.
+    pub(crate) fn scene_white(&self) -> Option<f64> {
+        match self {
+            Self::Raw { image, .. } => image.scene_white(),
+            Self::Jpeg(_) | Self::Paged(_) => None,
+        }
+    }
+
     /// The content-stage dimensions a recipe is compiled against.
     pub fn dimensions(&self) -> (u32, u32) {
         match self {

@@ -142,7 +142,8 @@ fn downscale_linear(
     );
     Ok(
         LinearImage::from_validated_planes(width, height, planes, image.fingerprint().to_owned())?
-            .with_development(proxy_development(image, plan)),
+            .with_development(proxy_development(image, plan))
+            .with_scene_white(image.scene_white()),
     )
 }
 
