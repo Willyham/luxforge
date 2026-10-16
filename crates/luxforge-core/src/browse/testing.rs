@@ -1077,6 +1077,8 @@ pub(crate) struct Item {
     pub path: String,
     pub header: HeaderMetadata,
     pub kind: SourceTag,
+    /// A file's length; none for a photograph.
+    pub len: Option<u64>,
     pub place: Option<String>,
     pub picked: bool,
     pub in_catalog: bool,
@@ -1126,6 +1128,7 @@ impl Fixture {
                     path: file.path().into(),
                     header,
                     kind: file.record.kind,
+                    len: Some(file.record.signature.len),
                     place,
                     picked: file.picked,
                     in_catalog: file.developed_as.is_some(),
@@ -1157,6 +1160,7 @@ impl Fixture {
                         SeedKind::Jpeg => SourceTag::Jpeg,
                         SeedKind::Raw => SourceTag::Raw,
                     },
+                    len: None,
                     place: seed.place.clone(),
                     picked: false,
                     in_catalog: true,
@@ -1362,6 +1366,15 @@ impl Fixture {
             .filter(|(item, decided)| passes(item, &query.filter, *decided))
             .map(|(item, _)| item)
             .collect();
+        // Each set of copies the filter keeps shows as one of them.
+        let copies = copies(&kept);
+        let copied: Vec<&Item> = kept
+            .iter()
+            .filter(|item| copies.iter().any(|(_, others)| others.contains(&item.item)))
+            .collect();
+        let copied_picks = copied.iter().filter(|item| item.picked).count() as u32;
+        let copied: Vec<ViewItem> = copied.iter().map(|item| item.item).collect();
+        kept.retain(|item| !copied.contains(&item.item));
         // A pair the filter keeps both files of shows as its RAW file, unless its JPEG is picked.
         let pairs: Vec<(ViewItem, ViewItem)> = pairs(&kept)
             .into_iter()
@@ -1406,7 +1419,7 @@ impl Fixture {
             moment.picked = picks(moment.start, moment.len);
         }
         Expected {
-            picked: ordered.iter().filter(|item| item.picked).count() as u32,
+            picked: ordered.iter().filter(|item| item.picked).count() as u32 + copied_picks,
             in_catalog: ordered.iter().filter(|item| item.in_catalog).count() as u32,
             unavailable: ordered
                 .iter()
@@ -1415,6 +1428,7 @@ impl Fixture {
             items: ordered,
             layout,
             pairs,
+            copies,
         }
     }
 }
@@ -1428,6 +1442,8 @@ pub(crate) struct Expected {
     pub unavailable: u32,
     /// Each pair shown as its RAW file, `(raw, jpeg)`.
     pub pairs: Vec<(ViewItem, ViewItem)>,
+    /// Each set of copies shown as one of them, `(shown, others)`.
+    pub copies: Vec<(ViewItem, Vec<ViewItem>)>,
 }
 
 impl Expected {
@@ -1494,10 +1510,54 @@ pub(crate) fn pairs(items: &[Item]) -> Vec<(ViewItem, ViewItem)> {
     found
 }
 
+/// The sets of copies among `items`, `(shown, others)`: dated files of one name ignoring case, one
+/// length, one instant and one camera. The one shown is in a RAW+JPEG pair, else picked, else the
+/// first file.
+pub(crate) fn copies(items: &[Item]) -> Vec<(ViewItem, Vec<ViewItem>)> {
+    let paired: Vec<ViewItem> = pairs(items)
+        .into_iter()
+        .flat_map(|(raw, jpeg)| [raw, jpeg])
+        .collect();
+    let same = |a: &Item, b: &Item| {
+        matches!(a.item, ViewItem::File(_))
+            && matches!(b.item, ViewItem::File(_))
+            && a.len.is_some()
+            && a.len == b.len
+            && a.instant().is_some()
+            && a.instant() == b.instant()
+            && a.name.to_lowercase() == b.name.to_lowercase()
+            && a.camera_key() == b.camera_key()
+    };
+    let mut found: Vec<(ViewItem, Vec<ViewItem>)> = Vec::new();
+    let mut seen: Vec<ViewItem> = Vec::new();
+    for item in items {
+        if seen.contains(&item.item) {
+            continue;
+        }
+        let mut set: Vec<&Item> = items.iter().filter(|other| same(item, other)).collect();
+        if set.len() < 2 {
+            continue;
+        }
+        seen.extend(set.iter().map(|copy| copy.item));
+        set.sort_by_key(|copy| (!paired.contains(&copy.item), !copy.picked, copy.item));
+        let others = set[1..].iter().map(|copy| copy.item).collect();
+        found.push((set[0].item, others));
+    }
+    found
+}
+
 /// Which items Moments without a pick leaves out: the source grouped Day › Camera › Moment with
-/// each pair's JPEG left out, and a frame decided when it or its JPEG is picked or it is in a
-/// moment with a picked frame; a pair's JPEG decided as its RAW file is.
+/// each pair's JPEG and each copy not shown left out, and a frame decided when it, its JPEG or a
+/// copy of either is picked or it is in a moment with a picked frame; a pair's JPEG decided as its
+/// RAW file is, and a copy as the copy shown.
 fn decided(read: &[Item], items: &[Item], thresholds: &Thresholds) -> Vec<bool> {
+    let copies = copies(items);
+    let shown_of = |item: ViewItem| {
+        copies
+            .iter()
+            .find(|(_, others)| others.contains(&item))
+            .map_or(item, |(shown, _)| *shown)
+    };
     let pairs = pairs(items);
     let jpeg_of = |raw: ViewItem| {
         pairs
@@ -1513,7 +1573,7 @@ fn decided(read: &[Item], items: &[Item], thresholds: &Thresholds) -> Vec<bool> 
     };
     let grouped: Vec<Item> = items
         .iter()
-        .filter(|item| raw_of(item.item).is_none())
+        .filter(|item| raw_of(item.item).is_none() && shown_of(item.item) == item.item)
         .cloned()
         .collect();
     let items_all = items;
@@ -1536,9 +1596,8 @@ fn decided(read: &[Item], items: &[Item], thresholds: &Thresholds) -> Vec<bool> 
         let picked = |item: ViewItem| {
             items_all
                 .iter()
-                .find(|candidate| candidate.item == item)
-                .unwrap()
-                .picked
+                .filter(|candidate| candidate.item == item || shown_of(candidate.item) == item)
+                .any(|candidate| candidate.picked)
         };
         picked(item) || jpeg_of(item).is_some_and(picked)
     };
@@ -1557,7 +1616,8 @@ fn decided(read: &[Item], items: &[Item], thresholds: &Thresholds) -> Vec<bool> 
     items_all
         .iter()
         .map(|item| {
-            let item = raw_of(item.item).unwrap_or(item.item);
+            let item = shown_of(item.item);
+            let item = raw_of(item).unwrap_or(item);
             decided
                 .iter()
                 .find(|(candidate, _)| *candidate == item)

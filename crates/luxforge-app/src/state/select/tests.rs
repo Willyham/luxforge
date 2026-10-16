@@ -25,6 +25,7 @@ fn event_source() -> ViewSource {
 fn summary(count: u32, groups: GroupLayout) -> ViewSummary {
     ViewSummary {
         paired: 0,
+        copies: 0,
         revision: 7,
         query: ViewQuery::of(event_source()),
         count,
@@ -1068,6 +1069,7 @@ fn the_select_filter_bar_reads_its_query_and_facets() {
 fn row(position: u32) -> ViewRow {
     ViewRow {
         pair: None,
+        copies: Vec::new(),
         position,
         item: RowItem::File {
             file_id: FileId(i64::from(position)),
@@ -1355,11 +1357,18 @@ fn the_select_info_panel_describes_the_active_item() {
         file_id: luxforge_core::catalog_types::FileId(99),
         file_name: "DSC_0005.JPG".into(),
     });
+    rows[5].copies = vec![luxforge_core::catalog_types::RowCopy {
+        file_id: luxforge_core::catalog_types::FileId(98),
+        path: "/Users/w/Backup/Dumps/DSC_0005.NEF".into(),
+    }];
     rows[2].picked = true;
     assert!(state.rows.answered(7, request.from, rows, 0..20));
-    // A RAW+JPEG pair's cell says so; the Info panel names its JPEG.
+    // A RAW+JPEG pair's cell says so, and a copied file's; the Info panel names its JPEG and the
+    // copies' folders.
     assert!(state.rows.cell(5).unwrap().paired);
     assert!(!state.rows.cell(2).unwrap().paired);
+    assert!(state.rows.cell(5).unwrap().copied);
+    assert!(!state.rows.cell(2).unwrap().copied);
 
     let one = |state: &SelectState, active: u32| {
         info(
@@ -1421,6 +1430,11 @@ fn the_select_info_panel_describes_the_active_item() {
         single
             .metadata
             .contains(&("With JPEG".to_owned(), "DSC_0005.JPG".to_owned()))
+    );
+    assert!(
+        single
+            .metadata
+            .contains(&("Also in".to_owned(), "~/Backup/Dumps".to_owned()))
     );
     assert_eq!(
         single.pick,
