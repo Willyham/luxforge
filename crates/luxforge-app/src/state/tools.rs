@@ -489,6 +489,9 @@ pub(crate) struct SliderControl {
     /// one. Such a field's neutral is not a value its text can show (a RAW white balance at As
     /// shot shows the camera's equivalent temperature), so its group reads its layer instead.
     pub(crate) reset: Option<ResetRef>,
+    /// Whether the field can be edited: false while its control's `enabled_when` does not hold, as
+    /// the look's Amount on a Neutral look. The section's own enabled rule applies on top.
+    pub(crate) enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1557,6 +1560,16 @@ fn resolved_model(
                     NumberStyle::Stepper => NumberControlStyle::Stepper { rail: false },
                 };
                 slider.rail = rail_style(number.rail.as_ref());
+                // The field the condition names shows the layer's value or, without a layer, its
+                // declared default (`seed_values`), so this reads what the section shows.
+                slider.enabled = number.enabled_when.as_ref().is_none_or(|condition| {
+                    condition.holds(
+                        inputs
+                            .fields
+                            .get(&number.action, &condition.parameter)
+                            .unwrap_or_default(),
+                    )
+                });
             }
             model
         }
@@ -2066,6 +2079,7 @@ fn slider(
         invalid,
         default: crate::state::fields::seed_text(declared),
         reset: None,
+        enabled: true,
     }
 }
 

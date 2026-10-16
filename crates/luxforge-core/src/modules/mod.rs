@@ -141,9 +141,10 @@ pub use descriptor::{
     resolve_control, resolve_group_reset,
 };
 pub use descriptor::{
-    BrushEdit, BrushSource, ChoiceControl, ColorControl, ControlVariant, EffectOperations,
-    IdentityKind, MAX_OPERATIONS, OPERATIONS_FIELD, RangeControl, ResolvedControl, ResolvedReset,
-    TaskControl, ToggleControl, ViewControl, WheelControl, WheelStyle,
+    BrushEdit, BrushSource, ChoiceControl, ColorControl, ControlCondition, ControlVariant,
+    EffectOperations, IdentityKind, MAX_OPERATIONS, OPERATIONS_FIELD, RangeControl,
+    ResolvedControl, ResolvedReset, TaskControl, ToggleControl, ViewControl, WheelControl,
+    WheelStyle,
 };
 pub use descriptor::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use descriptor::{

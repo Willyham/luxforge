@@ -307,12 +307,15 @@ impl LookModule {
                         analysis: None,
                         shortcut: None,
                         parameters: vec![
-                            ParameterDescriptor::enumeration(LOOK, [STANDARD, NEUTRAL]).notes(
-                                "standard writes the current Standard look's resolved knots, \
-                                 chroma gain and knee into the layer, keeping the amount in force \
-                                 (100 from Neutral); neutral writes the Neutral look, the bare RAW \
-                                 development. Match camera is not available yet",
-                            ),
+                            ParameterDescriptor::enumeration(LOOK, [STANDARD, NEUTRAL])
+                                .default(NEUTRAL)
+                                .notes(
+                                    "standard writes the current Standard look's resolved knots, \
+                                     chroma gain and knee into the layer, keeping the amount in \
+                                     force (100 from Neutral); neutral writes the Neutral look, the \
+                                     bare RAW development, which a photo without a Look layer \
+                                     holds. Match camera is not available yet",
+                                ),
                             ParameterDescriptor::number(AMOUNT, 0.0, MAX_AMOUNT)
                                 .default(FULL_AMOUNT)
                                 .step(1.0)
@@ -358,7 +361,11 @@ impl LookModule {
                     Control::choice(SET_LOOK, LOOK, "Look")
                         .labels(["Standard", "Neutral"])
                         .into(),
-                    Control::number(SET_LOOK, AMOUNT, "Amount").into(),
+                    // A Neutral look has no amount, which `plan` refuses, so its field is offered
+                    // only while the look is Standard.
+                    Control::number(SET_LOOK, AMOUNT, "Amount")
+                        .enabled_when(LOOK, [STANDARD])
+                        .into(),
                 ],
                 reset: Some(ResetAction {
                     action: RESET_LOOK.into(),
