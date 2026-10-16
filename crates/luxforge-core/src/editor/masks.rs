@@ -152,7 +152,7 @@ impl EditorService {
                 let y = content_pixel(request.y, stage.height).ok_or_else(outside)?;
                 let answer = questions
                     .query(SAMPLE_INPUT, &object(json!({"mask": mask, "x": x, "y": y})))?;
-                let point: PixelInput = decode(answer)?;
+                let point: PickedPoint = decode(answer)?;
                 return Ok(Some(PickedPixels::Point([point.r, point.g, point.b])));
             };
             let answer = questions.query(
@@ -160,7 +160,7 @@ impl EditorService {
                 &object(json!({"mask": mask, "x": request.x, "y": request.y,
                                "width": width, "height": height})),
             )?;
-            let area: AreaInput = decode(answer)?;
+            let area: PickedArea = decode(answer)?;
             Ok(Some(PickedPixels::Area(area.points)))
         })
     }
@@ -521,6 +521,22 @@ fn object(value: Value) -> Map<String, Value> {
 
 fn encode(value: &impl serde::Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
+}
+
+/// The values of a click's [`PixelInput`] a pick derives from. Only these are read back: the
+/// answer's renderer may name a reason no session carries, such as `refused` from a launch that
+/// refused the GPU, which [`crate::Renderer`] does not read back.
+#[derive(serde::Deserialize)]
+struct PickedPoint {
+    r: f64,
+    g: f64,
+    b: f64,
+}
+
+/// The points of a drag's [`AreaInput`], read back as [`PickedPoint`] is and for its reason.
+#[derive(serde::Deserialize)]
+struct PickedArea {
+    points: Vec<[f64; 3]>,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {

@@ -70,6 +70,7 @@ mod presence_mixer_vignette_acceptance;
 mod presence_smoke;
 mod presets_smoke;
 mod preview_error;
+mod range_corpus_smoke;
 mod raw;
 mod raw_camera;
 mod raw_editor;
@@ -568,9 +569,10 @@ fn main_result() -> Result {
                 Some("corrections") => editor_latency::Mode::Corrections,
                 Some("hover") => editor_latency::Mode::Hover,
                 Some("crop-start") => editor_latency::Mode::CropStart,
+                Some("pick") => editor_latency::Mode::Pick,
                 Some(other) => {
                     return Err(format!(
-                        "--mode is drag, commit, burst, paint, corrections, hover or crop-start, not {other}"
+                        "--mode is drag, commit, burst, paint, corrections, hover, crop-start or pick, not {other}"
                     )
                     .into());
                 }
