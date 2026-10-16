@@ -260,8 +260,7 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
     assert_eq!(
         entries,
         [
-            "lf_basic_white_balance",
-            "lf_basic_exposure",
+            "lf_basic_scene",
             "lf_basic_tone",
             "lf_basic_colour_adjust",
             "lf_look_look",
@@ -560,7 +559,7 @@ fn gpu_colour_exposure_meets_the_pointwise_limits() {
         .to_vec();
     qualify(
         "gpu_colour_exposure_meets_the_pointwise_limits",
-        "lf_basic_exposure",
+        "lf_basic_scene",
         cases,
         GRID,
     );
@@ -584,7 +583,7 @@ fn gpu_colour_white_balance_meets_the_pointwise_limits() {
     .to_vec();
     qualify(
         "gpu_colour_white_balance_meets_the_pointwise_limits",
-        "lf_basic_white_balance",
+        "lf_basic_scene",
         cases,
         GRID,
     );
@@ -944,17 +943,20 @@ fn gpu_colour_vignette_near_hard_boundaries_route_to_the_reference() {
     let registry = registry();
     let source = luxforge_core::LinearImage::new(20, 20, vec![1.0; 400 * 3]).unwrap();
     let context = luxforge_core::RenderContext::new();
+    // The recipe holds slider values; the oracle takes the strengths they apply.
+    let strength = |field: &str, value: f64| {
+        luxforge_core::slider_response("set-vignette", field).map_or(value, |r| r.strength(value))
+    };
     for feather in [0.0, 0.0001, 0.01] {
         let params = VignetteParams {
-            amount: -100.0,
-            midpoint: 65.0,
+            amount: strength("amount", -100.0),
+            midpoint: strength("midpoint", 65.0),
             roundness: 0.0,
             feather,
         };
         let recipe = recipe(vec![Layer::new(
             VIGNETTE_EFFECT,
-            json!({"amount": params.amount, "midpoint": params.midpoint,
-                "roundness": params.roundness, "feather": feather}),
+            json!({"amount": -100.0, "midpoint": 65.0, "roundness": 0.0, "feather": feather}),
         )]);
         for request in [
             GpuPlanRequest::exact(0, stage(20, 20)),
@@ -1008,17 +1010,20 @@ fn gpu_colour_vignette_boundary_white_twenty_by_twenty() {
     eprintln!("vignette boundary: adapter {}", qualifier.adapter());
     let registry = registry();
     let mut missed = Vec::new();
+    // The layer holds slider values; the oracle takes the strengths they apply.
+    let strength = |field: &str, value: f64| {
+        luxforge_core::slider_response("set-vignette", field).map_or(value, |r| r.strength(value))
+    };
     for feather in [0.1, 0.101, 1.0] {
         let params = VignetteParams {
-            amount: -100.0,
-            midpoint: 65.0,
+            amount: strength("amount", -100.0),
+            midpoint: strength("midpoint", 65.0),
             roundness: 0.0,
             feather,
         };
         let layer = Layer::new(
             VIGNETTE_EFFECT,
-            json!({"amount": params.amount, "midpoint": params.midpoint,
-                "roundness": params.roundness, "feather": feather}),
+            json!({"amount": -100.0, "midpoint": 65.0, "roundness": 0.0, "feather": feather}),
         );
         let plan = planned(
             &registry,

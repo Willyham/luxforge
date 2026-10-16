@@ -190,7 +190,7 @@ fn eligible_layers(width: u32, height: u32) -> Vec<Layer> {
         Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure": 0.5, "contrast": 20.0}),
             mask: None,
             artifacts: Vec::new(),
@@ -583,7 +583,7 @@ fn the_coverage_grid_answers_each_stack_whatever_the_display_bounds() {
     let presence = |mask: Option<&Mask>| Layer {
         id: LayerId::new(),
         effect_id: crate::PRESENCE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
         payload: json!({"texture": 40.0}),
         mask: mask.map(|mask| mask.id.clone()),
         artifacts: Vec::new(),
@@ -653,7 +653,7 @@ fn masked_basic(mask: &Mask) -> Vec<Layer> {
     vec![Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(BASIC_EFFECT),
         payload: json!({"exposure": 0.8, "contrast": 25.0}),
         mask: Some(mask.id.clone()),
         artifacts: Vec::new(),
@@ -956,7 +956,7 @@ fn a_spatial_layer_and_a_thin_mask_are_reported_separately() {
             .chain([Layer {
                 id: LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload: json!({"texture": 40.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -1208,7 +1208,7 @@ fn a_tight_crops_proxy_holds_its_whole_stage_and_is_cached_by_its_plan() {
             Layer {
                 id: LayerId::new(),
                 effect_id: BASIC_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(BASIC_EFFECT),
                 payload: json!({"exposure": exposure, "contrast": 15.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -1865,7 +1865,7 @@ fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
             parts.recipe.layers = vec![crate::Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: json!({"exposure": ev}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -1954,7 +1954,7 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
     let presence = |mask: Option<&Mask>| Layer {
         id: LayerId::new(),
         effect_id: crate::PRESENCE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
         payload: json!({"texture": 40.0}),
         mask: mask.map(|mask| mask.id.clone()),
         artifacts: Vec::new(),
@@ -2146,7 +2146,7 @@ fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held(
             Layer {
                 id: LayerId::new(),
                 effect_id: PRESENCE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload: json!({"clarity": 60.0}),
                 artifacts: Vec::new(),
                 mask: None,
@@ -2382,7 +2382,7 @@ fn a_value_based_thumbnail_reads_the_masked_operation_input() {
     let mut before = vec![Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(BASIC_EFFECT),
         payload: json!({"exposure": 1.0}),
         mask: None,
         artifacts: Vec::new(),

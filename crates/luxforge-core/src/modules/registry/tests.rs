@@ -238,7 +238,7 @@ impl ToolModule for PatchModule {
         let [red, green] = Self::channels(payload);
         BasicModule::new().compile(
             BASIC_EFFECT,
-            EFFECT_FORMAT,
+            crate::current_effect_format(crate::BASIC_EFFECT),
             &json!({"exposure": (red + green) / 50.0}),
             at,
         )
@@ -446,7 +446,7 @@ pub(crate) fn test_layer(effect: &str) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: effect.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(effect),
         payload: json!({}),
         mask: None,
         artifacts: Vec::new(),
@@ -1110,7 +1110,7 @@ pub(super) fn basic_layer() -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
         payload: json!({"exposure": 1.0}),
         mask: None,
         artifacts: Vec::new(),

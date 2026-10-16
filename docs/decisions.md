@@ -477,9 +477,12 @@ Decided the same day ([design](design/lightroom-alignment.md#decided)):
 - **The base rendering is measured and subtracted** (A5); the Standard look stands.
 - **A realigned module refuses recipes of the earlier scale** (A6) through its raised format marker; edited photographs need a new catalog.
 - **Validation on the owner's real edits** runs locally, figures only, with consent asked each run (A7).
+- **Sliders are realigned, not only imports mapped, and on photographs and pairs as well as targets** (A9, owner, 2026-10-13): the corpus photographs and round 2's pairs are measured in one Lightroom session before any control changes.
+- **A range shortfall extends the control** (A10, owner, 2026-10-13): where Lightroom's extreme does more than Luxforge's whole range, the internal range grows so ±100 reaches it, where the algorithm stays stable; what cannot be extended is reported.
+- **The importers' calibrated maps are the bridge** (A11, owner, 2026-10-13), each row becoming the identity, and removed, when its slider is realigned. Old edits on a realigned module are refused (A6), confirmed the same day.
 - **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
 
-The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, on 2026-10-13; whether the rest is authorized remains open.
+The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, TASK-002, measurement and fitting, TASK-003, recording round 1, and TASK-004, the calibrated mapping rows for preset import, with the generator's fixes and the measurement of photographs, on 2026-10-13, TASK-005 and TASK-006 the same day, and TASK-007 on 2026-10-16; TASK-008 onward are not authorized.
 
 ## Colour grading
 
@@ -558,7 +561,7 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 - What is the first external module the owner would use, and what enablement and recovery behaviour does it need? A processing tool needs its CPU reference and GPU qualification; external GPU loading is not delivered by the built-in module interface.
 - Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They cover the six bundled Omarchy themes, contrast floors and moving an imported theme's own ink to meet them, the Omarchy forms read, the Theme canvas-background default, the Appearance tab, and leaving the system appearance for later.
 - [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
-- Are [Lightroom import](design/lightroom-import.md) and [Lightroom alignment](design/lightroom-alignment.md) beyond its generator authorised for implementation? Their design decisions, including the scope refinements below, do not grant that authorisation.
+- Are [Lightroom import](design/lightroom-import.md) and [Lightroom alignment](design/lightroom-alignment.md) beyond round 1 and its calibrated import authorised for implementation? Their design decisions, including the scope refinements below, do not grant that authorisation.
 - Which measured workloads and responsiveness budgets become acceptance requirements? Accepted renderer budgets do not establish a bound on total native GPU memory.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? Current RAW preset white-balance conversion has no calibration; calibrated conversion belongs to the planned Lightroom alignment work, as decided below.
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a single-click add that snaps to the drawn curve, endpoints the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.

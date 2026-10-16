@@ -208,6 +208,8 @@ The importer owns one table of the Lightroom settings it recognizes. Each row sa
 
 A mapped value is a **value transfer**: the same number on a control with the same name, range and direction, or, for the point curve, the same points rescaled from Lightroom's 0–255 to 0–1. It is not a claim that Luxforge renders what Lightroom renders. The [slider audit](../research/lightroom/slider-parity.md) records why equal values do not mean equal pixels. The report and the user guide say so.
 
+A value transfer the [Lightroom alignment](lightroom-alignment.md#fitting-the-translation-level-a) has measured but whose slider has not been realigned is **calibrated**: the number goes through that setting's frozen map, read by linear interpolation, to the Luxforge value whose measured response was closest to Lightroom's (`crates/luxforge-core/src/presets/calibration.rs`, frozen from `cargo xtask lr-align measure`'s `maps.json`). The written number is first held to the control's range as a value transfer is; a value at or past the map's range shortfall is **refused** (`beyond Luxforge's range through the Lightroom alignment calibration (round 1)`), never clamped. A realigned slider follows Lightroom's response itself, so its row is removed ([A11](lightroom-alignment.md#decided)) and its value transfers as the same number. Every calibrated slider is now realigned, Basic ([Basic realigned](lightroom-alignment.md#basic-realigned)) and Clarity, Dehaze, the 24 colour mixer settings and the vignette's Amount and Midpoint ([Presence, the mixer and the vignette realigned](lightroom-alignment.md#presence-the-mixer-and-the-vignette-realigned)), so the table holds no rows and every value transfers as the same number. Texture's response is undetermined and the vignette's Feather and Roundness differ in kind, so they transfer as the same number unrealigned. The same number is still not a claim of equal rendering: each slider has its own residual, recorded in the alignment design.
+
 | Lightroom setting | Luxforge target | Rule |
 | --- | --- | --- |
 | `Exposure2012` | `set-basic.exposure` | Value transfer, −5..+5 EV, on a JPEG and a RAW photo alike |
@@ -253,7 +255,7 @@ A value is parsed as Lightroom writes it (`0.5`, `+0.50`, `-12`, `True`). A valu
 }
 ```
 
-- `mapped`: the value transfers and is in the preset's settings. An analysis step has `field: null` and `applied: {}`; `AutoTone` true maps to `auto-tone`, false is neutral. Accompanying eight Basic tone/colour values are reported under `neutral` with the explicit reason that Auto overrides them.
+- `mapped`: the value transfers and is in the preset's settings. A calibrated conversion names its rule in `rule` (`calibrated by the Lightroom alignment, round 1`) and `applied` is the converted value; `rule` is absent for the row's own rule. An analysis step has `field: null` and `applied: {}`; `AutoTone` true maps to `auto-tone`, false is neutral. Accompanying eight Basic tone/colour values are reported under `neutral` with the explicit reason that Auto overrides them.
 - `neutral`: the setting has no effect, or is explicitly superseded by Auto with its reason.
 - `unsupported`: the effect is not reproduced because Luxforge has no such tool.
 - `refused`: Luxforge has a related control, but this value cannot be carried. It is out of range, is a curve Luxforge's tone curve cannot hold, belongs to another process version or a switched-off panel, names a white balance Luxforge does not have, or its target is not presettable in this registry, reported with the registry's own refusal (`unavailable module luxforge.presence` when Presence is disabled).
@@ -299,7 +301,7 @@ The owner asked for this work to proceed without blocking. These are proposals t
 1. Presets are catalog data (see [versions and lineage](versions-and-lineage.md#storage-the-catalog-format)), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
 2. Only field-patch actions are presettable, so RAW's explicit gains and sensor pick, transforms and crop are excluded. The RAW white balance (`set-raw`) is presettable, and a preset carries each kind's white balance separately (owner decision 6, [source-kind controls](source-controls.md#decisions)).
 3. `edit.apply-settings` carries the settings, not a library reference; a preset and a paste share it and differ only in their origin.
-4. Imports are value transfers for the controls Luxforge has, and Lightroom's absolute `Temperature` and `Tint` a value conversion through the white they name (owner decision 5). Nothing is clamped.
+4. Imports are value transfers for the controls Luxforge has, calibrated through the Lightroom alignment's measured maps where it has them and the slider is not yet realigned (owner, 2026-10-13; a realigned slider's value transfers as the same number, A11), and Lightroom's absolute `Temperature` and `Tint` a value conversion through the white they name (owner decision 5). Nothing is clamped.
 5. The Presets section follows Crop in the tools panel, collapsed, in the "what can I do" panel. Lightroom Classic puts presets on the left instead.
 6. The create form leaves white balance unchecked by default, because white balance is usually per photo. Basic declares its White balance group `per_photo`, so the default is the descriptor's, not a list of field names.
 

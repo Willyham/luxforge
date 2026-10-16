@@ -48,7 +48,7 @@ pub(super) const T_FLOOR: f32 = 0.1;
 /// The extra uniform veil a negative amount adds on top of deepening the estimated one. Without it
 /// a negative amount would be an exact no-op on a haze-free photograph, whose dark-channel estimate
 /// is `t = 1` everywhere.
-const VEIL_MAX: f64 = 0.5;
+pub(super) const VEIL_MAX: f64 = 0.5;
 /// The floor on each channel of the atmospheric light, so `I / A` is always finite.
 pub(super) const A_FLOOR: f64 = 1.0e-3;
 /// The fraction of the host reduction's brightest dark-channel pixels averaged for `A`.

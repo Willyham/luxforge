@@ -291,21 +291,33 @@ fn read_chunk(path: &Path, ordinal: usize) -> String {
 
 /// The Original of a derived photograph is no edit: each output code is the stored linear value's
 /// sRGB code, negative values black and values above one white, worked out independently by the
-/// reference crate. Exposure down two stops brings the headroom back: a value of four is white and
-/// one of two is the code of a half, so nothing was clipped before the SDR boundary.
+/// reference crate. Exposure down two stops brings the headroom back, each value as the scene
+/// reference shifts it, so nothing was clipped before the SDR boundary.
 #[test]
 fn a_derived_source_stays_linear_until_the_sdr_boundary() {
     let (directory, _, mut service, asset, values) = published("linear");
     let state = prepare(&mut service, &asset).unwrap();
     assert!(state.current_entry.snapshot.recipe.layers.is_empty());
     let plane = (WIDTH * HEIGHT) as usize;
-    let codes = |frame: &crate::Raster, scale: f64| {
+    let codes = |frame: &crate::Raster, exposure: f64| {
         let mut mismatched = 0;
         for at in 0..plane {
             for channel in 0..3 {
-                let expected =
-                    luxforge_reference::srgb::code(f64::from(values[channel * plane + at]) * scale);
-                if frame.rgba[at * 4 + channel] != expected {
+                let linear = luxforge_reference::scene::shift(
+                    f64::from(values[channel * plane + at]),
+                    exposure,
+                );
+                let expected = luxforge_reference::srgb::code(linear);
+                let rendered = frame.rgba[at * 4 + channel];
+                // One code where the reference sits within the pointwise band of the threshold
+                // between two codes, since the unit's output is narrowed to f32.
+                let near = |code: u8| {
+                    let threshold =
+                        luxforge_reference::srgb::decode_encoded((f64::from(code) - 0.5) / 255.0);
+                    (linear - threshold).abs() <= 1e-6 + 1e-6 * threshold.abs()
+                };
+                let tolerated = rendered.abs_diff(expected) == 1 && near(rendered.max(expected));
+                if rendered != expected && !tolerated {
                     mismatched += 1;
                 }
             }
@@ -314,14 +326,14 @@ fn a_derived_source_stays_linear_until_the_sdr_boundary() {
     };
     let neutral = service.render_current(&asset).unwrap();
     assert_eq!((neutral.width, neutral.height), (WIDTH, HEIGHT));
-    assert_eq!(codes(&neutral, 1.0), 0, "the stored values' codes exactly");
+    assert_eq!(codes(&neutral, 0.0), 0, "the stored values' codes exactly");
     assert!(values.iter().any(|value| *value < 0.0) && values.iter().any(|value| *value > 3.0));
     apply(&mut service, &asset, "set-basic", json!({"exposure": -2.0}));
     let darker = service.render_current(&asset).unwrap();
     assert_eq!(
-        codes(&darker, 0.25),
+        codes(&darker, -2.0),
         0,
-        "two stops down is a quarter of each stored value, its headroom intact"
+        "two stops down on the scene scale, its headroom intact"
     );
     drop(service);
     fs::remove_dir_all(directory).unwrap();

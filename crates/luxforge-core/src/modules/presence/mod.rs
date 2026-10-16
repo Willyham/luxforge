@@ -45,6 +45,11 @@ use std::sync::Arc;
 /// tail as one tiled neighbourhood pass.
 pub const PRESENCE_EFFECT: &str = "luxforge.presence.adjust";
 
+/// The Presence effect's current payload format: 2 since Clarity and Dehaze follow Lightroom's
+/// responses ([`response`]), listed among [`super::BUILTIN_FORMATS`]. A stored Presence layer at
+/// any other format holds values of an earlier meaning and is refused, never rewritten.
+pub(super) const PRESENCE_EFFECT_FORMAT: u32 = 2;
+
 const TEXTURE: &str = "texture";
 const CLARITY: &str = "clarity";
 const DEHAZE: &str = "dehaze";
@@ -82,6 +87,7 @@ impl FieldPatch for Presence {
             PRESENCE_EFFECT,
             EffectStage::Spatial,
         )
+        .format(PRESENCE_EFFECT_FORMAT)
         .maskable()
         .set_notes("merges the named presence fields into the stack's one Presence layer, which the host places after the pointwise colour run and before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op")
         .fields([
@@ -119,11 +125,9 @@ impl FieldPatch for Presence {
     /// operation at.
     fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
         let stage = at.stage;
-        let (texture, clarity, dehaze) = (
-            values.number(TEXTURE),
-            values.number(CLARITY),
-            values.number(DEHAZE),
-        );
+        // Each unit receives its strength, the slider's value through its response.
+        let strength = |name: &str| RESPONSES.strength(name, values.number(name));
+        let (texture, clarity, dehaze) = (strength(TEXTURE), strength(CLARITY), strength(DEHAZE));
         let long_side = stage.width.max(stage.height);
         // The GPU shape holds all three units, an amount-0 one as its identity, so a drag across
         // zero keeps one program sequence (`CompileStage::gpu_shape`). No CPU compile asks for it.
@@ -142,6 +146,17 @@ impl FieldPatch for Presence {
     }
 }
 
+/// This module's frozen slider responses ([`super::response`]).
+static RESPONSES: std::sync::LazyLock<super::response::Responses> =
+    std::sync::LazyLock::new(|| {
+        super::response::Responses::parse(include_str!("response.json"), "Presence")
+    });
+
+/// The response of this module's `field`, if it is realigned.
+pub(super) fn response(field: &str) -> Option<&'static super::response::Response> {
+    RESPONSES.get(field)
+}
+
 /// The summed halo of the three units in their frozen order at a stage long side, which the host
 /// bounds at 512. Only the tests read it; production asks each unit for its own.
 #[cfg(test)]
@@ -152,6 +167,16 @@ pub(crate) fn presence_halo(long_side: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where a response extends a strength past the former -100 (A10), the unit stays stable:
+    /// Clarity's negative gain never passes -1, where detail would invert, and Dehaze's added
+    /// veil never reaches the whole picture.
+    #[test]
+    fn every_extended_strength_keeps_its_unit_stable() {
+        let lowest = |field: &str| response(field).map_or(-100.0, |r| r.knots[0][1]);
+        assert!(lowest(CLARITY) / 100.0 * clarity::GAIN_NEG > -1.0);
+        assert!(dehaze::VEIL_MAX * lowest(DEHAZE).abs() / 100.0 < 1.0);
+    }
     use crate::Stage;
     use crate::modules::{ActionInput, ToolModule};
 
@@ -193,7 +218,7 @@ mod tests {
             match module
                 .compile(
                     PRESENCE_EFFECT,
-                    1,
+                    crate::current_effect_format(crate::PRESENCE_EFFECT),
                     &payload,
                     crate::CompileStage::exact(STAGE),
                 )
@@ -259,7 +284,7 @@ mod tests {
         let Processing::Spatial(operation) = module
             .compile(
                 PRESENCE_EFFECT,
-                1,
+                crate::current_effect_format(crate::PRESENCE_EFFECT),
                 &json!({"texture": 10.0, "clarity": 10.0, "dehaze": 10.0}),
                 crate::CompileStage::exact(stage),
             )

@@ -453,7 +453,7 @@ fn a_list_at_its_limit_and_a_mask_at_its_limit_are_refused_by_name() {
     recipe.layers.push(Layer {
         id: LayerId::new(),
         effect_id: crate::BASIC_EFFECT.to_owned(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
         payload: json!({}),
         mask: Some(recipe.masks[0].id.clone()),
         artifacts: Vec::new(),
@@ -773,7 +773,7 @@ fn a_duplicate_copies_the_layers_bound_to_the_mask() {
     let layer = |effect: &str, bound: Option<&MaskId>| Layer {
         id: LayerId::new(),
         effect_id: effect.to_owned(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(effect),
         payload: json!({}),
         mask: bound.cloned(),
         artifacts: Vec::new(),
@@ -850,7 +850,7 @@ fn a_deleted_mask_takes_its_layers_and_says_which() {
         recipe.layers.push(Layer {
             id: LayerId::new(),
             effect_id: effect.to_owned(),
-            effect_format: crate::EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(effect),
             payload: json!({}),
             mask: Some(mask.clone()),
             artifacts: Vec::new(),
@@ -859,7 +859,7 @@ fn a_deleted_mask_takes_its_layers_and_says_which() {
     let global = Layer {
         id: LayerId::new(),
         effect_id: crate::BASIC_EFFECT.to_owned(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
         payload: json!({}),
         mask: None,
         artifacts: Vec::new(),
@@ -909,7 +909,7 @@ fn a_mask_move_resorts_the_masked_layers_and_moves_nothing_else() {
     let masked = |effect: &str, mask: &MaskId| Layer {
         id: LayerId::new(),
         effect_id: effect.to_owned(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(effect),
         payload: json!({}),
         mask: Some(mask.clone()),
         artifacts: Vec::new(),
@@ -917,7 +917,7 @@ fn a_mask_move_resorts_the_masked_layers_and_moves_nothing_else() {
     let global = Layer {
         id: LayerId::new(),
         effect_id: crate::BASIC_EFFECT.to_owned(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
         payload: json!({}),
         mask: None,
         artifacts: Vec::new(),
@@ -1022,7 +1022,7 @@ fn layer_of(effect: &str, bound: Option<&MaskId>, payload: Value) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: effect.to_owned(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(effect),
         payload,
         mask: bound.cloned(),
         artifacts: Vec::new(),

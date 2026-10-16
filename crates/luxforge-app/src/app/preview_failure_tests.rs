@@ -660,7 +660,7 @@ fn basic() -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
         payload: json!({"exposure": 0.5, "contrast": 20.0}),
         mask: None,
         artifacts: Vec::new(),

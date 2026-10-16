@@ -10,8 +10,8 @@ fn baseline_of(subject: &Subject) -> Fields {
     })
 }
 
-fn both_rounds() -> Vec<(u32, Vec<Family>)> {
-    [1, 2]
+fn every_round() -> Vec<(u32, Vec<Family>)> {
+    [1, 2, 3]
         .into_iter()
         .map(|round| (round, rounds::round(round).unwrap()))
         .collect()
@@ -50,13 +50,13 @@ fn the_baselines_read_back_neutral() {
     }
 }
 
-/// The last step of each area's first family in both rounds, the far end of its range, reads back
+/// The last step of each area's first family in every round, the far end of its range, reads back
 /// through the preset reader on the kind of subject it is first applied to; the slow test below
 /// reads back every variant.
 #[test]
 fn every_area_reads_back() {
     let registry = ModuleRegistry::builtin();
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         let mut areas = BTreeSet::new();
         for family in families.iter().filter(|family| areas.insert(family.area)) {
             let subject = &family.subjects[0];
@@ -70,14 +70,14 @@ fn every_area_reads_back() {
     }
 }
 
-/// Every step of every family of both rounds reads back, on every kind of subject it is applied
+/// Every step of every family of every round reads back, on every kind of subject it is applied
 /// to, and lands on the controls the manifest names.
 #[test]
 #[slow]
-fn every_variant_of_both_rounds_reads_back() {
+fn every_variant_of_every_round_reads_back() {
     let registry = ModuleRegistry::builtin();
     let mut count = 0;
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         for family in &families {
             let kinds: BTreeSet<bool> = family
                 .subjects
@@ -98,7 +98,19 @@ fn every_variant_of_both_rounds_reads_back() {
                             panic!("round {round} {} {}: {error}", family.id, step.label)
                         });
                     for (name, field) in &step.fields {
-                        if let Some((action, target, How::Transfer)) = counterpart(name) {
+                        // A value at its calibration's shortfall is refused, not transferred.
+                        let refused = match field {
+                            Field::Number { value, .. } => {
+                                matches!(
+                                    luxforge_core::lightroom_calibration(name, *value),
+                                    Some(Err(_))
+                                )
+                            }
+                            _ => false,
+                        };
+                        if let Some((action, target, How::Transfer)) = counterpart(name)
+                            && !refused
+                        {
                             assert!(
                                 read.settings[action].get(target).is_some(),
                                 "{name} on {action}.{target}"
@@ -116,14 +128,14 @@ fn every_variant_of_both_rounds_reads_back() {
             }
         }
     }
-    assert_eq!(count, 689);
+    assert_eq!(count, 1095);
 }
 
 /// The rounds' sizes, which the owner's import and export are planned around: round 1 writes 706
-/// variants of the targets and 49 of each photograph, round 2 292 and 21.
+/// variants of the targets and 49 of each photograph, round 2 292 and 21, round 3 553 and 29.
 #[test]
 fn the_rounds_have_their_sizes() {
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         let mut targets = BTreeSet::new();
         let mut on_targets = 0;
         let mut per_photograph = 1;
@@ -141,7 +153,11 @@ fn the_rounds_have_their_sizes() {
         let sizes = (on_targets + targets.len(), per_photograph);
         assert_eq!(
             sizes,
-            if round == 1 { (706, 49) } else { (292, 21) },
+            match round {
+                1 => (706, 49),
+                2 => (292, 21),
+                _ => (553, 29),
+            },
             "round {round}"
         );
     }
@@ -151,7 +167,7 @@ fn the_rounds_have_their_sizes() {
 /// variant id within a round; every label is safe in a file name.
 #[test]
 fn families_and_variants_have_unique_names() {
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         let mut ids = BTreeSet::new();
         let mut variants = BTreeSet::new();
         for family in &families {
@@ -183,9 +199,15 @@ fn families_and_variants_have_unique_names() {
                 }
             }
         }
-        // Round 1 covers every area of the design's order; round 2 the seven pairs.
+        // Round 1 covers every area of the design's order; round 2 the seven pairs; round 3 the
+        // realigned areas.
         let areas: BTreeSet<&str> = families.iter().map(|family| family.area).collect();
-        if round == 1 {
+        if round == 3 {
+            assert_eq!(
+                areas,
+                BTreeSet::from(["basic", "mixer", "presence", "vignette"])
+            );
+        } else if round == 1 {
             assert_eq!(
                 areas,
                 BTreeSet::from([
@@ -228,7 +250,7 @@ fn every_counterpart_is_a_luxforge_control() {
         "ToneCurveName2012",
     ];
     let mut names = BTreeSet::new();
-    for (_, families) in both_rounds() {
+    for (_, families) in every_round() {
         for family in &families {
             for (name, _) in family
                 .base
@@ -270,18 +292,33 @@ fn numbers_and_labels_are_written_as_lightroom_writes_them() {
     assert_eq!(rounds::label(0.8), "+0.8");
     assert_eq!(rounds::label(100.0), "+100");
     assert_eq!(rounds::label(0.0), "0");
-    // A straightened crop stays inside the frame however its box is rotated, and holds exactly the
-    // six decimals the XMP writes.
-    for angle in [-10.0, -1.0, 2.0, 10.0] {
-        let [top, left, bottom, right] = rounds::straighten_box(angle);
-        assert_eq!(top, left);
-        assert!(top > 0.0 && bottom < 1.0 && (top + bottom - 1.0).abs() < 1e-6);
-        assert_eq!(right, bottom);
-        assert_eq!(
-            settings::number_text(top, false, 6).parse::<f64>().unwrap(),
-            top
+    // A straightened crop is the largest centred 3:2 rectangle that stays inside the frame at
+    // either sign of the angle, and holds exactly the six decimals the XMP writes.
+    for angle in [-10.0, -5.0, -1.0, 1.0, 2.0, 10.0] {
+        let crop = rounds::straighten_box(angle);
+        let (width, height) = rounds::straighten_size(angle, crop);
+        assert!(
+            (width / height - 1.5).abs() < 1e-4,
+            "{angle}: {width} x {height}"
         );
+        let mirrored = rounds::straighten_size(-angle, rounds::straighten_box(-angle));
+        assert!((mirrored.0 - width).abs() < 0.01 && (mirrored.1 - height).abs() < 0.01);
+        for value in crop {
+            assert!(value > 0.0 && value < 1.0);
+            assert_eq!(
+                settings::number_text(value, false, 6)
+                    .parse::<f64>()
+                    .unwrap(),
+                value
+            );
+        }
     }
+    // Lightroom's reading reproduces round 1's exports: its recorded crop for −10° and +10° gave
+    // 897 × 857 and 1326 × 582 pixels.
+    let (w, h) = rounds::straighten_size(-10.0, [0.155819, 0.155819, 0.844181, 0.844181]);
+    assert_eq!((w.round(), h.round()), (897.0, 857.0));
+    let (w, h) = rounds::straighten_size(10.0, [0.098484, 0.098484, 0.901516, 0.901516]);
+    assert_eq!((w.round(), h.round()), (1326.0, 582.0));
 }
 
 /// Each target's pixels, frozen by their SHA-256: the generator is exact, and a change to a target
@@ -607,17 +644,35 @@ fn a_round_is_deterministic_and_reads_back_from_its_files() {
             "{}",
             variant["id"]
         );
-        assert!(read.report.refused.is_empty());
+        // What the reader refuses is exactly what the manifest records as refused: a calibrated
+        // value at its calibration's shortfall.
+        let refused: Vec<&str> = read
+            .report
+            .refused
+            .iter()
+            .map(|r| r.setting.as_str())
+            .collect();
+        let recorded: Vec<&str> = variant["refused"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["setting"].as_str())
+            .collect();
+        assert_eq!(refused, recorded, "{}", variant["id"]);
     }
-    let exposure = variants
-        .iter()
-        .find(|variant| variant["id"] == "wedge__exposure__-5")
-        .unwrap();
-    assert_eq!(exposure["settings"], json!({"Exposure2012": "-5.00"}));
+    // Exposure's slider follows Lightroom's response, so the reader transfers each value as it is.
+    let exposure = |id: &str| variants.iter().find(|variant| variant["id"] == id).unwrap();
     assert_eq!(
-        exposure["luxforge"],
-        json!({"set-basic": {"exposure": -5.0}})
+        exposure("wedge__exposure__-5")["settings"],
+        json!({"Exposure2012": "-5.00"})
     );
+    assert!(luxforge_core::lightroom_calibration("Exposure2012", -5.0).is_none());
+    for (id, value) in [("wedge__exposure__-5", -5.0), ("wedge__exposure__-3", -3.0)] {
+        assert_eq!(
+            exposure(id)["luxforge"],
+            json!({"set-basic": {"exposure": value}})
+        );
+    }
     let mask = variants
         .iter()
         .find(|variant| variant["family"] == "mask-radial")
@@ -654,7 +709,7 @@ fn an_unknown_round_is_refused() {
                 .collect(),
         )
     };
-    let error = run(directory.path(), args("3")).unwrap_err().to_string();
-    assert!(error.contains("rounds 1 and 2"), "{error}");
+    let error = run(directory.path(), args("4")).unwrap_err().to_string();
+    assert!(error.contains("rounds 1, 2 and 3"), "{error}");
     assert!(!directory.path().join("round").exists());
 }

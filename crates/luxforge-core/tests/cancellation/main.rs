@@ -18,9 +18,9 @@
 mod resources_cost;
 
 use luxforge_core::{
-    BASIC_EFFECT, BoxRect, Cancel, CropStage, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId,
-    ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, SnapshotId,
-    SourceImage, Transform,
+    BASIC_EFFECT, BoxRect, Cancel, CropStage, Error, ErrorKind, Layer, LayerId, ModuleRegistry,
+    Orientation, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, SnapshotId, SourceImage,
+    Transform,
 };
 use serde_json::json;
 use std::{
@@ -70,7 +70,7 @@ fn stack(width: u32, height: u32) -> Recipe {
             Layer {
                 id: LayerId::new(),
                 effect_id: BASIC_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
                 payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
                 mask: None,
                 artifacts: Vec::new(),

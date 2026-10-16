@@ -1066,8 +1066,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // ignored timing tests alike — is read from `luxforge_testbase::Distribution`'s nearest rank,
     // never from a sort-and-index of its own. The tokens are the shapes each hand-written
     // percentile, median or p50/p95 helper took, and a nearest-rank rank computed again. The Tone
-    // curve study's lifted-black noise spread, the RAW look study's corpus figures and the colour
-    // grading alignment's median response difference are the allowed second homes: they are study
+    // curve study's lifted-black noise spread, the RAW look study's corpus figures, the colour
+    // grading alignment's median response difference and the Lightroom alignment's residuals and
+    // spreads are the allowed second homes: they are study
     // figures, not timings, and `luxforge-reference` may
     // depend on no workspace crate (`independent-references`), so they cannot reach
     // `Distribution`; they use the same nearest rank. Auto's production image solver also
@@ -1101,6 +1102,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
             "crates/luxforge-reference/src/grade_response.rs",
+            "crates/luxforge-reference/src/lr_align.rs",
         ],
         mode: Match::Prefix,
         tests: true,
@@ -1166,6 +1168,11 @@ const SOURCE_RULES: &[SourceRule] = &[
             "xtask/src/verify.rs",
             "xtask/src/check.rs",
             "xtask/src/grade_align.rs",
+            // `lr-align measure`'s scoped render and decode pool, its workers bounded by the frame
+            // memory they hold, and the alignment fit's scoped pool, one search per Lightroom
+            // sample.
+            "xtask/src/lr_align/measure.rs",
+            "crates/luxforge-reference/src/lr_align.rs",
             // `usage-measure`'s contending producers and the window detacher beside them.
             "xtask/src/usage_measure.rs",
             // `hdr-merge-measure`'s scoped pool writing a photo-sized frame's bands.

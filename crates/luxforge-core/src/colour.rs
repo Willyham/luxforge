@@ -723,6 +723,7 @@ pub(crate) mod mat3 {
     }
 
     /// The exact algebraic inverse `adj(m) / det(m)` in `f64`, unchecked.
+    #[cfg(test)]
     pub(crate) fn inverse(m: &Mat3) -> Mat3 {
         inverse_and_determinant(m).0
     }

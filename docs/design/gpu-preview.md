@@ -116,8 +116,8 @@ These limits gate **enabling** a program, against the CPU frame it stands in for
     | Program | Beside | Words | Block |
     | --- | --- | --- | --- |
     | `lf_detail` (spatial) | `modules/detail/detail.wgsl`, described by `modules/detail/gpu.rs` | each smoothing pass's form and its kernels' taps, every tap's offset and weight; each level's thresholds, its details and whether a level came before it; sharpening's gain, coring threshold squared and masking scale squared | none |
-    | `lf_basic_white_balance` | `modules/basic/white_balance.rs` | the composite 3 × 3 matrix, row by row | none |
-    | `lf_basic_exposure` | `modules/basic/exposure.rs` | the gain | none |
+    | `lf_basic_white_balance` | `modules/basic/white_balance.rs` | a RAW white-balance draft's 3 × 3 matrix, row by row | none |
+    | `lf_basic_scene` | `modules/basic/scene.rs` | each channel's shift in stops on the scene scale: Temperature's and Tint's plus the Exposure | none |
     | `lf_basic_tone` | `modules/basic/tone.rs` | Contrast's branch (identity, positive, negative) and the eight coefficients the unit holds | none |
     | `lf_basic_colour_adjust` | `modules/basic/colour.rs` | Vibrance's gain and Saturation's | none |
     | `lf_curve_tone_curve` | `modules/curve/unit.rs` | the knot count, the curve's ends and its black level | the knots, inverse widths and per-segment coefficients |

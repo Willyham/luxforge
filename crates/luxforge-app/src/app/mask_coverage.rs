@@ -1232,7 +1232,7 @@ mod tests {
         recipe.layers.push(luxforge_core::Layer {
             id: luxforge_core::LayerId::new(),
             effect_id: luxforge_core::BASIC_EFFECT.into(),
-            effect_format: luxforge_core::EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(luxforge_core::BASIC_EFFECT),
             payload: json!({"exposure":1.0}),
             mask: Some(mask.id),
             artifacts: Vec::new(),
@@ -1304,7 +1304,7 @@ mod tests {
         recipe.layers.push(luxforge_core::Layer {
             id: luxforge_core::LayerId::new(),
             effect_id: luxforge_core::BASIC_EFFECT.into(),
-            effect_format: luxforge_core::EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(luxforge_core::BASIC_EFFECT),
             payload: json!({"exposure":1.0}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),
@@ -1489,7 +1489,7 @@ mod tests {
         recipe.layers.push(luxforge_core::Layer {
             id: luxforge_core::LayerId::new(),
             effect_id: luxforge_core::BASIC_EFFECT.into(),
-            effect_format: luxforge_core::EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(luxforge_core::BASIC_EFFECT),
             payload: json!({"exposure":1.0}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),

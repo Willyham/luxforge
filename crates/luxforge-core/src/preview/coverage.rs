@@ -691,9 +691,9 @@ impl Evaluation {
 mod tests {
     use super::*;
     use crate::{
-        AssetId, BASIC_EFFECT, Component, ComponentMode, DraftId, DraftStamp, EFFECT_FORMAT,
-        EntryId, HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, Recipe, RenderContext,
-        Snapshot, SnapshotId, SourceImage,
+        AssetId, BASIC_EFFECT, Component, ComponentMode, DraftId, DraftStamp, EntryId,
+        HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, Recipe, RenderContext, Snapshot,
+        SnapshotId, SourceImage,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -797,7 +797,7 @@ mod tests {
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: json!({"exposure":1.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -1056,7 +1056,7 @@ mod tests {
         recipe.layers.push(Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure":1.0}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),
@@ -1076,7 +1076,7 @@ mod tests {
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload: json!({"clarity":50.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -1217,7 +1217,7 @@ mod tests {
         layered.layers.push(Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure":1.0}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),
@@ -1286,7 +1286,7 @@ mod tests {
         let layer = Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure":1.0}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),

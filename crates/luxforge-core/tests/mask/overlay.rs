@@ -573,7 +573,7 @@ fn unbound_band(name: &str) -> (Fixture, MaskId) {
     f.edit("set-presence", json!({"clarity": 30.0}), "global-presence");
     let created = f.mask_command(
         "mask.create-luminance-range",
-        json!({"low": 40.0, "low_feather": 10.0, "high": 90.0, "high_feather": 5.0}),
+        json!({"low": 65.0, "low_feather": 10.0, "high": 90.0, "high_feather": 5.0}),
         "create",
     );
     let mask = mask_id(&created);
@@ -778,8 +778,8 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
     let raster = result.raster().expect("a frame").clone();
     assert_eq!((raster.width, raster.height), (source.width, source.height));
 
-    // The lift the layer applies, in linear light: one stop down.
-    let gain = 0.5_f64;
+    // What the layer makes of each input, in linear light: Exposure -1's scene shift.
+    let effect_of = |input: f64| super::exposed(input, -1.0);
     let mut compared = 0usize;
     let mut ends = 0usize;
     let mut worst = 0.0f64;
@@ -795,7 +795,8 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
             let output_code = u32::from(raster.rgba[offset + 1]);
             let input = code_to_linear(source_code);
             let output = code_to_linear(output_code);
-            let full = linear_to_code(input * gain);
+            let effect = effect_of(input);
+            let full = linear_to_code(effect);
             if reported == 0.0 {
                 // An uncovered cell is the identity, bit for bit, wherever the lift would have moved
                 // the byte at all.
@@ -816,17 +817,17 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
                 ends += 1;
                 continue;
             }
-            // One output code here is worth `dlinear / (in · |g - 1|)` of coverage. The tolerance is
+            // One output code here is worth `dlinear / |effect - in|` of coverage. The tolerance is
             // two of them: the frame's own rounding, and the reported byte's.
             let code = code_to_linear(output_code + 1) - code_to_linear(output_code);
-            let span = input * (1.0 - gain);
+            let span = input - effect;
             if span <= 2.0 * code {
                 // A cell so dark that the whole field spans less than the codes the frame can tell
                 // apart. The picture cannot measure a coverage there, and pretending otherwise would
                 // make this a test of rounding.
                 continue;
             }
-            let measured = (output / input - 1.0) / (gain - 1.0);
+            let measured = (output - input) / (effect - input);
             let resolution = 2.0 * code / span;
             let difference = (measured - reported).abs();
             worst = worst.max(difference / resolution);

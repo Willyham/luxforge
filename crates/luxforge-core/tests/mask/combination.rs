@@ -22,8 +22,8 @@
 
 use super::*;
 use luxforge_core::{
-    AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
-    Mask, MaskId, ModuleRegistry, Mutation, RECIPE_FORMAT, Raster, Recipe, SnapshotId,
+    AssetId, BASIC_EFFECT, Component, ComponentMode, EditorService, Layer, LayerId, Mask, MaskId,
+    ModuleRegistry, Mutation, RECIPE_FORMAT, Raster, Recipe, SnapshotId,
     mask::Stroke,
     mask::commands::{self, MaskTarget},
 };
@@ -154,7 +154,7 @@ fn a_mixed_kind_mask_renders_exactly_as_the_reference_composes_it() {
                 layers: vec![Layer {
                     id: LayerId::new(),
                     effect_id: BASIC_EFFECT.into(),
-                    effect_format: EFFECT_FORMAT,
+                    effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
                     payload: json!({"exposure": MASKED_EV}),
                     mask: Some(mask.id.clone()),
                     artifacts: Vec::new(),
@@ -175,7 +175,7 @@ fn a_mixed_kind_mask_renders_exactly_as_the_reference_composes_it() {
                     let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                     for (channel, &code) in pixel.iter().enumerate().take(3) {
                         let input = srgb::decode(source.rgba[offset + channel]);
-                        let effect = input * 2.0_f64.powf(MASKED_EV);
+                        let effect = exposed(input, MASKED_EV);
                         let blended = blend(input, effect, m);
                         assert_code(
                             code,
@@ -248,7 +248,7 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
         layers: vec![Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),
@@ -282,7 +282,7 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
             let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
             for (channel, &code) in pixel.iter().enumerate().take(3) {
                 let input = srgb::decode(source.rgba[offset + channel]);
-                let effect = input * 2.0_f64.powf(MASKED_EV);
+                let effect = exposed(input, MASKED_EV);
                 let blended = blend(input, effect, m);
                 assert_code(
                     code,
@@ -782,7 +782,7 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
             layers: vec![Layer {
                 id: LayerId::new(),
                 effect_id: BASIC_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
                 payload: json!({"exposure": MASKED_EV}),
                 mask: Some(mask.id.clone()),
                 artifacts: Vec::new(),
@@ -819,7 +819,7 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
                 let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                 for (channel, &code) in pixel.iter().enumerate().take(3) {
                     let input = srgb::decode(source.rgba[offset + channel]);
-                    let effect = input * 2.0_f64.powf(MASKED_EV);
+                    let effect = exposed(input, MASKED_EV);
                     let blended = blend(input, effect, m);
                     assert_code(
                         code,

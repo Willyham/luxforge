@@ -11,10 +11,9 @@
 
 use super::basic_layer;
 use luxforge_core::{
-    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, ModuleRegistry, OwnerHandle, SnapshotId,
+    ApiRequest, BASIC_EFFECT, ModuleRegistry, OwnerHandle, SnapshotId, current_effect_format,
 };
-use luxforge_reference::srgb;
-use luxforge_reference::white_balance::{self, RejectReason};
+use luxforge_reference::{scene, srgb};
 use luxforge_testbase::paths;
 use luxforge_testkit::client::{call, open, refused};
 use luxforge_testkit::fixtures::render;
@@ -61,7 +60,7 @@ fn grid_case(temperature: i64, tint: i64) -> SolverCase {
 // ---------------------------------------------------------------------------------------------
 
 /// Every parameter pair of the corpus, rendered through a real Basic layer at the exact input codes
-/// the corpus names, against the independent f64 reference.
+/// the corpus names, against the independent f64 scene reference.
 #[test]
 fn every_transform_case_renders_through_a_real_basic_layer() {
     #[derive(serde::Deserialize)]
@@ -69,7 +68,6 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
         input_rgb_u8: [u8; 3],
         temperature: f64,
         tint: f64,
-        expected_linear_f64: [f64; 3],
     }
     #[derive(serde::Deserialize)]
     struct Cases {
@@ -104,7 +102,11 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
         for (index, case) in group.iter().enumerate() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
-            for (channel, linear) in case.expected_linear_f64.into_iter().enumerate() {
+            // The corpus's inputs and parameters, held to the scene reference
+            // (`basic-scene.md`) rather than its recorded Bradford transform.
+            let reference =
+                scene::apply(temperature, tint, 0.0, case.input_rgb_u8.map(srgb::decode));
+            for (channel, linear) in reference.into_iter().enumerate() {
                 let expected = luxforge_reference::srgb::code(linear);
                 fixtures::assert_code_near_threshold(
                     pixel[channel],
@@ -121,13 +123,9 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
     }
 }
 
-/// The internal order inside the one layer is white balance first, then exposure.
-///
-/// The order is proved by the compiled unit list, which is what the host evaluates. It cannot also
-/// be proved numerically here: a scalar exposure gain commutes exactly with white balance's linear
-/// map, and nothing clamps between units of one operation, so both orders produce the same linear
-/// result by construction. The rendered bytes are still checked against the reference composed in
-/// the declared order, so a unit that silently did something else would fail.
+/// White balance and exposure are one unit, the first of the run: each channel shifted on the
+/// scene scale by white balance's stops plus the exposure, which is their frozen order exactly,
+/// since shifts on one scale add. The rendered bytes are checked against the scene reference.
 #[test]
 fn white_balance_runs_before_exposure_inside_the_one_layer() {
     use luxforge_core::{Processing, Stage};
@@ -137,7 +135,7 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
     let Processing::Color(operation) = module
         .compile(
             BASIC_EFFECT,
-            EFFECT_FORMAT,
+            current_effect_format(BASIC_EFFECT),
             &payload,
             luxforge_core::CompileStage::exact(Stage {
                 width: 4,
@@ -148,13 +146,16 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
     else {
         panic!("expected a colour operation");
     };
-    assert_eq!(operation.len(), 2);
+    assert_eq!(
+        operation.len(),
+        1,
+        "white balance and exposure are one unit"
+    );
     assert_eq!(
         operation.units()[0].describe(),
-        "white-balance(+60, -25)",
-        "white balance is the first unit of the run"
+        "scene(temperature:+60, tint:-25, exposure:+2)",
+        "white balance and exposure are the run's first unit"
     );
-    assert_eq!(operation.units()[1].describe(), "exposure(+2)");
 
     // The rendered bytes against the reference composed in that order, including inputs the
     // exposure drives above 1.0 so the output boundary's clamp is exercised.
@@ -175,8 +176,7 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
     .expect("a rendered mixed layer");
     for (index, input) in inputs.iter().enumerate() {
         let linear = input.map(srgb::decode);
-        let balanced = white_balance::apply(60.0, -25.0, linear);
-        let exposed = balanced.map(|value| value * 4.0);
+        let exposed = scene::apply(60.0, -25.0, 2.0, linear);
         for (channel, value) in exposed.into_iter().enumerate() {
             fixtures::assert_code_near_threshold(
                 rendered.pixel(index as u32, 0).expect("a pixel")[channel],
@@ -242,13 +242,15 @@ fn write_cast_image(name: &str) -> CastImage {
     }
 }
 
-/// The 8-bit codes a query answered with, and the settings the independent f64 reference solves
-/// from exactly those codes. The picker's own answer must equal the reference's, whatever the JPEG
-/// decoder produced.
-fn reference_settings(result: &Value) -> Result<(i32, i32), RejectReason> {
+/// The 8-bit codes a query answered with, and the settings the independent f64 scene reference
+/// solves from exactly those codes, rounded. The picker's own answer must equal the reference's,
+/// whatever the JPEG decoder produced.
+fn reference_settings(result: &Value) -> Option<(i64, i64)> {
     let pixels: Vec<[u8; 3]> =
         serde_json::from_value(result["patch"]["pixels"].clone()).expect("the sampled codes");
-    white_balance::solve_from_patch(&pixels)
+    let n = pixels.len() as f64;
+    let mean = [0, 1, 2].map(|c| pixels.iter().map(|p| srgb::decode(p[c])).sum::<f64>() / n);
+    scene::neutral_settings(mean).map(|(t, n)| (t.round() as i64, n.round() as i64))
 }
 
 /// An independent JSON client runs the pick and applies what it returns; the corrected patch is
@@ -297,18 +299,7 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
         picked["temperature"].as_i64().expect("a temperature"),
         picked["tint"].as_i64().expect("a tint"),
     );
-    assert_eq!(
-        reference_settings(&picked).expect("a solved patch"),
-        (temperature as i32, tint as i32),
-        "the picker's answer is the independent reference's answer for the codes it read"
-    );
-    // The cast was built from the corpus patch that solves to (20, -20); a JPEG round trip and a
-    // flatter patch move it a little, never far.
-    assert!(
-        (temperature - 20).abs() <= 3 && (tint + 20).abs() <= 6,
-        "the recovered correction ({temperature}, {tint}) is not near the cast it was built from"
-    );
-
+    assert_is_the_reference(&picked, "the picker's answer");
     // Applying it is an ordinary set-basic: one entry, and the patch becomes neutral to the code.
     let applied = call(
         &owner,
@@ -331,10 +322,12 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
     )
     .unwrap();
     let rgba: Vec<i64> = serde_json::from_value(sampled["rgba"].clone()).expect("a pixel");
+    // Within two codes: a whole step of the realigned Tint moves the colour further than one of
+    // the strengths the reference solves.
     let spread = rgba[..3].iter().max().unwrap() - rgba[..3].iter().min().unwrap();
     assert!(
-        spread <= 1,
-        "the corrected patch is not neutral to the code: {rgba:?}"
+        spread <= 2,
+        "the corrected patch is not neutral within two codes: {rgba:?}"
     );
 
     owner.disconnect(client);
@@ -479,6 +472,16 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
     let _ = fs::remove_file(image.path);
 }
 
+/// The picker's answer is the independent reference's for the codes it read.
+fn assert_is_the_reference(answer: &Value, case: &str) {
+    let solved = reference_settings(answer).expect("a solved patch");
+    assert_eq!(
+        (answer["temperature"].as_i64(), answer["tint"].as_i64()),
+        (Some(solved.0), Some(solved.1)),
+        "{case}"
+    );
+}
+
 /// The patch is clipped at the stage's edges, and every refusal names its reason first and commits
 /// nothing.
 #[test]
@@ -540,14 +543,7 @@ fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
                     expected.2 * expected.3,
                     "{case}: every sampled pixel is reported"
                 );
-                assert_eq!(
-                    reference_settings(&result).expect("a solved patch"),
-                    (
-                        result["temperature"].as_i64().unwrap() as i32,
-                        result["tint"].as_i64().unwrap() as i32
-                    ),
-                    "{case}"
-                );
+                assert_is_the_reference(&result, case);
             }
             None => {
                 // A corner sitting on the blown-white block is refused, not clamped inward.

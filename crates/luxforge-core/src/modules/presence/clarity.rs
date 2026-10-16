@@ -40,7 +40,7 @@ pub(super) const LIMIT_CLARITY: f32 = 0.15;
 /// deliberately not 1: removing the residual entirely replaces the image with its own base, which
 /// is a blur rather than the soft rendering a negative Clarity is reached for.
 const GAIN_POS: f64 = 1.0;
-const GAIN_NEG: f64 = 0.75;
+pub(super) const GAIN_NEG: f64 = 0.75;
 
 /// Clarity's guided-filter radius on its reduced grid.
 pub(super) fn reduced_radius(long_side: u32) -> i64 {

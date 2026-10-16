@@ -124,7 +124,7 @@ The solve runs off the owner and off the tile service, in a pure function in `lu
 - `P_q` is a weighted percentile of `y` over the sample.
 - The clipping fractions count non-excluded samples with any output channel at 1 (highlight) or every output channel at 0 (shadow). Basic's tone scales a pixel's channels together, so it drives one channel to 0 only with the others: a single channel at 0 is a colour out of gamut, such as turquoise water through the Look, which no Blacks value removes and which lifting Blacks only greys.
 
-**Steps**, in fixed order. Every search runs over the field's own grid, so the committed value meets its constraint exactly:
+**Steps**, in fixed order. Every search runs over the field's own grid, so the committed value meets its constraint exactly. The searched fields (Exposure, Whites, Blacks) search slider values through the Basic units, so their bounds are slider values; the ruled fields (Highlights, Shadows, Contrast, Vibrance, Saturation) compute and bound a strength, the value before [Basic was realigned](lightroom-alignment.md#basic-realigned), and write the whole slider value whose strength is nearest it, or the slider's end when it reaches no further. A ruled bound reached is reported as reached:
 
 1. **Exposure** `E` within ±4 EV.
    - Find, on the 0.01 EV grid, the `E` whose median `P_50(y)` is closest to `m = 0.46`.
@@ -147,7 +147,7 @@ The solve runs off the owner and off the tile service, in a pure function in `lu
 
 **Rounding and determinism.**
 
-- Values round half away from zero to the fields' steps: 0.01 EV for Exposure, integers for the rest.
+- Values round half away from zero to the fields' steps: 0.01 EV for Exposure, integers for the rest; a ruled field's slider value is rounded after its strength is converted.
 - The solve uses `f64` for statistics and deterministic weighted reductions, so the same sample gives the same values on every machine. Each chunk of 4,096 points is one task of the shared pool; integer counts and each chunk's chroma sum are added in chunk order, and each chunk writes its luminances where the sample alone places them, so neither values nor statistics depend on the pool's thread count.
 
 **Bounds of the search.**
@@ -210,7 +210,7 @@ The owner chose to fit the targets to Lightroom's Auto on their own photos, afte
 
 - The fitting tool compares picture statistics, not slider numbers: median, P10/P90, the band fractions, the clipping fractions and the mean chroma. It compares Lightroom's Auto export with Luxforge's Auto on the same originals.
 - It fits the targets of `AutoToneTargets` to minimise a weighted median difference, holding out a quarter of the photos to check the fit.
-- Comparing pictures keeps the fit independent of the slider response alignment, which is not yet done. The difference between the two programs' base renderings is reported beside it.
+- Comparing pictures keeps the fit independent of the slider response alignment. The difference between the two programs' base renderings is reported beside it.
 - Slider values are compared too, for information. They are converted wherever the alignment has a fitted conversion.
 
 **Conduct.** The rig follows the alignment programme's rules ([decided](lightroom-alignment.md#decided)):
@@ -221,7 +221,7 @@ The owner chose to fit the targets to Lightroom's Auto on their own photos, afte
 
 **Local rig.** `tools/cargo-cached xtask auto-tone-fit --manifest FILE --output NEW_FILE --consent-owner-photos [--rounds 1..6]` reads a manifest with `photos`, each holding a unique `id`, `original`, `lightroom_auto` and `xmp` path relative to the manifest. The optional `lightroom_base` is a separate export without Auto; without it the base gap is unavailable. It requires 40–100 photos and refuses before reading the manifest unless this run carries consent. It keeps at most 100 bounded grids (1,300 MiB at the square maximum) plus the current source/temporary render buffers; its temporary private catalog is removed on exit. Reports retain chosen ids and figures, not images or source paths. XMP must include finite values for all eight sliders.
 
-The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coordinate order it tries both directions for all eight targets, halving the steps each round, accepting only strict training improvements. Its objective is the median per-photo weighted absolute picture difference: median ×4, P10/P90 ×2, bright/dark fractions ×1, clipping fractions ×10 and chroma ×4. All clipping statistics in picture comparisons count the exported pixels, including originally clipped ones; the solver itself keeps its source-clipped exclusions. The rig reads its grids without the sensor, so a RAW photo's grid there carries no source-clipped flags (`source_clip_detection` would read `unavailable`). No Lightroom slider conversions are installed yet, so slider values are informational. The report proposes `auto-tone/2` without adopting it. A synthetic export test perturbs median and spread, checks recovery within 0.025 and 0.04 respectively, and requires held-out error to fall by at least half.
+The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coordinate order it tries both directions for all eight targets, halving the steps each round, accepting only strict training improvements. Its objective is the median per-photo weighted absolute picture difference: median ×4, P10/P90 ×2, bright/dark fractions ×1, clipping fractions ×10 and chroma ×4. All clipping statistics in picture comparisons count the exported pixels, including originally clipped ones; the solver itself keeps its source-clipped exclusions. The rig reads its grids without the sensor, so a RAW photo's grid there carries no source-clipped flags (`source_clip_detection` would read `unavailable`). Lightroom's Auto slider values are informational: the fit compares pictures. The report proposes `auto-tone/2` without adopting it. A synthetic export test perturbs median and spread, checks recovery within 0.025 and 0.04 respectively, and requires held-out error to fall by at least half.
 
 **Result.** The owner reviews the fitted `auto-tone/2` on the corpus and their photos. Lightroom's known weaknesses, such as a constant +15 Vibrance or over-lifted shadows, are reported where the fit reproduces them, so the owner can keep a target that differs.
 

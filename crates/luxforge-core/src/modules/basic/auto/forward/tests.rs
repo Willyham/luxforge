@@ -42,7 +42,12 @@ fn through(operations: &[ColorOperation]) -> Vec<[f32; 3]> {
 fn compiled(registry: &ModuleRegistry, layer: &Layer) -> ColorOperation {
     let (module, _) = registry.effect(&layer.effect_id).unwrap();
     let Processing::Color(operation) = module
-        .compile(&layer.effect_id, EFFECT_FORMAT, &layer.payload, stage())
+        .compile(
+            &layer.effect_id,
+            crate::current_effect_format(&layer.effect_id),
+            &layer.payload,
+            stage(),
+        )
         .unwrap()
     else {
         panic!("{} is pointwise", layer.effect_id)

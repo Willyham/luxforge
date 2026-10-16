@@ -9,7 +9,10 @@
 //! reference's code exactly, except where the reference's linear value sits within the contract's
 //! band of the exact linear threshold between two codes, where one code of difference is permitted
 //! because production evaluates in f32 ([`luxforge_testkit::fixtures::assert_code_near_threshold`]).
-//! Identity stacks, byte sharing and history behaviour are exact with no tolerance at all.
+//! Identity stacks, byte sharing and history behaviour are exact with no tolerance at all. A real
+//! layer stores slider values, which apply their strengths through Basic's frozen responses, so a
+//! layer at a corpus's parameter value is held to the reference at that value's strength; the
+//! module's unit tests hold each unit to the corpora themselves.
 
 mod auto_tone;
 mod colour;
@@ -33,6 +36,12 @@ use serde_json::Value;
 /// A global Basic layer holding `payload`.
 fn basic_layer(payload: Value) -> Layer {
     fixtures::layer(BASIC_EFFECT, payload)
+}
+
+/// The strength Basic's `field` applies at slider `value`, through its frozen response: what the
+/// f64 references take, since a real layer stores the slider's value.
+fn strength(field: &str, value: f64) -> f64 {
+    luxforge_core::basic_response(field).map_or(value, |response| response.strength(value))
 }
 
 /// The mutation envelope of an in-process edit these tests make.
