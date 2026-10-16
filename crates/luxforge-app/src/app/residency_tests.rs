@@ -78,7 +78,13 @@ fn select_idle_lets_the_pixels_go_and_develop_prepares_them_again() {
     let before = editor.document.state.clone().expect("a photograph");
     assert!(editor.gpu.source().is_some());
     assert!(editor.gpu.summary()["resident"]["version"].is_u64());
-    assert_eq!(subscription(&editor).units(), 0, "no timer in Develop");
+    // On macOS the memory-pressure signal is always subscribed; the grace timer comes on top.
+    let pressure = usize::from(cfg!(target_os = "macos"));
+    assert_eq!(
+        subscription(&editor).units(),
+        pressure,
+        "no timer in Develop"
+    );
     // The open's own heavy work has had its relief.
     idle_workers(&mut editor);
     editor.residency.relieving = false;
@@ -86,7 +92,11 @@ fn select_idle_lets_the_pixels_go_and_develop_prepares_them_again() {
     let log = attach_log(&mut editor);
 
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
-    assert_eq!(subscription(&editor).units(), 1, "one grace timer");
+    assert_eq!(
+        subscription(&editor).units(),
+        pressure + 1,
+        "one grace timer"
+    );
     let showing = editor.residency.showing;
     let _ = editor.update(Message::Residency(ResidencyMessage::SelectIdle(
         showing - 1,
@@ -99,7 +109,11 @@ fn select_idle_lets_the_pixels_go_and_develop_prepares_them_again() {
     let release = answer_release(&mut editor, &asset, Why::SelectIdle);
     assert!(release.released && release.source_bytes > 0, "{release:?}");
     assert_eq!(readiness(&editor, &asset), "preparation-required");
-    assert_eq!(subscription(&editor).units(), 0, "nothing left to let go");
+    assert_eq!(
+        subscription(&editor).units(),
+        pressure,
+        "nothing left to let go"
+    );
     assert_eq!(
         editor.residency.reliefs,
         reliefs + 1,
