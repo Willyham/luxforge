@@ -218,3 +218,73 @@ fn usage_adapter_names_and_driver_text_do_not_reach_the_profile() {
     }
     assert!(wire.contains("\"vendor\":\"other\""));
 }
+
+/// This host's real adapter, as the launch enumerates it, through the observation to the profile:
+/// within the 2 KiB cap, its vendor, backend and type as enums, an Apple silicon GPU's generation
+/// and tier equal to the CPU brand's, and nothing of the adapter's name or driver text on the
+/// wire. Enumeration creates a graphics instance and opens no device.
+#[test]
+#[luxforge_test_macros::slow]
+fn usage_this_hosts_real_adapter_makes_a_profile_without_its_strings() {
+    let offered = crate::adapters::enumerate(crate::adapters::renderer_backends());
+    let Some(real) = offered
+        .iter()
+        .find(|adapter| adapter.device_type != "Cpu")
+        .cloned()
+    else {
+        eprintln!("skipped: no GPU adapter on this host; not adapter evidence");
+        return;
+    };
+    let observation = Observation::new(GPU, Renderer::gpu(), Some(real.clone()), window_of(&real));
+    let resolved = observation
+        .resolve(|_, _| panic!("the window's adapter is the tile worker's"))
+        .unwrap();
+    let gate = Gate::new();
+    gate.enable();
+    let mut context = DeviceContext::new();
+    assert_eq!(
+        context.update(&gate, &resolved.gpus, resolved.path),
+        Ok(Update::Changed)
+    );
+    let profile = *context.profile(&gate).unwrap();
+    assert!(profile.encoded_len() <= 2048, "{}", profile.encoded_len());
+    let mut wire = Vec::new();
+    profile.write_json(&mut wire).unwrap();
+    let wire = String::from_utf8(wire).unwrap();
+    let gpus: Vec<_> = profile.gpus().collect();
+    assert_eq!(gpus.len(), 1, "{wire}");
+    for raw in [&real.name, &real.driver, &real.driver_info] {
+        for word in raw.split_whitespace().filter(|word| word.len() >= 3) {
+            // The approved enum spellings, such as `apple` and `metal`, are lowercase.
+            assert!(!wire.contains(word), "{word:?} of {raw:?} in {wire}");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use luxforge_core::usage::{GpuBackend, GpuType, GpuVendor};
+        let brand = std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .unwrap();
+        let brand = String::from_utf8(brand.stdout).unwrap();
+        if brand.starts_with("Apple M") {
+            let gpu = gpus[0];
+            assert_eq!(
+                (gpu.vendor, gpu.backend, gpu.gpu_type, gpu.unified_memory),
+                (
+                    GpuVendor::Apple,
+                    GpuBackend::Metal,
+                    GpuType::Integrated,
+                    true
+                ),
+                "{wire}"
+            );
+            assert_eq!(
+                (gpu.generation, gpu.tier),
+                (profile.cpu().generation, profile.cpu().tier),
+                "{brand}: {wire}"
+            );
+        }
+    }
+    eprintln!("this host's profile ({} bytes): {wire}", wire.len());
+}

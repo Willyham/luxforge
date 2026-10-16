@@ -122,11 +122,27 @@ impl TestServer {
         Self::http(move |request, out| send(out, &responses[request.index.min(last)]))
     }
 
+    /// Plain HTTP on `address`, such as a loopback port a test reserved earlier and left with
+    /// nothing listening, so a client refused there finds a receiver on its next attempt.
+    pub fn http_on(
+        address: SocketAddr,
+        respond: impl Fn(&Request, &mut dyn Write) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
+        Self::start_on(TcpListener::bind(address)?, Options::default(), respond)
+    }
+
     pub fn start(
         options: Options,
         respond: impl Fn(&Request, &mut dyn Write) + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
+        Self::start_on(TcpListener::bind("127.0.0.1:0")?, options, respond)
+    }
+
+    fn start_on(
+        listener: TcpListener,
+        options: Options,
+        respond: impl Fn(&Request, &mut dyn Write) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
         let address = listener.local_addr()?;
         let shared = Arc::new(Shared {
             stopped: AtomicBool::new(false),
