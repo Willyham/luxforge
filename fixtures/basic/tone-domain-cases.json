@@ -1,0 +1,7034 @@
+[
+  {
+    "label": "scene/0.33/highlights--150/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.000399990254059769,
+      0.000399990254059769,
+      0.000399990254059769
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.003989241168783122,
+      0.003989241168783122,
+      0.003989241168783122
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.02825500734718043,
+      0.02825500734718043,
+      0.02825500734718043
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.09129684428027392,
+      0.09129684428027392,
+      0.09129684428027392
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.15814108964563875,
+      0.15814108964563875,
+      0.15814108964563875
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.22391396186599496,
+      0.22391396186599496,
+      0.22391396186599496
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.0000000000000002,
+      1.0000000000000002,
+      1.0000000000000002
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.6000000000000005,
+      1.6000000000000005,
+      1.6000000000000005
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      2.8999999999999986,
+      2.8999999999999986,
+      2.8999999999999986
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      5.999999999999999,
+      5.999999999999999,
+      5.999999999999999
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.4243862161810812,
+      0.09430804804024027,
+      0.02357701201006007
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.00978411933186518,
+      0.1467617899779777,
+      0.6848883532305626
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights--150/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      -0.009304838843037027,
+      0.04652419421518514,
+      0.018609677686074053
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0004000305285548291,
+      0.0004000305285548291,
+      0.0004000305285548291
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0040286925011634445,
+      0.0040286925011634445,
+      0.0040286925011634445
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.033134562755247315,
+      0.033134562755247315,
+      0.033134562755247315
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.15347334675978289,
+      0.15347334675978289,
+      0.15347334675978289
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.45061114490268533,
+      0.45061114490268533,
+      0.45061114490268533
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.8443859758832875,
+      0.8443859758832875,
+      0.8443859758832875
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.0000000000000002,
+      1.0000000000000002,
+      1.0000000000000002
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.6000000000000005,
+      1.6000000000000005,
+      1.6000000000000005
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      2.8999999999999986,
+      2.8999999999999986,
+      2.8999999999999986
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      5.999999999999999,
+      5.999999999999999,
+      5.999999999999999
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.2283210662435917,
+      0.27296023694302035,
+      0.06824005923575509
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.02732152628777821,
+      0.4098228943166731,
+      1.9125068401444747
+    ]
+  },
+  {
+    "label": "scene/0.33/highlights-+90/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      -0.011199138726156684,
+      0.05599569363078342,
+      0.02239827745231337
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0009637897657114839,
+      0.0009637897657114839,
+      0.0009637897657114839
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.012306355675782555,
+      0.012306355675782555,
+      0.012306355675782555
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0664222401449817,
+      0.0664222401449817,
+      0.0664222401449817
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.15756385990618563,
+      0.15756385990618563,
+      0.15756385990618563
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.33969681029814197,
+      0.33969681029814197,
+      0.33969681029814197
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.7000000000000001,
+      0.7000000000000001,
+      0.7000000000000001
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.0000000000000002,
+      1.0000000000000002,
+      1.0000000000000002
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.6000000000000005,
+      1.6000000000000005,
+      1.6000000000000005
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      2.8999999999999986,
+      2.8999999999999986,
+      2.8999999999999986
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      5.999999999999999,
+      5.999999999999999,
+      5.999999999999999
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.9240078713328234,
+      0.20533508251840518,
+      0.051333770629601295
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.02066295077366586,
+      0.30994426160498784,
+      1.44640655415661
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows-+60/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      -0.020947634431712114,
+      0.10473817215856057,
+      0.04189526886342423
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0002231061184610872,
+      0.0002231061184610872,
+      0.0002231061184610872
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0022692523072705413,
+      0.0022692523072705413,
+      0.0022692523072705413
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.01849026935136054,
+      0.01849026935136054,
+      0.01849026935136054
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.09855870557855478,
+      0.09855870557855478,
+      0.09855870557855478
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.3208530982439501,
+      0.3208530982439501,
+      0.3208530982439501
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.7000000000000001,
+      0.7000000000000001,
+      0.7000000000000001
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.0000000000000002,
+      1.0000000000000002,
+      1.0000000000000002
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.6000000000000005,
+      1.6000000000000005,
+      1.6000000000000005
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      2.8999999999999986,
+      2.8999999999999986,
+      2.8999999999999986
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      5.999999999999999,
+      5.999999999999999,
+      5.999999999999999
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.8770719676142668,
+      0.1949048816920593,
+      0.048726220423014825
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.019384585895989938,
+      0.29076878843984905,
+      1.3569210127192954
+    ]
+  },
+  {
+    "label": "scene/0.33/shadows--40/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      -0.006336683577419676,
+      0.03168341788709838,
+      0.012673367154839353
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0005333333333333356,
+      0.0005333333333333356,
+      0.0005333333333333356
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.005719012847337849,
+      0.005719012847337849,
+      0.005719012847337849
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0521155461749969,
+      0.0521155461749969,
+      0.0521155461749969
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.22170871514654877,
+      0.22170871514654877,
+      0.22170871514654877
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.6261407625321864,
+      0.6261407625321864,
+      0.6261407625321864
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.3462829224282868,
+      1.3462829224282868,
+      1.3462829224282868
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.9330211939056434,
+      1.9330211939056434,
+      1.9330211939056434
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      3.1102216140215044,
+      3.1102216140215044,
+      3.1102216140215044
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      5.66935671968772,
+      5.66935671968772,
+      5.66935671968772
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      11.791589623422835,
+      11.791589623422835,
+      11.791589623422835
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.7085117292890082,
+      0.37966927317533516,
+      0.09491731829383379
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.03792293871482805,
+      0.5688440807224207,
+      2.654605710037963
+    ]
+  },
+  {
+    "label": "scene/0.33/whites-+100/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      -0.017528109225149552,
+      0.08764054612574776,
+      0.035056218450299104
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0003595505617977568,
+      0.0003595505617977568,
+      0.0003595505617977568
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0035480530812936786,
+      0.0035480530812936786,
+      0.0035480530812936786
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.024655672977552456,
+      0.024655672977552456,
+      0.024655672977552456
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.09609153307417896,
+      0.09609153307417896,
+      0.09609153307417896
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.26122287452498544,
+      0.26122287452498544,
+      0.26122287452498544
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.550829327848695,
+      0.550829327848695,
+      0.550829327848695
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.7851447918898153,
+      0.7851447918898153,
+      0.7851447918898153
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.2531203755247116,
+      1.2531203755247116,
+      1.2531203755247116
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      2.2655675866890572,
+      2.2655675866890572,
+      2.2655675866890572
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      4.676410669947538,
+      4.676410669947538,
+      4.676410669947538
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.7122702696939788,
+      0.1582822821542175,
+      0.039570570538554374
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.015836242668142386,
+      0.2375436400221358,
+      1.108536986769967
+    ]
+  },
+  {
+    "label": "scene/0.33/whites--45/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      -0.008188036316593924,
+      0.040940181582969616,
+      0.016376072633187848
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.0007845491222868271,
+      0.0007845491222868271,
+      0.0007845491222868271
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.00907354043709803,
+      0.00907354043709803,
+      0.00907354043709803
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.05440730676453522,
+      0.05440730676453522,
+      0.05440730676453522
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.13135310247092702,
+      0.13135310247092702,
+      0.13135310247092702
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.2295498230083193,
+      0.2295498230083193,
+      0.2295498230083193
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.0116554809931868,
+      1.0116554809931868,
+      1.0116554809931868
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      1.449593159702298,
+      1.449593159702298,
+      1.449593159702298
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      2.3271265250803275,
+      2.3271265250803275,
+      2.3271265250803275
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      4.232247143496278,
+      4.232247143496278,
+      4.232247143496278
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      8.783982789509484,
+      8.783982789509484,
+      8.783982789509484
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.6211447365062847,
+      0.13803216366806326,
+      0.034508040917015814
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      0.01406589403094615,
+      0.21098841046419226,
+      0.9846125821662305
+    ]
+  },
+  {
+    "label": "scene/0.33/combined/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      0.99,
+      0.66
+    ],
+    "expected_linear_rgb": [
+      -0.017314738771529257,
+      0.0865736938576463,
+      0.034629477543058514
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0003999989382732061,
+      0.0003999989382732061,
+      0.0003999989382732061
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0039989400383762,
+      0.0039989400383762,
+      0.0039989400383762
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.029592296011100777,
+      0.029592296011100777,
+      0.029592296011100777
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.11045572052864677,
+      0.11045572052864677,
+      0.11045572052864677
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.2576598715264683,
+      0.2576598715264683,
+      0.2576598715264683
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.41397389964325076,
+      0.41397389964325076,
+      0.41397389964325076
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.4792154231686023,
+      0.4792154231686023,
+      0.4792154231686023
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.5487490352952212,
+      0.5487490352952212,
+      0.5487490352952212
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      2.2365964294606555,
+      2.2365964294606555,
+      2.2365964294606555
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      6.000000000000003,
+      6.000000000000003,
+      6.000000000000003
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.6983867238372278,
+      0.1551970497416062,
+      0.03879926243540155
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.015738270625044962,
+      0.2360740593756744,
+      1.1016789437531471
+    ]
+  },
+  {
+    "label": "scene/1/highlights--150/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      -0.009828888822711553,
+      0.04914444411355776,
+      0.019657777645423105
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.00040000336942738556,
+      0.00040000336942738556,
+      0.00040000336942738556
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0040031770393549855,
+      0.0040031770393549855,
+      0.0040031770393549855
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.030934698051252,
+      0.030934698051252,
+      0.030934698051252
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.1359354090675673,
+      0.1359354090675673,
+      0.1359354090675673
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.41753333298230105,
+      0.41753333298230105,
+      0.41753333298230105
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.9485225169304174,
+      0.9485225169304174,
+      0.9485225169304174
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.3654883178869255,
+      1.3654883178869255,
+      1.3654883178869255
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      2.0879931781450356,
+      2.0879931781450356,
+      2.0879931781450356
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      2.9714199409573627,
+      2.9714199409573627,
+      2.9714199409573627
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      6.000000000000003,
+      6.000000000000003,
+      6.000000000000003
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.141778403669128,
+      0.2537285341486952,
+      0.0634321335371738
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.025216691328777043,
+      0.3782503699316556,
+      1.7651683930143927
+    ]
+  },
+  {
+    "label": "scene/1/highlights-+90/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      -0.010380615393521813,
+      0.05190307696760907,
+      0.020761230787043627
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0009771502040412778,
+      0.0009771502040412778,
+      0.0009771502040412778
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.009678569089419616,
+      0.009678569089419616,
+      0.009678569089419616
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.08855488469356139,
+      0.08855488469356139,
+      0.08855488469356139
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.2404018309366106,
+      0.2404018309366106,
+      0.2404018309366106
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.4484222885024088,
+      0.4484222885024088,
+      0.4484222885024088
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.7630904582134159,
+      0.7630904582134159,
+      0.7630904582134159
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.0293842736307335,
+      1.0293842736307335,
+      1.0293842736307335
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.6018701542690033,
+      1.6018701542690033,
+      1.6018701542690033
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      2.9000000000000017,
+      2.9000000000000017,
+      2.9000000000000017
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      6.000000000000003,
+      6.000000000000003,
+      6.000000000000003
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.212533209808902,
+      0.26945182440197823,
+      0.06736295610049456
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.027484550545909876,
+      0.41226825818864815,
+      1.9239185382136912
+    ]
+  },
+  {
+    "label": "scene/1/shadows-+60/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      -0.02873491632333168,
+      0.14367458161665841,
+      0.05746983264666336
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0002207110595699981,
+      0.0002207110595699981,
+      0.0002207110595699981
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.00231188580934879,
+      0.00231188580934879,
+      0.00231188580934879
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.016422381104471733,
+      0.016422381104471733,
+      0.016422381104471733
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.07779855323228482,
+      0.07779855323228482,
+      0.07779855323228482
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.26545504378878576,
+      0.26545504378878576,
+      0.26545504378878576
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.6503461549983771,
+      0.6503461549983771,
+      0.6503461549983771
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.9722821158907577,
+      0.9722821158907577,
+      0.9722821158907577
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.5977298279766432,
+      1.5977298279766432,
+      1.5977298279766432
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      2.9000000000000017,
+      2.9000000000000017,
+      2.9000000000000017
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      6.000000000000003,
+      6.000000000000003,
+      6.000000000000003
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.7277146372491461,
+      0.16171436383314358,
+      0.040428590958285895
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.01598013004602082,
+      0.23970195069031228,
+      1.1186091032214573
+    ]
+  },
+  {
+    "label": "scene/1/shadows--40/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      -0.005512218224731836,
+      0.027561091123659176,
+      0.011024436449463671
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0005333333333333368,
+      0.0005333333333333368,
+      0.0005333333333333368
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.005333333333333369,
+      0.005333333333333369,
+      0.005333333333333369
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.047868961290357226,
+      0.047868961290357226,
+      0.047868961290357226
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.21171568974373167,
+      0.21171568974373167,
+      0.21171568974373167
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.607743146375583,
+      0.607743146375583,
+      0.607743146375583
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.3174605881422798,
+      1.3174605881422798,
+      1.3174605881422798
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.897396250097535,
+      1.897396250097535,
+      1.897396250097535
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      3.063159907035388,
+      3.063159907035388,
+      3.063159907035388
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      5.602492378500033,
+      5.602492378500033,
+      5.602492378500033
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      11.688997970660962,
+      11.688997970660962,
+      11.688997970660962
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.6588152026798462,
+      0.3686256005955214,
+      0.09215640014888035
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.03679394934498594,
+      0.5519092401747892,
+      2.575576454149016
+    ]
+  },
+  {
+    "label": "scene/1/whites-+100/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      -0.01619273071121929,
+      0.08096365355609646,
+      0.03238546142243858
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.00035955056179775115,
+      0.00035955056179775115,
+      0.00035955056179775115
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0035955056179775378,
+      0.0035955056179775378,
+      0.0035955056179775378
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.02551751752976139,
+      0.02551751752976139,
+      0.02551751752976139
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.09798892258360015,
+      0.09798892258360015,
+      0.09798892258360015
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.26461653488109893,
+      0.26461653488109893,
+      0.26461653488109893
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.5560681620446033,
+      0.5560681620446033,
+      0.5560681620446033
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.7915844682575316,
+      0.7915844682575316,
+      0.7915844682575316
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.261575550630221,
+      1.261575550630221,
+      1.261575550630221
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      2.2775063797866038,
+      2.2775063797866038,
+      2.2775063797866038
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      4.694623718300605,
+      4.694623718300605,
+      4.694623718300605
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.7214323975521011,
+      0.16031831056713358,
+      0.040079577641783395
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.016044647518644786,
+      0.24066971277967178,
+      1.1231253263051348
+    ]
+  },
+  {
+    "label": "scene/1/whites--45/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      -0.00845644668218883,
+      0.04228223341094415,
+      0.01691289336437766
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0007918739296119971,
+      0.0007918739296119971,
+      0.0007918739296119971
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.007711168119698887,
+      0.007711168119698887,
+      0.007711168119698887
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.0677910818648151,
+      0.0677910818648151,
+      0.0677910818648151
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.2000104664258554,
+      0.2000104664258554,
+      0.2000104664258554
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.3764903341925685,
+      0.3764903341925685,
+      0.3764903341925685
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.5677659602039925,
+      0.5677659602039925,
+      0.5677659602039925
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.6956055242676342,
+      0.6956055242676342,
+      0.6956055242676342
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.2102482594734458,
+      1.2102482594734458,
+      1.2102482594734458
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      4.202356846480274,
+      4.202356846480274,
+      4.202356846480274
+    ]
+  },
+  {
+    "label": "scene/1/combined/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      8.738194693567099,
+      8.738194693567099,
+      8.738194693567099
+    ]
+  },
+  {
+    "label": "scene/1/combined/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      1.0164471335026106,
+      0.22587714077835794,
+      0.056469285194589484
+    ]
+  },
+  {
+    "label": "scene/1/combined/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      0.023118249570588233,
+      0.3467737435588235,
+      1.6182774699411764
+    ]
+  },
+  {
+    "label": "scene/1/combined/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      3.0,
+      2.0
+    ],
+    "expected_linear_rgb": [
+      -0.02219258318572528,
+      0.1109629159286264,
+      0.04438516637145056
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.00039999958523462764,
+      0.00039999958523462764,
+      0.00039999958523462764
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.003999585662843026,
+      0.003999585662843026,
+      0.003999585662843026
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.029810605406039227,
+      0.029810605406039227,
+      0.029810605406039227
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.11443682094050112,
+      0.11443682094050112,
+      0.11443682094050112
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.28375668251300207,
+      0.28375668251300207,
+      0.28375668251300207
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.5033222910839232,
+      0.5033222910839232,
+      0.5033222910839232
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.6247905932868741,
+      0.6247905932868741,
+      0.6247905932868741
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.7667446770697638,
+      0.7667446770697638,
+      0.7667446770697638
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.9318499361076472,
+      0.9318499361076472,
+      0.9318499361076472
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.77084979530506,
+      0.17129995451223556,
+      0.04282498862805889
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.01728305634917077,
+      0.25924584523756156,
+      1.209813944441954
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights--150/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -150.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      -0.009917359535056442,
+      0.049586797675282214,
+      0.019834719070112885
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.0004000013194579189,
+      0.0004000013194579189,
+      0.0004000013194579189
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.004001271559092214,
+      0.004001271559092214,
+      0.004001271559092214
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.030471930856618926,
+      0.030471930856618926,
+      0.030471930856618926
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.1304804522179302,
+      0.1304804522179302,
+      0.1304804522179302
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.39579790311751206,
+      0.39579790311751206,
+      0.39579790311751206
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.9129376815660015,
+      0.9129376815660015,
+      0.9129376815660015
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.345502109259538,
+      1.345502109259538,
+      1.345502109259538
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      2.184781308619081,
+      2.184781308619081,
+      2.184781308619081
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      3.6778863947038345,
+      3.6778863947038345,
+      3.6778863947038345
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.0823597794113753,
+      0.24052439542475007,
+      0.06013109885618752
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.023904240270268266,
+      0.35856360405402393,
+      1.6732968189187785
+    ]
+  },
+  {
+    "label": "scene/1.6/highlights-+90/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 90.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      -0.010200534858333788,
+      0.05100267429166894,
+      0.020401069716667577
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.0009796507126685193,
+      0.0009796507126685193,
+      0.0009796507126685193
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.009432037932254106,
+      0.009432037932254106,
+      0.009432037932254106
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.09288126786582084,
+      0.09288126786582084,
+      0.09288126786582084
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.28329203155139854,
+      0.28329203155139854,
+      0.28329203155139854
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.5361078858674044,
+      0.5361078858674044,
+      0.5361078858674044
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.8643849272034158,
+      0.8643849272034158,
+      0.8643849272034158
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.1180266838723545,
+      1.1180266838723545,
+      1.1180266838723545
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.6470148378091736,
+      1.6470148378091736,
+      1.6470148378091736
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      2.9003053626657573,
+      2.9003053626657573,
+      2.9003053626657573
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.4484742818903833,
+      0.3218831737534185,
+      0.08047079343835463
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.03289021149783226,
+      0.49335317246748384,
+      2.302314804848258
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows-+60/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 60.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      -0.03065108126561195,
+      0.15325540632805976,
+      0.0613021625312239
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.00022026667995021947,
+      0.00022026667995021947,
+      0.00022026667995021947
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.002268666597119987,
+      0.002268666597119987,
+      0.002268666597119987
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.016451467750386035,
+      0.016451467750386035,
+      0.016451467750386035
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.07170323140390472,
+      0.07170323140390472,
+      0.07170323140390472
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.23945017037059585,
+      0.23945017037059585,
+      0.23945017037059585
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.5974203081093046,
+      0.5974203081093046,
+      0.5974203081093046
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.9122207895456977,
+      0.9122207895456977,
+      0.9122207895456977
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.5556513854252128,
+      1.5556513854252128,
+      1.5556513854252128
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      2.899601522546934,
+      2.899601522546934,
+      2.899601522546934
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.656470717780725,
+      0.14588238172905,
+      0.0364705954322625
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.014414022343771059,
+      0.21621033515656587,
+      1.008981564063974
+    ]
+  },
+  {
+    "label": "scene/1.6/shadows--40/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -40.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      -0.005459325757963309,
+      0.02729662878981655,
+      0.010918651515926619
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.0005333333333332802,
+      0.0005333333333332802,
+      0.0005333333333332802
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.00533333333333338,
+      0.00533333333333338,
+      0.00533333333333338
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.045482782187231244,
+      0.045482782187231244,
+      0.045482782187231244
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.20599641367339291,
+      0.20599641367339291,
+      0.20599641367339291
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.5971330367725214,
+      0.5971330367725214,
+      0.5971330367725214
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.3007748917011805,
+      1.3007748917011805,
+      1.3007748917011805
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.8767432201075587,
+      1.8767432201075587,
+      1.8767432201075587
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      3.0358340001560564,
+      3.0358340001560564,
+      3.0358340001560564
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      5.563607234997963,
+      5.563607234997963,
+      5.563607234997963
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      11.629248947345062,
+      11.629248947345062,
+      11.629248947345062
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.630150597494881,
+      0.3622556883321958,
+      0.09056392208304895
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.03614297021200289,
+      0.5421445531800433,
+      2.530007914840202
+    ]
+  },
+  {
+    "label": "scene/1.6/whites-+100/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      -0.015440319496353952,
+      0.07720159748176976,
+      0.030880638992707904
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.0003595505617977615,
+      0.0003595505617977615,
+      0.0003595505617977615
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.003595505617977574,
+      0.003595505617977574,
+      0.003595505617977574
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.02602950724882749,
+      0.02602950724882749,
+      0.02602950724882749
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.0991084741318601,
+      0.0991084741318601,
+      0.0991084741318601
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.2666128511348904,
+      0.2666128511348904,
+      0.2666128511348904
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.559145019167083,
+      0.559145019167083,
+      0.559145019167083
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.7953643399366289,
+      0.7953643399366289,
+      0.7953643399366289
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.2665351492120513,
+      1.2665351492120513,
+      1.2665351492120513
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      2.284504640253516,
+      2.284504640253516,
+      2.284504640253516
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      4.7052930688962205,
+      4.7052930688962205,
+      4.7052930688962205
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.726821693436821,
+      0.16151593187484914,
+      0.040378982968712285
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.016167250785324386,
+      0.2425087617798658,
+      1.1317075549727071
+    ]
+  },
+  {
+    "label": "scene/1.6/whites--45/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -45.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      -0.008615746091321956,
+      0.04307873045660978,
+      0.01723149218264391
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.0007932353126946608,
+      0.0007932353126946608,
+      0.0007932353126946608
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.0077309743542685475,
+      0.0077309743542685475,
+      0.0077309743542685475
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.06948833902595532,
+      0.06948833902595532,
+      0.06948833902595532
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.2293274904198372,
+      0.2293274904198372,
+      0.2293274904198372
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.45459531268937664,
+      0.45459531268937664,
+      0.45459531268937664
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.7064312877887275,
+      0.7064312877887275,
+      0.7064312877887275
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.8557863461295638,
+      0.8557863461295638,
+      0.8557863461295638
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.112968838828215,
+      1.112968838828215,
+      1.112968838828215
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      2.710305960352411,
+      2.710305960352411,
+      2.710305960352411
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      8.711484435490014,
+      8.711484435490014,
+      8.711484435490014
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/colour-0",
+    "input_linear_rgb": [
+      0.9,
+      0.2,
+      0.05
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      1.2285634563765213,
+      0.2730141014170047,
+      0.06825352535425118
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/colour-1",
+    "input_linear_rgb": [
+      0.02,
+      0.3,
+      1.4
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      0.027877243105209747,
+      0.41815864657814616,
+      1.951407017364682
+    ]
+  },
+  {
+    "label": "scene/1.6/combined/colour-2",
+    "input_linear_rgb": [
+      -0.01,
+      0.05,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -110.0,
+      "shadows": 35.0,
+      "whites": 60.0,
+      "blacks": 0.0
+    },
+    "domain": [
+      4.800000000000001,
+      3.2
+    ],
+    "expected_linear_rgb": [
+      -0.02309117506051182,
+      0.1154558753025591,
+      0.04618235012102364
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      -0.02037761069340016,
+      -0.02037761069340016,
+      -0.02037761069340016
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      -0.015901644898781476,
+      -0.015901644898781476,
+      -0.015901644898781476
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      -0.0022361511248518732,
+      -0.0022361511248518732,
+      -0.0022361511248518732
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.037664176972957104,
+      0.037664176972957104,
+      0.037664176972957104
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.2181323096656964,
+      0.2181323096656964,
+      0.2181323096656964
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.6295498983438192,
+      0.6295498983438192,
+      0.6295498983438192
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      1.790518916792804,
+      1.790518916792804,
+      1.790518916792804
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      3.6190362220521797,
+      3.6190362220521797,
+      3.6190362220521797
+    ]
+  },
+  {
+    "label": "rendered/blacks--85/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -85.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      8.250762901340861,
+      8.250762901340861,
+      8.250762901340861
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-0",
+    "input_linear_rgb": [
+      0.0004,
+      0.0004,
+      0.0004
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.013263544469140855,
+      0.013263544469140855,
+      0.013263544469140855
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-1",
+    "input_linear_rgb": [
+      0.004,
+      0.004,
+      0.004
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.023729027498136088,
+      0.023729027498136088,
+      0.023729027498136088
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-2",
+    "input_linear_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.07243098951078436,
+      0.07243098951078436,
+      0.07243098951078436
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-3",
+    "input_linear_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.17054643343352038,
+      0.17054643343352038,
+      0.17054643343352038
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-4",
+    "input_linear_rgb": [
+      0.33,
+      0.33,
+      0.33
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.3409015126021747,
+      0.3409015126021747,
+      0.3409015126021747
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-5",
+    "input_linear_rgb": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      0.6705730085217713,
+      0.6705730085217713,
+      0.6705730085217713
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-6",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-7",
+    "input_linear_rgb": [
+      1.6,
+      1.6,
+      1.6
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      1.809391051737836,
+      1.809391051737836,
+      1.809391051737836
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-8",
+    "input_linear_rgb": [
+      2.9,
+      2.9,
+      2.9
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      4.027622120431345,
+      4.027622120431345,
+      4.027622120431345
+    ]
+  },
+  {
+    "label": "rendered/blacks-contrast/grey-9",
+    "input_linear_rgb": [
+      6.0,
+      6.0,
+      6.0
+    ],
+    "params": {
+      "contrast": -60.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 40.0
+    },
+    "domain": [
+      1.0,
+      1.0
+    ],
+    "expected_linear_rgb": [
+      10.52267842404511,
+      10.52267842404511,
+      10.52267842404511
+    ]
+  }
+]

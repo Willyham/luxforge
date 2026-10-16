@@ -250,11 +250,77 @@ pub fn tone_curve(l_encoded: f64, params: ToneParams) -> f64 {
 /// identity fast path, not a round-trip through encode/decode, so zero-valued
 /// Basic introduces no round-trip change at all, matching the host contract).
 pub fn tone_pixel(rgb_linear: [f64; 3], params: ToneParams) -> [f64; 3] {
+    tone_pixel_in(rgb_linear, params, Domain::RENDERED)
+}
+
+/// Highlights' and Whites' domain over a scene-referred input, in multiples of
+/// the scene white: the linear luminance `C_HIGHLIGHTS * W` is the curve's
+/// white. See "The operator" in `docs/design/basic-local-tone.md`.
+pub const C_HIGHLIGHTS: f64 = 3.0;
+
+/// Shadows' domain over a scene-referred input, in multiples of the scene
+/// white.
+pub const C_SHADOWS: f64 = 2.0;
+
+/// The linear luminances the tone curve's white stands for: one for Whites,
+/// Highlights, Blacks and Contrast, one for Shadows. A rendered input's domain
+/// is `1` for both, which is the frozen curve exactly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Domain {
+    pub highlights: f64,
+    pub shadows: f64,
+}
+
+impl Domain {
+    /// The rendered domain: the curve's white is linear 1.
+    pub const RENDERED: Self = Self {
+        highlights: 1.0,
+        shadows: 1.0,
+    };
+
+    /// The domain over a scene-referred input whose scene white, after every gain
+    /// before the curve, is `white` ([`exposed_white`]).
+    pub fn scene(white: f64) -> Self {
+        Self {
+            highlights: C_HIGHLIGHTS * white,
+            shadows: C_SHADOWS * white,
+        }
+    }
+}
+
+/// The tone curve on linear luminance `l` in `domain`: the encoded value of
+/// `l / domain.highlights` passes Whites/Blacks; Shadows acts on the encoded
+/// value of the same luminance over `domain.shadows`; Highlights and Contrast
+/// act over `domain.highlights` again; the result is decoded and scaled back.
+/// Where both domains are equal, no stage leaves the encoded domain, so the
+/// rendered domain is [`tone_curve`] exactly.
+pub fn tone_luminance_in(l: f64, params: ToneParams, domain: Domain) -> f64 {
+    let (h, s) = (domain.highlights, domain.shadows);
+    let y = whites_blacks_stage(encode_srgb_extended(l / h), params.whites, params.blacks);
+    let y = if s == h {
+        shadows_stage(y, params.shadows)
+    } else {
+        let over_s = encode_srgb_extended(h * decode_srgb_extended(y) / s);
+        let shadowed = shadows_stage(over_s, params.shadows);
+        encode_srgb_extended(s * decode_srgb_extended(shadowed) / h)
+    };
+    let y = highlights_stage(y, params.highlights);
+    h * decode_srgb_extended(contrast_stage(y, params.contrast))
+}
+
+/// [`tone_pixel`] in `domain`: the luminance through [`tone_luminance_in`], RGB
+/// rebuilt by the luminance ratio with the near-black rule. All-neutral
+/// parameters return the input unchanged in every domain.
+pub fn tone_pixel_in(rgb_linear: [f64; 3], params: ToneParams, domain: Domain) -> [f64; 3] {
     if params.is_neutral() {
         return rgb_linear;
     }
     let l_in = luminance(rgb_linear);
-    let l_out = decode_srgb_extended(tone_curve(encode_srgb_extended(l_in), params));
+    let l_out = if domain == Domain::RENDERED {
+        decode_srgb_extended(tone_curve(encode_srgb_extended(l_in), params))
+    } else {
+        tone_luminance_in(l_in, params, domain)
+    };
     if l_in.abs() < EPSILON_L {
         let delta = l_out - l_in;
         [
@@ -270,6 +336,96 @@ pub fn tone_pixel(rgb_linear: [f64; 3], params: ToneParams) -> [f64; 3] {
             rgb_linear[2] * ratio,
         ]
     }
+}
+
+/// The scene part of Basic's tone over a scene-referred input
+/// (`docs/design/basic-local-tone.md`, "The operator"): Whites, Shadows and
+/// Highlights in `domain`, with Blacks and Contrast left to [`rendered_tone`].
+pub fn scene_tone(rgb_linear: [f64; 3], params: ToneParams, domain: Domain) -> [f64; 3] {
+    tone_pixel_in(
+        rgb_linear,
+        ToneParams {
+            contrast: 0.0,
+            blacks: 0.0,
+            ..params
+        },
+        domain,
+    )
+}
+
+/// The rendered part of Basic's tone: Blacks, then Contrast, in the rendered
+/// domain, after the Look on a RAW photograph and directly after the scene part
+/// on a rendered one.
+pub fn rendered_tone(rgb_linear: [f64; 3], params: ToneParams) -> [f64; 3] {
+    tone_pixel(
+        rgb_linear,
+        ToneParams {
+            highlights: 0.0,
+            shadows: 0.0,
+            whites: 0.0,
+            ..params
+        },
+    )
+}
+
+/// The largest number of block means the scene white is read from: 0.25 MP.
+pub const SCENE_WHITE_SAMPLES: usize = 1 << 18;
+
+/// The quantile of the block means' luminance that is the scene white.
+pub const SCENE_WHITE_QUANTILE: f64 = 0.999;
+
+/// The least scene white: a development darker than this is read as this, so
+/// the domain never collapses.
+pub const SCENE_WHITE_FLOOR: f64 = 1.0 / 256.0;
+
+/// The side of the square blocks the scene white averages: the least `k` whose
+/// grid of `ceil(width / k)` by `ceil(height / k)` blocks holds at most
+/// [`SCENE_WHITE_SAMPLES`].
+pub fn scene_white_block(width: usize, height: usize) -> usize {
+    let mut k = 1;
+    while width.div_ceil(k) * height.div_ceil(k) > SCENE_WHITE_SAMPLES {
+        k += 1;
+    }
+    k
+}
+
+/// A development's scene white (`docs/design/basic-local-tone.md`): its linear
+/// RGB averaged over [`scene_white_block`] blocks (a block at the right or bottom
+/// edge over the pixels it holds), then the luminance of the block means at the
+/// [`SCENE_WHITE_QUANTILE`] order statistic, index `floor(q * (n - 1))` of the
+/// ascending means, no less than [`SCENE_WHITE_FLOOR`]. Sums run in `f64` in row
+/// order within each block.
+pub fn scene_white(width: usize, height: usize, rgb_linear: &[[f64; 3]]) -> f64 {
+    assert_eq!(rgb_linear.len(), width * height, "one triple per pixel");
+    if width == 0 || height == 0 {
+        return SCENE_WHITE_FLOOR;
+    }
+    let k = scene_white_block(width, height);
+    let (columns, rows) = (width.div_ceil(k), height.div_ceil(k));
+    let mut means = Vec::with_capacity(columns * rows);
+    for by in 0..rows {
+        for bx in 0..columns {
+            let (x0, y0) = (bx * k, by * k);
+            let (x1, y1) = ((x0 + k).min(width), (y0 + k).min(height));
+            let mut sum = 0.0;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    sum += luminance(rgb_linear[y * width + x]);
+                }
+            }
+            means.push(sum / ((x1 - x0) * (y1 - y0)) as f64);
+        }
+    }
+    means.sort_by(f64::total_cmp);
+    let index = (SCENE_WHITE_QUANTILE * (means.len() - 1) as f64).floor() as usize;
+    means[index].max(SCENE_WHITE_FLOOR)
+}
+
+/// The scene white after a per-channel gain of `stops` (Basic's white balance and
+/// Exposure, plain gains on a scene-referred input): `white` times the gain a
+/// neutral grey's luminance takes.
+pub fn exposed_white(white: f64, stops: [f64; 3]) -> f64 {
+    white * (LUMA_R * stops[0].exp2() + LUMA_G * stops[1].exp2() + LUMA_B * stops[2].exp2())
 }
 
 #[cfg(test)]
@@ -354,5 +510,132 @@ mod internal_tests {
             assert_eq!(highlights_stage(0.0, amount), 0.0, "highlights={amount}");
             assert_eq!(highlights_stage(1.0, amount), 1.0, "highlights={amount}");
         }
+    }
+
+    #[test]
+    fn the_rendered_domain_is_the_frozen_curve_and_an_equal_domain_is_a_scaled_one() {
+        let params = ToneParams {
+            contrast: 30.0,
+            highlights: -60.0,
+            shadows: 40.0,
+            whites: 20.0,
+            blacks: -10.0,
+        };
+        for i in 0..=40 {
+            let l = f64::from(i) / 20.0;
+            let frozen = decode_srgb_extended(tone_curve(encode_srgb_extended(l), params));
+            assert_eq!(tone_luminance_in(l, params, Domain::RENDERED), frozen);
+            // Both domains at 4: the curve of l / 4, scaled back.
+            let scaled = Domain {
+                highlights: 4.0,
+                shadows: 4.0,
+            };
+            let expected =
+                4.0 * decode_srgb_extended(tone_curve(encode_srgb_extended(l / 4.0), params));
+            assert!((tone_luminance_in(l, params, scaled) - expected).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn shadows_reads_its_own_domain_and_the_scene_part_leaves_its_whites_end_to_highlights() {
+        // Shadows alone in the scene domain is Shadows on l / (C_SHADOWS * W).
+        let white = 0.4;
+        let domain = Domain::scene(white);
+        let shadows = ToneParams {
+            shadows: 80.0,
+            ..ToneParams::NEUTRAL
+        };
+        for l in [0.001, 0.01, 0.05, 0.2, 0.5, 0.79, 1.5] {
+            let s = C_SHADOWS * white;
+            let expected =
+                s * decode_srgb_extended(shadows_stage(encode_srgb_extended(l / s), 80.0));
+            let actual = tone_luminance_in(l, shadows, domain);
+            assert!(
+                (actual - expected).abs() < 1e-12 * (1.0 + expected.abs()),
+                "{l}: {actual} {expected}"
+            );
+        }
+        // Past each stage's white, Shadows and Highlights pass the luminance through.
+        let both = ToneParams {
+            highlights: -100.0,
+            shadows: 100.0,
+            ..ToneParams::NEUTRAL
+        };
+        let past = 1.01 * C_HIGHLIGHTS * white;
+        assert!((tone_luminance_in(past, both, domain) - past).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_split_parts_take_only_their_own_fields() {
+        let params = ToneParams {
+            contrast: 50.0,
+            highlights: -50.0,
+            shadows: 30.0,
+            whites: 25.0,
+            blacks: 20.0,
+        };
+        let rgb = [0.3, 0.2, 0.1];
+        let domain = Domain::scene(0.8);
+        assert_eq!(
+            scene_tone(rgb, params, domain),
+            tone_pixel_in(
+                rgb,
+                ToneParams {
+                    contrast: 0.0,
+                    blacks: 0.0,
+                    ..params
+                },
+                domain
+            )
+        );
+        assert_eq!(
+            rendered_tone(rgb, params),
+            tone_pixel(
+                rgb,
+                ToneParams {
+                    contrast: 50.0,
+                    blacks: 20.0,
+                    ..ToneParams::NEUTRAL
+                }
+            )
+        );
+        // On a rendered input, the two parts compose to the frozen curve when Blacks is neutral.
+        let no_blacks = ToneParams {
+            blacks: 0.0,
+            ..params
+        };
+        let split = rendered_tone(scene_tone(rgb, no_blacks, Domain::RENDERED), no_blacks);
+        let whole = tone_pixel(rgb, no_blacks);
+        for c in 0..3 {
+            assert!((split[c] - whole[c]).abs() < 1e-12, "{split:?} {whole:?}");
+        }
+    }
+
+    #[test]
+    fn the_scene_white_is_the_block_means_quantile() {
+        // 1000 x 1 pixels: block 1, so the white is the luminance at index floor(0.999 * 999) = 998.
+        let rgb: Vec<[f64; 3]> = (0..1000).map(|i| [f64::from(i) / 1000.0; 3]).collect();
+        assert_eq!(scene_white_block(1000, 1), 1);
+        assert!((scene_white(1000, 1, &rgb) - 0.998).abs() < 1e-12);
+        // A frame past the sample budget is averaged in blocks, the edge blocks over what they hold.
+        assert_eq!(scene_white_block(1024, 256), 1);
+        assert_eq!(scene_white_block(1025, 256), 2);
+        assert_eq!(scene_white_block(6000, 4000), 10);
+        let (w, h) = (1025, 256);
+        let rgb: Vec<[f64; 3]> = (0..w * h)
+            .map(|i| if i % w == w - 1 { [8.0; 3] } else { [0.25; 3] })
+            .collect();
+        // The last column of blocks holds only the bright column: 128 of 65_664 means are 8.
+        assert_eq!(scene_white(w, h, &rgb), 8.0);
+        // A dark frame takes the floor.
+        assert_eq!(scene_white(4, 4, &[[0.0; 3]; 16]), SCENE_WHITE_FLOOR);
+    }
+
+    #[test]
+    fn exposure_scales_the_scene_white_exactly() {
+        assert_eq!(exposed_white(0.5, [1.0; 3]), 1.0);
+        assert_eq!(exposed_white(0.5, [0.0; 3]), 0.5);
+        let gains = LUMA_R * 2.0 + LUMA_G + LUMA_B * 0.5;
+        assert!((exposed_white(1.0, [1.0, 0.0, -1.0]) - gains).abs() < 1e-15);
     }
 }

@@ -157,6 +157,15 @@ impl Scene {
     }
 }
 
+impl Scene {
+    /// The gain a neutral grey's luminance takes from this unit over a scene-referred input: each
+    /// channel's plain gain weighted by its share of luminance. A scene white scales by it exactly.
+    pub(super) fn grey_gain(&self) -> f64 {
+        let [r, g, b] = self.stops.map(f64::exp2);
+        crate::colour::luma::rec709_f64([r, g, b])
+    }
+}
+
 impl PointwiseColor for Scene {
     fn identity(&self) -> crate::OperationIdentity {
         crate::OperationIdentity::new(

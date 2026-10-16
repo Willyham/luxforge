@@ -418,7 +418,9 @@ impl<'a> Planned<'a> {
                         crate::mask_field::MaskSampling::ThinFeature,
                     )
                 } else {
-                    registry.compile(width, height, &before)
+                    // The prefix as the whole stack compiles it, so a rendered tail the stack
+                    // places past the layer is not drawn before it.
+                    registry.compile_prefix(width, height, recipe, layer)
                 }
                 .map_err(refused)?;
                 (Cow::Owned(compiled), Some(before))

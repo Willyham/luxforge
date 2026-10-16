@@ -69,8 +69,9 @@ pub(super) fn query(context: &StageContext<'_>) -> Result<Value, Error> {
         || context.insertion_index_for(BASIC_EFFECT),
         |(index, _)| index,
     );
-    let stage = CompileStage::exact(context.stage_before(index)?);
     let input = context.questions.grid_before(index, BASIC_EFFECT)?;
+    let stage =
+        CompileStage::exact(context.stage_before(index)?).with_scene_white(input.scene_white);
     // Each evaluation retains one f64 luminance per point and one RGB chunk per pool thread. The
     // grid is accounted by its read and retained under the separate 32 MiB sample cap.
     let _scratch = input

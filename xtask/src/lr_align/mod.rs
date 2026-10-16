@@ -32,6 +32,7 @@ mod settings;
 mod targets;
 #[cfg(test)]
 mod tests;
+mod tone_study;
 
 use crate::*;
 use luxforge_core::ModuleRegistry;
@@ -41,7 +42,7 @@ use serde_json::Map;
 use settings::{Field, Fields, Kind};
 
 const FORMAT: u32 = 1;
-const USAGE: &str = "lr-align generate --round 1|2|3 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...] | lr-align fold --measured DIR [--measured DIR ...] --output NEW";
+const USAGE: &str = "lr-align generate --round 1|2|3 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...] | lr-align fold --measured DIR [--measured DIR ...] --output NEW | lr-align tone-study --charts ROUND1_DIR --photographs ROUND1B_DIR --output NEW [--reduce N] [--candidates ID,...] [--fields ID,...|none] [--pairs ROUND2_DIR] [--cache DIR]";
 /// The folder inside the round that the owner imports, and the one the exports go to.
 const LIGHTROOM: &str = "lightroom";
 const EXPORTS: &str = "exports";
@@ -56,6 +57,9 @@ pub fn run(root: &Path, mut a: Args) -> Result {
     }
     if op == "fold" {
         return fold::run(root, a);
+    }
+    if op == "tone-study" {
+        return tone_study::run(root, a);
     }
     ensure(op == "generate", USAGE)?;
     let round: u32 = a

@@ -120,6 +120,9 @@ pub struct GridRead {
     pub clipping: ClipDetection,
     pub context: RenderContext,
     pub cancel: Cancel,
+    /// The scene white of the development the grid was read from ([`crate::Recipe::scene_white`]),
+    /// which a model compiled over the grid's stage takes; `None` for any other source.
+    pub scene_white: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -297,6 +300,7 @@ pub fn read(
             clipping,
             context: evaluation.context().clone(),
             cancel: cancel.clone(),
+            scene_white: evaluation.source().scene_white(),
         });
     }
     let count = grid[0] as usize * grid[1] as usize;
@@ -361,6 +365,7 @@ pub fn read(
         clipping,
         context: evaluation.context().clone(),
         cancel: cancel.clone(),
+        scene_white: evaluation.source().scene_white(),
     })
 }
 

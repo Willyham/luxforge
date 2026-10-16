@@ -164,24 +164,18 @@ pub(crate) fn grid_input(
         )));
     }
     let (width, height) = source.dimensions();
-    let compile = |layers: &[crate::Layer]| {
-        registry.compile_layers(
-            width,
-            height,
-            layers,
-            &recipe.masks,
-            &recipe.strokes,
-            &recipe.artifacts,
-        )
-    };
-    let full = compile(&recipe.layers)?;
-    let suffix = compile(&prefix[split..])?;
+    // Every run is compiled as the whole stack compiles it, with the development's scene white.
+    let recipe = &*recipe.with_scene_white(source.scene_white());
+    let compile =
+        |from: usize, cut: usize| registry.compile_range(width, height, recipe, from, cut);
+    let full = compile(0, recipe.layers.len())?;
+    let suffix = compile(split, layer)?;
     if suffix.segments.len() != 1 || suffix.segments[0].entry.is_some() {
         return Err(Error::resource_limit(
             "a spatial layer before the masked one means reading the pixel it receives evaluates a spatial tile per grid cell",
         ));
     }
-    let restored = compile(&prefix[..split])?;
+    let restored = compile(0, split)?;
     let wide = full.prefix_spatial_input_wide(&restored);
     if !restored.evaluates_spatial() {
         return Ok(None);

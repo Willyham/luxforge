@@ -118,7 +118,8 @@ fn auto_tone_measure_photo_sized_inputs() -> Result<(), &'static str> {
                         CompileStage::exact(Stage {
                             width: 32,
                             height: 32,
-                        }),
+                        })
+                        .with_scene_white(sampled.scene_white),
                     )
                     .unwrap();
                     let report = model
