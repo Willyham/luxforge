@@ -3890,7 +3890,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 3,
+            "format": 4,
             "id": "luxforge.basic.adjust",
             "maskable": true,
             "order": 0,

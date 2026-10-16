@@ -97,7 +97,8 @@ impl ForwardModel<'_> {
         self.search
     }
 
-    /// The units a candidate is evaluated through, in order: Basic at `values`, then the Looks.
+    /// The units a candidate is evaluated through, in order: Basic at `values`, then the Looks, then
+    /// Basic's rendered tail.
     pub fn compile(&self, values: AutoToneValues) -> Result<Vec<ColorOperation>, Error> {
         let (module, _) = self
             .registry
@@ -114,9 +115,13 @@ impl ForwardModel<'_> {
         else {
             return Err(Error::internal("Basic did not compile to colour"));
         };
-        let mut units = Vec::with_capacity(1 + self.downstream.len());
+        // Basic's rendered tail follows the Looks, as the registry places it on a scene-referred
+        // stack (`docs/design/basic-local-tone.md`); without a Look it follows Basic directly.
+        let (basic, tail) = basic.split_tail();
+        let mut units = Vec::with_capacity(2 + self.downstream.len());
         units.push(basic);
         units.extend(self.downstream.iter().cloned());
+        units.extend(tail);
         Ok(units)
     }
 

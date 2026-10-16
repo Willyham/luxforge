@@ -572,7 +572,8 @@ impl RawPrepared {
                 .with_view(
                     [crop.x, crop.y, crop.width, crop.height],
                     metadata.exif_orientation,
-                )?;
+                )?
+                .measured_scene_white();
         Ok(Self {
             sensor,
             linear: Some(linear),

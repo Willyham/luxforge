@@ -1,6 +1,6 @@
 // The Basic module's Tone unit on the GPU, beside its CPU unit in `tone.rs`: the frozen global
 // luminance curve, Whites/Blacks, then Shadows, then Highlights, then Contrast, on the pixel's
-// encoded Rec. 709 luminance, with RGB reconstructed by the luminance ratio. The same f32
+// encoded Rec. 709 luminance in the unit's domain, with RGB reconstructed by the luminance ratio. The same f32
 // arithmetic in the same order as `Tone::apply_row`; nothing is clamped but the blend weight's own
 // input.
 //
@@ -15,6 +15,10 @@
 //   6  Highlights' e^-k
 //   7  the black point after the crossing-prevention clamp
 //   8  1 / (white point - black point)
+//   9  the domain's white, the linear luminance the curve's white stands for
+//  10  1 / the domain's white
+//  11  the ratio carrying a luminance into Shadows' domain, 1 where the domains are equal
+//  12  the ratio carrying it back
 // Each is the f32 the CPU unit holds, computed once in f64 and narrowed exactly as its own.
 
 const lf_basic_tone_near_black: f32 = 1e-6;
@@ -68,9 +72,16 @@ fn lf_basic_tone_tanhc(value: f32) -> f32 {
 fn lf_basic_tone_curve(input: f32, words: u32) -> f32 {
     // Whites and Blacks.
     var x = (input - lf_f32(words + 7u)) * lf_f32(words + 8u);
-    // Shadows.
+    // Shadows, in its own domain where that differs.
+    let to_shadows = lf_f32(words + 11u);
+    if to_shadows != 1.0 {
+        x = lf_basic_tone_encode(lf_basic_tone_decode(x) * to_shadows);
+    }
     let shadows = lf_basic_tone_blend_weight(x);
     x = shadows * lf_basic_tone_odds_bias(x, lf_f32(words + 5u)) + (1.0 - shadows) * x;
+    if to_shadows != 1.0 {
+        x = lf_basic_tone_encode(lf_basic_tone_decode(x) * lf_f32(words + 12u));
+    }
     // Highlights, mirrored about the midpoint.
     let mirrored = 1.0 - x;
     let highlights = lf_basic_tone_blend_weight(mirrored);
@@ -109,7 +120,8 @@ fn lf_basic_tone_curve(input: f32, words: u32) -> f32 {
 
 fn lf_basic_tone(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {
     let l_in = 0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z;
-    let l_out = lf_basic_tone_decode(lf_basic_tone_curve(lf_basic_tone_encode(l_in), words));
+    let l_out = lf_f32(words + 9u)
+        * lf_basic_tone_decode(lf_basic_tone_curve(lf_basic_tone_encode(l_in * lf_f32(words + 10u)), words));
     if abs(l_in) < lf_basic_tone_near_black {
         return rgb + vec3<f32>(l_out - l_in);
     }
