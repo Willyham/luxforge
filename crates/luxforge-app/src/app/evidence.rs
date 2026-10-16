@@ -2776,14 +2776,13 @@ impl Editor {
                     },
                 )
             }
-            // The host's own pick, entered and left the way the panel's button does: one
-            // `workspace.set` and nothing committed, so the frame after it shows the mode.
+            // The row's Pick, arming the eyedropper or putting it down as the button does. It
+            // stays in Mask mode and commits nothing, so the frame is the next redraw rather than a
+            // preview that will never arrive.
             MaskStep::Pick => {
                 if self.mask_panel.selected_component.is_none() {
                     return self.fail_step("a pick step needs a selected component to fill");
                 }
-                // Entering or leaving a pick mode commits nothing and changes no pixel, so the
-                // frame is the next redraw rather than a preview that will never arrive.
                 (Message::Mask(MaskMessage::Pick), Expect::Redraw)
             }
             // With only a brush in hand, Done and Cancel put it down: nothing is sent, so the frame
@@ -4239,13 +4238,52 @@ impl Editor {
     }
 
     /// One click on the photograph, at a pixel of the raster on screen, exactly as the canvas
-    /// publishes it. What the click means is the active canvas mode's own declared pick: a point
-    /// pick fills that mode's coordinate fields, or commits them when it declares `commit`, and a
-    /// sample-apply pick runs its module's query and submits the answer once. Nothing here names
-    /// any of them.
+    /// publishes it. With the range picker armed it is that picker's click; otherwise what it means
+    /// is the active canvas mode's own declared pick: a point pick fills that mode's coordinate
+    /// fields, or commits them when it declares `commit`, and a sample-apply pick runs its module's
+    /// query and submits the answer once. Nothing here names any of them.
     fn pick_step(&mut self, step: PickStep) -> Task<Message> {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
+        }
+        // In Mask mode with the eyedropper armed, the pick is the range picker's pointer: a press
+        // and a release at the pixel's centre is a click, with Shift read at the release, and a
+        // press, a move and a release at `to` is a drag over the rectangle between them. The
+        // canvas measures its click threshold in points, so a script's pixels stand for points
+        // here, and the step's own validation keeps a drag longer than the threshold. The pick
+        // waits for the map's answer and its turn like a person's.
+        if self.mask_panel.picker.is_some() {
+            use crate::app::message::mask::PickPointer;
+            self.await_step(Settle::Pick);
+            let centre = |x: u32, y: u32| (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let point = |x: u32, y: u32| (x as f32, y as f32);
+            let at = centre(step.x, step.y);
+            let mut tasks = vec![self.update(Message::Mask(MaskMessage::PickPointer(
+                PickPointer::Press {
+                    view: point(step.x, step.y),
+                    at,
+                },
+            )))];
+            let [x, y] = step.to.unwrap_or([step.x, step.y]);
+            if step.to.is_some() {
+                tasks.push(self.update(Message::Mask(MaskMessage::PickPointer(
+                    PickPointer::Move {
+                        view: point(x, y),
+                        at: centre(x, y),
+                    },
+                ))));
+            }
+            tasks.push(self.update(Message::Mask(MaskMessage::PickPointer(
+                PickPointer::Release {
+                    view: point(x, y),
+                    at: centre(x, y),
+                    shift: step.shift,
+                },
+            ))));
+            return Task::batch(tasks);
+        }
+        if step.shift || step.to.is_some() {
+            return self.fail_step("pick shift and to belong to the armed range eyedropper");
         }
         let mode = self.session.workspace.mode.clone();
         if crate::state::tools::canvas_pick(&self.modules, &mode).is_none() {
@@ -7092,6 +7130,29 @@ mod tests {
             editor.status.text
         );
         crate::app::testing::finish(editor, catalog);
+    }
+
+    /// Shift and a drag belong to the armed range eyedropper: anywhere else they are refused by
+    /// name, rather than read as the plain click of whatever mode is on screen.
+    #[test]
+    fn a_scripted_shift_or_drag_pick_is_refused_without_an_armed_eyedropper() {
+        for script in [
+            r#"[{"pick":{"x":7,"y":9,"shift":true}}]"#,
+            r#"[{"pick":{"x":7,"y":9,"to":[70,90]}}]"#,
+        ] {
+            let (mut editor, catalog, _, _) = scripted(script);
+            let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(
+                crate::app::testing::descriptors(),
+            ))));
+            let _ = editor.next_step();
+            assert!(evidence(&editor).had_errors, "{script}");
+            assert!(
+                editor.status.text.contains("armed range eyedropper"),
+                "{}",
+                editor.status.text
+            );
+            crate::app::testing::finish(editor, catalog);
+        }
     }
 
     #[test]

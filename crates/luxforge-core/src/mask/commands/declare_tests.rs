@@ -61,6 +61,9 @@ fn the_declared_family_is_the_designs_method_table() {
             // And the sample methods of the one kind that holds a list of picked colours.
             "mask.add-colour-range-sample",
             "mask.delete-colour-range-sample",
+            // And one pick method per kind whose values a click or a drag sets.
+            "mask.pick-luminance-range",
+            "mask.pick-colour-range",
         ]
     );
     assert!(
@@ -75,15 +78,15 @@ fn the_declared_family_is_the_designs_method_table() {
             .all(|command| !crate::valid_name(command.method)),
         "a mask command identity can never be a module action identity"
     );
-    // `mask.list` and `mask.sample-input` read, so they are the host descriptor's queries and
+    // `mask.list` and the two input reads read, so they are the host descriptor's queries and
     // never one of its actions; every command is an ordinary mutation.
     let reading: Vec<&str> = descriptor()
         .queries
         .iter()
         .map(|query| query.id.as_str())
         .collect();
-    assert_eq!(reading, [LIST, SAMPLE_INPUT]);
-    assert!(find(LIST).is_none() && find(SAMPLE_INPUT).is_none());
+    assert_eq!(reading, [LIST, SAMPLE_INPUT, SAMPLE_INPUT_AREA]);
+    assert!(reading.iter().all(|query| find(query).is_none()));
     // The host descriptor lists exactly the command table, in its order, and its controls.
     assert_eq!(descriptor().id, HOST_MODULE);
     assert_eq!(
@@ -201,6 +204,115 @@ fn registering_a_sampling_kind_is_enough_to_make_its_swatches_editable() {
 /// normalized-position descriptor and listed only `linear`, so the radial gradient was evaluable
 /// and not creatable. It is asserted over the table rather than over a list of names, so a kind
 /// added later is covered by this test on the day it is registered.
+/// Registering a kind with a pick rule is enough to make it pickable: `mask.pick-<kind>` is
+/// generated, listed by `schema.list` with its click-or-drag parameters, never gated by the
+/// experiment that gates creating the kind, and named by exactly one host `area-pick` canvas
+/// declaration. The host declares no `sample-apply` of its own any more, and a request carries no
+/// colour: `add` is declared only by a kind that holds samples.
+#[test]
+fn registering_a_picking_kind_is_enough_to_make_it_pickable() {
+    let schemas = crate::schemas(&registry());
+    let kinds: Vec<&str> = crate::mask::picking_kinds().collect();
+    assert_eq!(kinds.len(), 2, "both range kinds are picked");
+    assert_eq!(canvas().len(), kinds.len());
+    for (kind, interaction) in kinds.iter().zip(canvas()) {
+        let command = pick(kind).expect("its pick method is generated");
+        assert_eq!(command.method, format!("mask.pick-{kind}"));
+        assert_eq!(
+            find(command.method).map(|found| found.method),
+            Some(command.method)
+        );
+        assert_eq!(
+            experiment(command.method),
+            None,
+            "a pick edits what exists, so no experiment gates it"
+        );
+        assert!(crate::mask::component_kind_experiment(kind).is_some());
+        let crate::CanvasInteraction::AreaPick { action, title } = interaction else {
+            panic!("a mask's canvas pick is an area pick: {interaction:?}");
+        };
+        assert_eq!(action, command.method);
+        assert_eq!(title, &format!("Pick {}", spoken(kind)));
+        assert!(interaction.shortcut().is_none() && interaction.icon().is_none());
+        assert_eq!(canvas_pick(action), Some(interaction));
+
+        let schema = &schemas["methods"][command.method];
+        assert_eq!(schema["mutates"], json!(true));
+        assert_eq!(
+            schema["required"],
+            json!(["asset_id", "mutation", "mask", "component", "x", "y"])
+        );
+        let optional: Vec<&str> = schema["optional"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let samples = crate::mask::component_sample_limit(kind).is_some();
+        let mut expected = vec!["height", "width"];
+        if samples {
+            expected.insert(0, "add");
+        }
+        assert_eq!(optional, expected, "{kind}");
+        for colour in ["r", "g", "b"] {
+            assert!(
+                command.action.parameter(colour).is_none(),
+                "no colour is sent"
+            );
+        }
+    }
+    assert!(
+        canvas()
+            .iter()
+            .all(|pick| !matches!(pick, crate::CanvasInteraction::SampleApply { .. })),
+        "no host sample-apply remains"
+    );
+    assert!(canvas_pick(LIST).is_none() && canvas_pick(SAMPLE_INPUT).is_none());
+    // The area read declares a rectangle in normalized content coordinates, all required.
+    let area = &schemas["methods"][SAMPLE_INPUT_AREA];
+    assert_eq!(area["mutates"], json!(false));
+    assert_eq!(
+        area["required"],
+        json!(["asset_id", "mask", "x", "y", "width", "height"])
+    );
+    // A kind with no pick rule generates none.
+    for kind in crate::mask::component_kinds() {
+        if !kinds.contains(&kind) {
+            assert!(pick(kind).is_none(), "{kind}");
+        }
+    }
+}
+
+/// A module may not declare the host's area pick; Basic keeps its own sample-apply picker.
+#[test]
+fn only_the_host_declares_an_area_pick() {
+    let module = ModuleDescriptor {
+        id: "proof.area".to_owned(),
+        title: "Area".to_owned(),
+        canvas: Some(crate::CanvasInteraction::AreaPick {
+            action: "pick".to_owned(),
+            title: "Pick".to_owned(),
+        }),
+        ..ModuleDescriptor::default()
+    };
+    assert_eq!(
+        module.validate().expect_err("a module's area pick").detail,
+        "module proof.area declares an area-pick canvas, which only the host declares for a mask"
+    );
+    let builtin = registry();
+    let basic = builtin
+        .descriptors()
+        .into_iter()
+        .find(|descriptor| {
+            matches!(
+                descriptor.canvas,
+                Some(crate::CanvasInteraction::SampleApply { .. })
+            )
+        })
+        .expect("a module keeps its sample-apply picker");
+    assert!(basic.validate().is_ok());
+}
+
 #[test]
 fn registering_a_kind_is_enough_to_make_it_creatable_addable_and_patchable() {
     let schemas = crate::schemas(&registry());

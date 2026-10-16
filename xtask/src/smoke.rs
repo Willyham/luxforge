@@ -950,7 +950,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: mask_range::SCENARIO,
-        about: "Luminance and colour range selections typed, picked and combined, then their limits",
+        about: "Luminance and colour range selections created with the eyedropper armed, picked by click, Shift-click and drag, typed and combined, then their limits",
         launches: &[
             LaunchSpec {
                 name: "launch1",
@@ -1139,7 +1139,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "gallery",
-        about: "All 136 widget gallery states across twenty-one pages",
+        about: "All 137 widget gallery states across twenty-one pages",
         launches: &[LaunchSpec {
             plan: gallery::plan,
             developer: true,

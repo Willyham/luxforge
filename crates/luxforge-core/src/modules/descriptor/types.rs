@@ -1621,9 +1621,10 @@ impl Control {
     }
 }
 
-/// How a module lets the canvas drive its action. A point pick commits only when it declares
-/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply; a
-/// brush mask commits one painted path per gesture.
+/// How a module — or the host, for a mask — lets the canvas drive its action. A point pick commits
+/// only when it declares `commit`; a sample-apply pick submits its query's answer once; the host's
+/// area pick sends one command per click or drag; a crop frame commits on Apply; a brush mask commits
+/// one painted path per gesture.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CanvasInteraction {
@@ -1653,22 +1654,16 @@ pub enum CanvasInteraction {
     /// whose name is a parameter of `action`. A refused query commits nothing and its reason is shown
     /// instead.
     ///
-    /// **The pair may be a module's or the host's, and never one of each.** A module declaring this
-    /// names a query and an action it declares itself, which is what
-    /// [`ModuleDescriptor::validate`] checks. The **host** declares its own through
-    /// [`crate::mask::commands::canvas`], where both names are `mask.*` methods of the one command
-    /// family — a mask is a host object and no module declares one, so a pick that fills part of a
-    /// mask could not be expressed at all until this variant admitted a host target (proposal P17 of
-    /// `docs/design/range-study.md`). Everything else about the interaction is unchanged, which is the
-    /// point: one pick mechanism, one field-matching rule, one refusal path, and a client that knows
-    /// neither a module nor a mask by name.
+    /// A module declaring this names a query and an action it declares itself, which is what
+    /// [`ModuleDescriptor::validate`] checks; Basic's neutral picker is one. The host's own pick into
+    /// a mask is [`Self::AreaPick`], which reads its pixels inside the command rather than through a
+    /// query the client runs first.
     ///
-    /// **Why a query at all, rather than a colour the client read.** The query is the only way the
-    /// picked *value* reaches the action. A mask's value-based parts are evaluated on the input the
-    /// masked operation receives, while the frame a client can see holds that operation's output, so a
-    /// colour decoded from the picture would be a different colour and the selection would not be the
-    /// one the person picked. The host answers with the pixel it already computes and the client
-    /// carries numbers it never interprets.
+    /// **Why a query at all, rather than a value the client read.** The query is the only way the
+    /// picked *value* reaches the action: the frame a client can see is the stack's output, not the
+    /// stage the module samples, so a colour decoded from the picture would be a different colour.
+    /// The host answers with the pixel it already computes and the client carries numbers it never
+    /// interprets.
     SampleApply {
         query: String,
         x: String,
@@ -1681,6 +1676,22 @@ pub enum CanvasInteraction {
         /// The mode's icon in a client's mode strip; see [`CanvasInteraction::icon`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<String>,
+    },
+    /// **The host's own pick for a mask's value-based components**: a click or a drag on the
+    /// photograph sends `action`, a `mask.pick-<kind>` command, with the content coordinates of the
+    /// click or the content-space bounding box of the drag, addressed to the mask and component the
+    /// panel has open. The host reads the pixels at the mask's input site and derives the
+    /// component's values itself, so the client carries no colour and runs no query first.
+    ///
+    /// Only the host declares one, through [`crate::mask::commands::canvas`], one per picked
+    /// component kind; [`ModuleDescriptor::validate`] refuses it on a module, which keeps
+    /// `sample-apply` (Basic's neutral picker). It is not a canvas mode: a client arms it as a
+    /// sub-state of its mask editing, so the open mask, its overlay and the adjustments' target stay
+    /// as they are while picking (`docs/design/range-masks.md`).
+    AreaPick {
+        action: String,
+        /// What the client's pick control and hint call the pick.
+        title: String,
     },
     /// The host's crop-frame editor edits a transient draft of the named number parameters of
     /// `action` and derives its ratio presets from the `aspect` enum of `fit_action`. Only Apply
@@ -1774,18 +1785,21 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { title, .. }
             | Self::SampleApply { title, .. }
+            | Self::AreaPick { title, .. }
             | Self::CropFrame { title, .. }
             | Self::BrushMask { title, .. } => title,
         }
     }
 
-    /// The letter that selects this mode, when the module declares one.
+    /// The letter that selects this mode, when the module declares one. An area pick is armed from
+    /// its panel and has none.
     pub fn shortcut(&self) -> Option<&str> {
         match self {
             Self::PointPick { shortcut, .. }
             | Self::SampleApply { shortcut, .. }
             | Self::CropFrame { shortcut, .. }
             | Self::BrushMask { shortcut, .. } => shortcut.as_deref(),
+            Self::AreaPick { .. } => None,
         }
     }
 
@@ -1798,6 +1812,7 @@ impl CanvasInteraction {
             | Self::SampleApply { icon, .. }
             | Self::CropFrame { icon, .. }
             | Self::BrushMask { icon, .. } => icon.as_deref(),
+            Self::AreaPick { .. } => None,
         }
     }
 }

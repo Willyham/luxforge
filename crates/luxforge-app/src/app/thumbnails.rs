@@ -579,31 +579,27 @@ mod tests {
         assert_eq!(cache.len(), 1);
     }
 
-    /// A mask that reads pixels has a thumbnail when a layer bound to it gives it an operation's
-    /// input, and none — with the host's reason — when nothing is bound to it.
+    /// A mask that reads pixels has a thumbnail whether or not a layer is bound to it: an unbound
+    /// mask reads at the input site a first Basic adjustment would take, so no mask is left without
+    /// one for want of an adjustment.
     #[test]
-    fn a_value_based_mask_without_an_input_has_no_thumbnail() {
+    fn a_value_based_mask_without_a_bound_layer_has_a_thumbnail() {
         let shadows = range();
         let never = luxforge_core::Cancel::never();
-        let unbound = thumbnails(
-            &evaluation(Vec::new(), vec![shadows.clone()]),
-            &mut Vec::new(),
-            &never,
-        )
-        .unwrap();
-        assert_eq!(thumbnail(&unbound, &shadows), None);
-        assert_eq!(unbound.absent.len(), 1);
-        let bound = thumbnails(
-            &evaluation(vec![bound(&shadows, 0.5)], vec![shadows.clone()]),
-            &mut Vec::new(),
-            &never,
-        )
-        .unwrap();
-        let cells = &thumbnail(&bound, &shadows)
-            .expect("the input is read")
-            .cells;
-        assert_eq!(cells.len(), 28 * 19);
-        assert!(bound.absent.is_empty());
+        for stack in [Vec::new(), vec![bound(&shadows, 0.5)]] {
+            let bound = stack.len();
+            let thumbs = thumbnails(
+                &evaluation(stack, vec![shadows.clone()]),
+                &mut Vec::new(),
+                &never,
+            )
+            .unwrap();
+            let cells = &thumbnail(&thumbs, &shadows)
+                .unwrap_or_else(|| panic!("a thumbnail with {bound} bound layers"))
+                .cells;
+            assert_eq!(cells.len(), 28 * 19);
+            assert!(thumbs.absent.is_empty());
+        }
     }
 
     /// A cancelled job delivers nothing, and what it filled first is kept for the job after it.

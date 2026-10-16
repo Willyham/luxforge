@@ -243,7 +243,10 @@ fn a_pixel_read_returns_its_pixels_or_its_refusal_to_the_owner() {
     let answer = PixelAnswer {
         key,
         read: PixelRead::Point {
-            index: 1,
+            site: crate::tiles::InputSite {
+                index: 1,
+                mode: crate::tiles::MaskInputMode::Boundary,
+            },
             x: 2,
             y: 3,
         },

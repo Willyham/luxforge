@@ -584,6 +584,42 @@ pub enum ReadStage {
     Before { layer: usize, mode: MaskInputMode },
 }
 
+/// A position in a stack read as the operation there receives it: the stage the layers before
+/// `index` produce, in `mode`. `index` may be the stack's length.
+///
+/// A layer's own input is [`InputSite::of_layer`], whose mode its effect's stage decides. A mask's
+/// is [`crate::mask::commands::input_site`], which can name a position no layer holds yet — where a
+/// first adjustment through an unbound mask would go — and so states the mode of the operation that
+/// would sit there rather than asking whichever layer holds that position now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InputSite {
+    pub index: usize,
+    pub mode: MaskInputMode,
+}
+
+impl InputSite {
+    /// The input of the layer at `index`, read as that layer receives it. Past the end of the
+    /// stack, or at a layer whose effect no provider declares, the stage is read at its boundary.
+    pub(crate) fn of_layer(
+        registry: &crate::ModuleRegistry,
+        recipe: &crate::Recipe,
+        index: usize,
+    ) -> Self {
+        Self {
+            index,
+            mode: crate::render::MaskInputMode::for_layer(registry, recipe, index).into(),
+        }
+    }
+
+    /// The read of this site's stage.
+    pub(crate) fn stage(self) -> ReadStage {
+        ReadStage::Before {
+            layer: self.index,
+            mode: self.mode,
+        }
+    }
+}
+
 /// How a layer receives the stage before it, which decides what a [`ReadValues::Linear`] read of
 /// that stage answers; a [`ReadValues::Codes`] read answers the stage's bytes either way. The
 /// public counterpart of the renderer's own mode, which the catalog owner chooses by the layer's

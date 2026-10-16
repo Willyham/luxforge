@@ -2840,6 +2840,7 @@ pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &s
         }) if module.is_available() => Some((action.as_str(), x.as_str(), y.as_str())),
         Some(CanvasInteraction::PointPick { .. })
         | Some(CanvasInteraction::SampleApply { .. })
+        | Some(CanvasInteraction::AreaPick { .. })
         | Some(CanvasInteraction::CropFrame { .. })
         | Some(CanvasInteraction::BrushMask { .. })
         | None => None,
@@ -2871,42 +2872,16 @@ pub(crate) enum CanvasPick<'a> {
         y: &'a str,
         action: &'a str,
     },
-    /// The same interaction with the **host's** own pair: a `mask.*` read answers the pixel and a
-    /// `mask.*` command receives it. A mask is a host object and no module declares one, so a pick
-    /// that fills part of a mask reaches the host's declarations instead of a module's; everything
-    /// else about it — the query first, the numeric fields the action declares, the refusal that
-    /// commits nothing — is identical, which is why it is the same enum and not a second mechanism.
-    HostSample {
-        query: &'a str,
-        x: &'a str,
-        y: &'a str,
-        action: &'a str,
-    },
 }
 
 /// The pick the active canvas mode declares, if that mode declares one at all.
 ///
-/// The host's own picks are consulted first and by the same key: a pick's mode is its action's method
-/// name, which carries a dot and therefore can never be a module id.
+/// Only a module's mode declares one. The host's own area picks are not modes: a range component's
+/// eyedropper is armed inside Mask mode ([`crate::range_pick`]).
 pub(crate) fn canvas_pick<'a>(
     modules: &'a [ModuleDescriptor],
     mode: &str,
 ) -> Option<CanvasPick<'a>> {
-    if let Some(CanvasInteraction::SampleApply {
-        query,
-        x,
-        y,
-        action,
-        ..
-    }) = luxforge_core::mask::commands::canvas_pick(mode)
-    {
-        return Some(CanvasPick::HostSample {
-            query: query.as_str(),
-            x: x.as_str(),
-            y: y.as_str(),
-            action: action.as_str(),
-        });
-    }
     let module = module_of(modules, mode).filter(|module| module.is_available())?;
     match module.canvas.as_ref()? {
         CanvasInteraction::PointPick {
@@ -2933,7 +2908,9 @@ pub(crate) fn canvas_pick<'a>(
             y: y.as_str(),
             action: action.as_str(),
         }),
-        CanvasInteraction::CropFrame { .. } | CanvasInteraction::BrushMask { .. } => None,
+        CanvasInteraction::CropFrame { .. }
+        | CanvasInteraction::BrushMask { .. }
+        | CanvasInteraction::AreaPick { .. } => None,
     }
 }
 
@@ -3097,6 +3074,8 @@ pub(crate) fn palette_entries(
                 CanvasInteraction::BrushMask { .. } => {
                     crate::state::corrections::is_brush_mode(modules, &module.id)
                 }
+                // Only the host declares an area pick; validation refuses a module's.
+                CanvasInteraction::AreaPick { .. } => false,
             };
             if reachable {
                 entries.push((

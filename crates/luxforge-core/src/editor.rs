@@ -437,6 +437,46 @@ pub struct PixelInput {
     pub renderer: crate::Renderer,
 }
 
+/// The **input** of a masked operation over one rectangle of the stage it receives, reduced by block
+/// means: what `mask.sample-input-area` answers and what a drag of `mask.pick-<kind>` measures. Like
+/// [`PixelInput`] it is the masked operation's input and not the picture's output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AreaInput {
+    /// The stage the masked layer receives, at full resolution.
+    pub stage: AreaStage,
+    /// The stage pixels read: the requested rectangle widened to whole pixels and to whole blocks
+    /// of the reduction, and clipped to the stage.
+    pub rect: AreaRect,
+    /// The block side, the smallest power of two that leaves at most
+    /// [`crate::mask::commands::AREA_POINTS`] points.
+    pub reduction: u32,
+    /// The reduced rectangle's columns and rows.
+    pub size: [u32; 2],
+    /// One linear-sRGB mean per block, row by row from the top left.
+    pub points: Vec<[f64; 3]>,
+    /// The renderer that drew every pixel read.
+    pub renderer: crate::Renderer,
+}
+
+/// A stage's size in an [`AreaInput`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AreaStage {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The stage pixels an [`AreaInput`] read: columns `x0..x0 + width`, rows `y0..y0 + height`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AreaRect {
+    pub x0: u32,
+    pub y0: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Which evaluated stack an analysis job should describe: the asset's current entry, one frozen
 /// historical entry, the caller's own open draft, or one historical entry framed by another
 /// entry's geometry.

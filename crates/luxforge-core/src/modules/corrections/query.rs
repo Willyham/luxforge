@@ -182,6 +182,7 @@ pub(super) fn sources(
             stage,
             rect: planned.region,
             reduction: planned.r,
+            mode: None,
         })?;
         search::rank(&planned, &read)?
     };

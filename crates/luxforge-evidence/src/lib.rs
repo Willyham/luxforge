@@ -386,7 +386,8 @@ impl Step {
             }
             Self::Tab(step) => text(&step.module, "tab module"),
             Self::Section(step) => text(&step.module, "section module"),
-            Self::Gallery { .. } | Self::Pick(_) | Self::SliderDraft(_) => Ok(()),
+            Self::Pick(step) => step.validate(),
+            Self::Gallery { .. } | Self::SliderDraft(_) => Ok(()),
             Self::CanvasHover { x, y } => {
                 unit(f64::from(*x), "canvas_hover x")?;
                 unit(f64::from(*y), "canvas_hover y")
@@ -1344,11 +1345,42 @@ pub struct FieldStep {
 /// One canvas pick, in pixels of the raster on screen: the same coordinates the canvas publishes
 /// when a pointer is pressed over the photograph. Mapping them to the content stage is the core's
 /// answer, never the script's.
+///
+/// With the range eyedropper armed it is that picker's pointer: a press and release at `x`, `y` is a
+/// click, with `shift` held at the release; with `to`, the press is at `x`, `y` and the release at
+/// `to`, a drag over that rectangle, which must be at least [`PickStep::DRAG_MIN`] pixels long on
+/// one side so that it is never read as a click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PickStep {
     pub x: u32,
     pub y: u32,
+    /// Shift held at the release: the colour picker adds the sample rather than replacing.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shift: bool,
+    /// Where the pointer is released after a drag from `x`, `y`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<[u32; 2]>,
+}
+
+impl PickStep {
+    /// The shortest drag, in raster pixels, that is a drag rather than a click: the canvas's
+    /// threshold, which is in points, is no larger than a pixel of the raster.
+    pub const DRAG_MIN: u32 = 3;
+
+    fn validate(&self) -> Result<(), String> {
+        match self.to {
+            Some([x, y])
+                if x.abs_diff(self.x) < Self::DRAG_MIN && y.abs_diff(self.y) < Self::DRAG_MIN =>
+            {
+                Err(format!(
+                    "pick to must be at least {} pixels from x, y in one axis, or it is a click",
+                    Self::DRAG_MIN
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

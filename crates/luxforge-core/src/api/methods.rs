@@ -2670,22 +2670,10 @@ fn view_set(
 /// The canvas modes this registry offers: the pointer plus every available module that declares a
 /// canvas interaction. `O(modules)`; it touches no image resource.
 fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
-    // The host modes first: the pointer, the mask mode — a mask is a host object rather than a
-    // module — and one per canvas pick the host itself declares, which is one per sampling component
-    // kind. A pick's mode is its own action's method name, read from the same table that generates
-    // the command, so registering a kind is what makes its mode legal here too. Then one per module
-    // that declares a canvas.
+    // The host modes first: the pointer and the mask mode — a mask is a host object rather than a
+    // module. The host's area picks are not modes: a range component's eyedropper is armed inside
+    // Mask mode. Then one per module that declares a canvas.
     let mut modes = vec![POINTER_MODE.to_owned(), MASK_MODE.to_owned()];
-    modes.extend(
-        crate::mask::commands::canvas()
-            .iter()
-            .filter_map(|pick| match pick {
-                crate::CanvasInteraction::SampleApply { action, .. } => Some(action.clone()),
-                crate::CanvasInteraction::PointPick { .. }
-                | crate::CanvasInteraction::CropFrame { .. }
-                | crate::CanvasInteraction::BrushMask { .. } => None,
-            }),
-    );
     modes.extend(
         registry
             .descriptors()
@@ -5130,11 +5118,11 @@ mod tests {
             (
                 "an unknown mode",
                 json!({"mode": "luxforge.heal"}),
-                // The host modes first — the pointer, the mask mode and one per canvas pick the host
-                // declares for a sampling component kind — then the registry's canvas declarations,
-                // so the RAW and Basic neutral pickers join the list without a change here.
-                "mode must be one of pointer, mask, mask.add-colour-range-sample, luxforge.crop, \
-                 luxforge.corrections, luxforge.raw, luxforge.basic",
+                // The host modes first — the pointer and the mask mode — then the registry's canvas
+                // declarations, so the RAW and Basic neutral pickers join the list without a change
+                // here.
+                "mode must be one of pointer, mask, luxforge.crop, luxforge.corrections, \
+                 luxforge.raw, luxforge.basic",
             ),
             (
                 "a module that declares no canvas",

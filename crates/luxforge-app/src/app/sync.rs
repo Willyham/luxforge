@@ -17,7 +17,7 @@ use crate::state::{
     fields::{self, Fields},
 };
 use iced::{Subscription, Task};
-use luxforge_core::{ClientSession, HistoryRow, ModuleDescriptor};
+use luxforge_core::{ClientSession, HistoryRow, MaskId, ModuleDescriptor};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
 
@@ -141,10 +141,14 @@ impl Editor {
                 // Overtaken by a selection or a state this desktop already holds: whatever
                 // overtook it ended the request it answered, and brought its own frame.
                 if matches!(&result, Ok(refresh) if self.superseded(refresh)) {
+                    // The typed create's selection belongs to this answer alone; the next mask
+                    // command's answer must not inherit it.
+                    self.mask_panel.typed_create = false;
                     return Task::none();
                 }
                 self.busy = false;
                 let mask_command = std::mem::take(&mut self.mask_panel.command_in_flight);
+                let typed = std::mem::take(&mut self.mask_panel.typed_create);
                 match result {
                     Ok(refresh) => {
                         if self.activity.pending {
@@ -166,9 +170,25 @@ impl Editor {
                                     |(_, request)| request.get(luxforge_core::MASK_FIELD).is_none(),
                                 );
                         let before = self.listed_masks();
+                        // A typed add names the mask it adds to; the component it made is the one
+                        // the open mask gained.
+                        let added_to = self
+                            .mask_panel
+                            .last_request
+                            .as_ref()
+                            .and_then(|(_, request)| request.get(luxforge_core::MASK_FIELD))
+                            .and_then(Value::as_str)
+                            .and_then(|mask| MaskId::parse(mask).ok())
+                            .filter(|_| mask_command && typed);
+                        let before_components = added_to
+                            .as_ref()
+                            .map(|mask| self.listed_components(mask))
+                            .unwrap_or_default();
                         self.accept(*refresh);
                         if created_a_mask {
-                            self.open_created_mask(&before);
+                            self.open_created_mask(&before, mask_command && typed);
+                        } else if let Some(mask) = added_to {
+                            self.select_added_component(&mask, &before_components);
                         }
                     }
                     Err(error) => {

@@ -727,6 +727,7 @@ mod tests {
             mask_draft: None,
             mask_map: None,
             mask_handles: false,
+            range_pick: None,
             corrections: None,
             draft: Some(&draft),
             gpu: None,

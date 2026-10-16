@@ -108,10 +108,11 @@ pub use draft::{Draft, DraftTarget, declared_target};
 /// The catalog format this build opens, which release builds record for the update feed.
 pub use editor::CATALOG_FORMAT;
 pub use editor::{
-    ActionResult, AssetRecord, BatchStaleAcknowledgement, DraftStamp, EditorService, EditorState,
-    Evaluation, FirstOpen, HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD,
-    MutationOutcome, MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription,
-    SkippedSetting, SourceKind, SourceTag, StaleAcknowledgement, Version, operations_limit,
+    ActionResult, AreaInput, AreaRect, AreaStage, AssetRecord, BatchStaleAcknowledgement,
+    DraftStamp, EditorService, EditorState, Evaluation, FirstOpen, HistoryPage, LayerDescription,
+    Lineage, LineageStep, MASK_FIELD, MutationOutcome, MutationResult, PixelInput, PixelSample,
+    RawInterpretation, RecipeDescription, SkippedSetting, SourceKind, SourceTag,
+    StaleAcknowledgement, Version, operations_limit,
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
