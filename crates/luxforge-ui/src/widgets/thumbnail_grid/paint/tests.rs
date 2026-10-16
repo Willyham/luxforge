@@ -464,6 +464,63 @@ fn the_catalog_badge_follows_the_pick_and_keeps_its_icon_when_crowded() {
     assert_eq!(recorder.texts(), ["In the catalog", "12"]);
 }
 
+/// A row standing for copies in other folders draws the warning icon alone at the top right,
+/// before the frame count, in the unavailable badge's ink.
+#[test]
+fn a_copied_file_draws_the_warning_icon_before_the_count() {
+    let metrics = GridMetrics::select(200.0);
+    let layout = GridLayout::new(vec![GridBlock::Singles(2)], metrics, 600.0);
+    let cell = |grid: GridCell| CellView {
+        copied: true,
+        count: (grid.cell == 1).then_some(3),
+        ..CellView::default()
+    };
+    let mut recorder = Recorder::default();
+    paint(
+        &scene(&layout, 0.0, Size::new(600.0, 300.0)),
+        &cell,
+        &mut recorder,
+    );
+    let warnings: Vec<(Ink, Point)> = recorder
+        .ops
+        .iter()
+        .filter_map(|(_, op)| match op {
+            Op::Icon {
+                icon: Icon::Warning,
+                color,
+                at,
+                ..
+            } => Some((*color, *at)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(warnings.len(), 2);
+    assert!(
+        warnings
+            .iter()
+            .all(|(ink, _)| *ink == Ink::Fixed(theme::CLIPPING_HIGHLIGHT))
+    );
+    let corner = |cell: u32| {
+        let rect = layout.cell(cell).rect;
+        rect.x + rect.width - metrics.badge_inset
+    };
+    let count = recorder
+        .ops
+        .iter()
+        .find_map(|(_, op)| match op {
+            Op::Icon {
+                icon: Icon::Stack,
+                at,
+                ..
+            } => Some(*at),
+            _ => None,
+        })
+        .expect("the count's icon");
+    assert!(warnings[0].1.x < corner(0) && warnings[0].1.x > corner(0) - 30.0);
+    assert!(warnings[1].1.x < count.x, "before the count");
+    assert_eq!(recorder.texts(), ["3"], "no words");
+}
+
 #[test]
 fn the_footer_draws_its_label_and_the_edited_dot() {
     let metrics = GridMetrics::catalog(168.0);
