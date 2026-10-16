@@ -1939,6 +1939,14 @@ mod tests {
         assert_eq!(report["status"], "failed");
         assert_eq!(report["missed"][0]["exceeded"], json!(["mean"]));
         assert_eq!(report["missed"][0]["limits"]["mean"], json!(1.0));
+        // The pointwise worst block is the corpus's measured 2.5, not twice the class's 1.0.
+        paged["views"]["fit"]["at_rest"]["against_reference"] = stats(0.9, 2.4, 3.0, 0.4);
+        let report = judge(Some(&cells(vec![paged.clone()])), 1, &options());
+        assert_eq!(report["status"], "passed", "{report}");
+        paged["views"]["fit"]["at_rest"]["against_reference"] = stats(0.9, 2.6, 3.0, 0.4);
+        let report = judge(Some(&cells(vec![paged.clone()])), 1, &options());
+        assert_eq!(report["missed"][0]["exceeded"], json!(["worst_block"]));
+        assert_eq!(report["missed"][0]["limits"]["worst_block"], json!(2.5));
         paged["views"]["fit"]["at_rest"]["against_reference"] = within();
         paged["views"]["100%"]["at_rest"]["against_reference"] = stats(0.9, 0.5, 1.0, 0.0);
         let report = judge(Some(&cells(vec![paged])), 1, &options());

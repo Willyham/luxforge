@@ -494,9 +494,11 @@ impl Class {
     /// The limits a paged derived source's overview is held to (`docs/design/gpu-first.md`,
     /// "Tolerance by output kind"): the stack drawn over its resident level, its spatial
     /// parameters scaled to the level, against the banded reference of level 0 reduced to the same
-    /// view. Twice the class's own, the recorded default of 2026-10-13 until a corpus run measures
-    /// it: a pointwise stack over a reduced source differs from the reduction of its output where
-    /// a curve bends across the detail the level averages, and a spatial one by its scaled reach.
+    /// view. Twice the class's own, the recorded default of 2026-10-13, but for the pointwise
+    /// worst block, 2.5 from the corpus's measurement (owner, 2026-10-16): a pointwise stack over a
+    /// reduced source differs from the reduction of its output where a curve bends across the
+    /// detail the level averages, which Basic's scene scale does at every edge, and a spatial one
+    /// by its scaled reach.
     pub const fn overview_limits(self) -> Limits {
         let Limits {
             mean,
@@ -506,7 +508,10 @@ impl Class {
         } = self.limits();
         Limits {
             mean: 2.0 * mean,
-            worst_block: 2.0 * worst_block,
+            worst_block: match self {
+                Self::Pointwise => 2.5,
+                Self::Spatial => 2.0 * worst_block,
+            },
             p99: 2.0 * p99,
             mean_delta_l: 2.0 * mean_delta_l,
         }
