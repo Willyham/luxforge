@@ -752,7 +752,7 @@ pub(crate) fn control_view<'a>(
     plot: &HistogramModel,
 ) -> Element<'a, Message> {
     match control {
-        ControlModel::Slider(field) => number_view(enabled, field, menu),
+        ControlModel::Slider(field) => number_view(enabled && field.enabled, field, menu),
         ControlModel::Range(range) => range_view(enabled, range, menu),
         ControlModel::Wheel(wheel) => wheel_view(enabled, wheel, menu),
         ControlModel::Toggle(toggle) => toggle_view(enabled, toggle, menu),

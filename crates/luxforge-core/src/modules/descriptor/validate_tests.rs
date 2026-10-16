@@ -373,6 +373,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                     rail: None,
                     reset: None,
                     variants: Vec::new(),
+                    enabled_when: None,
                 })],
                 ..descriptor()
             },
@@ -388,6 +389,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                     rail: None,
                     reset: None,
                     variants: Vec::new(),
+                    enabled_when: None,
                 })],
                 ..descriptor()
             },
@@ -494,6 +496,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                     rail: None,
                     reset: None,
                     variants: Vec::new(),
+                    enabled_when: None,
                 })],
                 ..descriptor()
             },
@@ -1060,6 +1063,18 @@ fn invalid_new_bindings_and_hints_name_the_control_or_parameter() {
             "number control for enabled",
         ),
         (
+            "enabled when",
+            Box::new(|d: &mut ModuleDescriptor| {
+                if let Control::Number(NumberControl { enabled_when, .. }) = &mut d.controls[2] {
+                    *enabled_when = Some(crate::ControlCondition {
+                        parameter: "enabled".into(),
+                        values: vec!["true".into()],
+                    });
+                }
+            }),
+            "number control for amount of action set-controls is enabled by enabled",
+        ),
+        (
             "curve",
             Box::new(|d: &mut ModuleDescriptor| {
                 if let Control::Curve(CurveControl { channels, .. }) = &mut d.controls[3] {
@@ -1247,6 +1262,7 @@ fn layout_defaults_to_stacked_and_tabs_needs_at_least_two_top_level_groups() {
         rail: None,
         reset: None,
         variants: Vec::new(),
+        enabled_when: None,
     }));
     let error = non_group
         .validate()

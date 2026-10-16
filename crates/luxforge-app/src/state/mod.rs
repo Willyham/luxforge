@@ -636,11 +636,18 @@ impl Workspace {
                             tools::ControlModel::Group(group) => {
                                 Some(json!({"kind": "group", "label": group.label, "enabled": group.enabled, "unavailable": group.unavailable}))
                             }
-                            tools::ControlModel::Slider(slider) => Some(json!({
-                                "kind": "number", "label": slider.label,
-                                "action": slider.action, "parameter": slider.parameter,
-                                "unit": slider.unit,
-                            })),
+                            // A slider its control's condition disables adds `enabled: false`.
+                            tools::ControlModel::Slider(slider) => {
+                                let mut reported = json!({
+                                    "kind": "number", "label": slider.label,
+                                    "action": slider.action, "parameter": slider.parameter,
+                                    "unit": slider.unit,
+                                });
+                                if !slider.enabled {
+                                    reported["enabled"] = json!(false);
+                                }
+                                Some(reported)
+                            }
                             tools::ControlModel::Range(range) => Some(json!({
                                 "kind": "range", "label": range.label, "action": range.action,
                                 "parameters": range.fields()
@@ -2250,6 +2257,43 @@ mod tests {
         let mut at_80 = standard.payload.clone();
         at_80["amount"] = json!(80.0);
         assert!(section(&derive(&at_80), "luxforge.look").active);
+    }
+
+    /// A Neutral look has no amount, which `edit.set-look` refuses, so the Look section's Amount is
+    /// disabled while its Look field shows Neutral — a Neutral layer's value, or the field's
+    /// declared default on a photo with no Look layer — and editable on Standard.
+    #[test]
+    fn the_looks_amount_is_disabled_while_the_look_is_neutral() {
+        use crate::state::testing::{Z6_AS_SHOT, Z6_CAM_XYZ, raw_source};
+        use luxforge_core::{LOOK_EFFECT, RawPayload};
+        let modules = descriptors();
+        let amount_enabled = |look: Option<&str>| {
+            let raw = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+            let mut scene = Scene::new(modules.clone()).opened(vec![
+                raw.layer(luxforge_core::LayerId::new()),
+                luxforge_core::Layer::new(LOOK_EFFECT, json!({"look": "neutral"})),
+            ]);
+            scene
+                .document
+                .state
+                .as_mut()
+                .expect("an asset")
+                .asset
+                .source = raw_source();
+            if let Some(look) = look {
+                scene.fields.set("set-look", "look", look.to_owned());
+            }
+            let derived = scene.derive();
+            let shown = section(&derived, "luxforge.look");
+            assert!(shown.enabled, "the section itself stays editable");
+            match shown.controls.as_slice() {
+                [ControlModel::Enum(_), ControlModel::Slider(amount)] => amount.enabled,
+                other => panic!("the Look section draws {other:?}"),
+            }
+        };
+        assert!(!amount_enabled(None), "no Look layer is the Neutral look");
+        assert!(!amount_enabled(Some("neutral")));
+        assert!(amount_enabled(Some("standard")));
     }
 
     /// Basic's White balance controls edit it, so Basic's dot and its White balance caption ask the

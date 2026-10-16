@@ -10,7 +10,8 @@
 //! drafted picture's mean luminance lies between Neutral's and Standard's, released as one entry;
 //! the module reset back to Standard at 100; and a double-click on Amount, a committed jump and its
 //! reset to 100, which collapses back to the reset's entry. Through the API, `edit.set-look
-//! {look: neutral}`, which the section follows. Settings › General shows the starting look for new
+//! {look: neutral}`, which the section follows. Amount is disabled on every frame that shows a
+//! Neutral look, which has no amount, and editable on every Standard one. Settings › General shows the starting look for new
 //! RAW photos at Standard. Every frame is correlated with the photograph's state, the draft and the
 //! step's own events.
 //!
@@ -263,7 +264,19 @@ fn panel_order(frame: &Frame) -> Result<Vec<String>> {
         .collect())
 }
 
-/// The Look section is listed directly above Basic's, and its Amount is the descriptor's slider.
+/// The frames that show a Neutral look, on which the Look section's Amount is disabled: a Neutral
+/// look has no amount, which `edit.set-look` refuses. Every other frame shows Standard.
+const NEUTRAL_FRAMES: [&str; 6] = [
+    names::NEUTRAL,
+    names::NEUTRAL_SETTLED,
+    names::API_NEUTRAL,
+    names::DESCRIBE_NEUTRAL,
+    names::SETTINGS,
+    names::SETTINGS_CLOSED,
+];
+
+/// The Look section is listed directly above Basic's, and its Amount is the descriptor's slider,
+/// disabled exactly on the frames that show a Neutral look.
 fn look_above_basic(frame: &Frame, step: &str) -> Result<Vec<String>> {
     let order = panel_order(frame)?;
     let look = order.iter().position(|id| id == LOOK_MODULE);
@@ -273,10 +286,13 @@ fn look_above_basic(frame: &Frame, step: &str) -> Result<Vec<String>> {
         format!("{step}: the Look section is not directly above Basic's: {order:?}"),
     )?;
     let controls = &frame.state()["section_controls"][LOOK_MODULE];
+    let mut amount = json!({"kind": "number", "label": "Amount", "action": SET_LOOK,
+                            "parameter": AMOUNT, "unit": null});
+    if NEUTRAL_FRAMES.contains(&step) {
+        amount["enabled"] = json!(false);
+    }
     ensure(
-        controls
-            == &json!([{"kind": "number", "label": "Amount", "action": SET_LOOK,
-                        "parameter": AMOUNT, "unit": null}]),
+        controls == &json!([amount]),
         format!("{step}: the Look section's sliders are {controls}"),
     )?;
     Ok(order)
@@ -637,6 +653,17 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "edit.set-look {look: neutral} through the API, which the section follows",
         json!({"field": launch.at(names::API_NEUTRAL)?.field(SET_LOOK, LOOK)?, "row": api}),
     );
+    // Amount is disabled on the Neutral look, chosen through the section or the API, and editable
+    // again once Standard is chosen; `look_above_basic` checked every frame.
+    for step in [names::NEUTRAL, names::STANDARD, names::API_NEUTRAL] {
+        let frame = launch.at(step)?;
+        checks.note(
+            frame,
+            "the Look section's Amount on this look",
+            json!({"step": step, "look": frame.field(SET_LOOK, LOOK)?,
+                   "amount": frame.state()["section_controls"][LOOK_MODULE][0]}),
+        );
+    }
 
     // Settings › General: the starting look for new RAW photos is Standard.
     let general = launch.at(names::SETTINGS)?;
@@ -760,6 +787,9 @@ mod tests {
             names::DESCRIBE_NEUTRAL,
         ] {
             assert_eq!(scripted(&plan, step), describe().to_value(), "{step}");
+        }
+        for step in NEUTRAL_FRAMES {
+            assert!(plan.index(step).is_some(), "{step:?} is not planned");
         }
         let row = crate::smoke::find(SCENARIO).unwrap();
         assert_eq!((row.launches[0].plan)(&raw).script(), plan.script());

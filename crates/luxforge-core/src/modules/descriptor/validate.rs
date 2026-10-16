@@ -821,11 +821,32 @@ impl ModuleDescriptor {
                 parameter,
                 rail,
                 reset,
+                enabled_when,
                 ..
             }) => {
                 self.check_reset(reset.as_ref())?;
-                let declared = self.declared_action(action)?;
-                let declared = self.declared_parameter(declared, parameter)?;
+                let declared_action = self.declared_action(action)?;
+                let declared = self.declared_parameter(declared_action, parameter)?;
+                // A condition names another enum parameter of the same action and only its options.
+                if let Some(condition) = enabled_when {
+                    let options = (condition.parameter != *parameter)
+                        .then(|| declared_action.parameter(&condition.parameter))
+                        .flatten()
+                        .and_then(|other| match &other.kind {
+                            ParameterKind::Enum { options } => Some(options),
+                            _ => None,
+                        });
+                    if !options.is_some_and(|options| {
+                        !condition.values.is_empty()
+                            && condition.values.iter().all(|value| options.contains(value))
+                    }) {
+                        return Err(Error::validation(format!(
+                            "number control for {parameter} of action {action} is enabled by {} \
+                             {:?}, which is not another enum parameter of the action and its options",
+                            condition.parameter, condition.values
+                        )));
+                    }
+                }
                 if !matches!(
                     declared.kind,
                     ParameterKind::Integer { .. } | ParameterKind::Number { .. }

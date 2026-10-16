@@ -93,6 +93,7 @@ pub(super) fn frame_descriptor() -> ModuleDescriptor {
             rail: None,
             reset: None,
             variants: Vec::new(),
+            enabled_when: None,
         })],
         // The shared descriptor's reset names an action this one does not declare.
         reset: None,
@@ -200,6 +201,7 @@ pub(super) fn number_reset(action: &str, preset: Value) -> ModuleDescriptor {
                 preset: preset.as_object().unwrap().clone(),
             }),
             variants: Vec::new(),
+            enabled_when: None,
         })],
         ..descriptor()
     }
@@ -231,6 +233,7 @@ pub(super) fn descriptor() -> ModuleDescriptor {
                     rail: None,
                     reset: None,
                     variants: Vec::new(),
+                    enabled_when: None,
                 }),
                 Control::Action(ActionControl {
                     action: "set-thing".into(),
@@ -491,6 +494,7 @@ pub(super) fn controls_descriptor() -> ModuleDescriptor {
             rail: Some(RailDecoration::Hue),
             reset: None,
             variants: Vec::new(),
+            enabled_when: None,
         }),
         Control::Curve(CurveControl {
             action: "set-controls".into(),
@@ -572,6 +576,7 @@ pub(super) fn two_group_descriptor() -> ModuleDescriptor {
                 rail: None,
                 reset: None,
                 variants: Vec::new(),
+                enabled_when: None,
             })],
             collapsed: false,
             layout: ModuleLayout::Stacked,

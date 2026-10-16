@@ -1037,11 +1037,50 @@ pub struct NumberControl {
     /// (`ControlVariant`). Listed only when declared.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ControlVariant>,
+    /// When the field can be edited at all: only while another `enum` parameter of the same action
+    /// holds one of the listed values, as the look's Amount only while the look is Standard. A
+    /// client draws the field disabled otherwise. A hint that mirrors the module's own refusal of
+    /// the field in that state: the host still validates every request. Listed only when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_when: Option<ControlCondition>,
+}
+
+/// A number control's [`NumberControl::enabled_when`]: the field is editable while the action's
+/// `enum` parameter `parameter` holds one of `values` — the value its module's current layer
+/// reports or, without a layer, the parameter's declared default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlCondition {
+    pub parameter: String,
+    pub values: Vec<String>,
+}
+
+impl ControlCondition {
+    /// Whether `value`, the condition's parameter as the client shows it, enables the control.
+    pub fn holds(&self, value: &str) -> bool {
+        self.values.iter().any(|allowed| allowed == value)
+    }
 }
 
 impl NumberControl {
     pub fn number_style(self, style: NumberStyle) -> Self {
         Self { style, ..self }
+    }
+
+    /// Editable only while the action's `enum` parameter `parameter` holds one of `values`
+    /// ([`Self::enabled_when`]).
+    pub(crate) fn enabled_when<I: IntoIterator<Item = S>, S: Into<String>>(
+        self,
+        parameter: impl Into<String>,
+        values: I,
+    ) -> Self {
+        Self {
+            enabled_when: Some(ControlCondition {
+                parameter: parameter.into(),
+                values: values.into_iter().map(Into::into).collect(),
+            }),
+            ..self
+        }
     }
 
     pub fn rail(self, rail: RailDecoration) -> Self {
@@ -1418,6 +1457,7 @@ impl Control {
             rail: None,
             reset: None,
             variants: Vec::new(),
+            enabled_when: None,
         }
     }
 
