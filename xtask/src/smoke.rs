@@ -2436,6 +2436,7 @@ mod tests {
             [
                 "visibility-monitoring",
                 "raw-detail",
+                "minimap",
                 "auto-tone",
                 "copy-settings",
                 "export",
