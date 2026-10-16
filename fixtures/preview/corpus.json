@@ -61,6 +61,26 @@
       ]
     },
     {
+      "id": "basic-scene-jpeg",
+      "family": "basic",
+      "class": "pointwise",
+      "description": "Basic's scene unit in the other direction from basic-extended-jpeg: Exposure +5, Temperature +100 and Tint -100 on the scene scale, over JPEG sources and a derived merge, whose values past white take an exact gain.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 5.0, "temperature": 100.0, "tint": -100.0}}}
+      ]
+    },
+    {
+      "id": "basic-scene-raw",
+      "family": "basic",
+      "class": "pointwise",
+      "description": "Basic's scene unit as a plain gain on RAW sources, in the other direction from basic-extended-raw: Exposure -5.",
+      "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": -5.0}}}
+      ]
+    },
+    {
       "id": "tone-curve",
       "family": "tone-curve",
       "class": "pointwise",
@@ -78,6 +98,16 @@
       "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
       "steps": [
         {"api": {"method": "edit.set-mixer", "params": {"red-hue": 30, "orange-saturation": -40, "green-saturation": 40, "aqua-hue": -25, "blue-luminance": -30, "magenta-saturation": 25}}}
+      ]
+    },
+    {
+      "id": "mixer-extended",
+      "family": "mixer",
+      "class": "pointwise",
+      "description": "The mixer at the slider values whose strengths reach its extremes: hues of strength +115 (Orange and Green at +100) and -115 (Blue and Purple at -100), and Red, Yellow, Aqua and Magenta saturation at -100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-mixer", "params": {"orange-hue": 100, "green-hue": 100, "blue-hue": -100, "purple-hue": -100, "red-saturation": -100, "yellow-saturation": -100, "aqua-saturation": -100, "magenta-saturation": -100}}}
       ]
     },
     {
@@ -132,6 +162,46 @@
       "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
       "steps": [
         {"api": {"method": "edit.set-vignette", "params": {"amount": -60, "midpoint": 40, "roundness": 20, "feather": 60}}}
+      ]
+    },
+    {
+      "id": "vignette-dark-midpoint-0",
+      "family": "vignette",
+      "class": "pointwise",
+      "description": "The vignette at a corner of its response: Amount -100, the strongest darkening, with Midpoint 0.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-vignette", "params": {"amount": -100, "midpoint": 0}}}
+      ]
+    },
+    {
+      "id": "vignette-dark-midpoint-100",
+      "family": "vignette",
+      "class": "pointwise",
+      "description": "The vignette at a corner of its response: Amount -100, the strongest darkening, with Midpoint 100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-vignette", "params": {"amount": -100, "midpoint": 100}}}
+      ]
+    },
+    {
+      "id": "vignette-light-midpoint-0",
+      "family": "vignette",
+      "class": "pointwise",
+      "description": "The vignette at a corner of its response: Amount +100, the strongest lightening, with Midpoint 0.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-vignette", "params": {"amount": 100, "midpoint": 0}}}
+      ]
+    },
+    {
+      "id": "vignette-light-midpoint-100",
+      "family": "vignette",
+      "class": "pointwise",
+      "description": "The vignette at a corner of its response: Amount +100, the strongest lightening, with Midpoint 100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-vignette", "params": {"amount": 100, "midpoint": 100}}}
       ]
     },
     {
