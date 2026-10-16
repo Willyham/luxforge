@@ -263,6 +263,7 @@ impl SurfaceFigures {
         overall.gpu_overview = drawn.gpu_overview;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
         overall.first_drawn = drawn.first_drawn;
+        overall.view_drawn = drawn.view_drawn;
         // Read live: a lost device's callback changes it between draws.
         overall.gpu_stage = self.preview.stage_state();
         // Read live, as the budget is: the queue reports the drawn GPU frame's pass complete at a
@@ -400,6 +401,30 @@ pub struct FirstDrawn {
     pub evaluation: Option<gpu_preview::EvaluationFigures>,
 }
 
+/// Where a surface draws its picture now, and when the surface first drew it there: what evidence
+/// times a pan to the draw that shows it by ([`SurfaceDiagnostics::view_drawn`]). A pan that
+/// scrolls a picture already on the surface draws no new frame, so [`FirstDrawn`] does not mark it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewDrawn {
+    /// The picture's point at the top-left of its visible part, in logical pixels, rounded: a
+    /// percentage view's scroll offset, its pan, on an axis where the picture is larger than the
+    /// view; zero or negative where it sits inside the view.
+    pub origin: [i32; 2],
+    /// When the draw that first drew the picture there was encoded: not display scanout.
+    pub at: Instant,
+}
+
+impl ViewDrawn {
+    /// The stamp of a draw placing its picture at `offset` from the visible part's origin: the
+    /// previous stamp kept while the picture stays where it was, a new one at `now` once it moves.
+    fn stamp(previous: Option<Self>, offset: Vector, now: impl FnOnce() -> Instant) -> Self {
+        let origin = [(-offset.x).round() as i32, (-offset.y).round() as i32];
+        previous
+            .filter(|drawn| drawn.origin == origin)
+            .unwrap_or_else(|| Self { origin, at: now() })
+    }
+}
+
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
 /// Residency includes textures whose GPU submission has not yet retired. Overlay textures and
 /// backend-owned upload staging are outside these photograph-slot byte counts. Counts and
@@ -486,6 +511,9 @@ pub struct SurfaceDiagnostics {
     /// The frame the last draw drew and when it was first drawn: kept across redraws of the same
     /// frame, stamped anew when the path, the CPU picture or the GPU plan's boundary or tag change.
     pub first_drawn: Option<FirstDrawn>,
+    /// Where the last draw placed its picture and when it was first drawn there: kept across
+    /// redraws in place, stamped anew when a pan or a layout moves it.
+    pub view_drawn: Option<ViewDrawn>,
     /// The classes, shadows and highlights, of the clipping marks the GPU output the last draw
     /// drew in place of the photograph carried ([`ClipMarks`]): approximate, and in place of the
     /// CPU frame's overlay, which marks another frame's pixels.
@@ -2277,6 +2305,10 @@ impl shader::Primitive for PhotoPrimitive {
                     evaluation: gpu_evaluation,
                 })
         });
+        // A pan that scrolls the same picture draws no new frame: where it is placed is stamped
+        // apart from what is drawn.
+        let view_drawn =
+            drawn_path.map(|_| ViewDrawn::stamp(previous.view_drawn, self.offset, Instant::now));
         // Each surface compares against its own last draw, so two surfaces in different states
         // do not wake each other every frame. A change of drawing path, a new fallback, a
         // dissolve's start or end, a boundary upload's, or a picture at rest drawn or dissolving in,
@@ -2298,6 +2330,7 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_gpu_boundary = drawn_gpu_boundary;
         diagnostic.drawn_gpu_tag = drawn_gpu_tag;
         diagnostic.first_drawn = first_drawn;
+        diagnostic.view_drawn = view_drawn;
         diagnostic.gpu_ready_boundary = surface.gpu_outcome.and_then(Result::ok);
         diagnostic.gpu_evaluated_serial = surface
             .gpu
@@ -3524,6 +3557,43 @@ mod tests {
     fn raster(width: u32, height: u32, version: u64) -> Frame {
         let pixels = Arc::new(vec![0u8; (width * height * 4) as usize]);
         Frame::new(pixels, width, height, version).expect("a whole raster")
+    }
+
+    /// A scrolled percentage view's placement is stamped at its scroll offset, the pan, when it is
+    /// first drawn there: a redraw in place keeps the stamp, a pan stamps it anew.
+    #[test]
+    fn a_scrolled_view_is_stamped_at_its_pan_when_first_drawn_there() {
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(6000.0, 4000.0));
+        let scrolled = |x: f32, y: f32| {
+            let viewport = Rectangle::new(Point::new(x, y), Size::new(1200.0, 800.0));
+            visible_placement(
+                Base::Photo(Placement::Fill),
+                (12000, 8000),
+                bounds,
+                viewport,
+            )
+            .expect("a visible part")
+            .offset
+        };
+        let start = Instant::now();
+        let first = ViewDrawn::stamp(None, scrolled(812.4, 300.0), || start);
+        assert_eq!(first.origin, [812, 300]);
+        let later = start + std::time::Duration::from_millis(5);
+        assert_eq!(
+            ViewDrawn::stamp(Some(first), scrolled(812.4, 300.0), || later),
+            first,
+            "a redraw in place keeps its first draw"
+        );
+        let panned = ViewDrawn::stamp(Some(first), scrolled(700.0, 410.0), || later);
+        assert_eq!((panned.origin, panned.at), ([700, 410], later));
+        // A picture centred inside the view at Fit has a negative origin on the axis it leaves.
+        let fit = Rectangle::new(Point::ORIGIN, Size::new(1200.0, 800.0));
+        let inside = visible_placement(Base::Photo(Placement::Contain), (400, 400), fit, fit)
+            .expect("a visible part");
+        assert_eq!(
+            ViewDrawn::stamp(None, inside.offset, || start).origin,
+            [-200, 0]
+        );
     }
 
     #[test]

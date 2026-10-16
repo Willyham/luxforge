@@ -27,7 +27,7 @@ pub type Element<'a, Message> = iced::Element<'a, Message, Theme, iced::Renderer
 pub use photo_surface::{
     FirstDrawn, Frame, OverviewFigures, OverviewImage, OverviewShown, OverviewSurface,
     OverviewUpload, OverviewWant, Placement, RegionOverlay, SurfaceDiagnostics, SurfaceId, Turn,
-    mips_admissible, overview_image, photo_surface, set_surface_waker, stage_surface,
+    ViewDrawn, mips_admissible, overview_image, photo_surface, set_surface_waker, stage_surface,
     surface_diagnostics, surface_retirement_pending, viewport_surface,
 };
 pub use widgets::*;

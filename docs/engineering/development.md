@@ -1824,10 +1824,20 @@ desktop's answer carries none. `--samples` is 1 to 60, split over launches to fi
 script; `--reference-renderer` measures the reference's.
 
 `--mode minimap` times one drag of the minimap's viewport rectangle at `--zoom` (200% by default):
-each of `--samples` moves (40 by default, at most 48) from its pan to the surface's draw of the view it
-asked for, the overview's first latency cold and warm (from `overview_ready`), its retained and peak
+each of `--samples` moves (40 by default, at most 48) from its pan (`minimap_navigated`) to the
+surface's first draw of the view it asked for, the overview's first latency cold and warm (from
+`overview_ready`), its retained and peak
 GPU and CPU bytes, its build, sweep, upload and reuse counts, process memory and GPU allocation;
-`--reference-renderer` measures the reference's overview.
+`--reference-renderer` measures the reference's overview. A move is drawn one of three ways, which
+`drawn` counts: `plan`, the draw of the view plan the GPU was handed for it (`gpu_at_rest`'s
+boundary in `surface_frame_drawn`); `frame`, the draw of the CPU frame its preview job rendered
+(`preview_displayed`'s generation); or `scroll`, where the surface already holds the whole picture
+and the pan only scrolls it, the first draw that placed it at the pan. A scroll draws no new frame,
+so the desktop logs `surface_view_drawn` once for each place the surface first draws its picture
+at, with the draw's instant (`drawn_ms`) and `origin`, the picture's point at the visible part's
+top-left in logical points, rounded: the scroll offset, which matches the pan within a point. A
+move that panned nothing, was never drawn, or matched the same frame as the move before it fails
+the run rather than giving a figure.
 
 The `mask-range` scenario's own paced stroke, by contrast, sets `settle_between: true` on its
 `mask` stroke step: the desktop then holds every position after the first until the position before
