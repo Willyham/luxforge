@@ -242,16 +242,20 @@ pub struct ViewSummary {
     /// Items whose file is offline or missing.
     pub unavailable: u32,
     /// Results in the view leading an HDR stack, and the originals a collapsed one hides: `count`
-    /// rows show photographs, results and the originals not hidden, `count + collapsed + paired`
-    /// items match the query, as `browse.facets` counts them.
+    /// rows show photographs, results and the originals not hidden, `count + collapsed + paired +
+    /// copies` items match the query, as `browse.facets` counts them.
     #[serde(default)]
     pub stacks: u32,
     #[serde(default)]
     pub collapsed: u32,
     /// JPEG files shown as the row of the RAW file of the same shot beside them ([`RowPair`]):
-    /// `count + collapsed + paired` items match the query.
+    /// `count + collapsed + paired + copies` items match the query.
     #[serde(default)]
     pub paired: u32,
+    /// Copies of a file in other folders shown as that file's row ([`RowCopy`]): `count +
+    /// collapsed + paired + copies` items match the query.
+    #[serde(default)]
+    pub copies: u32,
     pub groups: GroupLayout,
     /// The library journal and the index revision the view was evaluated at: a later library change
     /// or index change marks it stale ([`BrowseSession::stale`]).
@@ -358,6 +362,10 @@ pub struct ViewRow {
     /// Develop take the RAW file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pair: Option<RowPair>,
+    /// The copies of this file in other folders the row also stands for, in path order: files of
+    /// its name and length taken at the same instant by the same body ([`RowCopy`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<RowCopy>,
 }
 
 /// The JPEG of a RAW+JPEG pair, which a view shows as its RAW file's row: in the RAW file's
@@ -368,6 +376,17 @@ pub struct ViewRow {
 pub struct RowPair {
     pub file_id: FileId,
     pub file_name: String,
+}
+
+/// A copy of a row's file in another folder, which the view shows as that row so it never splits
+/// a burst, a bracket or a panorama. The row is the copy a RAW+JPEG pair holds, else a picked one,
+/// else the first the index read; a copy in an HDR stack keeps its own row. Picks and Develop take
+/// the row's file; a hidden copy's pick still waits for a Develop of the view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RowCopy {
+    pub file_id: FileId,
+    pub path: PathBuf,
 }
 
 /// What `browse.rows` answers: rows `from..from + rows.len()` of the view at `revision`.
@@ -592,6 +611,10 @@ mod tests {
                 file_id: FileId(10),
                 file_name: "DSC_0001.JPG".into(),
             }),
+            copies: vec![RowCopy {
+                file_id: FileId(11),
+                path: "/backup/DSC_0001.NEF".into(),
+            }],
         };
         let json = serde_json::to_value(&row).unwrap();
         assert_eq!(json["item"], "file");
@@ -599,6 +622,10 @@ mod tests {
         assert_eq!(
             json["pair"],
             serde_json::json!({"file_id": 10, "file_name": "DSC_0001.JPG"})
+        );
+        assert_eq!(
+            json["copies"],
+            serde_json::json!([{"file_id": 11, "path": "/backup/DSC_0001.NEF"}])
         );
         assert_eq!(json["file_id"], 9);
         assert_eq!(json["path"], "/card/DSC_0001.NEF");

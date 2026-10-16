@@ -114,10 +114,10 @@ fn whole(
 
 // -- Cells and moments ----------------------------------------------------------------------------
 
-/// Nine cells, one per state, in three lines: the fifth block is a collapsed burst of four.
+/// Ten cells, one per state: the fifth block is a collapsed burst of four.
 static CELLS: LazyLock<GridLayout> = LazyLock::new(|| {
     GridLayout::new(
-        vec![GridBlock::Singles(5), collapsed(4), GridBlock::Singles(3)],
+        vec![GridBlock::Singles(5), collapsed(4), GridBlock::Singles(4)],
         compact(GridMetrics::select(theme::CELL_SIZE.width)),
         WIDTH,
     )
@@ -148,6 +148,7 @@ fn cells() -> Element<'static, ()> {
                 view.image = None;
                 view.aspect = Some(2.0 / 3.0);
             }
+            9 => view.copied = true,
             _ => {}
         }
         view
@@ -811,7 +812,7 @@ mod tests {
         ] {
             assert_eq!(layout.clamp_scroll(1.0e6, layout.height()), 0.0);
         }
-        assert_eq!(CELLS.cell_count(), 9);
+        assert_eq!(CELLS.cell_count(), 10);
         assert_eq!(WRAPPED.frames().len(), 1);
         assert_eq!(thousands(1_234_567), "1,234,567");
         assert_eq!(thousands(999), "999");

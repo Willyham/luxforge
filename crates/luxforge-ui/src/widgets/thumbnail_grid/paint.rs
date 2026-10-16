@@ -39,6 +39,9 @@ pub struct CellView<'a> {
     /// Already in the catalog: a badge at the top left.
     pub in_catalog: bool,
     pub availability: CellAvailability,
+    /// The row also stands for copies of its file in other folders: a warning icon at the top
+    /// right.
+    pub copied: bool,
     /// A collapsed moment's frame count, as a badge at the top right.
     pub count: Option<u32>,
     /// The footer's text: an exposure step, a file name.
@@ -1030,8 +1033,8 @@ fn stack_badge<'t>(stack: CellStack<'_>, text: &'t str) -> Badge<'t> {
 }
 
 /// A cell's badges over its photograph: the pick at the top left with the catalog badge after it;
-/// at the top right a stack's badge, then the frame count and the unavailable badge before it; a
-/// note at the bottom left. The catalog badge keeps only its icon when its words would reach the
+/// at the top right a stack's badge, then the frame count, the unavailable badge and the copies'
+/// warning icon before it; a note at the bottom left. The catalog badge keeps only its icon when its words would reach the
 /// right-hand badges, or pass the photograph's box; the note ends in an ellipsis at the cell's
 /// inset. `hovered` lights the stack's badge, which is a button.
 fn paint_badges<'a>(
@@ -1111,6 +1114,20 @@ fn paint_badges<'a>(
         if view.stack.is_some() && right - badge.width(painter) < left {
             badge.text = "";
         }
+        let width = badge.width(painter);
+        right -= width;
+        badge.paint(Point::new(right, top), width, surface, painter);
+        right -= theme::CELL_BADGE_GAP;
+    }
+    if view.copied {
+        let badge = Badge {
+            icon: Icon::Warning,
+            text: "",
+            style: UNAVAILABLE,
+            ink: Ink::Fixed(theme::CLIPPING_HIGHLIGHT),
+            spacing: theme::CELL_BADGE_SPACING,
+            trailing: None,
+        };
         let width = badge.width(painter);
         right -= width;
         badge.paint(Point::new(right, top), width, surface, painter);

@@ -1,6 +1,6 @@
 # Basic on the scene scale: Exposure, Temperature and Tint
 
-Status: implemented on the CPU reference and in WGSL (TASK-006, level C of the [Lightroom alignment](lightroom-alignment.md#basic-realigned)), measured against Lightroom Classic's exports through the CPU reference renderer on Linux. GPU qualification on the M4 is open; the owner reviewed the sheets and round 3 confirmed the unit between its measured values. The independent [`f64` reference](../../crates/luxforge-reference/src/scene.rs) and this document specify the unit; production is [`scene.rs`](../../crates/luxforge-core/src/modules/basic/scene.rs) with its program [`scene.wgsl`](../../crates/luxforge-core/src/modules/basic/scene.wgsl).
+Status: implemented on the CPU reference and in WGSL (TASK-006, level C of the [Lightroom alignment](lightroom-alignment.md#basic-realigned)), measured against Lightroom Classic's exports through the CPU reference renderer on Linux. Every Basic corpus cell is within its limits on the M4 Pro's GPU in the release gate's whole-corpus run; the owner reviewed the sheets and round 3 confirmed the unit between its measured values. The independent [`f64` reference](../../crates/luxforge-reference/src/scene.rs) and this document specify the unit; production is [`scene.rs`](../../crates/luxforge-core/src/modules/basic/scene.rs) with its program [`scene.wgsl`](../../crates/luxforge-core/src/modules/basic/scene.wgsl).
 
 ## Why
 
@@ -45,3 +45,4 @@ Through the CPU reference renderer on the round 1 charts, the worst median CIEDE
 - At −2 EV and below the tones just below white stay brighter than Lightroom's, by up to 30 codes at −5: one monotone scale cannot follow Lightroom at both ends.
 - At Temperature's extremes the red channel's shift varies with level in Lightroom's exports, which one stop per channel cannot follow (up to 33 codes of mean red error at −100, against 3 to 8 for green and blue).
 - A derived source (an HDR merge) has no source-stage layer, so it takes the scene shift though its values are scene-linear.
+- Below 100% a paged derived source is drawn from its overview, the stack over its reduced resident level. The scale bends, so the unit over averaged detail differs from the reduced output at edges, and the overview's pointwise worst-block limit is 2.5 for that reason ([GPU-first](gpu-first.md#the-contract), owner, 2026-10-16).
