@@ -246,6 +246,9 @@ struct HeldRest {
     overview: Option<u64>,
     /// The content serial whose job handed the tiles, which the overview keys them by.
     content: Option<u64>,
+    /// Drawn again under new versions once already, the surface having stopped it for a source it
+    /// had let go ([`Editor::gpu_rest_again`]).
+    again: bool,
 }
 
 /// One settled resource's handoff. Crop, retained Compare content and warming remain independent.
@@ -1235,6 +1238,9 @@ pub(crate) struct GpuPreviews {
     /// The picture at rest a test reports the surface has drawn whole, which no test draws.
     #[cfg(test)]
     pub(crate) rest_done: Option<u64>,
+    /// What a test reports of the surface's picture at rest, which no test draws.
+    #[cfg(test)]
+    pub(crate) rest_figures: Option<luxforge_gpu::RestFigures>,
 }
 
 /// What a tick, or a displayed entry's job, asks the owner to plan its GPU picture for, with its
@@ -2629,6 +2635,7 @@ impl Editor {
             wanted: false,
             overview,
             content: None,
+            again: false,
         });
         self.gpu_convert_rest();
     }
@@ -2916,15 +2923,74 @@ impl Editor {
         if held.conversion.refusal().is_some() {
             return true;
         }
-        #[cfg(test)]
-        let figures: Option<luxforge_gpu::RestFigures> = None;
-        #[cfg(not(test))]
-        let figures =
-            luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_rest;
-        figures.is_some_and(|figures| {
+        // A picture at rest stopped for a source the surface had let go is drawn again once the
+        // source is handed back ([`Self::gpu_rest_again`]): only a second stop fails the overview.
+        self.surface_rest().is_some_and(|figures| {
             (figures.version == held.versions.picture || figures.version == held.versions.counts)
-                && figures.fallback.is_some()
+                && figures.fallback.is_some_and(|fallback| {
+                    held.again || fallback != SurfaceFallback::SourceMissing
+                })
         })
+    }
+
+    /// What the photograph's surface says of the picture at rest it draws.
+    fn surface_rest(&self) -> Option<luxforge_gpu::RestFigures> {
+        #[cfg(test)]
+        return self.gpu.rest_figures;
+        #[cfg(not(test))]
+        luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_rest
+    }
+
+    /// A picture at rest the surface began while it held no source — its source let go by frames
+    /// that did not draw the photograph, as Select's, and handed again only by the job that
+    /// follows — stops with `source-missing`, and nothing would draw it after. Once the source is
+    /// handed again, or the surface holds it, the same tiles are drawn again under new versions,
+    /// with the minimap overview and counts they were swept for; once, so a source the surface
+    /// still cannot read leaves the stop standing. Run after every message; `O(1)` unless drawn
+    /// again, then `O(tiles × steps)`, no pixel.
+    pub(crate) fn gpu_rest_again(&mut self) {
+        let Some(held) = self.gpu.rest.as_ref().filter(|held| !held.again) else {
+            return;
+        };
+        let missing = self.surface_rest().is_some_and(|figures| {
+            (figures.version == held.versions.picture || figures.version == held.versions.counts)
+                && figures.fallback == Some(SurfaceFallback::SourceMissing)
+        });
+        if !missing {
+            return;
+        }
+        let (surface, _) = self.surface_source();
+        let handed = self
+            .gpu
+            .source
+            .as_ref()
+            .filter(|source| source.identity == held.tiles.source)
+            .is_some_and(|source| {
+                source.gpu.holds_pixels()
+                    || surface.is_some_and(|figures| figures.version == source.gpu.version())
+            });
+        if !handed {
+            return;
+        }
+        let stopped = held.versions.picture;
+        let content = held.content;
+        self.gpu.rests += 2;
+        let versions = RestVersions {
+            picture: self.gpu.rests - 1,
+            counts: self.gpu.rests,
+        };
+        let (picture, counts) = (versions.picture, versions.counts);
+        if let Some(held) = self.gpu.rest.as_mut() {
+            held.versions = versions;
+            held.conversion = Conversion::Pending;
+            held.again = true;
+        }
+        self.event(
+            "gpu_rest_again",
+            || json!({"stopped": stopped, "version": picture, "why": "source-missing"}),
+        );
+        self.gpu_convert_rest();
+        self.gpu_counts_reswept(content, [picture, counts]);
     }
 
     /// Sweep the held picture at rest again with the minimap overview `version` reduced beside it:
@@ -3447,6 +3513,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
         editor.gpu.rest = None;
         editor.gpu.compare = None;
     }
+    editor.gpu_rest_again();
     editor.gpu_mark_at_rest();
     editor.gpu_follow_rest_drawn();
     editor.gpu_follow_warm_up();
