@@ -166,6 +166,82 @@ fn select_idle_lets_the_pixels_go_and_develop_prepares_them_again() {
     finish(editor, catalog);
 }
 
+/// Select draws no photo surface, so the pipeline lets go of a source the surface held whole and
+/// whose pixels the desktop had let go. Back in Develop within the grace period, the displayed
+/// entry's preview is asked for, and its job hands the surface the pixels again under the same
+/// version: otherwise nothing would, and the picture at rest would stop with `source-missing`.
+#[test]
+fn develop_again_hands_back_a_source_the_pipeline_let_go_in_select() {
+    let catalog = catalog("retired");
+    let (mut editor, asset, _) = real_photo(&catalog);
+    idle_workers(&mut editor);
+    let version = editor.gpu.source().expect("the source").version();
+    // The surface holds every row: the desktop lets the pixels go.
+    let held = editor
+        .gpu
+        .source()
+        .map(|source| luxforge_gpu::SourceFigures {
+            version,
+            bytes: source.bytes(),
+            uploaded: source.bytes(),
+            ready: true,
+        });
+    editor.gpu.source_figures = held;
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(
+        editor
+            .gpu
+            .source()
+            .is_some_and(|source| !source.holds_pixels())
+    );
+    let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
+    assert!(editor.select_shown(), "{}", editor.status.text);
+    // Select's first frame hands the pipeline no source: it lets it go.
+    editor.gpu.source_figures = None;
+    let log = attach_log(&mut editor);
+    develop_again(&mut editor);
+    let records = logged(&mut editor, &log);
+    let restored = events(&records, "residency_restored");
+    assert_eq!(restored.len(), 1, "{records:?}");
+    assert_eq!(restored[0]["why"], "source-retired");
+    assert_eq!(restored[0]["earlier_frame"], false);
+    assert!(editor.presentation.has_picture(), "its own frame stays");
+    // The preview the way back asks for, as its task runs it.
+    let loaded = prepared_preview(
+        &editor.owner,
+        editor.client,
+        asset,
+        editor.displayed_entry(),
+        editor.drawn(),
+    );
+    assert!(loaded.is_ok(), "{loaded:?}");
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Residency(ResidencyMessage::Prepared(
+        loaded.map(Box::new),
+    )));
+    let records = logged(&mut editor, &log);
+    let handed = events(&records, "gpu_source");
+    assert_eq!(handed.len(), 1, "{records:?}");
+    assert_eq!(handed[0]["why"], "surface-let-go");
+    assert_eq!(handed[0]["version"], json!(version));
+    assert!(
+        editor
+            .gpu
+            .source()
+            .is_some_and(|source| source.holds_pixels())
+    );
+    // Shown again with the pixels in hand, Develop asks for nothing more.
+    let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
+    let log = attach_log(&mut editor);
+    develop_again(&mut editor);
+    let records = logged(&mut editor, &log);
+    assert!(
+        events(&records, "residency_restored").is_empty(),
+        "{records:?}"
+    );
+    finish(editor, catalog);
+}
+
 /// Where the frame on the presenter is an earlier stack's — the GPU's picture having been drawn
 /// over it — it is not drawn on the way back: with no cached large preview of the entry held, the
 /// canvas is empty until the job's picture arrives.

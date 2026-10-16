@@ -22,7 +22,9 @@
 //!
 //! **Back in Develop.** Develop asks for the displayed entry's preview as an open does: the owner
 //! prepares the original again through its source worker, and the job hands the surface its
-//! source. Until then the photograph's frame on the presenter stays where it is that entry's;
+//! source. It asks after a shorter visit too, whenever Select showed while the desktop held none of
+//! the source's pixels: Select's first frame let the pipeline's source go, and no other job would
+//! hand it back. Until then the photograph's frame on the presenter stays where it is that entry's;
 //! where it is an earlier stack's frame, which the GPU's picture was drawn over, the cached large
 //! preview of the entry stands in, or nothing, never an earlier entry. The recipe, history and
 //! drafts are untouched.
@@ -80,6 +82,11 @@ pub(crate) struct Residency {
     /// The photograph whose pixels the desktop let go while Select showed, until Develop shows it
     /// again and asks for them.
     pub(crate) released: Option<AssetId>,
+    /// The photograph Select was shown over while the desktop held none of its source's pixels,
+    /// the surface having held every row: Select draws no photo surface, so the pipeline lets the
+    /// source go at the end of its first frame, and only a job hands it again. Until Develop shows
+    /// it again and asks for one.
+    pub(crate) retired: Option<AssetId>,
     /// The owner has let go of this photograph's prepared source, or holds none of it.
     owner_released: Option<AssetId>,
     /// An owner release in flight.
@@ -264,22 +271,24 @@ impl Editor {
         )
     }
 
-    /// Develop shows the photograph whose pixels were let go: ask for the displayed entry's preview,
-    /// which waits for the original to be prepared again and hands the surface its source. A frame
-    /// on the presenter that is an earlier stack's, the GPU's picture having been drawn over it,
-    /// gives way to the entry's cached large preview, or to nothing.
-    fn residency_reenter(&mut self, asset: AssetId) -> iced::Task<Message> {
+    /// Develop shows the photograph whose pixels were let go — by the desktop (`released`), or by
+    /// the pipeline in Select (`retired`): ask for the displayed entry's preview, which waits for
+    /// the original to be prepared again where the owner let it go, and hands the surface its
+    /// source. A frame on the presenter that is an earlier stack's, the GPU's picture having been
+    /// drawn over it, gives way to the entry's cached large preview, or to nothing.
+    fn residency_reenter(&mut self, asset: AssetId, why: &'static str) -> iced::Task<Message> {
         self.residency.owner_released = None;
+        self.residency.retired = None;
         let earlier = self.presentation.gpu_presented.is_some()
             || self.presentation.presented_asset.as_ref() != Some(&asset);
         let cached = earlier && self.present_cached_of(&asset, None);
         if earlier && !cached {
             self.presentation.withdraw();
         }
-        self.event(
-            "residency_restored",
-            || json!({"asset_id": asset, "earlier_frame": earlier, "cached_preview": cached}),
-        );
+        self.event("residency_restored", || {
+            json!({"asset_id": asset, "why": why, "earlier_frame": earlier,
+                "cached_preview": cached})
+        });
         let (owner, client) = (self.owner.clone(), self.client);
         let (entry, drawn) = (self.displayed_entry(), self.drawn());
         owner_task(
@@ -359,6 +368,19 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> iced::Task<Messa
         editor.residency.owner_released = None;
         editor.residency.showing += 1;
     }
+    // Select is shown over a source the surface holds whole, whose pixels the desktop has let go:
+    // the pipeline lets it go at the end of Select's first frame, which draws no photo surface.
+    if shown
+        && editor.residency.released.is_none()
+        && editor.gpu_preview_allowed().is_ok()
+        && let Some(asset) = &open
+        && editor
+            .gpu
+            .source()
+            .is_some_and(|source| !source.holds_pixels())
+    {
+        editor.residency.retired = Some(asset.clone());
+    }
     if let Some(released) = editor.residency.released.clone() {
         if open.as_ref() != Some(&released) {
             // Another photograph was opened: its own open prepares it.
@@ -366,7 +388,25 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> iced::Task<Messa
         } else if !shown && !editor.activity.pending && editor.develop.switch.is_none() {
             // Develop shows it again, and no open of another photograph is on its way.
             editor.residency.released = None;
-            return editor.residency_reenter(released);
+            return editor.residency_reenter(released, "released");
+        }
+    }
+    if let Some(retired) = editor.residency.retired.clone() {
+        if open.as_ref() != Some(&retired) {
+            // Another photograph was opened: its own open hands its source.
+            editor.residency.retired = None;
+        } else if !shown && !editor.activity.pending && editor.develop.switch.is_none() {
+            // Develop shows it again: nothing else would hand the surface its source, so the
+            // picture at rest would stop with `source-missing` and Develop never settle. A job
+            // that handed the pixels again meanwhile leaves the surface to upload them.
+            editor.residency.retired = None;
+            if editor
+                .gpu
+                .source()
+                .is_some_and(|source| !source.holds_pixels())
+            {
+                return editor.residency_reenter(retired, "source-retired");
+            }
         }
     }
     if editor.develop_idle_after_heavy() {
