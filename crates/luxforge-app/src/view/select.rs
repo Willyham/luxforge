@@ -766,6 +766,7 @@ fn cell_view<'a>(
         selected: selection.selected(cell.item, cell.span),
         active: selection.active_in(cell.item, cell.span),
         in_catalog: facts.in_catalog,
+        copied: facts.copied,
         availability: match facts.availability {
             Availability::Available if unreadable => CellAvailability::Unreadable,
             Availability::Available => CellAvailability::Available,
