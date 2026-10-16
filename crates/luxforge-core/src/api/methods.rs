@@ -1443,19 +1443,19 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "browse.view",
         crate::catalog_types::api::BrowseView,
         owner::views::browse_view,
-        "evaluates a query into the caller's one view, held by the owner as its ordered items, and answers {revision, query, count, picked, in_catalog, unavailable, groups: {days, cameras, moments}, library_sequence, index_revision} without a row; files come from the index (an event, a folder on disk with its subfolders when asked, or a card), photographs from the catalog; without_pick is decided per frame over the whole source, Day › Camera › Moment under the query's thresholds, before the other conditions; grouping applies under the capture-time sort only; every sort ends in capture time (undated last), the file name ignoring case, then the path or the photograph's row; the selection carries over by item; resource-limit past 1,000,000 items in the source; a later library change or index revision marks the view stale"
+        "evaluates a query into the caller's one view, held by the owner as its ordered items, and answers {revision, query, count, picked, in_catalog, unavailable, paired, groups: {days, cameras, moments}, library_sequence, index_revision} without a row; a view of files shows a RAW+JPEG pair (a JPEG beside a RAW file of its name in one folder, dated at most 2 s apart or either undated) the filter keeps both files of as the RAW file's row, which names the JPEG, unless the JPEG is picked or in a stack; paired counts the JPEGs so shown; moments and without_pick treat a pair as its RAW file; files come from the index (an event, a folder on disk with its subfolders when asked, or a card), photographs from the catalog; without_pick is decided per frame over the whole source, Day › Camera › Moment under the query's thresholds, before the other conditions; grouping applies under the capture-time sort only; every sort ends in capture time (undated last), the file name ignoring case, then the path or the photograph's row; the selection carries over by item; resource-limit past 1,000,000 items in the source; a later library change or index revision marks the view stale"
     ),
     owner!(
         "browse.rows",
         crate::catalog_types::api::BrowseRows,
         owner::views::browse_rows,
-        "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, picked, developed_as?, edited, folder_id?, collections?, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
+        "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, pair?: {file_id, file_name} (the JPEG a RAW file's row stands for), picked, developed_as?, edited, folder_id?, collections?, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
     ),
     owner!(
         "browse.facets",
         crate::catalog_types::api::BrowseFacets,
         owner::views::browse_facets,
-        "{counts: {facet: [{value?, label?, count}]}}: for each facet asked (date, place, camera, lens, kind, pick), every value most frequent first, each count exactly the size of the view the source and filter give with that facet's own condition replaced by that value; the value absent counts the items that record none; the pick facet counts files only; the default thresholds decide moments"
+        "{counts: {facet: [{value?, label?, count}]}}: for each facet asked (date, place, camera, lens, kind, pick), every value most frequent first, each count exactly the size of the view the source and filter give with that facet's own condition replaced by that value, a RAW+JPEG pair's JPEG counted; the value absent counts the items that record none; the pick facet counts files only; the default thresholds decide moments"
     ),
     owner!(
         "browse.select",

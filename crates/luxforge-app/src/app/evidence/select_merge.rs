@@ -39,8 +39,8 @@ enum Reached {
 }
 
 impl Editor {
-    /// Press Merge HDR in the header of the bracket holding view position `position`, as the
-    /// header does: the grid's moment number is its place among the grid's
+    /// Press the merge (Merge HDR, Merge panorama) in the header of the bracket or panorama holding
+    /// view position `position`, as the header does: the grid's moment number is its place among the grid's
     /// moments, and the action's its place among the header's actions. With `last_settings` it is
     /// pressed with ⌥ held, which is let go after.
     pub(super) fn merge_step(&mut self, position: u32, last_settings: bool) -> Task<Message> {
@@ -74,19 +74,19 @@ impl Editor {
                     number,
                     actions
                         .iter()
-                        .position(|action| *action == MomentAction::Merge),
+                        .position(|action| matches!(action, MomentAction::Merge(_))),
                 )
             });
         let (number, action) = match found {
             Some((number, Some(action))) => (number as u32, action as u32),
             Some(_) => {
                 return self.fail_step(format!(
-                    "the moment holding position {position} offers no Merge HDR"
+                    "the moment holding position {position} offers no merge"
                 ));
             }
             None => return self.fail_step(format!("no moment holds position {position}")),
         };
-        // Scrolled to the bracket first, as a person scrolls to the header they press.
+        // Scrolled to the moment first, as a person scrolls to the header they press.
         let scroll =
             self.select
                 .layout

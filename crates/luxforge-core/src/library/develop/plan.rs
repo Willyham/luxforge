@@ -15,9 +15,9 @@ use super::{
 use crate::{
     Error,
     catalog_types::{
-        CatalogFolderId, DevelopInto, DevelopPlan, EventId, EventSpan, FolderChoice, Grouping,
-        LocalDay, MAX_LIBRARY_NAME, MomentId, NoProbe, PlannedEvent, RemovablePicks, Thresholds,
-        ViewItem, Volume, VolumeId,
+        CatalogFolderId, DevelopInto, DevelopPlan, EventId, EventSpan, FolderChoice, FrameFacts,
+        Grouping, LocalDay, MAX_LIBRARY_NAME, MomentId, NoProbe, PlannedEvent, RemovablePicks,
+        Thresholds, ViewItem, Volume, VolumeId,
     },
     editor::library_rows,
     index::volume_of,
@@ -374,11 +374,24 @@ fn catalog_name(name: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// Every burst's and bracket's identity by the items of its frames, over `frames` grouped as a
-/// view groups them (day, camera, moment) with the recorded thresholds: a moment is known by its
-/// first frame's path and capture instant.
+/// Every burst's, bracket's and panorama's identity by the items of its frames, over `frames`
+/// grouped as a view groups them (day, camera, moment) with the recorded thresholds: a moment is
+/// known by its first frame's path and capture instant. A RAW+JPEG pair is grouped as its RAW
+/// file, and its JPEG is of the RAW file's moment.
 fn moments(frames: &Frames) -> HashMap<ViewItem, MomentId> {
-    let mut ordered = frames.frames.clone();
+    let paired: HashMap<ViewItem, ViewItem> = organize::pairs(&frames.frames, |frame| {
+        frames.kinds.get(&frame.item).copied()
+    })
+    .into_iter()
+    .map(|(raw, jpeg)| (frames.frames[raw].item, frames.frames[jpeg].item))
+    .collect();
+    let jpegs: HashSet<ViewItem> = paired.values().copied().collect();
+    let mut ordered: Vec<FrameFacts> = frames
+        .frames
+        .iter()
+        .filter(|frame| !jpegs.contains(&frame.item))
+        .cloned()
+        .collect();
     organize::order(
         &mut ordered,
         &frames.tables,
@@ -398,6 +411,9 @@ fn moments(frames: &Frames) -> HashMap<ViewItem, MomentId> {
         let first = &members[0];
         let id = MomentId::of(&frames.path(first), first.instant_ms.unwrap_or(0));
         for frame in members {
+            if let Some(jpeg) = paired.get(&frame.item) {
+                of.insert(*jpeg, id.clone());
+            }
             of.insert(frame.item, id.clone());
         }
     }
@@ -625,4 +641,61 @@ pub(crate) fn destinations(
         }
     }
     Ok((destinations, of_event))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        SourceTag,
+        catalog_types::{Exposure, FileId, FrameTables},
+    };
+
+    /// A RAW+JPEG pair is one frame of a moment: a burst of three pairs is a burst of its RAW
+    /// files, each JPEG of its RAW file's burst, and a lone pair is no burst at all.
+    #[test]
+    fn develop_a_raw_and_its_jpeg_are_one_frame_of_a_moment() {
+        let t = 1_789_000_000_000;
+        let shots = [
+            ("DSC_0001", t),
+            ("DSC_0002", t + 200),
+            ("DSC_0003", t + 400),
+            ("DSC_0009", t + 60_000),
+        ];
+        let mut tables = FrameTables::default();
+        let folder = tables.folder(PathBuf::from("/card"));
+        let body = tables.body(None);
+        let mut frames = Frames {
+            frames: Vec::new(),
+            tables,
+            kinds: HashMap::new(),
+        };
+        for (name, instant) in shots {
+            for (extension, kind) in [("NEF", SourceTag::Raw), ("JPG", SourceTag::Jpeg)] {
+                let item = ViewItem::File(FileId(frames.frames.len() as i64 + 1));
+                frames.kinds.insert(item, kind);
+                frames.frames.push(FrameFacts {
+                    item,
+                    folder,
+                    name: format!("{name}.{extension}").into(),
+                    instant_ms: Some(instant),
+                    local_day: Some(LocalDay(instant.div_euclid(86_400_000) as i32)),
+                    position: None,
+                    body,
+                    exposure: Exposure::default(),
+                    merged: false,
+                });
+            }
+        }
+        let of = moments(&frames);
+        let burst = MomentId::of(Path::new("/card/DSC_0001.NEF"), t);
+        for id in 1..=6 {
+            assert_eq!(
+                of.get(&ViewItem::File(FileId(id))),
+                Some(&burst),
+                "file {id}"
+            );
+        }
+        assert_eq!(of.len(), 6, "the lone pair is no burst");
+    }
 }

@@ -30,7 +30,7 @@ use crate::{
         tasks::call,
     },
     state::{
-        select::{Block, InfoModel},
+        select::{Block, InfoModel, MomentAction},
         select_merge::{KindIcon, MergeAction, plan_refusal, sheet::Picture, stack_cell},
     },
 };
@@ -39,7 +39,7 @@ use luxforge_core::{
     SourceTag,
     catalog_types::{
         CaptureTime, Dimensions, ExifOrientation, FileRecord, FileSignature, HeaderMetadata,
-        HeaderState, IndexRoot, IndexedFolder, MergeKind, MergePlan, MergePreview,
+        HeaderState, IndexRoot, IndexedFolder, MergeKind, MergePlan, MergePreview, MomentKind,
         PanoramaProjection, RootKind, RowItem, StackRole, ViewSource, Volume, VolumeId,
     },
     preferences::PanoramaMergePreference,
@@ -263,14 +263,20 @@ fn panorama_merge_menu_and_sheet_requests_are_a_json_clients() {
     let mut editor = bench.open();
     let agent = editor.owner.register();
     assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 4);
-    // No moment header offers a panorama: a bracket's header keeps Merge HDR alone.
+    // A moment header offers Merge panorama only over a panorama, and Merge HDR only over a
+    // bracket.
     for block in &editor.select.state.content.blocks {
-        if let Block::Moment { actions, .. } = block {
-            assert!(
-                actions
-                    .iter()
-                    .all(|action| action.label() != "Merge panorama"),
-                "{actions:?}"
+        if let Block::Moment { kind, actions, .. } = block {
+            let offers = |merge| actions.contains(&MomentAction::Merge(merge));
+            assert_eq!(
+                offers(MergeKind::Panorama),
+                *kind == MomentKind::Panorama,
+                "{kind:?} {actions:?}"
+            );
+            assert_eq!(
+                offers(MergeKind::Hdr),
+                *kind == MomentKind::Bracket,
+                "{kind:?} {actions:?}"
             );
         }
     }

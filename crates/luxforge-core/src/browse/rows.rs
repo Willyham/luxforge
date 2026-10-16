@@ -4,7 +4,7 @@
 //! developed originals among the window's paths; for photographs the catalog's rows, their
 //! collections and the index's rendered previews. An expanded HDR
 //! stack's provenance rows are read an original at a time, at most nine a stack, and every stacked
-//! row carries the badge the view was arranged with.
+//! row carries the badge the view was arranged with, and every RAW+JPEG pair's RAW row its JPEG.
 
 use super::{
     View,
@@ -67,10 +67,9 @@ pub(crate) fn rows(
     }
     answer.sort_unstable_by_key(|row| row.position);
     for row in &mut answer {
-        row.stack = view
-            .badges
-            .get(&window[(row.position - from) as usize])
-            .cloned();
+        let item = &window[(row.position - from) as usize];
+        row.stack = view.badges.get(item).cloned();
+        row.pair = view.pairs.get(item).cloned();
     }
     Ok(answer)
 }
@@ -223,6 +222,7 @@ fn file_rows(
             preview,
             stack: None,
             reason: None,
+            pair: None,
         });
     }
     Ok(answer)
@@ -286,6 +286,7 @@ fn photo_rows(
             preview: PreviewState::Pending,
             stack: None,
             reason: None,
+            pair: None,
         };
         found.insert(row.get(0)?, PhotoFacts { row: row_facts });
     }
@@ -381,6 +382,7 @@ fn input_rows(
             preview: PreviewState::Unavailable,
             stack: None,
             reason: found.reason,
+            pair: None,
         });
     }
     if !listed.is_empty() {

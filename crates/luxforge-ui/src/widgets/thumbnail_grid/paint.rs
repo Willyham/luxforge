@@ -762,6 +762,7 @@ fn paint_frame<'a>(
     let icon = match header.kind {
         MomentKind::Burst => Icon::Stack,
         MomentKind::Bracket => Icon::Bracket,
+        MomentKind::Panorama => Icon::Panorama,
     };
     painter.icon(
         icon,
