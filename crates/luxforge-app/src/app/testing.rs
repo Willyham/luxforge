@@ -486,6 +486,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         view_idle: None,
         idle: None,
         minimap: None,
+        window_size: None,
         allow_unready_capture: false,
         capture_overlay: false,
         saving: false,

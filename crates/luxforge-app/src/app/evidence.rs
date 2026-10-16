@@ -15,6 +15,7 @@ mod select_merge;
 mod select_missing;
 mod update;
 mod usage;
+mod window;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -112,6 +113,8 @@ pub(crate) struct Evidence {
     pub(crate) idle: Option<IdleObservation>,
     /// A minimap step waiting for the card to be able to navigate.
     pub(crate) minimap: Option<minimap::PendingMinimap>,
+    /// A `window_size` step waiting for the window to report the size it asked for.
+    pub(crate) window_size: Option<window::PendingSize>,
     /// Permit a diagnostic capture of a blank/stale result after a failed view-idle check.
     pub(crate) allow_unready_capture: bool,
     /// This capture was armed by the mask overlay, so it must show one.
@@ -258,6 +261,7 @@ impl Evidence {
             view_idle: None,
             idle: None,
             minimap: None,
+            window_size: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,
@@ -632,6 +636,8 @@ pub(crate) enum Settle {
     /// A minimap step's routed mouse events were dispatched through the window's widgets, and the
     /// messages they published handled.
     Minimap,
+    /// A `window_size` step's window reports the size it asked for.
+    Window,
 }
 
 impl Settle {
@@ -678,6 +684,7 @@ impl Settle {
             Self::Update => "update",
             Self::Corrections => "corrections",
             Self::Minimap => "minimap",
+            Self::Window => "window",
         }
     }
 
@@ -1581,6 +1588,7 @@ impl Editor {
             Step::PresetImport { path } => self.preset_import_step(path),
             Step::Performance { expanded } => self.performance_step(expanded),
             Step::WindowVisibility { action } => self.window_visibility_step(action),
+            Step::WindowSize { width, height } => self.window_size_step(width, height),
             Step::PerformanceCancel { row } => {
                 let job = self
                     .workspace
@@ -6389,6 +6397,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let minimap = editor.minimap_step_when_navigable();
     editor.settle_minimap();
+    editor.settle_window_size();
     editor.settle_when_quiet();
     editor.settle_corrections();
     editor.settle_capability();
@@ -6955,6 +6964,7 @@ mod tests {
             view_idle: None,
             idle: None,
             minimap: None,
+            window_size: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,

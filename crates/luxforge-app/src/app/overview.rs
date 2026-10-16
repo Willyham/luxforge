@@ -302,6 +302,8 @@ pub(crate) struct Overviews {
     counters: OverviewCounters,
     /// What the photograph's surface is handed ([`Self::handed`]).
     handed: OverviewWant,
+    /// The last settled overview's version the evidence log announced ([`Self::newly_settled`]).
+    announced: Option<u64>,
 }
 
 impl Overviews {
@@ -665,6 +667,17 @@ impl Overviews {
     }
 
     /// Evidence: what is held, in progress and refused, and the counters.
+    /// The settled overview's version and renderer when it was not settled at the last call: once
+    /// per overview made, as the card first shows it.
+    fn newly_settled(&mut self) -> Option<(u64, Renderer)> {
+        let made = self
+            .settled
+            .as_ref()
+            .filter(|made| self.announced != Some(made.version))?;
+        self.announced = Some(made.version);
+        Some((made.version, made.renderer))
+    }
+
     pub(crate) fn summary(&self) -> Value {
         let made = |made: &Made| {
             json!({"version": made.version, "renderer": made.renderer.as_str(),
@@ -823,6 +836,13 @@ impl Editor {
         let desired = self.overview_desired(true);
         let facts = self.overview_facts(desired.as_ref());
         let work = self.overviews.reconcile(desired.as_ref(), &facts);
+        // Once per overview made: when it became the one the card shows, for its latency.
+        if let Some((version, renderer)) = self.overviews.newly_settled() {
+            self.event(
+                "overview_ready",
+                || json!({"version": version, "renderer": renderer.as_str()}),
+            );
+        }
         // A view change that found the overview ready reused it.
         if matches!(
             self.overviews.minimap(desired.as_ref()),

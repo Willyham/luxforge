@@ -15,7 +15,7 @@ use crate::{
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
-    minify_smoke as minify, mixer_smoke as mixer,
+    minify_smoke as minify, minimap_smoke as minimap, mixer_smoke as mixer,
     move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
     panorama_merge_smoke as panorama_merge, performance_smoke as performance,
     presence_smoke as presence, presets_smoke as presets, range_corpus_smoke as range_corpus,
@@ -485,6 +485,36 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: None,
         own: Some(zoom::run),
+    },
+    Scenario {
+        name: minimap::SCENARIO,
+        about: "The high-zoom minimap across API and pinch thresholds, every corner, resize, interface scale and panels, edits, history, a straightened crop, a mask, a photograph switch, a hidden window and the reference renderer, over the 24 MP JPEG or `--source` photographs, one run each",
+        launches: &[
+            LaunchSpec {
+                name: "gpu",
+                script: "gpu-script.json",
+                plan: minimap::gpu_plan,
+                // Sixty-four frames, several of which wait for an overview to be made.
+                deadline: Some(Duration::from_secs(300)),
+                ..APP
+            },
+            LaunchSpec {
+                name: "reference",
+                script: "reference-script.json",
+                plan: minimap::reference_plan,
+                no_gpu_render: true,
+                // Every overview and every frame at 200% is the reference's own render.
+                deadline: Some(Duration::from_secs(300)),
+                ..APP
+            },
+        ],
+        verify: minimap::verify,
+        source: Source::Default(&["fixtures/generated/24mp.jpg"]),
+        window: Some(PANELLED),
+        note: Some(
+            "The `gpu` launch is the ordinary editor; the `reference` launch passes `--no-gpu-render`, so every overview is the reference's reduction of the frame it retains. The `gpu` launch also opens `fixtures/s0/orientation-1.jpg`, whose stage fits the canvas at 200%, and the photograph again.",
+        ),
+        own: Some(minimap::run),
     },
     Scenario {
         name: minify::SCENARIO,

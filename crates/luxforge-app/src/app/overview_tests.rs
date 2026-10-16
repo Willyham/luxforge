@@ -115,6 +115,9 @@ fn a_swept_overview_is_adopted_ready_and_reused_with_no_work() {
     assert_eq!(overviews.counters().gpu_builds, 1);
     assert_eq!(overviews.counters().cpu_builds, 0);
     assert_eq!(overviews.counters().uploads, 0);
+    // Its settling is announced once, however often reused.
+    assert_eq!(overviews.newly_settled(), Some((version, Renderer::Gpu)));
+    assert_eq!(overviews.newly_settled(), None);
     // A content admitted again with the same pixels — a cancelled draft — keys the same overview.
     overviews.admitted(9, Some(pixels(7)));
     assert_eq!(overviews.content(9), Some(&pixels(7)));
