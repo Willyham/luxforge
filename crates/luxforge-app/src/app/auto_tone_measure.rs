@@ -102,7 +102,7 @@ fn auto_tone_measure_photo_sized_inputs() -> Result<(), &'static str> {
                     // thread, here as on the core's analysis worker.
                     service.submit(TileCall::caller(client, Cancel::new(), move |reads, cancel| {
                         let read_started = Instant::now();
-                        let sampled = luxforge_core::tiles::read_grid(&held, 0, reads, cancel)?;
+                        let sampled = luxforge_core::tiles::read_grid(&held, 0, luxforge_core::BASIC_EFFECT, reads, cancel)?;
                         let read_ms = read_started.elapsed().as_secs_f64() * 1000.;
                         let row = json!({"read_ms":read_ms,"sample_bytes":sampled.sample.bytes(),"samples":sampled.sample.rgb.len(),"renderer":sampled.answered.record});
                         let _ = grids.send(sampled);

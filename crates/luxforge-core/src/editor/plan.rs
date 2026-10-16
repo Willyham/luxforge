@@ -1226,7 +1226,7 @@ fn sample_compile_count() -> usize {
 }
 
 impl StageQuestions for HostStage<'_> {
-    fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
+    fn grid_before(&self, index: usize, effect_id: &str) -> Result<crate::tiles::GridRead, Error> {
         refuse_on_owner()?;
         let sensor = super::evaluate::sensor_of(self.source()?);
         let source = super::evaluate::source_of(
@@ -1251,6 +1251,7 @@ impl StageQuestions for HostStage<'_> {
         crate::tiles::grid::read(
             &evaluation,
             index,
+            effect_id,
             &crate::tiles::ReferenceReads,
             &crate::Cancel::never(),
         )

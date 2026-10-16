@@ -250,6 +250,7 @@ fn prepare(manifest: &Manifest, base: &Path) -> Result<Vec<Prepared>> {
         let read = luxforge_core::tiles::read_grid(
             evaluation,
             index_basic,
+            luxforge_core::BASIC_EFFECT,
             &luxforge_core::tiles::ReferenceReads,
             &Cancel::never(),
         )?;

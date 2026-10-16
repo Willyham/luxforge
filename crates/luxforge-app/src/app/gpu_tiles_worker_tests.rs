@@ -2718,7 +2718,7 @@ fn auto_tone_gpu_grid_and_values_agree_with_the_reference() {
                 let held = evaluation.clone();
                 let (sender, receiver) = mpsc::sync_channel(1);
                 service.submit(TileCall::caller(client, Cancel::new(), move |reads, cancel| {
-                let sampled = luxforge_core::tiles::read_grid(&held, prefix, reads, cancel)?;
+                let sampled = luxforge_core::tiles::read_grid(&held, prefix, luxforge_core::BASIC_EFFECT, reads, cancel)?;
                 let model = luxforge_core::auto_tone::forward_model(held.registry(), &held.recipe().layers, prefix, luxforge_core::CompileStage::exact(luxforge_core::Stage { width: 32, height: 32 }))?;
                 let report = model.solve(&sampled.sample, Default::default(), cancel)?;
                 Ok(json!({"renderer": sampled.answered.record, "rgb": sampled.sample.rgb, "values": report.values}))

@@ -99,6 +99,7 @@ Auto reads one bounded **analysis sample**: linear RGB values of the stage the B
   - Clipped samples are left out of the clipping fractions, so Auto never greys out a sky that was already clipped in the file.
 - **Identity:** asset, source fingerprint, the content of the layers before Basic, the geometry after it, grid dimensions, the input mode, how clipping is detected and the renderer. Nothing of Auto is part of it.
   - Basic's own values, the Look and later colour layers are not part of it, so a repeated Auto or a query followed by the action reads the sample once.
+  - The input mode is Basic's, whether the global Basic layer exists or Auto's commit will insert it, never that of whatever layer holds Basic's position. The first Auto on a photograph without Basic therefore reads the grid every later Auto finds.
   - Retained grids live in one least-recently-used cache per render context, capped at 32 MiB in total and shared by every client, the desktop and API clients alike; a read evicts the least recently used grids before it builds its own.
   - Removing a photo to Removed, or deleting its records, releases its grids; a read under way then cannot put its grid back.
 - **Cancellation:** the sample read and the solve run under the request's cancellation and stop within a row, tile or solver chunk; one still waiting in the tile service's queue, or in the analysis worker's after it, is answered as soon as its turn comes. The owner cancels a parked `edit.auto-tone` (or preset) read ([detail](detail.md)):

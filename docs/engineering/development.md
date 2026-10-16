@@ -1815,13 +1815,15 @@ reference's.
 
 `--mode auto-tone` times Auto tone from its input, the Auto button's action or, with `--shortcut`,
 `⌘U` through the key table, to the `analysis_action_answered` event of the entry it committed and to
-that entry's first exact frame. A warm run zeroes Auto's fields and sets a distinct Tint before each
-sample, so every frame is drawn anew while the sample grid stays cached (the first Auto of each
-launch, which fills it, is not measured); `--cold` commits a crop inset a little further instead, so
-every sample reads a new grid. Warm runs refuse a RAW, whose Basic refuses Tint. Each sample records
-the report's grid points and sample bytes; the solve time is the engine measurement's, as the
-desktop's answer carries none. `--samples` is 1 to 60, split over launches to fit the evidence
-script; `--reference-renderer` measures the reference's.
+that entry's first exact frame: a `preview_displayed` that is neither a draft, a proxy nor a zoom's
+hand-over, which at Fit on the reference is its exact frame reduced to the view (`frame_reduced` in
+each sample), or a `preview_pixels_reused` naming the entry. A warm run zeroes Auto's fields and
+sets a distinct Tint before each sample, so every frame is drawn anew while the sample grid stays
+cached (the first Auto of each launch, which fills it, is not measured); `--cold` commits a crop
+inset a little further instead, so every sample reads a new grid. Warm runs refuse a RAW, whose
+Basic refuses Tint. Each sample records the report's grid points and sample bytes; the solve time
+is the engine measurement's, as the desktop's answer carries none. `--samples` is 1 to 60, split
+over launches to fit the evidence script; `--reference-renderer` measures the reference's.
 
 `--mode minimap` times one drag of the minimap's viewport rectangle at `--zoom` (200% by default):
 each of `--samples` moves (40 by default, at most 48) from its pan (`minimap_navigated`) to the
