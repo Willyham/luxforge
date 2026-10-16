@@ -4,11 +4,15 @@
 //! boundary and the draft revision its plan was drawn for; a CPU frame by its picture version and
 //! the preview generation and draft revision the desktop handed the surface it as.
 //!
-//! The surface stamps a frame in its draw ([`luxforge_ui::FirstDrawn`]); the desktop reads the stamp
-//! after its next message, which carries the draw's own instant, however late it comes. Nothing
-//! here runs unless the run logs events, and nothing wakes the editor.
+//! A pan that scrolls the picture already on the surface draws no new frame, so the place a draw
+//! puts its picture is logged apart, as `surface_view_drawn`, once for each place it is first drawn
+//! at: a harness times a pan to the draw that shows it by the place's origin.
+//!
+//! The surface stamps a frame in its draw ([`luxforge_ui::FirstDrawn`], [`luxforge_ui::ViewDrawn`]);
+//! the desktop reads the stamps after its next message, which carry the draw's own instant, however
+//! late it comes. Nothing here runs unless the run logs events, and nothing wakes the editor.
 use super::{Before, Editor, Message};
-use luxforge_ui::FirstDrawn;
+use luxforge_ui::{FirstDrawn, ViewDrawn};
 use serde_json::json;
 use std::collections::VecDeque;
 
@@ -19,6 +23,8 @@ const PICTURES: usize = 16;
 #[derive(Default)]
 pub(crate) struct DrawnFrames {
     logged: Option<FirstDrawn>,
+    /// The surface's last stamped placement the desktop logged.
+    logged_view: Option<ViewDrawn>,
     /// The CPU frames handed to the surface, newest last: picture version, preview generation and
     /// draft revision.
     pictures: VecDeque<(u64, u64, Option<u64>)>,
@@ -29,8 +35,9 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> iced::Task<Messa
         return iced::Task::none();
     }
     remember_picture(editor);
-    let first = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).first_drawn;
-    log_drawn(editor, first);
+    let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+    log_drawn(editor, drawn.first_drawn);
+    log_view_drawn(editor, drawn.view_drawn);
     iced::Task::none()
 }
 
@@ -101,6 +108,26 @@ fn log_drawn(editor: &mut Editor, first: Option<FirstDrawn>) {
     });
 }
 
+/// Log the place the surface last stamped its picture at, once.
+fn log_view_drawn(editor: &mut Editor, view: Option<ViewDrawn>) {
+    let Some(view) = view else {
+        return;
+    };
+    if editor.drawn_frames.logged_view == Some(view) {
+        return;
+    }
+    editor.drawn_frames.logged_view = Some(view);
+    let drawn_ms = view
+        .at
+        .saturating_duration_since(editor.log.started)
+        .as_secs_f64()
+        * 1000.0;
+    editor.event(
+        "surface_view_drawn",
+        || json!({"drawn_ms": drawn_ms, "origin": view.origin}),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testing::{attach_log, events, finish, logged, real_photo};
@@ -110,7 +137,8 @@ mod tests {
 
     /// Each frame the surface first draws is logged once, at the draw's own instant on the run's
     /// clock: a CPU frame under the generation that handed it, a GPU frame under its boundary and
-    /// draft revision, and a redraw of either not again.
+    /// draft revision, and a redraw of either not again; each place a picture is first drawn at,
+    /// as a pan scrolls it, likewise.
     #[test]
     fn each_first_drawn_frame_is_logged_once_at_its_draws_instant() {
         let catalog = std::env::temp_dir().join(format!(
@@ -156,7 +184,29 @@ mod tests {
         };
         log_drawn(&mut editor, Some(gpu));
         log_drawn(&mut editor, None);
+        // A place is logged once too, and a pan's new place again.
+        let placed = ViewDrawn {
+            origin: [812, 300],
+            at: at + Duration::from_millis(20),
+        };
+        log_view_drawn(&mut editor, Some(placed));
+        log_view_drawn(&mut editor, Some(placed));
+        log_view_drawn(
+            &mut editor,
+            Some(ViewDrawn {
+                origin: [700, 410],
+                at: at + Duration::from_millis(30),
+            }),
+        );
+        log_view_drawn(&mut editor, None);
         let records = logged(&mut editor, &log);
+        let views = events(&records, "surface_view_drawn");
+        assert_eq!(views.len(), 2, "{views:?}");
+        assert_eq!(
+            (&views[0]["origin"], &views[0]["drawn_ms"]),
+            (&json!([812, 300]), &json!(270.0))
+        );
+        assert_eq!(views[1]["origin"], json!([700, 410]));
         let drawn = events(&records, "surface_frame_drawn");
         assert_eq!(drawn.len(), 2, "{drawn:?}");
         assert_eq!(drawn[0]["path"], "cpu");

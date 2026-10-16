@@ -11,7 +11,9 @@
 //! - **pan to frame**: each move's `minimap_navigated` to the surface's first draw of the view it
 //!   asked for — the draw of the view plan the GPU was handed for it (`gpu_at_rest`'s boundary), the
 //!   CPU frame of the preview job it raised (`preview_displayed`'s generation), or, where neither
-//!   was needed, the first draw after it. Neither is display scanout;
+//!   was needed, the first draw that placed the picture the surface holds at the pan
+//!   (`surface_view_drawn`'s origin, its scroll offset). Every move must match a frame of its own,
+//!   later than the move before it's, or the run fails. None is display scanout;
 //! - **first overview**: the crossing's `script_step` to the first `overview_ready` (cold: the
 //!   launch's first), and Develop's `script_step` to the first after it (warm);
 //! - the overview's own retained GPU and CPU bytes and their peak over the captured frames, the
@@ -163,7 +165,7 @@ enum Drawn {
     Plan,
     /// The surface's first draw of the CPU frame the pan's preview job rendered.
     Frame,
-    /// Neither was needed: the first draw after the pan.
+    /// Neither was needed: the surface's first draw of the picture it holds scrolled to the pan.
     Scroll,
 }
 
@@ -177,22 +179,55 @@ impl Drawn {
     }
 }
 
-/// A move's pan to the first draw of the view it asked for: `(navigated_ms, drawn_ms, how)`, or
-/// `None` when the move panned nothing or a later pan replaced its view before it was drawn.
-fn pan_frame(events: &[Value], step: usize) -> Result<Option<(f64, f64, Drawn)>> {
+/// How far, in logical points, a drawn place's origin may lie from the pan that asked for it: the
+/// scrollable rounds its offset to whole points.
+const PLACED_WITHIN: f64 = 1.0;
+
+/// An event detail's two-number field `name`.
+fn pair(detail: &Value, name: &str) -> Option<[f64; 2]> {
+    let pair = detail[name].as_array()?;
+    Some([pair.first()?.as_f64()?, pair.get(1)?.as_f64()?])
+}
+
+/// The first draw, at or after `from`, that placed the picture at `pan`: the instant of the first
+/// `surface_view_drawn` whose origin, the surface's scroll offset, is the pan.
+fn placed_at(events: &[Value], pan: [f64; 2], from: f64) -> Result<Option<f64>> {
+    for event in events
+        .iter()
+        .filter(|event| event["event"] == "surface_view_drawn")
+    {
+        let detail = &event["detail"];
+        let drawn = detail["drawn_ms"]
+            .as_f64()
+            .ok_or("A drawn place carries no drawn_ms")?;
+        let origin = pair(detail, "origin").ok_or("A drawn place carries no origin")?;
+        if drawn >= from
+            && (origin[0] - pan[0]).abs() <= PLACED_WITHIN
+            && (origin[1] - pan[1]).abs() <= PLACED_WITHIN
+        {
+            return Ok(Some(drawn));
+        }
+    }
+    Ok(None)
+}
+
+/// A move's pan to the first draw of the view it asked for: `(navigated_ms, drawn_ms, how)`. A move
+/// that panned nothing, or whose view no draw showed, is an error: a move matched to no frame of
+/// its own must not pass as a figure.
+fn pan_frame(events: &[Value], step: usize) -> Result<(f64, f64, Drawn)> {
     let at = sent(events, step)?;
     let next = events[at + 1..]
         .iter()
         .position(|event| event["event"] == "script_step")
         .map_or(events.len(), |offset| at + 1 + offset);
-    let Some(navigated) = events[at + 1..next]
+    let navigated = events[at + 1..next]
         .iter()
         .position(|event| event["event"] == "minimap_navigated")
         .map(|offset| at + 1 + offset)
-    else {
-        return Ok(None);
-    };
+        .ok_or_else(|| format!("Move step {step} panned nothing"))?;
     let from = elapsed(&events[navigated])?;
+    let pan = pair(&events[navigated]["detail"], "pan")
+        .ok_or_else(|| format!("Move step {step}'s minimap_navigated carries no pan"))?;
     // What the pan raised before the next pan: a view plan handed, or a preview job's frame.
     let later = events[navigated + 1..]
         .iter()
@@ -210,18 +245,54 @@ fn pan_frame(events: &[Value], step: usize) -> Result<Option<(f64, f64, Drawn)>>
         })
         .and_then(|event| event["detail"]["generation"].as_u64());
     let draws = drawn_frames(&events[navigated + 1..])?;
-    let found = match (plan, frame) {
-        (Some(boundary), _) => draws
-            .iter()
-            .find(|(_, detail)| detail["boundary"].as_u64() == Some(boundary))
-            .map(|(ms, _)| (*ms, Drawn::Plan)),
-        (None, Some(generation)) => draws
-            .iter()
-            .find(|(_, detail)| detail["generation"].as_u64() == Some(generation))
-            .map(|(ms, _)| (*ms, Drawn::Frame)),
-        (None, None) => draws.first().map(|(ms, _)| (*ms, Drawn::Scroll)),
+    let (found, sought) = match (plan, frame) {
+        (Some(boundary), _) => (
+            draws
+                .iter()
+                .find(|(_, detail)| detail["boundary"].as_u64() == Some(boundary))
+                .map(|(ms, _)| (*ms, Drawn::Plan)),
+            format!("draw of view plan boundary {boundary}"),
+        ),
+        (None, Some(generation)) => (
+            draws
+                .iter()
+                .find(|(_, detail)| detail["generation"].as_u64() == Some(generation))
+                .map(|(ms, _)| (*ms, Drawn::Frame)),
+            format!("draw of preview generation {generation}"),
+        ),
+        (None, None) => (
+            placed_at(&events[navigated + 1..], pan, from)?.map(|ms| (ms, Drawn::Scroll)),
+            format!("surface_view_drawn at origin {pan:?}"),
+        ),
     };
-    Ok(found.map(|(drawn, how)| (from, drawn, how)))
+    let (drawn, how) = found.ok_or_else(|| {
+        format!("Move step {step}'s pan {pan:?} was never drawn: no {sought} followed it")
+    })?;
+    ensure(
+        drawn >= from,
+        format!("Move step {step}'s frame was drawn at {drawn} ms, before its pan at {from} ms"),
+    )?;
+    Ok((from, drawn, how))
+}
+
+/// Each move's frame, `(step, navigated_ms, drawn_ms, how)`: every move matched, each to a later
+/// draw than the move before it's, so no two moves share a frame.
+fn pan_frames(events: &[Value], moves: &[usize]) -> Result<Vec<(usize, f64, f64, Drawn)>> {
+    let mut matched: Vec<(usize, f64, f64, Drawn)> = Vec::with_capacity(moves.len());
+    for &step in moves {
+        let (navigated, drawn, how) = pan_frame(events, step)?;
+        if let Some(&(before, _, earlier, _)) = matched.last() {
+            ensure(
+                drawn > earlier,
+                format!(
+                    "Move steps {before} and {step} matched the same or out-of-order frames \
+                     ({earlier} ms, then {drawn} ms): each frame shows one move's pan"
+                ),
+            )?;
+        }
+        matched.push((step, navigated, drawn, how));
+    }
+    Ok(matched)
 }
 
 /// The overview summary of a captured frame.
@@ -300,38 +371,12 @@ fn measure(run: &mut Run, options: &Options) -> Result {
     )?;
     let mut pans = Vec::new();
     let mut per_move = Vec::new();
-    let mut unpanned = 0;
-    let mut replaced = 0;
     let mut how = BTreeMap::<&str, usize>::new();
-    for &step in &script.moves {
-        match pan_frame(&events, step)? {
-            Some((navigated, drawn, by)) => {
-                pans.push(drawn - navigated);
-                *how.entry(by.name()).or_default() += 1;
-                per_move.push(json!({"step":step,"pan_to_frame_ms":drawn - navigated,
-                    "drawn":by.name()}));
-            }
-            None => {
-                let navigated = events[sent(&events, step)?..]
-                    .iter()
-                    .take_while(|event| {
-                        event["event"] != "script_step" || event["detail"]["step"] == json!(step)
-                    })
-                    .any(|event| event["event"] == "minimap_navigated");
-                if navigated {
-                    replaced += 1;
-                } else {
-                    unpanned += 1;
-                }
-                per_move.push(json!({"step":step,"pan_to_frame_ms":null,
-                    "drawn":if navigated { "replaced" } else { "no pan" }}));
-            }
-        }
+    for (step, navigated, drawn, by) in pan_frames(&events, &script.moves)? {
+        pans.push(drawn - navigated);
+        *how.entry(by.name()).or_default() += 1;
+        per_move.push(json!({"step":step,"pan_to_frame_ms":drawn - navigated,"drawn":by.name()}));
     }
-    ensure(
-        !pans.is_empty(),
-        "No minimap move was drawn: the drag measured nothing",
-    )?;
     let cold = to_first(&events, script.crossing, "overview_ready")?;
     let warm = to_first(&events, script.develop, "overview_ready")?;
     // Counters over the drag: from the frame before the press to the one after the release.
@@ -418,12 +463,10 @@ fn measure(run: &mut Run, options: &Options) -> Result {
         "reference_renderer":options.no_gpu_render,
         "samples":options.samples,
         "drawn":how,
-        "unpanned_moves":unpanned,
-        "replaced_moves":replaced,
         "drag_counters":drag_counters,
         "total_counters":total_counters,
         "overview_at_rest":overview(held),
-        "method":format!("Background evidence launch of the release binary, warm filesystem cache, the Performance section open. The view crosses from Fit to the measured zoom and waits for the card's ready overview, then one drag on the card: a press on the viewport rectangle's centre, {} moves round a loop of radius {LOOP_RADIUS} of the stage about its centre, each a minimap move step routed as the card's own, and the release. Moves are paced one per captured frame, not at a pointer's rate. Pan to frame is each move's minimap_navigated to the surface's first draw of the view it asked for: the view plan the GPU was handed for it (gpu_at_rest's boundary), the CPU frame its preview job rendered (preview_displayed's generation), or where neither was needed the first draw after it; not display scanout. First overview is the crossing step's script_step to the first overview_ready (cold, the launch's first) and the Develop step's, after Select let the overview go, to the first after it (warm, its programs compiled). Overview bytes are the photograph surface's overview GPU bytes and the lifecycle's reference codes held for upload, retained after the first ready and peak over the captured frames; memory and GPU allocation are the Performance section's figures at Fit, with the overview at rest and at the end.", options.samples),
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache, the Performance section open. The view crosses from Fit to the measured zoom and waits for the card's ready overview, then one drag on the card: a press on the viewport rectangle's centre, {} moves round a loop of radius {LOOP_RADIUS} of the stage about its centre, each a minimap move step routed as the card's own, and the release. Moves are paced one per captured frame, not at a pointer's rate. Pan to frame is each move's minimap_navigated to the surface's first draw of the view it asked for: the view plan the GPU was handed for it (gpu_at_rest's boundary), the CPU frame its preview job rendered (preview_displayed's generation), or where neither was needed the first draw that placed the picture it holds at the pan (surface_view_drawn's origin, its scroll offset, within {PLACED_WITHIN} point). Every move is matched to a frame of its own, later than the move before it's, or the run fails. None is display scanout. First overview is the crossing step's script_step to the first overview_ready (cold, the launch's first) and the Develop step's, after Select let the overview go, to the first after it (warm, its programs compiled). Overview bytes are the photograph surface's overview GPU bytes and the lifecycle's reference codes held for upload, retained after the first ready and peak over the captured frames; memory and GPU allocation are the Performance section's figures at Fit, with the overview at rest and at the end.", options.samples),
         "rows":rows,
         "moves":per_move,
         "load":launch::load(load_start),
@@ -469,16 +512,89 @@ mod tests {
             ),
             event("script_step", 40.0, json!({"step": 8})),
         ];
-        assert_eq!(
-            pan_frame(&events, 7).unwrap(),
-            Some((1.0, 16.5, Drawn::Plan))
-        );
-        // A move that panned nothing is no sample.
+        assert_eq!(pan_frame(&events, 7).unwrap(), (1.0, 16.5, Drawn::Plan));
+        // A move that panned nothing fails the run rather than dropping out of it.
         let still = vec![
             event("script_step", 0.0, json!({"step": 7})),
             event("script_step", 40.0, json!({"step": 8})),
         ];
-        assert_eq!(pan_frame(&still, 7).unwrap(), None);
+        assert!(pan_frame(&still, 7).is_err());
+    }
+
+    /// Two scroll-path moves of a held picture, steps 7 and 8, with the places drawn at `places`
+    /// (the first logged before the second move, the rest after the drag) and a late frame.
+    fn scrolled(places: &[(f64, [i64; 2])]) -> Vec<Value> {
+        let mut events = vec![
+            event("script_step", 0.0, json!({"step": 7})),
+            event("minimap_navigated", 1.0, json!({"pan": [812.4, 300.0]})),
+            event("script_step", 40.0, json!({"step": 8})),
+            event("minimap_navigated", 41.0, json!({"pan": [700.0, 410.6]})),
+            event("script_step", 80.0, json!({"step": 9})),
+        ];
+        for (index, (drawn, origin)) in places.iter().enumerate() {
+            // Each place is logged after the message that follows its draw.
+            let at = if index == 0 { 2 } else { events.len() };
+            events.insert(
+                at,
+                event(
+                    "surface_view_drawn",
+                    drawn + 0.5,
+                    json!({"drawn_ms": drawn, "origin": origin}),
+                ),
+            );
+        }
+        // A frame drawn long after the drag, as the picture at rest lands: never a move's.
+        events.push(event(
+            "surface_frame_drawn",
+            3000.0,
+            json!({"boundary": 9, "drawn_ms": 3000.0}),
+        ));
+        events
+    }
+
+    #[test]
+    fn a_scroll_pan_is_timed_to_the_first_draw_at_its_place() {
+        let events = scrolled(&[(9.0, [812, 300]), (52.0, [700, 411])]);
+        let frames = pan_frames(&events, &[7, 8]).unwrap();
+        assert_eq!(
+            frames,
+            vec![(7, 1.0, 9.0, Drawn::Scroll), (8, 41.0, 52.0, Drawn::Scroll)]
+        );
+    }
+
+    /// A pan no place was drawn at fails, rather than being matched to a later frame; so does a
+    /// draw at another pan's place.
+    #[test]
+    fn a_scroll_pan_never_placed_fails_the_run() {
+        let unlogged = scrolled(&[]);
+        let error = pan_frames(&unlogged, &[7, 8]).unwrap_err().to_string();
+        assert!(error.contains("never drawn"), "{error}");
+        let elsewhere = scrolled(&[(9.0, [812, 300]), (52.0, [650, 411])]);
+        assert!(pan_frames(&elsewhere, &[7, 8]).is_err());
+    }
+
+    #[test]
+    fn two_moves_matched_to_one_frame_fail_the_run() {
+        let plan = |step: usize, at: f64| {
+            vec![
+                event("script_step", at, json!({"step": step})),
+                event("minimap_navigated", at + 1.0, json!({"pan": [10.0, 0.0]})),
+                event(
+                    "gpu_at_rest",
+                    at + 2.0,
+                    json!({"boundary": 5, "region": [0, 0, 9, 9]}),
+                ),
+            ]
+        };
+        let mut events = plan(7, 0.0);
+        events.extend(plan(8, 40.0));
+        events.push(event(
+            "surface_frame_drawn",
+            90.0,
+            json!({"boundary": 5, "drawn_ms": 90.0}),
+        ));
+        let error = pan_frames(&events, &[7, 8]).unwrap_err().to_string();
+        assert!(error.contains("same or out-of-order"), "{error}");
     }
 
     #[test]
