@@ -1358,6 +1358,8 @@ pub(crate) struct CellFacts {
     pub(crate) edited: bool,
     /// A RAW file shown with the JPEG the camera wrote beside it, which [`PAIR_NOTE`] says.
     pub(crate) paired: bool,
+    /// A file shown for its copies in other folders too, which a warning icon says.
+    pub(crate) copied: bool,
 }
 
 /// The note on a RAW+JPEG pair's cell.
@@ -1366,6 +1368,7 @@ pub(crate) const PAIR_NOTE: &str = "RAW+JPEG";
 pub(crate) fn cell_facts(row: &ViewRow) -> CellFacts {
     CellFacts {
         paired: row.pair.is_some(),
+        copied: !row.copies.is_empty(),
         aspect: aspect(row),
         picked: row.picked,
         in_catalog: matches!(row.item, RowItem::File { .. }) && row.developed_as.is_some(),
@@ -2599,6 +2602,18 @@ pub(crate) fn item_info(
             .parent()
             .map(|folder| shown_path(folder, home))
             .filter(|folder| !folder.is_empty()),
+    );
+    // Copies of the file in other folders, which the row stands for.
+    push(
+        "Also in",
+        Some(
+            row.copies
+                .iter()
+                .filter_map(|copy| copy.path.parent())
+                .map(|folder| shown_path(folder, home))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
     );
     push(
         "Original",

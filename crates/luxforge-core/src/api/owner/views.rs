@@ -211,7 +211,8 @@ pub(super) fn current_items(owner: &mut Owner, client: ClientId) -> Result<Vec<V
         evaluate_into(owner, client, query)?;
     }
     let view = owner.catalog.views.views.get(&client).ok_or_else(no_view)?;
-    // The originals a collapsed stack hides are the view's too: their picks wait for a Develop.
+    // The originals a collapsed stack hides and the copies a row stands for are the view's too:
+    // their picks wait for a Develop.
     let mut items = Vec::with_capacity(view.items.len() + view.hidden.len());
     items.extend_from_slice(&view.items);
     items.extend_from_slice(&view.hidden);
@@ -328,6 +329,7 @@ fn evaluate_into(
         stacks: evaluation.stacks.stacks,
         collapsed: evaluation.stacks.collapsed,
         paired: evaluation.pairs.len() as u32,
+        copies: evaluation.copied.len() as u32,
         groups: evaluation.layout.clone(),
         library_sequence: evaluation.stamp.library_sequence,
         index_revision: evaluation.stamp.index_revision,
@@ -340,6 +342,8 @@ fn evaluate_into(
         .copied()
         .collect();
     want_view(owner, client, &previewed);
+    let mut hidden = evaluation.stacks.hidden;
+    hidden.extend(evaluation.copied);
     owner.catalog.views.views.insert(
         client,
         View {
@@ -348,9 +352,10 @@ fn evaluate_into(
             layout: evaluation.layout,
             selection,
             stale: false,
-            hidden: evaluation.stacks.hidden,
+            hidden,
             badges: evaluation.stacks.badges,
             pairs: evaluation.pairs,
+            copies: evaluation.copies,
         },
     );
     Ok(summary)
@@ -968,6 +973,7 @@ mod tests {
                 hidden: Vec::new(),
                 badges: Default::default(),
                 pairs: Default::default(),
+                copies: Default::default(),
                 selection: ViewSelection {
                     count: 3,
                     ranges: vec![
