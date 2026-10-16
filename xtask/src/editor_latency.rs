@@ -47,8 +47,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod auto_tone;
 mod corrections;
 mod pick;
+pub use auto_tone::AutoTone;
 pub use corrections::CORRECTION_POSITIONS;
 
 /// The Basic module's patch action and the field the gesture drags, named as the module declares
@@ -1263,6 +1265,9 @@ pub enum Mode {
     /// eyedropper armed on an unbound colour range, each from its press to the pick's command sent
     /// and to the overlay adopted for the entry it committed.
     Pick,
+    /// Auto tone's input, the Auto button or `⌘U`, to the entry it commits and to that entry's
+    /// frame, against a warm or a cold sample cache ([`auto_tone`]).
+    AutoTone(AutoTone),
 }
 
 impl Mode {
@@ -1276,6 +1281,7 @@ impl Mode {
             Self::Hover => "hover",
             Self::CropStart => "crop-start",
             Self::Pick => "pick",
+            Self::AutoTone(_) => "auto-tone",
         }
     }
 }
@@ -3233,9 +3239,14 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         !options.no_gpu_render
             || matches!(
                 options.mode,
-                Mode::Drag | Mode::Commit | Mode::Paint | Mode::Corrections | Mode::Pick
+                Mode::Drag
+                    | Mode::Commit
+                    | Mode::Paint
+                    | Mode::Corrections
+                    | Mode::Pick
+                    | Mode::AutoTone(_)
             ),
-        "--reference-renderer measures a drag, a commit, a stroke or a pick; pass --mode drag, commit, paint, corrections or pick",
+        "--reference-renderer measures a drag, a commit, a stroke, a pick or Auto tone; pass --mode drag, commit, paint, corrections, pick or auto-tone",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
@@ -3282,6 +3293,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     }
     if options.mode == Mode::Pick {
         return pick::run(root, out, bin, &options);
+    }
+    if let Mode::AutoTone(auto) = options.mode {
+        return auto_tone::run(root, out, bin, &options, auto);
     }
     ensure(
         (1..=60).contains(&options.samples),
