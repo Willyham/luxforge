@@ -1851,7 +1851,7 @@ pub(crate) fn view_preview_task(
 }
 
 /// The plain calls [`current_preview_task`] runs.
-fn current_preview(
+pub(crate) fn current_preview(
     owner: &OwnerHandle,
     client: ClientId,
     asset_id: AssetId,

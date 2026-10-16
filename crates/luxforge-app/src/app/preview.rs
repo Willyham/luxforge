@@ -1936,6 +1936,12 @@ impl Editor {
                         == (job.identity.width, job.identity.height)
             })
             .map(|frame| Arc::clone(&frame.raster));
+        // Where the GPU can present the stack it does, as over a reduced frame: the exact frame is
+        // neither reduced nor reused. Otherwise an open whose reduction the display scale's arrival
+        // made stale would stay the reference's, and its retained exact frame would hold every
+        // view at 100% and above, so the GPU would never plan one.
+        let gpu_replaces_exact = reduces_exact.is_some() && self.gpu_presents(&job, content);
+        let reduces_exact = reduces_exact.filter(|_| !gpu_replaces_exact);
         if let Some(raster) = reduces_exact.clone() {
             job.reduce = Some(raster);
             job.intent = PreviewIntent::Reduce;
@@ -1944,6 +1950,7 @@ impl Editor {
         // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
         // mask edits have a different pixel key and still use the ordinary rendering path.
         let reusable = reduces_exact.is_none()
+            && !gpu_replaces_exact
             && job.layer_count.is_none()
             && content == self.presentation.presented_content
             && self.presentation.has_picture()
