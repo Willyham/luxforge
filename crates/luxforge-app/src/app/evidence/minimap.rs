@@ -56,9 +56,20 @@ impl Editor {
         else {
             return Task::none();
         };
+        // A `ready` step waits for the stage's own overview, ready rather than updating, pending or
+        // unavailable, and sends nothing.
+        let ready_step = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.minimap.as_ref())
+            .is_some_and(|pending| pending.step == MinimapStep::Ready);
+        let ready = matches!(
+            self.minimap_overview(),
+            crate::app::overview::MinimapOverview::Ready(_)
+        );
         let Some(minimap) = self
             .minimap(&self.surfaces())
-            .filter(|minimap| minimap.navigable)
+            .filter(|minimap| minimap.navigable && (!ready_step || ready))
         else {
             if since.elapsed() >= NAVIGABLE_WAIT {
                 if let Some(evidence) = &mut self.evidence {
@@ -66,7 +77,11 @@ impl Editor {
                 }
                 let state = self.minimap_summary();
                 self.note_step(json!({"minimap_before": state}));
-                return self.fail_step("the minimap was not shown with a navigable overview");
+                return self.fail_step(if ready_step {
+                    "the minimap was not shown with the stage's ready overview"
+                } else {
+                    "the minimap was not shown with a navigable overview"
+                });
             }
             return Task::none();
         };
@@ -90,6 +105,11 @@ impl Editor {
         let released = |point: Point| (Event::Mouse(Mouse::ButtonReleased(Button::Left)), point);
         let origin = minimap.area_origin();
         let before = self.minimap_summary();
+        if pending.step == MinimapStep::Ready {
+            self.note_step(json!({"minimap_before": before}));
+            self.capture_next_frame();
+            return Task::none();
+        }
         let point = match &pending.step {
             MinimapStep::Press(point)
             | MinimapStep::Move(point)
@@ -99,7 +119,7 @@ impl Editor {
                 Some(point) => Some(point),
                 None => return self.fail_step("the minimap shows no viewport rectangle"),
             },
-            MinimapStep::Wheel(_) | MinimapStep::Pinch(_) => None,
+            MinimapStep::Wheel(_) | MinimapStep::Pinch(_) | MinimapStep::Ready => None,
         };
         self.note_step(json!({
             "minimap_before": before,
@@ -108,6 +128,8 @@ impl Editor {
             "card_centre": [centre.x, centre.y],
         }));
         let events = match pending.step {
+            // Captured above: it sends nothing.
+            MinimapStep::Ready => return Task::none(),
             MinimapStep::Press(_) => {
                 let point = point.expect("a resolved point");
                 vec![moved(point), pressed(point)]

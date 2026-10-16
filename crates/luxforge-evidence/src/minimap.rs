@@ -20,6 +20,8 @@ const REACH: f32 = 2.0;
 /// - `{"api": P}` sends `view.set` on the desktop's own session with the pan that centres the view
 ///   on the stage point under `P` as the schema's pan units define it — what an API client
 ///   computes — and the desktop follows the answer.
+/// - `"ready"` sends nothing: it waits for the card to show the current stage's own overview,
+///   ready rather than updating, pending or unavailable (at most ten seconds), and captures.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum MinimapStep {
@@ -30,6 +32,7 @@ pub enum MinimapStep {
     Wheel([f32; 2]),
     Pinch(f64),
     Api(MinimapPoint),
+    Ready,
 }
 
 /// A point on the minimap, as fractions: of the stage's thumbnail (`image`, which is the stage),
@@ -71,6 +74,7 @@ impl MinimapStep {
             | Self::Release(point)
             | Self::Click(point)
             | Self::Api(point) => point.validate(),
+            Self::Ready => Ok(()),
             Self::Wheel([x, y]) => {
                 if x.is_finite() && y.is_finite() && x.abs() <= 10_000.0 && y.abs() <= 10_000.0 {
                     Ok(())

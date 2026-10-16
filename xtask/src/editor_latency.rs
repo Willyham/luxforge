@@ -49,9 +49,11 @@ use std::{
 
 mod auto_tone;
 mod corrections;
+mod minimap;
 mod pick;
 pub use auto_tone::AutoTone;
 pub use corrections::CORRECTION_POSITIONS;
+pub use minimap::MINIMAP_MOVES;
 
 /// The Basic module's patch action and the field the gesture drags, named as the module declares
 /// them.
@@ -1268,6 +1270,10 @@ pub enum Mode {
     /// Auto tone's input, the Auto button or `⌘U`, to the entry it commits and to that entry's
     /// frame, against a warm or a cold sample cache ([`auto_tone`]).
     AutoTone(AutoTone),
+    /// One drag on the high-zoom minimap's card ([`minimap`]): `--samples` moves of the viewport
+    /// rectangle at `--zoom` (200% by default), each move's pan to the surface's draw of the view
+    /// it asked for, the overview's first latency cold and warm, its bytes and its counters.
+    Minimap,
 }
 
 impl Mode {
@@ -1282,6 +1288,7 @@ impl Mode {
             Self::CropStart => "crop-start",
             Self::Pick => "pick",
             Self::AutoTone(_) => "auto-tone",
+            Self::Minimap => "minimap",
         }
     }
 }
@@ -3245,8 +3252,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
                     | Mode::Corrections
                     | Mode::Pick
                     | Mode::AutoTone(_)
+                    | Mode::Minimap
             ),
-        "--reference-renderer measures a drag, a commit, a stroke, a pick or Auto tone; pass --mode drag, commit, paint, corrections, pick or auto-tone",
+        "--reference-renderer measures a drag, a commit, a stroke, a pick, Auto tone or a minimap drag; pass --mode drag, commit, paint, corrections, pick, auto-tone or minimap",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
@@ -3296,6 +3304,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     }
     if let Mode::AutoTone(auto) = options.mode {
         return auto_tone::run(root, out, bin, &options, auto);
+    }
+    if options.mode == Mode::Minimap {
+        return minimap::run(root, out, bin, &options);
     }
     ensure(
         (1..=60).contains(&options.samples),

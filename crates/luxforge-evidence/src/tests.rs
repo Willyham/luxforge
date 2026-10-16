@@ -1531,6 +1531,28 @@ fn window_visibility_requires_a_known_native_action() {
 }
 
 #[test]
+fn window_size_takes_a_bounded_size_in_points() {
+    let steps = parse(r#"[{"window_size":{"width":1000,"height":700}}]"#).unwrap();
+    assert_eq!(
+        steps,
+        vec![super::Step::WindowSize {
+            width: 1000.0,
+            height: 700.0
+        }]
+    );
+    assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
+    assert!(parse(r#"[{"window_size":{"width":100,"height":700}}]"#).is_err());
+    assert!(parse(r#"[{"window_size":{"width":1000,"height":9000}}]"#).is_err());
+}
+
+#[test]
+fn the_minimap_ready_step_is_a_bare_word() {
+    let steps = parse(r#"[{"minimap":"ready"}]"#).unwrap();
+    assert_eq!(steps, vec![super::Step::Minimap(super::MinimapStep::Ready)]);
+    assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
+}
+
+#[test]
 fn presentation_observation_has_a_bounded_measurement_window() {
     let steps = parse(r#"[{"observe":{"settle_ms":1000,"ms":30000}}]"#).unwrap();
     assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);

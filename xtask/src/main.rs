@@ -60,6 +60,7 @@ mod mask_panel_smoke;
 mod mask_range_smoke;
 mod mask_smoke;
 mod minify_smoke;
+mod minimap_smoke;
 mod mixer_smoke;
 mod move_to_applications_smoke;
 mod no_gpu_render_smoke;
@@ -575,9 +576,10 @@ fn main_result() -> Result {
                 Some("crop-start") => editor_latency::Mode::CropStart,
                 Some("pick") => editor_latency::Mode::Pick,
                 Some("auto-tone") => editor_latency::Mode::AutoTone(auto),
+                Some("minimap") => editor_latency::Mode::Minimap,
                 Some(other) => {
                     return Err(format!(
-                        "--mode is drag, commit, burst, paint, corrections, hover, crop-start, pick or auto-tone, not {other}"
+                        "--mode is drag, commit, burst, paint, corrections, hover, crop-start, pick, auto-tone or minimap, not {other}"
                     )
                     .into());
                 }
@@ -592,6 +594,7 @@ fn main_result() -> Result {
                 match mode {
                     editor_latency::Mode::Paint => editor_latency::PAINT_POSITIONS,
                     editor_latency::Mode::Corrections => editor_latency::CORRECTION_POSITIONS,
+                    editor_latency::Mode::Minimap => editor_latency::MINIMAP_MOVES,
                     _ => 30,
                 },
             )?;

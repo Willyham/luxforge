@@ -35,6 +35,10 @@ pub use missing::{MissingFilterStep, MissingStep};
 /// unnoticed.
 pub const MAX_SCRIPT_STEPS: usize = 64;
 
+/// The least and most a `window_size` step may make either side of the window, in points.
+pub const MIN_WINDOW_SIDE: f32 = 480.0;
+pub const MAX_WINDOW_SIDE: f32 = 4096.0;
+
 /// The longest one `wait` step may idle, so a script cannot spend its deadline doing nothing.
 pub const MAX_WAIT_MS: u64 = 10_000;
 /// The longest one `gpu_warmed` step may wait for the GPU preview's compile thread: a cold shader
@@ -219,6 +223,12 @@ pub enum Step {
     /// window. The desktop waits for the native callback, not a synthetic visibility message.
     WindowVisibility {
         action: String,
+    },
+    /// Resize the window to this size in the system's points, as dragging its frame does, and
+    /// capture once the window reports that size and the canvas has been laid out again for it.
+    WindowSize {
+        width: f32,
+        height: f32,
     },
     /// Press Cancel on one displayed running job row (zero-based, at most four rows).
     PerformanceCancel {
@@ -444,6 +454,18 @@ impl Step {
                     Ok(())
                 } else {
                     Err("window_visibility action must be minimize, restore, hide_window, show_window, hide_app or show_app".into())
+                }
+            }
+            Self::WindowSize { width, height } => {
+                if [width, height].iter().all(|side| {
+                    side.is_finite() && (MIN_WINDOW_SIDE..=MAX_WINDOW_SIDE).contains(*side)
+                }) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "window_size takes a width and height from {MIN_WINDOW_SIDE} to \
+                         {MAX_WINDOW_SIDE} points"
+                    ))
                 }
             }
             Self::Settings { open, tab } => match tab {

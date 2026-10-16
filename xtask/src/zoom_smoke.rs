@@ -65,19 +65,19 @@ const BASIC_MODULE: &str = "luxforge.basic";
 /// The design's minimap: an image area of at most 180 × 120 points and at most this share of the
 /// canvas on each axis, the stage fitted into it, padded by 4 points and inset 12 from the
 /// canvas's right and bottom edges.
-const MINIMAP_AREA: (f64, f64) = (180.0, 120.0);
-const MINIMAP_SHARE: f64 = 0.35;
-const MINIMAP_PADDING: f64 = 4.0;
-const MINIMAP_INSET: f64 = 12.0;
+pub(crate) const MINIMAP_AREA: (f64, f64) = (180.0, 120.0);
+pub(crate) const MINIMAP_SHARE: f64 = 0.35;
+pub(crate) const MINIMAP_PADDING: f64 = 4.0;
+pub(crate) const MINIMAP_INSET: f64 = 12.0;
 /// How far, in points, the card's chrome shadow (`luxforge_ui::theme::CHROME_SHADOW`: a 16-point
 /// blur offset 4 points down) darkens the photograph beyond its bounds, with a little to spare.
 const CARD_SHADOW: f64 = 22.0;
 /// The minimap appears from this percentage up.
-const MINIMAP_FROM: f64 = 200.0;
+pub(crate) const MINIMAP_FROM: f64 = 200.0;
 /// How far, in logical points, the minimap's recorded geometry may lie from the geometry worked
 /// here, and a pan from the one a gesture asks for: the scrollable draws whole logical pixels.
-const GEOMETRY_SLACK: f64 = 0.75;
-const PAN_SLACK: f64 = 1.0;
+pub(crate) const GEOMETRY_SLACK: f64 = 0.75;
+pub(crate) const PAN_SLACK: f64 = 1.0;
 /// A wheel's pan passes through the scrollable's own clamping, which rounds its extent.
 const WHEEL_SLACK: f64 = 1.5;
 /// The thumbnail is the stage reduced to under 200 points: a sample shows its quadrant's colour
@@ -1084,23 +1084,23 @@ struct Grab {
     pan: (f64, f64),
 }
 
-fn pair(value: &Value, what: &str) -> Result<(f64, f64)> {
+pub(crate) fn pair(value: &Value, what: &str) -> Result<(f64, f64)> {
     let [a, b]: [f64; 2] =
         serde_json::from_value(value.clone()).map_err(|_| format!("no {what}: {value}"))?;
     Ok((a, b))
 }
 
-fn rect(value: &Value, what: &str) -> Result<[f64; 4]> {
+pub(crate) fn rect(value: &Value, what: &str) -> Result<[f64; 4]> {
     serde_json::from_value(value.clone()).map_err(|_| format!("no {what}: {value}").into())
 }
 
-fn near(a: f64, b: f64, slack: f64) -> bool {
+pub(crate) fn near(a: f64, b: f64, slack: f64) -> bool {
     (a - b).abs() <= slack
 }
 
 /// The minimap's card in physical pixels, `[left, top, right, bottom]` with a margin for the
 /// chrome shadow it casts on the photograph, where it is shown.
-fn card_pixels(frame: &Frame) -> Result<Option<[f64; 4]>> {
+pub(crate) fn card_pixels(frame: &Frame) -> Result<Option<[f64; 4]>> {
     let minimap = &frame["state"]["minimap"];
     if minimap["shown"] != json!(true) {
         return Ok(None);
@@ -1117,7 +1117,7 @@ fn card_pixels(frame: &Frame) -> Result<Option<[f64; 4]>> {
 }
 
 /// The pan the session holds at a frame: logical pixels from the zoomed stage's corner.
-fn session_pan(frame: &Frame) -> Result<(f64, f64)> {
+pub(crate) fn session_pan(frame: &Frame) -> Result<(f64, f64)> {
     let view = &frame["state"]["surface"]["view"];
     Ok((
         view["pan_x"].as_f64().ok_or("no session pan")?,
@@ -1128,28 +1128,28 @@ fn session_pan(frame: &Frame) -> Result<(f64, f64)> {
 /// The view a frame shows, worked from its own zoom, pan and canvas rather than from anything the
 /// minimap records: the stage in logical pixels per stage pixel, the canvas, and the pan clamped
 /// as the scrollable clamps it.
-struct View {
-    stage: (f64, f64),
-    scale: f64,
-    canvas: [f64; 4],
-    pan: (f64, f64),
+pub(crate) struct View {
+    pub(crate) stage: (f64, f64),
+    pub(crate) scale: f64,
+    pub(crate) canvas: [f64; 4],
+    pub(crate) pan: (f64, f64),
 }
 
 impl View {
-    fn range(&self) -> (f64, f64) {
+    pub(crate) fn range(&self) -> (f64, f64) {
         (
             (self.stage.0 * self.scale - self.canvas[2]).max(0.0),
             (self.stage.1 * self.scale - self.canvas[3]).max(0.0),
         )
     }
 
-    fn clamp(&self, (x, y): (f64, f64)) -> (f64, f64) {
+    pub(crate) fn clamp(&self, (x, y): (f64, f64)) -> (f64, f64) {
         let (rx, ry) = self.range();
         (x.clamp(0.0, rx), y.clamp(0.0, ry))
     }
 
     /// The pan that centres the canvas on stage point `at`, as far as the stage's edges allow.
-    fn centred(&self, at: (f64, f64)) -> (f64, f64) {
+    pub(crate) fn centred(&self, at: (f64, f64)) -> (f64, f64) {
         self.clamp((
             at.0 * self.scale - self.canvas[2] / 2.0,
             at.1 * self.scale - self.canvas[3] / 2.0,
@@ -1157,7 +1157,7 @@ impl View {
     }
 
     /// The stage region the canvas shows, `[x0, y0, x1, y1]` in stage pixels.
-    fn visible(&self) -> [f64; 4] {
+    pub(crate) fn visible(&self) -> [f64; 4] {
         let pan = self.clamp(self.pan);
         let axis = |extent: f64, view: f64, pan: f64| {
             let origin = ((view - extent * self.scale) / 2.0).max(0.0) - pan;
@@ -1414,6 +1414,7 @@ fn check_minimap(
                     WHEEL_SLACK,
                 )
             }
+            MinimapStep::Ready => (from, PAN_SLACK),
             MinimapStep::Pinch(_) => {
                 ensure(
                     counted("pinches")? == 1,
