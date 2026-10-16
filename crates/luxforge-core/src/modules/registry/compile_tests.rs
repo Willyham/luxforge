@@ -482,7 +482,7 @@ fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::VIGNETTE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::VIGNETTE_EFFECT),
                 payload: json!({"amount": -40.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -518,7 +518,7 @@ fn a_masked_spatial_layer_compiles_with_its_mask_attached() {
     let presence = Layer {
         id: LayerId::new(),
         effect_id: crate::PRESENCE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
         payload: json!({"clarity": 40.0}),
         mask: None,
         artifacts: Vec::new(),

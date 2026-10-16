@@ -3776,7 +3776,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 1,
+            "format": 2,
             "id": "luxforge.presence.adjust",
             "maskable": true,
             "order": 0,
@@ -5589,7 +5589,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 2,
+            "format": 3,
             "id": "luxforge.mixer.hsl",
             "maskable": true,
             "order": 10,
@@ -5966,7 +5966,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 1,
+            "format": 2,
             "id": "luxforge.vignette.postcrop",
             "order": 0,
             "single": true,

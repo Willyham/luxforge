@@ -1,5 +1,5 @@
 {
-  "format": "luxforge.basic-response",
+  "format": "luxforge.slider-response",
   "version": 1,
   "basis": "lr-align fold of round 1 (lr-round-1), round 1 (round-1b): each field's measured families fitted jointly, each weighted equally, every step at least 0.2 of its Lightroom step, composed with the measured build's responses; Whites above +50 lowered to +75 at 85 and +100 at 100 on the owner's review of the sheets (2026-10-15)",
   "responses": {

@@ -26,6 +26,7 @@ mod processing;
 mod raw;
 mod registry;
 mod repair;
+pub(crate) mod response;
 mod selection_proof;
 mod spatial;
 mod vignette;
@@ -55,6 +56,8 @@ const BUILTIN_FORMATS: &[(&str, u32)] = &[
     raw::RAW_BUILTIN_FORMAT,
     (BASIC_EFFECT, basic::BASIC_EFFECT_FORMAT),
     (MIXER_EFFECT, mixer::MIXER_EFFECT_FORMAT),
+    (PRESENCE_EFFECT, presence::PRESENCE_EFFECT_FORMAT),
+    (VIGNETTE_EFFECT, vignette::VIGNETTE_EFFECT_FORMAT),
 ];
 
 /// The current payload format marker of a built-in effect ([`BUILTIN_FORMATS`]). What
@@ -74,6 +77,18 @@ pub(crate) use basic::BasicModule;
 pub use basic::auto as auto_tone;
 /// Basic's slider responses, public for the Lightroom alignment's fold.
 pub use basic::response::{Response as BasicResponse, response as basic_response};
+
+/// The frozen response of the slider `field` that `action` patches, if it is realigned
+/// ([`response`]): Basic's, Presence's, the colour mixer's or the vignette's.
+pub fn slider_response(action: &str, field: &str) -> Option<&'static BasicResponse> {
+    match action {
+        "set-basic" => basic::response::response(field),
+        "set-presence" => presence::response(field),
+        "set-mixer" => mixer::response(field),
+        "set-vignette" => vignette::response(field),
+        _ => None,
+    }
+}
 pub(crate) use candidate_proof::CandidateProofModule;
 #[cfg(test)]
 pub(crate) use candidate_proof::{

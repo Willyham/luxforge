@@ -10,8 +10,8 @@ fn baseline_of(subject: &Subject) -> Fields {
     })
 }
 
-fn both_rounds() -> Vec<(u32, Vec<Family>)> {
-    [1, 2]
+fn every_round() -> Vec<(u32, Vec<Family>)> {
+    [1, 2, 3]
         .into_iter()
         .map(|round| (round, rounds::round(round).unwrap()))
         .collect()
@@ -50,13 +50,13 @@ fn the_baselines_read_back_neutral() {
     }
 }
 
-/// The last step of each area's first family in both rounds, the far end of its range, reads back
+/// The last step of each area's first family in every round, the far end of its range, reads back
 /// through the preset reader on the kind of subject it is first applied to; the slow test below
 /// reads back every variant.
 #[test]
 fn every_area_reads_back() {
     let registry = ModuleRegistry::builtin();
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         let mut areas = BTreeSet::new();
         for family in families.iter().filter(|family| areas.insert(family.area)) {
             let subject = &family.subjects[0];
@@ -70,14 +70,14 @@ fn every_area_reads_back() {
     }
 }
 
-/// Every step of every family of both rounds reads back, on every kind of subject it is applied
+/// Every step of every family of every round reads back, on every kind of subject it is applied
 /// to, and lands on the controls the manifest names.
 #[test]
 #[slow]
-fn every_variant_of_both_rounds_reads_back() {
+fn every_variant_of_every_round_reads_back() {
     let registry = ModuleRegistry::builtin();
     let mut count = 0;
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         for family in &families {
             let kinds: BTreeSet<bool> = family
                 .subjects
@@ -128,14 +128,14 @@ fn every_variant_of_both_rounds_reads_back() {
             }
         }
     }
-    assert_eq!(count, 689);
+    assert_eq!(count, 1095);
 }
 
 /// The rounds' sizes, which the owner's import and export are planned around: round 1 writes 706
-/// variants of the targets and 49 of each photograph, round 2 292 and 21.
+/// variants of the targets and 49 of each photograph, round 2 292 and 21, round 3 553 and 29.
 #[test]
 fn the_rounds_have_their_sizes() {
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         let mut targets = BTreeSet::new();
         let mut on_targets = 0;
         let mut per_photograph = 1;
@@ -153,7 +153,11 @@ fn the_rounds_have_their_sizes() {
         let sizes = (on_targets + targets.len(), per_photograph);
         assert_eq!(
             sizes,
-            if round == 1 { (706, 49) } else { (292, 21) },
+            match round {
+                1 => (706, 49),
+                2 => (292, 21),
+                _ => (553, 29),
+            },
             "round {round}"
         );
     }
@@ -163,7 +167,7 @@ fn the_rounds_have_their_sizes() {
 /// variant id within a round; every label is safe in a file name.
 #[test]
 fn families_and_variants_have_unique_names() {
-    for (round, families) in both_rounds() {
+    for (round, families) in every_round() {
         let mut ids = BTreeSet::new();
         let mut variants = BTreeSet::new();
         for family in &families {
@@ -195,9 +199,15 @@ fn families_and_variants_have_unique_names() {
                 }
             }
         }
-        // Round 1 covers every area of the design's order; round 2 the seven pairs.
+        // Round 1 covers every area of the design's order; round 2 the seven pairs; round 3 the
+        // realigned areas.
         let areas: BTreeSet<&str> = families.iter().map(|family| family.area).collect();
-        if round == 1 {
+        if round == 3 {
+            assert_eq!(
+                areas,
+                BTreeSet::from(["basic", "mixer", "presence", "vignette"])
+            );
+        } else if round == 1 {
             assert_eq!(
                 areas,
                 BTreeSet::from([
@@ -240,7 +250,7 @@ fn every_counterpart_is_a_luxforge_control() {
         "ToneCurveName2012",
     ];
     let mut names = BTreeSet::new();
-    for (_, families) in both_rounds() {
+    for (_, families) in every_round() {
         for family in &families {
             for (name, _) in family
                 .base
@@ -699,7 +709,7 @@ fn an_unknown_round_is_refused() {
                 .collect(),
         )
     };
-    let error = run(directory.path(), args("3")).unwrap_err().to_string();
-    assert!(error.contains("rounds 1 and 2"), "{error}");
+    let error = run(directory.path(), args("4")).unwrap_err().to_string();
+    assert!(error.contains("rounds 1, 2 and 3"), "{error}");
     assert!(!directory.path().join("round").exists());
 }

@@ -2463,7 +2463,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload,
                 artifacts: Vec::new(),
                 mask: None,

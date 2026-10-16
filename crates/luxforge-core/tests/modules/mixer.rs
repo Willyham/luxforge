@@ -244,7 +244,7 @@ fn every_saturation_slider_at_minus_100_renders_exact_greys() {
     }
 }
 
-/// Production versus every one of the 576 frozen fixture cases, through the real render path
+/// Production versus every frozen fixture case its sliders can reach, through the real render path
 /// (the 8-bit JPEG path for `srgb8` inputs, the RAW linear path for `linear` ones), grouped by
 /// parameter set so each set costs one render rather than one per case. This complements
 /// `modules::mixer::unit::tests::production_matches_every_frozen_fixture_case_within_the_frozen_tolerance`,
@@ -268,18 +268,31 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
     let mut worst = 0.0f64;
     let mut worst_case = String::new();
+    let mut checked = 0;
 
     for set in parameter_sets {
         let set_name = set["name"].as_str().unwrap();
+        // The set's values are strengths: each is sent as the slider value that applies it, and a
+        // set holding a strength beyond a slider's response is not reachable through the payload.
         let mut payload = Map::new();
+        let mut reachable = true;
         for property in ["hue", "saturation", "luminance"] {
             let values = set[property].as_array().unwrap();
             for (range, value) in range_order.iter().zip(values) {
                 let value = value.as_f64().unwrap();
                 if value != 0.0 {
-                    payload.insert(format!("{range}-{property}"), json!(value));
+                    let field = format!("{range}-{property}");
+                    match slider(&field, value) {
+                        Some(slider) => {
+                            payload.insert(field, json!(slider));
+                        }
+                        None => reachable = false,
+                    }
                 }
             }
+        }
+        if !reachable {
+            continue;
         }
         let layer = layer(Value::Object(payload));
 
@@ -319,6 +332,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
             )
             .unwrap_or_else(|error| panic!("{set_name} (srgb8): {error}"));
             for (index, case) in srgb8.iter().enumerate() {
+                checked += 1;
                 let name = case["name"].as_str().unwrap();
                 let pixel = rendered.pixel(index as u32, 0).unwrap();
                 assert_eq!(pixel[3], 255, "{name}: alpha is never touched");
@@ -364,6 +378,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
             )
             .unwrap_or_else(|error| panic!("{set_name} (linear): {error}"));
             for (index, case) in linear.iter().enumerate() {
+                checked += 1;
                 let name = case["name"].as_str().unwrap();
                 let pixel = rendered.pixel(index as u32, 0).unwrap();
                 let expected = case["expected_linear"].as_array().unwrap();
@@ -386,8 +401,16 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
             }
         }
     }
+    // The luminance sliders reach about ±28 of strength, so the sets at a luminance of ±100 are
+    // not reachable through the payload; the unit's own test checks every case directly.
+    assert!(
+        checked * 4 >= cases.len(),
+        "only {checked} cases are reachable through the sliders"
+    );
     // Printed with --nocapture so the handoff can quote a measured figure.
-    println!("maximum observed rendered-code deviation {worst} at {worst_case}");
+    println!(
+        "{checked} reachable cases; maximum observed rendered-code deviation {worst} at {worst_case}"
+    );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -465,7 +488,21 @@ fn grade_params(payload: &Map<String, Value>) -> grade::GradeParams {
     }
 }
 
-/// The HSL parameters of a payload's HSL fields.
+/// The strength the mixer's `field` applies at slider `value`, through its response.
+fn strength(field: &str, value: f64) -> f64 {
+    luxforge_core::slider_response("set-mixer", field)
+        .expect("a realigned field")
+        .strength(value)
+}
+
+/// The slider value of the mixer's `field` that applies `strength`, `None` beyond its response.
+fn slider(field: &str, strength: f64) -> Option<f64> {
+    luxforge_core::slider_response("set-mixer", field)
+        .expect("a realigned field")
+        .value(strength)
+}
+
+/// The HSL strengths of a payload's HSL fields.
 fn hsl_params(payload: &Map<String, Value>) -> reference::mixer::MixerParams {
     let mut params = reference::mixer::MixerParams::neutral();
     for (range, name) in RANGE_NAMES.iter().enumerate() {
@@ -475,9 +512,9 @@ fn hsl_params(payload: &Map<String, Value>) -> reference::mixer::MixerParams {
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0)
         };
-        params.hue[range] = number("hue");
-        params.saturation[range] = number("saturation");
-        params.luminance[range] = number("luminance");
+        params.hue[range] = strength(&format!("{name}-hue"), number("hue"));
+        params.saturation[range] = strength(&format!("{name}-saturation"), number("saturation"));
+        params.luminance[range] = strength(&format!("{name}-luminance"), number("luminance"));
     }
     params
 }

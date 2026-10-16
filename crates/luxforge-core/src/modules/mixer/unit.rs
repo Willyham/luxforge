@@ -99,7 +99,7 @@ const LUMINANCE_GAMMA_BASE_F64: f64 = 2.0;
 /// way to the neighbouring centre in the direction of travel. It is also the most two neighbouring
 /// centres may close the gap between them together, so every gap keeps at least `1 - KAPPA` of its
 /// width and the hue warp stays strictly increasing under any combination of sliders.
-const HUE_REACH_F64: f64 = 0.85;
+pub(super) const HUE_REACH_F64: f64 = 0.85;
 
 const CHROMA_RAMP_EDGE: f32 = CHROMA_RAMP_EDGE_F64 as f32;
 const LUMINANCE_GAMMA_BASE: f32 = LUMINANCE_GAMMA_BASE_F64 as f32;

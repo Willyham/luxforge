@@ -2979,7 +2979,7 @@ mod tests {
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload: json!({"dehaze": 60.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -3698,7 +3698,7 @@ mod tests {
             match module
                 .compile(
                     crate::PRESENCE_EFFECT,
-                    EFFECT_FORMAT,
+                    crate::current_effect_format(crate::PRESENCE_EFFECT),
                     payload,
                     crate::CompileStage::exact(stage),
                 )
@@ -3776,7 +3776,7 @@ mod tests {
         Layer {
             id: LayerId::new(),
             effect_id: crate::PRESENCE_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
             payload,
             mask: mask.map(|mask| mask.id.clone()),
             artifacts: Vec::new(),
@@ -5184,9 +5184,7 @@ mod tests {
     #[test]
     #[ignore = "measurement, run explicitly in release"]
     fn masked_spatial_timing() {
-        use crate::{
-            Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask, PRESENCE_EFFECT,
-        };
+        use crate::{Component, ComponentMode, Layer, LayerId, Mask, PRESENCE_EFFECT};
 
         let registry = ModuleRegistry::builtin();
         // One `add` linear gradient between two normalized points, as the host stores one.
@@ -5220,7 +5218,7 @@ mod tests {
                     let presence = |mask: Option<&Mask>| Layer {
                         id: LayerId::new(),
                         effect_id: PRESENCE_EFFECT.into(),
-                        effect_format: EFFECT_FORMAT,
+                        effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                         payload: json!({"clarity": 100.0}),
                         mask: mask.map(|mask| mask.id.clone()),
                         artifacts: Vec::new(),
@@ -5296,9 +5294,7 @@ mod tests {
     #[test]
     #[ignore = "measurement, run explicitly in release"]
     fn masked_spatial_zero_coverage_timing() {
-        use crate::{
-            Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask, PRESENCE_EFFECT,
-        };
+        use crate::{Component, ComponentMode, Layer, LayerId, Mask, PRESENCE_EFFECT};
 
         let registry = ModuleRegistry::builtin();
         let (width, height) = (6000_u32, 4000_u32);
@@ -5345,7 +5341,7 @@ mod tests {
                 layers: vec![Layer {
                     id: LayerId::new(),
                     effect_id: PRESENCE_EFFECT.into(),
-                    effect_format: EFFECT_FORMAT,
+                    effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                     payload: json!({"clarity": 100.0}),
                     mask: Some(mask.id.clone()),
                     artifacts: Vec::new(),
@@ -5412,8 +5408,7 @@ mod tests {
     #[ignore = "measurement, run explicitly in release"]
     fn masked_spatial_component_timing() {
         use crate::{
-            COMPONENTS_PER_MASK, Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask,
-            PRESENCE_EFFECT,
+            COMPONENTS_PER_MASK, Component, ComponentMode, Layer, LayerId, Mask, PRESENCE_EFFECT,
         };
 
         let registry = ModuleRegistry::builtin();
@@ -5451,7 +5446,7 @@ mod tests {
                     layers: vec![Layer {
                         id: LayerId::new(),
                         effect_id: PRESENCE_EFFECT.into(),
-                        effect_format: EFFECT_FORMAT,
+                        effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                         payload: json!({"clarity": 100.0}),
                         mask: Some(mask.id.clone()),
                         artifacts: Vec::new(),
