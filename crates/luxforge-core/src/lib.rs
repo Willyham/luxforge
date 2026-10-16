@@ -148,7 +148,8 @@ pub use modules::{
     ViewControl, WheelControl, WheelStyle, WhiteBalanceMode, basic_response, check_parameters,
     check_value, controls_module, current_effect_format, fit_correction_source,
     gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
-    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
+    palette_bytes, resolve_control, resolve_group_reset, slider_response,
+    temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{DeveloperModels, HostView, TaskAdmission, TaskNeeds};

@@ -2,7 +2,8 @@
 //! and the Luxforge control each Lightroom setting is compared with.
 //!
 //! Round 1 sweeps one setting at a time across its range; round 2 the interacting pairs the design
-//! names (`docs/design/lightroom-alignment.md`, "Fitting the translation"). Colour grading is not
+//! names (`docs/design/lightroom-alignment.md`, "Fitting the translation"); round 3 confirms the
+//! realigned sliders at values between round 1's, which no response was fitted to. Colour grading is not
 //! here: the delivered `grade-align` round measures it. Brush and range masks wait for a later
 //! round (see [`NOT_IN_ROUND`]).
 use super::settings::{
@@ -741,11 +742,148 @@ pub fn round_two() -> Vec<Family> {
     families
 }
 
+/// Round 3's signed values, between round 1's [`SIGNED`].
+const BETWEEN: [f64; 10] = [
+    -90.0, -60.0, -35.0, -15.0, -5.0, 5.0, 15.0, 35.0, 60.0, 90.0,
+];
+/// Round 3's Exposure values, between round 1's [`EXPOSURE`].
+const BETWEEN_EXPOSURE: [f64; 10] = [-4.0, -2.5, -1.5, -0.75, -0.25, 0.25, 0.75, 1.5, 2.5, 4.0];
+/// Round 3's Midpoint values, between round 1's.
+const BETWEEN_FIFTY: [f64; 8] = [5.0, 20.0, 33.0, 45.0, 55.0, 67.0, 80.0, 95.0];
+/// Round 3's photograph values, between round 1's [`COARSE`].
+const BETWEEN_COARSE: [f64; 4] = [-75.0, -35.0, 35.0, 75.0];
+const BETWEEN_COARSE_EXPOSURE: [f64; 4] = [-1.5, -0.5, 0.5, 1.5];
+
+/// Round 3, the confirming round: every realigned slider alone at values between round 1's, on
+/// the subjects round 1 measured it on, with round 1's family ids so the measurement treats each
+/// family as round 1's. Texture, the vignette's Roundness and Feather, Detail, the Tone curve,
+/// masks and geometry are not realigned and are not here.
+pub fn round_three() -> Vec<Family> {
+    let tone_targets = [Target("wedge"), Target("patches"), Target("surround")];
+    let between = |setting: &str| -> &'static [f64] {
+        if setting == "Exposure2012" {
+            &BETWEEN_EXPOSURE
+        } else {
+            &BETWEEN
+        }
+    };
+    let mut families = Vec::new();
+    for (id, setting) in TONE {
+        families.push(sweep(
+            id,
+            "basic",
+            &tone_targets,
+            setting,
+            between(setting),
+            tone_field(setting),
+        ));
+    }
+    for (id, setting) in [("vibrance", "Vibrance"), ("saturation", "Saturation")] {
+        families.push(sweep(
+            id,
+            "basic",
+            &[Target("patches")],
+            setting,
+            &BETWEEN,
+            signed,
+        ));
+    }
+    for (id, setting) in [
+        ("temperature", "IncrementalTemperature"),
+        ("tint", "IncrementalTint"),
+    ] {
+        families.push(sweep(
+            id,
+            "basic",
+            &[Target("wedge"), Target("patches")],
+            setting,
+            &BETWEEN,
+            signed,
+        ));
+    }
+    families.push(sweep(
+        "clarity",
+        "presence",
+        &[Target("edges"), Target("surround")],
+        "Clarity2012",
+        &BETWEEN,
+        signed,
+    ));
+    families.push(sweep(
+        "dehaze",
+        "presence",
+        &[Target("edges"), Target("surround"), Target("patches")],
+        "Dehaze",
+        &BETWEEN,
+        signed,
+    ));
+    for (kind, names) in ["hue", "saturation", "luminance"].into_iter().zip(MIXER) {
+        for name in names {
+            let colour = name
+                .rsplit("Adjustment")
+                .next()
+                .unwrap_or_default()
+                .to_lowercase();
+            families.push(sweep(
+                &format!("mixer-{colour}-{kind}"),
+                "mixer",
+                &[Target("patches")],
+                name,
+                &BETWEEN,
+                signed,
+            ));
+        }
+    }
+    let flat = [Target("flat")];
+    families.push(sweep(
+        "vignette-amount",
+        "vignette",
+        &flat,
+        "PostCropVignetteAmount",
+        &BETWEEN,
+        signed,
+    ));
+    families.push(held(
+        "vignette-midpoint",
+        "vignette",
+        &flat,
+        vec![("PostCropVignetteAmount", signed(-50.0))],
+        "PostCropVignetteMidpoint",
+        &BETWEEN_FIFTY,
+        unsigned,
+    ));
+    for (id, setting) in TONE {
+        let values: &[f64] = if setting == "Exposure2012" {
+            &BETWEEN_COARSE_EXPOSURE
+        } else {
+            &BETWEEN_COARSE
+        };
+        families.push(sweep(
+            id,
+            "basic",
+            &[Photographs],
+            setting,
+            values,
+            tone_field(setting),
+        ));
+    }
+    families.push(sweep(
+        "dehaze",
+        "presence",
+        &[Photographs],
+        "Dehaze",
+        &BETWEEN_COARSE,
+        signed,
+    ));
+    distinct(families)
+}
+
 /// The families of round `round`, or `None` for a round the rig does not define.
 pub fn round(round: u32) -> Option<Vec<Family>> {
     match round {
         1 => Some(round_one()),
         2 => Some(round_two()),
+        3 => Some(round_three()),
         _ => None,
     }
 }

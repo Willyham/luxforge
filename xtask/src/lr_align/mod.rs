@@ -41,7 +41,7 @@ use serde_json::Map;
 use settings::{Field, Fields, Kind};
 
 const FORMAT: u32 = 1;
-const USAGE: &str = "lr-align generate --round 1|2 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...] | lr-align fold --measured DIR [--measured DIR ...] --output NEW";
+const USAGE: &str = "lr-align generate --round 1|2|3 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...] | lr-align fold --measured DIR [--measured DIR ...] --output NEW";
 /// The folder inside the round that the owner imports, and the one the exports go to.
 const LIGHTROOM: &str = "lightroom";
 const EXPORTS: &str = "exports";
@@ -74,7 +74,7 @@ pub fn run(root: &Path, mut a: Args) -> Result {
         .map(|v| v.to_string_lossy().split(',').map(str::to_owned).collect());
     a.done()?;
     let mut families =
-        rounds::round(round).ok_or(format!("lr-align defines rounds 1 and 2, not {round}"))?;
+        rounds::round(round).ok_or(format!("lr-align defines rounds 1, 2 and 3, not {round}"))?;
     // A part of a round: only the named families, each with every variant it has, for a session
     // that re-exports what changed or adds what an earlier session could not.
     if let Some(only) = &only {
@@ -522,7 +522,7 @@ fn write_round(plan: &Plan, out: &Path) -> Result {
             "format": FORMAT,
             "tool": "cargo xtask lr-align generate",
             "round": plan.round,
-            "kind": if plan.round == 1 { "single settings across each range" } else { "interacting pairs" },
+            "kind": match plan.round { 1 => "single settings across each range", 2 => "interacting pairs", _ => "the realigned sliders between round 1's values" },
             "instructions": "INSTRUCTIONS.txt",
             "lightroom_folder": LIGHTROOM,
             "exports_folder": EXPORTS,

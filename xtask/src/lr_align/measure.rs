@@ -3670,7 +3670,7 @@ fn measure(
             "kept": ledger.quantization,
         },
         "behaviour_threshold": {"residual_de2000": BEHAVIOUR_RESIDUAL, "share_of_range_from_default": THRESHOLD_SHARE},
-        "basic_responses": super::fold::build_responses(),
+        "slider_responses": super::fold::build_responses(),
         "exports": exports_json,
         "base_rendering": base,
         "families": entries,

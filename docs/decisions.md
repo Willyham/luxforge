@@ -479,7 +479,7 @@ Decided the same day ([design](design/lightroom-alignment.md#decided)):
 - **The importers' calibrated maps are the bridge** (A11, owner, 2026-10-13), each row becoming the identity, and removed, when its slider is realigned. Old edits on a realigned module are refused (A6), confirmed the same day.
 - **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
 
-The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, TASK-002, measurement and fitting, TASK-003, recording round 1, and TASK-004, the calibrated mapping rows for preset import, with the generator's fixes and the measurement of photographs, on 2026-10-13; whether TASK-005 onward are authorized remains open.
+The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, TASK-002, measurement and fitting, TASK-003, recording round 1, and TASK-004, the calibrated mapping rows for preset import, with the generator's fixes and the measurement of photographs, on 2026-10-13, TASK-005 and TASK-006 the same day, and TASK-007 on 2026-10-16; TASK-008 onward are not authorized.
 
 ## Colour grading
 
