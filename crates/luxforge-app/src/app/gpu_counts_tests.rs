@@ -817,3 +817,31 @@ fn a_tick_with_no_plan_after_a_drawn_one_keeps_the_drags_own_frame() {
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
+
+/// A picture at rest the surface stopped for a source it had let go — Develop shown again after
+/// Select, before the job that hands the source back — is drawn again under new versions once the
+/// desktop holds the source's pixels to hand, and only once: a second stop stands.
+#[test]
+fn a_picture_at_rest_stopped_for_a_let_go_source_is_drawn_again_once() {
+    let (mut editor, catalog, version) = presented_at_rest("rest-source-missing");
+    let stopped = |version| luxforge_gpu::RestFigures {
+        version,
+        fallback: Some(luxforge_gpu::GpuFallback::SourceMissing),
+        ..Default::default()
+    };
+    editor.gpu.rest_figures = Some(stopped(version));
+    editor.gpu_rest_again();
+    let again = editor
+        .gpu_rest_handed()
+        .expect("its picture at rest, drawn again")
+        .version;
+    assert_ne!(again, version, "under a new version");
+    editor.gpu.rest_figures = Some(stopped(again));
+    editor.gpu_rest_again();
+    assert_eq!(
+        editor.gpu_rest_handed().map(|rest| rest.version),
+        Some(again),
+        "a second stop stands"
+    );
+    finish(editor, catalog);
+}
