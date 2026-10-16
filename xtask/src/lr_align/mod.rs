@@ -1,8 +1,10 @@
-//! `cargo xtask lr-align`: the Lightroom alignment rig's generator
-//! (`docs/design/lightroom-alignment.md`, "The rig" and "Running a round").
+//! `cargo xtask lr-align`: the Lightroom alignment rig's generator, measurement and fold
+//! (`docs/design/lightroom-alignment.md`, "The rig", "Running a round" and "Changing a control").
+//! `measure` is [`measure`]'s and `fold` [`fold`]'s; the rest of this module is the generator.
 //!
-//! `generate --round N --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST]` writes a round
-//! folder for the owner to import into a scratch Lightroom Classic catalog and export:
+//! `generate --round N --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...]`
+//! writes a round folder, or with `--families` the part of one those families make, for the owner
+//! to import into a scratch Lightroom Classic catalog and export:
 //!
 //! - `targets/`: the synthetic JPEG targets the round uses, without XMP, the sources Luxforge
 //!   renders its own side from.
@@ -19,8 +21,12 @@
 //! bytes. The command writes only inside the new round folder, which must not exist and whose
 //! parent must; RAW originals are only read, verified by their SHA-256 before and after, and a
 //! failed run removes the folder it created.
+mod fold;
+mod measure;
+mod photographs;
 mod photos;
 mod readback;
+mod report;
 mod rounds;
 mod settings;
 mod targets;
@@ -35,8 +41,7 @@ use serde_json::Map;
 use settings::{Field, Fields, Kind};
 
 const FORMAT: u32 = 1;
-const USAGE: &str =
-    "lr-align generate --round 1|2 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST]";
+const USAGE: &str = "lr-align generate --round 1|2|3 --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...] | lr-align measure --round N (--folder ROUND_DIR | --exports DIR) --output NEW [--families ID,...] | lr-align fold --measured DIR [--measured DIR ...] --output NEW";
 /// The folder inside the round that the owner imports, and the one the exports go to.
 const LIGHTROOM: &str = "lightroom";
 const EXPORTS: &str = "exports";
@@ -46,6 +51,12 @@ const TIFF_BYTES_PER_PIXEL: u64 = 6;
 pub fn run(root: &Path, mut a: Args) -> Result {
     let op = a.0.first().cloned().ok_or(USAGE)?;
     a.0.remove(0);
+    if op == "measure" {
+        return measure::run(root, a);
+    }
+    if op == "fold" {
+        return fold::run(root, a);
+    }
     ensure(op == "generate", USAGE)?;
     let round: u32 = a
         .value("--round")?
@@ -58,9 +69,25 @@ pub fn run(root: &Path, mut a: Args) -> Result {
     let supplied = a
         .value("--manifest")?
         .map(|p| absolute(root, Path::new(&p)));
+    let only: Option<Vec<String>> = a
+        .value("--families")?
+        .map(|v| v.to_string_lossy().split(',').map(str::to_owned).collect());
     a.done()?;
-    let families =
-        rounds::round(round).ok_or(format!("lr-align defines rounds 1 and 2, not {round}"))?;
+    let mut families =
+        rounds::round(round).ok_or(format!("lr-align defines rounds 1, 2 and 3, not {round}"))?;
+    // A part of a round: only the named families, each with every variant it has, for a session
+    // that re-exports what changed or adds what an earlier session could not.
+    if let Some(only) = &only {
+        let unknown: Vec<&String> = only
+            .iter()
+            .filter(|id| !families.iter().any(|family| &family.id == *id))
+            .collect();
+        ensure(
+            unknown.is_empty(),
+            format!("round {round} has no families {unknown:?}"),
+        )?;
+        families.retain(|family| only.contains(&family.id));
+    }
     let mut photos = Vec::new();
     let mut excluded = Vec::new();
     if let Some(cache) = &cache {
@@ -495,7 +522,7 @@ fn write_round(plan: &Plan, out: &Path) -> Result {
             "format": FORMAT,
             "tool": "cargo xtask lr-align generate",
             "round": plan.round,
-            "kind": if plan.round == 1 { "single settings across each range" } else { "interacting pairs" },
+            "kind": match plan.round { 1 => "single settings across each range", 2 => "interacting pairs", _ => "the realigned sliders between round 1's values" },
             "instructions": "INSTRUCTIONS.txt",
             "lightroom_folder": LIGHTROOM,
             "exports_folder": EXPORTS,

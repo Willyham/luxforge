@@ -36,10 +36,10 @@ use std::sync::Arc;
 /// run. The identity keeps its historical `hsl` spelling; grading is part of the same layer.
 pub const MIXER_EFFECT: &str = "luxforge.mixer.hsl";
 
-/// The mixer effect's current payload format: 2 since the payload gained the fourteen grading
-/// fields, listed among [`super::BUILTIN_FORMATS`]. A stored mixer layer at any other format is
+/// The mixer effect's current payload format: 3 since its hue, saturation and luminance sliders
+/// follow Lightroom's responses ([`response`]), listed among [`super::BUILTIN_FORMATS`]. A stored mixer layer at any other format is
 /// refused as `incompatible` and never rewritten.
-pub(super) const MIXER_EFFECT_FORMAT: u32 = 2;
+pub(super) const MIXER_EFFECT_FORMAT: u32 = 3;
 
 const HUE: &str = "hue";
 const SATURATION: &str = "saturation";
@@ -285,7 +285,10 @@ impl FieldPatch for Mixer {
     fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
         // HSL_FIELDS is hue, then saturation, then luminance, each over the eight ranges in order.
         let property = |offset: usize| -> [f64; unit::RANGE_COUNT] {
-            std::array::from_fn(|range| values.number(HSL_FIELDS[offset + range]))
+            std::array::from_fn(|range| {
+                let name = HSL_FIELDS[offset + range];
+                RESPONSES.strength(name, values.number(name))
+            })
         };
         let (hue, saturation, luminance) = (
             property(0),
@@ -305,6 +308,17 @@ impl FieldPatch for Mixer {
         }
         Ok(Processing::Color(ColorOperation::new(units)))
     }
+}
+
+/// This module's frozen slider responses ([`super::response`]).
+static RESPONSES: std::sync::LazyLock<super::response::Responses> =
+    std::sync::LazyLock::new(|| {
+        super::response::Responses::parse(include_str!("response.json"), "the colour mixer")
+    });
+
+/// The response of this module's `field`, if it is realigned.
+pub(super) fn response(field: &str) -> Option<&'static super::response::Response> {
+    RESPONSES.get(field)
 }
 
 /// The Grading tab: one group owning the fourteen grading fields and declaring the four wheels,
@@ -438,6 +452,23 @@ fn grade_fields() -> Vec<Field> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where a response extends a hue shift past +-100 (A10), a range's hue never reaches its
+    /// neighbour's centre, where the ranges' order would cross.
+    #[test]
+    fn every_extended_hue_stays_short_of_its_neighbour() {
+        for field in &HSL_FIELDS[0..unit::RANGE_COUNT] {
+            if let Some(response) = response(field) {
+                let reach = response.knots[0][1]
+                    .abs()
+                    .max(response.knots[response.knots.len() - 1][1].abs());
+                assert!(
+                    reach / 100.0 * unit::HUE_REACH_F64 < 1.0,
+                    "{field}: {reach}"
+                );
+            }
+        }
+    }
     use crate::Stage;
     use crate::modules::{ActionInput, ToolModule};
     use serde_json::json;
@@ -533,9 +564,11 @@ mod tests {
     /// neither stage.
     #[test]
     fn each_stage_compiles_only_when_it_changes_a_pixel() {
+        // The unit holds the strength the slider's response gives.
+        let red = RESPONSES.strength("red-hue", 20.0);
         assert_eq!(
             units(json!({"red-hue": 20.0}), false),
-            ["mixer(red-hue:+20)"]
+            [format!("mixer(red-hue:{red:+})")]
         );
         assert_eq!(
             units(json!({"grade-midtones-saturation": 20.0}), false),
@@ -550,7 +583,9 @@ mod tests {
                 json!({"red-hue": 20.0, "grade-global-saturation": 5.0}),
                 false
             ),
-            ["mixer(red-hue:+20, grade-global-saturation:+5)"]
+            [format!(
+                "mixer(red-hue:{red:+}, grade-global-saturation:+5)"
+            )]
         );
         assert!(
             units(

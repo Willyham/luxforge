@@ -21,7 +21,8 @@
 //! neutral. It commits nothing.
 pub mod auto;
 mod colour;
-mod exposure;
+pub mod response;
+mod scene;
 mod tone;
 mod white_balance;
 
@@ -32,22 +33,28 @@ use super::{
 };
 use crate::Error;
 #[cfg(test)]
-use crate::{EFFECT_FORMAT, ErrorKind};
+use crate::ErrorKind;
 use colour::ColourAdjust;
 /// The Basic units' GPU programs, which [`super::GPU_PROGRAMS`] lists.
 pub(crate) use colour::PROGRAM as COLOUR_ADJUST_PROGRAM;
-use exposure::Exposure;
-pub(crate) use exposure::PROGRAM as EXPOSURE_PROGRAM;
+pub(crate) use scene::PROGRAM as SCENE_PROGRAM;
+use scene::Scene;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 pub(crate) use tone::PROGRAM as TONE_PROGRAM;
 use tone::Tone;
+use white_balance::PARAMETER_RANGE;
 pub(crate) use white_balance::PROGRAM as WHITE_BALANCE_PROGRAM;
-use white_balance::{PARAMETER_RANGE, WhiteBalance};
 
 /// The one colour-stage effect of the Basic module: every implemented Basic parameter of a stack
 /// lives in one layer of this effect.
 pub const BASIC_EFFECT: &str = "luxforge.basic.adjust";
+
+/// The Basic effect's current payload format: 3 since its sliders follow Lightroom's responses
+/// (`response.rs`) and its white balance and exposure act on the scene scale (`scene.rs`), listed
+/// among [`super::BUILTIN_FORMATS`]. A stored Basic layer at any other
+/// format holds values of the earlier meaning and is refused as `incompatible`, never rewritten.
+pub(super) const BASIC_EFFECT_FORMAT: u32 = 3;
 
 pub(super) const SET_BASIC: &str = "set-basic";
 /// The read-only query the neutral picker runs, in its own `query.<id>` namespace.
@@ -131,27 +138,28 @@ impl FieldPatch for Basic {
             BASIC_EFFECT,
             EffectStage::Color,
         )
+        .format(BASIC_EFFECT_FORMAT)
         .maskable()
         .set_notes("merges the named Basic fields into the stack's one Basic layer, which the host places before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op")
         .fields([
                 white_balance(
                         TEMPERATURE,
                         "Temperature",
-                        "a relative warm/cool correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
+                        "a relative warm/cool correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. Each channel shifts by its own frozen stops on the scene scale Exposure uses, measured from Lightroom Classic, so white stays white and the cast lives in the midtones and shadows",
                 )
                 .rail(crate::RailDecoration::Temperature)
                 .variant(raw.temperature),
                 white_balance(
                         TINT,
                         "Tint",
-                        "a relative green/magenta correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
+                        "a relative green/magenta correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. Each channel shifts by its own frozen stops on the scene scale, measured from Lightroom Classic, adding to Temperature's",
                 )
                 .rail(crate::RailDecoration::Tint)
                 .variant(raw.tint),
                 Field::slider(
                         EXPOSURE,
                         "Exposure",
-                        "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
+                        "on a JPEG shifts each linear-light channel by the value in stops on the scene scale measured from Lightroom Classic's Exposure: the deepest shadows and values past white take the plain gain, the midtones about 1.4 times the stops, and the highlights roll off towards white rather than clipping; the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds. On a RAW photo it multiplies the developed scene-linear planes by 2^EV, which stay unclipped until the terminal boundary, before the tone curve and the Look render them. It is the one exposure on every kind: the RAW development carries none",
                 )
                 .range(-5.0, 5.0)
                 .step(0.01)
@@ -262,20 +270,27 @@ impl FieldPatch for Basic {
         // program sequence (`CompileStage::gpu_shape`); no CPU compile asks for it.
         let every = at.gpu_shape;
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
+        // Each unit receives its fields' strengths, the slider values through their responses
+        // (`response.rs`); a neutral value is a neutral strength exactly.
+        let strength = |name| response::strength(name, values.number(name));
+        // White balance and exposure are one shift of each channel on the scene scale
+        // (`scene.rs`), white balance's stops plus the exposure, which is their frozen order.
         let temperature = values.number(TEMPERATURE);
         let tint = values.number(TINT);
-        if every || temperature != NEUTRAL || tint != NEUTRAL {
-            units.push(Arc::new(WhiteBalance::new(temperature, tint)));
-        }
         let exposure = values.number(EXPOSURE);
-        if every || exposure != NEUTRAL {
-            units.push(Arc::new(Exposure::new(exposure)));
+        if every || [temperature, tint, exposure] != [NEUTRAL; 3] {
+            units.push(Arc::new(Scene::new(
+                temperature,
+                tint,
+                exposure,
+                at.scene_referred,
+            )));
         }
-        let contrast = values.number(CONTRAST);
-        let highlights = values.number(HIGHLIGHTS);
-        let shadows = values.number(SHADOWS);
-        let whites = values.number(WHITES);
-        let blacks = values.number(BLACKS);
+        let contrast = strength(CONTRAST);
+        let highlights = strength(HIGHLIGHTS);
+        let shadows = strength(SHADOWS);
+        let whites = strength(WHITES);
+        let blacks = strength(BLACKS);
         if every || [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
             units.push(Arc::new(Tone::new(
                 contrast, highlights, shadows, whites, blacks,
@@ -285,8 +300,8 @@ impl FieldPatch for Basic {
         // (see `colour.rs`) whenever at least one of the two fields is non-neutral, so a layer
         // that moves either slider alone still costs exactly one unit, and moving both costs one
         // unit rather than two.
-        let vibrance = values.number(VIBRANCE);
-        let saturation = values.number(SATURATION);
+        let vibrance = strength(VIBRANCE);
+        let saturation = strength(SATURATION);
         if every || vibrance != NEUTRAL || saturation != NEUTRAL {
             units.push(Arc::new(ColourAdjust::new(vibrance, saturation)));
         }
@@ -361,7 +376,10 @@ impl FieldPatch for Basic {
 
         let mean = white_balance::average_patch(&pixels)
             .map_err(|reason| Error::validation(reason.message()))?;
-        let (temperature, tint) = white_balance::neutral_settings(mean)
+        // On a RAW photo the patch is the development's, scene-referred, where the stops are plain
+        // gains; elsewhere it is rendered, and the stops shift it on the scene scale.
+        let scene_referred = context.kind == crate::SourceTag::Raw;
+        let (temperature, tint) = white_balance::neutral_values(mean, scene_referred)
             .map_err(|reason| Error::validation(reason.message()))?;
         Ok(serde_json::json!({
             TEMPERATURE: temperature,
@@ -398,7 +416,7 @@ mod tests {
         Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: BASIC_EFFECT_FORMAT,
             payload,
             mask: None,
             artifacts: Vec::new(),
@@ -542,16 +560,26 @@ mod tests {
     #[test]
     fn compilation_produces_the_units_a_payload_names_in_the_frozen_order() {
         let module = BasicModule::new();
+        // Each unit holds its fields' strengths, the stored values through their responses.
+        let s = |field: &str, value: f64| response::strength(field, value);
         let compiled = |payload: Value| {
             module
-                .compile(BASIC_EFFECT, 1, &payload, crate::CompileStage::exact(STAGE))
+                .compile(
+                    BASIC_EFFECT,
+                    BASIC_EFFECT_FORMAT,
+                    &payload,
+                    crate::CompileStage::exact(STAGE),
+                )
                 .unwrap()
         };
         match compiled(json!({"exposure": 0.5})) {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
                 assert!(operation.is_finite());
-                assert_eq!(operation.units()[0].describe(), "exposure(+0.5)");
+                assert_eq!(
+                    operation.units()[0].describe(),
+                    "scene(temperature:+0, tint:+0, exposure:+0.5)"
+                );
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
@@ -563,7 +591,10 @@ mod tests {
                 assert!(operation.is_finite());
                 assert_eq!(
                     operation.units()[0].describe(),
-                    "tone(contrast=+20, highlights=+0, shadows=+0, whites=+0, blacks=+0)"
+                    format!(
+                        "tone(contrast={:+}, highlights=+0, shadows=+0, whites=+0, blacks=+0)",
+                        s(CONTRAST, 20.0)
+                    )
                 );
             }
             other => panic!("expected a colour operation, got {other:?}"),
@@ -576,7 +607,10 @@ mod tests {
                 assert!(operation.is_finite());
                 assert_eq!(
                     operation.units()[0].describe(),
-                    "colour-adjust(vibrance:+30, saturation:+0)"
+                    format!(
+                        "colour-adjust(vibrance:{:+}, saturation:+0)",
+                        s(VIBRANCE, 30.0)
+                    )
                 );
             }
             other => panic!("expected a colour operation, got {other:?}"),
@@ -599,34 +633,43 @@ mod tests {
                 assert!(operation.is_finite());
                 assert_eq!(
                     operation.units()[0].describe(),
-                    "colour-adjust(vibrance:+30, saturation:-100)"
+                    format!(
+                        "colour-adjust(vibrance:{:+}, saturation:-100)",
+                        s(VIBRANCE, 30.0)
+                    )
                 );
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
-        // Exposure and Tone together compile to two units, Exposure before Tone, matching the
-        // internal order white balance -> exposure -> tone -> vibrance -> saturation.
+        // Exposure and Tone together compile to two units, the scene unit before Tone, matching
+        // the internal order white balance -> exposure -> tone -> vibrance -> saturation.
         match compiled(json!({"exposure": 1.0, "shadows": 50.0})) {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 2);
                 assert!(operation.is_finite());
-                assert_eq!(operation.units()[0].describe(), "exposure(+1)");
+                assert_eq!(
+                    operation.units()[0].describe(),
+                    "scene(temperature:+0, tint:+0, exposure:+1)"
+                );
                 assert!(operation.units()[1].describe().starts_with("tone("));
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
-        // One non-neutral white balance field compiles the one white-balance unit, holding both.
+        // One non-neutral white balance field compiles the one scene unit, holding all three.
         match compiled(json!({"temperature": 20.0})) {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
                 assert!(operation.is_finite());
-                assert_eq!(operation.units()[0].describe(), "white-balance(+20, +0)");
+                assert_eq!(
+                    operation.units()[0].describe(),
+                    "scene(temperature:+20, tint:+0, exposure:+0)"
+                );
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
-        // The frozen internal order over every implemented field: white balance, exposure, tone,
-        // then the fused Colour unit, whichever fields the payload set. Vibrance and saturation
-        // together still cost one unit, not two.
+        // The frozen internal order over every implemented field: the scene unit (white balance
+        // and exposure), tone, then the fused Colour unit, whichever fields the payload set.
+        // Vibrance and saturation together still cost one unit, not two.
         match compiled(json!({
             "temperature": 20.0,
             "tint": -5.0,
@@ -641,14 +684,41 @@ mod tests {
                     .iter()
                     .map(|unit| unit.describe())
                     .collect::<Vec<_>>();
-                assert_eq!(described.len(), 4);
-                assert_eq!(described[0], "white-balance(+20, -5)");
-                assert_eq!(described[1], "exposure(+1)");
-                assert!(described[2].starts_with("tone("));
-                assert_eq!(described[3], "colour-adjust(vibrance:+20, saturation:+10)");
+                assert_eq!(
+                    described.len(),
+                    3,
+                    "white balance and exposure are one unit"
+                );
+                assert_eq!(described[0], "scene(temperature:+20, tint:-5, exposure:+1)");
+                assert!(described[1].starts_with("tone("));
+                assert_eq!(
+                    described[2],
+                    format!(
+                        "colour-adjust(vibrance:{:+}, saturation:{:+})",
+                        s(VIBRANCE, 20.0),
+                        s(SATURATION, 10.0)
+                    )
+                );
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
+    }
+
+    /// A Basic layer stored before the sliders followed Lightroom's responses holds values of the
+    /// earlier meaning: it is refused, naming its format, rather than rendered at the new scale.
+    #[test]
+    fn an_earlier_basic_layer_is_refused_naming_its_format() {
+        let module = BasicModule::new();
+        let error = module
+            .compile(
+                BASIC_EFFECT,
+                1,
+                &json!({"exposure": 1.0}),
+                crate::CompileStage::exact(STAGE),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert!(error.detail.contains("format 1"), "{}", error.detail);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -769,21 +839,36 @@ mod tests {
     #[test]
     fn the_query_returns_the_settings_the_solver_corpus_predicts() {
         let mut covered = 0;
+        let mut solved = 0;
         for case in solver_cases() {
-            let (Some(expected), 25) = (case.expected_solution, case.patch_u8.len()) else {
+            let (Some(_), 25) = (case.expected_solution, case.patch_u8.len()) else {
                 continue;
             };
             covered += 1;
             // The patch sits away from every edge, so all 25 samples are in bounds.
             let probe = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &case.patch_u8);
-            let result =
-                queried(&probe, &[], 5, 5).unwrap_or_else(|e| panic!("{}: {e}", case.description));
-            assert_eq!(
-                (result["temperature"].as_i64(), result["tint"].as_i64()),
-                (Some(expected[0]), Some(expected[1])),
-                "{}",
-                case.description
-            );
+            let answer = queried(&probe, &[], 5, 5);
+            // The corpus's patches, solved by the independent scene reference: its rounded
+            // answer, or a refusal where it lies outside the sliders' range.
+            let mean = white_balance::average_patch(&case.patch_u8).expect("a usable patch");
+            let reference = luxforge_reference::scene::neutral_settings(mean);
+            let result = match (answer, reference) {
+                (Ok(result), Some((t, n))) => {
+                    assert_eq!(
+                        (result[TEMPERATURE].as_i64(), result[TINT].as_i64()),
+                        (Some(t.round() as i64), Some(n.round() as i64)),
+                        "{}",
+                        case.description
+                    );
+                    solved += 1;
+                    result
+                }
+                (Err(error), None) => {
+                    assert!(error.detail.starts_with("out-of-range:"), "{error}");
+                    continue;
+                }
+                (got, want) => panic!("{}: {got:?} against {want:?}", case.description),
+            };
             assert_eq!(
                 result["patch"],
                 json!({
@@ -804,6 +889,7 @@ mod tests {
             );
         }
         assert_eq!(covered, 121, "every full-patch round-trip case of the grid");
+        assert!(solved >= 100, "most of the grid solves: {solved}");
     }
 
     /// The picker reads the stage the Basic layer *receives*: the layer's own index when one
@@ -994,20 +1080,13 @@ mod tests {
     #[test]
     fn the_settings_a_pick_returns_neutralize_the_patch_it_read() {
         let module = BasicModule::new();
-        for case in solver_cases() {
-            let (Some(_), 25) = (case.expected_solution, case.patch_u8.len()) else {
-                continue;
-            };
-            let probe = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &case.patch_u8);
-            let result = queried(&probe, &[], 5, 5).expect("a solved patch");
-            let payload = json!({
-                "temperature": result["temperature"],
-                "tint": result["tint"],
-            });
+        // The channel spread, in output codes, of `mean` corrected by whole slider values.
+        let spread = |mean: [f32; 3], temperature: f64, tint: f64| {
+            let payload = json!({"temperature": temperature, "tint": tint});
             let Processing::Color(operation) = module
                 .compile(
                     BASIC_EFFECT,
-                    EFFECT_FORMAT,
+                    BASIC_EFFECT_FORMAT,
                     &payload,
                     crate::CompileStage::exact(STAGE),
                 )
@@ -1015,23 +1094,42 @@ mod tests {
             else {
                 panic!("expected a colour operation");
             };
-            // The patch's own average, corrected by the settings the picker returned.
-            let mean = result["patch"]["mean_linear"]
-                .as_array()
-                .expect("the averaged patch");
-            let mut row = [[
-                mean[0].as_f64().unwrap() as f32,
-                mean[1].as_f64().unwrap() as f32,
-                mean[2].as_f64().unwrap() as f32,
-            ]];
+            let mut row = [mean];
             for unit in operation.units() {
                 unit.apply_row(0, 0, &mut row);
             }
             let codes = row[0].map(|value| i32::from(srgb::code(f64::from(value))));
-            let spread = codes.iter().max().unwrap() - codes.iter().min().unwrap();
+            codes.iter().max().unwrap() - codes.iter().min().unwrap()
+        };
+        for case in solver_cases() {
+            let (Some(_), 25) = (case.expected_solution, case.patch_u8.len()) else {
+                continue;
+            };
+            let probe = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &case.patch_u8);
+            // A patch outside the sliders' range is refused, which the corpus test checks.
+            let Ok(result) = queried(&probe, &[], 5, 5) else {
+                continue;
+            };
+            // The patch's own average, corrected by the settings the picker returned.
+            let mean = result["patch"]["mean_linear"]
+                .as_array()
+                .expect("the averaged patch");
+            let mean = [0, 1, 2].map(|c| mean[c].as_f64().unwrap() as f32);
+            let (temperature, tint) = (
+                result["temperature"].as_f64().unwrap(),
+                result["tint"].as_f64().unwrap(),
+            );
+            // Neutral to the code where a whole step reaches it; where a step of the realigned
+            // slider moves the colour further, within a code of the best neighbouring whole step.
+            let best = (-1..=1)
+                .flat_map(|dt| (-1..=1).map(move |dn| (f64::from(dt), f64::from(dn))))
+                .map(|(dt, dn)| spread(mean, temperature + dt, tint + dn))
+                .min()
+                .unwrap();
+            let picked = spread(mean, temperature, tint);
             assert!(
-                spread <= 1,
-                "{}: corrected patch {codes:?} is not neutral to the code",
+                picked <= best.max(1) + 1,
+                "{}: corrected patch spreads {picked} codes, a neighbour {best}",
                 case.description
             );
         }

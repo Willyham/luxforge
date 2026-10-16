@@ -140,8 +140,8 @@ fn a_half_covered_frame_matches_the_stepwise_reference_on_both_paths() {
             }
             let offset = ((y * WIDTH + x) * 4) as usize;
             for channel in 0..3 {
-                let input = srgb::decode(source.rgba[offset + channel]) * 2.0_f64.powf(0.5);
-                let effect = input * 2.0_f64.powf(2.0);
+                let input = exposed(srgb::decode(source.rgba[offset + channel]), 0.5);
+                let effect = exposed(input, 2.0);
                 let blended = blend(input, effect, m);
                 let expected = srgb::code(blended);
                 for (path, pixel) in [

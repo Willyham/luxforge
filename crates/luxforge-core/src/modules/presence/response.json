@@ -1,0 +1,9 @@
+{
+  "format": "luxforge.slider-response",
+  "version": 1,
+  "basis": "lr-align fold of round 1's charts (lr-round-1): each field's measured families fitted jointly, each weighted equally, every step at least 0.2 of its Lightroom step, composed with the study build's responses; Dehaze from round 1's photographs (round-1b) alone, the charts holding no haze for its estimate",
+  "responses": {
+    "clarity": {"knots": [[-100, -130], [-75, -117], [-50, -65], [-25, -24.375], [-10, -9.75], [0, 0], [10, 5], [25, 15], [50, 31.6667], [75, 48.3333], [100, 65]]},
+    "dehaze": {"knots": [[-100, -84.375], [-50, -28.125], [0, 0], [50, 50], [100, 100]]}
+  }
+}

@@ -2,7 +2,9 @@
 
 Status: implemented and verified on the M4 Mac. The owner authorized implementation on 2026-09-22 on the recorded defaults; the three modules, the host stages, the spatial primitive and the acceptance and rendered evidence are delivered, and [performance](../specs/performance.md#presence-colour-mixer-and-vignette-qualification) records the measurements and the missed slider targets. The [proposals](#proposals-with-recorded-defaults) at the end carry those defaults so the plan runs to completion on agent judgement; each is the owner's to refine, as the Basic defaults were. It builds on the delivered [Basic adjustments](basic-and-histogram.md) integration contract (field patches, the draft lifecycle, pointwise colour runs), the [module and API contract](modules-and-api.md), the [UI components](ui-components.md) vocabulary and the [Develop workspace](develop-workspace.md) tool array.
 
-[Colour grading](colour-grading.md) extends the delivered mixer: the same layer, now at its own format 2, adds fourteen grading fields compiled to a second pointwise unit after the HSL unit, under a Grading tab beside HSL. What this design says of the mixer's HSL controls still holds; their groups now sit inside the HSL tab.
+[Colour grading](colour-grading.md) extends the delivered mixer: the same layer, at its own format marker, adds fourteen grading fields compiled to a second pointwise unit after the HSL unit, under a Grading tab beside HSL. What this design says of the mixer's HSL controls still holds; their groups now sit inside the HSL tab.
+
+Clarity, Dehaze, the mixer's 24 HSL sliders and the vignette's Amount and Midpoint follow Lightroom Classic's measured responses ([Presence, the mixer and the vignette realigned](lightroom-alignment.md#presence-the-mixer-and-the-vignette-realigned)): each slider's value goes through a frozen response to the strength the unit below applies, which is what the tables here call the slider's value. The units, their stages and their GPU programs are unchanged. Presence's payload format is 2, the vignette's 2 and the mixer's 3, so a layer of an earlier meaning is refused, never re-rendered.
 
 ## Outcome and scope
 

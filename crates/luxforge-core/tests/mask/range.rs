@@ -18,8 +18,8 @@ use super::kinds::{
 };
 use super::*;
 use luxforge_core::{
-    AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
-    Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId,
+    AssetId, BASIC_EFFECT, Component, ComponentMode, EditorService, Layer, LayerId, Mask,
+    ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId,
     mask::Stroke,
     mask::{
         CompiledMask,
@@ -84,7 +84,7 @@ fn masked_stack(mask: Mask) -> Recipe {
         layers: vec![Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask.id.clone()),
             artifacts: Vec::new(),
@@ -156,7 +156,7 @@ fn a_range_selection_reads_the_operations_input_and_renders_as_the_reference_com
                 }
                 let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                 for (channel, &code) in pixel.iter().enumerate().take(3) {
-                    let effect = input[channel] * 2.0_f64.powf(MASKED_EV);
+                    let effect = exposed(input[channel], MASKED_EV);
                     let blended = (1.0 - m) * input[channel] + m * effect;
                     assert_code(
                         code,
@@ -281,7 +281,7 @@ fn a_range_selection_reads_the_operations_input_on_the_raw_linear_path() {
                     "{kind}: a sampled byte differs from the rendered byte at ({x}, {y})"
                 );
                 for (channel, &code) in pixel.iter().enumerate().take(3) {
-                    let effect = input[channel] * 2.0_f64.powf(MASKED_EV);
+                    let effect = exposed(input[channel], MASKED_EV);
                     let blended = (1.0 - m) * input[channel] + m * effect;
                     assert_code(
                         code,
@@ -376,7 +376,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
         layers: vec![Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask_id),
             artifacts: Vec::new(),
@@ -410,7 +410,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
             }
             let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
             for (channel, &code) in pixel.iter().enumerate().take(3) {
-                let effect = input[channel] * 2.0_f64.powf(MASKED_EV);
+                let effect = exposed(input[channel], MASKED_EV);
                 let blended = (1.0 - m) * input[channel] + m * effect;
                 assert_code(
                     code,
@@ -752,7 +752,7 @@ fn a_dragged_colour_pick_stores_what_the_area_holds_and_renders_as_the_reference
             }
             let out = rendered.pixel(x, y).expect("a pixel of the stage");
             for (channel, &code) in out.iter().enumerate().take(3) {
-                let effect = pixel[channel] * 2.0_f64.powf(MASKED_EV);
+                let effect = exposed(pixel[channel], MASKED_EV);
                 let blended = (1.0 - m) * pixel[channel] + m * effect;
                 assert_code(
                     code,

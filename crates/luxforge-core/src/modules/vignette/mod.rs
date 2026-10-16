@@ -37,6 +37,11 @@ use std::sync::Arc;
 /// vignette" name is used instead of a literal hyphen.
 pub const VIGNETTE_EFFECT: &str = "luxforge.vignette.postcrop";
 
+/// The vignette effect's current payload format: 2 since Amount and Midpoint follow Lightroom's
+/// responses ([`response`]), listed among [`super::BUILTIN_FORMATS`]. A stored vignette layer at
+/// any other format holds values of an earlier meaning and is refused, never rewritten.
+pub(super) const VIGNETTE_EFFECT_FORMAT: u32 = 2;
+
 const AMOUNT: &str = "amount";
 const MIDPOINT: &str = "midpoint";
 const ROUNDNESS: &str = "roundness";
@@ -88,6 +93,7 @@ impl FieldPatch for Vignette {
             VIGNETTE_EFFECT,
             EffectStage::Finish,
         )
+        .format(VIGNETTE_EFFECT_FORMAT)
         .set_notes(
             "merges the named Vignette fields into the stack's one Vignette layer. A missing key \
              means that field's own default (amount 0, midpoint 50, roundness 0, feather 50), not \
@@ -151,24 +157,37 @@ impl FieldPatch for Vignette {
 
     fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
         let stage = at.stage;
+        // Each field's strength, the slider's value through its response.
+        let strength = |name: &str| RESPONSES.strength(name, values.number(name));
         let unit: Arc<dyn PointwiseColor> = Arc::new(unit::Vignette::new(
-            values.number(AMOUNT),
-            values.number(MIDPOINT),
-            values.number(ROUNDNESS),
-            values.number(FEATHER),
+            strength(AMOUNT),
+            strength(MIDPOINT),
+            strength(ROUNDNESS),
+            strength(FEATHER),
             stage,
         ));
         Ok(Processing::Color(ColorOperation::new(vec![unit])))
     }
 }
 
+/// This module's frozen slider responses ([`super::response`]).
+static RESPONSES: std::sync::LazyLock<super::response::Responses> =
+    std::sync::LazyLock::new(|| {
+        super::response::Responses::parse(include_str!("response.json"), "the vignette")
+    });
+
+/// The response of this module's `field`, if it is realigned.
+pub(super) fn response(field: &str) -> Option<&'static super::response::Response> {
+    RESPONSES.get(field)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Layer;
     use crate::Stage;
     use crate::modules::check_parameters;
     use crate::modules::{ActionInput, ActionPlan, FixedStage, ToolModule};
-    use crate::{EFFECT_FORMAT, Layer};
     use serde_json::Value;
     use serde_json::json;
 
@@ -250,7 +269,7 @@ mod tests {
         let processing = module
             .compile(
                 VIGNETTE_EFFECT,
-                EFFECT_FORMAT,
+                crate::current_effect_format(crate::VIGNETTE_EFFECT),
                 &json!({"amount": -35.0}),
                 crate::CompileStage::exact(STAGE),
             )

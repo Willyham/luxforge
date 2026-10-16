@@ -230,6 +230,11 @@ impl PixelDomain for Byte<'_> {
             255,
         ])
     }
+    /// A wide pixel is already its 16-bit code, and a narrow one its byte's multiple of 257.
+    fn terminal16(pixel: Self::Pixel) -> Result<[u16; 3], Error> {
+        Ok(pixel)
+    }
+    const NARROW_BOUNDARIES: bool = true;
     fn spatial_frame(stage: Stage, wide: bool) -> Result<ByteFrame, Error> {
         ByteFrame::new(stage, wide)
     }

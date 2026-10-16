@@ -73,9 +73,12 @@ fn effect(effect_id: &str, payload: Value) -> Layer {
 /// Every stack shape the rows, the resample, the spatial frames and the point evaluator cover. The
 /// GPU plan's tests plan every one of them too (`gpu::plan_tests`).
 pub(super) fn cases() -> Vec<Case> {
+    // A negative Exposure: on the scene scale a positive shift stretches the tones just below
+    // white (`basic-scene.md`), which would magnify the one code a quantized stage frame may
+    // differ by past the tolerance these shapes are held to.
     let basic = effect(
         crate::BASIC_EFFECT,
-        json!({"exposure": 0.4, "contrast": 20.0, "vibrance": 15.0}),
+        json!({"exposure": -0.4, "contrast": 20.0, "vibrance": 15.0}),
     );
     let full_basic = effect(
         crate::BASIC_EFFECT,

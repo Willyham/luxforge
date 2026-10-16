@@ -37,6 +37,10 @@ pub struct CompileStage {
     /// (`crate::GpuPlanRequest::drafted`); every CPU compile leaves it unset, so no CPU frame,
     /// sample or answer ever sees a unit the CPU shape omits.
     pub(crate) gpu_shape: bool,
+    /// The layer's input is scene-referred: a source-stage layer (a RAW photo's development) leads
+    /// the stack, so a rendering Look follows rather than precedes it. Basic's scene unit applies
+    /// plain gains there and its scene shift on a rendered source (`docs/design/basic-scene.md`).
+    pub(crate) scene_referred: bool,
 }
 
 impl CompileStage {
@@ -46,7 +50,15 @@ impl CompileStage {
             full: stage,
             scale: SamplingScale { x: 1.0, y: 1.0 },
             gpu_shape: false,
+            scene_referred: false,
         }
+    }
+
+    /// The same stage over a scene-referred input when `scene_referred`
+    /// ([`Self::scene_referred`]).
+    pub(crate) fn over_scene(mut self, scene_referred: bool) -> Self {
+        self.scene_referred = scene_referred;
+        self
     }
 
     /// The same stage in the GPU shape ([`Self::gpu_shape`]) when `shaped`.
@@ -67,6 +79,7 @@ impl CompileStage {
                 y: f64::from(stage.height) / f64::from(full.height),
             },
             gpu_shape: false,
+            scene_referred: false,
         }
     }
 }

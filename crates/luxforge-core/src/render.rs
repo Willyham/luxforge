@@ -43,6 +43,7 @@ pub(crate) mod repair_entry;
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) mod repair_testing;
 pub(crate) mod spatial;
+mod study;
 #[cfg(test)]
 pub(crate) mod testing;
 mod view;
@@ -93,4 +94,5 @@ pub use raster::Raster;
 #[cfg(test)]
 pub(crate) use raster::frame_writes;
 pub(crate) use raster::{frame_mut, wide_terminal_len, zeroed_frame};
+pub use study::StudyFrame;
 pub(crate) use view::reduce_to_view;

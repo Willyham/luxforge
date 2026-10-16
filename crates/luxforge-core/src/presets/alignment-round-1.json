@@ -1,0 +1,7 @@
+{
+  "basis": "cargo xtask lr-align measure: Lightroom Classic exports of the round's synthetic targets against Luxforge's CPU reference renderer; each map the knots of the setting's monotone fit",
+  "format": "luxforge.lightroom-calibration",
+  "maps": [],
+  "round": 1,
+  "version": 1
+}

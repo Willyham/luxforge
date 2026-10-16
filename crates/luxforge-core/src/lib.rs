@@ -139,25 +139,26 @@ pub use modules::PROOF_SELECTION_ARTIFACT;
 pub use modules::auto_tone;
 pub use modules::{
     AcceptedCandidate, ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef,
-    ActionStyle, AnalysisAction, Availability, BASIC_EFFECT, BoxRect, BrushEdit, BrushSource,
-    CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl,
-    ChoiceStyle, ColorControl, ColorOperation, ColorStyle, CompileStage, Control, ControlVariant,
-    CropAspect, CropPayload, CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT,
-    Edge, EffectDescriptor, EffectOperations, EffectStage, ExactGeometry, GPU_PROGRAMS,
-    GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate,
-    MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_REPAIR_OPERATIONS, MAX_SOURCE_NAME,
-    MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
-    NumberControl, NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity,
-    OutputRect, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
-    PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
-    PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, RepairInput, RepairTable,
-    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin,
-    SourceFit, SpatialOperation, Stage, StageContext, StageQuestions, StaleCorrection, StaleReason,
-    TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, ViewControl, WheelControl, WheelStyle,
-    WhiteBalanceMode, check_parameters, check_value, controls_module, current_effect_format,
-    fit_correction_source, gains_from_temperature_tint, guide_angle, insertion_index_among,
-    largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
+    ActionStyle, AnalysisAction, Availability, BASIC_EFFECT, BasicResponse, BoxRect, BrushEdit,
+    BrushSource, CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction, CapabilityModule,
+    ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle, CompileStage, Control,
+    ControlVariant, CropAspect, CropPayload, CropStage, CurveBackground, CurveChannel,
+    CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor, EffectOperations, EffectStage,
+    ExactGeometry, GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit,
+    LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS,
+    MAX_REPAIR_OPERATIONS, MAX_SOURCE_NAME, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor,
+    ModuleLayout, ModuleRegistry, NewLayer, NumberControl, NumberStyle, OPERATIONS_FIELD,
+    ORIENTATION_EFFECT, OperationIdentity, OutputRect, PERSPECTIVE_EFFECT, PRESENCE_EFFECT,
+    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
+    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
+    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
+    RepairInput, RepairTable, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
+    SettingsOrigin, SourceFit, SpatialOperation, Stage, StageContext, StageQuestions,
+    StaleCorrection, StaleReason, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
+    ViewControl, WheelControl, WheelStyle, WhiteBalanceMode, basic_response, check_parameters,
+    check_value, controls_module, current_effect_format, fit_correction_source,
+    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
+    palette_bytes, resolve_control, resolve_group_reset, slider_response,
     temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
@@ -171,7 +172,8 @@ pub use presets::{
     DerivedSettings, GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip,
     MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord, PresetSummary, ReportCounts,
     ReportedSetting, SettingsAnalysis, SettingsGroup, SettingsGroups, SettingsPhoto,
-    USER_PRESET_GROUP, inspect_preset, settings_at_amount, settings_can_preview, settings_groups,
+    USER_PRESET_GROUP, inspect_preset, lightroom_calibration, settings_at_amount,
+    settings_can_preview, settings_groups,
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
@@ -205,7 +207,8 @@ pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
     MappingDescriptor, MappingShape, Raster, Render, RenderContext, RenderOptions, RenderSource,
-    Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render, stage_transform,
+    Sample, ScratchBudget, StageSize, StudyFrame, WhiteBalanceApproximation, render,
+    stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 /// Output sharpening, an export setting (`docs/design/export-settings.md`, "Output sharpening").
@@ -800,11 +803,13 @@ pub mod qualification {
         /// of the sums.
         #[test]
         fn the_twins_light_through_a_gain_is_the_exact_light_at_every_factor() {
-            let registry = ModuleRegistry::builtin();
+            // The render tests' linear gain, since Basic's Exposure is a shift on the scene scale,
+            // which does not commute with a mean.
+            let registry = crate::render::tests::colour_registry();
             let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
             let recipe = Recipe {
                 layers: vec![
-                    Layer::new(BASIC_EFFECT, json!({"exposure": -1.0})),
+                    crate::render::tests::exposure_layer(&[-1.0]),
                     Layer::new(PRESENCE_EFFECT, json!({"dehaze": 60})),
                 ],
                 ..Recipe::default()
@@ -886,7 +891,8 @@ pub mod qualification {
         #[test]
         #[slow]
         fn a_twin_light_reads_the_earlier_twin_light_and_can_leave_restoration_out() {
-            let registry = ModuleRegistry::builtin();
+            // The render tests' linear gain, which a mean commutes with, unlike Basic's Exposure.
+            let registry = crate::render::tests::colour_registry();
             let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
             let mut mask = crate::Mask::new("Mask 1");
             mask.components = vec![crate::Component::new(
@@ -897,7 +903,7 @@ pub mod qualification {
             )];
             let chained = Recipe {
                 layers: vec![
-                    Layer::new(BASIC_EFFECT, json!({"exposure": -1.0})),
+                    crate::render::tests::exposure_layer(&[-1.0]),
                     Layer::new(PRESENCE_EFFECT, json!({"dehaze": 40})),
                     Layer {
                         mask: Some(mask.id.clone()),
@@ -928,7 +934,7 @@ pub mod qualification {
                 layers,
                 ..Recipe::default()
             };
-            let gain = Layer::new(BASIC_EFFECT, json!({"exposure": -1.0}));
+            let gain = crate::render::tests::exposure_layer(&[-1.0]);
             let dehaze = Layer::new(PRESENCE_EFFECT, json!({"dehaze": 40}));
             let sharpened = stack(vec![
                 Layer::new(

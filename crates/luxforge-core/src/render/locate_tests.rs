@@ -329,7 +329,7 @@ fn geometry_tails(width: u32, height: u32) -> Vec<(String, Vec<Layer>, bool)> {
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: json!({"exposure": 0.4, "contrast": 20.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -337,7 +337,7 @@ fn geometry_tails(width: u32, height: u32) -> Vec<(String, Vec<Layer>, bool)> {
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload: json!({"texture": 35.0}),
                 mask: None,
                 artifacts: Vec::new(),

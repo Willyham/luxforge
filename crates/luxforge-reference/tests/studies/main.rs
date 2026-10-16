@@ -18,6 +18,7 @@ mod grade;
 mod grade_response;
 mod hdr;
 mod look;
+mod lr_align;
 mod mask;
 mod mixer;
 mod panorama;

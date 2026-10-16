@@ -49,11 +49,11 @@ impl ToolModule for Probe {
             return Ok(());
         }
         self.presence
-            .validate_payload(crate::PRESENCE_EFFECT, format, payload)
+            .validate_payload(crate::PRESENCE_EFFECT, presence_format(format), payload)
     }
     fn describe(&self, _: &str, format: u32, payload: &Value) -> Result<LayerReport, crate::Error> {
         self.presence
-            .describe(crate::PRESENCE_EFFECT, format, payload)
+            .describe(crate::PRESENCE_EFFECT, presence_format(format), payload)
     }
     fn compile(
         &self,
@@ -69,8 +69,13 @@ impl ToolModule for Probe {
             ])?));
         }
         self.presence
-            .compile(crate::PRESENCE_EFFECT, format, payload, at)
+            .compile(crate::PRESENCE_EFFECT, presence_format(format), payload, at)
     }
+}
+/// The probe's layers are at its own format 1; it forwards them as Presence's current format.
+fn presence_format(format: u32) -> u32 {
+    assert_eq!(format, 1);
+    crate::modules::current_effect_format(crate::PRESENCE_EFFECT)
 }
 fn registry() -> (ModuleRegistry, Arc<Probe>) {
     let mut registry = ModuleRegistry::developer();

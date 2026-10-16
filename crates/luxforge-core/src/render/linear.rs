@@ -637,6 +637,14 @@ impl PixelDomain for Linear<'_> {
         terminal_pixel(pixel)
     }
 
+    /// Refused when not finite, as [`Self::terminal`] is; headroom above 1 takes the top code.
+    fn terminal16(pixel: [f64; 3]) -> Result<[u16; 3], Error> {
+        if !pixel.iter().all(|value| value.is_finite()) {
+            return Err(Error::render(NON_FINITE_TERMINAL));
+        }
+        Ok(srgb::quantizer16().pixel(pixel.map(|value| value as f32)))
+    }
+
     /// The rendered-frame limit ([`RENDERED_FRAME`]) bounds this float frame, the camera limits.
     fn spatial_frame(stage: Stage, _: bool) -> Result<Vec<f32>, Error> {
         let (values, _) = RENDERED_FRAME.layout(stage.width, stage.height)?;
@@ -1376,7 +1384,7 @@ mod tests {
         Layer {
             id: crate::LayerId::new(),
             effect_id: effect_id.into(),
-            effect_format: crate::EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(effect_id),
             payload,
             mask: None,
             artifacts: Vec::new(),
@@ -2124,7 +2132,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: serde_json::json!({"exposure": 1.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -2140,24 +2148,15 @@ mod tests {
             LinearSettings::default(),
         )
         .unwrap();
-        // +1 EV doubles the linear value; the second pixel's blue clips only at the encoding.
+        // Exposure +1 shifts each linear value on the scene scale, encoded only at the boundary.
+        let exposed = |x: f64| reference_srgb(luxforge_reference::scene::shift(x, 1.0));
         assert_eq!(
             raster.pixel(0, 0),
-            Some([
-                reference_srgb(0.2),
-                reference_srgb(0.4),
-                reference_srgb(0.6),
-                255
-            ])
+            Some([exposed(0.1), exposed(0.2), exposed(0.3), 255])
         );
         assert_eq!(
             raster.pixel(1, 0),
-            Some([
-                reference_srgb(0.1),
-                reference_srgb(0.8),
-                reference_srgb(1.0),
-                255
-            ])
+            Some([exposed(0.05), exposed(0.4), exposed(0.6), 255])
         );
     }
 
@@ -2193,8 +2192,8 @@ mod tests {
     }
 
     /// Basic's exposure on the developed planes is an `f64` read of the unclipped source, clipped
-    /// only at the terminal boundary: a value pushed past 1 by the gain encodes as white and a
-    /// negative one as black, exactly as the reference computes it.
+    /// only at the terminal boundary: a negative value encodes as black, and every value as the
+    /// scene reference computes it.
     #[test]
     fn basic_exposure_reads_unclipped_planes_before_terminal_clipping() {
         let source = image(1, 1, &[[0.18, -0.1, 0.6]]);
@@ -2209,9 +2208,10 @@ mod tests {
             LinearSettings::default(),
         )
         .unwrap();
+        let exposed = |x: f64| reference_srgb(luxforge_reference::scene::shift(x, 1.0));
         assert_eq!(
             raster.pixel(0, 0),
-            Some([reference_srgb(0.36), 0, 255, 255])
+            Some([exposed(0.18), 0, exposed(0.6), 255])
         );
     }
 
@@ -2559,7 +2559,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
                 mask: None,
                 artifacts: Vec::new(),
@@ -2575,7 +2575,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload,
                 artifacts: Vec::new(),
                 mask: None,
@@ -2648,7 +2648,7 @@ mod tests {
         let layer = |effect: &str, payload, mask: Option<&crate::Mask>| Layer {
             id: crate::LayerId::new(),
             effect_id: effect.into(),
-            effect_format: crate::EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(effect),
             payload,
             mask: mask.map(|mask| mask.id.clone()),
             artifacts: Vec::new(),
@@ -2809,7 +2809,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::BASIC_EFFECT),
                 payload: serde_json::json!({"exposure": 0.4, "contrast": 8.0, "vibrance": -15.0}),
                 mask: None,
                 artifacts: Vec::new(),

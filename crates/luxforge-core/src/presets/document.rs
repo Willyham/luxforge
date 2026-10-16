@@ -83,6 +83,7 @@ pub(super) fn read(
                 action: action.clone(),
                 field: None,
                 applied: Value::Object(Map::new()),
+                rule: None,
             });
         }
         for (field, applied) in fields {
@@ -92,6 +93,7 @@ pub(super) fn read(
                 action: action.clone(),
                 field: Some(field.clone()),
                 applied: applied.clone(),
+                rule: None,
             });
         }
     }

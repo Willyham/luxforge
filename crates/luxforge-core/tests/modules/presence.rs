@@ -153,44 +153,30 @@ fn expected_frame(width: i64, height: i64, pixels: &[[f64; 3]], params: Presence
 /// The four parameter sets every numerical test below runs: each unit alone at an endpoint and all
 /// three together at intermediate amounts.
 fn parameter_sets() -> Vec<(&'static str, Value, PresenceParams)> {
-    vec![
-        (
-            "texture +100",
-            json!({"texture": 100.0}),
-            PresenceParams {
-                texture: 100.0,
-                clarity: 0.0,
-                dehaze: 0.0,
-            },
-        ),
-        (
-            "clarity -60",
-            json!({"clarity": -60.0}),
-            PresenceParams {
-                texture: 0.0,
-                clarity: -60.0,
-                dehaze: 0.0,
-            },
-        ),
-        (
-            "dehaze +100",
-            json!({"dehaze": 100.0}),
-            PresenceParams {
-                texture: 0.0,
-                clarity: 0.0,
-                dehaze: 100.0,
-            },
-        ),
-        (
-            "all three",
-            json!({"texture": 40.0, "clarity": -20.0, "dehaze": 15.0}),
-            PresenceParams {
-                texture: 40.0,
-                clarity: -20.0,
-                dehaze: 15.0,
-            },
-        ),
+    // The slider values sent, and the strengths their responses give, which the reference takes.
+    let strength = |field: &str, value: f64| {
+        luxforge_core::slider_response("set-presence", field)
+            .map_or(value, |response| response.strength(value))
+    };
+    [
+        ("texture +100", 100.0, 0.0, 0.0),
+        ("clarity -60", 0.0, -60.0, 0.0),
+        ("dehaze +100", 0.0, 0.0, 100.0),
+        ("all three", 40.0, -20.0, 15.0),
     ]
+    .into_iter()
+    .map(|(name, texture, clarity, dehaze)| {
+        (
+            name,
+            json!({"texture": texture, "clarity": clarity, "dehaze": dehaze}),
+            PresenceParams {
+                texture: strength("texture", texture),
+                clarity: strength("clarity", clarity),
+                dehaze: strength("dehaze", dehaze),
+            },
+        )
+    })
+    .collect()
 }
 
 // -------------------------------------------------------------------------------------------

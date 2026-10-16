@@ -67,7 +67,7 @@ fn basic_layer(payload: serde_json::Value) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(BASIC_EFFECT),
         payload,
         mask: None,
         artifacts: Vec::new(),
@@ -78,7 +78,7 @@ fn presence_layer(payload: serde_json::Value) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: crate::PRESENCE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
         payload,
         mask: None,
         artifacts: Vec::new(),
@@ -561,7 +561,7 @@ fn finish_layers_are_exact_and_spatial_layers_are_approximate_at_proxy_scale() {
         Layer {
             id: LayerId::new(),
             effect_id: crate::VIGNETTE_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(crate::VIGNETTE_EFFECT),
             payload: json!({ "amount": -40 }),
             mask: None,
             artifacts: Vec::new(),

@@ -53,9 +53,15 @@ const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 const WIDTH: u32 = 24;
 const HEIGHT: u32 = 16;
 
-/// The exposure a masked layer applies, in EV. Large enough that a coverage difference of one part
+/// The Exposure a masked layer holds, the slider's value. Large enough that a coverage difference of one part
 /// in a thousand is visible in the output codes rather than lost in the quantizer.
 const MASKED_EV: f64 = 2.0;
+
+/// What Basic's Exposure at `ev` makes of one linear channel: the scene shift
+/// (`docs/design/basic-scene.md`).
+fn exposed(x: f64, ev: f64) -> f64 {
+    luxforge_reference::scene::shift(x, ev)
+}
 
 /// The stages the compiled gradients are held to the reference on: both 24 MP orientations, a
 /// square and a panorama.

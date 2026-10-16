@@ -4,7 +4,9 @@
 //! The reader reports every setting the file holds in one of its lists with the text as written.
 //! A read-back passes when nothing is refused; the settings it reports are exactly the settings
 //! written, each with its written text; each value transfer lands on its Luxforge control at the
-//! same number (a point curve at its points over 255); and anything reported unsupported is a
+//! same number (a point curve at its points over 255), or, for a setting the Lightroom alignment
+//! has calibrated, where its frozen calibration puts it, refused at its shortfall; and anything
+//! reported unsupported is a
 //! setting this rig compares through its own counterpart, because the importer does not map it
 //! (Detail, crop, perspective, lens profiles and gradient corrections). A gradient correction is
 //! reported as a summary, so its geometry is read back by this rig's own parse of the same text.
@@ -208,15 +210,26 @@ pub fn read_back(
 ) -> Result<Readback, String> {
     let read = inspect_preset(xmp, None, registry).map_err(|error| error.to_string())?;
     let report = &read.report;
-    // The one refusal a round expects: a RAW white-balance pair whose white lies outside the
-    // Kelvin and tint range Luxforge's development holds, a range shortfall to measure, and the
-    // Custom white balance that names it.
+    // The refusals a round expects, each a range shortfall to measure: a RAW white-balance pair
+    // whose white lies outside the Kelvin and tint range Luxforge's development holds, with the
+    // Custom white balance that names it, and a calibrated value at or past its calibration's
+    // shortfall.
     let shortfall = |entry: &luxforge_core::ReportedSetting| {
         let reason = entry.reason.as_deref().unwrap_or_default();
         match entry.setting.as_str() {
             "Temperature" | "Tint" => reason.starts_with("out-of-range"),
             "WhiteBalance" => reason.contains("Temperature and Tint are refused"),
-            _ => false,
+            name => fields
+                .get(name)
+                .and_then(|field| match field {
+                    Field::Number { value, .. } => {
+                        luxforge_core::lightroom_calibration(name, *value)
+                    }
+                    _ => None,
+                })
+                .is_some_and(|converted| {
+                    converted.as_ref().err().map(String::as_str) == Some(reason)
+                }),
         }
     };
     if let Some(refused) = report.refused.iter().find(|entry| !shortfall(entry)) {
@@ -286,6 +299,20 @@ pub fn read_back(
                 }
             }
         }
+        // A calibrated value lands where the frozen calibration puts it, or is refused at its
+        // shortfall (checked above with the other expected refusals).
+        let calibrated = match field {
+            Field::Number { value, .. } => luxforge_core::lightroom_calibration(name, *value),
+            _ => None,
+        };
+        if let Some(Err(_)) = &calibrated {
+            if list != "refused" {
+                return Err(format!(
+                    "{name} is {list}, not refused at its calibration's shortfall"
+                ));
+            }
+            continue;
+        }
         match counterpart(name) {
             Some((action, target, How::Transfer)) => {
                 if list != "mapped" {
@@ -296,7 +323,10 @@ pub fn read_back(
                     .get(action)
                     .and_then(|fields| fields.get(target))
                     .ok_or(format!("{name} is not on {action}.{target}"))?;
-                let wanted = expected(field).ok_or(format!("{name} has no value"))?;
+                let wanted = match &calibrated {
+                    Some(Ok(converted)) => json!(converted),
+                    _ => expected(field).ok_or(format!("{name} has no value"))?,
+                };
                 if !same_value(applied, &wanted) {
                     return Err(format!(
                         "{name} lands on {action}.{target} as {applied}, written {wanted}"

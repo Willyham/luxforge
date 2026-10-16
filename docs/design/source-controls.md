@@ -21,7 +21,7 @@ In scope: descriptors, the RAW module's actions and payload, the refusals that k
 | | JPEG | RAW |
 | --- | --- | --- |
 | Exposure | Basic `set-basic.exposure`, colour stage, maskable | The same, on the developed planes; the development carries none |
-| White balance | Basic `set-basic.temperature`, `tint`: relative ±100, a Bradford von Kries correction of the rendered image, 2e−4 CIE 1960 uv per tint unit; As shot is `set-basic {temperature: 0, tint: 0}` | Global target: `set-raw {temperature?, tint?, white-balance?}` (2000–12000 K, ±100 at 1e−4 uv per unit), As shot `set-raw {white-balance: as-shot}`, reached through Basic's RAW variants; Basic's pair is refused there. A mask: Basic's relative pair |
+| White balance | Basic `set-basic.temperature`, `tint`: relative ±100, per-channel stops on the scene scale ([Basic on the scene scale](basic-scene.md)), a correction of the rendered image; As shot is `set-basic {temperature: 0, tint: 0}` | Global target: `set-raw {temperature?, tint?, white-balance?}` (2000–12000 K, ±100 at 1e−4 uv per unit), As shot `set-raw {white-balance: as-shot}`, reached through Basic's RAW variants; Basic's pair is refused there. A mask: Basic's relative pair |
 | Neutral picker | Basic's `neutral-sample` query through `sample-apply`, shortcut `W`, with the optional `mask` target | Global target: RAW's `pick-raw-neutral` through `point-pick`, reached by Basic's picker variant; the RAW canvas has no shortcut of its own. A mask: Basic's |
 | Applicability | Every other effect declares no `sources`, so it exists on every kind | Declared: the RAW effect's `sources` is `["raw"]`, and action refusal, admission, `module.list {asset_id}` and the desktop's sections, palette, mode strip, mode shortcuts and pick gate all read it through `ModuleDescriptor::applies_to`; no check names the module |
 | Desktop | Basic's section as declared | Basic's section drawn through the resolver: on the global target White balance's controls, picker, As shot and reset are the RAW development's, on a mask Basic's own; no RAW section; `W` and the pick gate follow the resolved picker; the dot reads every layer the resolved controls edit |
@@ -52,7 +52,7 @@ Recommended, in four parts:
 
 ### Exposure
 
-There is one Exposure, `set-basic.exposure`: −5..+5 EV, `2^EV` in linear light, on every kind and every target, and it acts once. On RAW it moves from the source read into the colour run, so it now follows pixel-stage layers; later retouching then does not depend on exposure. The source read multiplies in f64 and Basic's unit applies an f32 gain, so the move is byte-identical only where `2^EV` is exact. [Verification](#verification) measures the bound before the change lands.
+There is one Exposure, `set-basic.exposure`: −5..+5 EV, a shift of the value in stops on the scene scale over a rendered source and `2^EV` over a RAW photo's development ([Basic on the scene scale](basic-scene.md)), on every kind and every target, and it acts once. On RAW it moves from the source read into the colour run, so it now follows pixel-stage layers; later retouching then does not depend on exposure. The source read multiplies in f64 and Basic's unit applies an f32 gain, so the move is byte-identical only where `2^EV` is exact. [Verification](#verification) measures the bound before the change lands.
 
 ### White balance on a RAW photo
 
@@ -67,7 +67,7 @@ There is one Exposure, `set-basic.exposure`: −5..+5 EV, `2^EV` in linear light
 
 - Temperature and Tint are Basic's relative ±100 correction, unchanged.
 - As shot means the file's own rendering: Temperature 0 and Tint 0, which is the White balance group's reset. It recovers no camera white balance and shows no Kelvin. The As shot button is new on JPEG. It needs the action-control rule relaxed from exactly one preset field to at least one, since a group reset already holds several.
-- A double-click on either field returns that field to 0. The picker is the 5×5 Bradford solve and drafts are exact, as today.
+- A double-click on either field returns that field to 0. The picker is the 5×5 solve on the scene scale and drafts are exact.
 
 ### Masks on either kind
 

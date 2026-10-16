@@ -87,6 +87,7 @@ mod smoke;
 mod sparkle;
 mod stats;
 mod theme_smoke;
+mod tiff_reader;
 mod unsupported_catalog_smoke;
 mod update_journey;
 mod usage_backend_smoke;

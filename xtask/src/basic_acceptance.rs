@@ -97,21 +97,27 @@ impl Basic {
             reference::srgb::decode(rgb[1]),
             reference::srgb::decode(rgb[2]),
         ];
-        channels = reference::white_balance::apply(self.temperature, self.tint, channels);
-        for channel in &mut channels {
-            *channel = reference::exposure(*channel, self.exposure);
-        }
+        // White balance and exposure on the scene scale, then the tone and colour units at the
+        // strengths their sliders' responses give.
+        channels = reference::scene::apply(self.temperature, self.tint, self.exposure, channels);
+        let strength = |field: &str, value: f64| {
+            luxforge_core::basic_response(field).map_or(value, |r| r.strength(value))
+        };
         channels = reference::tone::tone_pixel(
             channels,
             reference::tone::ToneParams {
-                contrast: self.contrast,
-                highlights: self.highlights,
-                shadows: self.shadows,
-                whites: self.whites,
-                blacks: self.blacks,
+                contrast: strength("contrast", self.contrast),
+                highlights: strength("highlights", self.highlights),
+                shadows: strength("shadows", self.shadows),
+                whites: strength("whites", self.whites),
+                blacks: strength("blacks", self.blacks),
             },
         );
-        channels = reference::colour::apply_basic_colour(channels, self.vibrance, self.saturation);
+        channels = reference::colour::apply_basic_colour(
+            channels,
+            strength("vibrance", self.vibrance),
+            strength("saturation", self.saturation),
+        );
         [
             reference::srgb::code(channels[0]),
             reference::srgb::code(channels[1]),

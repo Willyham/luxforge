@@ -146,6 +146,13 @@ pub(crate) trait PixelDomain: Sync {
     /// The terminal byte of one output pixel.
     fn terminal(pixel: Self::Pixel) -> Result<[u8; 4], Error>;
 
+    /// A study's 16-bit sRGB code of one output pixel ([`Evaluation::study`]), never the editor's:
+    /// the same encoding as [`Self::terminal`] at 16 bits rather than 8.
+    fn terminal16(pixel: Self::Pixel) -> Result<[u16; 3], Error>;
+
+    /// Whether a boundary between two segments may be quantized to the domain's narrow width.
+    const NARROW_BOUNDARIES: bool = false;
+
     /// An empty spatial frame of `stage`, inside the domain's frame limit.
     fn spatial_frame(stage: Stage, wide: bool) -> Result<Self::SpatialFrame, Error>;
 
@@ -409,6 +416,66 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             });
         }
         Ok(self)
+    }
+
+    /// `compiled` evaluated in frame mode for a study's 16-bit output (`super::study`): every
+    /// boundary as [`Self::new`] chooses it but the terminal one, which is held wide, so the last
+    /// colour run, or the last spatial or repair frame when no colour follows it, writes 16-bit codes
+    /// rather than 8-bit ones. No earlier boundary changes, so every intermediate quantization of
+    /// the ordinary render is kept and is reported by [`Self::narrow_boundaries`].
+    pub(crate) fn study(
+        domain: D,
+        compiled: Cow<'a, Compiled>,
+        tiling: Tiling,
+        cancel: &Cancel,
+        context: &'a RenderContext,
+    ) -> Result<Self, Error> {
+        let mut evaluation = Self::new(
+            domain,
+            compiled,
+            tiling,
+            SpatialMode::Point,
+            cancel,
+            context,
+        )?;
+        let last = evaluation.widths.len() - 1;
+        let materializes = evaluation.compiled.segments[last]
+            .entry
+            .as_ref()
+            .is_some_and(super::Entry::materializes);
+        evaluation.widths[last].output = true;
+        if materializes {
+            evaluation.widths[last].input = true;
+        }
+        let segments = evaluation.compiled.segments.len();
+        evaluation
+            .compiled
+            .plan_progress(cancel, None, 0..segments, tiling);
+        evaluation.materialized(segments)
+    }
+
+    /// The segments before the last that compute something, a colour run or an entry, and whose
+    /// output the next one reads at the domain's narrow width, with whether that reader is a
+    /// resample: the intermediate quantizations a study's output keeps. A segment that only passes
+    /// the source on rounds nothing. Empty for a domain without narrow boundaries.
+    pub(crate) fn narrow_boundaries(&self) -> Vec<(usize, bool)> {
+        if !D::NARROW_BOUNDARIES {
+            return Vec::new();
+        }
+        let last = self.widths.len() - 1;
+        (0..last)
+            .filter(|&index| {
+                let segment = &self.compiled.segments[index];
+                !self.widths[index].output && (segment.has_color || segment.entry.is_some())
+            })
+            .map(|index| {
+                let resample = self.compiled.segments[index + 1]
+                    .entry
+                    .as_ref()
+                    .is_some_and(super::Entry::blends);
+                (index, resample)
+            })
+            .collect()
     }
 
     /// The frames a stack's prefix through segment `boundary` builds, each as the whole stack
