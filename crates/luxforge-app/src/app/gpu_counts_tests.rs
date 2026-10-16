@@ -104,6 +104,67 @@ fn a_zoom_to_100_over_a_stack_the_gpu_presented_keeps_its_plan_until_the_region(
     finish(editor, catalog);
 }
 
+/// An open's reference frame on screen at Fit unreduced — its reduction made stale by the display
+/// scale's arrival — is not reduced again for the window's bounds where the GPU can present the
+/// stack: the GPU presents it, as over a reduced frame. So a zoom to 200% hands over no retained
+/// exact frame to hold the view, and the GPU plans the view's region.
+#[test]
+fn a_refit_over_an_exact_frame_at_fit_is_the_gpus_and_200_percent_plans_the_view() {
+    let (mut editor, catalog) = opened_on_the_gpu("refit-exact");
+    assert!(
+        !editor.presentation.presented_reduced && editor.presentation.exact().is_some(),
+        "the open's exact frame is the picture at Fit"
+    );
+    // The bounds Fit draws in shrink below the stage, as the display scale's arrival makes them.
+    editor.view_state.window = (980.0, 400.0);
+    let stage = editor.presentation.dimensions.expect("the stage");
+    let bounds = editor.proxy_bounds().expect("Fit's bounds");
+    assert!(bounds.width < stage.0 && bounds.height < stage.1);
+    // The refit's job of the displayed stack, as its task asks for it.
+    let asset = editor
+        .document
+        .state
+        .as_ref()
+        .expect("open")
+        .asset
+        .id
+        .clone();
+    let refit = crate::app::tasks::current_preview(
+        &editor.owner,
+        editor.client,
+        asset,
+        editor.displayed_entry(),
+        editor.drawn(),
+    );
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Preview(PreviewMessage::Loaded(
+        refit.map(Box::new),
+    )));
+    let records = logged(&mut editor, &log);
+    assert!(
+        events(&records, "preview_job_requested").is_empty(),
+        "no reduction of the exact frame: {records:?}"
+    );
+    assert_eq!(
+        editor.presentation.gpu_presented,
+        Some(editor.presentation.presented_content),
+        "{records:?}"
+    );
+    // 200%: the view is the GPU's region plan, never the retained exact frame.
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 200.0 };
+    let log = attach_log(&mut editor);
+    let _ = editor.zoom_changed(&luxforge_core::Zoom::Fit);
+    editor.view_plan.dirty = true;
+    let _ = editor.reconcile_view();
+    let records = logged(&mut editor, &log);
+    assert!(
+        events(&records, "preview_displayed").is_empty(),
+        "no retained frame handed over: {records:?}"
+    );
+    assert!(editor.view_plan.in_flight, "the view's region is planned");
+    finish(editor, catalog);
+}
+
 /// A commit the GPU draws at rest is presented with no preview job, so no exact frame is rendered
 /// or reduced; its tiles are handed for their counts, which, read back, are its report: plotted as
 /// the GPU's, current, and in the owner's store under the committed stack's identity, so an API
