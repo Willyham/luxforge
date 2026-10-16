@@ -8,8 +8,8 @@
 //!
 //! - The family is published as one **host descriptor** ([`descriptor`], `luxforge.masks`) in the
 //!   same [`crate::ModuleDescriptor`] shape a module's is, listed by `module.list` under `host`: its actions
-//!   are the commands, its queries `mask.list` and `mask.sample-input`, its controls the panel's
-//!   widgets. An agent discovers a mask command exactly as it discovers a module action.
+//!   are the commands, its queries `mask.list`, `mask.sample-input` and `mask.sample-input-area`,
+//!   its controls the panel's widgets. An agent discovers a mask command exactly as it discovers a module action.
 //! - A command is resolved as [`crate::ActionRef::Host`] by the registry's one action lookup,
 //!   checked by the same [`crate::check_parameters`] and planned and committed through the editor's
 //!   one action path (`EditorService::run_action`), so the envelope, the deduplication, the
@@ -32,7 +32,8 @@
 //!
 //! **Every command is one [`MaskOp`]**, which the command table carries beside its method name and
 //! planning matches exhaustively: a kind-independent command is a variant of its own, and a
-//! generated one carries the [`GeometryMethod`] or [`SampleMethod`] it was generated as. No command
+//! generated one carries the [`GeometryMethod`], [`SampleMethod`] or [`PickMethod`] it was generated
+//! as. No command
 //! reaches its behaviour by its spelling, and an operation added without a plan arm does not
 //! compile.
 //!
@@ -55,17 +56,17 @@ mod tests;
 pub(crate) use declare::HOST_MODULE;
 pub(crate) use declare::descriptor;
 pub use declare::{
-    all, canvas, canvas_pick, controls, experiment, find, find_query, geometry, sample,
+    all, canvas, canvas_pick, controls, experiment, find, find_query, geometry, pick, sample,
 };
 pub use list::{
     ComponentReport, MaskListing, MaskReport, MaskedLayer, ModelReport, ModelStale, StrokeColour,
     StrokeReport, StrokeSettings,
 };
 pub(crate) use list::{RemovedLayer, listing};
-pub use plan::asks_colour_limit_value;
 pub(crate) use plan::{
-    MaskOutcome, asks_colour_limit, colour_limit_request, input_layer_index, plan,
+    HostRead, MaskOutcome, asks_colour_limit, colour_limit_request, pick_request, plan,
 };
+pub use plan::{asks_colour_limit_value, input_site};
 
 use crate::{ActionDescriptor, ComponentId, Error, MaskId, path::StrokeId};
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,21 @@ pub(crate) const LIST: &str = "mask.list";
 ///
 /// Read-only in every sense: it writes no entry, emits no event and touches no session state.
 pub const SAMPLE_INPUT: &str = "mask.sample-input";
+
+/// `mask.sample-input-area`: the **input of the operation a mask modulates over a rectangle**, in
+/// normalized content coordinates, reduced by the smallest power of two that leaves at most
+/// [`AREA_POINTS`] points, in linear sRGB.
+///
+/// What a drag of `mask.pick-<kind>` reads, and a read of its own for a client that wants to see
+/// what a drag would measure. The rectangle is read through the bounded region read
+/// ([`crate::tiles::region`]) at the mask's input site, by the tile service on the desktop and by
+/// the reference elsewhere, so it holds one band of the region and the reduced sums and never the
+/// rectangle at full resolution. Read-only like [`SAMPLE_INPUT`].
+pub const SAMPLE_INPUT_AREA: &str = "mask.sample-input-area";
+
+/// The most points one [`SAMPLE_INPUT_AREA`] answers: a 64 × 64 grid's worth, which is what a pick's
+/// percentiles and medoid need and what keeps a pick's own arithmetic `O(1)` in the photograph.
+pub const AREA_POINTS: usize = 4096;
 
 /// The brush's two commands: the **only** way a stroke reaches a mask.
 ///
@@ -205,6 +221,21 @@ pub enum MaskOp {
     Geometry(GeometryMethod),
     /// A generated `mask.add-<kind>-sample` or `mask.delete-<kind>-sample`.
     Sample(SampleMethod),
+    /// A generated `mask.pick-<kind>`.
+    Pick(PickMethod),
+}
+
+/// The identity of one generated pick method: the one component kind whose values a click or a
+/// drag on the canvas sets through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PickMethod {
+    pub kind: &'static str,
+}
+
+impl PickMethod {
+    fn method(kind: &str) -> String {
+        format!("mask.pick-{kind}")
+    }
 }
 
 /// A kind as a label or a title says it: `linear`, `luminance range`. Lower case, because the

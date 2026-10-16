@@ -8592,7 +8592,8 @@ mod tests {
         let recipe = evaluation.recipe();
         let source = evaluation.source().input();
         let (width, height) = source.dimensions();
-        let layer = crate::mask::commands::input_layer_index(recipe, mask).unwrap();
+        let site = crate::mask::commands::input_site(evaluation.registry(), recipe, mask).unwrap();
+        let layer = site.index;
         let prefix = evaluation
             .registry()
             .compile_layers(
@@ -8616,7 +8617,7 @@ mod tests {
             evaluation.context(),
             &crate::Cancel::never(),
             wide,
-            crate::render::MaskInputMode::for_layer(evaluation.registry(), recipe, layer),
+            site.mode.into(),
         )
         .unwrap();
         // A read's linear values are `f32`, the GPU's and the reference's alike.

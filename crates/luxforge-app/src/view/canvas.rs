@@ -23,6 +23,7 @@ use crate::{
         corrections_canvas::CorrectionsCanvas,
         crop_canvas::{CropCanvas, Mode},
         mask_canvas::{MaskCanvas, Placement},
+        range_pick_canvas::RangePickCanvas,
     },
 };
 use iced::{
@@ -736,6 +737,7 @@ fn plain<'a>(
     let mask_draft = surfaces.mask_draft;
     let mask_map = surfaces.mask_map;
     let mask_handles = surfaces.mask_handles;
+    let range_pick = surfaces.range_pick;
     let corrections = surfaces.corrections;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
@@ -819,6 +821,43 @@ fn plain<'a>(
                         .into(),
                     ])
                     .into(),
+                    // The armed eyedropper's crosshair and drag rectangle, mapped through the same
+                    // contained rectangle the photograph is drawn into.
+                    None if range_pick.is_some() => match range_pick.and_then(|data| {
+                        let rect = fit_rect((width, height), available)?;
+                        let view = CanvasView::fit(data.map.output(), rect.size())?;
+                        Some((data, view, rect))
+                    }) {
+                        Some((data, view, rect)) => stack([
+                            photo,
+                            iced::widget::container(
+                                canvas(
+                                    RangePickCanvas::new(
+                                        Placement {
+                                            map: data.map.clone(),
+                                            view,
+                                            scale_factor: model.scale_factor,
+                                        },
+                                        data.rectangle,
+                                    )
+                                    .covered(model.covered),
+                                )
+                                .width(Length::Fill)
+                                .height(Length::Fill),
+                            )
+                            .padding(iced::Padding {
+                                top: rect.y,
+                                left: rect.x,
+                                right: 0.0,
+                                bottom: 0.0,
+                            })
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .into(),
+                        ])
+                        .into(),
+                        None => photo,
+                    },
                     None => match corrections.and_then(|data| {
                         let rect = fit_rect((width, height), available)?;
                         let view = CanvasView::fit(data.map.output(), rect.size())?;
@@ -969,6 +1008,29 @@ fn plain<'a>(
                         .into(),
                     ])
                     .into(),
+                    None if range_pick.is_some() => {
+                        match range_pick.zip(CanvasView::percent(value, model.scale_factor)) {
+                            Some((data, view)) => stack([
+                                photo,
+                                canvas(
+                                    RangePickCanvas::new(
+                                        Placement {
+                                            map: data.map.clone(),
+                                            view,
+                                            scale_factor: model.scale_factor,
+                                        },
+                                        data.rectangle,
+                                    )
+                                    .covered(model.covered),
+                                )
+                                .width(box_width)
+                                .height(box_height)
+                                .into(),
+                            ])
+                            .into(),
+                            None => photo,
+                        }
+                    }
                     None => match corrections.zip(CanvasView::percent(value, model.scale_factor)) {
                         Some((data, view)) => stack([
                             photo,
@@ -1704,6 +1766,7 @@ mod tests {
             mask_draft: None,
             mask_map: None,
             mask_handles: true,
+            range_pick: None,
             corrections: None,
             draft: None,
             gpu: None,

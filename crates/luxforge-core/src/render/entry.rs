@@ -735,12 +735,16 @@ impl<'a> Render<'a> {
 /// against, and the point query over it, in the domain the render's masked primitives blend in.
 /// A colour layer receives the final run's unclamped `f32` input, before JPEG encoding; a spatial
 /// layer receives the decoded, encoded boundary selected by the whole recipe. The overlay,
-/// colour-constrained seed and `mask.sample-input` read the same value in either domain.
+/// colour-constrained seed and `mask.sample-input` read the same value in either domain. `mode` is
+/// the caller's, not the layer's: an unbound mask's site is a position no layer of its own holds
+/// yet ([`crate::mask::commands::input_site`]), so the layer that holds it now cannot say how the
+/// operation that would go there receives it.
 pub(crate) fn layer_input<'a>(
     registry: &ModuleRegistry,
     source: RenderSource<'a>,
     recipe: &Recipe,
     layer: usize,
+    mode: MaskInputMode,
     context: &'a RenderContext,
 ) -> Result<(Stage, Box<dyn MaskInputPixel + 'a>), Error> {
     let layers = crate::editor::prefix(&recipe.layers, layer)?;
@@ -753,7 +757,6 @@ pub(crate) fn layer_input<'a>(
         &recipe.strokes,
         &recipe.artifacts,
     )?;
-    let mode = MaskInputMode::for_layer(registry, recipe, layer);
     if compiled.evaluates_spatial() {
         return Err(Error::resource_limit(
             "a spatial layer before the masked one means reading the pixel it receives \
@@ -824,12 +827,20 @@ pub(crate) enum MaskInputMode {
     ColourRun,
 }
 impl MaskInputMode {
+    /// How the layer at `layer` receives its input: by its effect's stage.
     pub(crate) fn for_layer(registry: &ModuleRegistry, recipe: &Recipe, layer: usize) -> Self {
-        match recipe
-            .layers
-            .get(layer)
-            .and_then(|layer| registry.effect_stage(&layer.effect_id))
-        {
+        Self::for_stage(
+            recipe
+                .layers
+                .get(layer)
+                .and_then(|layer| registry.effect_stage(&layer.effect_id)),
+        )
+    }
+
+    /// How an operation of `stage` receives its input: a pointwise colour operation inside its
+    /// colour run, every other one — and a position no declared effect holds — at the boundary.
+    pub(crate) fn for_stage(stage: Option<crate::EffectStage>) -> Self {
+        match stage {
             Some(crate::EffectStage::Color) => Self::ColourRun,
             _ => Self::Boundary,
         }

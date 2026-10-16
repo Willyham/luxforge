@@ -63,6 +63,8 @@ fn usage_a_mask_command_maps_to_its_interaction_and_nothing_else_does() {
         ("mask.delete-stroke", Feature::MaskEdit),
         ("mask.add-colour-range-sample", Feature::MaskEdit),
         ("mask.delete-colour-range-sample", Feature::MaskEdit),
+        ("mask.pick-colour-range", Feature::MaskEdit),
+        ("mask.pick-luminance-range", Feature::MaskEdit),
         ("mask.set-linear", Feature::MaskEdit),
         ("mask.set-amount", Feature::MaskEdit),
         ("mask.set-component-invert", Feature::MaskEdit),
@@ -81,6 +83,7 @@ fn usage_a_mask_command_maps_to_its_interaction_and_nothing_else_does() {
         "apply-settings",
         "mask.list",
         "mask.sample-input",
+        "mask.sample-input-area",
     ] {
         assert_eq!(mask_feature(other), None, "{other}");
     }

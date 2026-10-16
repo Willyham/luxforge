@@ -167,6 +167,9 @@ pub(crate) struct KeyContext {
     /// The New mask or Add component menu is open, with the letter of each kind it lists: while it
     /// is, a kind's letter starts that kind, ahead of any canvas-mode letter.
     pub(crate) kind_menu: Option<(KindMenu, Vec<(char, String)>)>,
+    /// The range picker is armed in Mask mode: Escape cancels a drag in progress or puts the
+    /// eyedropper down, and Return puts it down, before either reaches the mode.
+    pub(crate) range_picking: bool,
     /// Mask mode is active with no shape gesture open, so the panel's keys act on its selection:
     /// `X` inverts, `⌫` deletes, the arrows move the selection and `⌥` with them reorders.
     pub(crate) mask_keys: bool,
@@ -558,6 +561,18 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
     }
     if context.crop && character(key, "x") && !repeat && modifiers.is_empty() {
         return Some(Message::Crop(CropMessage::Swap));
+    }
+    // The armed eyedropper answers Escape and Return ahead of the mode: Escape cancels a drag in
+    // progress, keeping the eyedropper, or puts it down, and Return is the pick bar's Done. A
+    // second Escape then leaves Mask mode as ever.
+    if context.range_picking && !context.drafting {
+        match key {
+            Key::Named(Named::Escape) => return Some(Message::Mask(MaskMessage::PickEscape)),
+            Key::Named(Named::Enter) if !*repeat && plain(modifiers) => {
+                return Some(Message::Mask(MaskMessage::PickDone));
+            }
+            _ => {}
+        }
     }
     // The crop draft and a mask shape gesture answer the same two keys, because they are the same
     // kind of draft.
@@ -1423,6 +1438,7 @@ mod tests {
             select: false,
             select_menu_open: false,
             loupe_open: false,
+            range_picking: false,
             merge_sheet_open: false,
             develop_confirm: false,
             filmstrip: false,

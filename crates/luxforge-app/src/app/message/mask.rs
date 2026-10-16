@@ -40,6 +40,23 @@ pub(crate) enum MaskPointer {
     PaintEnd,
 }
 
+/// One pointer step on the photograph while the range picker is armed, as the canvas saw it: where
+/// in its own logical points, which the click threshold is measured in, and where in output-stage
+/// pixels, which the held content map places.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PickPointer {
+    /// The button went down on the photograph.
+    Press { view: (f32, f32), at: (f64, f64) },
+    /// The pointer moved with the button down.
+    Move { view: (f32, f32), at: (f64, f64) },
+    /// The button came up, with Shift held or not.
+    Release {
+        view: (f32, f32),
+        at: (f64, f64),
+        shift: bool,
+    },
+}
+
 /// One change to the brush the next stroke will be drawn with.
 ///
 /// It is per-client gesture state and sends no mask command on its own: the brush reaches the host
@@ -125,10 +142,18 @@ pub(crate) enum MaskMessage {
     Drag(DragEdit),
     /// One of the panel's keys, resolved against the selection into the edit it sends.
     Key(MaskKey),
-    /// Enter or leave the canvas pick that fills the selected component's swatches, which is the
-    /// host's own declared pick for that component's kind. It is one `workspace.set`, exactly as a
-    /// module's picker control is.
+    /// The row's Pick: arm the eyedropper on the selected component, whose kind the host declares a
+    /// pick for, or put it down again. It stays in Mask mode and sends nothing.
     Pick,
+    /// The pick bar's Done, or Enter: put the eyedropper down.
+    PickDone,
+    /// Escape while the eyedropper is armed: a drag in progress is cancelled and sends nothing,
+    /// with the eyedropper still armed; otherwise the eyedropper is put down.
+    PickEscape,
+    /// One pointer step on the photograph while the eyedropper is armed.
+    PickPointer(PickPointer),
+    /// The request the last pick sent, or a click at the frame's centre before any, copied as JSON.
+    CopyPick,
     /// One list edit from a row, run as the command it names.
     Row(RowEdit),
     /// The same edit, copied as the JSON request it would send rather than sent.

@@ -71,6 +71,8 @@ pub struct Masks {
     pub menu: Option<Value>,
     /// Whether the panel shows the Brush section.
     pub brush_section: Option<bool>,
+    /// The range eyedropper: the kind of component it is armed on, or `None` for it put down.
+    pub picker: Option<Option<String>>,
 }
 
 impl Masks {
@@ -84,6 +86,7 @@ impl Masks {
             && self.overlay.is_none()
             && self.menu.is_none()
             && self.brush_section.is_none()
+            && self.picker.is_none()
     }
 
     fn record(&self) -> Value {
@@ -116,6 +119,7 @@ impl Masks {
             "brush_section",
             self.brush_section.map(|shown| json!(shown)),
         );
+        put("picker", self.picker.as_ref().map(|kind| json!(kind)));
         Value::Object(record)
     }
 
@@ -201,6 +205,17 @@ impl Masks {
             ensure(
                 recorded == &json!(shown),
                 format!("the Brush section's visibility is {recorded}, expected {shown}"),
+            )?;
+        }
+        if let Some(kind) = &self.picker {
+            let picker = &state["masks"]["picker"];
+            let armed = match picker {
+                Value::Null => None,
+                _ => Some(picker["kind"].as_str().unwrap_or_default().to_owned()),
+            };
+            ensure(
+                &armed == kind,
+                format!("the range eyedropper is {picker}, expected {kind:?}"),
             )?;
         }
         Ok(())
@@ -536,6 +551,12 @@ impl Step {
     /// The panel's open menu, or none.
     pub fn mask_menu(mut self, menu: Option<&str>) -> Self {
         self.expect.masks.menu = Some(json!(menu));
+        self
+    }
+
+    /// The range eyedropper is armed on a component of this kind, or (`None`) put down.
+    pub fn picker(mut self, kind: Option<&str>) -> Self {
+        self.expect.masks.picker = Some(kind.map(str::to_owned));
         self
     }
 
@@ -1272,7 +1293,8 @@ mod tests {
         let frame = Frame::state_only(&json!({"state":{
             "masks":{"masks":[{"id":"m1","name":"Sky"}],"selected":"m1",
                      "components":[{"name":"Linear 1","mode":"add","kind":"linear","selected":true}],
-                     "overlay_colour":"green","menu":null,"brush_visible":false},
+                     "overlay_colour":"green","menu":null,"brush_visible":false,
+                     "picker":{"armed":true,"kind":"luminance-range"}},
             "mask_overlay":{"setting":"tint"},
             "notices":["Changed elsewhere"],
             "status":"Previewing entry 1 of 3",
@@ -1294,6 +1316,7 @@ mod tests {
             .mask_overlay("tint", "green")
             .mask_menu(None)
             .brush_section(false)
+            .picker(Some("luminance-range"))
             .notice("Changed elsewhere")
             .status_starts("Previewing entry 1")
             .mode("mask")
@@ -1316,6 +1339,11 @@ mod tests {
             ),
             (Step::opened("a").mask_menu(Some("new_mask")), "open menu"),
             (Step::opened("a").brush_section(true), "Brush section"),
+            (Step::opened("a").picker(None), "range eyedropper"),
+            (
+                Step::opened("a").picker(Some("colour-range")),
+                "range eyedropper",
+            ),
             (
                 Step::opened("a").notice("Preview is stale"),
                 "Preview is stale",

@@ -1075,7 +1075,8 @@ const SOURCE_RULES: &[SourceRule] = &[
     // does the generative fill's robust grain estimate (a median absolute deviation over a ring's
     // samples), whose test restates it by sorting as its independent reference; the HDR exposure
     // resolution's median reference and robust pairwise fit are production estimators, not timing
-    // figures.
+    // figures, and so are a range mask pick's tonal span and colour spread (`mask/range.rs`), which
+    // interpolate between order statistics of at most the area query's 4,096 points.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -1096,6 +1097,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/modules/ai/fill/grain.rs",
             "crates/luxforge-core/src/modules/ai/fill/tests.rs",
             "crates/luxforge-core/src/merge/hdr/exposure.rs",
+            "crates/luxforge-core/src/mask/range.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
             "crates/luxforge-reference/src/grade_response.rs",

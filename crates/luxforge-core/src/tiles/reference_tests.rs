@@ -936,6 +936,7 @@ fn a_region_read_is_the_exact_block_means_of_its_stage() {
                         stage: RegionStage::Before(layer),
                         rect,
                         reduction,
+                        mode: None,
                     };
                     let what = format!("{kind} {name} before {layer} at {reduction}");
                     let region = read(&evaluation, &request, &ReferenceReads, &cancel)

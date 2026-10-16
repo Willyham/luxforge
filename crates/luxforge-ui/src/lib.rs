@@ -207,6 +207,7 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
             "Component fields · typing and refused",
             "Toggle rows · with hints, plain, disabled",
             "Colour range swatches · three of five, picking, full",
+            "Range picker · tone bar, lit Pick, colour bar with its count, Pick at rest and refused",
             "Brush strokes · deletable and refused",
         ],
     ),
@@ -345,7 +346,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 136);
+        assert_eq!(next - 1, 137);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }

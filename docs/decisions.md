@@ -606,6 +606,16 @@ The owner requested a minimap at zoom levels of **200% or more**. The inclusive 
 
 The owner requested a plan for copying settings between photographs and on 2026-10-07 chose: **adjustments only** in the first delivery (the presettable groups; crop, orientation, lens correction, perspective, the RAW look and masks later), **every group except White balance** checked by default with neutral groups included and the last confirmed choice remembered for a quick `⌘C`, **multi-selection in Develop's filmstrip** with `⌘V` pasting to it, and **Paste from previous** (`⌥⌘V`). The [design](design/copy-settings.md) records the remaining defaults. Implementation and an upstream pull request were authorized on 2026-10-08.
 
+## Range mask picking
+
+The owner reported that colour and luminance range masks seemed not to work; the core and reference were correct and the desktop flow hid them. The owner decided on 2026-10-16 ([design](design/range-masks.md), [task plan](../tasks/editing/range-masks.json)):
+
+- **Creation stays behind `masks.range-selections`**, off by default; the flag is unchanged.
+- **Lightroom-style picking.** Creating a range mask arms an eyedropper. Colour: a click replaces the samples with that colour, Shift+click adds one (at most five), a drag samples an area. Luminance: a click sets a band around the clicked tone, a drag sets the band to the area's tonal span. Escape, Enter or Done ends picking. The band slider, number fields, swatch slots and Refine remain.
+- **A mask with no bound layer is read, not refused.** This reverses the decided [P17](design/range-study.md#proposals) rule that an unbound mask's sample is refused by name, which follows from choosing the picking flow: an unbound mask reads its input where a first Basic adjustment would take it.
+
+The derivation constants, the input site's colour-stage rule and the canvas details are delegated choices recorded in the design. Implemented; qualification on the M4 GPU and the corpus is open ([task plan](../tasks/editing/range-masks.json)).
+
 ## Code structure consolidation
 
 The owner authorized implementation on 2026-10-07 and approved the static `luxforge-gpu-types` plus `luxforge-gpu` split in the [design](design/code-structure.md#approved-boundary-task-003). The shared crate holds std-only GPU primitives, shader conventions and pure layout rules; the backend owns the existing wgpu executor and tile runner. Core keeps semantic planning and `TileService`, the app keeps one lowering path and host source/worker policy, and UI keeps Iced presentation on its existing device. The existing separate tile-worker device, current budgets, bounded caches, retirement, cancellation and fallback behavior are preserved.

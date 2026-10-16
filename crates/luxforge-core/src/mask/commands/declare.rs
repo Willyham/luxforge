@@ -1,13 +1,14 @@
 //! What the family publishes: the command table, the panel's controls, the host descriptor and the
 //! canvas picks, each generated from the host's kind table where a kind declares it.
 use super::{
-    ADD_STROKE, COMPONENT, DELETE_STROKE, GeometryMethod, GeometryOp, LIST, MASK, MaskCommand,
-    MaskOp, NAME, SAMPLE_INPUT, STROKE, SampleMethod, SampleOp, spoken,
+    ADD_STROKE, AREA_POINTS, COMPONENT, DELETE_STROKE, GeometryMethod, GeometryOp, LIST, MASK,
+    MaskCommand, MaskOp, NAME, PickMethod, SAMPLE_INPUT, SAMPLE_INPUT_AREA, STROKE, SampleMethod,
+    SampleOp, spoken,
 };
 use crate::mask::{
-    REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_band_control, component_parameters,
-    component_sample_limit, component_sample_parameters, declared_geometry_kinds, rules,
-    sampling_kinds,
+    POSITION_MAX, POSITION_MIN, REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_band_control,
+    component_parameters, component_sample_limit, component_sample_parameters,
+    declared_geometry_kinds, picking_kinds, rules, sampling_kinds,
 };
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Control, Mask, ModuleDescriptor, NumberStyle,
@@ -57,7 +58,8 @@ pub(crate) fn descriptor() -> &'static ModuleDescriptor {
     &DESCRIPTOR
 }
 
-/// The read one method name declares — `mask.list` or `mask.sample-input` — or none.
+/// The read one method name declares — `mask.list`, `mask.sample-input` or
+/// `mask.sample-input-area` — or none.
 pub fn find_query(method: &str) -> Option<&'static ActionDescriptor> {
     DESCRIPTOR.queries.iter().find(|query| query.id == method)
 }
@@ -99,7 +101,35 @@ static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| ModuleDescripto
                     range selection is evaluated on the operation's input while the frame a client \
                     can see holds that operation's output — so a colour read from the picture would \
                     be a different colour. The position is a pixel of the stage that operation's \
-                    layer receives, and one outside it is refused rather than clamped",
+                    layer receives, and one outside it is refused rather than clamped. A mask no \
+                    layer is bound to answers the pixel a first adjustment through it would receive",
+            )
+        },
+        ActionDescriptor {
+            parameters: vec![
+                mask_parameter(true),
+                area_position("x", true, "the rectangle's left edge"),
+                area_position("y", true, "the rectangle's top edge"),
+                area_extent("width", true, "the rectangle's width"),
+                area_extent("height", true, "the rectangle's height"),
+            ],
+            ..ActionDescriptor::new(
+                SAMPLE_INPUT_AREA,
+                "Sample input area",
+                format!(
+                    "the input the operation this mask modulates receives over one rectangle of \
+                     normalized content coordinates, as {{stage: {{width, height}}, rect: {{x0, y0, \
+                     width, height}}, reduction, size: [columns, rows], points: [[r, g, b], …], \
+                     renderer}}: the rectangle is widened to whole pixels, then to whole blocks of \
+                     the reduction, and clipped to the stage, rect naming those stage pixels; \
+                     reduction is the smallest power of two that leaves at most {AREA_POINTS} \
+                     points; each point is the linear-sRGB mean of the stage pixels of its block, in \
+                     reading order; renderer is {{record: gpu or reference, reason}}. Read at the \
+                     mask's input site, as mask.sample-input is, and off the catalog owner by its \
+                     tile service. A rectangle that misses the stage is refused rather than clamped. \
+                     Read-only: it writes no history and emits no event. It is what a drag of \
+                     mask.pick-<kind> measures"
+                ),
             )
         },
     ],
@@ -116,6 +146,41 @@ fn mask_parameter(required: bool) -> ParameterDescriptor {
         } else {
             "the mask this command addresses; without it the command draws a new one"
         })
+}
+
+/// One edge of a picked rectangle or a picked point, in the content stage's normalized coordinates:
+/// the frame itself is `0..1`, and a stage extent of overshoot either side is legal, because a drag
+/// that starts off the photograph is an ordinary gesture; what misses the stage is refused when it is
+/// read, not here.
+fn area_position(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
+    ParameterDescriptor::number(name, POSITION_MIN, POSITION_MAX)
+        .required(required)
+        .notes(format!(
+            "{notes}, in the content stage's normalized coordinates; 0..1 is the frame"
+        ))
+        .unit("frame")
+        .step(0.01)
+        .precision(3)
+        .soft_min(0.0)
+        .soft_max(1.0)
+        .fine_step(0.001)
+}
+
+/// One side of a picked rectangle, in the same normalized units: at most the whole legal span of
+/// [`area_position`]. A side of `0` reads the one stage pixel the edge falls in.
+fn area_extent(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
+    ParameterDescriptor::number(name, 0.0, POSITION_MAX - POSITION_MIN)
+        .required(required)
+        .notes(format!(
+            "{notes}, in the content stage's normalized coordinates; 0 reads the one pixel the \
+             edge falls in"
+        ))
+        .unit("frame")
+        .step(0.01)
+        .precision(3)
+        .soft_min(0.0)
+        .soft_max(1.0)
+        .fine_step(0.001)
 }
 
 /// The component inside that mask.
@@ -151,6 +216,14 @@ pub fn sample(op: SampleOp, kind: &str) -> Option<&'static MaskCommand> {
     })
 }
 
+/// The generated `mask.pick-<kind>` of one picked kind, or none when this build does not pick that
+/// kind.
+pub fn pick(kind: &str) -> Option<&'static MaskCommand> {
+    COMMANDS
+        .iter()
+        .find(|command| matches!(command.op, MaskOp::Pick(picked) if picked.kind == kind))
+}
+
 /// The generated command one operation on one component kind declares, or none when this build does
 /// not know the kind.
 ///
@@ -163,52 +236,46 @@ pub fn geometry(op: GeometryOp, kind: &str) -> Option<&'static MaskCommand> {
     })
 }
 
-/// The canvas picks the host declares for its own commands: one per sampling kind, generated from
-/// the kind table exactly as that kind's two sample methods are.
+/// The canvas picks the host declares for its own commands: one [`CanvasInteraction::AreaPick`] per
+/// picked kind, generated from the kind table exactly as that kind's `mask.pick-<kind>` is.
 ///
-/// This is the host's side of the delivered pick machinery, in the delivered type
-/// ([`CanvasInteraction`]) with the delivered meaning, because a mask is a host object and no module
-/// declares one — so a pick that fills part of a mask had no way to be expressed until the
-/// interaction admitted a host target (proposal P17 of `docs/design/range-study.md`). Each entry runs
-/// [`SAMPLE_INPUT`] at the picked content pixel and submits the `r`, `g` and `b` it answers with to
-/// `mask.add-<kind>-sample`, whose own declared parameters carry exactly those names — so the
-/// delivered "every top-level number field of the result whose name is a parameter of the action"
-/// rule needs no exception and the client maps nothing.
+/// A mask is a host object and no module declares one, so its canvas pick is the host's own
+/// declaration, in the delivered type with its own variant. An area pick names the command a click
+/// or a drag on the photograph sends: the client sends the content coordinates of the click, or the
+/// content-space bounding box of the drag, with the open mask and component, and the host reads the
+/// pixels at the mask's input site and derives the values itself.
 ///
-/// **The colour is never the client's.** It is read by the host from the stage the masked layer
-/// receives and travels straight back into a host command; nothing on the way can decode a pixel,
-/// because nothing on the way has one. That is the whole of what this declaration buys.
+/// **The colour is never the client's.** It is read by the host from the stage the masked operation
+/// receives and never leaves it; nothing a client sends can be a colour, because the command takes
+/// none. That is the whole of what this declaration buys.
 ///
-/// The mode a pick belongs to is its **action's** method name, which is unique by construction and is
-/// what a client sets to enter the mode — there is no second table of mode names. No shortcut is
-/// declared: a mask's pick is offered beside the component it fills, the way a module's picker control
-/// is, and the canvas mode strip lists no pick mode at all.
+/// The pick's identity is its **action's** method name, which is unique by construction. No shortcut
+/// is declared: a mask's pick is armed beside the component it fills, the way a module's picker
+/// control is, and it is a sub-state of Mask mode rather than a canvas mode of its own.
 pub fn canvas() -> &'static [CanvasInteraction] {
     &CANVAS
 }
 
 static CANVAS: LazyLock<Vec<CanvasInteraction>> = LazyLock::new(|| {
-    sampling_kinds()
+    picking_kinds()
         .filter_map(|kind| {
-            let add = sample(SampleOp::Add, kind)?;
-            Some(CanvasInteraction::SampleApply {
-                query: SAMPLE_INPUT.to_owned(),
-                x: "x".to_owned(),
-                y: "y".to_owned(),
-                action: add.method.to_owned(),
+            let pick = pick(kind)?;
+            Some(CanvasInteraction::AreaPick {
+                action: pick.method.to_owned(),
                 title: format!("Pick {}", spoken(kind)),
-                shortcut: None,
-                icon: None,
             })
         })
         .collect()
 });
 
-/// The canvas pick whose mode a client is in, or none when that mode is not one of the host's.
-pub fn canvas_pick(mode: &str) -> Option<&'static CanvasInteraction> {
+/// The host's canvas pick whose action is `action`, or none when that is not one of the host's.
+pub fn canvas_pick(action: &str) -> Option<&'static CanvasInteraction> {
     CANVAS.iter().find(|pick| match pick {
-        CanvasInteraction::SampleApply { action, .. } => action == mode,
+        CanvasInteraction::AreaPick {
+            action: declared, ..
+        } => declared == action,
         CanvasInteraction::PointPick { .. }
+        | CanvasInteraction::SampleApply { .. }
         | CanvasInteraction::CropFrame { .. }
         | CanvasInteraction::BrushMask { .. } => false,
     })
@@ -391,6 +458,62 @@ fn sample_commands(kind: &'static str) -> Vec<MaskCommand> {
             )
         })
         .collect()
+}
+
+/// The pick method one picked kind generates: a click or a drag on the canvas, read by the host at
+/// the mask's input site and turned into the kind's values by its own pick rule.
+///
+/// The method name is leaked for the lifetime of the process, exactly as the geometry methods' are.
+fn pick_command(kind: &'static str) -> MaskCommand {
+    let method: &'static str = String::leak(PickMethod::method(kind));
+    let mut parameters = vec![
+        area_position(
+            "x",
+            true,
+            "the picked point, or the left edge of the dragged rectangle",
+        ),
+        area_position(
+            "y",
+            true,
+            "the picked point, or the top edge of the dragged rectangle",
+        ),
+        area_extent(
+            "width",
+            false,
+            "the dragged rectangle's width; with height, it makes the pick a drag over that \
+             rectangle, and without both the pick is a click at the content pixel holding (x, y)",
+        ),
+        area_extent("height", false, "the dragged rectangle's height"),
+    ];
+    let samples = component_sample_limit(kind);
+    if let Some(limit) = samples {
+        parameters.push(
+            ParameterDescriptor::boolean("add")
+                .notes(format!(
+                    "keep the colours the component already holds and add the picked one, up to \
+                     {limit}, rather than replacing them; a colour already held changes nothing"
+                ))
+                .default(false),
+        );
+    }
+    let notes = format!(
+        "set one {0} component from the photograph: the host reads the input the operation this \
+         mask modulates receives — at the content pixel holding (x, y) for a click, or over the \
+         rectangle for a drag, through mask.sample-input-area — and derives the values itself, so \
+         no client sends a colour. One history entry, Pick and the component's name. A mask no \
+         layer is bound to reads where a first adjustment through it would go. Never gated by an \
+         experiment flag: it edits a component that already exists",
+        spoken(kind)
+    );
+    command(
+        MaskOp::Pick(PickMethod { kind }),
+        method,
+        &format!("Pick {}", spoken(kind)),
+        &notes,
+        (true, true),
+        false,
+        parameters,
+    )
 }
 
 static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
@@ -617,8 +740,8 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                          the photograph has at that position. It is a per-pixel colour test and \
                          not Lightroom's Auto Mask: it knows nothing about edges or connectivity, \
                          so it also paints a matching colour anywhere else the stroke passes over. \
-                         A mask no layer is bound to has no operation to read an input from and is \
-                         refused by name",
+                         On a mask no layer is bound to, a new one included, the pixel is the one a \
+                         first adjustment through the mask would receive",
                     )
                     .default(false),
                 ParameterDescriptor::number("colour_refine", REFINE_MIN, REFINE_MAX)
@@ -681,6 +804,10 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
     // is edited for that to happen.
     for kind in sampling_kinds() {
         commands.extend(sample_commands(kind));
+    }
+    // The pick methods, generated the same way: a kind registered with a pick rule is pickable.
+    for kind in picking_kinds() {
+        commands.push(pick_command(kind));
     }
     debug_assert!(
         {

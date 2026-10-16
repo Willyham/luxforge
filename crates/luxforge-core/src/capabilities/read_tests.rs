@@ -412,6 +412,7 @@ fn a_read_is_the_reference_renderers_own_and_reports_the_identity_accept_checks(
                 height: 16,
             },
             reduction: 1,
+            mode: None,
         },
         &ReferenceReads,
         &Cancel::never(),

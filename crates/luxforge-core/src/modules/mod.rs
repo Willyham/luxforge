@@ -394,6 +394,18 @@ pub trait StageQuestions {
             crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]).map(f64::from)
         }))
     }
+    /// The input of `site` in linear light, read as `site.mode` says rather than as whichever
+    /// layer holds `site.index` now: how a mask no layer is bound to reads where a first
+    /// adjustment through it would go ([`crate::mask::commands::input_site`]). Questions that
+    /// read no mask answer it as [`Self::input_before`]; the host's own read in the site's mode.
+    fn input_at(
+        &self,
+        site: crate::tiles::InputSite,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<[f64; 3]>, Error> {
+        self.input_before(site.index, x, y)
+    }
     /// The mean pre-white-balance sensor values of a bounded patch at upright content coordinates,
     /// green-normalized, which a RAW neutral pick sets its gains from. Only a RAW original has a
     /// sensor, so the default, for a stack without one, refuses.

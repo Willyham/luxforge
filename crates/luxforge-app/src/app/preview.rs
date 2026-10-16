@@ -663,6 +663,7 @@ impl Presentation {
             mask_draft: None,
             mask_map: None,
             mask_handles: true,
+            range_pick: None,
             corrections: None,
             draft: None,
             gpu: None,

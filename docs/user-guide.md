@@ -555,7 +555,7 @@ A mask is a selection plus the adjustments that apply through it. Choose Mask in
 
 The panel reads top to bottom. The **Masks** band says how many masks there are and that Escape leaves Mask mode; its chevron folds the panel away down to the adjustments. Under it is the **overlay** row, then one row per mask: a small picture of what the mask covers, its name, a dot when it is changing the photograph, its amount, an eye and a menu. Under the list are **New mask** and a count of masks against the limit of sixteen. The open mask follows under its own name, with its **Amount** and **Invert mask**, its components, the **Add component** row, the **Brush** settings while a brush is in hand or selected, and then the adjustments that apply through it, each band marked with the mask's name.
 
-**New mask** opens a menu of every component kind this build offers, each with its icon — Linear gradient (`L`), Radial gradient (`R`) and Brush (`B`), then Luminance range and Colour range while their experiment is on — and while the menu is open its letter starts that kind. Each acts the way its own shape demands: a gradient has handles to drag, so choosing it starts a gesture; a brush is painted, so choosing it puts the brush in your hand; a range selection has numbers rather than a shape, so choosing it creates the selection those numbers start at in one history entry. Either way, **the mask you just made is the one that opens**, so the adjustments under the component list are already bound to it and the next slider you move belongs to it. There is no Sky, Subject, People, Objects or Background: every selection offered is brightness, colour, a shape or painted coverage, with no model behind it. A linear gradient is drawn across the photograph from the side you do not want to the side you do, exactly as Lightroom's gradient works: the press sets the end at no coverage and the pointer the end at full coverage. The three lines the design draws are that first end, the midpoint and the far end, each with a handle; drag an end to move it, or the midpoint to move the whole axis without changing its length or direction. As in Lightroom, **letting go commits**: the drag that draws the gradient is one history entry, written when you release, with no Apply step, and Escape while the button is still down discards it and changes nothing. The numbers follow the drag in the panel while it is down, and a committed component's `x0`, `y0`, `x1` and `y1` are ordinary fields under its row, each with the same Copy as JSON request its context menu offers anywhere else.
+**New mask** opens a menu of every component kind this build offers, each with its icon — Linear gradient (`L`), Radial gradient (`R`) and Brush (`B`), then Luminance range and Colour range while their experiment is on — and while the menu is open its letter starts that kind. Each acts the way its own shape demands: a gradient has handles to drag, so choosing it starts a gesture; a brush is painted, so choosing it puts the brush in your hand; a range selection has numbers rather than a shape, so choosing it creates the selection those numbers start at in one history entry, selects its row and arms the eyedropper (see Making a range mask, below). Either way, **the mask you just made is the one that opens**, so the adjustments under the component list are already bound to it and the next slider you move belongs to it. There is no Sky, Subject, People, Objects or Background: every selection offered is brightness, colour, a shape or painted coverage, with no model behind it. A linear gradient is drawn across the photograph from the side you do not want to the side you do, exactly as Lightroom's gradient works: the press sets the end at no coverage and the pointer the end at full coverage. The three lines the design draws are that first end, the midpoint and the far end, each with a handle; drag an end to move it, or the midpoint to move the whole axis without changing its length or direction. As in Lightroom, **letting go commits**: the drag that draws the gradient is one history entry, written when you release, with no Apply step, and Escape while the button is still down discards it and changes nothing. The numbers follow the drag in the panel while it is down, and a committed component's `x0`, `y0`, `x1` and `y1` are ordinary fields under its row, each with the same Copy as JSON request its context menu offers anywhere else.
 
 A **radial** is drawn the same way in one stroke: the press sets the centre and the drag sets both radii. Its handles are four radius grips on the ellipse's own axes, a centre that moves the whole ellipse, a rotation grip just beyond the sideways radius, and a feather grip on the ellipse's diagonal, where the dashed inner ring shows where the falloff begins. **Inside the ellipse is selected**, which is the other way round from Lightroom; the component's own Invert gives Lightroom's reading exactly. Radii are in units of the picture's height on both axes, so a circle stays a circle whatever the shape of the frame, and `x`, `y`, `radius_x`, `radius_y`, `angle` and `feather` are fields beside the handles and under the row. Dragging any handle is one history entry when you let go, and the numbers follow the drag exactly.
 
@@ -585,8 +585,8 @@ API without the desktop reads it from the reference, which may differ by a code.
 it inherits what the range selections say below — what it holds follows the adjustment's own input, so
 a layer ahead of the mask changes it, and its overlay is read on that input rather than on the finished
 picture.
-Limit to colour needs an adjustment to read the input of, so the toggle is unavailable until the open
-mask is bound to a layer, and it says so.
+Limit to colour works on a new mask too: a mask no adjustment is bound to yet reads the stage a first Basic
+adjustment would receive, so the stroke's colour is read there and nothing needs binding first.
 
 A mask's geometry is stored in the photograph's own content coordinates, so it travels through every quarter-turn, reflection and crop with the picture: cropping after masking never moves the mask. A stroke is stored on a grid fine enough that a position is one pixel of the largest picture the editor admits, simplified to within a twenty-fifth of its own brush radius so a large brush keeps only the positions its size can show, and each stroke is kept once under the fingerprint of its own contents, so painting for an afternoon costs kilobytes rather than megabytes.
 
@@ -596,7 +596,7 @@ Under the component list are the **adjustments**: the ordinary Basic, Detail, Pr
 
 The whole mask has an **Amount** (0 to 100, multiplying the composed coverage) and an **Invert mask**. Each row carries a small picture of what the mask covers, a dot when the mask is doing something, an eye that shows or hides its overlay, and a menu with Rename, Duplicate, Invert, Move up, Move down, Delete and Copy as JSON request. Rename edits the name in place: Return keeps it and Escape leaves it as it was; a component renames the same way from its own menu. Drag a mask by its picture to reorder the list. Duplicating a mask copies its components **and** the layers bound to it, because a mask without its adjustments is not a useful copy, and deleting one deletes those layers and names them in the history entry.
 
-The **overlay** row shows what the mask selects: off, a tint over the photograph, the mask alone on black, or the photograph seen through the mask on black, as four icons whose names are in their tooltips, then the tint's two colours. The colour you choose is remembered, and Settings › General sets it too. `O` shows or hides the tint in Mask mode. `H` independently shows or hides gradient handles. While you hold an adjustment control, coverage temporarily disappears so you can see the edit; releasing or cancelling restores your chosen overlay. The tint is green or white and never red — the clipping indicators already own red, blue and the magenta between them on this canvas, and an overlay you cannot tell apart from a clipping indicator is worse than none. The overlay updates independently from the photograph, using the actual draft coverage and feather. Starting a tool makes it visible automatically; pressing `O` or choosing Off hides it even while you continue drawing. The overlay is a view setting: it changes no recipe, and hiding a mask's overlay with the eye does not stop that mask applying to the picture. Outside Mask mode, `O` toggles thirds. The two black presentations remain choices in the overlay row.
+The **overlay** row shows what the mask selects: off, a tint over the photograph, the mask alone on black, or the photograph seen through the mask on black, as four icons whose names are in their tooltips, then the tint's two colours. The colour you choose is remembered, and Settings › General sets it too. `O` shows or hides the tint in Mask mode. `H` independently shows or hides gradient handles. While you hold a slider in an adjustment section, coverage temporarily disappears so you can see the edit; releasing or cancelling restores your chosen overlay. The selection's own controls, which are a range's band, Refine and Amount, keep it, because the coverage is the edit. The tint is green or white and never red — the clipping indicators already own red, blue and the magenta between them on this canvas, and an overlay you cannot tell apart from a clipping indicator is worse than none. The overlay updates independently from the photograph, using the actual draft coverage and feather. Starting a tool, or arming the eyedropper, makes it visible automatically as the tint; pressing `O` or choosing Off hides it even while you continue drawing or picking. The overlay is a view setting: it changes no recipe, and hiding a mask's overlay with the eye does not stop that mask applying to the picture. Outside Mask mode, `O` toggles thirds. The two black presentations remain choices in the overlay row.
 
 Masked layers stay in the recipe list on the left, in the durable processing order, each naming the mask it applies through and the first of them carrying that mask's heading. They are not moved under it: the list's job is to show the order edits are applied in, and a mask's layers belong to different stages.
 
@@ -621,24 +621,52 @@ once. With it off, a request to create one, such as `mask.create-luminance-range
 `not-ready` with `data.flag` naming `masks.range-selections`. A range selection you already have keeps
 working either way: it renders, lists through `mask.list`, and stays editable and deletable.
 
-Neither kind is drawn on the photograph, because neither has a shape: choosing it from New mask or
-Add component creates it straight away as a starting selection — the whole tonal range with soft
-shoulders for a band, no swatches for a colour range — and you narrow it through the numbers under
-its row. A colour range's swatches are **picked off the photograph**: select the component and press
-**Pick**, which counts the swatches it holds (`Pick 3 of 5`), then click the picture, and each click
-adds one swatch, up to five. The swatches sit under the row in the colours they hold, with an empty
-slot for each one left; press a swatch for its Remove, so one picked by accident goes without
-clearing the rest, and picking a colour the component already holds changes
-nothing rather than spending a swatch on it. The same two commands do it from a script:
-`mask.add-colour-range-sample` takes a linear sRGB triple and `mask.delete-colour-range-sample` an
-index.
+**Making a range mask.** Neither kind is drawn on the photograph, because neither has a shape. Turn the
+experiment on, then choose Luminance range or Colour range from New mask or from Add component. It is
+created at once as a starting selection — the whole tonal range with soft shoulders for a band, no
+colours for a colour range — in Mask mode, with its row selected, the overlay showing as the tint and
+**the eyedropper armed**. A line under the row says what a click does, with an eyedropper in the accent
+and a **Done** button; the pointer over the photograph is a crosshair. Nothing has to be bound to the mask
+first: its selection is read on the stage a first Basic adjustment will receive, so the tint, the row's
+picture and the picks all work on a brand new mask.
 
-The pick needs something to read: a selection by value is evaluated on the pixel the adjustment it
-modulates *receives*, so the mask has to be bound to a layer before a colour can be picked into it.
-Until it is, the button says so. The colour never comes from the frame you are looking at — that
-frame holds the adjustment's output, and picking from it would sample a colour the selection is never
-evaluated against — so the host reads the pixel itself and the click carries a position, not a
-colour.
+- **Luminance range.** Click a tone and the band is set around it: ten units either side, with a
+  shoulder of ten. Drag a rectangle over an area and the band is set to the tones the area spans, from
+  its 5th to its 95th percentile, with each shoulder kept but at least 2.
+- **Colour range.** Click a colour and it **replaces** the colours the component holds; Shift-click adds it
+  as one more, up to five (a sixth is refused with the reason, and a colour already held changes
+  nothing). Drag a rectangle over an area and its most representative colour is the sample, replacing
+  or, with Shift, adding; and **Refine** is loosened just enough to hold most of the area, never
+  tightened. Refine is one value for the whole component, so loosening it for one drag loosens every
+  colour's selection. The line reads `N of 5`, and a colour range holding none says `Pick a colour to
+  select`.
+- **Each pick is one history entry**, such as `Pick Colour range 1`, so Undo takes it back, and the
+  tint follows it. A drag shorter than three points is a click. Escape while dragging cancels that drag
+  and keeps picking.
+- **Ending.** Escape, Return or **Done** puts the eyedropper down and stays in Mask mode; a further Escape
+  leaves it. Picking also ends when you select another mask or component, delete it, start another mask
+  gesture, leave Mask mode or change the photograph. **Pick**, on the band's row and at the end of a colour
+  range's swatch row, arms it again.
+- **Adjustments while picking.** The adjustment sections stay bound to the open mask, so a slider moved
+  between picks edits the mask's own layer and the tint stays on.
+- **Fine control stays.** The band slider and its four numbers, the colour swatches with each one's
+  Remove, and Refine are all still under the row, because a typed value is exact; picking only
+  writes the values they edit. Each swatch sits in the colour it holds, with an empty slot for each one
+  left.
+
+Picking works whether or not the experiment is on, for a range you already have. The colour or area never
+comes from the frame you are looking at, which holds an adjustment's output: the host reads the pixels
+itself, on the GPU where there is one, and the click or drag carries a position, not a colour. The same
+picks are `mask.pick-luminance-range` and `mask.pick-colour-range` (a click at `x`, `y`; with `width` and
+`height` a drag over that rectangle; `add` for Shift), `mask.sample-input-area` reads an area without
+writing anything, and a row menu's Copy pick request shows the exact request. `mask.add-colour-range-sample`
+takes a linear sRGB triple and `mask.delete-colour-range-sample` an index.
+
+Because an unbound mask reads at the place a first Basic adjustment would, binding a **Basic**
+adjustment to it leaves its selection exactly as it was. Binding a first Tone curve, colour mixer,
+Presence or Detail adjustment moves the place it reads to that layer, and the selection can shift, as it
+does when a layer is added ahead of a mask that is already bound. Where a Detail layer leads the stack,
+the read is after it, at the bounded precision Detail hands on.
 
 Four things about a range selection are worth knowing before you rely on one, because they are how it
 works rather than faults to be fixed. **The panel says all but the third on the component's own
@@ -661,10 +689,10 @@ which is here:
   downscaled, and at 100% and above the GPU draws the visible region at full scale, the coverage
   grid of that region laid over it; where the reference renderer draws the whole photograph, the
   whole-stage grid is. The coverage grid uses the mask's full-stage coordinates independently of
-  that displayed pixel scale. Two masks have no grid at all and say why: one no layer
-  is bound to yet, because there is no adjustment whose input to read, and one whose adjustment sits
-  behind Presence or another neighbourhood effect, because reading that input costs a tile of the
-  picture per overlay cell. Read either in the picture at 100%.
+  that displayed pixel scale. A mask whose first adjustment sits behind
+  Presence or another neighbourhood effect has no grid and says why, on its row and in the status bar,
+  because reading that input costs a tile of the picture per overlay cell. Read it in the picture at
+  100%. A mask no layer is bound to has one: it reads where a first Basic adjustment would.
 - **A narrow band speckles on noise.** A range selection is a per-pixel test, so it inherits the
   picture's grain: on a shadow around output code 40 with two codes of noise, a hard edge flips 47%
   of neighbouring pixels by more than half, a shoulder of 1 flips 31%, and a shoulder of 5 — about 13
@@ -942,9 +970,10 @@ pick gets the colour a colour range's swatch is, and it exists because a client 
 colour off the frame: the frame holds the adjustment's output, which is a different colour wherever
 the adjustment does anything. The values are 32-bit floats, read from the GPU with the desktop open,
 and the answer names the `renderer` that read them as `render.sample`'s does. A mask no layer is bound
-to has no adjustment to be the input of and is refused by name. `mask.add-stroke` takes `limit_to_colour` and `colour_refine` beside its path and its
+to reads where a first Basic adjustment through it would go, so it answers before anything is bound.
+`mask.add-stroke` takes `limit_to_colour` and `colour_refine` beside its path and its
 brush; it carries **no colour**, because the host reads the pixel at the stroke's first position
-itself, and a stroke limited on a mask no layer carries is refused by name for the same reason.
+itself, on a mask no layer is bound to as on any other.
 
 The `mask`, `component` and `stroke` a command addresses are declared parameters of the **identity** kind (`{"kind": "identity", "of": "mask"}`), listed first among its parameters, and a rename's `name` is one of the string kind; every other field — an endpoint, an amount, a mode, an inversion — is a declared parameter too, and all of them go through the same generic check a module action's do. A malformed identity is refused with, for example, `parameter mask must be a mask identity`, and a required identity stays required on a patch: `mask.set-linear` always names its mask and component. Every one of these is an ordinary mutation with a revision check, request deduplication, one history entry and one immutable snapshot. A retry with the same `request_id` answers with the whole first answer, the `mask` and `component` a create minted included, because the answer is stored with the request. Each drafts through `draft.*` exactly as a module action does — `draft.begin` names the mask and component the gesture edits, and must name every identity its command requires — so a whole gradient drag costs one entry.
 

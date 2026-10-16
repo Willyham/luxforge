@@ -3,6 +3,34 @@
 use super::*;
 
 #[test]
+fn pick_steps_carry_shift_and_a_drag_and_reject_one_too_short_to_be_a_drag() {
+    let steps = parse(
+        r#"[{"pick":{"x":5,"y":6}},
+            {"pick":{"x":5,"y":6,"shift":true}},
+            {"pick":{"x":5,"y":6,"to":[40,30]}},
+            {"pick":{"x":5,"y":6,"to":[40,30],"shift":true}}]"#,
+    )
+    .unwrap();
+    assert_eq!(steps[0], Step::pick(5, 6));
+    assert_eq!(steps[1], Step::pick_shift(5, 6));
+    assert_eq!(steps[2], Step::pick_drag([5, 6], [40, 30], false));
+    assert_eq!(steps[3], Step::pick_drag([5, 6], [40, 30], true));
+    // A click writes no more than it ever did; a drag and Shift write what they add.
+    let written = write(&steps);
+    assert_eq!(written[0], json!({"pick":{"x":5,"y":6}}));
+    assert_eq!(
+        written[3],
+        json!({"pick":{"x":5,"y":6,"shift":true,"to":[40,30]}})
+    );
+    assert_eq!(parse(&written.to_string()).unwrap(), steps);
+    // Under the canvas's three-point threshold the release is a click, which `pick` already is.
+    let error = parse(r#"[{"pick":{"x":5,"y":6,"to":[7,8]}}]"#).unwrap_err();
+    assert!(error.contains("or it is a click"), "{error}");
+    assert!(parse(r#"[{"pick":{"x":5,"y":6,"to":[8,6]}}]"#).is_ok());
+    assert!(parse(r#"[{"pick":{"x":5,"y":6,"to":[40]}}]"#).is_err());
+}
+
+#[test]
 fn pinch_steps_round_trip_and_reject_invalid_canvas_positions() {
     let step = Step::Pinch(PinchStep {
         delta: 1.2_f64.ln(),
@@ -270,7 +298,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
             .into()
     );
     assert_eq!(steps[22], Step::Preview(PreviewStep::Current));
-    assert_eq!(steps[25], Step::Pick(PickStep { x: 120, y: 80 }));
+    assert_eq!(steps[25], Step::pick(120, 80));
     assert_eq!(steps[31], Step::gallery(None));
     assert_eq!(
         steps[33],

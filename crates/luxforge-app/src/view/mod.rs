@@ -31,6 +31,7 @@ pub(crate) mod minimap_geometry;
 pub(crate) mod move_to_applications;
 pub(crate) mod palette;
 pub(crate) mod query_choice;
+pub(crate) mod range_pick_canvas;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_merge;
@@ -61,6 +62,14 @@ use iced::{
 };
 use luxforge_ui::theme;
 use luxforge_ui::{Element, Theme};
+
+/// What the armed range picker's canvas is drawn from: the content map a press is placed through
+/// and the drag rectangle, in output-stage pixels, while one lasts.
+#[derive(Clone, Copy)]
+pub(crate) struct RangePickData<'a> {
+    pub(crate) map: &'a crate::mask_draft::ContentMap,
+    pub(crate) rectangle: Option<[f64; 4]>,
+}
 
 /// The pixels and the transient draft the canvas borrows for one frame. They are not view-model
 /// data: the model says what to draw, these are what it is drawn from.
@@ -93,6 +102,9 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
     pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
     pub(crate) mask_handles: bool,
+    /// The armed range picker's content map and the drag rectangle it draws, in Mask mode with no
+    /// mask gesture held.
+    pub(crate) range_pick: Option<RangePickData<'a>>,
     /// The Corrections workspace's pins, outlines, handles and gesture, while its mode is active.
     pub(crate) corrections: Option<corrections_canvas::CanvasData<'a>>,
     pub(crate) draft: Option<&'a CropDraft>,

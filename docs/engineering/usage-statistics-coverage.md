@@ -192,11 +192,14 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `mask.delete-stroke` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.duplicate` | `interaction` mask-duplicate (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.list` | Exempt (read) | Lists masks. |
+| `mask.pick-colour-range` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
+| `mask.pick-luminance-range` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.rename` | `interaction` mask-rename (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.rename-component` | `interaction` mask-rename (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.reorder` | `interaction` mask-reorder (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.reorder-component` | `interaction` mask-reorder (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.sample-input` | Exempt (read) | A pixel query for a mask's input; a read. |
+| `mask.sample-input-area` | Exempt (read) | An area query for a mask's input; a read. |
 | `mask.set-amount` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-colour-range` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-component-invert` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |

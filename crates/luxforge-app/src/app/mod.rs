@@ -176,6 +176,7 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+pub(crate) mod range_picker;
 mod relaunch;
 mod remembered;
 #[cfg(test)]
@@ -1359,6 +1360,7 @@ impl Editor {
             mask_draft: self.drawn_mask().map(|mask| &mask.shape),
             mask_map: self.drawn_mask().and_then(|mask| mask.map.as_ref()),
             mask_handles: self.session.workspace.mask_handles,
+            range_pick: self.range_pick_canvas(),
             corrections: self.correction_canvas(),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
@@ -1566,6 +1568,7 @@ impl Editor {
                     .collect();
                 (menu, letters)
             }),
+            range_picking: self.mask_mode_active() && self.mask_panel.picker.is_some(),
             mask_keys: self.mask_mode_active()
                 && self
                     .mask_shape()

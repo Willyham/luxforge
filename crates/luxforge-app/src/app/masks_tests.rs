@@ -36,6 +36,10 @@ use std::{
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
+/// The range picker's journeys, on this file's photograph and harness.
+#[path = "range_picker_tests.rs"]
+mod range_picker;
+
 #[test]
 fn idle_brush_row_hover_shows_contribution_and_an_active_stroke_shows_composition() {
     let mut masking = Masking::opened();
@@ -2471,7 +2475,8 @@ fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() 
     );
 }
 
-/// **A create opens what it made**, for a typed kind exactly as for a drawn one.
+/// **A create opens what it made and selects what it made**, for a typed kind exactly as for a
+/// drawn one.
 ///
 /// This is not a nicety. The generated sections under the component list are bound to the *open* mask,
 /// so a New mask button that leaves the previous mask open puts the next slider on a mask the person
@@ -2480,10 +2485,11 @@ fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() 
 /// a typed kind is created by its button and never reaches that path, so the rule is applied where
 /// every `mask.*` answer arrives instead.
 ///
-/// The converse is checked too: a command that adds a *component* gains no mask and must leave the
-/// open one alone.
+/// A typed create also selects its sole component, so the band or the swatches are on screen at
+/// once, and a typed add selects the component it added. The converse is checked too: a command that
+/// adds a *component* gains no mask and must leave the open one alone.
 #[test]
-fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
+fn a_typed_create_opens_its_mask_and_selects_its_component() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.draw_mask();
@@ -2507,12 +2513,19 @@ fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
         masking.editor.workspace.masks.name, listing.masks[1].name,
         "the rename field follows the mask that is now open"
     );
+    let created = listing.masks[1].components[0].id.clone();
+    assert_eq!(
+        masking.editor.mask_panel.selected_component.as_ref(),
+        Some(&created),
+        "a typed create selects the one component it made"
+    );
     assert!(
-        masking.editor.mask_panel.selected_component.is_none(),
-        "a newly opened mask has no row selected"
+        masking.editor.workspace.masks.components[0].selected,
+        "the row is selected, so its fields are visible"
     );
 
-    // Adding a component gains no mask, so the open one stays open.
+    // Adding a component gains no mask, so the open one stays open, and the component it added is
+    // the one selected.
     masking.run(MaskMessage::Add("colour-range".to_owned()));
     assert_eq!(
         masking.editor.mask_panel.selected_mask.as_ref(),
@@ -2520,6 +2533,134 @@ fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
         "adding a component to the open mask does not move the selection"
     );
     assert_eq!(masking.listing().masks.len(), 2);
+    let components = masking.listing().masks[1].components.clone();
+    assert_eq!(components.len(), 2);
+    assert_eq!(
+        masking.editor.mask_panel.selected_component.as_ref(),
+        Some(&components[1].id),
+        "a typed add selects the component it added"
+    );
+}
+
+/// **The typed-create flag belongs to its own answer.** An answer overtaken by a newer state ends
+/// the flag with it, and a later mask command starts without it, so a `mask.add-stroke` that makes a
+/// new mask is never read as a typed kind selecting a brush component.
+#[test]
+fn a_typed_create_flag_does_not_outlive_its_answer() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+
+    // The answer arrives after a newer state was already read, so it is dropped whole.
+    let stale = tasks::refresh(
+        &masking.owner(),
+        masking.editor.client,
+        masking.asset.clone(),
+        tasks::Scope::Open,
+        None,
+    )
+    .unwrap();
+    masking.editor.mask_panel.last_request = None;
+    masking.message(MaskMessage::New("luminance-range".to_owned()));
+    assert!(
+        masking.editor.mask_panel.typed_create,
+        "the typed button claims its answer"
+    );
+    masking
+        .editor
+        .document
+        .state
+        .as_mut()
+        .expect("a document")
+        .revision += 1;
+    let _ = masking
+        .editor
+        .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(stale)))));
+    assert!(
+        !masking.editor.mask_panel.typed_create,
+        "an overtaken answer consumes the flag"
+    );
+
+    // A flag that somehow survived is not carried into the next mask command either.
+    masking.editor.busy = false;
+    masking.editor.mask_panel.typed_create = true;
+    masking.editor.mask_panel.last_request = None;
+    masking.message(MaskMessage::Key(crate::app::message::mask::MaskKey::Invert));
+    assert!(
+        masking.editor.mask_panel.last_request.is_some(),
+        "a mask command went out"
+    );
+    assert!(
+        !masking.editor.mask_panel.typed_create,
+        "a plain mask command does not inherit a typed create"
+    );
+}
+
+/// A typed create of a range shows its selection: an overlay that is Off by default shows Tint for
+/// the new component, as a drawn tool's start does, and an explicit Off is honoured.
+#[test]
+fn a_typed_range_create_shows_tint_unless_off_was_chosen() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("luminance-range".to_owned()));
+    assert_eq!(
+        overlay_state(&masking),
+        ("off".into(), "tint".into(), true),
+        "the stored setting is untouched and the new selection is shown"
+    );
+
+    masking.message(MaskMessage::Overlay(
+        MaskOverlayMode::ALL
+            .iter()
+            .position(|mode| *mode == MaskOverlayMode::Off)
+            .unwrap(),
+    ));
+    assert_eq!(
+        overlay_state(&masking),
+        ("off".into(), "off".into(), false),
+        "an explicit Off stays off"
+    );
+
+    // The next typed add is a tool start again, and shows its selection.
+    masking.run(MaskMessage::Add("colour-range".to_owned()));
+    assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
+
+    // Another component, such as the first, no longer shows it automatically.
+    let first = masking.listing().masks[0].components[0].id.clone();
+    masking.message(MaskMessage::SelectComponent(first.as_str().to_owned()));
+    assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
+}
+
+/// A colour range with no sample says what to do under its swatches, and the note goes with the
+/// first sample.
+#[test]
+fn an_empty_colour_range_says_to_pick_a_colour() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("colour-range".to_owned()));
+    let row = &masking.editor.workspace.masks.components[0];
+    assert!(row.selected && row.samples.is_empty());
+    assert_eq!(row.sample_note, Some("Pick a colour to select"));
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["components"][0]["sample_note"],
+        json!("Pick a colour to select")
+    );
+
+    let mask = masking.listing().masks[0].id.clone();
+    let component = masking.listing().masks[0].components[0].id.clone();
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "mask.add-colour-range-sample",
+        json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision), "mask": mask,
+               "component": component, "r": 0.5, "g": 0.2, "b": 0.1}),
+    )
+    .expect("a sample is added");
+    masking.refresh();
+    let row = &masking.editor.workspace.masks.components[0];
+    assert_eq!(row.samples.len(), 1);
+    assert_eq!(row.sample_note, None);
 }
 
 /// The Add row offers each kind with its mode chosen up front, and the gesture that follows creates
@@ -2947,11 +3088,11 @@ fn a_refused_mask_command_ends_the_step_that_sent_it() {
 /// This is the refusal one step further out than
 /// [`a_refused_mask_command_ends_the_step_that_sent_it`]: the request is accepted, the frame is
 /// rendered, and it is the **grid** that is refused, on the coverage worker, a round trip after the
-/// step returned. The mask here is drawn and **no layer is bound to it**, and it holds a component whose
-/// coverage depends on the pixel the masked operation receives — so there is no operation to read
-/// that pixel from and no grid at all (proposal P16 of `docs/design/range-study.md`, decided and
-/// built). A step that asked for the overlay would otherwise wait out the run's whole deadline for a
-/// texture nothing will fill.
+/// step returned. The mask here holds a component whose coverage depends on the pixel the masked
+/// operation receives, and its only layer is a masked Presence layer placed after the global one —
+/// so reading that pixel would evaluate a spatial tile per grid cell, and the host refuses the grid
+/// (proposal P16 of `docs/design/range-study.md`, decided and built). A step that asked for the
+/// overlay would otherwise wait out the run's whole deadline for a texture nothing will fill.
 #[test]
 fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
     use crate::app::{
@@ -2978,6 +3119,13 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
     )
     .expect("the range component is added");
     masking.refresh();
+    // A spatial layer ahead of the mask's first bound layer is what leaves no input to read.
+    agent_edits(&mut masking, "edit.set-presence", json!({"clarity": 30.0}));
+    agent_edits(
+        &mut masking,
+        "edit.set-presence",
+        json!({"mask": mask, "clarity": 20.0}),
+    );
     masking.message(MaskMessage::ToggleOverlay);
     assert_eq!(
         masking.editor.session.workspace.mask_overlay,
@@ -3032,12 +3180,156 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
         step["reason"]
             .as_str()
             .is_some_and(|reason| reason.contains("depends on the pixel it reads")
-                && reason.contains("no layer is bound to mask")),
+                && reason.contains("a spatial layer before the masked one")),
         "the host's own reason is what is recorded, and it says which half is missing: {step}"
     );
     assert!(
         masking.editor.presentation.coverage().is_none(),
         "nothing is drawn over the photograph for a mask that has no grid"
+    );
+
+    // The refusal is not only an event: the open mask's row carries it as a note, the status bar
+    // says it, and a captured frame reports it.
+    let refusal = masking
+        .editor
+        .mask_panel
+        .coverage_refusal
+        .clone()
+        .expect("the worker's refusal is kept");
+    assert!(refusal.contains("a spatial layer before the masked one"));
+    assert_eq!(
+        masking.editor.workspace.masks.masks[0]
+            .coverage_note
+            .as_deref(),
+        Some(refusal.as_str()),
+        "the note sits on the open mask's row"
+    );
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["masks"][0]["coverage_note"],
+        json!(refusal)
+    );
+    assert_eq!(masking.editor.status.text, refusal, "and in the status bar");
+
+    // A later frame asks again and is refused again. While that job is pending the note stays, and
+    // the same refusal does not rewrite the status line the person may have moved on from.
+    masking.editor.status.text = "Something else".into();
+    // Another edit of the same mask, read by this client's job but not adopted as a session, which
+    // would reset the overlay choice this test holds locally.
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
+    call(
+        &masking.owner(),
+        masking.agent,
+        "edit.set-presence",
+        json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision),
+               "mask": mask, "clarity": 25.0}),
+    )
+    .expect("a second edit of the masked layer");
+    let again = tasks::refresh(
+        &masking.owner(),
+        masking.editor.client,
+        masking.asset.clone(),
+        tasks::Scope::Open,
+        None,
+    )
+    .unwrap()
+    .job;
+    let content = masking.editor.presentation.content_serial;
+    masking.editor.request_mask_coverage(&again, content);
+    assert!(
+        masking.editor.mask_coverage_pending(),
+        "the second grid job is in flight"
+    );
+    assert_eq!(
+        masking.editor.mask_panel.coverage_refusal.as_deref(),
+        Some(refusal.as_str()),
+        "the note stays while the next job is pending"
+    );
+    luxforge_testbase::wait_until("the second refused grid", || {
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
+        !masking.editor.mask_coverage_pending()
+    });
+    assert_eq!(
+        masking.editor.mask_panel.coverage_refusal.as_deref(),
+        Some(refusal.as_str()),
+        "the same refusal keeps the note"
+    );
+    assert_eq!(
+        masking.editor.status.text, "Something else",
+        "and does not write the status line again"
+    );
+
+    // Hiding the overlay leaves nothing to refuse, and the note goes with it.
+    masking.message(MaskMessage::ToggleOverlay);
+    assert_eq!(masking.editor.mask_panel.coverage_refusal, None);
+    assert_eq!(masking.editor.workspace.masks.masks[0].coverage_note, None);
+}
+
+/// **Tuning the selection keeps its overlay; adjusting through the mask hides it.** The range band's
+/// grips, the selection's number fields and Refine are the mask family's own drafted controls: the
+/// overlay is what they tune, so holding one leaves it drawn. (Amount commits on release and opens
+/// no gesture, so it never hid the overlay.) A module section's slider — Exposure
+/// through the mask — still steps the overlay aside while it is held, and releasing restores it.
+#[test]
+fn only_an_adjustment_slider_hides_the_overlay_while_it_is_held() {
+    const BAND: &str = "mask.set-luminance-range";
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("luminance-range".to_owned()));
+    // The person's own choice of Tint, which the session adopts from the owner.
+    masking.message(MaskMessage::Overlay(
+        MaskOverlayMode::ALL
+            .iter()
+            .position(|mode| *mode == MaskOverlayMode::Tint)
+            .unwrap(),
+    ));
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "workspace.set",
+        json!({"mask_overlay": "tint"}),
+    )
+    .expect("the setting persists at the owner");
+    masking.adopt_session();
+    assert_eq!(
+        masking.editor.session.workspace.mask_overlay,
+        MaskOverlayMode::Tint
+    );
+    assert_eq!(
+        masking.editor.effective_mask_overlay(),
+        MaskOverlayMode::Tint
+    );
+
+    for (action, parameter, value) in [(BAND, "high", 88.0), (BAND, "low_feather", 8.0)] {
+        let _ = testing::slide(&mut masking.editor, action, parameter, value);
+        assert!(
+            masking.editor.session.draft.is_some(),
+            "{parameter} is held: {}",
+            masking.editor.status.text
+        );
+        assert_eq!(
+            masking.editor.effective_mask_overlay(),
+            MaskOverlayMode::Tint,
+            "holding {action} {parameter} keeps the overlay"
+        );
+        let _ = testing::let_go(&mut masking.editor, action, parameter);
+        assert!(testing::run_commit(&mut masking.editor));
+        masking.editor.busy = false;
+        masking.refresh();
+    }
+
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
+    assert_eq!(
+        masking.editor.effective_mask_overlay(),
+        MaskOverlayMode::Off,
+        "an adjustment slider hides it while it is held"
+    );
+    let _ = testing::let_go(&mut masking.editor, "set-basic", "exposure");
+    assert_eq!(
+        masking.editor.effective_mask_overlay(),
+        MaskOverlayMode::Tint,
+        "and releasing restores it"
     );
 }
 
@@ -6214,8 +6506,8 @@ fn a_mask_bound_only_to_a_curve_shows_the_scope_chip_on_the_tone_curve_band() {
 
 /// **The coverage overlay of a curve-only mask reads the curve layer's input.** A luminance band is
 /// value-based, so its grid is read on the pixel the mask's first bound layer receives
-/// (`mask::commands::input_layer_index`). With no layer bound the overlay is refused by name; once a
-/// curve is the only bound layer the overlay draws, and the grid it is filled from follows the
+/// (`mask::commands::input_site`). With no layer bound the overlay draws from where a first Basic
+/// adjustment through the mask would go; once a curve is the only bound layer the grid follows the
 /// stack **ahead of** the masked curve — the global Basic layer and the global curve layer the
 /// masked one is placed after — and not the masked curve's own points, which change its output and
 /// not its input.
@@ -6267,15 +6559,6 @@ fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
             component: None
         })
     );
-    let refused = masking.editor.mask_overlay_summary();
-    assert!(
-        refused["coverage"]["unavailable"]["reason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("no layer is bound to mask")),
-        "an unbound value-based mask has no input to read: {refused}"
-    );
-    assert!(masking.editor.presentation.coverage().is_none());
-
     // The grid the coverage worker fills for this mask, from the owner's current evaluation.
     let target = MaskCoverageTarget::Existing {
         mask: mask.clone(),
@@ -6313,6 +6596,8 @@ fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
             .expect("a curve-only mask has a grid")
             .coverage
     };
+    // No layer is bound yet, and the overlay draws all the same.
+    assert_eq!(grid(&mut masking).len(), 48 * 32);
 
     agent_edits(&mut masking, "edit.set-basic", json!({"exposure": 1.0}));
     agent_edits(

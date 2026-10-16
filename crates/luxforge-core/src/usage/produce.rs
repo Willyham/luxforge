@@ -119,8 +119,9 @@ pub(crate) fn mask_feature(action_id: &str) -> Option<Feature> {
         "duplicate" => Feature::MaskDuplicate,
         "rename" | "rename-component" => Feature::MaskRename,
         "reorder" | "reorder-component" => Feature::MaskReorder,
-        // A brush stroke, a sampled colour added or removed: a change to a component.
+        // A brush stroke, a sampled colour added or removed, a pick: a change to a component.
         "add-stroke" | "delete-stroke" => Feature::MaskEdit,
+        pick if pick.starts_with("pick-") => Feature::MaskEdit,
         sample if sample.ends_with("-sample") => Feature::MaskEdit,
         create if create.starts_with("create-") => Feature::MaskCreate,
         add if add.starts_with("add-") => Feature::MaskComponentAdd,
