@@ -845,6 +845,77 @@ fn bracket_preview_a_sweep_is_organized_as_a_panorama() {
     assert_eq!(organized(&sweep, false), bracket);
 }
 
+/// A panorama of two rows through the organize functions and the fingerprints: six frames left to
+/// right a third of the frame apart, then six more below them, 2.5 s a frame. The last frame of
+/// the first row and the first of the second share no view, so frames whose numbers skip are two
+/// panoramas, one a row, and frames numbered one after another one panorama of twelve.
+#[test]
+#[slow]
+fn bracket_preview_two_numbered_rows_are_one_panorama() {
+    let scene = Scene::wide(3);
+    let body = CameraBody {
+        make: "NIKON CORPORATION".into(),
+        model: "NIKON Z 6".into(),
+        serial: None,
+    };
+    let day = LocalDay::from_ymd(2026, 9, 18).unwrap();
+    let shots: Vec<Shot> = (0..12)
+        .map(|at| Shot {
+            pan: (at % 6) as f32 / 3.0,
+            tilt: (at / 6) as f32 * 0.45,
+            ..Shot::at(0.0, Curve::Aces)
+        })
+        .collect();
+    let prints = prints(&scene, &shots);
+    let organized = |name: fn(usize) -> String| -> Vec<(MomentKind, u32, u32)> {
+        let mut tables = FrameTables::default();
+        let mut frames = Vec::new();
+        let mut fingerprints = HashMap::new();
+        for (at, print) in prints.iter().enumerate() {
+            let file = FileId(at as i64 + 1);
+            fingerprints.insert(file, (PreviewOrigin::Embedded, print.clone()));
+            frames.push(FrameFacts {
+                merged: false,
+                item: ViewItem::File(file),
+                folder: tables.folder("/card/DCIM/100NIKON".into()),
+                name: name(at).into(),
+                instant_ms: Some(1_789_000_000_000 + at as i64 * 2500),
+                local_day: Some(day),
+                position: None,
+                body: tables.body(Some(&body)),
+                exposure: Exposure {
+                    time_s: Some(1.0 / 250.0),
+                    f_number: Some(8.0),
+                    iso: Some(100),
+                    focal_mm: Some(50.0),
+                    ..Exposure::default()
+                },
+            });
+        }
+        let probe = PreviewProbe::memory(fingerprints);
+        crate::organize::order(&mut frames, &tables, Grouping::DayCameraMoment, false);
+        crate::organize::group(
+            &frames,
+            &tables,
+            Grouping::DayCameraMoment,
+            &Thresholds::default(),
+            &probe,
+        )
+        .moments
+        .iter()
+        .map(|moment| (moment.kind, moment.start, moment.len))
+        .collect()
+    };
+    assert_eq!(
+        organized(|at| format!("DSC_{:04}.NEF", at * 2 + 1)),
+        [(MomentKind::Panorama, 0, 6), (MomentKind::Panorama, 6, 6)]
+    );
+    assert_eq!(
+        organized(|at| format!("DSC_{:04}.NEF", at + 1)),
+        [(MomentKind::Panorama, 0, 12)]
+    );
+}
+
 /// The pan cache answers a pair it measured from its record, keyed by the fingerprints' contents
 /// (another file's identical preview is the same pair; a changed one is not), and starts again
 /// empty when full.
