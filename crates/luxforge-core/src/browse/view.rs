@@ -12,15 +12,16 @@ use super::{
 use crate::{
     EditorService, Error,
     catalog_types::{
-        FileAvailability, FrameFacts, GroupLayout, Grouping, Moment, MomentProbe, RowPair,
+        FileAvailability, FrameFacts, GroupLayout, Grouping, Moment, MomentProbe, RowCopy, RowPair,
         RowStack, SortKey, Thresholds, ViewFilter, ViewItem, ViewQuery, ViewSelection, ViewSort,
         ViewSource, ViewStamp,
     },
     organize,
 };
 use std::{
-    cmp::Ordering,
+    cmp::{Ordering, Reverse},
     collections::{HashMap, HashSet},
+    path::Path,
 };
 
 /// One client's evaluated view as the owner holds it: its items in order, 16 bytes each, its
@@ -35,13 +36,15 @@ pub(crate) struct View {
     /// A later library change or index revision exists: the view still answers for its items,
     /// and the client evaluates it again.
     pub stale: bool,
-    /// The originals collapsed HDR stacks hide: in no position, so no selection names them, but
-    /// items of the view a Develop takes the picks of.
+    /// The originals collapsed HDR stacks hide and the copies other rows stand for: in no
+    /// position, so no selection names them, but items of the view a Develop takes the picks of.
     pub hidden: Vec<ViewItem>,
     /// Each stacked row's badge, by item.
     pub badges: HashMap<ViewItem, RowStack>,
     /// The JPEG each RAW+JPEG pair's RAW row stands for, by the RAW file's item.
     pub pairs: HashMap<ViewItem, RowPair>,
+    /// The copies in other folders each row stands for, by the row's item.
+    pub copies: HashMap<ViewItem, Vec<RowCopy>>,
 }
 
 /// What evaluating a query found.
@@ -61,6 +64,10 @@ pub(crate) struct Evaluation {
     /// The JPEG each RAW+JPEG pair's RAW row stands for, by the RAW file's item; the JPEG is in
     /// no position.
     pub pairs: HashMap<ViewItem, RowPair>,
+    /// The copies in other folders each row stands for, by the row's item, and every such copy,
+    /// in no position.
+    pub copies: HashMap<ViewItem, Vec<RowCopy>>,
+    pub copied: Vec<ViewItem>,
 }
 
 /// What an evaluation reads with: the service, the event cache an event source resolves through,
@@ -156,6 +163,7 @@ pub(crate) fn evaluate_with(
             .collect()
     };
     facts.retain(|fact| filter.failing(fact, candidates.extra(fact.item)) == 0);
+    let (copies, copied) = collapse(&mut facts, &candidates);
     let pairs = pair(&mut facts, &candidates);
     order(&mut facts, &candidates, query);
     let (stacks, provenance) = stacks::arrange(
@@ -189,8 +197,9 @@ pub(crate) fn evaluate_with(
         in_catalog += u32::from(extra.in_catalog);
         unavailable += u32::from(extra.availability != FileAvailability::Available);
     }
-    // The originals a collapsed stack hides are the view's files too: a Develop takes their picks.
-    for item in &stacks.hidden {
+    // The originals a collapsed stack hides and the copies a row stands for are the view's files
+    // too: a Develop takes their picks.
+    for item in stacks.hidden.iter().chain(&copied) {
         if let ViewItem::File(_) = item {
             picked += u32::from(candidates.extra(*item).picked);
         }
@@ -204,7 +213,86 @@ pub(crate) fn evaluate_with(
         stamp,
         stacks,
         pairs,
+        copies,
+        copied,
     })
+}
+
+/// Each set of copies among `facts` (`organize::copies`) as the index of the copy a view shows and
+/// the indices of the others: the copy a RAW+JPEG pair holds, so the pair stays whole, else a
+/// picked one, else the first read. A file in an HDR stack is no copy here and keeps its own row.
+fn copy_sets(facts: &[FrameFacts], candidates: &Candidates) -> Vec<(usize, Vec<usize>)> {
+    if !candidates.over_files {
+        return Vec::new();
+    }
+    let stacked =
+        |item: ViewItem| candidates.stacks.member(item).is_some() || candidates.stacks.leads(item);
+    let sets = organize::copies(facts, |fact| {
+        if stacked(fact.item) {
+            None
+        } else {
+            candidates.extra(fact.item).len
+        }
+    });
+    if sets.is_empty() {
+        return Vec::new();
+    }
+    let paired: HashSet<usize> =
+        organize::pairs(facts, |fact| Some(candidates.extra(fact.item).kind))
+            .into_iter()
+            .flat_map(|(raw, jpeg)| [raw, jpeg])
+            .collect();
+    sets.into_iter()
+        .map(|set| {
+            let keep = set
+                .iter()
+                .copied()
+                .max_by_key(|&at| {
+                    let picked = candidates.extra(facts[at].item).picked;
+                    (paired.contains(&at), picked, Reverse(at))
+                })
+                .expect("a set of copies holds two files");
+            let others = set.into_iter().filter(|&at| at != keep).collect();
+            (keep, others)
+        })
+        .collect()
+}
+
+/// Show each set of copies the filter left as one row (`copy_sets`): take the other copies out of
+/// `facts` before pairs are found and frames grouped, so a copy never splits a burst, a bracket or
+/// a panorama. Answers the copies each row stands for, in path order, and every copy taken out.
+fn collapse(
+    facts: &mut Vec<FrameFacts>,
+    candidates: &Candidates,
+) -> (HashMap<ViewItem, Vec<RowCopy>>, Vec<ViewItem>) {
+    let sets = copy_sets(facts, candidates);
+    if sets.is_empty() {
+        return (HashMap::new(), Vec::new());
+    }
+    let mut copies = HashMap::with_capacity(sets.len());
+    let mut copied = Vec::new();
+    for (keep, others) in sets {
+        let mut rows: Vec<RowCopy> = others
+            .iter()
+            .filter_map(|&at| {
+                let fact = &facts[at];
+                let ViewItem::File(file_id) = fact.item else {
+                    return None;
+                };
+                copied.push(fact.item);
+                let folder = &candidates.names.folders[fact.folder.0 as usize];
+                Some(RowCopy {
+                    file_id,
+                    path: Path::new(folder).join(&*fact.name),
+                })
+            })
+            .collect();
+        rows.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        copies.insert(facts[keep].item, rows);
+    }
+    let gone: HashSet<ViewItem> = copied.iter().copied().collect();
+    facts.retain(|fact| !gone.contains(&fact.item));
+    (copies, copied)
 }
 
 /// Show each RAW+JPEG pair the filter left whole (`organize::pairs`) as its RAW file's row: take
@@ -287,7 +375,9 @@ pub(super) fn prepare(
 /// A bracket whose stack has an active result is decided: its originals count as picked here, so
 /// their moment is decided whole. The result, which only an active stack brings into a view over
 /// files, is not one of the frames grouped, and is decided with its bracket. A RAW+JPEG pair is
-/// one frame here, its RAW file's, picked when either file is; its JPEG is decided with it.
+/// one frame here, its RAW file's, picked when either file is; its JPEG is decided with it. A set
+/// of copies is one frame too, the copy a view shows, picked when any copy is; the other copies
+/// are decided with it.
 fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn MomentProbe) {
     let mut facts = std::mem::take(&mut candidates.facts);
     let results: Vec<FrameFacts> = if candidates.stacks.is_empty() {
@@ -299,6 +389,25 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Mome
         facts = files;
         results
     };
+    // Each set of copies as the copy a view shows; the others are taken out of the frames grouped,
+    // and a copy's pick is the shown copy's.
+    let sets: Vec<(ViewItem, Vec<ViewItem>)> = copy_sets(&facts, candidates)
+        .into_iter()
+        .map(|(keep, others)| {
+            let others = others.into_iter().map(|at| facts[at].item).collect();
+            (facts[keep].item, others)
+        })
+        .collect();
+    let copied: HashSet<ViewItem> = sets
+        .iter()
+        .flat_map(|(_, others)| others.iter().copied())
+        .collect();
+    let copy_picked: HashSet<ViewItem> = sets
+        .iter()
+        .filter(|(_, others)| others.iter().any(|item| candidates.extra(*item).picked))
+        .map(|(keep, _)| *keep)
+        .collect();
+    let picked_any = |item: ViewItem| candidates.extra(item).picked || copy_picked.contains(&item);
     // Each pair's JPEG by its RAW file, taken out of the frames grouped.
     let paired: HashMap<ViewItem, ViewItem> =
         organize::pairs(&facts, |fact| Some(candidates.extra(fact.item).kind))
@@ -308,7 +417,7 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Mome
     let jpegs: HashSet<ViewItem> = paired.values().copied().collect();
     let (mut partners, files): (Vec<FrameFacts>, Vec<FrameFacts>) = facts
         .into_iter()
-        .partition(|fact| jpegs.contains(&fact.item));
+        .partition(|fact| jpegs.contains(&fact.item) || copied.contains(&fact.item));
     facts = files;
     organize::order(
         &mut facts,
@@ -326,10 +435,8 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Mome
     let picked: Vec<bool> = facts
         .iter()
         .map(|fact| {
-            candidates.extra(fact.item).picked
-                || paired
-                    .get(&fact.item)
-                    .is_some_and(|jpeg| candidates.extra(*jpeg).picked)
+            picked_any(fact.item)
+                || paired.get(&fact.item).is_some_and(|jpeg| picked_any(*jpeg))
                 || candidates.stacks.decided_by_result(fact.item)
         })
         .collect();
@@ -337,6 +444,12 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Mome
         candidates.extra_mut(fact.item).decided = decided;
         if let Some(jpeg) = paired.get(&fact.item) {
             candidates.extra_mut(*jpeg).decided = decided;
+        }
+    }
+    for (keep, others) in &sets {
+        let decided = candidates.extra(*keep).decided;
+        for item in others {
+            candidates.extra_mut(*item).decided = decided;
         }
     }
     for result in &results {

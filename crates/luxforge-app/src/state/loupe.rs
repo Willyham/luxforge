@@ -1046,6 +1046,7 @@ mod tests {
     fn summary(revision: u64, count: u32, moments: &[(u32, u32, MomentKind)]) -> ViewSummary {
         ViewSummary {
             paired: 0,
+            copies: 0,
             revision,
             query: ViewQuery::of(ViewSource::AllPhotographs),
             count,
@@ -1098,6 +1099,7 @@ mod tests {
     fn row(position: u32, ms: u32) -> ViewRow {
         ViewRow {
             pair: None,
+            copies: Vec::new(),
             position,
             item: RowItem::File {
                 file_id: FileId(100 + i64::from(position)),

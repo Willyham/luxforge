@@ -98,6 +98,7 @@ fn event_source() -> ViewSource {
 fn summary(count: u32) -> ViewSummary {
     ViewSummary {
         paired: 0,
+        copies: 0,
         revision: 7,
         query: ViewQuery::of(event_source()),
         count,
