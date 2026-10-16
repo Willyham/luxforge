@@ -11,7 +11,7 @@ use crate::{
     EditorService, ErrorKind, SourceTag,
     catalog_types::{
         BodyKey, BrowseSession, DateRange, Facet, FileAvailability, Grouping, ItemRef, LocalDay,
-        MAX_VIEW_ITEMS, MomentRef, Month, NoProbe, PositionRange, PreviewState, RowItem,
+        MAX_VIEW_ITEMS, MomentRef, Month, NoProbe, PositionRange, PreviewState, RowCopy, RowItem,
         SelectionMode, SortKey, ViewFilter, ViewItem, ViewQuery, ViewSelection, ViewSort,
         ViewSource,
     },
@@ -77,6 +77,38 @@ fn agree(fx: &Fixture, service: &EditorService, events: &mut EventCache, query: 
     let mut want_pairs = want.pairs.clone();
     want_pairs.sort();
     assert_eq!(pairs, want_pairs, "pairs of {query:?}");
+    let mut copies: Vec<(ViewItem, Vec<ViewItem>)> = got
+        .copies
+        .iter()
+        .map(|(shown, copies)| {
+            let mut others: Vec<ViewItem> = copies
+                .iter()
+                .map(|copy| ViewItem::File(copy.file_id))
+                .collect();
+            others.sort();
+            (*shown, others)
+        })
+        .collect();
+    copies.sort();
+    let mut want_copies: Vec<(ViewItem, Vec<ViewItem>)> = want
+        .copies
+        .iter()
+        .map(|(shown, others)| {
+            let mut others = others.clone();
+            others.sort();
+            (*shown, others)
+        })
+        .collect();
+    want_copies.sort();
+    assert_eq!(copies, want_copies, "copies of {query:?}");
+    assert_eq!(
+        got.copied.len(),
+        want.copies
+            .iter()
+            .map(|(_, others)| others.len())
+            .sum::<usize>(),
+        "copied of {query:?}"
+    );
     let by_item = |item: &ViewItem| want.items.iter().find(|model| model.item == *item).unwrap();
     // Days partition a grouped view, each one day; cameras sit inside days, each one body.
     if query.effective_grouping() != Grouping::None {
@@ -369,9 +401,9 @@ fn browse_views_of_files_agree_with_the_model() {
     let old = fx.file(&format!("{}/OLD_0001.JPG", testing::OLD)).id;
     assert!(!pictures.items.contains(&ViewItem::File(old)));
     assert_eq!(
-        pictures.items.len(),
-        11,
-        "the lake, its selects, the dump and the root"
+        (pictures.items.len(), pictures.copied.len()),
+        (10, 1),
+        "the lake, its selects but for the copy of L1000001, the dump and the root"
     );
 }
 
@@ -561,6 +593,78 @@ fn browse_a_raw_and_its_jpeg_show_as_one_row() {
     assert!(view.pairs.is_empty());
 }
 
+/// A file's copy in another folder shows as the file's row, which names the copy, so the frames
+/// around it group as they would without it; a picked copy is the row instead, and its file is the
+/// copy.
+#[test]
+#[slow]
+fn browse_a_files_copy_shows_as_its_row() {
+    let fx = testing::fixture("copies");
+    let lake = fx.file(&format!("{}/L1000001.DNG", testing::LAKE));
+    let copy = fx.file(&format!("{}/L1000001.DNG", testing::SELECTS));
+    let next = fx.file(&format!("{}/L1000002.DNG", testing::LAKE));
+    let query = ViewQuery::of(ViewSource::Folder {
+        path: testing::LAKE.into(),
+        subfolders: true,
+    });
+    let mut events = EventCache::default();
+    let picked = {
+        let service = EditorService::open(&fx.catalog).unwrap();
+        let view = run(&service, &mut events, &query);
+        assert!(view.items.contains(&ViewItem::File(lake.id)));
+        assert!(!view.items.contains(&ViewItem::File(copy.id)));
+        assert_eq!(view.copied, [ViewItem::File(copy.id)]);
+        let position = |file| {
+            view.items
+                .iter()
+                .position(|item| *item == ViewItem::File(file))
+                .unwrap() as u32
+        };
+        let at = position(lake.id);
+        let burst = view
+            .layout
+            .moments
+            .iter()
+            .find(|moment| (moment.start..moment.start + moment.len).contains(&at))
+            .expect("L1000001's burst");
+        assert_eq!(burst.len, 2, "L1000001 and L1000002, not the copy");
+        assert!((burst.start..burst.start + burst.len).contains(&position(next.id)));
+        let row = rows(&service, &held(&view, true), at, 1, &|items| {
+            index_grid_states(&service, items)
+        })
+        .unwrap();
+        assert_eq!(
+            row[0].copies,
+            [RowCopy {
+                file_id: copy.id,
+                path: copy.record.path.clone(),
+            }]
+        );
+        view.picked
+    };
+    Connection::open(&fx.catalog)
+        .unwrap()
+        .execute(
+            "INSERT INTO picks (path, byte_len, modified_ns, volume_id, actor, request_id, picked_ms)
+             VALUES (?1, ?2, ?3, ?4, 'test', 'pick', 1)",
+            rusqlite::params![
+                copy.record.path.to_str().unwrap(),
+                copy.record.signature.len as i64,
+                copy.record.signature.modified_ns,
+                copy.record.volume_id.as_str(),
+            ],
+        )
+        .unwrap();
+    let service = EditorService::open(&fx.catalog).unwrap();
+    let view = run(&service, &mut events, &query);
+    assert!(
+        view.items.contains(&ViewItem::File(copy.id)),
+        "a picked copy"
+    );
+    assert_eq!(view.copied, [ViewItem::File(lake.id)]);
+    assert_eq!(view.picked, picked + 1);
+}
+
 /// `event.list` lists the model's events newest first with their counts, picks, offline files,
 /// roots, volumes, months and cameras; `month` narrows them; `query` matches dates and cameras;
 /// and an event's view holds exactly its files.
@@ -615,9 +719,10 @@ fn browse_events_agree_with_the_model() {
                 event_id: event.id.clone(),
             }),
         );
-        // Every file of the event, a pair's JPEG shown as its RAW file.
+        // Every file of the event, a pair's JPEG shown as its RAW file and a copy as the file.
         let mut held: Vec<ViewItem> = view.items.clone();
         held.extend(view.pairs.values().map(|pair| ViewItem::File(pair.file_id)));
+        held.extend(&view.copied);
         held.sort();
         assert_eq!(
             held,
@@ -842,7 +947,7 @@ fn browse_facets_equal_the_views_they_predict() {
                                 &predicted(&source, &filter, *facet, text),
                             );
                             assert_eq!(
-                                (view.items.len() + view.pairs.len()) as u32,
+                                (view.items.len() + view.pairs.len() + view.copied.len()) as u32,
                                 value.count,
                                 "{facet:?} {text} of {filter:?}"
                             );
@@ -927,7 +1032,7 @@ fn browse_facets_equal_the_views_they_predict() {
                 );
                 assert_eq!(
                     total as usize,
-                    whole.items.len() + whole.pairs.len(),
+                    whole.items.len() + whole.pairs.len() + whole.copied.len(),
                     "{facet:?} of {filter:?}"
                 );
             }
@@ -999,9 +1104,16 @@ fn held(evaluation: &Evaluation, over_files: bool) -> View {
         layout: evaluation.layout.clone(),
         selection: ViewSelection::default(),
         stale: false,
-        hidden: evaluation.stacks.hidden.clone(),
+        hidden: evaluation
+            .stacks
+            .hidden
+            .iter()
+            .chain(&evaluation.copied)
+            .copied()
+            .collect(),
         badges: evaluation.stacks.badges.clone(),
         pairs: evaluation.pairs.clone(),
+        copies: evaluation.copies.clone(),
     }
 }
 

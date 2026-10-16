@@ -70,6 +70,7 @@ pub(crate) fn rows(
         let item = &window[(row.position - from) as usize];
         row.stack = view.badges.get(item).cloned();
         row.pair = view.pairs.get(item).cloned();
+        row.copies = view.copies.get(item).cloned().unwrap_or_default();
     }
     Ok(answer)
 }
@@ -223,6 +224,7 @@ fn file_rows(
             stack: None,
             reason: None,
             pair: None,
+            copies: Vec::new(),
         });
     }
     Ok(answer)
@@ -287,6 +289,7 @@ fn photo_rows(
             stack: None,
             reason: None,
             pair: None,
+            copies: Vec::new(),
         };
         found.insert(row.get(0)?, PhotoFacts { row: row_facts });
     }
@@ -383,6 +386,7 @@ fn input_rows(
             stack: None,
             reason: found.reason,
             pair: None,
+            copies: Vec::new(),
         });
     }
     if !listed.is_empty() {

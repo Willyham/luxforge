@@ -34,6 +34,8 @@ const DAY_MS: i64 = 86_400_000;
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Extra {
     pub kind: SourceTag,
+    /// A file's length in bytes, which its copies share (`view::collapse`); none for a photograph.
+    pub len: Option<u64>,
     /// An index into [`Names::lenses`].
     pub lens: Option<u32>,
     /// An index into [`Names::places`].
@@ -568,12 +570,14 @@ impl FileScope<'_> {
 /// The `files` columns [`file_row`] reads, in its order.
 pub(super) const FILE_COLUMNS: &str = "id, folder, name, kind, capture_ms, offset_minutes, \
     latitude, longitude, altitude_m, make, model, body_serial, lens, exposure_time_s, f_number, \
-    iso, exposure_bias_ev, focal_mm, focal_35mm_mm, path";
+    iso, exposure_bias_ev, focal_mm, focal_35mm_mm, path, byte_len";
 
-/// One `files` row of [`FILE_COLUMNS`]: its frame facts, kind, lens and place, and its path.
+/// One `files` row of [`FILE_COLUMNS`]: its frame facts, kind, length, lens and place, and its
+/// path.
 pub(super) struct FileRow {
     pub fact: FrameFacts,
     pub kind: SourceTag,
+    pub len: u64,
     pub lens: Option<u32>,
     pub place: Option<u32>,
     pub path: Box<str>,
@@ -617,6 +621,7 @@ pub(super) fn file_row(
             exposure,
         },
         kind,
+        len: row.get::<_, i64>(20)?.max(0) as u64,
         lens,
         place,
         path: text(row, 19)?.into(),
@@ -644,6 +649,7 @@ fn read_files(reader: &mut Reader<'_>, scopes: &[FileScope<'_>]) -> Result<Candi
                 file.fact,
                 Extra {
                     kind: file.kind,
+                    len: Some(file.len),
                     lens: file.lens,
                     place: file.place,
                     picked: false,
@@ -914,6 +920,7 @@ fn append_photos(
         candidates.keys.push(item);
         candidates.extras.push(Extra {
             kind,
+            len: None,
             lens,
             place,
             picked: false,
