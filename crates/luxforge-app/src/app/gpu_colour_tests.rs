@@ -257,10 +257,12 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
             GpuStep::Spatial(_) => panic!("a colour stack has no spatial step"),
         })
         .collect();
+    // The stack has no RAW development, so Basic's rendered tail follows its scene part.
     assert_eq!(
         entries,
         [
             "lf_basic_scene",
+            "lf_basic_tone",
             "lf_basic_tone",
             "lf_basic_colour_adjust",
             "lf_look_look",

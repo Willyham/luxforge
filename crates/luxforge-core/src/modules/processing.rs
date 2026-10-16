@@ -41,6 +41,10 @@ pub struct CompileStage {
     /// the stack, so a rendering Look follows rather than precedes it. Basic's scene unit applies
     /// plain gains there and its scene shift on a rendered source (`docs/design/basic-scene.md`).
     pub(crate) scene_referred: bool,
+    /// On a scene-referred input, the scene white the layer receives: the development's
+    /// ([`crate::Recipe::scene_white`]) through every global scene gain before it. `None` where the
+    /// recipe is compiled without its source, for its stages or its structure only.
+    pub(crate) scene_white: Option<f64>,
 }
 
 impl CompileStage {
@@ -51,6 +55,7 @@ impl CompileStage {
             scale: SamplingScale { x: 1.0, y: 1.0 },
             gpu_shape: false,
             scene_referred: false,
+            scene_white: None,
         }
     }
 
@@ -59,6 +64,20 @@ impl CompileStage {
     pub(crate) fn over_scene(mut self, scene_referred: bool) -> Self {
         self.scene_referred = scene_referred;
         self
+    }
+
+    /// The same stage receiving the scene white `white` ([`Self::scene_white`]).
+    pub(crate) fn white(mut self, white: Option<f64>) -> Self {
+        self.scene_white = white;
+        self
+    }
+
+    /// The same stage over a development whose scene white is `white`
+    /// ([`crate::Recipe::scene_white`]): what a model compiled outside a stack, Auto tone's
+    /// [`crate::forward_model`], is given for the stage it was read from. Only a scene-referred
+    /// layer reads it.
+    pub fn with_scene_white(self, white: Option<f64>) -> Self {
+        self.white(white)
     }
 
     /// The same stage in the GPU shape ([`Self::gpu_shape`]) when `shaped`.
@@ -80,6 +99,7 @@ impl CompileStage {
             },
             gpu_shape: false,
             scene_referred: false,
+            scene_white: None,
         }
     }
 }
@@ -187,13 +207,60 @@ pub trait PointwiseColor: Send + Sync {
 pub struct ColorOperation {
     units: Vec<Arc<dyn PointwiseColor>>,
     mask: Option<MaskField>,
+    /// The units of the layer's **rendered tail**, which on a scene-referred stack the host places
+    /// directly after the stack's rendering layer (the Look) when one follows this layer, and
+    /// otherwise directly after `units` (`docs/design/basic-local-tone.md`, "One layer, two
+    /// places"). The same mask modulates both. Empty for every module but Basic.
+    tail: Vec<Arc<dyn PointwiseColor>>,
+    /// The factor by which this layer, where it applies everywhere, scales the scene white of every
+    /// later layer: Basic's white balance and Exposure, plain gains on a scene-referred input.
+    scene_gain: Option<f64>,
 }
 
 impl ColorOperation {
     /// An operation over these units in evaluation order. The host validates the count and the
     /// units' finiteness when it compiles the recipe, so a module may build one freely.
     pub fn new(units: Vec<Arc<dyn PointwiseColor>>) -> Self {
-        Self { units, mask: None }
+        Self {
+            units,
+            ..Self::default()
+        }
+    }
+
+    /// The same operation with `tail` as its rendered tail ([`Self::tail`]).
+    pub(crate) fn with_tail(mut self, tail: Vec<Arc<dyn PointwiseColor>>) -> Self {
+        self.tail = tail;
+        self
+    }
+
+    /// The same operation scaling later layers' scene white by `gain` ([`Self::scene_gain`]).
+    pub(crate) fn with_scene_gain(mut self, gain: f64) -> Self {
+        self.scene_gain = Some(gain);
+        self
+    }
+
+    /// The rendered tail's units, in evaluation order.
+    pub(crate) fn tail(&self) -> &[Arc<dyn PointwiseColor>] {
+        &self.tail
+    }
+
+    /// The factor this layer scales later layers' scene white by; 1 for an operation that declares
+    /// none.
+    pub(crate) fn scene_gain(&self) -> f64 {
+        self.scene_gain.unwrap_or(1.0)
+    }
+
+    /// This operation's rendered tail as an operation of its own, under the same mask, or `None`
+    /// when it has none; and this operation without it.
+    pub(crate) fn split_tail(mut self) -> (Self, Option<Self>) {
+        let tail = std::mem::take(&mut self.tail);
+        let rest = (!tail.is_empty()).then(|| Self {
+            units: tail,
+            mask: self.mask.clone(),
+            tail: Vec::new(),
+            scene_gain: None,
+        });
+        (self, rest)
     }
 
     /// The same operation modulated by one compiled mask. Host-only: the mask comes from the
@@ -223,13 +290,20 @@ impl ColorOperation {
         self.units.len()
     }
 
+    /// Whether the operation holds no unit, in its body or its tail.
     pub fn is_empty(&self) -> bool {
-        self.units.is_empty()
+        self.units.is_empty() && self.tail.is_empty()
     }
 
-    /// Whether every unit reports finite coefficients.
+    /// Whether every unit, of the body and the tail, reports finite coefficients.
     pub(crate) fn is_finite(&self) -> bool {
-        self.units.iter().all(|unit| unit.is_finite())
+        self.units
+            .iter()
+            .chain(&self.tail)
+            .all(|unit| unit.is_finite())
+            && self
+                .scene_gain
+                .is_none_or(|gain| gain.is_finite() && gain > 0.0)
     }
 }
 
@@ -242,10 +316,14 @@ impl PartialEq for ColorOperation {
             (Some(left), Some(right)) => left.same_as(right),
             _ => false,
         };
+        let same = |left: &[Arc<dyn PointwiseColor>], right: &[Arc<dyn PointwiseColor>]| {
+            left.len() == right.len()
+                && std::iter::zip(left, right).all(|(l, r)| l.identity() == r.identity())
+        };
         masks
-            && self.units.len() == other.units.len()
-            && std::iter::zip(&self.units, &other.units)
-                .all(|(left, right)| left.identity() == right.identity())
+            && same(&self.units, &other.units)
+            && same(&self.tail, &other.tail)
+            && self.scene_gain.map(f64::to_bits) == other.scene_gain.map(f64::to_bits)
     }
 }
 
@@ -253,6 +331,15 @@ impl std::fmt::Debug for ColorOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut list = f.debug_list();
         list.entries(self.units.iter().map(|unit| unit.describe()));
+        if !self.tail.is_empty() {
+            list.entry(&format!(
+                "rendered tail {:?}",
+                self.tail
+                    .iter()
+                    .map(|unit| unit.describe())
+                    .collect::<Vec<_>>()
+            ));
+        }
         if let Some(mask) = &self.mask {
             list.entry(&format!(
                 "masked by {} components over {}x{}{}",

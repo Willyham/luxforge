@@ -643,6 +643,7 @@ pub(super) fn recipe_for_target<'a>(
         masks: recipe.masks.clone(),
         strokes: recipe.strokes.clone(),
         artifacts: recipe.artifacts.clone(),
+        scene_white: recipe.scene_white,
     })
 }
 

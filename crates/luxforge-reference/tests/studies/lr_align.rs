@@ -9,9 +9,9 @@
 use luxforge_reference::colour::{self, Oklab};
 use luxforge_reference::lr_align::{
     self, Band, Direction, DistanceTable, Lab, Target, axis_profile, band_energy, band_gains,
-    blur_from_gains, box_blur, carried, continued_within_ties, crossing, deviation, dots, edge,
+    blur_from_gains, box_blur, carried, crossing, deviation, dots, edge, floored_joint_knots,
     grid_angle, joint_fit, keystone, linear_gain, locality, match_points, orientation,
-    radial_profile, sectors, tone_locality, with_slope_floor,
+    radial_profile, sectors, tone_locality,
 };
 use luxforge_reference::{SplitMix64, srgb};
 
@@ -628,47 +628,63 @@ fn a_joint_fit_meets_between_two_classes_and_follows_the_one_alone() {
     assert_eq!(targets.at(10.0, 0.0), None);
 }
 
-#[test]
-fn a_slope_floor_lifts_a_flat_run_outward_and_keeps_neutral_and_the_limits() {
-    let knots = [
-        [-100.0, -30.0],
-        [-50.0, -30.0],
-        [0.0, 0.0],
-        [50.0, 100.0],
-        [100.0, 100.0],
-    ];
-    let floored = with_slope_floor(&knots, 0.0, 0.1, (-200.0, 100.0));
-    assert_eq!(floored[2], [0.0, 0.0]);
-    assert_eq!(floored[0], [-100.0, -35.0]);
-    assert_eq!(floored[1], [-50.0, -30.0]);
-    // The top is held at the limit and the step below it gives way.
-    assert_eq!(floored[4], [100.0, 100.0]);
-    assert_eq!(floored[3], [50.0, 95.0]);
-    assert!(floored.windows(2).all(|p| p[1][1] > p[0][1]));
+/// A table on Luxforge values -100 to 100 in steps of 5, one row per Lightroom value, each row's
+/// distance at every value from `distance`.
+fn table_of(rows: &[f64], distance: impl Fn(f64, f64) -> f64) -> DistanceTable {
+    let values: Vec<f64> = (-20..=20).map(|i| f64::from(i) * 5.0).collect();
+    DistanceTable {
+        rows: rows
+            .iter()
+            .map(|lr| (*lr, values.iter().map(|v| distance(*lr, *v)).collect()))
+            .collect(),
+        values,
+    }
 }
 
+/// Where both Lightroom values want the same Luxforge value, the floor is spent where it costs
+/// least: the two knots straddle it rather than the inner one taking it and the outer one being
+/// pushed out. Neutral is kept, and a limit holds a knot that would pass it.
 #[test]
-fn a_saturated_point_continues_the_slope_within_its_ties() {
-    let point = |lightroom: f64, luxforge: f64, span: [f64; 2]| lr_align::FitPoint {
-        lightroom,
-        luxforge,
-        residual: 0.0,
-        identity: None,
-        shortfall: false,
-        span,
-    };
-    // 50 is determined at 40; 100 could be anything from 50 to 100, and the slope continued
-    // from 0 through 50 reaches 80 there. -100 is determined and stays.
-    let knots = continued_within_ties(
-        &[
-            point(-100.0, -90.0, [-90.0, -90.0]),
-            point(50.0, 40.0, [40.0, 40.0]),
-            point(100.0, 50.0, [50.0, 100.0]),
-        ],
+fn a_floored_fit_spends_the_floor_where_it_costs_least() {
+    let flat = table_of(&[-100.0, 50.0, 100.0], |lr, v| {
+        if lr < 0.0 {
+            (v + 100.0).abs()
+        } else {
+            (v - 30.0).abs()
+        }
+    });
+    let knots = floored_joint_knots(
+        std::slice::from_ref(&flat),
         (0.0, 0.0),
-    );
+        0.2,
+        (-100.0, 100.0),
+    )
+    .unwrap();
     assert_eq!(
         knots,
-        vec![[-100.0, -90.0], [0.0, 0.0], [50.0, 40.0], [100.0, 80.0]]
+        vec![[-100.0, -100.0], [0.0, 0.0], [50.0, 25.0], [100.0, 35.0]]
     );
+    let held = floored_joint_knots(&[flat], (0.0, 0.0), 0.2, (-60.0, 100.0)).unwrap();
+    assert_eq!(held[0], [-100.0, -60.0]);
+}
+
+/// Where a point cannot tell the values in its span apart, as a chart clipped to white cannot,
+/// the fit continues the slope inside it; and the joint fit weighs each table holding a value
+/// equally.
+#[test]
+fn a_floored_fit_continues_the_slope_within_ties_and_weighs_tables_equally() {
+    let saturated = table_of(&[50.0, 100.0], |lr, v| {
+        if lr < 75.0 {
+            (v - 40.0).abs()
+        } else {
+            (50.0 - v).max(0.0)
+        }
+    });
+    let knots = floored_joint_knots(&[saturated], (0.0, 0.0), 0.2, (-100.0, 100.0)).unwrap();
+    assert_eq!(knots, vec![[0.0, 0.0], [50.0, 40.0], [100.0, 80.0]]);
+    let targets = table_of(&[50.0], |_, v| (v - 60.0).abs());
+    let photographs = table_of(&[50.0], |_, v| 2.0 * (v - 20.0).abs());
+    let knots =
+        floored_joint_knots(&[targets, photographs], (0.0, 0.0), 0.2, (-100.0, 100.0)).unwrap();
+    assert_eq!(knots, vec![[0.0, 0.0], [50.0, 20.0]]);
 }

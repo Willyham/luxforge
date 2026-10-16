@@ -35,7 +35,7 @@ use super::{
 };
 use crate::{
     Cancel, ClientId, Error, Evaluation, Raster, Region, Render, RenderOptions, Stage,
-    editor::prefix, render::StagePixels,
+    render::StagePixels,
 };
 use std::{
     collections::VecDeque,
@@ -329,14 +329,9 @@ impl<'a> ReferenceSession<'a> {
             ReadStage::Before { layer, mode } => {
                 let recipe = evaluation.recipe();
                 let (width, height) = evaluation.source().dimensions();
-                let before = evaluation.registry().compile_layers(
-                    width,
-                    height,
-                    prefix(&recipe.layers, layer)?,
-                    &recipe.masks,
-                    &recipe.strokes,
-                    &recipe.artifacts,
-                )?;
+                let before = evaluation
+                    .registry()
+                    .compile_prefix(width, height, recipe, layer)?;
                 let wide = evaluation.compiled()?.prefix_spatial_input_wide(&before);
                 let size = before.stage();
                 let render = Render::compiled(

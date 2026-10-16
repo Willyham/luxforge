@@ -9,7 +9,10 @@
 use super::approximately_equal;
 use luxforge_reference::SplitMix64;
 use luxforge_reference::srgb;
-use luxforge_reference::tone::{ToneParams, luminance, tone_curve, tone_pixel};
+use luxforge_reference::tone::{
+    C_HIGHLIGHTS, Domain, ToneParams, luminance, rendered_tone, scene_tone, tone_curve,
+    tone_luminance_in, tone_pixel, tone_pixel_in,
+};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -1097,6 +1100,272 @@ fn regenerate_committed_tone_case_fixture() {
     let cases = build_tone_cases();
     let json = serde_json::to_string_pretty(&cases).expect("serializable");
     std::fs::write(fixture_path(), json).expect("write fixtures/basic/tone-cases.json");
+}
+
+// ---------------------------------------------------------------------------
+// The scene white's domain (`docs/design/basic-local-tone.md`): its proofs and the oracle
+// fixture `fixtures/basic/tone-domain-cases.json`.
+// ---------------------------------------------------------------------------
+
+fn domain_fixture_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/basic/tone-domain-cases.json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+struct DomainCase {
+    label: String,
+    input_linear_rgb: [f64; 3],
+    params: FixtureParams,
+    /// The linear luminances Highlights' and Shadows' curve whites stand for.
+    domain: [f64; 2],
+    expected_linear_rgb: [f64; 3],
+}
+
+fn build_tone_domain_cases() -> Vec<DomainCase> {
+    let mut cases = Vec::new();
+    let greys = [0.0004, 0.004, 0.03, 0.12, 0.33, 0.7, 1.0, 1.6, 2.9, 6.0];
+    let colours = [[0.9, 0.2, 0.05], [0.02, 0.3, 1.4], [-0.01, 0.05, 0.02]];
+    let scene = |white: f64| Domain::scene(white);
+    let sets: [(&str, ToneParams); 7] = [
+        (
+            "highlights--150",
+            ToneParams {
+                highlights: -150.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+        (
+            "highlights-+90",
+            ToneParams {
+                highlights: 90.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+        (
+            "shadows-+60",
+            ToneParams {
+                shadows: 60.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+        (
+            "shadows--40",
+            ToneParams {
+                shadows: -40.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+        (
+            "whites-+100",
+            ToneParams {
+                whites: 100.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+        (
+            "whites--45",
+            ToneParams {
+                whites: -45.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+        (
+            "combined",
+            ToneParams {
+                highlights: -110.0,
+                shadows: 35.0,
+                whites: 60.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+    ];
+    for white in [0.33, 1.0, 1.6] {
+        let domain = scene(white);
+        for (name, params) in sets {
+            for (i, grey) in greys.iter().enumerate() {
+                let input = [*grey; 3];
+                cases.push(DomainCase {
+                    label: format!("scene/{white}/{name}/grey-{i}"),
+                    input_linear_rgb: input,
+                    params: params.into(),
+                    domain: [domain.highlights, domain.shadows],
+                    expected_linear_rgb: scene_tone(input, params, domain),
+                });
+            }
+            for (i, input) in colours.iter().enumerate() {
+                cases.push(DomainCase {
+                    label: format!("scene/{white}/{name}/colour-{i}"),
+                    input_linear_rgb: *input,
+                    params: params.into(),
+                    domain: [domain.highlights, domain.shadows],
+                    expected_linear_rgb: scene_tone(*input, params, domain),
+                });
+            }
+        }
+    }
+    // The rendered part: Blacks and Contrast in the rendered domain, which is the frozen curve.
+    for (name, params) in [
+        (
+            "blacks--85",
+            ToneParams {
+                blacks: -85.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+        (
+            "blacks-contrast",
+            ToneParams {
+                blacks: 40.0,
+                contrast: -60.0,
+                ..ToneParams::NEUTRAL
+            },
+        ),
+    ] {
+        for (i, grey) in greys.iter().enumerate() {
+            let input = [*grey; 3];
+            cases.push(DomainCase {
+                label: format!("rendered/{name}/grey-{i}"),
+                input_linear_rgb: input,
+                params: params.into(),
+                domain: [1.0, 1.0],
+                expected_linear_rgb: rendered_tone(input, params),
+            });
+        }
+    }
+    cases
+}
+
+#[test]
+fn committed_tone_domain_fixture_matches_the_reference() {
+    let path = domain_fixture_path();
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    let committed: Vec<DomainCase> = serde_json::from_str(&contents).expect("valid JSON");
+    let fresh = build_tone_domain_cases();
+    assert_eq!(
+        committed.len(),
+        fresh.len(),
+        "regenerate it with `cargo test -p luxforge-reference --test studies -- --ignored \
+         regenerate_committed_tone_domain_fixture`"
+    );
+    for (a, b) in committed.iter().zip(&fresh) {
+        assert_eq!(
+            a.label, b.label,
+            "the domain fixture drifted; regenerate it"
+        );
+        assert_eq!(a.params, b.params, "{}: stale params", a.label);
+        assert_eq!(a.domain, b.domain, "{}: stale domain", a.label);
+        for (x, y) in a.expected_linear_rgb.iter().zip(&b.expected_linear_rgb) {
+            assert!(
+                approximately_equal(*x, *y),
+                "{}: committed {x}, reference {y}",
+                a.label
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "regenerates the committed domain fixture; run explicitly after changing the frozen \
+            equations in crates/luxforge-reference/src/tone.rs"]
+fn regenerate_committed_tone_domain_fixture() {
+    let json = serde_json::to_string_pretty(&build_tone_domain_cases()).expect("serializable");
+    std::fs::write(domain_fixture_path(), json).expect("write the domain fixture");
+}
+
+/// The scene part is nondecreasing in luminance across six stops either side of the scene white,
+/// densely, at every corner of Highlights' and Shadows' stable ends (A10) with Whites at its
+/// extremes, for a dim, a clipping and a bright development; and it passes values past each
+/// stage's white through, so it never folds the headroom a RAW photograph keeps.
+#[test]
+fn the_scene_part_is_nondecreasing_densely_at_every_corner_of_its_end_strengths() {
+    let steps = 24_000;
+    for white in [0.2, 1.0, 2.5] {
+        let domain = Domain::scene(white);
+        for highlights in [-150.0, 150.0] {
+            for shadows in [-150.0, 150.0] {
+                for whites in [-100.0, 200.0] {
+                    let params = ToneParams {
+                        highlights,
+                        shadows,
+                        whites,
+                        ..ToneParams::NEUTRAL
+                    };
+                    let mut last = f64::NEG_INFINITY;
+                    for i in 0..=steps {
+                        let l = white * (f64::from(i) / f64::from(steps) * 12.0 - 6.0).exp2();
+                        let out = tone_luminance_in(l, params, domain);
+                        assert!(
+                            out >= last - 1e-12,
+                            "W {white}, {params:?}: decreases at {l} ({last} -> {out})"
+                        );
+                        last = out;
+                    }
+                }
+            }
+        }
+        // Past Highlights' white a luminance passes Shadows and Highlights unchanged.
+        let both = ToneParams {
+            highlights: -150.0,
+            shadows: 150.0,
+            ..ToneParams::NEUTRAL
+        };
+        for l in [1.0001, 2.0, 7.5].map(|k| k * C_HIGHLIGHTS * white) {
+            assert!((tone_luminance_in(l, both, domain) - l).abs() <= 1e-12 * l);
+        }
+    }
+}
+
+/// On a rendered input a payload without Blacks renders as the single frozen curve did: the scene
+/// part then the rendered tail is Whites, Shadows, Highlights then Contrast, each rebuilt by its
+/// luminance ratio, which compose to the one ratio. Only Blacks moves, from Whites' remap to after
+/// Highlights.
+#[test]
+fn a_rendered_payload_without_blacks_is_the_single_curve() {
+    let mut rng = SplitMix64(0x5eed_b1ac);
+    for _ in 0..2000 {
+        let params = ToneParams {
+            contrast: rng.next_range(-100.0, 100.0),
+            highlights: rng.next_range(-100.0, 100.0),
+            shadows: rng.next_range(-100.0, 100.0),
+            whites: rng.next_range(-100.0, 100.0),
+            blacks: 0.0,
+        };
+        let rgb = [0, 1, 2].map(|_| rng.next_range(0.002, 1.2));
+        let split = rendered_tone(scene_tone(rgb, params, Domain::RENDERED), params);
+        let single = tone_pixel(rgb, params);
+        for (a, b) in split.iter().zip(single) {
+            assert!(
+                (a - b).abs() <= 1e-12 * b.abs().max(1.0),
+                "{params:?} {rgb:?}"
+            );
+        }
+    }
+}
+
+/// Exposure moves the scene white with the picture, so the scene part commutes with it: toning a
+/// picture a stop brighter over its doubled white is the toned picture doubled.
+#[test]
+fn the_scene_part_commutes_with_exposure() {
+    let params = ToneParams {
+        highlights: -80.0,
+        shadows: 50.0,
+        whites: 40.0,
+        ..ToneParams::NEUTRAL
+    };
+    for rgb in [[0.05, 0.04, 0.03], [0.4, 0.5, 0.6], [1.2, 0.9, 0.3]] {
+        let toned = scene_tone(rgb, params, Domain::scene(0.7));
+        let brighter = scene_tone(rgb.map(|c| 2.0 * c), params, Domain::scene(1.4));
+        for c in 0..3 {
+            assert!((brighter[c] - 2.0 * toned[c]).abs() <= 1e-12 * (1.0 + toned[c].abs()));
+        }
+    }
+    // The rendered domain is the frozen curve itself.
+    let rgb = [0.3, 0.2, 0.1];
+    assert_eq!(
+        tone_pixel_in(rgb, params, Domain::RENDERED),
+        tone_pixel(rgb, params)
+    );
 }
 
 // ---------------------------------------------------------------------------

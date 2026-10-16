@@ -56,6 +56,8 @@ struct Prepared {
     /// The original's stack and where Basic goes in it, which the forward model is built from.
     layers: Vec<Layer>,
     basic: usize,
+    /// The development's scene white the sample was read over, which the model is compiled with.
+    scene_white: Option<f64>,
     target: Statistics,
     base: Statistics,
     lightroom_base: Option<Statistics>,
@@ -100,6 +102,7 @@ fn model<'a>(
     registry: &'a ModuleRegistry,
     layers: &[Layer],
     basic: usize,
+    scene_white: Option<f64>,
 ) -> std::result::Result<ForwardModel<'a>, luxforge_core::Error> {
     forward_model(
         registry,
@@ -108,7 +111,8 @@ fn model<'a>(
         CompileStage::exact(Stage {
             width: 32,
             height: 32,
-        }),
+        })
+        .with_scene_white(scene_white),
     )
 }
 
@@ -260,13 +264,15 @@ fn prepare(manifest: &Manifest, base: &Path) -> Result<Vec<Prepared>> {
         )?;
         let base_stats = rendered_statistics(
             &read.sample,
-            &model(&registry, &recipe.layers, index_basic)?.compile(AutoToneValues::default())?,
+            &model(&registry, &recipe.layers, index_basic, read.scene_white)?
+                .compile(AutoToneValues::default())?,
         )?;
         prepared.push(Prepared {
             id: photo.id.clone(),
             sample: read.sample,
             layers: recipe.layers.clone(),
             basic: index_basic,
+            scene_white: read.scene_white,
             target: exported(&base.join(&photo.lightroom_auto))?,
             base: base_stats,
             lightroom_base: photo
@@ -322,7 +328,7 @@ fn evaluate(
     registry: &ModuleRegistry,
     targets: AutoToneTargets,
 ) -> Result<auto_tone::AutoToneReport> {
-    let model = model(registry, &photo.layers, photo.basic)?;
+    let model = model(registry, &photo.layers, photo.basic, photo.scene_white)?;
     let mut report = model.solve(&photo.sample, targets, &Cancel::never())?;
     report.output = rendered_statistics(&photo.sample, &model.compile(report.values)?)?;
     Ok(report)
@@ -499,7 +505,7 @@ mod tests {
                     .collect(),
                 source_clipped: vec![false; 64 * 48],
             };
-            let model = model(&registry, &[], 0).unwrap();
+            let model = model(&registry, &[], 0, None).unwrap();
             let report = model.solve(&sample, known, &Cancel::never()).unwrap();
             for operation in model.compile(report.values).unwrap() {
                 for unit in operation.units() {
