@@ -48,7 +48,7 @@ struct Truth {
 /// is of one moment (the framing is unchanged).
 struct ManifestProbe<'a>(&'a HashMap<ViewItem, Truth>);
 
-impl BracketProbe for ManifestProbe<'_> {
+impl MomentProbe for ManifestProbe<'_> {
     fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>> {
         let truths: Vec<&Truth> = frames.iter().map(|item| &self.0[item]).collect();
         if truths.iter().any(|truth| truth.moment != truths[0].moment) {
@@ -170,7 +170,7 @@ fn check_events(frames: &Frames, truths: &HashMap<ViewItem, Truth>, manifest: &V
 fn check_layout(
     frames: &mut Frames,
     truths: &HashMap<ViewItem, Truth>,
-    probe: &dyn BracketProbe,
+    probe: &dyn MomentProbe,
     previews: bool,
 ) -> BTreeMap<String, usize> {
     let layout = frames.group(&Thresholds::default(), probe);
@@ -231,11 +231,13 @@ fn check_layout(
         let found_kind = match moment.kind {
             MomentKind::Bracket => "bracket",
             MomentKind::Burst => "burst",
+            MomentKind::Panorama => "panorama",
             MomentKind::Single => "single",
         };
         let found_evidence = moment.evidence.map(|evidence| match evidence {
-            BracketEvidence::Metadata => "metadata",
-            BracketEvidence::Previews => "previews",
+            MomentEvidence::Metadata => "metadata",
+            MomentEvidence::Previews => "previews",
+            MomentEvidence::Folder => "folder",
         });
         assert_eq!(
             (found_kind, found_evidence),

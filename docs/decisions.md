@@ -143,7 +143,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Filtering, tagging and collections | Design one retrieval model from concrete workflows |
 | Full catalog with lazy shoot subsets | Keep catalog scale independent of decoded pixels; scope views to the working set |
 | Multi-selection and stacking | Multi-selection and result-led HDR merge stacks are delivered ([design](design/hdr-merge.md)) |
-| Bracket and panorama identification | Brackets are detected and [HDR merging](#hdr-exposure-merges) is implemented; [panorama merging](#panorama-merges) is planned from a selection, without automatic panorama grouping |
+| Bracket and panorama identification | Brackets and panoramas are detected in Select, panoramas from a folder named for them (DJI's `PANO0001`) or from previews that pan, and a RAW file with its camera JPEG is one photograph (owner, 2026-10-16; [grouping](design/catalog.md#grouping-inside-a-view)); [HDR](#hdr-exposure-merges) and [panorama](#panorama-merges) merges are offered from a moment's header or a selection |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
 ## Presets
@@ -509,7 +509,7 @@ The owner selected **RAW brackets only** and **automatic alignment and deghostin
 Requested for design by the owner on 2026-10-11 ([design](design/panorama-merge.md), [task plan](../tasks/library/panorama-merge.json)), as a second merge kind beside [HDR exposure merges](#hdr-exposure-merges), with the same merge workflow (one **Merge panorama** action since 2026-10-11), stacks, lifecycle and saved derived source. The owner chose:
 
 - **RAW or JPEG frames.** Every frame of one merge is RAW, or every frame is JPEG; mixing them is refused. HDR panoramas (bracketed positions) are outside this plan, and HDR merges stay RAW-only.
-- **Selection only.** Selecting frames offers the panorama merge, and the job checks their overlap; automatic panorama detection or grouping stays a later catalog feature.
+- **Selection only.** Selecting frames offers the panorama merge, and the job checks their overlap. On 2026-10-16 the owner asked Select to group panoramas too, from DJI-style panorama folders and, where it can, frames shot by hand; a panorama's moment header offers the merge ([grouping](design/catalog.md#grouping-inside-a-view)).
 - **Automatic crop with Boundary Warp.** The saved result is always the largest clean rectangle, with a Boundary Warp option (0–100) that bends the stitch to fill the rectangle instead; no empty pixels reach the editor.
 - **Raise the limits for derived sources** to about 65,000 pixels a side and 512 MP, rather than scaling a panorama down to the current 128 MP; camera files keep their current limits.
 

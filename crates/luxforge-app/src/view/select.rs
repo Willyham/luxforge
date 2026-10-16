@@ -26,9 +26,9 @@ use crate::{
         select::{
             Availability, CELL_WIDTH_MAX, CELL_WIDTH_MIN, CELL_WIDTH_STEP, CardNotice, ChipModel,
             Count, Dot, FilterBarModel, ForgetSheet, GridContent, InfoModel, ItemInfo, MenuChoice,
-            PickBand, PickFilter, QueryChange, RowCache, RowChoice, SelectMenu, SelectModel,
-            SelectPanel, SelectStatus, SelectTitle, SelectionModel, Shown, SourceIcon, SourcePress,
-            SourceRow, SourcesModel, StripModel,
+            PAIR_NOTE, PickBand, PickFilter, QueryChange, RowCache, RowChoice, SelectMenu,
+            SelectModel, SelectPanel, SelectStatus, SelectTitle, SelectionModel, Shown, SourceIcon,
+            SourcePress, SourceRow, SourcesModel, StripModel,
         },
         select_merge,
     },
@@ -750,7 +750,12 @@ fn cell_view<'a>(
         short,
         expanded,
     });
-    let note = stack.note;
+    // A RAW+JPEG pair says so where a stack's original says its exposure, which it gives way to.
+    let (note, note_icon) = match stack.note {
+        Some(note) => (Some(note), icon),
+        None if facts.paired => (Some(PAIR_NOTE), Some(Icon::Copy)),
+        None => (None, icon),
+    };
     let exposure = stack.exposure;
     CellView {
         // The decoded preview while the cache holds it; the placeholder at the photograph's shape
@@ -777,7 +782,7 @@ fn cell_view<'a>(
         edited: facts.edited,
         stack: badge,
         note,
-        note_icon: icon,
+        note_icon,
     }
 }
 

@@ -288,9 +288,10 @@ fn bracket_header(editor: &Editor) -> Option<(u32, Vec<String>)> {
         .blocks
         .iter()
         .filter_map(|block| match block {
-            Block::Moment {
-                bracket, actions, ..
-            } => Some((*bracket, actions)),
+            Block::Moment { kind, actions, .. } => Some((
+                *kind == luxforge_core::catalog_types::MomentKind::Bracket,
+                actions,
+            )),
             _ => None,
         })
         .enumerate()
@@ -524,7 +525,7 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
         .iter()
         .find_map(|block| match block {
             Block::Moment {
-                bracket: true,
+                kind: luxforge_core::catalog_types::MomentKind::Bracket,
                 actions,
                 ..
             } => Some(actions.clone()),
@@ -532,7 +533,10 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
         })
         .unwrap();
     assert!(actions[1].primary() && !actions[0].primary());
-    assert_eq!(actions[1], MomentAction::Merge);
+    assert_eq!(
+        actions[1],
+        MomentAction::Merge(luxforge_core::catalog_types::MergeKind::Hdr)
+    );
 
     // Pressed with the camera held at its first read: the pending row before the frames.
     bench.reading.shut();

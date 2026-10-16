@@ -10,7 +10,7 @@
 use crate::{
     EditorService,
     browse::{self, Context, EventCache, Probe},
-    catalog_types::{BracketProbe, MAX_VIEW_ITEMS, ViewItem, ViewQuery},
+    catalog_types::{MAX_VIEW_ITEMS, MomentProbe, ViewItem, ViewQuery},
     previews,
 };
 use serde_json::{Value, json};
@@ -31,7 +31,7 @@ struct Timed<'a> {
     runs: RefCell<Vec<Value>>,
 }
 
-impl BracketProbe for Timed<'_> {
+impl MomentProbe for Timed<'_> {
     fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>> {
         // The index is borrowed per run, as nothing else holds it while organizing asks.
         let index = self.service.index().ok()?;

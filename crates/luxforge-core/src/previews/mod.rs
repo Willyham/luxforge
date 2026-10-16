@@ -35,7 +35,7 @@
 //!   extracted from its original as a browsed file's tiers are, on an extraction worker.
 //! - `bracket.rs`: the brightness check for brackets the metadata cannot show: a
 //!   fingerprint of each complete grid tier, kept beside its row, and [`PreviewProbe`], a
-//!   [`BracketProbe`](crate::catalog_types::BracketProbe) over the index ([`bracket_probe`]) that
+//!   [`MomentProbe`](crate::catalog_types::MomentProbe) over the index ([`bracket_probe`]) that
 //!   `browse.view` hands to `organize::group`: it reads a run's fingerprints only when
 //!   organizing asks about that run.
 //!

@@ -350,7 +350,7 @@ fn select_views_selects_and_follows_another_clients_pick_on_a_real_owner() {
         blocks.iter().any(|block| matches!(
             block,
             Block::Moment {
-                bracket: false,
+                kind: luxforge_core::catalog_types::MomentKind::Burst,
                 frames: 3,
                 ..
             }
@@ -360,7 +360,7 @@ fn select_views_selects_and_follows_another_clients_pick_on_a_real_owner() {
     assert!(
         blocks.iter().any(|block| matches!(
             block,
-            Block::Moment { bracket: true, frames: 3, evidence: Some(evidence), .. }
+            Block::Moment { kind: luxforge_core::catalog_types::MomentKind::Bracket, frames: 3, evidence: Some(evidence), .. }
                 if evidence == "from metadata"
         )),
         "the Leica bracket: {blocks:?}"
@@ -1046,10 +1046,14 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
         .filter_map(|block| match block {
             Block::Moment {
                 index,
-                bracket,
+                kind,
                 actions,
                 ..
-            } => Some((*index, *bracket, actions.clone())),
+            } => Some((
+                *index,
+                *kind == luxforge_core::catalog_types::MomentKind::Bracket,
+                actions.clone(),
+            )),
             _ => None,
         })
         .enumerate()
@@ -1109,7 +1113,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
             .iter()
             .any(|block| matches!(
                 block,
-                Block::Moment { bracket: true, picked: Some(picked), actions, .. }
+                Block::Moment { kind: luxforge_core::catalog_types::MomentKind::Bracket, picked: Some(picked), actions, .. }
                     if picked == "3 picked"
                         && actions.iter().all(|action| !matches!(action, MomentAction::PickAll(_)))
             ))

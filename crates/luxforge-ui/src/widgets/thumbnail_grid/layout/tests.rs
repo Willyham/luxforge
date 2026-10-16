@@ -15,6 +15,7 @@ fn header(kind: MomentKind) -> MomentHeader {
         title: match kind {
             MomentKind::Burst => "Burst".into(),
             MomentKind::Bracket => "Bracket".into(),
+            MomentKind::Panorama => "Panorama".into(),
         },
         detail: "frames".into(),
         evidence: None,

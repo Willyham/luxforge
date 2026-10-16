@@ -68,6 +68,15 @@ fn agree(fx: &Fixture, service: &EditorService, events: &mut EventCache, query: 
         (want.picked, want.in_catalog, want.unavailable),
         "counts of {query:?}"
     );
+    let mut pairs: Vec<(ViewItem, ViewItem)> = got
+        .pairs
+        .iter()
+        .map(|(raw, pair)| (*raw, ViewItem::File(pair.file_id)))
+        .collect();
+    pairs.sort();
+    let mut want_pairs = want.pairs.clone();
+    want_pairs.sort();
+    assert_eq!(pairs, want_pairs, "pairs of {query:?}");
     let by_item = |item: &ViewItem| want.items.iter().find(|model| model.item == *item).unwrap();
     // Days partition a grouped view, each one day; cameras sit inside days, each one body.
     if query.effective_grouping() != Grouping::None {
@@ -478,6 +487,80 @@ fn browse_a_file_carries_its_pick_catalog_state_and_availability() {
     assert_eq!(archive.picked, 1);
 }
 
+/// A RAW file and the JPEG the camera wrote beside it show as the RAW file's row, which names the
+/// JPEG; a JPEG-only filter shows the JPEG alone; and a picked JPEG keeps its own row.
+#[test]
+#[slow]
+fn browse_a_raw_and_its_jpeg_show_as_one_row() {
+    let fx = testing::fixture("pairs");
+    let raw = fx.file(&format!("{}/DSC_0007.NEF", testing::CARD_1));
+    let jpeg = fx.file(&format!("{}/DSC_0007.JPG", testing::CARD_1));
+    let card = ViewQuery::of(ViewSource::Card {
+        volume_id: testing::volume("card"),
+    });
+    let only_jpegs = ViewQuery {
+        filter: ViewFilter {
+            kinds: vec![SourceTag::Jpeg],
+            ..ViewFilter::default()
+        },
+        ..card.clone()
+    };
+    let mut events = EventCache::default();
+    {
+        let service = EditorService::open(&fx.catalog).unwrap();
+        let view = run(&service, &mut events, &card);
+        assert!(view.items.contains(&ViewItem::File(raw.id)));
+        assert!(!view.items.contains(&ViewItem::File(jpeg.id)));
+        let pair = &view.pairs[&ViewItem::File(raw.id)];
+        assert_eq!(
+            (pair.file_id, pair.file_name.as_str()),
+            (jpeg.id, "DSC_0007.JPG")
+        );
+        let position = view
+            .items
+            .iter()
+            .position(|item| *item == ViewItem::File(raw.id))
+            .unwrap() as u32;
+        let row = rows(&service, &held(&view, true), position, 1, &|items| {
+            index_grid_states(&service, items)
+        })
+        .unwrap();
+        assert_eq!(row[0].pair.as_ref().map(|pair| pair.file_id), Some(jpeg.id));
+        assert!(
+            !view
+                .layout
+                .moments
+                .iter()
+                .any(|moment| { (moment.start..moment.start + moment.len).contains(&position) }),
+            "the pair is one frame, not a burst"
+        );
+        let jpegs = run(&service, &mut events, &only_jpegs);
+        assert!(jpegs.items.contains(&ViewItem::File(jpeg.id)));
+        assert!(jpegs.pairs.is_empty());
+    }
+    Connection::open(&fx.catalog)
+        .unwrap()
+        .execute(
+            "INSERT INTO picks (path, byte_len, modified_ns, volume_id, actor, request_id, picked_ms)
+             VALUES (?1, ?2, ?3, ?4, 'test', 'pick', 1)",
+            rusqlite::params![
+                jpeg.record.path.to_str().unwrap(),
+                jpeg.record.signature.len as i64,
+                jpeg.record.signature.modified_ns,
+                jpeg.record.volume_id.as_str(),
+            ],
+        )
+        .unwrap();
+    let service = EditorService::open(&fx.catalog).unwrap();
+    let view = run(&service, &mut events, &card);
+    assert!(view.items.contains(&ViewItem::File(raw.id)));
+    assert!(
+        view.items.contains(&ViewItem::File(jpeg.id)),
+        "a picked JPEG"
+    );
+    assert!(view.pairs.is_empty());
+}
+
 /// `event.list` lists the model's events newest first with their counts, picks, offline files,
 /// roots, volumes, months and cameras; `month` narrows them; `query` matches dates and cameras;
 /// and an event's view holds exactly its files.
@@ -532,7 +615,9 @@ fn browse_events_agree_with_the_model() {
                 event_id: event.id.clone(),
             }),
         );
+        // Every file of the event, a pair's JPEG shown as its RAW file.
         let mut held: Vec<ViewItem> = view.items.clone();
+        held.extend(view.pairs.values().map(|pair| ViewItem::File(pair.file_id)));
         held.sort();
         assert_eq!(
             held,
@@ -757,7 +842,7 @@ fn browse_facets_equal_the_views_they_predict() {
                                 &predicted(&source, &filter, *facet, text),
                             );
                             assert_eq!(
-                                view.items.len() as u32,
+                                (view.items.len() + view.pairs.len()) as u32,
                                 value.count,
                                 "{facet:?} {text} of {filter:?}"
                             );
@@ -840,7 +925,11 @@ fn browse_facets_equal_the_views_they_predict() {
                         ..ViewQuery::of(source.clone())
                     },
                 );
-                assert_eq!(total as usize, whole.items.len(), "{facet:?} of {filter:?}");
+                assert_eq!(
+                    total as usize,
+                    whole.items.len() + whole.pairs.len(),
+                    "{facet:?} of {filter:?}"
+                );
             }
         }
     }
@@ -912,6 +1001,7 @@ fn held(evaluation: &Evaluation, over_files: bool) -> View {
         stale: false,
         hidden: evaluation.stacks.hidden.clone(),
         badges: evaluation.stacks.badges.clone(),
+        pairs: evaluation.pairs.clone(),
     }
 }
 
@@ -985,6 +1075,15 @@ fn browse_rows_read_windows_by_position() {
             assert_eq!(row.picked, file.picked, "{}", row.file_name);
             assert_eq!(row.developed_as, file.developed_as);
             assert_eq!(row.availability, FileAvailability::Available);
+            assert_eq!(
+                row.pair.as_ref().map(|pair| ViewItem::File(pair.file_id)),
+                want.pairs
+                    .iter()
+                    .find(|(raw, _)| *raw == item.item)
+                    .map(|(_, jpeg)| *jpeg),
+                "{}",
+                row.file_name
+            );
             assert!(!row.edited);
             let header = file.record.header.header();
             assert_eq!(
@@ -1186,7 +1285,7 @@ fn browse_selection_modes_ranges_items_all_and_active() {
     );
     let mut view = held(&evaluation, true);
     let len = view.items.len() as u32;
-    assert_eq!(len, 15);
+    assert_eq!(len, 14, "DSC_0007's JPEG shown as its RAW file");
     let apply = |view: &mut View, request: SelectRequest| {
         let mut selection = view.selection.clone();
         let result = select(&service, view, &mut selection, request);

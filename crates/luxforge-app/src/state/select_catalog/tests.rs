@@ -131,6 +131,7 @@ fn catalog_state(source: ViewSource) -> SelectState {
 
 fn summary_of(query: ViewQuery, count: u32) -> ViewSummary {
     ViewSummary {
+        paired: 0,
         revision: 7,
         query,
         count,
@@ -147,6 +148,7 @@ fn summary_of(query: ViewQuery, count: u32) -> ViewSummary {
 
 fn photo_row(position: u32, folder: &str, collections: &[&str], edited: bool) -> ViewRow {
     ViewRow {
+        pair: None,
         position,
         item: RowItem::Photo {
             asset_id: asset(position),
