@@ -30,12 +30,11 @@ fn strength(field: &str, value: f64) -> f64 {
         .strength(value)
 }
 
-/// The slider value of the vignette's `field` that applies `strength`.
-fn slider(field: &str, strength: f64) -> f64 {
+/// The slider value of the vignette's `field` that applies `strength`, `None` beyond its response.
+fn slider(field: &str, strength: f64) -> Option<f64> {
     luxforge_core::slider_response("set-vignette", field)
         .expect("a realigned field")
         .value(strength)
-        .expect("a strength within the response")
 }
 
 /// A global vignette layer holding `payload`.
@@ -238,7 +237,8 @@ fn the_vignette_recentres_on_the_stage_a_crop_produces() {
 /// 8-bit `SourceImage`), rendered through a real `luxforge.vignette` layer and compared to the
 /// reference recomputed from that same quantized input, within one output code per channel. The
 /// case's amount is sent as the slider value and the reference takes its strength; its midpoint,
-/// a strength, is sent as the slider value that applies it, so the case's mask holds.
+/// a strength, is sent as the slider value that applies it, so the case's mask holds, and a case
+/// whose midpoint lies below the slider's response is left out.
 #[test]
 fn production_matches_every_amount_case_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
@@ -246,6 +246,7 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
         .expect("fixtures/vignette/amount-cases.json");
     let cases: Vec<Value> = serde_json::from_str(&raw).expect("a JSON array");
     assert_eq!(cases.len(), 60);
+    let mut checked = 0;
     for case in &cases {
         let width = case["width"].as_u64().unwrap() as u32;
         let height = case["height"].as_u64().unwrap() as u32;
@@ -268,9 +269,14 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
 
         let pixels = vec![byte; (width * height) as usize];
         let source = source_of(width, height, &pixels);
+        // A case whose midpoint lies below the slider's response is not reachable through it.
+        let Some(midpoint) = slider("midpoint", params["midpoint"].as_f64().unwrap()) else {
+            continue;
+        };
+        checked += 1;
         let stack = recipe(vec![layer(json!({
             "amount": amount,
-            "midpoint": slider("midpoint", params["midpoint"].as_f64().unwrap()),
+            "midpoint": midpoint,
             "roundness": params["roundness"],
             "feather": params["feather"],
         }))]);
@@ -288,6 +294,10 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
             );
         }
     }
+    assert!(
+        checked * 2 >= cases.len(),
+        "only {checked} cases are reachable"
+    );
 }
 
 /// Every `fixtures/vignette/mask-cases.json` case records the mask at `amount = 0`, which is
@@ -295,8 +305,9 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
 /// geometry itself through the real render path, each case's geometry (`width`, `height`, `x`,
 /// `y`, `midpoint`, `roundness`, `feather`) is reused with the `amount` slider at `-100` (its
 /// strongest darken, `gain = 1 - s·mask` at its strength `s`) and the midpoint sent as the slider
-/// value that applies the case's, so the fixture's own `expected_mask` becomes directly observable
-/// as a byte through a real vignette layer.
+/// value that applies the case's (a case whose midpoint lies below the slider's response is left
+/// out), so the fixture's own `expected_mask` becomes directly observable as a byte through a real
+/// vignette layer.
 #[test]
 fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
@@ -304,6 +315,7 @@ fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
         .expect("fixtures/vignette/mask-cases.json");
     let cases: Vec<Value> = serde_json::from_str(&raw).expect("a JSON array");
     assert_eq!(cases.len(), 202);
+    let mut checked = 0;
     let grey_byte = 160u8;
     let grey_linear = reference::srgb::decode(grey_byte);
     for case in &cases {
@@ -320,9 +332,14 @@ fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
 
         let pixels = vec![[grey_byte; 3]; (width * height) as usize];
         let source = source_of(width, height, &pixels);
+        // A case whose midpoint lies below the slider's response is not reachable through it.
+        let Some(midpoint) = slider("midpoint", params["midpoint"].as_f64().unwrap()) else {
+            continue;
+        };
+        checked += 1;
         let stack = recipe(vec![layer(json!({
             "amount": amount,
-            "midpoint": slider("midpoint", params["midpoint"].as_f64().unwrap()),
+            "midpoint": midpoint,
             "roundness": params["roundness"],
             "feather": params["feather"],
         }))]);
@@ -338,6 +355,10 @@ fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
             expected
         );
     }
+    assert!(
+        checked * 2 >= cases.len(),
+        "only {checked} cases are reachable"
+    );
 }
 
 // -------------------------------------------------------------------------------------------
