@@ -10,7 +10,8 @@
 //!   (`moments.rs`: panoramas, runs, bursts and brackets, P5); [`events`] splits every frame into events and
 //!   names them (`events.rs`, the P3 rule; `names.rs`, P4's names and [`Gazetteer`]).
 //! - `gazetteer.rs` is the bundled offline place table and its index; `pairs.rs` finds the RAW+JPEG
-//!   pairs a view shows as one row ([`pairs`]).
+//!   pairs a view shows as one row ([`pairs`]), and `copies.rs` the copies of one file in several
+//!   folders a view shows as one row ([`copies`]).
 //!
 //! The cost is a sort and a pass: `events` allocates its order vector and then per event, `group`
 //! per moment, and neither holds a string per frame.
@@ -21,6 +22,7 @@ use crate::catalog_types::{
 };
 use std::{cmp::Ordering, collections::BTreeMap};
 
+mod copies;
 mod events;
 pub(crate) mod gazetteer;
 mod moments;
@@ -29,6 +31,7 @@ mod pairs;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use copies::copies;
 pub(crate) use names::{Gazetteer, user_folder_name};
 pub(crate) use pairs::pairs;
 
