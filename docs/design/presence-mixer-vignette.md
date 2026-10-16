@@ -4,7 +4,7 @@ Status: implemented and verified on the M4 Mac. The owner authorized implementat
 
 [Colour grading](colour-grading.md) extends the delivered mixer: the same layer, at its own format marker, adds fourteen grading fields compiled to a second pointwise unit after the HSL unit, under a Grading tab beside HSL. What this design says of the mixer's HSL controls still holds; their groups now sit inside the HSL tab.
 
-Clarity, Dehaze, the mixer's 24 HSL sliders and the vignette's Amount and Midpoint follow Lightroom Classic's measured responses ([Presence, the mixer and the vignette realigned](lightroom-alignment.md#presence-the-mixer-and-the-vignette-realigned)): each slider's value goes through a frozen response to the strength the unit below applies, which is what the tables here call the slider's value. The units, their stages and their GPU programs are unchanged. Presence's payload format is 2, the vignette's 2 and the mixer's 3, so a layer of an earlier meaning is refused, never re-rendered.
+Clarity, Dehaze, the mixer's 24 HSL sliders and the vignette's Amount and Midpoint follow Lightroom Classic's measured responses ([Presence, the mixer and the vignette realigned](lightroom-alignment.md#presence-the-mixer-and-the-vignette-realigned)): each slider's value goes through a frozen response to the strength the unit below applies, which is what the tables here call the slider's value. The units, their stages and their GPU programs are unchanged, and every corpus cell of the three, with recipes at the extended strengths, is within its limits on the M4 Pro's GPU in the release gate's whole-corpus run. Presence's payload format is 2, the vignette's 2 and the mixer's 3, so a layer of an earlier meaning is refused, never re-rendered.
 
 ## Outcome and scope
 
