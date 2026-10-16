@@ -27,10 +27,10 @@ pub(crate) const NEUTRAL: LinearGradient = LinearGradient {
     y1: 0.75,
 };
 
-/// How far past the drawn frame the three perpendicular lines are extended, in normalized content
-/// units. A gradient's lines are infinite; this is enough to leave the frame from any position and
-/// angle the legal range allows.
-const LINE_REACH: f64 = 2.0;
+/// How far the three perpendicular lines are extended each way along their dominant normalized
+/// axis. A gradient's lines are infinite; the legal range spans three stage extents, so this leaves
+/// the frame from any position and angle the range allows.
+const LINE_REACH: f64 = 3.0;
 
 /// The handles, in hit order: the endpoints win over the midpoint that moves them both.
 const HANDLES: [MaskHandle; 3] = [MaskHandle::Start, MaskHandle::End, MaskHandle::Middle];
@@ -208,14 +208,23 @@ impl ShapeEditor for LinearEditor {
 
     /// The three perpendicular lines and the axis. They are drawn in content space and mapped, so a
     /// crop, a straighten or a quarter turn moves them with the picture.
-    fn draw(&self, _aspect: f64, _pointer: Option<(f64, f64)>, pen: &mut dyn Pen) {
+    ///
+    /// Perpendicular means perpendicular in mask space (`u = x · aspect`, `v = y`), where coverage
+    /// is constant across the axis; in normalized coordinates the lines would lean away from the
+    /// coverage contours on any diagonal axis of a non-square stage.
+    fn draw(&self, aspect: f64, _pointer: Option<(f64, f64)>, pen: &mut dyn Pen) {
         let gradient = self.shape;
-        let (dx, dy) = (gradient.x1 - gradient.x0, gradient.y1 - gradient.y0);
-        let length = dx.hypot(dy);
-        if length <= 0.0 {
+        let (du, dv) = (
+            (gradient.x1 - gradient.x0) * aspect,
+            gradient.y1 - gradient.y0,
+        );
+        // The mask-space normal (-dv, du), back in normalized coordinates.
+        let (nx, ny) = (-dv / aspect, du);
+        let dominant = nx.abs().max(ny.abs());
+        if !(dominant > 0.0 && dominant.is_finite()) {
             return;
         }
-        let (px, py) = (-dy / length * LINE_REACH, dx / length * LINE_REACH);
+        let (px, py) = (nx / dominant * LINE_REACH, ny / dominant * LINE_REACH);
         for (handle, alpha) in [
             (MaskHandle::Start, 0.85),
             (MaskHandle::Middle, 0.45),
@@ -310,4 +319,44 @@ fn lengthened(gradient: LinearGradient, reference: LinearGradient) -> LinearGrad
 
 fn in_range(value: f64) -> bool {
     value.is_finite() && (POSITION_MIN..=POSITION_MAX).contains(&value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct LinePen {
+        lines: Vec<((f64, f64), (f64, f64))>,
+    }
+    impl Pen for LinePen {
+        fn line(&mut self, from: (f64, f64), to: (f64, f64), _: f32) {
+            self.lines.push((from, to));
+        }
+        fn ellipse(&mut self, _: (f64, f64), _: (f64, f64), _: f64, _: f32, _: bool) {}
+    }
+
+    #[test]
+    fn a_diagonal_gradient_draws_its_lines_perpendicular_in_mask_space() {
+        let aspect = 1.5;
+        let editor = LinearEditor {
+            shape: LinearGradient {
+                x0: 0.5,
+                y0: 0.5,
+                x1: 1.0,
+                y1: 0.0,
+            },
+            grab: None,
+        };
+        let mut pen = LinePen::default();
+        editor.draw(aspect, None, &mut pen);
+        assert_eq!(pen.lines.len(), 4);
+        let axis = (0.5 * aspect, -0.5);
+        for (from, to) in &pen.lines[..3] {
+            let line = ((to.0 - from.0) * aspect, to.1 - from.1);
+            let cosine =
+                (line.0 * axis.0 + line.1 * axis.1) / (line.0.hypot(line.1) * axis.0.hypot(axis.1));
+            assert!(cosine.abs() < 1e-12, "{from:?} -> {to:?}: cosine {cosine}");
+        }
+    }
 }
