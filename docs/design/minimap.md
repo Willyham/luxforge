@@ -1,6 +1,6 @@
 # High-zoom minimap
 
-Status: **implemented and qualified on the M4**; the M4's rendered journeys and the corpus's overview kind pass, the paged derived source's overview excepted, and the M4 measurements are [recorded](../specs/performance.md#high-zoom-minimap). A 199.9% control, unavailable originals, a lens or perspective warp, oversubscribed memory in a real window, panning under Compare and Windows/Linux remain open ([evidence](#acceptance-and-evidence)). The owner requested a minimap at zoom levels of 200% or more and chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below are the recorded defaults. [Tasks](../../tasks/interface/minimap.json) hold the plan.
+Status: **implemented and qualified on the M4**; the M4's rendered journeys and the corpus's overview kind pass, the paged derived source's overview excepted, and the M4 measurements are [recorded](../specs/performance.md#high-zoom-minimap). A 199.9% control, unavailable originals, a lens or perspective warp, oversubscribed memory in a real window, panning under Compare and Windows/Linux remain open ([evidence](#acceptance-and-evidence)). The owner requested a minimap at zoom levels of 200% or more and chose click-to-jump navigation and dragging the viewport rectangle. The layout and engineering defaults below are the recorded defaults.
 
 ## Behavior and scope
 
@@ -95,4 +95,4 @@ The [checklist](../engineering/performance-rules.md#review-checklist), answered 
 
 ## Execution
 
-Four tasks in three dependency waves: shared placement and navigation projection and bounded overview rendering independently, then the canvas widget, then qualification, measurement and documentation. The first three are delivered with their tests and the background zoom journey; the fourth has added the corpus qualification kind, its corpus run, the rendered `minimap` journey, the latency mode and the documentation, its measurements remaining ([tasks](../../tasks/interface/minimap.json)).
+Four tasks in three dependency waves: shared placement and navigation projection and bounded overview rendering independently, then the canvas widget, then qualification, measurement and documentation. All four are delivered: the first three with their tests and the background zoom journey, the fourth with the corpus qualification kind and its run, the rendered `minimap` journey, the latency mode, the M4 measurements and the documentation.

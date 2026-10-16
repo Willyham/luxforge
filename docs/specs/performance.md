@@ -5606,6 +5606,17 @@ Opted in and opted out are the same within the runs' spread: the owner's produce
 
 The statistics clock is moved past the first window just before each drag, so an opted-in launch sends while it runs. p50 moves by at most 0.06 ms and p95 by at most 0.95 ms (60 MP `offline`), within the 1 ms budget; a second run of the same drags (load 2.1 to 3.6) put the 60 MP `off` p95 at 9.18 ms and every mode's between 8.49 and 9.57 ms, so the p95 differences are the run-to-run spread rather than a cost of collection. This run's load ended its last 60 MP launches at 4.2. Peak footprint over each launch, every mode ending with the same wait and a six-second window: 1,624 to 1,657 MiB at 24 MP and 1,896 to 1,918 MiB at 60 MP, opted out within that range (1,641 and 1,918); an earlier version of the script gave opted-out launches one wait fewer, which alone accounted for a 20 MiB difference.
 
+The same drag over the private manifest's three RAWs, measured on 16 October 2026 on the same Mac (release editor of the qualification sweep; load 4.1 to 6.2 through these launches), each photograph opened as a RAW development:
+
+| `editor-latency --mode drag`, RAW, input to presented frame (90 inputs per mode, 3 launches each) | Nikon Z6 p50 / p95 ms | Fujifilm X100VI p50 / p95 ms | DJI Air 2S DNG p50 / p95 ms |
+| --- | --- | --- | --- |
+| `off` | 8.49 / 9.11 | 8.49 / 8.67 | 8.51 / 8.77 |
+| `fast` | 8.49 / 8.91 | 8.53 / 8.68 | 8.51 / 8.91 |
+| `slow` | 8.49 / 8.85 | 8.49 / 8.89 | 8.51 / 9.03 |
+| `offline` | 8.46 / 8.88 | 8.48 / 8.81 | 8.52 / 8.85 |
+
+Opted in, a RAW drag's p50 moves by at most 0.05 ms and its p95 by at most 0.26 ms, within the 1 ms budget.
+
 | Idle and hidden, one launch per mode and repeat over 24 MP, Performance closed, the statistics clock moved past the first window (6 ten-second windows per mode, load 2.1 to 3.5) | `off` | `fast` | `offline` |
 | --- | --- | --- | --- |
 | Presented and idle: process CPU, % of one core, p50 / p95 | 0.25 / 0.26 | 0.23 / 0.25 | 0.23 / 0.26 |
@@ -5632,7 +5643,7 @@ The close is the wall clock between the shutdown event's time (the launch's star
 - This Mac's device profile against `sw_vers` and `sysctl` (`usage_this_macs_profile_matches_what_the_system_reports_without_its_strings`): macOS 26.5, Apple M4 Pro tier, 14 physical and logical cores, the 64 GiB memory band for 48 GiB, within 2 KiB, and no brand string, hostname, user name or product name in it.
 - Collection leaves originals, recipes, history and exports unchanged (`usage_collection_leaves_originals_recipes_and_exports_unchanged`, and its photo-sized variant over the generated 24 MP and 60 MP JPEGs with `LUXFORGE_GENERATED_FIXTURES`): the same source hashes, recipe and history (identifiers and times aside) and byte-identical exports with collection on and off.
 
-**Outstanding.** Authentic RAWs (no corpus on this Mac, so RAW preservation and RAW timing are unrun), Windows and Linux (no native measurement), a TLS receiver in a timing run (the timed receivers are plain HTTP on loopback; TLS cost is the test's heap figure above) and an import timed in the editor rather than in the owner. A `process.sample` needs a minute of real presented activity, which the evidence clock's moves do not give, so no launch here recorded one.
+**Outstanding.** Windows and Linux (no native measurement), a TLS receiver in a timing run (the timed receivers are plain HTTP on loopback; TLS cost is the test's heap figure above) and an import timed in the editor rather than in the owner. A `process.sample` needs a minute of real presented activity, which the evidence clock's moves do not give, so no launch here recorded one.
 
 ## Software adapters
 

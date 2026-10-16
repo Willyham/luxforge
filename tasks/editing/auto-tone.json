@@ -373,7 +373,7 @@
     {
       "id": "TASK-006",
       "description": "Qualify Auto tone on the corpus, measure it once on the M4, and document the delivered behaviour.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-004",
         "TASK-005"
@@ -386,7 +386,7 @@
         "Owner M4 sample/value comparisons and rendered JPEG/supplied RAW journeys from TASK-002/TASK-004 remain qualification requirements here. Release engine measurements on an M4 Pro (not the owner M4) are recorded in docs/specs/performance.md: warm GPU p95 40.5 ms at 24 MP and 54.7 ms at 60 MP through Basic, about 0.32 s through a Look above 100; engine scope excludes preparation, commit and preview.",
         "Final quick and full headless checks pass on M2. Rendered tier: 58 pre-gate components pass; the GPU gate has no errors and passes 159 measured combinations, but 118 missing-source combinations make the aggregate incomplete. Standard timing tier passes functionally with all four timing components marked unreliable by high host load; the separate Auto engine run had load 1.44–2.95. Evidence is under artifacts/auto-tone-quick-03, auto-tone-rendered-01, auto-tone-timing-01 and auto-tone-measure-01*.",
         "Done on the owner M4 (Apple M4 Pro, Metal) on 2026-10-16: corpus agreement through the owner's query.auto-tone with the GPU tile worker against the reference service (harness app::gpu_qualification::auto_tone::auto_tone_corpus_agreement, generated JPEGs plus the private manifest's Z6, X100VI and Air 2S RAWs, each as opened and under Detail, perspective and a straightened crop): 18 of 18 measured cells agree exactly on all eight fields; derived-paged is a gap because the reference refuses Auto on a paged source with resource-limit. The auto-tone background journey passes on its generated JPEG and on all three RAWs with the tooltip taken from the action's answer. Evidence: artifacts/qual-sweep/auto-tone-006/corpus-02 and smoke-*-01 under /Users/will/projects/lightwell.",
-        "Remaining: release click-to-entry measurements (24/60 MP, warm/cold, GPU/reference) on a quiet host with editor-latency --mode auto-tone [--cold] [--reference-renderer] [--shortcut] (input to the answered committed entry and to its exact frame, with sample bytes; a 2-sample functional run passed on the M4, evidence artifacts/qual-sweep/auto-tone-006/latency-smoke-01), and read/solve time from the engine measurement auto_tone_measure_photo_sized_inputs on the same host. Then the performance spec, feature status, user guide, Basic/presets designs and decisions updates, and final quick and rendered tiers. Reference Auto on paged derived sources stays refused."
+        "Done on the owner's M4 on 2026-10-16: click-to-entry for 24 MP and 60 MP, warm and cold, on the GPU and the reference, and the shortcut, through editor-latency --mode auto-tone, with read and solve time from auto_tone_measure_photo_sized_inputs, recorded in the performance spec (the warm GPU path meets the provisional budgets; a first Auto and the reference do not; the warm 24 MP solve is slower than when first measured, cause not investigated). A second Auto no longer re-reads its grid: the grid is read in the input mode of Basic's stage. Final quick and the rendered tier with --manifest pass. Reference Auto on paged derived sources stays refused."
       ],
       "context_links": [
         {
