@@ -53,9 +53,9 @@ const PATCH_HALF: i64 = 10;
 
 /// How far the edge contrast (the gap between the low and high edge samples) must widen before
 /// this scenario calls Clarity's local-contrast gain visible. Measured against the real render at
-/// this fixture's own geometry, Clarity +100 widens it by about 7.2; the margin here sits below
-/// that and comfortably above `UNCHANGED`'s own noise floor.
-const CONTRAST_WIDER: f64 = 5.0;
+/// this fixture's own geometry, Clarity +100, at the strength Lightroom's response gives it, widens
+/// it by about 5; the margin here sits below that and above `UNCHANGED`'s own noise floor.
+const CONTRAST_WIDER: f64 = 3.5;
 /// How far the texture range (the gap between the checker's own light and dark cells in a small
 /// patch) must widen before this scenario calls Texture's band gain visible.
 const RANGE_WIDER: f64 = 4.0;

@@ -13,7 +13,9 @@
 //! inner bound while a rounded rectangle's is beyond its outer one, so roundness -100 darkens an
 //! edge midpoint fully while roundness +100 only partly does; a feather of 0 collapses the falloff
 //! to a hard step at the midpoint radius while a feather of 100 spreads it from the centre to the
-//! corner, so a point partway out is always darkened more at feather 0 than at feather 100.
+//! corner. The default Midpoint, at the strength Lightroom's response gives it, puts that step
+//! beyond the edge midpoint, so feather 0 leaves the edge midpoint as it was and feather 100's
+//! spread darkens it.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
@@ -276,13 +278,13 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         Tolerance::Above(DARKER),
     )?;
 
-    // Feather: a hard step at the midpoint radius fully darkens the same edge midpoint, beyond
-    // that radius; the widest falloff leaves it only partway through and reads brighter.
+    // Feather: a hard step at the midpoint radius, beyond the edge midpoint, leaves it as it was;
+    // the widest falloff reaches in from the corners and darkens it.
     checks.compare(
-        launch.at("soft")?,
-        "Feather 100's edge midpoint brighter than Feather 0's",
-        edge(launch, "soft")?,
+        launch.at("hard")?,
+        "Feather 0's edge midpoint brighter than Feather 100's",
         edge(launch, "hard")?,
+        edge(launch, "soft")?,
         Tolerance::Above(DARKER),
     )?;
 
