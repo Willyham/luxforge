@@ -51,6 +51,13 @@ fn ended(editor: &Editor, job: &str) -> Value {
     })
 }
 
+/// One tick of the Performance section's timer, and the sample it yields, if any.
+fn tick_section(editor: &mut Editor) {
+    if let Some(sampled) = crate::app::performance::timer_tick(editor) {
+        let _ = editor.update(sampled);
+    }
+}
+
 /// The refresh timer's tick, as it comes a second after the last read.
 fn tick(editor: &mut Editor) {
     editor.long_work.read_at = Some(Instant::now() - REFRESH_INTERVAL);
@@ -68,7 +75,7 @@ fn nothing_wakes_while_nothing_runs() {
     assert_eq!(editor.workspace.long_work, LongWorkModel::default());
     let reads = editor.long_work.reads;
     for _ in 0..3 {
-        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+        tick_section(&mut editor);
     }
     assert_eq!(editor.long_work.reads, reads);
     assert_eq!(editor.long_work.timers(), Timers::default());
@@ -95,9 +102,9 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
     assert!(editor.performance_sampling(), "the section is open");
     // The first message starts the section's sampling, whose first read goes out and stays out:
     // the section samples nothing more here, so whatever its rows show came from long work's reads.
-    let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
-    assert!(editor.performance.read.in_flight());
-    let requested = editor.performance.requested;
+    let _ = editor.performance_transition();
+    assert!(editor.performance.reads.in_flight());
+    let requested = editor.performance.requested();
     let agree = |editor: &Editor| {
         let work = crate::state::performance::Work {
             board: editor.long_work.state.board.as_ref(),
@@ -166,7 +173,8 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
     assert!(editor.long_work.state.job(&job).is_none());
     assert_eq!(editor.long_work.timers(), Timers::default());
     assert_eq!(
-        editor.performance.requested, requested,
+        editor.performance.requested(),
+        requested,
         "no sample of the section's"
     );
 
@@ -180,8 +188,8 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
         editor.long_work.wakes,
         editor.long_work.state.version,
     );
-    let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
-    assert_eq!(editor.performance.requested, requested + 1);
+    tick_section(&mut editor);
+    assert_eq!(editor.performance.requested(), requested + 1);
     assert_eq!(
         editor.long_work.state.version,
         version + 1,
@@ -197,10 +205,10 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
     let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
     assert!(!editor.performance_sampling());
     for _ in 0..3 {
-        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+        tick_section(&mut editor);
     }
     assert_eq!(editor.long_work.state.version, version + 1);
-    assert_eq!(editor.performance.requested, requested + 1);
+    assert_eq!(editor.performance.requested(), requested + 1);
     assert_eq!(editor.long_work.timers(), Timers::default());
     std::fs::remove_dir_all(folder).unwrap();
     finish(editor, catalog);

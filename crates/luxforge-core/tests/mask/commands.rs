@@ -1,7 +1,8 @@
 //! The `mask.*` command family from an independent JSON client, through the owner loop with the
 //! shared client (`luxforge_testkit::client`): a gesture drafted over a component, a draft that
 //! another client commits under, discovery of the family as a host descriptor, a mask deleted with
-//! the layers bound to it, and a masked recipe whose original is missing or changed. What each command does to a stack and the label it commits are the
+//! the layers bound to it, a masked recipe whose original is missing or changed, and the same picks
+//! and refusals answered alike through the owner and directly through `EditorService`. What each command does to a stack and the label it commits are the
 //! command family's own tests (`mask::commands`), and a retry is the dispatcher's one envelope check.
 
 use super::*;
@@ -30,12 +31,18 @@ struct Session {
 
 impl Session {
     fn open(name: &str) -> Self {
+        Self::open_on(name, luxforge_core::HostConfig::unconfigured())
+    }
+
+    /// [`Self::open`] on `host`, such as one that forces the range mask experiment on.
+    fn open_on(name: &str, host: luxforge_core::HostConfig) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
         std::fs::copy(paths::jpeg(), &source).expect("the fixture copies");
-        let owner = Owner::start(
+        let owner = Owner::start_with_host(
             &dir.join("catalog.sqlite"),
             luxforge_core::ModuleRegistry::builtin(),
+            host,
             ACTOR,
         )
         .expect("an owner");
@@ -669,4 +676,363 @@ fn a_missing_or_changed_original_refuses_the_picture_and_discards_no_mask() {
     assert_eq!(code, "source-unavailable", "{message}");
     assert!(message.contains("fingerprint changed"), "{message}");
     assert_eq!(client.list(), listed, "a changed original discards nothing");
+}
+
+/// The same photograph opened directly in an `EditorService`, with no owner and no tile service:
+/// what an in-process caller reaches, and the other side of [`picks_answer_alike_through_the_owner_and_the_service`].
+struct Direct {
+    service: EditorService,
+    asset: luxforge_core::AssetId,
+    dir: PathBuf,
+    request: u64,
+}
+
+impl Direct {
+    fn open(name: &str) -> Self {
+        let dir = temp(name);
+        let source = dir.join("orientation-1.jpg");
+        std::fs::copy(paths::jpeg(), &source).expect("the fixture copies");
+        let mut service = EditorService::open(&dir.join("catalog.sqlite")).expect("a catalog");
+        let asset = service
+            .import(&source)
+            .expect("the fixture imports")
+            .asset
+            .id;
+        Self {
+            service,
+            asset,
+            dir,
+            request: 0,
+        }
+    }
+
+    fn run(
+        &mut self,
+        method: &str,
+        target: &MaskTarget,
+        parameters: Value,
+    ) -> Result<(), luxforge_core::Error> {
+        self.request += 1;
+        let mutation = luxforge_core::Mutation {
+            expected_revision: self.service.state(&self.asset).unwrap().revision,
+            request_id: format!("direct-{}", self.request),
+            actor: ACTOR.to_owned(),
+        };
+        self.service
+            .run_action(&self.asset, mutation, method, target.request(parameters))
+            .map(|_| ())
+    }
+
+    fn list(&self) -> Value {
+        let entry = self.service.state(&self.asset).unwrap().current_entry.id;
+        serde_json::to_value(self.service.mask_listing(&self.asset, &entry).unwrap()).unwrap()
+    }
+
+    fn labels(&self) -> Vec<Value> {
+        let page = self.service.history(&self.asset, None, 100).unwrap();
+        let mut labels: Vec<Value> = page
+            .entries
+            .iter()
+            .map(|entry| json!([entry.action_id, entry.label]))
+            .collect();
+        labels.reverse();
+        labels
+    }
+}
+
+impl Drop for Direct {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Each component's name, kind and values, without the identities that differ between catalogs.
+fn components(listing: &Value) -> Vec<Value> {
+    listing["masks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|mask| mask["components"].as_array().unwrap().iter())
+        .map(|component| json!([component["name"], component["kind"], component["payload"]]))
+        .collect()
+}
+
+/// **API parity for picks.** The same picks, through an independent JSON client of the owner — where
+/// each defers its pixel read to the tile service — and directly through `EditorService::run_action`,
+/// which reads through the reference: the area query answers the same points, every pick commits the
+/// same values under the same label, and each refusal is the same refusal. That a pick runs with the
+/// range-selection experiment off is the owner's own test (`api::owner::experiment_tests`).
+#[test]
+fn picks_answer_alike_through_the_owner_and_the_service() {
+    let owner = Session::open_on("pick-owner", luxforge_testkit::client::range_masks_host());
+    let mut direct = Direct::open("pick-direct");
+    let drag = json!({"x": 0.1, "y": 0.2, "width": 0.4, "height": 0.3});
+
+    // A colour range and a band intersected with it.
+    let whole = json!({"mode": "intersect", "low": 0.0, "low_feather": 5.0, "high": 100.0, "high_feather": 5.0});
+    owner.run(
+        "mask.create-colour-range",
+        &MaskTarget::default(),
+        json!({"refine": 80.0}),
+        "create",
+    );
+    let of_mask = |listing: &Value| MaskTarget {
+        mask: Some(MaskId::parse(listing["masks"][0]["id"].as_str().unwrap()).unwrap()),
+        ..MaskTarget::default()
+    };
+    owner.run(
+        "mask.add-luminance-range",
+        &of_mask(&owner.list()),
+        whole.clone(),
+        "add",
+    );
+    direct
+        .run(
+            "mask.create-colour-range",
+            &MaskTarget::default(),
+            json!({"refine": 80.0}),
+        )
+        .unwrap();
+    direct
+        .run("mask.add-luminance-range", &of_mask(&direct.list()), whole)
+        .unwrap();
+
+    // The area query answers the same points either way; only the renderer that read them may say
+    // something different.
+    let area_of = |listing: &Value| {
+        let mut query = drag.clone();
+        query["mask"] = listing["masks"][0]["id"].clone();
+        query
+    };
+    let mut through_owner = owner.send(commands::SAMPLE_INPUT_AREA, {
+        let mut query = area_of(&owner.list());
+        query["asset_id"] = owner.asset.clone();
+        query
+    });
+    let entry = direct
+        .service
+        .state(&direct.asset)
+        .unwrap()
+        .current_entry
+        .id;
+    let mut through_service = direct
+        .service
+        .run_query(
+            &direct.asset,
+            &entry,
+            commands::SAMPLE_INPUT_AREA,
+            area_of(&direct.list()),
+        )
+        .unwrap();
+    through_owner["renderer"] = Value::Null;
+    through_service["renderer"] = Value::Null;
+    assert_eq!(through_owner, through_service);
+
+    // A drag, the band picked by a click, and a colour added by a click.
+    let steps = [
+        ("mask.pick-colour-range", "Colour range 1", drag.clone()),
+        (
+            "mask.pick-luminance-range",
+            "Luminance range 1",
+            json!({"x": 0.7, "y": 0.4}),
+        ),
+        (
+            "mask.pick-colour-range",
+            "Colour range 1",
+            json!({"x": 0.8, "y": 0.8, "add": true}),
+        ),
+    ];
+    for (index, (method, component, parameters)) in steps.into_iter().enumerate() {
+        owner.run(
+            method,
+            &component_of(&owner.list(), "Mask 1", component),
+            parameters.clone(),
+            &format!("pick-{index}"),
+        );
+        direct
+            .run(
+                method,
+                &component_of(&direct.list(), "Mask 1", component),
+                parameters,
+            )
+            .unwrap_or_else(|error| panic!("{method}: {error}"));
+    }
+    let unbound = owner.labels();
+    // An exposure bound through the mask, then a band picked on the now-bound mask and a colour
+    // it already holds picked again, which changes nothing and writes no entry.
+    let exposure = |listing: &Value| json!({"mask": listing["masks"][0]["id"], "exposure": 1.5});
+    owner.send("edit.set-basic", {
+        let mut params = exposure(&owner.list());
+        params["asset_id"] = owner.asset.clone();
+        params["mutation"] = mutation(owner.revision(), "bind");
+        params
+    });
+    direct
+        .run(
+            "set-basic",
+            &MaskTarget::default(),
+            exposure(&direct.list()),
+        )
+        .unwrap();
+    let held = owner.labels().len();
+    for (index, (method, component, parameters)) in [
+        (
+            "mask.pick-colour-range",
+            "Colour range 1",
+            json!({"x": 0.8, "y": 0.8, "add": true}),
+        ),
+        (
+            "mask.pick-luminance-range",
+            "Luminance range 1",
+            json!({"x": 0.3, "y": 0.6}),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        owner.run(
+            method,
+            &component_of(&owner.list(), "Mask 1", component),
+            parameters.clone(),
+            &format!("bound-{index}"),
+        );
+        direct
+            .run(
+                method,
+                &component_of(&direct.list(), "Mask 1", component),
+                parameters,
+            )
+            .unwrap_or_else(|error| panic!("{method}: {error}"));
+    }
+    let labels = owner.labels();
+    assert_eq!(
+        labels[held..],
+        [json!([
+            "mask.pick-luminance-range",
+            "Pick Luminance range 1"
+        ])],
+        "the duplicate wrote nothing and the bound pick one entry"
+    );
+    assert_eq!(components(&owner.list()), components(&direct.list()));
+    assert_eq!(owner.labels(), direct.labels());
+    let rendered = direct.service.render_current(&direct.asset).unwrap();
+    for y in (0..rendered.height).step_by(37) {
+        for x in (0..rendered.width).step_by(41) {
+            let through_owner = owner
+                .owner
+                .sample(owner.client, &owner.asset, (x, y), None)
+                .unwrap();
+            assert_eq!(
+                through_owner,
+                json!(rendered.pixel(x, y).unwrap()),
+                "({x}, {y})"
+            );
+        }
+    }
+    let labels = unbound;
+    assert_eq!(
+        labels[labels.len() - 3..],
+        [
+            json!(["mask.pick-colour-range", "Pick Colour range 1"]),
+            json!(["mask.pick-luminance-range", "Pick Luminance range 1"]),
+            json!(["mask.pick-colour-range", "Pick Colour range 1"]),
+        ],
+        "one entry a pick"
+    );
+
+    // Each refusal is the same refusal, through either door, and names what it refuses.
+    fn colour(listing: &Value) -> MaskTarget {
+        component_of(listing, "Mask 1", "Colour range 1")
+    }
+    fn band(listing: &Value) -> MaskTarget {
+        component_of(listing, "Mask 1", "Luminance range 1")
+    }
+    fn absent(listing: &Value) -> MaskTarget {
+        MaskTarget {
+            component: Some(ComponentId::new()),
+            ..colour(listing)
+        }
+    }
+    type Refusal = (
+        &'static str,
+        fn(&Value) -> MaskTarget,
+        &'static str,
+        Value,
+        &'static str,
+    );
+    let refusals: [Refusal; 3] = [
+        (
+            "no such component",
+            absent,
+            "mask.pick-colour-range",
+            json!({"x": 0.5, "y": 0.5}),
+            "has no component",
+        ),
+        (
+            "a component of another kind",
+            band,
+            "mask.pick-colour-range",
+            json!({"x": 0.5, "y": 0.5}),
+            "is a luminance range component, not a colour range",
+        ),
+        (
+            "an area outside the stage",
+            colour,
+            "mask.pick-colour-range",
+            json!({"x": 1.2, "y": 0.2, "width": 0.4, "height": 0.3}),
+            "outside the stage",
+        ),
+    ];
+    let revision = owner.revision();
+    for (what, target, method, parameters, says) in refusals {
+        let mut params = target(&owner.list()).request(parameters.clone());
+        params["asset_id"] = owner.asset.clone();
+        params["mutation"] = mutation(owner.revision(), what);
+        let message = owner.refused(method, params);
+        assert!(
+            message.contains(says),
+            "{what}, through the owner: {message}"
+        );
+        let error = direct
+            .run(method, &target(&direct.list()), parameters)
+            .expect_err(what);
+        assert!(error.detail.contains(says), "{what}, directly: {error}");
+    }
+
+    // A colour added to a full component is refused by the declared limit, after the read.
+    for (index, rgb) in [[0.11, 0.2, 0.3], [0.9, 0.12, 0.1], [0.1, 0.9, 0.13]]
+        .into_iter()
+        .enumerate()
+    {
+        let parameters = json!({"r": rgb[0], "g": rgb[1], "b": rgb[2]});
+        owner.run(
+            "mask.add-colour-range-sample",
+            &colour(&owner.list()),
+            parameters.clone(),
+            &format!("fill-{index}"),
+        );
+        direct
+            .run(
+                "mask.add-colour-range-sample",
+                &colour(&direct.list()),
+                parameters,
+            )
+            .unwrap();
+    }
+    assert_eq!(components(&owner.list()), components(&direct.list()));
+    let full = json!({"x": 0.3, "y": 0.6, "add": true});
+    let mut params = colour(&owner.list()).request(full.clone());
+    params["asset_id"] = owner.asset.clone();
+    params["mutation"] = mutation(owner.revision(), "full");
+    let message = owner.refused("mask.pick-colour-range", params);
+    assert!(
+        message.contains("the limit is 5"),
+        "through the owner: {message}"
+    );
+    let error = direct
+        .run("mask.pick-colour-range", &colour(&direct.list()), full)
+        .expect_err("a full component");
+    assert_eq!(error.kind, luxforge_core::ErrorKind::ResourceLimit);
+    assert!(error.detail.contains("the limit is 5"), "directly: {error}");
+    assert_eq!(owner.revision(), revision + 3, "no refusal committed");
 }

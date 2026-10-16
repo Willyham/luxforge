@@ -1,17 +1,18 @@
 //! Gallery states for the Masks panel's widgets, at the reference panel width, as the mask-panels
-//! board draws them: the mask and component rows, the mode and overlay controls, the kind menu,
-//! the group rules, the two-column fields, the toggle rows with hints, the colour range's swatches
-//! and a brush component's strokes. Widget states only: no composed panel.
+//! and range-masks boards draw them: the mask and component rows, the mode and overlay controls, the
+//! kind menu, the group rules, the two-column fields, the toggle rows with hints, the colour range's
+//! swatches, the range picker's bar and Pick buttons, and a brush component's strokes. Widget states
+//! only: no composed panel.
 
 use crate::Element;
 use crate::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel,
     DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
     MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
-    POPOVER_GAP, RenameMessages, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit, caption,
-    compact_toggle, component_note, component_row, coverage_thumbnail, dropdown_button, field_grid,
-    group_rule, mask_row, menu_list, mode_control, overlay_control, stroke_row, swatch_slots,
-    theme,
+    POPOVER_GAP, PickBarModel, PickButtonModel, RenameMessages, StrokeRowModel, SwatchSlotsModel,
+    ToggleModel, ValueEdit, caption, compact_toggle, component_note, component_row,
+    coverage_thumbnail, dropdown_button, field_grid, group_rule, mask_row, menu_list, mode_control,
+    overlay_control, pick_bar, pick_button, stroke_row, swatch_slots, theme,
 };
 use iced::widget::{Column, Row, Space, container, row};
 use iced::{Alignment, Length, Padding};
@@ -548,7 +549,6 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
         selected: None,
         picking: false,
         pick_label: "Pick".into(),
-        count: "3 of 5".into(),
         pick_enabled: true,
         enabled: true,
     };
@@ -568,13 +568,66 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
         swatch_slots(
             &SwatchSlotsModel {
                 swatches: full,
-                count: "5 of 5".into(),
                 pick_enabled: false,
                 ..swatches
             },
             |_| (),
             (),
         ),
+    ]));
+    // -- The range picker armed: a luminance range's bar and its lit Pick, then a colour range's
+    // bar with its count, then a Pick at rest and one refused.
+    let armed = PickButtonModel {
+        label: "Pick".into(),
+        armed: true,
+        enabled: true,
+    };
+    let right = |button: Element<'static, ()>| -> Element<'static, ()> {
+        container(row![Space::new().width(Length::Fill), button])
+            .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
+            .width(Length::Fill)
+            .into()
+    };
+    states.push(panel(vec![
+        component_row(
+            &ComponentRowModel {
+                selected: true,
+                ..component("Luminance range 1", Icon::Luminance, mode(CombineMode::Add))
+            },
+            component_messages(),
+        ),
+        pick_bar(
+            &PickBarModel {
+                hint: "Click a tone \u{b7} drag over an area".into(),
+                count: None,
+                enabled: true,
+            },
+            (),
+        ),
+        right(pick_button(&armed, ())),
+        pick_bar(
+            &PickBarModel {
+                hint: "Click a colour \u{b7} Shift-click to add \u{b7} drag over an area".into(),
+                count: Some("2 of 5".into()),
+                enabled: true,
+            },
+            (),
+        ),
+        right(pick_button(
+            &PickButtonModel {
+                armed: false,
+                ..armed.clone()
+            },
+            (),
+        )),
+        right(pick_button(
+            &PickButtonModel {
+                armed: false,
+                enabled: false,
+                ..armed
+            },
+            (),
+        )),
     ]));
     // -- A brush component's strokes: two deletable, and one whose delete is refused.
     states.push(panel(vec![

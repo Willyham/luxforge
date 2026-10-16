@@ -177,26 +177,19 @@ pub fn segments_per_pixel(mask: &str, component: &str, densest: usize) -> Result
 }
 
 /// Reading the pixel the operation mask `mask` modulates receives — a pick into one of its
-/// components, a stroke held to a colour — needs such an operation, so a mask no layer is bound to
-/// is refused by name rather than answered from the source or the finished frame.
-pub fn bound_layer(mask: &str, bound: bool) -> Result<(), Error> {
-    if !bound {
+/// components, a stroke held to a colour, its coverage — needs an operation it could modulate. A
+/// mask no layer is bound to reads where a first adjustment through it would go
+/// ([`super::commands::input_site`]), so only a host that registers no maskable effect at all has
+/// nowhere to read, and that is refused by name rather than answered from the source or the
+/// finished frame.
+pub fn maskable_operation(mask: &str, registered: bool) -> Result<(), Error> {
+    if !registered {
         return Err(Error::validation(format!(
-            "no layer is bound to mask {mask}, and reading the pixel an operation receives \
-             needs an operation; apply an adjustment through {mask} first"
+            "no effect that can be applied through a mask is available, so mask {mask} has no \
+             operation whose input it could read"
         )));
     }
     Ok(())
-}
-
-/// A stroke that draws a new mask cannot be held to a colour: a new mask is bound to no layer yet,
-/// so there is no operation whose input the limit could read.
-pub fn limit_on_new_mask() -> Error {
-    Error::validation(
-        "a stroke that draws a new mask cannot be limited to a colour: the limit reads the pixel \
-         the operation the mask modulates receives, and a new mask is bound to no layer yet. \
-         Paint the mask, apply an adjustment through it, then limit the strokes after that",
-    )
 }
 
 #[cfg(test)]

@@ -12,13 +12,16 @@ use super::{
 use crate::{
     EditorService, Error,
     catalog_types::{
-        BracketProbe, FileAvailability, FrameFacts, GroupLayout, Grouping, Moment, RowStack,
-        SortKey, Thresholds, ViewFilter, ViewItem, ViewQuery, ViewSelection, ViewSort, ViewSource,
-        ViewStamp,
+        FileAvailability, FrameFacts, GroupLayout, Grouping, Moment, MomentProbe, RowPair,
+        RowStack, SortKey, Thresholds, ViewFilter, ViewItem, ViewQuery, ViewSelection, ViewSort,
+        ViewSource, ViewStamp,
     },
     organize,
 };
-use std::{cmp::Ordering, collections::HashMap};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 /// One client's evaluated view as the owner holds it: its items in order, 16 bytes each, its
 /// group layout, which a window reads moments from, and its selection, which the client's session
@@ -37,6 +40,8 @@ pub(crate) struct View {
     pub hidden: Vec<ViewItem>,
     /// Each stacked row's badge, by item.
     pub badges: HashMap<ViewItem, RowStack>,
+    /// The JPEG each RAW+JPEG pair's RAW row stands for, by the RAW file's item.
+    pub pairs: HashMap<ViewItem, RowPair>,
 }
 
 /// What evaluating a query found.
@@ -53,6 +58,9 @@ pub(crate) struct Evaluation {
     pub stamp: ViewStamp,
     /// How the view's HDR stacks were arranged.
     pub stacks: Arranged,
+    /// The JPEG each RAW+JPEG pair's RAW row stands for, by the RAW file's item; the JPEG is in
+    /// no position.
+    pub pairs: HashMap<ViewItem, RowPair>,
 }
 
 /// What an evaluation reads with: the service, the event cache an event source resolves through,
@@ -74,7 +82,7 @@ pub(crate) enum Probe<'a> {
     Previews,
     /// A check of the caller's: the tests' and a model's.
     #[cfg_attr(not(test), allow(dead_code))]
-    Given(&'a dyn BracketProbe),
+    Given(&'a dyn MomentProbe),
 }
 
 impl Probe<'_> {
@@ -84,7 +92,7 @@ impl Probe<'_> {
         self,
         service: &EditorService,
         over_files: bool,
-        group: impl FnOnce(&dyn BracketProbe) -> T,
+        group: impl FnOnce(&dyn MomentProbe) -> T,
     ) -> Result<T, Error> {
         match self {
             Self::Given(probe) => Ok(group(probe)),
@@ -148,6 +156,7 @@ pub(crate) fn evaluate_with(
             .collect()
     };
     facts.retain(|fact| filter.failing(fact, candidates.extra(fact.item)) == 0);
+    let pairs = pair(&mut facts, &candidates);
     order(&mut facts, &candidates, query);
     let (stacks, provenance) = stacks::arrange(
         &mut facts,
@@ -194,7 +203,45 @@ pub(crate) fn evaluate_with(
         unavailable,
         stamp,
         stacks,
+        pairs,
     })
+}
+
+/// Show each RAW+JPEG pair the filter left whole (`organize::pairs`) as its RAW file's row: take
+/// its JPEG out of `facts`, unless it is picked (a pick is never hidden) or in an HDR or panorama
+/// stack, and answer the JPEG of each RAW row that stands for one. A filter that leaves the RAW
+/// file out, as JPEG only does, leaves the JPEG a row of its own.
+fn pair(facts: &mut Vec<FrameFacts>, candidates: &Candidates) -> HashMap<ViewItem, RowPair> {
+    if !candidates.over_files {
+        return HashMap::new();
+    }
+    let found = organize::pairs(facts, |fact| Some(candidates.extra(fact.item).kind));
+    let mut hidden = HashSet::new();
+    let mut pairs = HashMap::new();
+    for (raw, jpeg) in found {
+        let jpeg = &facts[jpeg];
+        let ViewItem::File(file_id) = jpeg.item else {
+            continue;
+        };
+        if candidates.extra(jpeg.item).picked
+            || candidates.stacks.member(jpeg.item).is_some()
+            || candidates.stacks.leads(jpeg.item)
+        {
+            continue;
+        }
+        hidden.insert(jpeg.item);
+        pairs.insert(
+            facts[raw].item,
+            RowPair {
+                file_id,
+                file_name: jpeg.name.to_string(),
+            },
+        );
+    }
+    if !hidden.is_empty() {
+        facts.retain(|fact| !hidden.contains(&fact.item));
+    }
+    pairs
 }
 
 /// Fill each day's and each moment's pick count from whether the ordered view's frame at each
@@ -239,8 +286,9 @@ pub(super) fn prepare(
 ///
 /// A bracket whose stack has an active result is decided: its originals count as picked here, so
 /// their moment is decided whole. The result, which only an active stack brings into a view over
-/// files, is not one of the frames grouped, and is decided with its bracket.
-fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn BracketProbe) {
+/// files, is not one of the frames grouped, and is decided with its bracket. A RAW+JPEG pair is
+/// one frame here, its RAW file's, picked when either file is; its JPEG is decided with it.
+fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn MomentProbe) {
     let mut facts = std::mem::take(&mut candidates.facts);
     let results: Vec<FrameFacts> = if candidates.stacks.is_empty() {
         Vec::new()
@@ -251,6 +299,17 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Brac
         facts = files;
         results
     };
+    // Each pair's JPEG by its RAW file, taken out of the frames grouped.
+    let paired: HashMap<ViewItem, ViewItem> =
+        organize::pairs(&facts, |fact| Some(candidates.extra(fact.item).kind))
+            .into_iter()
+            .map(|(raw, jpeg)| (facts[raw].item, facts[jpeg].item))
+            .collect();
+    let jpegs: HashSet<ViewItem> = paired.values().copied().collect();
+    let (mut partners, files): (Vec<FrameFacts>, Vec<FrameFacts>) = facts
+        .into_iter()
+        .partition(|fact| jpegs.contains(&fact.item));
+    facts = files;
     organize::order(
         &mut facts,
         &candidates.names.tables,
@@ -267,15 +326,23 @@ fn decide(candidates: &mut Candidates, thresholds: &Thresholds, probe: &dyn Brac
     let picked: Vec<bool> = facts
         .iter()
         .map(|fact| {
-            candidates.extra(fact.item).picked || candidates.stacks.decided_by_result(fact.item)
+            candidates.extra(fact.item).picked
+                || paired
+                    .get(&fact.item)
+                    .is_some_and(|jpeg| candidates.extra(*jpeg).picked)
+                || candidates.stacks.decided_by_result(fact.item)
         })
         .collect();
     for (fact, decided) in facts.iter().zip(decided(&picked, &layout.moments)) {
         candidates.extra_mut(fact.item).decided = decided;
+        if let Some(jpeg) = paired.get(&fact.item) {
+            candidates.extra_mut(*jpeg).decided = decided;
+        }
     }
     for result in &results {
         candidates.extra_mut(result.item).decided = true;
     }
+    facts.append(&mut partners);
     facts.extend(results);
     candidates.facts = facts;
 }

@@ -49,7 +49,7 @@ On 2026-10-12 the owner reset the catalog format to 1. Until 1.0.0, catalog form
 - Quarter-turns and reflections are one orientation layer holding the composed exact state. It sits ahead of the crop and any finish layer, is updated in place, and carries a later crop through the transform; four rotations leave one neutral layer. See [orientation layer](design/orientation-layer.md).
 - Selecting the current entry in history is Return to current, not a historical preview.
 - Crop (M4): free handles, composition move, thirds overlay, Free/Original/1:1/3:2/4:3/16:9/custom ratios, a drag-to-straighten guide, Apply, Cancel and reset. Option/Alt scales proportionally about a fixed center. Straightening preserves composition with only the trimming needed. Apply commits once; Cancel discards.
-- Export (follow-up): JPEG quality 90, native destination picker, suggested `-edited.jpg`, never overwrite an existing file or a source alias. Optional metadata is stripped by default; Keep metadata retains supported descriptive, capture and GPS fields with correct geometry and profile.
+- Export (follow-up): JPEG quality 90, native destination picker, suggested `-edited.jpg`, never overwrite an existing file or a source alias. Optional metadata is stripped by default; Keep metadata retains supported descriptive, capture and GPS fields with correct geometry and profile. The [export settings](design/export-settings.md) (owner, 2026-10-07) replaced the fixed quality, the picker and Keep metadata with presets, settings and metadata levels; never overwriting stands.
 - Recovery (follow-up): verified manual Locate keeps asset identity, layers and history and rejects changed or ambiguous sources.
 - Live agents: human and agent actions share one history. An external commit preserves a human draft and marks it conflicted, resolved by explicit Discard or Reapply. Live JSON/IPC exists from M1; MCP is a later adapter over the same operations.
 
@@ -143,7 +143,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Filtering, tagging and collections | Design one retrieval model from concrete workflows |
 | Full catalog with lazy shoot subsets | Keep catalog scale independent of decoded pixels; scope views to the working set |
 | Multi-selection and stacking | Multi-selection and result-led HDR merge stacks are delivered ([design](design/hdr-merge.md)) |
-| Bracket and panorama identification | Brackets are detected and [HDR merging](#hdr-exposure-merges) is implemented; [panorama merging](#panorama-merges) is planned from a selection, without automatic panorama grouping |
+| Bracket and panorama identification | Brackets and panoramas are detected in Select, panoramas from a folder named for them (DJI's `PANO0001`) or from previews that pan, and a RAW file with its camera JPEG is one photograph (owner, 2026-10-16; [grouping](design/catalog.md#grouping-inside-a-view)); [HDR](#hdr-exposure-merges) and [panorama](#panorama-merges) merges are offered from a moment's header or a selection |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
 ## Presets
@@ -155,6 +155,7 @@ The owner asked on 2026-09-23 for presets, with native presets and Lightroom imp
 - A shared working-memory budget is a target that keeps memory low, not a limit that refuses the user's work (owner, 2026-09-23). Work that needs more than the target has left still runs and completes. The 256 MiB spatial budget lowers how many tiles run at once, down to one. The 64 MiB colour scratch budget's row chunks are sized so the pool's workers stay well inside it, and a chunk past it still runs. Both keep a high-water mark that the timing tier reads against the target. Size limits on what is accepted — source and frame sizes, the halo and unit bounds a module declares — still refuse with `resource-limit`.
 - When the spatial target holds a render's batch to fewer tiles than the pool has workers, each tile's own passes run on the pool rather than the target being raised (owner, 2026-09-23): the same bytes and the same memory, all three Presence fields at 60 MP in about 3.9 s instead of 11 s, for about twice the CPU time. An operation with a large summed halo now runs in larger tiles ([post-consolidation review](#post-consolidation-review)).
 - Editing responsiveness comes first, and caching is an expected way to get it (owner, 2026-09-30). When a measured interaction repeats work whose inputs have not changed, a bounded, disposable cache is weighed by the memory it holds against the time it saves, not ruled out; no rule forbids caches as a class. The conditions a cache meets are [performance rule 14](engineering/performance-rules.md#rules). A cache whose budget adds to the RAW working set or another memory target still needs the owner's acceptance or delegation. The candidate caches are proposals in [instant previews](design/instant-preview.md#proposals-and-later-work).
+- An export of a 60 MP photograph may take more than 1 GiB of process memory (owner, 2026-10-13). The 1 GiB peak remains the target for importing one; an export's peak is measured and reported ([performance](specs/performance.md#export-settings)), not held to it.
 
 ## Architecture review
 
@@ -224,17 +225,18 @@ The owner provisionally accepted on 2026-09-27 the surface's temporary overlap c
 
 Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decisions), beyond the export contract under [editing and storage](#editing-and-storage):
 
-- The title bar's Export button opens a two-item menu, Export JPEG… and Export JPEG, keep metadata…, with `Cmd+E` and `Shift+Cmd+E` and both in the command palette.
+- The title bar's Export button opens a menu. The export settings replaced its two items with Export… (`Cmd+E`), Export again (`Shift+Cmd+E`) and Export with preset, each in the command palette too.
 - The desktop exports the displayed entry, including a history preview, and never a draft.
-- The suggested name counts up (`-edited-2.jpg`) when `-edited.jpg` is taken.
-- Keep metadata carries exactly the design's EXIF field set, and no IPTC or XMP.
+- The suggested name counts up (`-web-2.jpg`) when `-web.jpg` is taken.
+- An HDR or panorama result, which has no original, is named after its stack's first input with `-hdr` or `-pano` (`LXF_0005-pano-web.jpg`), and an HDR panorama would take `-hdr-pano`. No name the editor suggests has spaces, which are awkward on Linux: each run of whitespace becomes `-` (owner, 2026-10-13).
+- Exported metadata carries at most the design's EXIF field set, and no IPTC or XMP.
 - The encoder is libjpeg-turbo through the `mozjpeg` crate at its fastest profile: baseline, 4:4:4, one interleaved scan, standard Huffman tables. It is more than twice as fast as the `image` encoder at the same output; the comparison is in the [export design](design/export.md#decisions).
 - Import decodes JPEG with the same libjpeg-turbo (owner, 2026-09-27), for dependency consolidation rather than speed: shipped code uses one JPEG library, and `image` keeps PNG only. The decoded pixels differ from the previous decoder's by at most 3 codes ([performance](specs/performance.md#jpeg-decode-libjpeg-turbo-against-zune-jpeg)).
 - The codec is its own crate, `luxforge-jpeg` (owner, 2026-09-27): the one crate that names `mozjpeg`, depending on no workspace crate, with the JPEG container (the marker walk, the ICC chunks both ways) and the safety and recovery around the C library; the core keeps the policy ([architecture](design/architecture.md#the-jpeg-codec)). Its decoder goes on past libjpeg's harmless warnings and refuses the ones that stand for lost data (owner, 2026-09-27): truncated or corrupt image data, a scan out of step and anything libjpeg would guess are refused, as is any warning the crate does not list, while bytes between header segments and an unknown JFIF version are accepted, with the same pixels as the clean file.
 - JPEG import stays strict (owner, 2026-09-27): extraneous bytes after a scan, an unknown Adobe colour transform, non-sequential scans and any data after the end-of-image marker are refused. Accepting trailing data (for example the video a Motion Photo appends) would mean reading past the image, a denial-of-service and parsing surface the owner does not want now; each relaxation is added deliberately, with its own review, only when a real file needs it.
-- The methods are `export.plan`, `export.jpeg`, `export.read` and `export.cancel`; the export lane is its own instance of the lane runner until one job table exists.
+- The methods are `export.plan` and `export.write`, read and cancelled through `job.read` and `job.cancel`; the export lane is a lane of the one job table.
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
-- The desktop's export records 72 pixels per inch for each physical pixel of a point on the window's display, 144 on Retina, on macOS only (owner, 2026-10-05), so Preview's Actual Size matches the editor's 100%; `export.jpeg` takes the density as an optional parameter and the core never reads a display.
+- The desktop's export records 72 pixels per inch for each physical pixel of a point on the window's display, 144 on Retina, on macOS only (owner, 2026-10-05), so Preview's Actual Size matches the editor's 100%; `export.write` takes the density as a setting and the core never reads a display.
 
 ## Export settings planning
 
@@ -384,7 +386,7 @@ Decided by the owner on 2026-10-04, choosing from a list of proposed settings ([
 - **Remembered across launches, with no Settings row:** panel visibility, the thirds and clipping overlays, the brush's size, feather and flow, the window's frame and the last export folder.
 - **Settings › General gains** the mask overlay colour, the canvas background, a switch for automatic lens correction of new RAW photos, an interface size and the catalog location.
 - **The GPU preview stays a per-session switch**, not a preference. Superseded by [GPU-first rendering](#gpu-first-rendering) (2026-10-05): the switch is retired, and `--no-gpu-render` is the launch switch for a session the reference renderer draws.
-- **Export defaults** (JPEG quality, Keep metadata) wait for the export work.
+- **Export defaults** are the [export settings](design/export-settings.md)' presets and the remembered last export.
 
 The field shapes, the three canvas colours, the four interface sizes, the catalog as a folder holding `catalog.sqlite` applied at the next launch with a fallback to the default catalog when its folder is missing, and the other details are proposals with recorded defaults in the [design](design/preferences.md#decisions).
 
@@ -415,8 +417,9 @@ Decided by the owner on 2026-10-05, on the [UI themes](design/ui-themes.md) prop
 - **The photograph's surround stays neutral** in every theme. A theme chooses its lightness, never its hue.
 - **Each theme keeps its own accent**, even near the clipping or mask colours. The import report notes an accent within 15 ΔE00 of one of them.
 - **A few popular Omarchy themes are bundled** for now, beside themes imported from a folder.
+- **The theme follows Omarchy's current one** where Omarchy runs (2026-10-15), whenever the library holds it: a preference, on by default, that choosing a theme by hand turns off. A theme the library does not hold changes nothing ([following Omarchy](design/ui-themes.md#following-omarchy)).
 
-The rest are proposals with recorded defaults in the [design](design/ui-themes.md#proposals-with-recorded-defaults): which themes are bundled (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest), the contrast floors, which Omarchy forms are read, a Theme choice for the canvas background as its default, the Appearance tab, and leaving Omarchy's current theme and the system appearance for later.
+The rest are proposals with recorded defaults in the [design](design/ui-themes.md#proposals-with-recorded-defaults): which themes are bundled (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest), the contrast floors, which Omarchy forms are read, a Theme choice for the canvas background as its default, the Appearance tab, and leaving the system appearance for later.
 
 ## AI editing
 
@@ -479,7 +482,7 @@ Decided the same day ([design](design/lightroom-alignment.md#decided)):
 - **The importers' calibrated maps are the bridge** (A11, owner, 2026-10-13), each row becoming the identity, and removed, when its slider is realigned. Old edits on a realigned module are refused (A6), confirmed the same day.
 - **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
 
-The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, TASK-002, measurement and fitting, TASK-003, recording round 1, and TASK-004, the calibrated mapping rows for preset import, with the generator's fixes and the measurement of photographs, on 2026-10-13; whether TASK-005 onward are authorized remains open.
+The [task plan](../tasks/lightroom/lightroom-alignment.json) is written. The owner authorized TASK-001, the rig's generator, TASK-002, measurement and fitting, TASK-003, recording round 1, and TASK-004, the calibrated mapping rows for preset import, with the generator's fixes and the measurement of photographs, on 2026-10-13, TASK-005 and TASK-006 the same day, and TASK-007 on 2026-10-16; TASK-008 onward are not authorized.
 
 ## Colour grading
 
@@ -509,7 +512,7 @@ The owner selected **RAW brackets only** and **automatic alignment and deghostin
 Requested for design by the owner on 2026-10-11 ([design](design/panorama-merge.md), [task plan](../tasks/library/panorama-merge.json)), as a second merge kind beside [HDR exposure merges](#hdr-exposure-merges), with the same merge workflow (one **Merge panorama** action since 2026-10-11), stacks, lifecycle and saved derived source. The owner chose:
 
 - **RAW or JPEG frames.** Every frame of one merge is RAW, or every frame is JPEG; mixing them is refused. HDR panoramas (bracketed positions) are outside this plan, and HDR merges stay RAW-only.
-- **Selection only.** Selecting frames offers the panorama merge, and the job checks their overlap; automatic panorama detection or grouping stays a later catalog feature.
+- **Selection only.** Selecting frames offers the panorama merge, and the job checks their overlap. On 2026-10-16 the owner asked Select to group panoramas too, from DJI-style panorama folders and, where it can, frames shot by hand; a panorama's moment header offers the merge ([grouping](design/catalog.md#grouping-inside-a-view)).
 - **Automatic crop with Boundary Warp.** The saved result is always the largest clean rectangle, with a Boundary Warp option (0–100) that bends the stitch to fill the rectangle instead; no empty pixels reach the editor.
 - **Raise the limits for derived sources** to about 65,000 pixels a side and 512 MP, rather than scaling a panorama down to the current 128 MP; camera files keep their current limits.
 
@@ -556,7 +559,7 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work? A consistent backup must account for the catalog's live WAL and derived artifacts as well as its rows.
 - Do the [catalog design](design/catalog.md#proposals)'s eighteen recorded defaults stand? The feature is implemented on them; P13's choice of how to meet the photographs view's time remains open.
 - What is the first external module the owner would use, and what enablement and recovery behaviour does it need? A processing tool needs its CPU reference and GPU qualification; external GPU loading is not delivered by the built-in module interface.
-- Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They cover the six bundled Omarchy themes, contrast floors and moving an imported theme's own ink to meet them, the Omarchy forms read, the Theme canvas-background default, the Appearance tab, and leaving Omarchy's current theme and the system appearance for later.
+- Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They cover the six bundled Omarchy themes, contrast floors and moving an imported theme's own ink to meet them, the Omarchy forms read, the Theme canvas-background default, the Appearance tab, and leaving the system appearance for later.
 - [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
 - Are [Lightroom import](design/lightroom-import.md) and [Lightroom alignment](design/lightroom-alignment.md) beyond round 1 and its calibrated import authorised for implementation? Their design decisions, including the scope refinements below, do not grant that authorisation.
 - Which measured workloads and responsiveness budgets become acceptance requirements? Accepted renderer budgets do not establish a bound on total native GPU memory.
@@ -570,7 +573,7 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 - **GPU correctness and motion.** The current [GPU-first picture, sample and export tolerances](design/gpu-first.md#the-contract) are accepted. Samples use their class's statistics without a block statistic over scattered sites, and match the at-rest screen byte at 100%. Reduced-source motion below 100% reports differences against the reference and the picture at rest; the at-rest gate stays strict. Softer budget-reduced motion at 100% is accepted subject to explicit qualification. This answer supplies no new qualification evidence.
 - **GPU execution and pixel reads.** The current displayed/updating counts cadence; GPU export with the explicit reference option, reference fallback and whole-export restart; owner work on the blocking pool; release-compilation behaviour; first-photograph warm-up; at-most-four pixel-read replays; and the host renderer for existing stored picks are accepted. The existing bounded 13×13 (169-site) RAW sensor pick may remain on the catalog owner. Neutral-picker answers must name their renderer.
 - **Catalog renderer exception.** The catalog focus check's 100% development and `develop_instead` tiers use the CPU reference as an explicit exception to GPU-first. This exception does not cover committed catalog tiers, which use GPU tile rendering where available ([catalog](design/catalog.md)).
-- **Later export features.** Resize, 16-bit and wide-gamut export each declare and qualify their GPU-versus-reference tolerance when the feature is designed. Current export keeps quality 90 and per-export metadata choices; no persistent preference is added ([export](design/export.md)).
+- **Later export features.** Resize, 16-bit and wide-gamut export each declare and qualify their GPU-versus-reference tolerance when the feature is designed. Quality and metadata are export settings, held in presets and the remembered last export ([export settings](design/export-settings.md)).
 - **GPU preview.** The 150 ms linear-light dissolve, status-bar render timings and lasting fallback/reference notices without a canvas badge, shrinking scratch pool and current qualified mixed precision are accepted ([design](design/gpu-preview.md#proposals-with-recorded-defaults)). Later GPU optimisations remain proposals.
 - **AI inputs and resources.** All durable analysis, guide, fill and remote-crop inputs use the reference renderer. Generation locks its photograph while permitting edits to another photograph; progress and cancellation remain responsive. Combined memory requirements include resident renderer resources, and the generative minimums (16 GB for removal, 24 GB for Replace, 2026-10-11) must be rechecked against that total ([design](design/ai-editing.md)).
 - **Masking and Corrections.** Masking's P1–P11 recorded defaults are accepted ([design](design/masking.md)). The Corrections repair layer precedes Detail, its GPU qualification uses the spatial class, and its descriptor has `preset: false` ([design](design/corrections.md)). These answers do not assert that the planned repair feature is delivered.
@@ -605,6 +608,16 @@ The owner requested a minimap at zoom levels of **200% or more**. The inclusive 
 ## Copy and paste settings planning
 
 The owner requested a plan for copying settings between photographs and on 2026-10-07 chose: **adjustments only** in the first delivery (the presettable groups; crop, orientation, lens correction, perspective, the RAW look and masks later), **every group except White balance** checked by default with neutral groups included and the last confirmed choice remembered for a quick `⌘C`, **multi-selection in Develop's filmstrip** with `⌘V` pasting to it, and **Paste from previous** (`⌥⌘V`). The [design](design/copy-settings.md) records the remaining defaults. Implementation and an upstream pull request were authorized on 2026-10-08.
+
+## Range mask picking
+
+The owner reported that colour and luminance range masks seemed not to work; the core and reference were correct and the desktop flow hid them. The owner decided on 2026-10-16 ([design](design/range-masks.md), [task plan](../tasks/editing/range-masks.json)):
+
+- **Creation stays behind `masks.range-selections`**, off by default; the flag is unchanged.
+- **Lightroom-style picking.** Creating a range mask arms an eyedropper. Colour: a click replaces the samples with that colour, Shift+click adds one (at most five), a drag samples an area. Luminance: a click sets a band around the clicked tone, a drag sets the band to the area's tonal span. Escape, Enter or Done ends picking. The band slider, number fields, swatch slots and Refine remain.
+- **A mask with no bound layer is read, not refused.** This reverses the decided [P17](design/range-study.md#proposals) rule that an unbound mask's sample is refused by name, which follows from choosing the picking flow: an unbound mask reads its input where a first Basic adjustment would take it.
+
+The derivation constants, the input site's colour-stage rule and the canvas details are delegated choices recorded in the design. Implemented; qualification on the M4 GPU and the corpus is open ([task plan](../tasks/editing/range-masks.json)).
 
 ## Code structure consolidation
 

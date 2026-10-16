@@ -5,7 +5,8 @@
 // input.
 //
 // Words:
-//   0  Contrast's branch, an integer: 0 the identity, 1 the positive S-curve, 2 its reflection
+//   0  Contrast's branch: 0 identity, 1 positive S-curve, 2 its reflection;
+//      3 and 4 use the stable small-alpha form of the corresponding curve
 //   1  alpha
 //   2  g(0)
 //   3  1 / (g(1) - g(0))
@@ -54,6 +55,20 @@ fn lf_basic_tone_blend_weight(x: f32) -> f32 {
     return complement * complement;
 }
 
+// tanh(z)/z with its even, finite zero limit. The Taylor remainder below 0.01 is below f32
+// rounding; tanh(10) rounds to one, so its large arguments never reach the backend's exp.
+fn lf_basic_tone_tanhc(value: f32) -> f32 {
+    let magnitude = abs(value);
+    if magnitude < 0.01 {
+        let square = value * value;
+        return 1.0 + square * (-1.0 / 3.0 + square * (2.0 / 15.0));
+    }
+    if magnitude >= 10.0 {
+        return 1.0 / magnitude;
+    }
+    return tanh(value) / value;
+}
+
 fn lf_basic_tone_curve(input: f32, words: u32) -> f32 {
     // Whites and Blacks.
     var x = (input - lf_f32(words + 7u)) * lf_f32(words + 8u);
@@ -77,6 +92,18 @@ fn lf_basic_tone_curve(input: f32, words: u32) -> f32 {
     let branch = lf_word(words);
     if branch == 0u {
         return x;
+    }
+    if branch >= 3u {
+        if x == 0.0 || x == 1.0 {
+            return x;
+        }
+        let distance = x - 0.5;
+        let s = 0.5 + distance * lf_basic_tone_tanhc((lf_f32(words + 1u) * 0.5) * distance)
+            / lf_f32(words + 4u);
+        if branch == 3u {
+            return s;
+        }
+        return x - lf_f32(words + 4u) * (s - x);
     }
     let exponent = clamp(
         -lf_f32(words + 1u) * (x - 0.5),

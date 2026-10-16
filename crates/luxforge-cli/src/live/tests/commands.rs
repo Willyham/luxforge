@@ -413,12 +413,12 @@ fn job_session(method: &'static str, ownership: &'static str, last: Value) -> En
 }
 
 fn exporting(last: Value) -> Endpoint {
-    job_session("export.jpeg", "catalog", last)
+    job_session("export.write", "catalog", last)
 }
 
 const EXPORT: &[&str] = &[
     "call",
-    "export.jpeg",
+    "export.write",
     "--params",
     r#"{"asset_id": "a", "destination": "/tmp/out.jpg"}"#,
     "--wait",
@@ -437,7 +437,7 @@ fn luxforge_ctl_commands_wait_follows_a_job_to_its_end_on_one_connection() {
     let requests = endpoint.requests();
     assert_eq!(
         methods(&requests),
-        ["schema.list", "export.jpeg", "job.wait", "job.wait"]
+        ["schema.list", "export.write", "job.wait", "job.wait"]
     );
     let hold = luxforge_core::MAX_EVENT_WAIT_MS;
     assert_eq!(
@@ -455,7 +455,7 @@ fn luxforge_ctl_commands_wait_follows_a_job_to_its_end_on_one_connection() {
     assert_eq!(printed, json!({"job_id": "job-1", "status": "queued"}));
     assert_eq!(
         methods(&endpoint.requests()),
-        ["schema.list", "export.jpeg", "job.read"]
+        ["schema.list", "export.write", "job.read"]
     );
 }
 
@@ -568,6 +568,47 @@ fn luxforge_ctl_commands_batch_sends_each_line_over_one_connection_and_carries_o
     );
     assert_envelope(&requests[3]["params"]["mutation"], Some(2));
     assert_envelope(&requests[5]["params"]["mutation"], Some(2));
+}
+
+#[test]
+fn luxforge_ctl_commands_batch_stops_after_an_input_read_error() {
+    struct BrokenInput(usize);
+    impl std::io::Read for BrokenInput {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            // A second read ends the test rather than hanging on the old retry loop.
+            if self.0 > 1 {
+                return Ok(0);
+            }
+            Err(std::io::Error::other("input failed"))
+        }
+    }
+    let endpoint = session(|_| panic!("no command should follow failed input"));
+    let mut input = BrokenInput(0);
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let status = run(
+        ["--catalog", endpoint.catalog.to_str().unwrap(), "batch"]
+            .into_iter()
+            .map(OsString::from),
+        &mut input,
+        &mut stdout,
+        &mut stderr,
+        None,
+    );
+    assert_eq!(input.0, 1, "a failed input must not be retried forever");
+    assert_eq!(status, EXIT_USAGE);
+    assert!(stderr.is_empty());
+    let output = String::from_utf8(stdout).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    let line: Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(line["error"]["code"], USAGE);
+    assert!(
+        line["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("input failed")
+    );
+    assert_eq!(methods(&endpoint.requests()), ["schema.list"]);
 }
 
 #[test]

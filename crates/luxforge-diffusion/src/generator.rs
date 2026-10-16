@@ -112,6 +112,7 @@ impl KleinGenerator {
         #[cfg(luxforge_sdcpp)]
         {
             use crate::native;
+            native::validate_condition(&files.conditioning).map_err(Error::incompatible)?;
             if let Some(level) = std::env::var("LUXFORGE_SD_LOG")
                 .ok()
                 .and_then(|value| value.parse().ok())

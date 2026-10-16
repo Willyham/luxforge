@@ -223,7 +223,7 @@ impl ArtifactWriter {
             match object_holds(&object, bytes) {
                 Ok(true) => Ok(()),
                 Ok(false) => atomic_file::publish(&staged, &object)
-                    .map_err(|error| file_error("cannot publish artifact", error.kind())),
+                    .map_err(|error| error.into_error(&object)),
                 Err(error) => Err(error),
             }
         };
@@ -289,7 +289,7 @@ impl ArtifactWriter {
         let staged = self.stage(&manifest)?;
         atomic_file::publish(&staged, &self.root.join(MANIFEST)).map_err(|error| {
             let _ = fs::remove_file(&staged);
-            file_error("cannot write artifact manifest", error.kind())
+            error.into_error(&self.root.join(MANIFEST))
         })
     }
 
@@ -538,6 +538,36 @@ mod tests {
             catalog_id.into(),
             LiveArtifacts::default(),
         )
+    }
+
+    #[test]
+    fn unsynced_manifest_and_object_remain_visible_and_retryable() {
+        let directory = temp("visible-publication");
+        let root = directory.join("catalog.artifacts");
+        let writer = writer(&root, "catalog-a");
+        crate::atomic_file::sync_faults::inject(&root);
+        let error = writer
+            .write(b"immutable artifact", meta(), "test.writer")
+            .unwrap_err();
+        assert_eq!(error.data.as_deref().unwrap()["published"], true);
+        assert!(root.join(MANIFEST).exists());
+        // The manifest is now visible: a retry reads it and may publish the object.
+        crate::atomic_file::sync_faults::inject(&root.join(OBJECTS));
+        let error = writer
+            .write(b"immutable artifact", meta(), "test.writer")
+            .unwrap_err();
+        assert_eq!(error.data.as_deref().unwrap()["durable"], false);
+        let id =
+            ArtifactId::for_hash(&format!("{:x}", Sha256::digest(b"immutable artifact"))).unwrap();
+        assert_eq!(
+            fs::read(object_path(&root, &id)).unwrap(),
+            b"immutable artifact"
+        );
+        let (record, _) = writer
+            .write(b"immutable artifact", meta(), "test.writer")
+            .unwrap();
+        assert_eq!(record.id, id);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -14,16 +14,20 @@
 //! - [`byte`] and [`linear`]: the two pixel domains, each with its rows and its driver.
 //! - [`spatial`] and [`window`]: the spatial primitive's execution and the GPU window walk.
 //! - [`raster`]: the rendered frame and its helpers.
+//! - [`export_output`]: an export's output from the reference: its wide terminal, encoded at 16
+//!   bits, and the linear-light Lanczos resample of it to a smaller output.
 //! - [`mod@locate`]: the public locate and transform types.
 //! - [`context`] and [`parallel`]: the render context's budgets and the one parallel gate.
 
 pub(crate) mod bands;
+pub(crate) mod bands_output;
 mod boundary;
 mod byte;
 mod colour_runs;
 mod compiled;
 mod context;
 mod entry;
+pub(crate) mod export_output;
 mod geometry;
 pub(crate) mod gpu;
 mod input_grid;
@@ -89,6 +93,6 @@ use pipeline::{SegmentRows, SpatialEntry, Taps, segment_pass, spatial_entry};
 pub use raster::Raster;
 #[cfg(test)]
 pub(crate) use raster::frame_writes;
-pub(crate) use raster::{frame_mut, zeroed_frame};
+pub(crate) use raster::{frame_mut, wide_terminal_len, zeroed_frame};
 pub use study::StudyFrame;
 pub(crate) use view::reduce_to_view;

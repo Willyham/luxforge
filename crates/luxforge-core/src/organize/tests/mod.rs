@@ -5,8 +5,8 @@
 use super::names::{central_position, dates, user_folder_name};
 use super::*;
 use crate::catalog_types::{
-    BracketEvidence, CameraBody, EventGroup, EventId, FileId, GeoPosition, LocalDay, Moment,
-    MomentKind, NoPlaces, NoProbe, ViewItem,
+    CameraBody, EventGroup, EventId, FileId, GeoPosition, LocalDay, Moment, MomentEvidence,
+    MomentKind, NoPlaces, NoProbe, Pan, ViewItem,
 };
 use std::{cell::Cell, collections::HashMap};
 
@@ -128,7 +128,7 @@ impl Frames {
     }
 
     /// Orders the frames for a Day › Camera › Moment view and groups them.
-    pub fn group(&mut self, thresholds: &Thresholds, probe: &dyn BracketProbe) -> GroupLayout {
+    pub fn group(&mut self, thresholds: &Thresholds, probe: &dyn MomentProbe) -> GroupLayout {
         order(
             &mut self.frames,
             &self.tables,
@@ -808,7 +808,7 @@ fn moments_of(
     offsets: &[i64],
     exposures: &[Exposure],
     thresholds: &Thresholds,
-    probe: &dyn BracketProbe,
+    probe: &dyn MomentProbe,
 ) -> Vec<Moment> {
     let start = midnight(2026, 9, 12) + 10 * HOUR;
     let mut frames = Frames::default();
@@ -822,7 +822,7 @@ fn moments_of(
     frames.group(thresholds, probe).moments
 }
 
-fn kinds(moments: &[Moment]) -> Vec<(MomentKind, Option<BracketEvidence>, u32, u32)> {
+fn kinds(moments: &[Moment]) -> Vec<(MomentKind, Option<MomentEvidence>, u32, u32)> {
     moments
         .iter()
         .map(|moment| (moment.kind, moment.evidence, moment.start, moment.len))
@@ -842,7 +842,7 @@ fn assert_steps(moment: &Moment, expected: &[f32]) {
 /// A probe that must not be asked.
 struct Unasked;
 
-impl BracketProbe for Unasked {
+impl MomentProbe for Unasked {
     fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>> {
         panic!("the probe was asked about {frames:?}");
     }
@@ -851,7 +851,7 @@ impl BracketProbe for Unasked {
 /// A probe that answers one measurement and counts how often it was asked.
 struct Answer(Option<Vec<f32>>, Cell<u32>);
 
-impl BracketProbe for Answer {
+impl MomentProbe for Answer {
     fn measure(&self, _: &[ViewItem]) -> Option<Vec<f32>> {
         self.1.set(self.1.get() + 1);
         self.0.clone()
@@ -927,7 +927,7 @@ fn organize_third_stop_brackets_count_from_nominal_values() {
         let moments = moments_of(&offsets, &run, &t, &Unasked);
         assert_eq!(
             kinds(&moments),
-            [(MomentKind::Bracket, Some(BracketEvidence::Metadata), 0, 3)],
+            [(MomentKind::Bracket, Some(MomentEvidence::Metadata), 0, 3)],
             "{times:?}"
         );
         // Every bias is 0: the metered frame is the median, the first here.
@@ -952,7 +952,7 @@ fn organize_third_stop_brackets_count_from_nominal_values() {
     let moments = moments_of(&[0, 900, 1800], &run, &t, &Unasked);
     assert_eq!(
         kinds(&moments),
-        [(MomentKind::Bracket, Some(BracketEvidence::Metadata), 0, 3)]
+        [(MomentKind::Bracket, Some(MomentEvidence::Metadata), 0, 3)]
     );
     assert_steps(&moments[0], &[0.0, -2.0, 2.0]);
     assert_eq!(moments[0].span_ms, 1800);
@@ -1005,7 +1005,7 @@ fn organize_consecutive_brackets_split_by_their_period() {
             .map(|at| {
                 (
                     MomentKind::Bracket,
-                    Some(BracketEvidence::Metadata),
+                    Some(MomentEvidence::Metadata),
                     at * 3,
                     3,
                 )
@@ -1027,8 +1027,8 @@ fn organize_consecutive_brackets_split_by_their_period() {
     assert_eq!(
         kinds(&moments),
         [
-            (MomentKind::Bracket, Some(BracketEvidence::Metadata), 0, 5),
-            (MomentKind::Bracket, Some(BracketEvidence::Metadata), 5, 5)
+            (MomentKind::Bracket, Some(MomentEvidence::Metadata), 0, 5),
+            (MomentKind::Bracket, Some(MomentEvidence::Metadata), 5, 5)
         ]
     );
     assert_steps(&moments[1], &five);
@@ -1052,7 +1052,7 @@ fn organize_brackets_from_previews_come_through_the_probe() {
     let moments = moments_of(&offsets, &[drone; 3], &t, &probe);
     assert_eq!(
         kinds(&moments),
-        [(MomentKind::Bracket, Some(BracketEvidence::Previews), 0, 3)]
+        [(MomentKind::Bracket, Some(MomentEvidence::Previews), 0, 3)]
     );
     assert_steps(&moments[0], &[-1.0, 0.0, 1.0]);
     assert_eq!(probe.1.get(), 1);
@@ -1087,6 +1087,187 @@ fn organize_brackets_from_previews_come_through_the_probe() {
         [(MomentKind::Burst, None, 0, 10)]
     );
     assert_eq!(probe.1.get(), 0);
+}
+
+/// A probe whose pans come from `link`, given the file row of a link's first frame, and that
+/// counts the chains it was asked about.
+struct Pans(fn(i64) -> Option<Pan>, Cell<u32>);
+
+impl MomentProbe for Pans {
+    fn measure(&self, _: &[ViewItem]) -> Option<Vec<f32>> {
+        None
+    }
+
+    fn pans(&self, frames: &[ViewItem]) -> Vec<Option<Pan>> {
+        self.1.set(self.1.get() + 1);
+        frames
+            .windows(2)
+            .map(|pair| match pair[0] {
+                ViewItem::File(FileId(id)) => (self.0)(id),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+const RIGHT: Pan = Pan {
+    across: 0.4,
+    down: 0.0,
+};
+const LEFT: Pan = Pan {
+    across: -0.4,
+    down: 0.0,
+};
+const DOWN: Pan = Pan {
+    across: 0.0,
+    down: 0.5,
+};
+
+/// A drone's panorama folders: each folder's frames are one panorama, whatever their exposures
+/// (an auto-exposed sweep reads as a bracket in its metadata) and their pace, without asking the
+/// previews; the stitched result and the drone's other frames beside them are not. A folder's
+/// name or its parent's says so in any case, a frame alone is no panorama, and a minute's gap
+/// splits a person's folder of sweeps.
+#[test]
+fn organize_a_panorama_folder_is_one_panorama() {
+    let start = midnight(2026, 9, 12) + 10 * HOUR;
+    let drone = body("DJI", "FC3411", None);
+    let mut frames = Frames::default();
+    let mut add = |folder: &str, at: i64, time: f32| {
+        frames.add(
+            shot(folder, Some(start + at))
+                .by(&drone)
+                .exposed(exposure(time, Some(0.0))),
+        );
+    };
+    // 0–4: a sweep in DCIM/PANORAMA/100_0001, 2.5 s a frame, auto-exposed in ⅓ EV steps.
+    for at in 0..5 {
+        add(
+            "/card/DCIM/PANORAMA/100_0001",
+            at * 2500,
+            1.0 / 250.0 * 2f32.powf(at as f32 / 3.0),
+        );
+    }
+    // 5: the stitched result, in the drone's ordinary folder.
+    add("/card/DCIM/100MEDIA", 14_000, 1.0 / 250.0);
+    // 6–8: the next sweep, in a folder named PANO0002, 400 ms a frame.
+    for at in 0..3 {
+        add("/card/DCIM/PANO0002", 20_000 + at * 400, 1.0 / 250.0);
+    }
+    // 9: one frame alone in a panorama folder.
+    add("/card/DCIM/PANORAMA/100_0003", 40_000, 1.0 / 250.0);
+    // 10–13: a person's own folder of sweeps, two frames, a two-minute gap, two more.
+    for at in [0, 3000, 123_000, 126_000] {
+        add("/Users/anna/Panoramas", 60_000 + at, 1.0 / 250.0);
+    }
+    let moments = frames.group(&Thresholds::default(), &Unasked).moments;
+    let folder = Some(MomentEvidence::Folder);
+    assert_eq!(
+        kinds(&moments),
+        [
+            (MomentKind::Panorama, folder, 0, 5),
+            (MomentKind::Panorama, folder, 6, 3),
+            (MomentKind::Panorama, folder, 10, 2),
+            (MomentKind::Panorama, folder, 12, 2),
+        ]
+    );
+    assert_eq!(moments[0].span_ms, 10_000);
+    assert!(moments[0].steps_ev.is_empty());
+    // The same frames in an ordinary folder are a bracket and a burst.
+    let mut plain = Frames::default();
+    for at in 0..3 {
+        plain.add(
+            shot("/card/DCIM/100MEDIA", Some(start + at * 700))
+                .by(&drone)
+                .exposed(exposure(1.0 / 250.0 * 2f32.powi(at as i32), Some(0.0))),
+        );
+    }
+    assert_eq!(
+        kinds(&plain.group(&Thresholds::default(), &NoProbe).moments),
+        [(MomentKind::Bracket, Some(MomentEvidence::Metadata), 0, 3)]
+    );
+}
+
+/// Elsewhere, the previews show a sweep: a chain of frames seconds apart at one focal length whose
+/// every link pans on from the last is a panorama, over a burst's pace or a bracket's metadata,
+/// turning a corner as a panorama's rows do but not turning back. Fewer than three frames, a burst
+/// at 10 fps, another focal length, exposures more than 3 EV apart and links the previews cannot
+/// measure are not one.
+#[test]
+fn organize_panoramas_from_previews_come_through_the_probe() {
+    let t = Thresholds::default();
+    let same = exposure(1.0 / 250.0, Some(0.0));
+    let every = |gap: i64, count: i64| -> Vec<i64> { (0..count).map(|at| at * gap).collect() };
+    let previews = Some(MomentEvidence::Previews);
+    // Five frames 2.5 s apart, each panning right.
+    let probe = Pans(|_| Some(RIGHT), Cell::new(0));
+    let moments = moments_of(&every(2500, 5), &[same; 5], &t, &probe);
+    assert_eq!(kinds(&moments), [(MomentKind::Panorama, previews, 0, 5)]);
+    assert_eq!(moments[0].span_ms, 10_000);
+    assert_eq!(probe.1.get(), 1);
+    // Half a second apart, which is a burst's run, and auto-exposed in steps a bracket's metadata
+    // shows: still a panorama.
+    let stepped: Vec<_> = (0..3)
+        .map(|at| exposure(1.0 / 250.0 * 2f32.powi(at), Some(0.0)))
+        .collect();
+    assert_eq!(
+        kinds(&moments_of(&every(500, 3), &stepped, &t, &probe)),
+        [(MomentKind::Panorama, previews, 0, 3)]
+    );
+    // Right, right, down, left, left: two rows of a panorama, one sweep.
+    let probe = Pans(
+        |id| Some([RIGHT, RIGHT, DOWN, LEFT, LEFT][id as usize - 1]),
+        Cell::new(0),
+    );
+    assert_eq!(
+        kinds(&moments_of(&every(2500, 6), &[same; 6], &t, &probe)),
+        [(MomentKind::Panorama, previews, 0, 6)]
+    );
+    // Right, right, then back left twice: the first three frames, then two frames too few.
+    let probe = Pans(
+        |id| Some([RIGHT, RIGHT, LEFT, LEFT][id as usize - 1]),
+        Cell::new(0),
+    );
+    assert_eq!(
+        kinds(&moments_of(&every(2500, 5), &[same; 5], &t, &probe)),
+        [(MomentKind::Panorama, previews, 0, 3)]
+    );
+    // Right, then back left, left: the turn starts the next sweep at the frame it turns from.
+    let probe = Pans(
+        |id| Some([RIGHT, LEFT, LEFT][id as usize - 1]),
+        Cell::new(0),
+    );
+    assert_eq!(
+        kinds(&moments_of(&every(2500, 4), &[same; 4], &t, &probe)),
+        [(MomentKind::Panorama, previews, 1, 3)]
+    );
+    // A link the previews cannot measure splits the chain; what is left is too short.
+    let probe = Pans(|id| (id != 2).then_some(RIGHT), Cell::new(0));
+    assert!(moments_of(&every(2500, 4), &[same; 4], &t, &probe).is_empty());
+    // Two frames are too few, and are not asked about.
+    let probe = Pans(|_| Some(RIGHT), Cell::new(0));
+    assert!(moments_of(&every(2500, 2), &[same; 2], &t, &probe).is_empty());
+    assert_eq!(probe.1.get(), 0);
+    // A burst at 10 fps panning after its subject is a burst, and not asked about.
+    assert_eq!(
+        kinds(&moments_of(&every(100, 6), &[same; 6], &t, &probe)),
+        [(MomentKind::Burst, None, 0, 6)]
+    );
+    // 11 s apart, at another focal length, or 4 EV apart: no chain to ask about.
+    assert!(moments_of(&every(11_000, 3), &[same; 3], &t, &probe).is_empty());
+    let zoomed = Exposure {
+        focal_mm: Some(85.0),
+        ..same
+    };
+    assert!(moments_of(&every(2500, 3), &[same, zoomed, same], &t, &probe).is_empty());
+    let darker = exposure(1.0 / 4000.0, Some(0.0));
+    assert!(moments_of(&every(2500, 3), &[same, darker, same], &t, &probe).is_empty());
+    assert_eq!(probe.1.get(), 0);
+    // Without previews, the bracket stays a bracket.
+    assert_eq!(
+        kinds(&moments_of(&every(500, 3), &stepped, &t, &NoProbe)),
+        [(MomentKind::Bracket, Some(MomentEvidence::Metadata), 0, 3)]
+    );
 }
 
 /// A view sorted newest first has the same moments, their frames and steps in its own order.
@@ -1126,7 +1307,7 @@ fn organize_moments_follow_a_descending_view() {
         kinds(&layout.moments),
         [
             (MomentKind::Burst, None, 0, 4),
-            (MomentKind::Bracket, Some(BracketEvidence::Metadata), 4, 3)
+            (MomentKind::Bracket, Some(MomentEvidence::Metadata), 4, 3)
         ]
     );
     assert_steps(&layout.moments[1], &[2.0, -2.0, 0.0]);

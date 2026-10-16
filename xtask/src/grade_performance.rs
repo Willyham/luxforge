@@ -109,8 +109,8 @@ fn sample(
     let started = Instant::now();
     let queued = owner.call(
         client,
-        "export.jpeg",
-        json!({"asset_id":asset,"destination":destination,
+        "export.write",
+        json!({"asset_id":asset,"destination":destination,"settings":crate::export_smoke::export_settings(out),
         "mutation":{"request_id":client::request_id(ACTOR),"actor":ACTOR}}),
     )?;
     let completed = client::settle(owner, client, &queued["job_id"])?;
@@ -200,7 +200,7 @@ fn measure(
         "source":source,"source_sha256":source_hash,"source_preserved":true,
         "source_dimensions":[opened["asset"]["width"],opened["asset"]["height"]],"samples":samples,
         "load":{"before":launch::load(load_before),"after":launch::load(load_after)},
-        "method":"One owner and one prepared original; one warm-up of each workload, then the samples alternating HSL alone and HSL plus grading, each commit setting the workload's full fields so it changes the photo. Commits through edit.set-mixer, whole-frame CPU reference render, render.sample checked against it, serial export.jpeg completion. Headless owner has no GPU tile service: samples and exports use the reference renderer. RSS is sampled between operations, not peak memory. No desktop presentation measured.",
+        "method":"One owner and one prepared original; one warm-up of each workload, then the samples alternating HSL alone and HSL plus grading, each commit setting the workload's full fields so it changes the photo. Commits through edit.set-mixer, whole-frame CPU reference render, render.sample checked against it, serial export.write completion. Headless owner has no GPU tile service: samples and exports use the reference renderer. RSS is sampled between operations, not peak memory. No desktop presentation measured.",
         "rows":rows,"workloads":reports,"resources":resources,
     }))
 }

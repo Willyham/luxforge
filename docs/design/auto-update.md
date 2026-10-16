@@ -86,8 +86,8 @@ The `luxforge-update` crate is the format's one home: the record, the appcast wr
   "channel": "prerelease",
   "public_key": "<base64 public key of the signing key>",
   "archives": {
-    "macos-arm64": {"file": "luxforge-0.2.0-rc.1-macos-arm64.zip", "length": 5242893, "build": 9, "ed_signature": "<base64>", "minimum_system_version": "14.0", "catalog_format": 1, "signing": "notarized"},
-    "linux-x86_64": {"file": "luxforge-0.2.0-rc.1-linux-x86_64.tar.gz", "length": 5242893, "build": 9, "ed_signature": "<base64>", "catalog_format": 1, "signing": "not-applicable"}
+    "macos-arm64": {"file": "luxforge-0.2.0-rc.1-macos-arm64.zip", "length": 5242893, "build": 9, "ed_signature": "<base64>", "minimum_system_version": "14.0", "catalog_format": 2, "signing": "notarized"},
+    "linux-x86_64": {"file": "luxforge-0.2.0-rc.1-linux-x86_64.tar.gz", "length": 5242893, "build": 9, "ed_signature": "<base64>", "catalog_format": 2, "signing": "not-applicable"}
   }
 }
 ```
@@ -132,6 +132,9 @@ It leaves out, with a note, withdrawn releases and macOS archives that are not n
 - a malformed `luxforge:catalogFormat`;
 - `sparkle:informationalUpdate`.
 
+Skipped-item diagnostics use the original zero-based RSS item positions, including parser refusals
+and the payload updater's missing-catalog-format refusals, and are returned in document order.
+
 `newest_eligible` chooses the highest build above the current one on a followed channel. A channel it does not know is never followed.
 
 ### Publishing and serving the feeds
@@ -166,7 +169,7 @@ A failure in either step fails the job before anything is published.
   - answers `404` for a target with no feed, a feed over 4 MiB or any query string, and `405` with `Allow: GET, HEAD` for another method;
   - reads no request header, cookie or address and sets no cookie;
   - logs nothing but two aggregate counters, `feeds_served` and `feeds_missing`;
-  - reads a feed again only when its file changes, so at most one copy of each target's feed is held in memory.
+  - reads a feed again only when its file changes, with one load at a time per target from opening the file through caching its bytes. Other targets proceed independently. The old cache entry is released before allocating its replacement, the opened file is checked again after reading, and responses share immutable bytes. An active response may still retain its previous publication.
 
   The statistics route's global and per-installation limits do not apply to it; the connection cap and the request timeout do.
 - **The local reference stack** mounts `LUXFORGE_UPDATE_STORE` (default `./update-store`) into its ingress, so the route can be exercised before production exists.
@@ -372,6 +375,7 @@ The engine is `luxforge_update::payload`, in the leaf crate. It reaches the netw
 **When it can update in place.** All of these must hold:
 
 - the payload carries no package-manager marker, `Luxforge/.package-managed`, which a future distribution package writes to stand the updater down;
+- the payload does not lie at `omastore/apps/<app>/<version>/Luxforge`, where [OmaStore](../engineering/releases.md#omastore) installs a release. OmaStore keeps each version in its own directory and updates it itself, and it runs nothing from the package, so it cannot write the marker;
 - the person can write the payload and its parent;
 - a staging directory can be created beside the payload on the same filesystem. A launch probes this by creating and removing `.luxforge-update-probe-<pid>` in the parent.
 
@@ -394,7 +398,7 @@ Otherwise it reports `linux-notify`. It still checks and offers the update, `upd
    - Files keep their permission bits, executable bits included, with set-id and sticky bits, group and other write removed. Directories gain owner access.
    - The extracted `build.json` must name the item's version and build and this payload's target, and the payload's executable must be present and executable (`build-mismatch` otherwise).
 
-   On Linux the filesystem is then synced, so a crash after the swap cannot leave files that never reached the disk. The archive is deleted.
+   On Linux the filesystem is then synced before the update is ready; a failure to open or sync it refuses the update, removes staging and leaves the installed payload untouched. The archive is deleted.
 5. **Install** at the end of the quit path, after the catalog is closed. The staged `build.json` is checked again first.
    - On Linux, `renameat2(RENAME_EXCHANGE)` swaps `Luxforge` and the staging's `Luxforge.new` atomically. It is called through `rustix`, so the crate needs no `unsafe`. The old payload then moves from the staging directory to `Luxforge.previous` beside the new one.
    - Where the filesystem cannot exchange, and on other unix systems, two renames are used instead. The payload moves to `Luxforge.previous` and the new one into its place. If the second rename fails, the first is undone.
@@ -404,7 +408,7 @@ Otherwise it reports `linux-notify`. It still checks and offers the update, `upd
 
 Any failure before the swap, a cancelled download included, removes its staging directory and leaves the installed payload untouched. Every refusal names its code in `update.status`'s `error`.
 
-**The desktop entry.** After a swap, a user-level desktop entry is refreshed when its `Exec` program lies inside this payload. The entry is `$XDG_DATA_HOME/applications/luxforge.desktop`, or `~/.local/share/applications/luxforge.desktop`. The refresh rewrites `Exec` and `TryExec` for the installed executable, and `X-Luxforge-Version` and `X-Luxforge-Build` for the new build, then replaces the file with a rename. That prompts the desktop environment to read the entry and its icon again. The install helper that would write the entry does not exist yet.
+**The desktop entry.** After a swap, a user-level desktop entry is refreshed when its `Exec` program lies inside this payload. The entry is `$XDG_DATA_HOME/applications/luxforge.desktop`, or `~/.local/share/applications/luxforge.desktop`. The refresh rewrites `Exec` and `TryExec` for the installed executable, and `X-Luxforge-Version` and `X-Luxforge-Build` for the new build, then replaces the file with a rename. That prompts the desktop environment to read the entry and its icon again. `Exec` is read and written as the Desktop Entry Specification encodes it: string escapes, then the quoting rule (`"`, `` \` ``, `\$` inside quotes), then `%%`, as the payload's [desktop-integration helper](release-v0.1.md#deliverables) writes it. A path with a backslash or line break is not written.
 
 **The port** (`LinuxPayloadPort`):
 

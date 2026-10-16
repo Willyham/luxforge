@@ -1,49 +1,13 @@
-//! The Basic sliders' responses (`docs/design/lightroom-alignment.md`, "Changing a control"): for
-//! each realigned field, the strength its unit applies at each slider value, so that a value does
-//! about what the same value does in Lightroom. The units' algorithms are unchanged and receive the
-//! strength; the slider's value is what the payload stores, the history names and every API reads.
-//!
-//! A response is a frozen table of knots `[value, strength]` read by linear interpolation: both
-//! strictly increasing, spanning the field's declared range and passing through `[0, 0]`, so the
-//! neutral value is exactly neutral and every slider step moves the picture. A strength beyond the
-//! unit's former ±100 (or ±5 EV) is a range extension, kept where the unit stays stable. The table
-//! is `response.json`, written by `cargo xtask lr-align fold` from the measured rounds; a refit is a
-//! reviewed change of that file and of Basic's format marker.
-use serde::Deserialize;
-use std::collections::BTreeMap;
+//! The Basic sliders' responses ([`super::super::response`]): Contrast, Highlights, Shadows,
+//! Whites, Blacks, Vibrance and Saturation. Exposure, Temperature and Tint act on the scene scale
+//! (`scene.rs`) and have none.
+pub use super::super::response::Response;
+use super::super::response::Responses;
 use std::sync::LazyLock;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Table {
-    format: String,
-    version: u64,
-    #[allow(dead_code)]
-    basis: String,
-    responses: BTreeMap<String, Response>,
-}
-
-/// One field's response.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Response {
-    /// `[value, strength]`, both strictly increasing, through `[0, 0]`.
-    pub knots: Vec<[f64; 2]>,
-}
-
-static TABLE: LazyLock<Table> = LazyLock::new(|| {
-    let table: Table = serde_json::from_str(include_str!("response.json"))
-        .expect("the frozen Basic response table parses");
-    assert_eq!(table.format, "luxforge.basic-response");
-    assert_eq!(table.version, 1);
-    for (field, response) in &table.responses {
-        assert!(
-            response
-                .knots
-                .windows(2)
-                .all(|pair| pair[0][0] < pair[1][0] && pair[0][1] < pair[1][1]),
-            "{field}'s response is not strictly increasing"
-        );
+static TABLE: LazyLock<Responses> = LazyLock::new(|| {
+    let table = Responses::parse(include_str!("response.json"), "Basic");
+    for (field, response) in table.iter() {
         assert!(
             response.knots.contains(&[0.0, 0.0]),
             "{field}'s response does not keep 0 neutral"
@@ -55,12 +19,12 @@ static TABLE: LazyLock<Table> = LazyLock::new(|| {
 /// The response of Basic's `field`, if it is realigned; an unlisted field applies its value as its
 /// strength.
 pub fn response(field: &str) -> Option<&'static Response> {
-    TABLE.responses.get(field)
+    TABLE.get(field)
 }
 
 /// The strength Basic's `field` applies at slider `value`.
 pub(super) fn strength(field: &str, value: f64) -> f64 {
-    response(field).map_or(value, |response| response.strength(value))
+    TABLE.strength(field, value)
 }
 
 /// The slider value of Basic's `field` that applies `strength`, `None` beyond its response.
@@ -68,49 +32,10 @@ pub(super) fn value(field: &str, strength: f64) -> Option<f64> {
     response(field).map_or(Some(strength), |response| response.value(strength))
 }
 
-/// `y` at `x` by linear interpolation over `points`, strictly increasing in `x`, exact at a point
-/// and `None` outside their span.
-fn interpolate(points: impl Iterator<Item = (f64, f64)> + Clone, x: f64) -> Option<f64> {
-    let mut previous: Option<(f64, f64)> = None;
-    for (px, py) in points {
-        if x == px {
-            return Some(py);
-        }
-        if let Some((qx, qy)) = previous
-            && x > qx
-            && x < px
-        {
-            return Some(qy + (x - qx) / (px - qx) * (py - qy));
-        }
-        previous = Some((px, py));
-    }
-    None
-}
-
-impl Response {
-    /// The strength at `value`. The field's range check runs first, so a value outside the
-    /// knots' span is not reached; it would continue the end segment.
-    pub fn strength(&self, value: f64) -> f64 {
-        interpolate(self.knots.iter().map(|k| (k[0], k[1])), value).unwrap_or_else(|| {
-            let (a, b) = if value < self.knots[0][0] {
-                (self.knots[0], self.knots[1])
-            } else {
-                let n = self.knots.len();
-                (self.knots[n - 2], self.knots[n - 1])
-            };
-            a[1] + (value - a[0]) / (b[0] - a[0]) * (b[1] - a[1])
-        })
-    }
-
-    /// The slider value that applies `strength`, `None` beyond the strengths the slider reaches.
-    pub fn value(&self, strength: f64) -> Option<f64> {
-        interpolate(self.knots.iter().map(|k| (k[1], k[0])), strength)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     /// Every realigned field's response spans its declared range, keeps 0 exactly neutral and
     /// inverts to the value it came from.
@@ -125,8 +50,8 @@ mod tests {
             ("vibrance", (-100.0, 100.0)),
             ("saturation", (-100.0, 100.0)),
         ]);
-        assert!(!TABLE.responses.is_empty());
-        for (field, response) in &TABLE.responses {
+        assert!(TABLE.iter().next().is_some());
+        for (field, response) in TABLE.iter() {
             let (low, high) = ranges[field.as_str()];
             assert_eq!(response.knots.first().unwrap()[0], low, "{field}");
             assert_eq!(response.knots.last().unwrap()[0], high, "{field}");

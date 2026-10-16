@@ -128,13 +128,13 @@ mod tests {
         )
     }
 
-    /// The frozen table names only value-transfer rows, onto their own targets, across exactly
+    /// The frozen table, empty while every measured slider follows Lightroom's response itself
+    /// (A11), names only value-transfer rows, onto their own targets, across exactly
     /// the Lightroom range each row claims; its knots rise strictly in Lightroom, never fall in
     /// Luxforge and lie inside the target's range, with Lightroom's default on Luxforge's.
     #[test]
     fn every_calibration_is_a_monotone_map_of_a_value_transfer_row() {
         let registry = ModuleRegistry::builtin();
-        assert!(!Calibration::all().is_empty());
         for map in Calibration::all() {
             let row = lookup(&map.setting).expect("a recognised setting");
             let Rule::Transfer {

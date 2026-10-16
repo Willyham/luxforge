@@ -19,6 +19,7 @@ pub(crate) mod corrections_panel;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 pub(crate) mod develop;
+pub(crate) mod export_sheet;
 pub(crate) mod fill_setup;
 mod gallery;
 pub(crate) mod long_work;
@@ -30,6 +31,7 @@ pub(crate) mod minimap_geometry;
 pub(crate) mod move_to_applications;
 pub(crate) mod palette;
 pub(crate) mod query_choice;
+pub(crate) mod range_pick_canvas;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_merge;
@@ -60,6 +62,14 @@ use iced::{
 };
 use luxforge_ui::theme;
 use luxforge_ui::{Element, Theme};
+
+/// What the armed range picker's canvas is drawn from: the content map a press is placed through
+/// and the drag rectangle, in output-stage pixels, while one lasts.
+#[derive(Clone, Copy)]
+pub(crate) struct RangePickData<'a> {
+    pub(crate) map: &'a crate::mask_draft::ContentMap,
+    pub(crate) rectangle: Option<[f64; 4]>,
+}
 
 /// The pixels and the transient draft the canvas borrows for one frame. They are not view-model
 /// data: the model says what to draw, these are what it is drawn from.
@@ -92,6 +102,9 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
     pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
     pub(crate) mask_handles: bool,
+    /// The armed range picker's content map and the drag rectangle it draws, in Mask mode with no
+    /// mask gesture held.
+    pub(crate) range_pick: Option<RangePickData<'a>>,
     /// The Corrections workspace's pins, outlines, handles and gesture, while its mode is active.
     pub(crate) corrections: Option<corrections_canvas::CanvasData<'a>>,
     pub(crate) draft: Option<&'a CropDraft>,
@@ -118,6 +131,11 @@ pub(crate) struct Surfaces<'a> {
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
     pub(crate) gpu_rest: Option<&'a luxforge_gpu::GpuRest>,
+    /// The picture at rest handed, drawn whole already, stands in for the photograph's frame, an
+    /// earlier stack's, under a gesture's frames: a whole frame draws it only where no plan's
+    /// output is drawn, and a percentage view draws its backdrop in place of that frame
+    /// ([`crate::app::Editor::gpu_rest_under`]).
+    pub(crate) gpu_rest_under: bool,
     /// The same tiles where the picture is not handed, handed to whichever surface draws the
     /// photograph, a percentage view's included: at 100% and above reduced to the backdrop the
     /// view's region is drawn over where it does not cover the view; otherwise drawn for their
@@ -238,6 +256,9 @@ pub(crate) fn workspace<'a>(
     }
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
+    }
+    if let Some(sheet) = export_sheet::export_sheet(model.export_sheet.as_ref()) {
+        layers = layers.push(sheet);
     }
     if let Some(sheet) = settings::settings(&model.settings) {
         layers = layers.push(sheet);

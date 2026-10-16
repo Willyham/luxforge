@@ -8,8 +8,8 @@ use super::*;
 use crate::{
     SourceTag,
     catalog_types::{
-        BracketEvidence, CameraBody, Exposure, FrameFacts, FrameTables, Grouping, HeaderState,
-        LocalDay, Moment, MomentKind, PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, Thresholds,
+        CameraBody, Exposure, FrameFacts, FrameTables, Grouping, HeaderState, LocalDay, Moment,
+        MomentEvidence, MomentKind, PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, Thresholds,
     },
     jobs::JobControl,
     previews::{
@@ -64,6 +64,8 @@ struct Shape {
 /// about 0.004 in shade to 0.8 in the sky. Its light is a sunlit part and a sky-lit part, so a
 /// cloud can take the sun away.
 struct Scene {
+    /// Whether it is [`Scene::wide`], which the fingerprint cache keys apart.
+    wide: bool,
     horizon: f32,
     shapes: Vec<Shape>,
     seed: u64,
@@ -97,11 +99,43 @@ impl Scene {
             })
             .collect();
         Self {
+            wide: false,
             horizon: random.between(0.35, 0.55),
             shapes,
             seed,
             fog: false,
         }
+    }
+
+    /// A scene wide and tall enough to sweep across: twice as many shapes, spread over three
+    /// frames' width and two frames' height.
+    fn wide(seed: u64) -> Self {
+        let mut random = Random(seed.wrapping_mul(31).wrapping_add(7));
+        let mut scene = Self::new(seed);
+        scene.wide = true;
+        scene.shapes = (0..random.between(14.0, 20.0) as usize)
+            .map(|_| {
+                let round = random.unit() < 0.5;
+                let lit = random.unit() < 0.7;
+                let albedo = [(); 3].map(|_| random.between(0.15, 0.9));
+                let width = random.between(0.05, 0.2);
+                Shape {
+                    round,
+                    centre: (random.between(-0.3, 2.6), random.between(0.0, 1.7)),
+                    radius: (
+                        width,
+                        if round {
+                            width * 1.5
+                        } else {
+                            random.between(0.08, 0.3)
+                        },
+                    ),
+                    sun: albedo.map(|a| if lit { a * 0.9 } else { 0.0 }),
+                    sky: albedo.map(|a| a * 0.12),
+                }
+            })
+            .collect();
+        scene
     }
 
     fn fog(seed: u64) -> Self {
@@ -199,6 +233,8 @@ struct Shot {
     curve: Curve,
     /// The frame moved right by this share of its width.
     pan: f32,
+    /// The frame moved down by this share of its height.
+    tilt: f32,
     /// The frame's field of view divided by this, about its centre.
     zoom: f32,
     /// The sunlight, times this: 1 in full sun, less with a cloud before it.
@@ -217,6 +253,7 @@ impl Shot {
             step_ev,
             curve,
             pan: 0.0,
+            tilt: 0.0,
             zoom: 1.0,
             sun: 1.0,
             shadow: None,
@@ -242,7 +279,7 @@ fn render(scene: &Scene, shot: &Shot, width: u32, height: u32) -> Vec<u8> {
             let v = (y as f32 + 0.5) / height as f32;
             let (sun, sky) = scene.light(
                 (u - 0.5) / shot.zoom + 0.5 + shot.pan,
-                (v - 0.5) / shot.zoom + 0.5,
+                (v - 0.5) / shot.zoom + 0.5 + shot.tilt,
             );
             let shade = shot.shadow.map_or(1.0, |(edge, ev)| {
                 2f32.powf(-ev * (((edge - u) / 0.05).clamp(-1.0, 1.0) * 0.5 + 0.5))
@@ -276,6 +313,7 @@ fn jpeg(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
         &luxforge_jpeg::Settings {
             quality: 85,
             chroma: (2, 2),
+            optimise: false,
             segments: &[],
             icc: None,
             pixels_per_inch: None,
@@ -290,9 +328,9 @@ fn jpeg(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 /// whether it is fog, so a shot of it renders once per process: the brackets repeat their
 /// exposures across runs and curves.
 fn fingerprint(scene: &Scene, shot: &Shot) -> Fingerprint {
-    static PRINTS: std::sync::Mutex<BTreeMap<(u64, bool, String), Fingerprint>> =
+    static PRINTS: std::sync::Mutex<BTreeMap<(u64, bool, bool, String), Fingerprint>> =
         std::sync::Mutex::new(BTreeMap::new());
-    let key = (scene.seed, scene.fog, format!("{shot:?}"));
+    let key = (scene.seed, scene.fog, scene.wide, format!("{shot:?}"));
     if let Some(print) = PRINTS.lock().unwrap().get(&key) {
         return print.clone();
     }
@@ -418,7 +456,7 @@ fn bracket_preview_steps_without_a_tone_curve_are_measured_exactly() {
                 } else {
                     assert_eq!(
                         (moment.kind, moment.evidence),
-                        (MomentKind::Bracket, Some(BracketEvidence::Previews)),
+                        (MomentKind::Bracket, Some(MomentEvidence::Previews)),
                         "seed {seed} {step} {pattern:?}"
                     );
                     for (found, truth) in moment.steps_ev.iter().zip(from_median(&truth)) {
@@ -464,7 +502,7 @@ fn bracket_preview_steps_through_a_tone_curve_stay_brackets() {
                     if step >= 0.5 {
                         assert_eq!(
                             (moment.kind, moment.evidence),
-                            (MomentKind::Bracket, Some(BracketEvidence::Previews)),
+                            (MomentKind::Bracket, Some(MomentEvidence::Previews)),
                             "{curve:?} seed {seed} {step} {pattern:?}: {found:?}"
                         );
                     } else if curve != Curve::Aces {
@@ -624,6 +662,218 @@ fn bracket_preview_measures_nothing_it_cannot_tell() {
     assert_eq!(probe(embedded, 3).measure(&[]), None);
 }
 
+/// The pans the sweeps of six wide scenes take: across by 15 to 70% of the frame, left, down and
+/// up, with a hand-held drift, each frame exposed apart from the last as an automatic exposure
+/// does, without a tone curve and through ACES's. Every pan found is within a cell of the truth,
+/// and at least nine in ten are found; what is not had too little structure where the frames
+/// overlap (plain sky) to place it.
+#[test]
+#[slow]
+fn bracket_preview_pans_of_a_sweep_are_measured() {
+    let (mut found, mut cases) = (0, 0);
+    for seed in 1..=6 {
+        let scene = Scene::wide(seed);
+        for curve in [Curve::Clip, Curve::Aces] {
+            let base = Shot::at(0.0, curve);
+            for (pan, tilt, step_ev) in [
+                (0.15, 0.0, 0.0),
+                (0.25, 0.0, 0.3),
+                (0.4, 0.0, -0.5),
+                (0.55, 0.0, 0.7),
+                (0.7, 0.0, 0.0),
+                (-0.4, 0.0, 0.3),
+                (0.4, 0.05, 0.0),
+                (0.0, 0.3, -0.3),
+            ] {
+                let moved = Shot {
+                    pan,
+                    tilt,
+                    step_ev,
+                    ..base
+                };
+                let frames = prints(&scene, &[base, moved]);
+                cases += 1;
+                let Some(measured) = pan::pan(&frames[0], &frames[1]) else {
+                    continue;
+                };
+                found += 1;
+                let cell = 1.0 / GRID as f32;
+                assert!(
+                    (measured.across - pan).abs() <= cell + 1e-4
+                        && (measured.down - tilt).abs() <= cell + 1e-4,
+                    "seed {seed} {curve:?} {moved:?}: {measured:?}"
+                );
+            }
+        }
+    }
+    assert!(found * 10 >= cases * 9, "{found} of {cases} found");
+}
+
+/// What is no pan: a burst of one view, however exposed and however noisy; a hand-held drift of 2
+/// to 8% of the frame; another scene; fog; and frames of another shape.
+#[test]
+#[slow]
+fn bracket_preview_one_view_and_other_scenes_are_no_pans() {
+    for seed in 1..=6 {
+        let scene = Scene::wide(seed);
+        for curve in [Curve::Clip, Curve::Aces] {
+            let base = Shot::at(0.0, curve);
+            let mut still = vec![
+                Shot {
+                    step_ev: 1.0,
+                    ..base
+                },
+                Shot {
+                    step_ev: -1.0,
+                    ..base
+                },
+                Shot {
+                    noise: 4.0,
+                    seed: 9,
+                    ..base
+                },
+            ];
+            still.extend([0.02, 0.05, 0.08].map(|pan| Shot { pan, ..base }));
+            still.push(Shot { tilt: 0.05, ..base });
+            for moved in still {
+                let frames = prints(&scene, &[base, moved]);
+                assert_eq!(
+                    pan::pan(&frames[0], &frames[1]),
+                    None,
+                    "seed {seed} {curve:?} {moved:?}"
+                );
+            }
+            let other = prints(&Scene::wide(seed + 100), &[base]);
+            let frames = prints(&scene, &[base]);
+            assert_eq!(
+                pan::pan(&frames[0], &other[0]),
+                None,
+                "seed {seed} {curve:?}"
+            );
+        }
+    }
+    let base = Shot::at(0.0, Curve::Clip);
+    let fog = prints(&Scene::fog(1), &[base, Shot { pan: 0.4, ..base }]);
+    assert_eq!(pan::pan(&fog[0], &fog[1]), None, "fog");
+    let scene = Scene::wide(1);
+    let rgba = render(&scene, &Shot { pan: 0.25, ..base }, WIDTH, HEIGHT);
+    let turned = Fingerprint::of_rgba((HEIGHT, WIDTH), HEIGHT, WIDTH, &rgba).unwrap();
+    assert_eq!(
+        pan::pan(&fingerprint(&scene, &base), &turned),
+        None,
+        "another shape"
+    );
+}
+
+/// A hand-held sweep through the organize functions: four frames 2.5 s apart, each a quarter of
+/// the frame on, auto-exposed in steps a bracket's metadata would show, is a panorama from
+/// previews; the same frames shot of one view are a bracket, and frames without fingerprints are
+/// asked about but stay what their metadata says.
+#[test]
+#[slow]
+fn bracket_preview_a_sweep_is_organized_as_a_panorama() {
+    let scene = Scene::wide(2);
+    let body = CameraBody {
+        make: "FUJIFILM".into(),
+        model: "X100VI".into(),
+        serial: None,
+    };
+    let day = LocalDay::from_ymd(2026, 9, 18).unwrap();
+    let organized =
+        |shots: &[Shot], with_prints: bool| -> Vec<(MomentKind, Option<MomentEvidence>)> {
+            let mut tables = FrameTables::default();
+            let mut frames = Vec::new();
+            let mut fingerprints = HashMap::new();
+            for (at, shot) in shots.iter().enumerate() {
+                let file = FileId(at as i64 + 1);
+                if with_prints {
+                    fingerprints.insert(file, (PreviewOrigin::Embedded, fingerprint(&scene, shot)));
+                }
+                frames.push(FrameFacts {
+                    merged: false,
+                    item: ViewItem::File(file),
+                    folder: tables.folder("/card/DCIM/100_FUJI".into()),
+                    name: format!("DSCF{:04}.JPG", at + 1).into(),
+                    instant_ms: Some(1_789_000_000_000 + at as i64 * 700),
+                    local_day: Some(day),
+                    position: None,
+                    body: tables.body(Some(&body)),
+                    exposure: Exposure {
+                        time_s: Some(1.0 / 250.0 / 2f32.powf(shot.step_ev)),
+                        f_number: Some(5.6),
+                        iso: Some(125),
+                        focal_mm: Some(23.0),
+                        ..Exposure::default()
+                    },
+                });
+            }
+            let probe = PreviewProbe::memory(fingerprints);
+            crate::organize::order(&mut frames, &tables, Grouping::DayCameraMoment, false);
+            let layout = crate::organize::group(
+                &frames,
+                &tables,
+                Grouping::DayCameraMoment,
+                &Thresholds::default(),
+                &probe,
+            );
+            assert_eq!(probe.frames_asked(), shots.len());
+            layout
+                .moments
+                .iter()
+                .map(|moment| (moment.kind, moment.evidence))
+                .collect()
+        };
+    let sweep: Vec<Shot> = [0.0f32, 0.7, 0.35, 1.05]
+        .iter()
+        .enumerate()
+        .map(|(at, step_ev)| Shot {
+            pan: at as f32 * 0.25,
+            step_ev: *step_ev,
+            ..Shot::at(0.0, Curve::Aces)
+        })
+        .collect();
+    assert_eq!(
+        organized(&sweep, true),
+        [(MomentKind::Panorama, Some(MomentEvidence::Previews))]
+    );
+    let one_view: Vec<Shot> = sweep
+        .iter()
+        .map(|shot| Shot { pan: 0.0, ..*shot })
+        .collect();
+    let bracket = [(MomentKind::Bracket, Some(MomentEvidence::Metadata))];
+    assert_eq!(organized(&one_view, true), bracket);
+    assert_eq!(organized(&sweep, false), bracket);
+}
+
+/// The pan cache answers a pair it measured from its record, keyed by the fingerprints' contents
+/// (another file's identical preview is the same pair; a changed one is not), and starts again
+/// empty when full.
+#[test]
+fn bracket_preview_pans_are_kept_by_content() {
+    let scene = Scene::wide(1);
+    let base = Shot::at(0.0, Curve::Clip);
+    let frames = prints(
+        &scene,
+        &[base, Shot { pan: 0.25, ..base }, Shot { pan: 0.5, ..base }],
+    );
+    let mut cache = PanCache {
+        answers: HashMap::with_hasher(ContentHasher::new()),
+    };
+    let measured = pan::pan(&frames[0], &frames[1]);
+    assert!(measured.is_some());
+    assert_eq!(cache.pan(&frames[0], &frames[1]), measured);
+    assert_eq!(cache.pan(&frames[0].clone(), &frames[1].clone()), measured);
+    assert_eq!(cache.answers.len(), 1);
+    cache.pan(&frames[1], &frames[2]);
+    assert_eq!(cache.answers.len(), 2);
+    for at in 0..PAN_CACHE_ENTRIES as u64 {
+        cache.answers.insert((at, at), None);
+    }
+    assert_eq!(cache.pan(&frames[0], &frames[1]), measured, "kept");
+    cache.pan(&frames[0], &frames[2]);
+    assert_eq!(cache.answers.len(), 1, "a full cache starts again");
+}
+
 /// A fingerprint is its fixed bytes: stored and read back whole, and nothing else reads as one.
 #[test]
 fn bracket_preview_fingerprints_are_fixed_and_round_trip() {
@@ -775,8 +1025,9 @@ fn bracket_preview_fingerprints_are_kept_with_the_grid_tier() {
 }
 
 /// The probe reads lazily: a view whose runs the metadata classifies (a bracket whose bias steps,
-/// frames apart in time) asks it nothing and reads no fingerprint, and a burst's run, which the
-/// metadata cannot classify, reads its own frames' and no others.
+/// shot faster than a sweep) asks it nothing and reads no fingerprint; a bracket shot at a sweep's
+/// pace reads its own frames' for the pan check, and a burst's run, which the metadata cannot
+/// classify, its own frames' for the bracket check, and no others.
 #[test]
 fn bracket_preview_a_metadata_only_view_reads_no_fingerprints() {
     let fixture = Fixture::new("bracket-preview-lazy");
@@ -825,6 +1076,21 @@ fn bracket_preview_a_metadata_only_view_reads_no_fingerprints() {
     let layout = group(&mut frames, &tables, &probe);
     assert_eq!(layout.moments.len(), 1);
     assert_eq!(layout.moments[0].kind, MomentKind::Bracket);
+    // The bracket's frames, 300 ms apart, could be a sweep: the pan check reads them, and finds
+    // no fingerprint.
+    assert_eq!(probe.frames_asked(), 3, "the bracket's frames alone");
+    // Shot faster than a sweep is, the same bracket reads nothing.
+    let mut fast: Vec<FrameFacts> = frames[..3]
+        .iter()
+        .enumerate()
+        .map(|(at, frame)| FrameFacts {
+            instant_ms: Some(1_789_000_000_000 + at as i64 * 100),
+            ..frame.clone()
+        })
+        .collect();
+    let probe = bracket_probe(fixture.index.connection());
+    let layout = group(&mut fast, &tables, &probe);
+    assert_eq!(layout.moments[0].kind, MomentKind::Bracket);
     assert_eq!(probe.frames_asked(), 0, "nothing read for a metadata view");
     // Add a burst of three frames with one exposure: only its frames are looked up.
     frames.extend([
@@ -836,7 +1102,11 @@ fn bracket_preview_a_metadata_only_view_reads_no_fingerprints() {
     let layout = group(&mut frames, &tables, &probe);
     assert_eq!(layout.moments.len(), 2);
     assert_eq!(layout.moments[1].kind, MomentKind::Burst, "no fingerprints");
-    assert_eq!(probe.frames_asked(), 3, "the burst's frames alone");
+    assert_eq!(
+        probe.frames_asked(),
+        6,
+        "the bracket's and the burst's frames alone"
+    );
 }
 
 /// The agreement bands the calibration compares with [`AGREEMENT`], first.
@@ -1068,10 +1338,11 @@ fn bracket_preview_the_generated_image_folders() {
                 expected.entry(&truth.moment).or_default().push(at);
             }
         }
-        let label = |kind: MomentKind, evidence: Option<BracketEvidence>| match (kind, evidence) {
-            (MomentKind::Bracket, Some(BracketEvidence::Metadata)) => "bracket metadata",
+        let label = |kind: MomentKind, evidence: Option<MomentEvidence>| match (kind, evidence) {
+            (MomentKind::Bracket, Some(MomentEvidence::Metadata)) => "bracket metadata",
             (MomentKind::Bracket, _) => "bracket previews",
             (MomentKind::Burst, _) => "burst",
+            (MomentKind::Panorama, _) => "panorama",
             (MomentKind::Single, _) => "single",
         };
         let mut confusion: BTreeMap<(String, &str), usize> = BTreeMap::new();

@@ -906,6 +906,30 @@ pub const SWATCH_SLOT_RADIUS: f32 = 4.0;
 pub const SWATCH_SLOT_SPACING: f32 = 6.0;
 /// The dashes of an empty slot's outline.
 pub const SWATCH_SLOT_DASH: f32 = 2.0;
+/// The range picker's bar under the selected component row (range-masks.html `.pick`): at least
+/// 28 pt, inset 3 pt above and below, 8 pt before the glyph and 4 pt after Done, its parts 7 pt
+/// apart, rounded 5 pt, 8 pt in from the row and 6 pt over what follows; the accent at 10% behind
+/// it and at 30% around it.
+pub const PICK_BAR_HEIGHT: f32 = 28.0;
+pub const PICK_BAR_PADDING: Padding = Padding {
+    top: 3.0,
+    right: 4.0,
+    bottom: 3.0,
+    left: 8.0,
+};
+pub const PICK_BAR_SPACING: f32 = 7.0;
+pub const PICK_BAR_RADIUS: f32 = 5.0;
+pub const PICK_BAR_MARGIN: Padding = Padding {
+    top: 0.0,
+    right: 0.0,
+    bottom: 6.0,
+    left: 8.0,
+};
+pub const PICK_BAR_FILL_ALPHA: f32 = 0.10;
+pub const PICK_BAR_BORDER_ALPHA: f32 = 0.30;
+/// The bar's Done: 20 pt, inset 8 pt.
+pub const PICK_BAR_DONE_HEIGHT: f32 = 20.0;
+pub const PICK_BAR_DONE_PADDING: f32 = 8.0;
 /// A brush stroke's row: 20 pt, its 11 pt caption after its number right-aligned in 14 pt, and an
 /// 11 pt bin.
 pub const STROKE_ROW_HEIGHT: f32 = 20.0;
@@ -1822,6 +1846,24 @@ pub fn swatch_open(theme: &Theme, status: button::Status) -> button::Style {
         shadow: Shadow::default(),
         snap: false,
     }
+}
+
+/// The range picker's bar: the accent at [`PICK_BAR_FILL_ALPHA`] behind it and at
+/// [`PICK_BAR_BORDER_ALPHA`] around it, rounded [`PICK_BAR_RADIUS`].
+pub fn pick_bar_surface(theme: &Theme) -> container::Style {
+    let accent = theme.palette().accent;
+    surface(Color {
+        a: PICK_BAR_FILL_ALPHA,
+        ..accent
+    })
+    .border(Border {
+        color: Color {
+            a: PICK_BAR_BORDER_ALPHA,
+            ..accent
+        },
+        width: BORDER_WIDTH,
+        radius: PICK_BAR_RADIUS.into(),
+    })
 }
 
 /// A segmented control's track: the tab track, its segments inset by [`SEGMENT_INSET`].

@@ -411,9 +411,8 @@ host_params! {
     /// `batch.export`.
     pub(crate) struct BatchExport {
         targets: Targets = json(TARGETS),
-        destination: PathBuf = path().notes("an existing folder; each file is named by the export's naming rule and nothing is replaced"),
+        settings: crate::export::settings::ExportSettings = json("ExportSettings, as schema.list's export_settings describes: one set for every photograph; folder \"original\" writes each beside its own original, and {path} into that existing folder; each file is named <original stem><suffix>.<extension>, counting up per folder, and nothing is replaced"),
         mutation: MutationRequest,
-        keep_metadata: Option<bool> = boolean().default(false),
         acknowledge_stale: Option<Vec<crate::BatchStaleAcknowledgement>> = json("[{asset_id, entry_id, operations: [correction-…]}], at most one a photograph: export these photographs' stale frozen patches as they render; a photograph with stale corrections and no exactly matching acknowledgement of its current entry is skipped stale-unacknowledged, with entry_id and stale in its skipped row"),
     }
 }
@@ -878,7 +877,7 @@ mod contract_table {
                 NotReady,
                 Cancelled,
             ],
-            "a cached preview's path, size, origin, whether it is approximate (never) and, for a photograph's rendered tier, the renderer that drew it, or the job that makes it, shared by every request for the tier and read by the clients that asked, a cancel releasing only the caller's interest and another client's refused conflict while one waits, and the best preview cached meanwhile: a file's grid or loupe tier (job preview-extract; a RAW with no usable preview is developed for a visible or look-ahead request and not-ready for a background one), or a developed photograph's grid or large tier rendered from its current or named entry (job preview-render, one per tier; its camera preview is the fallback until its first render, and an edit's missing module is incompatible)",
+            "a cached preview's path, size, origin, whether it is approximate (never) and, for a photograph's rendered tier, the renderer that drew it, or the job that makes it, shared by every request for the tier and read by the clients that asked, a cancel releasing only the caller's interest and another client's refused conflict while one waits, and the best preview cached meanwhile, with fallback_current saying whether it shows what was asked for, edits included (a photograph's earlier entry's render, or its camera preview once it is edited, does not): a file's grid or loupe tier (job preview-extract; a RAW with no usable preview is developed for a visible or look-ahead request and not-ready for a background one), or a developed photograph's grid or large tier rendered from its current or named entry (job preview-render, one per tier; its camera preview is the fallback until its first render, and an edit's missing module is incompatible)",
         )
         .starts(&jobs::PREVIEW_EXTRACT),
         method::<PreviewRegion>(

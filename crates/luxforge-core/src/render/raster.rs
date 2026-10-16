@@ -25,6 +25,12 @@ impl Raster {
             .map_err(|_| Error::resource_limit("image allocation is not addressable"))
     }
 
+    /// The samples of a `width` × `height` RGBA frame of 16-bit codes, eight bytes a pixel, bounded
+    /// as an evaluated frame is: refused past 512 MiB.
+    pub(crate) fn expected_len16(width: u32, height: u32) -> Result<usize, Error> {
+        frame_samples(width, height, 4, 2, "16-bit")
+    }
+
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width || y >= self.height {
             return None;
@@ -34,6 +40,34 @@ impl Raster {
             .get(offset..offset + 4)
             .map(|p| [p[0], p[1], p[2], p[3]])
     }
+}
+
+/// The samples of a `width` × `height` frame of `channels` samples a pixel, each `bytes` wide,
+/// refused past the evaluated-frame limit, 512 MiB, as `kind` frame.
+fn frame_samples(
+    width: u32,
+    height: u32,
+    channels: u64,
+    bytes: u64,
+    kind: &str,
+) -> Result<usize, Error> {
+    let samples = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|n| n.checked_mul(channels))
+        .ok_or_else(|| Error::resource_limit("image dimensions overflow"))?;
+    if samples.saturating_mul(bytes) > crate::render::limits::MAX_FRAME_BYTES {
+        return Err(Error::resource_limit(format!(
+            "a {kind} evaluated image exceeds 512 MiB"
+        )));
+    }
+    usize::try_from(samples)
+        .map_err(|_| Error::resource_limit("image allocation is not addressable"))
+}
+
+/// The bytes of a stage's wide terminal ([`super::Render::wide_frame`]): red, green and blue
+/// 16-bit codes, six bytes a pixel, refused past the evaluated-frame limit, 512 MiB.
+pub(crate) fn wide_terminal_len(width: u32, height: u32) -> Result<usize, Error> {
+    frame_samples(width, height, 3, 2, "wide").map(|samples| samples * 2)
 }
 
 /// A zeroed byte frame of `len` bytes, allocated as the `Arc<Vec<u8>>` a [`Raster`] holds so that

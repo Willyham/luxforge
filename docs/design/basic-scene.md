@@ -1,6 +1,6 @@
 # Basic on the scene scale: Exposure, Temperature and Tint
 
-Status: implemented on the CPU reference and in WGSL (TASK-006, level C of the [Lightroom alignment](lightroom-alignment.md#basic-realigned)), measured against Lightroom Classic's exports through the CPU reference renderer on Linux. GPU qualification on the M4 and the owner's review of the sheets are open. The independent [`f64` reference](../../crates/luxforge-reference/src/scene.rs) and this document specify the unit; production is [`scene.rs`](../../crates/luxforge-core/src/modules/basic/scene.rs) with its program [`scene.wgsl`](../../crates/luxforge-core/src/modules/basic/scene.wgsl).
+Status: implemented on the CPU reference and in WGSL (TASK-006, level C of the [Lightroom alignment](lightroom-alignment.md#basic-realigned)), measured against Lightroom Classic's exports through the CPU reference renderer on Linux. GPU qualification on the M4 is open; the owner reviewed the sheets and round 3 confirmed the unit between its measured values. The independent [`f64` reference](../../crates/luxforge-reference/src/scene.rs) and this document specify the unit; production is [`scene.rs`](../../crates/luxforge-core/src/modules/basic/scene.rs) with its program [`scene.wgsl`](../../crates/luxforge-core/src/modules/basic/scene.wgsl).
 
 ## Why
 

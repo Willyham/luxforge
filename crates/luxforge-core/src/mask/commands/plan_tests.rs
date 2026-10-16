@@ -2,8 +2,10 @@
 use super::tests::{apply, created, linear, plan, radial, registry};
 use super::*;
 use crate::{
-    Component, ComponentId, ComponentMode, ErrorKind, Layer, LayerId, Mask, MaskId, Recipe,
+    Component, ComponentId, ComponentMode, ErrorKind, Layer, LayerId, Mask, MaskId, ModuleRegistry,
+    Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
+    tiles::InputSite,
 };
 use serde_json::{Map, Value, json};
 
@@ -1015,40 +1017,52 @@ fn an_index_outside_the_list_it_addresses_is_refused_with_the_count() {
     );
 }
 
-/// The Tone curve declares `maskable` and nothing else, so the host's one coverage-input rule holds
-/// for it unchanged: a mask whose only bound layer is a curve layer reads its value-based parts at
-/// the input of that curve layer, placed after the global Basic and curve layers by the ordering
-/// rule — not at the global curve's input, and not at the source. Before the curve is bound, the
-/// same mask is refused by name.
-#[test]
-fn the_input_layer_of_a_curve_only_mask_is_its_curve_layer() {
-    let (recipe, _) = created();
-    let mask = recipe.masks[0].id.clone();
-    let layer = |effect: &str, bound: Option<&MaskId>, payload: Value| Layer {
+/// One layer of `effect`, bound to `mask` when one is given.
+fn layer_of(effect: &str, bound: Option<&MaskId>, payload: Value) -> Layer {
+    Layer {
         id: LayerId::new(),
         effect_id: effect.to_owned(),
         effect_format: crate::current_effect_format(effect),
         payload,
         mask: bound.cloned(),
         artifacts: Vec::new(),
-    };
+    }
+}
+
+/// The site a colour operation at `index` reads.
+fn colour_site(index: usize) -> InputSite {
+    InputSite {
+        index,
+        mode: crate::tiles::MaskInputMode::ColourRun,
+    }
+}
+
+/// The Tone curve declares `maskable` and nothing else, so the host's one coverage-input rule holds
+/// for it unchanged: a mask whose only bound layer is a curve layer reads its value-based parts at
+/// the input of that curve layer, placed after the global Basic and curve layers by the ordering
+/// rule — not at the global curve's input, and not at the source. Before the curve is bound, the
+/// same mask reads where a first Basic adjustment through it would go: after the global Basic layer
+/// and ahead of the global curve.
+#[test]
+fn the_input_layer_of_a_curve_only_mask_is_its_curve_layer() {
+    let (recipe, _) = created();
+    let mask = recipe.masks[0].id.clone();
     let mut recipe = recipe;
     recipe.layers = vec![
-        layer(crate::BASIC_EFFECT, None, json!({"exposure": 0.5})),
-        layer(
+        layer_of(crate::BASIC_EFFECT, None, json!({"exposure": 0.5})),
+        layer_of(
             crate::CURVE_EFFECT,
             None,
             json!({"luminance": [[0.0, 0.1], [1.0, 1.0]]}),
         ),
     ];
     assert_eq!(
-        input_layer_index(&recipe, &mask).unwrap_err().detail,
-        "no layer is bound to mask Mask 1, and reading the pixel an operation receives needs an \
-         operation; apply an adjustment through Mask 1 first",
-        "a mask bound to nothing has no operation whose input it reads"
+        input_site(&registry(), &recipe, &mask).unwrap(),
+        colour_site(1),
+        "a mask bound to nothing reads where a masked Basic layer would go"
     );
 
-    recipe.layers.push(layer(
+    recipe.layers.push(layer_of(
         crate::CURVE_EFFECT,
         Some(&mask),
         json!({"luminance": [[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]}),
@@ -1063,9 +1077,290 @@ fn the_input_layer_of_a_curve_only_mask_is_its_curve_layer() {
         .compile(400, 300, &recipe)
         .expect("a global and a masked curve layer are two targets");
     assert_eq!(
-        input_layer_index(&recipe, &mask).unwrap(),
-        2,
+        input_site(&registry(), &recipe, &mask).unwrap(),
+        colour_site(2),
         "the coverage input of a curve-only mask is its own curve layer"
     );
     assert_eq!(recipe.layers[2].effect_id, crate::CURVE_EFFECT);
+}
+
+/// An unbound mask's site is where a masked Basic layer would be inserted, read as a colour
+/// operation receives it — even where the layer holding that position now is a spatial one, whose
+/// own input would be read at the boundary — and ahead of Detail, which a restoration stage would
+/// place earlier. A mask the stack does not hold yet sorts after every mask it does.
+#[test]
+fn an_unbound_mask_reads_where_a_first_basic_adjustment_through_it_would_go() {
+    let (recipe, _) = created();
+    let mask = recipe.masks[0].id.clone();
+    let mut recipe = recipe;
+    recipe.layers = vec![
+        layer_of(crate::DETAIL_EFFECT, None, json!({"luminance": 30.0})),
+        layer_of(crate::PRESENCE_EFFECT, None, json!({"clarity": 20.0})),
+    ];
+    let registry = registry();
+    let site = input_site(&registry, &recipe, &mask).unwrap();
+    assert_eq!(site, colour_site(1));
+    assert_eq!(
+        site.index,
+        registry.insertion_index_for_target(
+            &recipe.layers,
+            crate::BASIC_EFFECT,
+            Some(&mask),
+            &recipe.masks
+        )
+    );
+    assert_eq!(
+        InputSite::of_layer(&registry, &recipe, 1).mode,
+        crate::tiles::MaskInputMode::Boundary,
+        "the Presence layer at that position now receives its input at the boundary"
+    );
+
+    // A second mask with a masked Basic layer: the first, unbound, reads ahead of that layer, and a
+    // mask the stack does not hold reads after it, as a new last mask's layer would go.
+    let second = Mask::new("Mask 2");
+    recipe.masks.push(second.clone());
+    recipe.layers.insert(
+        1,
+        layer_of(
+            crate::BASIC_EFFECT,
+            Some(&second.id),
+            json!({"exposure": 1.0}),
+        ),
+    );
+    assert_eq!(
+        input_site(&registry, &recipe, &mask).unwrap(),
+        colour_site(1)
+    );
+    assert_eq!(
+        input_site(&registry, &recipe, &second.id).unwrap(),
+        colour_site(1),
+        "a bound mask reads its first bound layer"
+    );
+    assert_eq!(
+        input_site(&registry, &recipe, &MaskId::new()).unwrap(),
+        colour_site(2)
+    );
+}
+
+/// With no maskable colour effect available, an unbound mask reads where the earliest maskable
+/// effect of any stage would go, as that effect receives its input; with none at all it is refused
+/// by name.
+#[test]
+fn an_unbound_mask_needs_a_maskable_effect_to_read_through() {
+    let (recipe, _) = created();
+    let mask = recipe.masks[0].id.clone();
+    let mut recipe = recipe;
+    recipe.layers = vec![layer_of(
+        crate::PRESENCE_EFFECT,
+        None,
+        json!({"clarity": 20.0}),
+    )];
+    let without = |modules: &[&str]| {
+        let disabled: Vec<String> = modules.iter().map(|id| (*id).to_owned()).collect();
+        ModuleRegistry::assemble(&crate::RegistryOptions {
+            disabled: &disabled,
+            ..crate::RegistryOptions::default()
+        })
+        .unwrap()
+    };
+    let colourless = without(&["luxforge.basic", "luxforge.curve", "luxforge.mixer"]);
+    assert_eq!(
+        input_site(&colourless, &recipe, &mask).unwrap(),
+        InputSite {
+            index: 0,
+            mode: crate::tiles::MaskInputMode::Boundary,
+        },
+        "Detail would go first, and receives its input at the boundary"
+    );
+    let none = without(&[
+        "luxforge.basic",
+        "luxforge.curve",
+        "luxforge.mixer",
+        "luxforge.presence",
+        "luxforge.detail",
+    ]);
+    assert_eq!(
+        input_site(&none, &recipe, &mask).unwrap_err().detail,
+        "no effect that can be applied through a mask is available, so mask Mask 1 has no \
+         operation whose input it could read"
+    );
+}
+
+/// A stack holding one luminance-range mask, made by its generated create, and the target of its
+/// one component.
+fn band_mask() -> (Recipe, MaskTarget) {
+    let mut band = Map::new();
+    for (name, value) in [
+        ("low", 0.0),
+        ("low_feather", 5.0),
+        ("high", 100.0),
+        ("high_feather", 5.0),
+    ] {
+        band.insert(name.into(), json!(value));
+    }
+    let change = apply(
+        &Recipe::default(),
+        "mask.create-luminance-range",
+        MaskTarget::default(),
+        band,
+    )
+    .unwrap();
+    let mask = &change.recipe.masks[0];
+    let target = MaskTarget {
+        mask: Some(mask.id.clone()),
+        component: Some(mask.components[0].id.clone()),
+        ..MaskTarget::default()
+    };
+    (change.recipe, target)
+}
+
+fn point(x: f64, y: f64) -> Map<String, Value> {
+    let mut parameters = Map::new();
+    parameters.insert("x".into(), json!(x));
+    parameters.insert("y".into(), json!(y));
+    parameters
+}
+
+/// A pick plans with the pixels the host read and nothing else: one entry labelled `Pick` and the
+/// component's name, the mask named first once there are two; with no pixels it is refused rather
+/// than guessed. What the pick needs read is named before reading anything: the input site of the
+/// mask, the point, and a drag's size — refused when only one side is sent.
+#[test]
+fn a_pick_is_one_entry_named_for_its_component_and_reads_only_what_the_host_hands_it() {
+    let (recipe, target) = band_mask();
+    let command = find("mask.pick-luminance-range").unwrap();
+    // A mid grey: tone 50 on the band's axis.
+    let grey = luxforge_reference::srgb::decode_encoded(0.5);
+    let picked = super::plan(
+        command,
+        &recipe,
+        &target,
+        &point(0.5, 0.5),
+        &registry(),
+        HostRead::Picked(crate::mask::Picked::Point([grey; 3])),
+    )
+    .unwrap();
+    let MaskOutcome::Change(change) = picked else {
+        panic!("a pick that moves the band changes the stack");
+    };
+    assert_eq!(change.label, "Pick Luminance range 1");
+    assert_eq!(change.component, target.component);
+    let payload = &change.recipe.masks[0].components[0].payload;
+    assert!(
+        (payload["low"].as_f64().unwrap() - 40.0).abs() < 1e-9,
+        "{payload}"
+    );
+    assert!(
+        (payload["high"].as_f64().unwrap() - 60.0).abs() < 1e-9,
+        "{payload}"
+    );
+
+    // A second mask prefixes the label with the mask's name, as every mask label is.
+    let mut two = recipe.clone();
+    two.masks.push(created().0.masks[0].clone());
+    two.masks[1].name = "Mask 2".into();
+    let MaskOutcome::Change(named) = super::plan(
+        command,
+        &two,
+        &target,
+        &point(0.5, 0.5),
+        &registry(),
+        HostRead::Picked(crate::mask::Picked::Point([grey; 3])),
+    )
+    .unwrap() else {
+        panic!("a change");
+    };
+    assert_eq!(named.label, "Mask 1 · Pick Luminance range 1");
+
+    let unread = plan(command, &recipe, &target, &point(0.5, 0.5), &registry()).unwrap_err();
+    assert!(unread.detail.contains("none were read"), "{unread}");
+
+    let request = pick_request(command, &recipe, &target, &point(0.5, 0.5), &registry())
+        .unwrap()
+        .expect("a pick reads");
+    assert_eq!(request.area, None, "no size is a click");
+    assert_eq!(
+        request.site,
+        input_site(&registry(), &recipe, target.mask.as_ref().unwrap()).unwrap()
+    );
+    let mut drag = point(0.2, 0.3);
+    drag.insert("width".into(), json!(0.1));
+    drag.insert("height".into(), json!(0.2));
+    let request = pick_request(command, &recipe, &target, &drag, &registry())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (request.x, request.y, request.area),
+        (0.2, 0.3, Some((0.1, 0.2)))
+    );
+    drag.remove("height");
+    let lopsided = pick_request(command, &recipe, &target, &drag, &registry()).unwrap_err();
+    assert!(
+        lopsided.detail.contains("both width and height"),
+        "{lopsided}"
+    );
+    // Any other command reads nothing for a pick.
+    assert!(
+        pick_request(
+            find("mask.delete").unwrap(),
+            &recipe,
+            &target,
+            &Map::new(),
+            &registry()
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+/// A pick addresses a component that exists and is of its own kind, refused by name before any
+/// pixel is read: a missing component, a component of another kind — naming the pick that does
+/// fill it, or saying it is not picked — and a kind this build does not know.
+#[test]
+fn a_pick_refuses_a_missing_component_and_a_component_of_another_kind() {
+    let (recipe, target) = band_mask();
+    let colour = find("mask.pick-colour-range").unwrap();
+    let wrong = pick_request(colour, &recipe, &target, &point(0.5, 0.5), &registry()).unwrap_err();
+    assert_eq!(wrong.kind, ErrorKind::Validation);
+    assert_eq!(
+        wrong.detail,
+        "component Luminance range 1 is a luminance range component, not a colour range; pick it \
+         with mask.pick-luminance-range"
+    );
+    let missing = MaskTarget {
+        component: Some(ComponentId::new()),
+        ..target.clone()
+    };
+    let refused =
+        pick_request(colour, &recipe, &missing, &point(0.5, 0.5), &registry()).unwrap_err();
+    assert!(
+        refused.detail.starts_with("mask Mask 1 has no component"),
+        "{refused}"
+    );
+
+    let (gradient, _) = created();
+    let linear = MaskTarget {
+        mask: Some(gradient.masks[0].id.clone()),
+        component: Some(gradient.masks[0].components[0].id.clone()),
+        ..MaskTarget::default()
+    };
+    let unpicked =
+        pick_request(colour, &gradient, &linear, &point(0.5, 0.5), &registry()).unwrap_err();
+    assert!(
+        unpicked
+            .detail
+            .ends_with("not a colour range; a linear component is not picked from the photograph"),
+        "{unpicked}"
+    );
+    let mut unknown = recipe.clone();
+    unknown.masks[0].components[0].kind = "future-kind".into();
+    let incompatible = pick_request(
+        find("mask.pick-luminance-range").unwrap(),
+        &unknown,
+        &target,
+        &point(0.5, 0.5),
+        &registry(),
+    )
+    .unwrap_err();
+    assert_eq!(incompatible.kind, ErrorKind::Incompatible);
 }

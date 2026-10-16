@@ -620,6 +620,211 @@ impl CompiledColour {
 }
 
 // ---------------------------------------------------------------------------
+// Picking: what a click or a drag on the canvas sets
+// ---------------------------------------------------------------------------
+//
+// `mask.pick-<kind>` reads the mask's input site — one pixel for a click, the reduced points of a
+// rectangle for a drag — and hands what it read to the kind's pick rule below. Each rule is a pure
+// function of the stored payload and the pixels, over this file's own axes: the band's `0..100`
+// tone axis ([`luminance_axis`] times 100) and the colour range's Oklab `(a, b)` plane
+// ([`oklab_ab`]), so a pick measures exactly what the frozen selection then evaluates. The constants
+// are named and justified in `docs/design/range-masks.md#pick-commands`.
+
+/// How far either side of a clicked tone a luminance click puts the band's edges, in slider units.
+pub(super) const PICK_BAND_HALF_WIDTH: f64 = 10.0;
+
+/// The shoulder a luminance click gives both edges, in slider units: wide enough that the band
+/// fades rather than speckles across the noise of an ordinary surface around the clicked tone.
+pub(super) const PICK_CLICK_FEATHER: f64 = 10.0;
+
+/// The percentiles of an area's tones a luminance drag puts the band's edges at: the area's tonal
+/// span without its few darkest and brightest points, so a speck of highlight in a dragged shadow
+/// does not stretch the band to white.
+pub(super) const PICK_LOW_PERCENTILE: f64 = 5.0;
+pub(super) const PICK_HIGH_PERCENTILE: f64 = 95.0;
+
+/// The narrowest shoulder a luminance drag leaves on either edge, in slider units. A hard edge on a
+/// span fitted to an area speckles at its ends, so a narrower stored shoulder — a hard `0`
+/// included — is raised to this and a wider one kept.
+pub(super) const PICK_FEATHER_FLOOR: f64 = 2.0;
+
+/// The percentile of an area's chromaticity distances from its medoid that a colour drag puts on the
+/// selection's plateau: most of the area, not its stray outliers.
+pub(super) const PICK_SPREAD_PERCENTILE: f64 = 90.0;
+
+/// What a pick read at the mask's input site, in linear sRGB: the one pixel a click holds, or the
+/// reduced points of a dragged area in reading order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Picked<'a> {
+    Point([f64; 3]),
+    Area(&'a [[f64; 3]]),
+}
+
+/// The `p`th percentile of `values`, `0 <= p <= 100`, by linear interpolation between the two
+/// nearest order statistics: rank `h = (n - 1) * p / 100`, then `v[floor(h)]` moved toward
+/// `v[floor(h) + 1]` by the fraction of `h`. One value answers itself at every percentile, `p = 0`
+/// is the minimum and `p = 100` the maximum. Sorts `values` in place; `None` when empty.
+pub(super) fn percentile(values: &mut [f64], p: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let rank = (values.len() - 1) as f64 * (p / 100.0);
+    let below = rank.floor() as usize;
+    let above = (below + 1).min(values.len() - 1);
+    let fraction = rank - below as f64;
+    Some(values[below] + fraction * (values[above] - values[below]))
+}
+
+/// One pixel's tone on the band's own axis: [`luminance_axis`] times 100, unclamped.
+pub(super) fn tone(rgb: [f64; 3]) -> f64 {
+    100.0 * luminance_axis(rgb)
+}
+
+/// A luminance click on tone `e`: the band `e ± PICK_BAND_HALF_WIDTH`, each edge clamped to the
+/// axis, with both shoulders [`PICK_CLICK_FEATHER`].
+pub(super) fn band_at(e: f64) -> LuminanceRange {
+    LuminanceRange {
+        low: (e - PICK_BAND_HALF_WIDTH).clamp(LEVEL_MIN, LEVEL_MAX),
+        low_feather: PICK_CLICK_FEATHER,
+        high: (e + PICK_BAND_HALF_WIDTH).clamp(LEVEL_MIN, LEVEL_MAX),
+        high_feather: PICK_CLICK_FEATHER,
+    }
+}
+
+/// A luminance drag over an area whose points have `tones`: the band from the area's
+/// [`PICK_LOW_PERCENTILE`] to its [`PICK_HIGH_PERCENTILE`], each clamped to the axis, keeping
+/// `current`'s shoulders but raising each to [`PICK_FEATHER_FLOOR`] where it is narrower. `None` for
+/// an area with no points.
+pub(super) fn band_over(current: LuminanceRange, tones: &mut [f64]) -> Option<LuminanceRange> {
+    let low = percentile(tones, PICK_LOW_PERCENTILE)?;
+    let high = percentile(tones, PICK_HIGH_PERCENTILE)?;
+    Some(LuminanceRange {
+        low: low.clamp(LEVEL_MIN, LEVEL_MAX),
+        low_feather: current.low_feather.max(PICK_FEATHER_FLOOR),
+        high: high.clamp(LEVEL_MIN, LEVEL_MAX),
+        high_feather: current.high_feather.max(PICK_FEATHER_FLOOR),
+    })
+}
+
+/// The index of an area's **medoid**: the point whose Oklab `(a, b)` is nearest the mean `(a, b)` of
+/// all of them, the first in reading order on a tie. A point of the area rather than its mean colour,
+/// because the mean of a two-coloured area may be a colour the area does not hold. `None` when empty.
+pub(super) fn medoid(points: &[(f64, f64)]) -> Option<usize> {
+    if points.is_empty() {
+        return None;
+    }
+    let count = points.len() as f64;
+    let (sum_a, sum_b) = points
+        .iter()
+        .fold((0.0, 0.0), |(sa, sb), (a, b)| (sa + a, sb + b));
+    let (mean_a, mean_b) = (sum_a / count, sum_b / count);
+    let mut best = (0, f64::INFINITY);
+    for (index, (a, b)) in points.iter().enumerate() {
+        let (da, db) = (a - mean_a, b - mean_b);
+        let d2 = da * da + db * db;
+        if d2 < best.1 {
+            best = (index, d2);
+        }
+    }
+    Some(best.0)
+}
+
+/// The refine whose radius is `radius`: the inverse of the frozen mapping [`refine_radius`],
+///
+/// ```text
+/// refine_for(r) = 100 * ln(r / RADIUS_MAX) / ln(RADIUS_MIN / RADIUS_MAX)
+/// ```
+///
+/// clamped to the slider's `0..100`, so a radius at or past [`RADIUS_MAX`] answers `0` and one at or
+/// inside [`RADIUS_MIN`] — `0` included, which the logarithm cannot take — answers `100`.
+pub(super) fn refine_for(radius: f64) -> f64 {
+    if radius <= 0.0 {
+        return REFINE_MAX;
+    }
+    (100.0 * (radius / RADIUS_MAX).ln() / (RADIUS_MIN / RADIUS_MAX).ln())
+        .clamp(REFINE_MIN, REFINE_MAX)
+}
+
+/// What a colour drag over `area` derives: its medoid, as the sample it adds, and the refine that
+/// puts [`PICK_SPREAD_PERCENTILE`] of the area's `(a, b)` distances from the medoid on the plateau —
+/// `refine_for(d90 / PLATEAU)`. `None` for an area with no points.
+pub(super) fn colour_over(area: &[[f64; 3]]) -> Option<([f64; 3], f64)> {
+    let points: Vec<(f64, f64)> = area.iter().map(|rgb| oklab_ab(*rgb)).collect();
+    let centre = medoid(&points)?;
+    let (ca, cb) = points[centre];
+    let mut distances: Vec<f64> = points
+        .iter()
+        .map(|(a, b)| {
+            let (da, db) = (a - ca, b - cb);
+            (da * da + db * db).sqrt()
+        })
+        .collect();
+    let spread = percentile(&mut distances, PICK_SPREAD_PERCENTILE)?;
+    Some((area[centre], refine_for(spread / PLATEAU)))
+}
+
+/// A refusal for an area that held no point to pick from, which a clipped read never answers.
+fn empty_area(component: &Component) -> Error {
+    Error::validation(format!(
+        "the area picked for component {} holds no pixel",
+        component.name
+    ))
+}
+
+/// The luminance range's pick rule: a click is [`band_at`] the clicked tone and a drag
+/// [`band_over`] the area's tones. A band holds no samples, so `add` means nothing here and the
+/// generated command does not declare it.
+pub(super) fn pick_luminance(
+    component: &Component,
+    picked: Picked<'_>,
+    _add: bool,
+) -> Result<serde_json::Value, Error> {
+    let current = parse_luminance(component)?;
+    let band = match picked {
+        Picked::Point(rgb) => band_at(tone(rgb)),
+        Picked::Area(area) => {
+            let mut tones: Vec<f64> = area.iter().map(|rgb| tone(*rgb)).collect();
+            band_over(current, &mut tones).ok_or_else(|| empty_area(component))?
+        }
+    };
+    serde_json::to_value(band).map_err(|error| Error::internal(error.to_string()))
+}
+
+/// The colour range's pick rule. A click's pixel, or a drag's medoid, replaces the samples or, with
+/// `add`, joins them: a colour the component already holds changes nothing, and a sixth is refused
+/// by [`super::rules::room_for_sample`]. A click leaves Refine as it is; a drag lowers it to the
+/// refine that holds the area ([`colour_over`]) and never raises it, because loosening one swatch
+/// for an area must not tighten the others' hold.
+pub(super) fn pick_colour(
+    component: &Component,
+    picked: Picked<'_>,
+    add: bool,
+) -> Result<serde_json::Value, Error> {
+    let mut range = parse_colour(component)?;
+    let (sample, refine) = match picked {
+        Picked::Point(rgb) => (rgb, range.refine),
+        Picked::Area(area) => {
+            let (medoid, refine) = colour_over(area).ok_or_else(|| empty_area(component))?;
+            (medoid, range.refine.min(refine))
+        }
+    };
+    if !add {
+        range.samples = vec![sample];
+    } else if !range.samples.contains(&sample) {
+        super::rules::room_for_sample(
+            &component.name,
+            COLOUR_KIND,
+            range.samples.len(),
+            MAX_SAMPLES,
+        )?;
+        range.samples.push(sample);
+    }
+    range.refine = refine;
+    serde_json::to_value(range).map_err(|error| Error::internal(error.to_string()))
+}
+
+// ---------------------------------------------------------------------------
 // What a value-based component answers about the frame
 // ---------------------------------------------------------------------------
 
@@ -793,5 +998,222 @@ mod tests {
     /// The linear grey whose encoded luminance is `e`.
     fn linear_grey(e: f64) -> f64 {
         srgb::decode_encoded(e)
+    }
+
+    // -----------------------------------------------------------------------
+    // Picking
+    // -----------------------------------------------------------------------
+
+    fn component(kind: &str, payload: serde_json::Value) -> Component {
+        Component::new("Range 1", crate::ComponentMode::Add, kind, payload)
+    }
+
+    fn band(low: f64, low_feather: f64, high: f64, high_feather: f64) -> LuminanceRange {
+        LuminanceRange {
+            low,
+            low_feather,
+            high,
+            high_feather,
+        }
+    }
+
+    fn close(actual: f64, expected: f64) -> bool {
+        (actual - expected).abs() < 1e-9
+    }
+
+    /// A click centres the band on the clicked tone with the click's shoulders, and each edge
+    /// stops at its end of the axis.
+    #[test]
+    fn a_luminance_click_centres_the_band_and_clamps_it_to_the_axis() {
+        assert_eq!(band_at(50.0), band(40.0, 10.0, 60.0, 10.0));
+        assert_eq!(band_at(4.0), band(0.0, 10.0, 14.0, 10.0));
+        assert_eq!(band_at(97.0), band(87.0, 10.0, 100.0, 10.0));
+        // A pixel brighter than white or darker than black sits on the axis's end.
+        assert_eq!(band_at(130.0), band(100.0, 10.0, 100.0, 10.0));
+        assert_eq!(band_at(-30.0), band(0.0, 10.0, 0.0, 10.0));
+        // Through the kind's own rule: a grey whose tone is 50 sets the band 40..60.
+        let grey = linear_grey(0.5);
+        let stored = component(
+            LUMINANCE_KIND,
+            json!({"low": 0.0, "low_feather": 5.0, "high": 100.0, "high_feather": 5.0}),
+        );
+        let picked: LuminanceRange = serde_json::from_value(
+            pick_luminance(&stored, Picked::Point([grey; 3]), false).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            close(picked.low, 40.0) && close(picked.high, 60.0),
+            "{picked:?}"
+        );
+        assert_eq!((picked.low_feather, picked.high_feather), (10.0, 10.0));
+    }
+
+    /// Percentiles interpolate linearly between the two nearest order statistics, whatever order
+    /// the values arrive in; one value, or a uniform set, answers itself.
+    #[test]
+    fn percentiles_interpolate_between_order_statistics() {
+        let mut tones = [70.0, 10.0, 100.0, 40.0, 20.0, 90.0, 60.0, 30.0, 80.0, 50.0];
+        // Rank 9 · 0.05 = 0.45 between 10 and 20; rank 9 · 0.95 = 8.55 between 90 and 100.
+        assert!(close(percentile(&mut tones, 5.0).unwrap(), 14.5));
+        assert!(close(percentile(&mut tones, 95.0).unwrap(), 95.5));
+        assert_eq!(percentile(&mut tones, 0.0), Some(10.0));
+        assert_eq!(percentile(&mut tones, 100.0), Some(100.0));
+        assert_eq!(percentile(&mut [42.0], 5.0), Some(42.0));
+        assert_eq!(percentile(&mut [42.0], 95.0), Some(42.0));
+        assert_eq!(percentile(&mut [7.0; 6], 90.0), Some(7.0));
+        assert_eq!(percentile(&mut [], 50.0), None);
+    }
+
+    /// A drag spans the area's 5th to 95th percentile tones, clamped to the axis; each shoulder is
+    /// kept but raised to the floor where narrower, a hard edge included. A one-point area and a
+    /// uniform area make a band of no width at that tone.
+    #[test]
+    fn a_luminance_drag_spans_the_areas_tones_and_floors_its_shoulders() {
+        let mut tones = [70.0, 10.0, 100.0, 40.0, 20.0, 90.0, 60.0, 30.0, 80.0, 50.0];
+        let spanned = band_over(band(0.0, 0.0, 100.0, 7.0), &mut tones).unwrap();
+        assert!(
+            close(spanned.low, 14.5) && close(spanned.high, 95.5),
+            "{spanned:?}"
+        );
+        assert_eq!((spanned.low_feather, spanned.high_feather), (2.0, 7.0));
+        assert_eq!(
+            band_over(band(0.0, 1.0, 100.0, 1.5), &mut [33.0]),
+            Some(band(33.0, 2.0, 33.0, 2.0))
+        );
+        assert_eq!(
+            band_over(band(0.0, 5.0, 100.0, 5.0), &mut [62.0; 9]),
+            Some(band(62.0, 5.0, 62.0, 5.0))
+        );
+        // Values past the axis's ends: -5 + 0.05 · 125 and -5 + 0.95 · 125, the second clamped.
+        assert_eq!(
+            band_over(band(0.0, 5.0, 100.0, 5.0), &mut [-5.0, 120.0]),
+            Some(band(1.25, 5.0, 100.0, 5.0))
+        );
+        assert_eq!(band_over(band(0.0, 5.0, 100.0, 5.0), &mut []), None);
+    }
+
+    /// The medoid is a point of the area — the one nearest the mean `(a, b)` — so a two-coloured
+    /// area yields the majority colour rather than the mixture between them; a tie takes the first
+    /// in reading order.
+    #[test]
+    fn the_medoid_is_the_point_nearest_the_areas_mean() {
+        let points = [(0.0, 0.0), (0.3, 0.1), (0.0, 0.0), (0.0, 0.0)];
+        // The mean is (0.075, 0.025), which no point holds; the nearest point is the first.
+        assert_eq!(medoid(&points), Some(0));
+        assert_eq!(medoid(&[(0.1, 0.0), (-0.1, 0.0)]), Some(0), "a tie");
+        assert_eq!(medoid(&[(0.2, 0.0), (0.0, 0.0), (0.1, 0.01)]), Some(2));
+        assert_eq!(medoid(&[]), None);
+    }
+
+    /// `refine_for` inverts the frozen mapping: a round trip returns the refine, `r = 0` and
+    /// `RADIUS_MIN` give 100, and `RADIUS_MAX` and anything past it give 0.
+    #[test]
+    fn refine_for_inverts_the_frozen_refine_mapping() {
+        assert_eq!(refine_for(0.0), REFINE_MAX);
+        assert!(close(refine_for(RADIUS_MIN), REFINE_MAX));
+        assert_eq!(refine_for(RADIUS_MIN / 4.0), REFINE_MAX, "clamped");
+        assert_eq!(refine_for(RADIUS_MAX), REFINE_MIN);
+        assert_eq!(refine_for(3.0 * RADIUS_MAX), REFINE_MIN, "clamped");
+        for step in 0..=100 {
+            let refine = f64::from(step);
+            assert!(
+                (refine_for(refine_radius(refine)) - refine).abs() < 1e-9,
+                "refine {refine}"
+            );
+        }
+        // The default's radius is the geometric mean of the ends.
+        assert!(close(
+            refine_for((RADIUS_MIN * RADIUS_MAX).sqrt()),
+            REFINE_DEFAULT
+        ));
+    }
+
+    /// A colour drag samples the medoid and sets the refine that puts the 90th-percentile distance
+    /// from it on the plateau: over nine pixels of one colour and one of another, the distances are
+    /// nine zeros and `d`, so `d90` is `0.1 · d` (rank 8.1) and the refine is `refine_for(0.2 · d)`.
+    #[test]
+    fn a_colour_drag_samples_the_medoid_and_holds_ninety_percent_of_the_area() {
+        let (sky, leaf) = ([0.10, 0.18, 0.32], [0.12, 0.30, 0.05]);
+        let mut area = vec![sky; 9];
+        area.insert(4, leaf);
+        let ((sa, sb), (la, lb)) = (oklab_ab(sky), oklab_ab(leaf));
+        let d = ((la - sa).powi(2) + (lb - sb).powi(2)).sqrt();
+        let (sample, refine) = colour_over(&area).unwrap();
+        assert_eq!(sample, sky, "the majority colour, not the mixture");
+        assert!(close(refine, refine_for(0.1 * d / PLATEAU)), "{refine}");
+        assert!(refine > REFINE_MIN && refine < REFINE_MAX, "{refine}");
+        assert_eq!(colour_over(&[]), None);
+    }
+
+    /// Refine is lowered to hold a dragged area and never raised: a uniform area, which a tighter
+    /// selection would hold, leaves a loose refine as it is.
+    #[test]
+    fn a_colour_drag_never_raises_refine() {
+        let colour = [0.4, 0.2, 0.1];
+        let stored = |refine: f64| {
+            component(
+                COLOUR_KIND,
+                json!({"samples": [[0.1, 0.5, 0.2]], "refine": refine}),
+            )
+        };
+        let pick = |refine: f64, area: &[[f64; 3]]| -> ColourRange {
+            serde_json::from_value(pick_colour(&stored(refine), Picked::Area(area), false).unwrap())
+                .unwrap()
+        };
+        let uniform = [colour; 16];
+        assert_eq!(colour_over(&uniform), Some((colour, REFINE_MAX)));
+        let kept = pick(30.0, &uniform);
+        assert_eq!(
+            kept.refine, 30.0,
+            "a uniform area does not tighten the hold"
+        );
+        assert_eq!(kept.samples, vec![colour]);
+        let spread = [colour, colour, [0.4, 0.25, 0.1], colour];
+        let (_, wanted) = colour_over(&spread).unwrap();
+        assert!(wanted > 10.0 && wanted < 90.0, "{wanted}");
+        assert_eq!(
+            pick(90.0, &spread).refine,
+            wanted,
+            "lowered to hold the area"
+        );
+        assert_eq!(
+            pick(wanted / 2.0, &spread).refine,
+            wanted / 2.0,
+            "never raised"
+        );
+    }
+
+    /// A colour click replaces the samples, or with `add` joins them; a colour already held changes
+    /// nothing; a sixth is refused with the sample limit's own sentence. Refine is unchanged.
+    #[test]
+    fn a_colour_click_replaces_or_adds_one_sample() {
+        let held = [[0.1, 0.2, 0.3], [0.5, 0.5, 0.1]];
+        let stored = component(COLOUR_KIND, json!({"samples": held, "refine": 64.0}));
+        let picked = [0.7, 0.3, 0.2];
+        let replaced: ColourRange =
+            serde_json::from_value(pick_colour(&stored, Picked::Point(picked), false).unwrap())
+                .unwrap();
+        assert_eq!(replaced.samples, vec![picked]);
+        assert_eq!(replaced.refine, 64.0);
+        let added: ColourRange =
+            serde_json::from_value(pick_colour(&stored, Picked::Point(picked), true).unwrap())
+                .unwrap();
+        assert_eq!(added.samples, vec![held[0], held[1], picked]);
+        let duplicate = pick_colour(&stored, Picked::Point(held[1]), true).unwrap();
+        assert_eq!(duplicate, stored.payload, "a held colour changes nothing");
+        let full = component(
+            COLOUR_KIND,
+            json!({"samples": [[0.1, 0.1, 0.1], [0.2, 0.2, 0.2], [0.3, 0.3, 0.3],
+                               [0.4, 0.4, 0.4], [0.5, 0.5, 0.5]], "refine": 50.0}),
+        );
+        let refused = pick_colour(&full, Picked::Point(picked), true).unwrap_err();
+        assert_eq!(
+            refused.detail,
+            super::super::rules::room_for_sample("Range 1", COLOUR_KIND, 5, MAX_SAMPLES)
+                .unwrap_err()
+                .detail
+        );
+        // Without `add` a full list is simply replaced.
+        assert!(pick_colour(&full, Picked::Point(picked), false).is_ok());
     }
 }

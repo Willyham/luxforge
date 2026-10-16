@@ -1226,3 +1226,125 @@ fn only_capability_events_ask_for_capability_reads() {
     assert!(!capability_event("edit.apply-proof-tint"));
     assert!(!capability_event("pick.develop"));
 }
+
+#[test]
+fn published_settings_failure_reads_back_the_visible_revision_and_keeps_the_error() {
+    let mut proof = Proof::start();
+    proof.expand();
+    // The owner already committed the value; the UI receives the durability failure separately.
+    proof.api("module.settings.set", json!({"module_id": MODULE, "values": {"strength": 0.8}, "mutation": proof.settings_mutation()}));
+    proof
+        .editor
+        .capabilities
+        .module_mut(MODULE)
+        .edits
+        .insert("strength".into(), "0.1".into());
+    let error = super::tasks::CallError {
+        code: "read-error".into(),
+        message: "the replacement is visible but durability is unconfirmed".into(),
+        data: Some(json!({"published": true, "durable": false, "path": "settings.json"})),
+        job_id: None,
+    };
+    let mut settings = None;
+    let outcome = super::capabilities::settings_failure(error, || {
+        let (answer, _) = call(
+            &proof.editor.owner,
+            proof.editor.client,
+            "module.settings.read",
+            json!({"module_id": MODULE}),
+        )
+        .unwrap();
+        settings = Some(serde_json::from_value(answer).unwrap());
+    });
+    assert!(matches!(outcome, super::capabilities::Outcome::Failed(_)));
+    let status = proof.state().status.clone().unwrap();
+    proof.send(CapabilityMessage::Answered(Box::new(
+        super::capabilities::Answer {
+            module_id: MODULE.into(),
+            op: Operation::Set {
+                field: "strength".into(),
+                value: json!(0.8),
+                revision: 0,
+            },
+            consent: None,
+            outcome,
+            settings,
+            status: Ok(status),
+            job: None,
+            sent: Vec::new(),
+        },
+    )));
+    assert_eq!(proof.state().revision(), Some(1));
+    assert!(!proof.state().edits.contains_key("strength"));
+    assert!(
+        matches!(&proof.block().fields[0].kind, FieldKindModel::Number { display, typing: None } if display == "0.80")
+    );
+    assert!(
+        proof
+            .editor
+            .status
+            .text
+            .contains("visible but durability is unconfirmed")
+    );
+    assert!(
+        proof
+            .block()
+            .status_line
+            .as_deref()
+            .unwrap()
+            .contains("durability")
+    );
+    proof.stop();
+}
+
+#[test]
+#[slow]
+fn published_resource_job_failure_shows_the_error_beside_the_installed_resource() {
+    let mut proof = Proof::start();
+    proof.ready();
+    let mut status = proof.state().status.clone().unwrap();
+    let mut record = status
+        .jobs
+        .iter()
+        .find(|record| record.kind == luxforge_core::jobs::JobKind::Install)
+        .unwrap()
+        .clone();
+    record.status = JobStatus::Failed;
+    record.result = None;
+    record.error = Some(luxforge_core::jobs::JobError {
+        code: "read-error".into(),
+        message: "the replacement is visible but durability is unconfirmed".into(),
+        data: Some(json!({"published": true, "durable": false, "path": "installed.json"})),
+    });
+    status
+        .jobs
+        .iter_mut()
+        .filter(|job| job.job_id == record.job_id)
+        .for_each(|job| *job = record.clone());
+    proof.send(CapabilityMessage::Answered(Box::new(
+        super::capabilities::Answer {
+            module_id: MODULE.into(),
+            op: Operation::Install {
+                resource: "proof-palette".into(),
+            },
+            consent: None,
+            outcome: super::capabilities::Outcome::Done(json!({"job_id": record.job_id})),
+            settings: None,
+            status: Ok(status),
+            job: Some(record),
+            sent: Vec::new(),
+        },
+    )));
+    assert_eq!(
+        proof.state().status.as_ref().unwrap().resources[0].state,
+        luxforge_core::capabilities::resources::ResourceState::Installed
+    );
+    assert!(
+        proof
+            .editor
+            .status
+            .text
+            .contains("visible but durability is unconfirmed")
+    );
+    proof.stop();
+}

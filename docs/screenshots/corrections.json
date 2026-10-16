@@ -1,0 +1,89 @@
+[
+  {
+    "api": {
+      "method": "edit.set-basic",
+      "params": {
+        "exposure": 0.2,
+        "contrast": 10.0,
+        "highlights": -20.0,
+        "shadows": 15.0,
+        "vibrance": 15.0
+      }
+    }
+  },
+  {
+    "key": {
+      "key": "q"
+    }
+  },
+  {
+    "correction": {
+      "press": {
+        "at": [
+          0.747,
+          0.59
+        ]
+      }
+    }
+  },
+  {
+    "correction": {
+      "press": {
+        "at": [
+          0.766,
+          0.627
+        ]
+      }
+    }
+  },
+  {
+    "correction": {
+      "press": {
+        "at": [
+          0.836,
+          0.642
+        ]
+      }
+    }
+  },
+  {
+    "correction": {
+      "press": {
+        "at": [
+          0.706,
+          0.647
+        ]
+      }
+    }
+  },
+  {
+    "correction": {
+      "press": {
+        "at": [
+          0.708,
+          0.674
+        ]
+      }
+    }
+  },
+  {
+    "correction": {
+      "press": {
+        "at": [
+          0.813,
+          0.734
+        ]
+      }
+    }
+  },
+  {
+    "wait": {
+      "ms": 8000
+    }
+  },
+  {
+    "wait": {
+      "ms": 8000
+    }
+  }
+]

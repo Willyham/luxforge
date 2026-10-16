@@ -38,6 +38,23 @@ const PIVOT: f32 = 0.5;
 /// not the exponent's sign. See "Contrast" in the design doc.
 const ALPHA_MAX: f64 = 6.0;
 
+/// Below this slope, subtracting logistic values near 0.5 loses the curve in f32. The
+/// algebraically identical tanhc form keeps the extended-domain response and its zero limit.
+const SMALL_ALPHA: f64 = 0.1;
+
+fn tanhc(value: f32) -> f32 {
+    let magnitude = value.abs();
+    if magnitude < 0.01 {
+        let square = value * value;
+        1.0 + square * (-1.0 / 3.0 + square * (2.0 / 15.0))
+    } else if magnitude >= 10.0 {
+        // tanh(10) rounds to one in f32; avoid a backend's overflowing exp at large arguments.
+        1.0 / magnitude
+    } else {
+        value.tanh() / value
+    }
+}
+
 /// Whites/Blacks endpoint range and the crossing-prevention clamp's minimum gap. See "Whites and
 /// Blacks" in the design doc.
 const K_W: f64 = 0.25;
@@ -66,6 +83,7 @@ pub(super) struct Tone {
     /// Contrast: `alpha = ALPHA_MAX * |contrast| / 100`, computed once. Only read when
     /// `contrast != 0.0`; the identity branch in `contrast_stage` never reaches it otherwise.
     alpha: f32,
+    small_contrast: bool,
     /// Contrast's endpoint normalization, `g(0)` and `1 / (g(1) - g(0))`, computed once in `f64`.
     contrast_g0: f32,
     contrast_inv_gap: f32,
@@ -127,8 +145,17 @@ impl Tone {
         // contrast == 0.0 makes alpha == 0.0 and so g1 - g0 == 0.0; the identity branch in
         // `contrast_stage` never reads `contrast_inv_gap` or `contrast_kappa` in that case, so 0.0
         // here is a safe, finite placeholder rather than an unused NaN/inf from dividing by zero.
+        let small_contrast = contrast != 0.0 && alpha < SMALL_ALPHA;
         let (contrast_inv_gap, contrast_kappa) = if contrast == 0.0 {
             (0.0, 0.0)
+        } else if small_contrast {
+            let quarter = alpha / 4.0;
+            let kappa = if quarter == 0.0 {
+                1.0
+            } else {
+                quarter.tanh() / quarter
+            };
+            (0.0, kappa)
         } else {
             let sigma = (alpha / 4.0) / (g1 - g0);
             (1.0 / (g1 - g0), 1.0 / sigma)
@@ -158,6 +185,7 @@ impl Tone {
             whites,
             blacks,
             alpha: alpha as f32,
+            small_contrast,
             contrast_g0: g0 as f32,
             contrast_inv_gap: contrast_inv_gap as f32,
             contrast_kappa: contrast_kappa as f32,
@@ -226,8 +254,16 @@ impl Tone {
         if self.contrast == 0.0 {
             return x;
         }
-        let g = 1.0 / (1.0 + (-self.alpha * (x - PIVOT)).exp());
-        let s = (g - self.contrast_g0) * self.contrast_inv_gap;
+        let s = if self.small_contrast {
+            if x == 0.0 || x == 1.0 {
+                return x;
+            }
+            let distance = x - PIVOT;
+            PIVOT + distance * tanhc((self.alpha * 0.5) * distance) / self.contrast_kappa
+        } else {
+            let g = 1.0 / (1.0 + (-self.alpha * (x - PIVOT)).exp());
+            (g - self.contrast_g0) * self.contrast_inv_gap
+        };
         if self.contrast > 0.0 {
             s
         } else {
@@ -345,6 +381,8 @@ impl PointwiseColor for Tone {
     fn gpu(&self) -> Option<GpuDescription> {
         let branch: u32 = if self.contrast == 0.0 {
             0
+        } else if self.small_contrast {
+            if self.contrast > 0.0 { 3 } else { 4 }
         } else if self.contrast > 0.0 {
             1
         } else {
@@ -570,6 +608,84 @@ mod tests {
         }
     }
 
+    /// Fractional API values and preset Amount can approach zero more closely than a slider's
+    /// displayed step. Contrast must stay continuous there on both sides, at the frozen tolerance.
+    #[test]
+    fn tiny_contrast_matches_the_independent_reference_on_both_sides() {
+        use luxforge_reference::tone::{ToneParams, tone_pixel};
+
+        for magnitude in [
+            1e-4,
+            1e-6,
+            1e-20,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            0.18,
+            0.3,
+            1.6,
+            5.0 / 3.0,
+            1.7,
+        ] {
+            for contrast in [-magnitude, magnitude] {
+                let unit = Tone::new(contrast, 0.0, 0.0, 0.0, 0.0, RENDERED);
+                assert!(unit.is_finite());
+                let parameters = ToneParams {
+                    contrast,
+                    ..ToneParams::NEUTRAL
+                };
+                for grey in [0.05_f32, 0.18, 0.5, 0.86, 1.169] {
+                    let input = [grey; 3];
+                    let expected = tone_pixel(input.map(f64::from), parameters);
+                    let mut row = [input];
+                    unit.apply_row(0, 0, &mut row);
+                    for (actual, expected) in row[0].into_iter().zip(expected) {
+                        assert!(
+                            (f64::from(actual) - expected).abs() <= tolerance(expected),
+                            "contrast={contrast} grey={grey}: actual {actual}, reference {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Independent high-precision evaluation of the original logistic, including extended
+    /// values whose alpha*x is appreciable even when Contrast is tiny. A blind identity limit
+    /// cannot pass these cases. No output clamp hides a discrepancy.
+    #[test]
+    fn small_contrast_matches_high_precision_extended_cases() {
+        let raw = fs::read_to_string(fixture_path().with_file_name("contrast-small-cases.json"))
+            .expect("the independent high-precision contrast fixture");
+        let fixture: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+        for case in fixture["cases"].as_array().expect("cases") {
+            let contrast = case["contrast"].as_f64().expect("contrast");
+            let input = case["input_encoded"].as_f64().expect("input");
+            let expected = case["expected_encoded"].as_f64().expect("expected");
+            assert_eq!(f64::from(input as f32), input, "f32-representable input");
+            let unit = Tone::new(contrast, 0.0, 0.0, 0.0, 0.0, RENDERED);
+            assert!(unit.is_finite(), "contrast={contrast}");
+            let actual = f64::from(unit.contrast_stage(input as f32));
+            assert!(
+                actual.is_finite() && (actual - expected).abs() <= tolerance(expected),
+                "contrast={contrast} input={input}: actual {actual}, high precision {expected}"
+            );
+            for endpoint in [0.0_f32, 1.0] {
+                let actual = unit.contrast_stage(endpoint);
+                if unit.small_contrast {
+                    assert_eq!(actual, endpoint);
+                } else {
+                    // The unchanged ordinary f32 logistic fixes endpoints within its frozen
+                    // tolerance; only the stable branch promises exact endpoint placement.
+                    assert!(
+                        (f64::from(actual) - f64::from(endpoint)).abs()
+                            <= tolerance(f64::from(endpoint)),
+                        "contrast={contrast} endpoint={endpoint}: actual {actual}"
+                    );
+                }
+            }
+        }
+    }
+
     /// A pointwise, per-pixel curve applied to an achromatic pixel (equal channels) must return
     /// another achromatic pixel: the same scalar ratio or the same additive delta is applied to all
     /// three equal channels.
@@ -598,7 +714,19 @@ mod tests {
     fn gpu_uniforms_follow_the_description() {
         let mut values = Vec::new();
         for field in 0..5 {
-            for value in [-100.0, -37.5, -0.0, 0.0, 1.0 / 3.0, 64.0, 100.0] {
+            for value in [
+                -100.0,
+                -37.5,
+                -0.1,
+                -1e-6,
+                -0.0,
+                0.0,
+                1e-6,
+                0.1,
+                1.0 / 3.0,
+                64.0,
+                100.0,
+            ] {
                 let mut set = [0.0; 5];
                 set[field] = value;
                 values.push(set);
@@ -623,6 +751,8 @@ mod tests {
             let description = unit.gpu().expect("Tone has a program");
             let branch = if unit.contrast == 0.0 {
                 0
+            } else if unit.small_contrast {
+                if unit.contrast > 0.0 { 3 } else { 4 }
             } else if unit.contrast > 0.0 {
                 1
             } else {

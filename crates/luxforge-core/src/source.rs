@@ -372,6 +372,23 @@ pub(crate) enum PreparedSource {
     Paged(PagedPrepared),
 }
 
+impl PreparedSource {
+    /// The bytes the source cache holds for it: a decoded frame, a RAW's mosaic and the
+    /// development beside it, or a derived source's planes. A paged source's chunks are its own
+    /// cache's, which goes with it, and are not counted here.
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        match self {
+            Self::Jpeg(image) => image.rgba.len() as u64,
+            Self::Raw(raw) => {
+                std::mem::size_of_val(raw.sensor.source_samples()) as u64
+                    + raw.linear.as_ref().map_or(0, LinearImage::plane_bytes)
+            }
+            Self::Derived(derived) => derived.linear.plane_bytes(),
+            Self::Paged(_) => 0,
+        }
+    }
+}
+
 /// A paged derived source as it is prepared: the verified manifest and smallest level, with windows
 /// of any level and the resident level read on demand through the source
 /// ([`crate::artifacts::derived_source::PagedSource`]). Shared, and held on the source worker's
@@ -817,6 +834,13 @@ impl SecondDevelopment {
             .identity()
                 == *wanted
         })
+    }
+
+    /// The bytes of the planes this slot holds.
+    pub(crate) fn plane_bytes(&self) -> u64 {
+        self.held
+            .as_ref()
+            .map_or(0, |(_, planes)| planes.plane_bytes())
     }
 
     /// Whether this slot holds planes developed at `gains`.

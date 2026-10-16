@@ -4,10 +4,9 @@
 //!
 //! Open sits beside the file's identity, as the default board draws it: the editor has no library
 //! to open a photograph from, and without it a fresh launch could reach no photograph at all.
-//! Export sits beside Open and drops its two-item menu under itself. Where
+//! Export sits beside Open and drops the Export menu under itself. Where
 //! the bar is the window's own title bar ([`crate::window_frame`]), its empty area drags the
 //! window; every control in it answers its own press first.
-use crate::state::MenuTarget;
 use crate::state::palette::Panel;
 use crate::{
     app::message::{
@@ -17,8 +16,8 @@ use crate::{
     state::{
         Workspace,
         title::{
-            EXPORT_ITEMS, EXPORT_TOOLTIP, SEGMENT_FIT, SEGMENT_HUNDRED, SEGMENT_PERCENT,
-            SETTINGS_TOOLTIP, TitleBarModel, ZOOM_STOPS, percent_text,
+            EXPORT_SHORTCUTS, EXPORT_TOOLTIP, ExportMenuModel, SEGMENT_FIT, SEGMENT_HUNDRED,
+            SEGMENT_PERCENT, SETTINGS_TOOLTIP, TitleBarModel, ZOOM_STOPS, percent_text,
         },
     },
     window_frame,
@@ -28,9 +27,9 @@ use iced::{
     widget::{Space, container, mouse_area, row, stack, text, text_input},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, Icon, IconButtonModel, NotchedSliderModel, StepKeys, chevron_segment,
-    hover_panel, inline_menu, notched_panel, popover, segment, segment_track, text_button, theme,
-    title_bar_icon_button,
+    ButtonSize, ButtonTone, Icon, IconButtonModel, MenuEntry, MenuItem, NotchedSliderModel,
+    StepKeys, chevron_segment, hover_panel, menu_list_with_width, notched_panel, popover, segment,
+    segment_track, text_button, theme, title_bar_icon_button,
 };
 use luxforge_ui::{Element, Token};
 
@@ -40,8 +39,8 @@ pub(crate) const ZOOM_FIELD: &str = "luxforge.title.zoom";
 /// How wide the typed-percentage field is: enough for four digits and the caret.
 const ZOOM_FIELD_WIDTH: f32 = 56.0;
 
-/// How wide the Export menu is: its longer item and the menu's padding.
-const EXPORT_MENU_WIDTH: f32 = 220.0;
+/// How wide the Export menu is: a preset row with its settings trailing, and the padding.
+const EXPORT_MENU_WIDTH: f32 = 300.0;
 
 /// The Thirds toggle's tooltip, naming its letter as Clipping's does.
 const THIRDS_TOOLTIP: &str = "Thirds (O)";
@@ -121,9 +120,9 @@ fn identity(model: &TitleBarModel) -> Element<'_, Message> {
 /// palette also offers. The button opens and closes the menu; a press elsewhere closes it too.
 fn export(model: &TitleBarModel) -> Element<'_, Message> {
     let toggle = if model.export_menu_open {
-        ViewMessage::CloseMenu
+        Message::View(ViewMessage::CloseMenu)
     } else {
-        ViewMessage::OpenMenu(MenuTarget::Export)
+        Message::Export(ExportMessage::Menu)
     };
     let button = title_bar_icon_button(
         &IconButtonModel {
@@ -132,27 +131,55 @@ fn export(model: &TitleBarModel) -> Element<'_, Message> {
             enabled: model.can_export,
             selected: model.export_menu_open,
         },
-        model.can_export.then_some(Message::View(toggle)),
+        model.can_export.then_some(toggle),
     );
-    let menu = model.export_menu_open.then(|| {
-        container(inline_menu(
-            EXPORT_ITEMS
-                .iter()
-                .map(|(label, keep_metadata)| {
-                    (
-                        (*label).to_owned(),
-                        Message::Export(ExportMessage::Start {
-                            keep_metadata: *keep_metadata,
-                            reference: false,
-                        }),
-                    )
-                })
-                .collect(),
-        ))
-        .width(Length::Fixed(EXPORT_MENU_WIDTH))
-        .into()
-    });
+    let menu = model.export_menu.as_ref().map(export_menu);
     popover(button, menu, Message::View(ViewMessage::CloseMenu))
+}
+
+/// The Export menu: Export…, Export again and, under its heading, one row per preset with its
+/// settings trailing.
+fn export_menu(menu: &ExportMenuModel) -> Element<'_, Message> {
+    let mut entries = vec![
+        MenuEntry::Item(MenuItem {
+            icon: None,
+            label: "Export\u{2026}".to_owned(),
+            trailing: Some(EXPORT_SHORTCUTS.0.to_owned()),
+            on_press: Some(Message::Export(ExportMessage::OpenSheet {
+                reference: false,
+            })),
+            reason: None,
+        }),
+        MenuEntry::Item(MenuItem {
+            icon: None,
+            label: menu
+                .again
+                .clone()
+                .unwrap_or_else(|| "Export again".to_owned()),
+            trailing: Some(EXPORT_SHORTCUTS.1.to_owned()),
+            on_press: menu
+                .again
+                .as_ref()
+                .map(|_| Message::Export(ExportMessage::Again)),
+            reason: Some("Nothing has been exported yet".to_owned()),
+        }),
+    ];
+    if !menu.presets.is_empty() {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Heading("Export with preset".to_owned()));
+        entries.extend(menu.presets.iter().map(|(preset_id, name, detail)| {
+            MenuEntry::Item(MenuItem {
+                icon: None,
+                label: name.clone(),
+                trailing: Some(detail.clone()),
+                on_press: Some(Message::Export(ExportMessage::WithPreset(
+                    preset_id.clone(),
+                ))),
+                reason: None,
+            })
+        }));
+    }
+    menu_list_with_width(entries, EXPORT_MENU_WIDTH)
 }
 
 /// Fit, 100% and the effective percentage on one track, then Compare, Clipping and the Thirds and

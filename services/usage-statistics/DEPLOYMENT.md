@@ -68,7 +68,7 @@ The local reference's exact ClickHouse timelines and 90-day TTL do not prove hos
 Start the relay from the separate backend checkout in one terminal:
 
 ```sh
-cd /Users/will/projects/luxforge-backend
+cd ../luxforge-backend
 npm run relay
 ```
 

@@ -382,6 +382,12 @@ impl Presentation {
         }
     }
 
+    /// Let go of the whole-stack plan a Fit resize reduces again, whose evaluation shares the
+    /// source's pixels: a resize then asks for a job of its own.
+    pub(crate) fn forget_reduction_job(&mut self) {
+        self.reduction_job = None;
+    }
+
     /// Forget what a job whose last phase has been taken up was asked for.
     pub(crate) fn forget(&mut self, generation: u64) {
         self.pending_bounds.remove(&generation);
@@ -657,6 +663,7 @@ impl Presentation {
             mask_draft: None,
             mask_map: None,
             mask_handles: true,
+            range_pick: None,
             corrections: None,
             draft: None,
             gpu: None,
@@ -668,6 +675,7 @@ impl Presentation {
             gpu_source: None,
             gpu_window: None,
             gpu_rest: None,
+            gpu_rest_under: false,
             stage_rest: None,
             gpu_counts: None,
             compare_gpu: None,
@@ -695,6 +703,13 @@ impl Presentation {
     /// ([`super::presenter::Presenter::region_coverage`]).
     pub(crate) fn coverage(&self) -> Option<&luxforge_ui::Frame> {
         self.presenter.coverage(self.presented_generation)
+    }
+
+    /// Whether the GPU presents the content on screen with no CPU frame of it
+    /// ([`Self::show_gpu`]): the presenter's frame under the GPU's picture is an earlier stack's,
+    /// an open's empty frame or its instant preview, never to be drawn in place of that picture.
+    pub(crate) fn frame_behind(&self) -> bool {
+        self.gpu_presented == Some(self.presented_content)
     }
 
     /// The reduced frame retained for the generation on screen, when there is one.
@@ -902,8 +917,8 @@ impl Editor {
             return false;
         }
         // The GPU's picture at rest of the content on screen holds the view at full detail, once
-        // the surface has evaluated it.
-        if self.gpu_holds_view(wanted)
+        // the surface has evaluated it: of a content it presents, or of a paged source's window.
+        if (self.gpu_holds_view(wanted) || self.gpu_window_holds_view(wanted))
             && self.gpu_rest_plan().is_some_and(|(plan, _)| {
                 luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
                     .gpu_ready_boundary
@@ -968,7 +983,9 @@ impl Editor {
             None => outcome::Presented::Photo,
         };
         self.outcome(Outcome::Presented(presented));
-        if self.activity.pending {
+        // Pixels reused while a file imports are the photograph before it, kept on screen for
+        // bounds the open changed (its filmstrip goes until its folder is read).
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
@@ -1090,7 +1107,7 @@ impl Editor {
                                 self.owner.clone(),
                                 self.client,
                                 state.asset.id.clone(),
-                                Some(entry),
+                                entry,
                             );
                         }
                     }
@@ -1263,20 +1280,35 @@ impl Editor {
     /// 100% and above, holds `wanted`.
     fn gpu_holds_view(&self, wanted: Region) -> bool {
         self.presentation.gpu_presented == Some(self.presentation.content_serial)
-            && self.gpu_rest_plan().is_some_and(|(plan, _)| {
-                plan.region.is_some_and(|region| {
-                    let [x0, y0, x1, y1] = region.rect;
-                    contains_region(
-                        Region {
-                            x0,
-                            y0,
-                            width: x1 - x0,
-                            height: y1 - y0,
-                        },
-                        wanted,
-                    )
-                })
+            && self.gpu_rest_region_holds(wanted)
+    }
+
+    /// Whether a paged source's view plan at rest, cut from the window of level 0 the surface
+    /// holds, is of the content on screen and holds `wanted`. The reference's frame of a paged
+    /// source is its overview alone, never level 0, so at 100% and above that region is the
+    /// photograph's only full-detail picture, whichever renderer presented the content.
+    fn gpu_window_holds_view(&self, wanted: Region) -> bool {
+        self.gpu_window_handed().is_some()
+            && self.presentation.presented_content == self.presentation.content_serial
+            && self.gpu_rest_region_holds(wanted)
+    }
+
+    /// Whether the view plan at rest is a region's, at 100% and above, that holds `wanted`.
+    fn gpu_rest_region_holds(&self, wanted: Region) -> bool {
+        self.gpu_rest_plan().is_some_and(|(plan, _)| {
+            plan.region.is_some_and(|region| {
+                let [x0, y0, x1, y1] = region.rect;
+                contains_region(
+                    Region {
+                        x0,
+                        y0,
+                        width: x1 - x0,
+                        height: y1 - y0,
+                    },
+                    wanted,
+                )
             })
+        })
     }
 
     /// The physical pixels the photo area can show a frame in, when the view means a display-size
@@ -1521,7 +1553,7 @@ impl Editor {
         } else {
             (frame.raster().width, frame.raster().height)
         };
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.preview_dimensions = Some(stage);
             self.event(
                 "decoded",
@@ -1632,7 +1664,7 @@ impl Editor {
         self.outcome(Outcome::PreviewFailed {
             newest: generation >= self.presentation.preview_generation,
         });
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.phase = "error";
             self.activity.error_code = Some(error.kind.code().into());
@@ -2161,6 +2193,10 @@ impl Editor {
         let generation = frame.generation();
         self.presentation
             .show(&frame, stage, &entry, draft_revision);
+        if !zoom && frame.proxy().is_none() {
+            // The reference rendered this stage whole: heavy work at photo size.
+            self.residency_rendered(stage);
+        }
         if !zoom {
             self.presentation.presented_asset = self
                 .document
@@ -2240,7 +2276,7 @@ impl Editor {
             None => outcome::Presented::Photo,
         };
         self.outcome(Outcome::Presented(presented));
-        if self.activity.pending {
+        if self.request_awaits_picture() {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";

@@ -607,7 +607,7 @@ fn lightroom_means(folder: &Path, id: &str) -> Result<Option<Vec<[f64; 3]>>> {
         .extension()
         .is_some_and(|extension| extension == "tif" || extension == "tiff");
     let (width, height, pixels) = if is_tiff {
-        let tiff = crate::tiff::read(&fs::read(&path)?)
+        let tiff = crate::tiff_reader::read(&fs::read(&path)?)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         let encoded: Vec<[f64; 3]> = tiff
             .rgb

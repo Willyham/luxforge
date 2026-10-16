@@ -14,6 +14,7 @@
 //! selected mask as their target.
 use crate::{
     mask_draft::MaskDraft,
+    range_pick::RangePicker,
     state::{
         Inputs,
         number::NumberSpec,
@@ -23,7 +24,7 @@ use crate::{
 use luxforge_core::{
     ComponentId, ComponentMode, Control, MaskId, MaskOverlayColour, MaskOverlayMode,
     mask::{
-        commands::{self, ComponentReport, MaskReport, SampleOp},
+        commands::{self, ComponentReport, MaskReport},
         rules,
     },
 };
@@ -52,6 +53,9 @@ pub(crate) struct MaskRow {
     /// A component of a kind this build cannot evaluate is retained and reported; the row says so
     /// rather than drawing the mask as if it were complete.
     pub(crate) unavailable: Option<String>,
+    /// Why the overlay of this mask cannot be drawn, in the host's words: shown as a muted note
+    /// under the open mask's row, and never on a mask that is not open.
+    pub(crate) coverage_note: Option<String>,
     /// Why this mask cannot move up or down the list, when it cannot: it is already at that end, or
     /// the panel is waiting for a request.
     pub(crate) up_reason: Option<String>,
@@ -218,6 +222,21 @@ pub(crate) struct MaskPanel {
     /// without this the refusal arrives with no frame behind it and a driven run waits out its
     /// deadline on a step that has already been answered.
     pub(crate) command_in_flight: bool,
+    /// Why the coverage worker could not draw the open mask's overlay, in the host's words, while
+    /// it cannot. Mirrors the worker's latest refusal and is cleared when the worker's spec changes
+    /// or a grid is adopted, so it describes the overlay on screen and nothing older.
+    pub(crate) coverage_refusal: Option<String>,
+    /// The `mask.*` command in flight is a typed kind's create or add, so its answer selects the
+    /// component it made. Taken when that answer lands.
+    pub(crate) typed_create: bool,
+    /// The range picker, armed on the selected component: a sub-state of Mask mode that leaves the
+    /// mode, the open mask and the sections' target as they are. While it is armed and the overlay
+    /// is Off by default rather than by choice, the overlay shows Tint, as a drawn tool's start does.
+    pub(crate) picker: Option<RangePicker>,
+    /// The last pick the eyedropper sent, on one component, in the command's own terms, so the
+    /// row's Copy as JSON gives it after the picker is put down. Only the most recent pick is kept;
+    /// it is dropped when its component is no longer listed.
+    pub(crate) last_pick: Option<(MaskId, ComponentId, crate::range_pick::PickArea)>,
 }
 
 impl Default for MaskPanel {
@@ -238,6 +257,10 @@ impl Default for MaskPanel {
             thumbnails: MaskThumbnails::default(),
             last_request: None,
             command_in_flight: false,
+            coverage_refusal: None,
+            typed_create: false,
+            picker: None,
+            last_pick: None,
         }
     }
 }
@@ -296,14 +319,17 @@ pub(crate) struct ComponentRow {
     /// selected so every swatch is a thing a person can see and remove one at a time. Empty for a
     /// kind that samples nothing.
     pub(crate) samples: Vec<SampleRow>,
-    /// This component's kind samples colours from the photograph, so the panel offers the host's own
-    /// canvas pick for it.
+    /// The host declares a pick for this component's kind, so the open row offers Pick, which arms
+    /// the eyedropper on it.
     pub(crate) can_pick: bool,
-    /// The canvas pick is on, so a click on the photograph adds a swatch.
+    /// The note under the swatches while a sampling kind holds no colour yet and the row is open.
+    pub(crate) sample_note: Option<&'static str>,
+    /// The eyedropper is armed on this component: its Pick is lit and the pick bar sits under it.
     pub(crate) picking: bool,
-    /// What the pick button reads, from the host's own declaration.
+    /// What the Pick button reads, and its tooltip: the host's own declared title for the pick.
     pub(crate) pick_label: String,
-    /// Why a colour cannot be picked into this component right now.
+    pub(crate) pick_title: String,
+    /// Why this component cannot be picked into right now.
     pub(crate) pick_reason: Option<String>,
     /// What this component's kind does **not** select, shown on the open row in the kind's own terms.
     ///
@@ -516,6 +542,26 @@ pub(crate) struct MasksModel {
     pub(crate) count: String,
     /// The Brush section is shown: a brush is armed or a brush component is selected.
     pub(crate) brush_visible: bool,
+    /// The range picker while it is armed on a component of the open mask.
+    pub(crate) picker: Option<PickerModel>,
+}
+
+/// The armed range picker, as the pick bar and a captured frame read it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PickerModel {
+    pub(crate) mask: MaskId,
+    pub(crate) component: ComponentId,
+    pub(crate) kind: String,
+    /// What a click and a drag do: the bar's hint.
+    pub(crate) hint: &'static str,
+    /// The colours held of the most the kind holds (`2 of 5`), for a kind that holds them.
+    pub(crate) count: Option<String>,
+    /// The drag in progress, as output-stage pixels `[x0, y0, x1, y1]`, once it is one.
+    pub(crate) rectangle: Option<[f64; 4]>,
+    /// A pick waits for the one in flight, or for the photograph's coordinates.
+    pub(crate) waiting: bool,
+    /// The content map a press is placed through has arrived.
+    pub(crate) mapped: bool,
 }
 
 impl Default for MasksModel {
@@ -541,7 +587,6 @@ impl Default for MasksModel {
                 limit: false,
                 limit_label: String::new(),
                 refine: String::new(),
-                limit_reason: None,
                 erase_held: false,
                 locked: false,
                 armed: false,
@@ -565,6 +610,7 @@ impl Default for MasksModel {
             drag: None,
             count: String::new(),
             brush_visible: false,
+            picker: None,
         }
     }
 }
@@ -584,6 +630,7 @@ impl MasksModel {
                 "selected": row.selected,
                 "layers": row.layers,
                 "unavailable": row.unavailable,
+                "coverage_note": row.coverage_note,
                 "renaming": row.renaming,
                 "menu_open": row.menu_open,
                 // Whether a thumbnail is drawn, its cells and the mean of its coverage, so a
@@ -622,6 +669,7 @@ impl MasksModel {
                     "swatch": sample.swatch,
                 })).collect::<Vec<_>>(),
                 "picking": row.picking,
+                "sample_note": row.sample_note,
                 "pick_reason": row.pick_reason,
                 // The kind's own number fields as the open row shows them, so a captured frame is
                 // evidence of the geometry a person can read rather than of the payload behind it,
@@ -646,7 +694,6 @@ impl MasksModel {
                 "armed": self.brush.armed,
                 "locked": self.brush.locked,
                 "limit_to_colour": self.brush.limit,
-                "limit_reason": self.brush.limit_reason,
             }),
             "kinds": self.kinds.iter().map(|kind| kind.kind.clone()).collect::<Vec<_>>(),
             "add_mode": self.modes.get(self.add_mode),
@@ -682,6 +729,19 @@ impl MasksModel {
             })),
             "count": self.count,
             "brush_visible": self.brush_visible,
+            // The range picker as the panel and the canvas showed it: what it picks into, the drag
+            // rectangle being drawn and whether a pick is waiting.
+            "picker": self.picker.as_ref().map(|picker| serde_json::json!({
+                "armed": true,
+                "mask": picker.mask.as_str(),
+                "component": picker.component.as_str(),
+                "kind": picker.kind,
+                "hint": picker.hint,
+                "count": picker.count,
+                "rectangle": picker.rectangle,
+                "waiting": picker.waiting,
+                "mapped": picker.mapped,
+            })),
         })
     }
 }
@@ -798,7 +858,10 @@ pub(crate) fn effective_overlay(
 ) -> MaskOverlayMode {
     // An existing gradient's drag is not a tool start: its handles and the drafted picture show
     // what it moves, so a hidden overlay stays hidden rather than flashing on for every nudge.
-    if draft.is_some_and(|draft| !draft.direct())
+    // The range picker is armed by a typed kind's create or by the row's Pick, each a tool start: a
+    // pick is aimed at what the selection holds, so it shows Tint while it is armed.
+    let picking = panel.picker.is_some();
+    if (draft.is_some_and(|draft| !draft.direct()) || picking)
         && !panel.overlay_manual
         && stored == MaskOverlayMode::Off
     {
@@ -854,6 +917,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
                 .map(|layer| layer.title.clone().unwrap_or_else(|| layer.effect.clone()))
                 .collect(),
             unavailable: unavailable(&report.components),
+            coverage_note: inputs
+                .mask_panel
+                .coverage_refusal
+                .clone()
+                .filter(|_| selected.as_ref() == Some(&report.id)),
             up_reason: mask_move_reason(report, reports.len(), -1, disabled_reason.as_deref()),
             down_reason: mask_move_reason(report, reports.len(), 1, disabled_reason.as_deref()),
             thumbnail: inputs.mask_panel.thumbnails.get(&report.id).cloned(),
@@ -926,7 +994,34 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         drag: inputs.mask_panel.drag.clone(),
         count: format!("{} of {}", reports.len(), luxforge_core::MASKS_PER_RECIPE),
         brush_visible,
+        picker: picker_model(inputs, open),
     }
+}
+
+/// The armed range picker, while it is armed on a component of the open mask.
+fn picker_model(inputs: &Inputs<'_>, open: Option<&MaskReport>) -> Option<PickerModel> {
+    let picker = inputs.mask_panel.picker.as_ref()?;
+    let report = open.filter(|report| report.id == picker.mask)?;
+    let component = report
+        .components
+        .iter()
+        .find(|component| component.id == picker.component)?;
+    let count = luxforge_core::mask::component_sample_limit(&component.kind).map(|limit| {
+        let held = component.payload[luxforge_core::mask::SAMPLES_FIELD]
+            .as_array()
+            .map_or(0, Vec::len);
+        format!("{held} of {limit}")
+    });
+    Some(PickerModel {
+        mask: picker.mask.clone(),
+        component: picker.component.clone(),
+        kind: picker.kind.clone(),
+        hint: picker.hint(),
+        count,
+        rectangle: picker.rectangle(),
+        waiting: picker.waiting.is_some(),
+        mapped: picker.map.is_some(),
+    })
 }
 
 /// The text a row shows in place of its name while it is renamed, when `target` is the rename.
@@ -1121,11 +1216,19 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 } else {
                     Vec::new()
                 },
-                can_pick: luxforge_core::mask::component_sample_limit(&component.kind).is_some(),
-                picking: pick_mode(&component.kind)
-                    .is_some_and(|mode| inputs.session.workspace.mode == mode),
-                pick_label: pick_label(&component.kind),
-                pick_reason: pick_reason(report, component, refusal),
+                can_pick: commands::pick(&component.kind).is_some(),
+                sample_note: (selected
+                    && luxforge_core::mask::component_sample_limit(&component.kind).is_some()
+                    && component.payload[luxforge_core::mask::SAMPLES_FIELD]
+                        .as_array()
+                        .is_none_or(Vec::is_empty))
+                .then_some("Pick a colour to select"),
+                picking: inputs.mask_panel.picker.as_ref().is_some_and(|picker| {
+                    picker.mask == report.id && picker.component == component.id
+                }),
+                pick_label: PICK_LABEL.to_owned(),
+                pick_title: pick_title(&component.kind),
+                pick_reason: pick_reason(component, refusal),
                 limits: if selected {
                     kind_limits(&component.kind)
                 } else {
@@ -1165,58 +1268,29 @@ fn kind_limits(kind: &str) -> Vec<String> {
         .collect()
 }
 
-/// The canvas mode one kind's pick lives in, which is that pick's own action, or none when the kind
-/// samples nothing. The panel reads the host's declaration and names no mode of its own.
-pub(crate) fn pick_mode(kind: &str) -> Option<String> {
-    kind_pick(kind).map(|(action, _)| action.to_owned())
+/// What a Pick button reads, as the range-masks board draws it.
+const PICK_LABEL: &str = "Pick";
+
+/// The host's own title for one kind's pick, from the area pick it declares for the kind's pick
+/// command: the Pick button's tooltip.
+fn pick_title(kind: &str) -> String {
+    commands::pick(kind)
+        .and_then(|command| commands::canvas_pick(command.method))
+        .and_then(|declared| match declared {
+            luxforge_core::CanvasInteraction::AreaPick { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| PICK_LABEL.to_owned())
 }
 
-/// What the pick button reads, from the host's own declared title.
-fn pick_label(kind: &str) -> String {
-    kind_pick(kind)
-        .map(|(_, title)| title.to_owned())
-        .unwrap_or_else(|| "Pick".to_owned())
-}
-
-/// The host's own pick for one kind, found by the sample method the host generated for it: the pick's
-/// mode is that method's name, and its title is what the button reads.
-fn kind_pick(kind: &str) -> Option<(&'static str, &'static str)> {
-    let method = commands::sample(SampleOp::Add, kind)?.method;
-    match commands::canvas_pick(method)? {
-        luxforge_core::CanvasInteraction::SampleApply { title, .. } => Some((method, title)),
-        _ => None,
-    }
-}
-
-/// Why a colour cannot be picked into this component right now, in the words the command family
-/// would use. Every one of these is a state the host itself refuses, stated before the click rather
-/// than discovered by sending a request that will be rejected.
-fn pick_reason(
-    report: &MaskReport,
-    component: &ComponentReport,
-    refusal: Option<&str>,
-) -> Option<String> {
+/// Why this component cannot be picked into right now. A full colour range can still be picked
+/// into: a click replaces its colours, and only a Shift-pick past its limit is refused, by the host,
+/// once the pixel is read, since a colour it already holds is not a refusal.
+fn pick_reason(component: &ComponentReport, refusal: Option<&str>) -> Option<String> {
     if let Some(reason) = refusal {
         return Some(reason.to_owned());
     }
-    if !component.available {
-        return Some(rules::unknown_kind(&component.kind).detail);
-    }
-    // A pick reads the pixel the operation this mask modulates receives, so there has to be an
-    // operation: the host refuses a mask no layer is bound to, and the panel says so first.
-    if let Some(unbound) = reason(rules::bound_layer(&report.name, !report.layers.is_empty())) {
-        return Some(unbound);
-    }
-    let limit = luxforge_core::mask::component_sample_limit(&component.kind)?;
-    let held = component.payload[luxforge_core::mask::SAMPLES_FIELD]
-        .as_array()
-        .map_or(0, Vec::len);
-    reason(rules::room_for_sample(
-        &component.name,
-        &component.kind,
-        held,
-        limit,
-    ))
+    (!component.available).then(|| rules::unknown_kind(&component.kind).detail)
 }
 
 /// The colours one component's stored payload holds, read through the host's own reserved field so
@@ -1331,9 +1405,6 @@ pub(crate) struct BrushModel {
     pub(crate) limit_label: String,
     /// The limit's refine value as the toggle's hint reads it: `refine 50`.
     pub(crate) refine: String,
-    /// Why the limit cannot apply to the next stroke, when it cannot: it reads the pixel the masked
-    /// operation receives, so the open mask has to be bound to a layer.
-    pub(crate) limit_reason: Option<String>,
     /// The erase modifier is held down, so the next stroke erases whatever the toggle says.
     pub(crate) erase_held: bool,
     /// A stroke is on the photograph, so the brush is frozen for the rest of its life.
@@ -1377,23 +1448,13 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
             }
         })
         .collect();
-    // The limit reads the pixel the operation the open mask modulates receives, so it needs an
-    // operation: the host refuses a mask no layer is bound to by name, and the panel states that
-    // before the stroke rather than after it. `limit` is what the next stroke will actually carry,
-    // which is why it is the toggle's state *and* the condition, in one place.
-    let limit_reason = limit_reason(if inputs.mask_draft.is_some_and(MaskDraft::owns_creation) {
-        None
-    } else {
-        open
-    });
     BrushModel {
         fields,
         erase: brush.erase,
         erase_label: luxforge_core::mask::kind_title("erase"),
-        limit: brush.limit_to_colour && limit_reason.is_none(),
+        limit: brush.limit_to_colour,
         limit_label: luxforge_core::mask::kind_title("limit_to_colour"),
         refine: format!("refine {:.0}", brush.colour_refine),
-        limit_reason,
         erase_held: inputs.mask_panel.erase_held,
         locked: painting,
         armed: inputs
@@ -1402,18 +1463,6 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
         can_add: open.is_some(),
         enabled,
     }
-}
-
-/// Why the next stroke cannot be limited to a colour, or `None` when it can.
-///
-/// One predicate, read by the panel and by the gesture that builds the request, so what the panel
-/// says and what the stroke carries cannot disagree.
-pub(crate) fn limit_reason(open: Option<&MaskReport>) -> Option<String> {
-    let Some(report) = open else {
-        // With no mask open the next stroke draws a new one, which no layer is bound to yet.
-        return Some(rules::limit_on_new_mask().detail);
-    };
-    reason(rules::bound_layer(&report.name, !report.layers.is_empty()))
 }
 
 /// The one host command every stroke commits through.

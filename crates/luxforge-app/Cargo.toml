@@ -23,6 +23,7 @@ luxforge-sparkle = { path = "../luxforge-sparkle" }
 luxforge-ui = { path = "../luxforge-ui" }
 luxforge-input = { path = "../luxforge-input" }
 luxforge-install = { path = "../luxforge-install" }
+luxforge-process = { path = "../luxforge-process" }
 iced.workspace = true
 wgpu.workspace = true
 image.workspace = true

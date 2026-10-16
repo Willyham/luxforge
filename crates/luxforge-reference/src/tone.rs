@@ -208,6 +208,22 @@ fn contrast_stage(x: f64, contrast: f64) -> f64 {
         return x;
     }
     let alpha = ALPHA_MAX * (contrast.abs() / 100.0);
+    if alpha < 0.1 {
+        // Same normalized logistic, without subtracting two values near 0.5. This reference
+        // uses f64's tanh directly; production uses a bounded f32 series near the origin.
+        if x == 0.0 || x == 1.0 {
+            return x;
+        }
+        let tanhc = |z: f64| if z == 0.0 { 1.0 } else { z.tanh() / z };
+        let kappa = tanhc(alpha / 4.0);
+        let distance = x - PIVOT;
+        let s = PIVOT + distance * tanhc((alpha * 0.5) * distance) / kappa;
+        return if contrast > 0.0 {
+            s
+        } else {
+            x - kappa * (s - x)
+        };
+    }
     let g = |u: f64| 1.0 / (1.0 + (-alpha * (u - PIVOT)).exp());
     let g0 = g(0.0);
     let g1 = g(1.0);
@@ -415,6 +431,28 @@ pub fn exposed_white(white: f64, stops: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod internal_tests {
     use super::*;
+
+    /// Decimal evaluation of the original logistic equation at 430-digit precision supplies
+    /// this fixture independently of the tanhc algebra used to avoid cancellation here.
+    #[test]
+    fn small_contrast_matches_high_precision_extended_cases() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/basic/contrast-small-cases.json"
+        ))
+        .expect("the independent high-precision contrast fixture");
+        for case in fixture["cases"].as_array().expect("cases") {
+            let contrast = case["contrast"].as_f64().expect("contrast");
+            let input = case["input_encoded"].as_f64().expect("input");
+            let expected = case["expected_encoded"].as_f64().expect("expected");
+            let actual = contrast_stage(input, contrast);
+            assert!(
+                actual.is_finite() && (actual - expected).abs() <= 1e-12 * expected.abs().max(1.0),
+                "contrast={contrast} input={input}: actual {actual}, high precision {expected}"
+            );
+            assert_eq!(contrast_stage(0.0, contrast), 0.0);
+            assert_eq!(contrast_stage(1.0, contrast), 1.0);
+        }
+    }
 
     #[test]
     fn extended_srgb_encode_decode_round_trip_near_the_unit_range() {

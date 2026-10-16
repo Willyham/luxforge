@@ -1,18 +1,22 @@
 //! The `mask-range` smoke scenario: phase D's claim, which is that a deterministic per-pixel
 //! selection is worth having **and** that what it cannot do is worth saying.
 //!
-//! Two launches over one catalog. The first types a luminance band, intersects a gradient with it,
-//! applies an adjustment through the result and shows the band taking a grey card along with the sky
-//! it was drawn for; then intersects a colour range, picks the sky off the photograph and shows the
-//! grey card come back; then puts a `+0.75 EV` layer **ahead** of the masked one and shows the band
-//! stop selecting the sky altogether; then asks the composed mask and each component for its overlay,
-//! where all four grids are drawn and the two range components' own grids show the failure and its
-//! remedy as pictures. The second reopens
-//! that catalog and takes the colour range's own limits one at a time — a sampled grey selecting every
-//! neutral, a second swatch adding a colour, a third changing nothing, and one person's skin selecting
-//! another's — and finishes with the colour-constrained brush: one stroke across two surfaces, and a
-//! colour-held erase that takes one of them back out and leaves the other alone — read from the
-//! picture and then from that mask's own overlay, which a colour-held stroke used to have none of.
+//! Two launches over one catalog. The first creates a luminance range, which selects its row, arms
+//! the eyedropper and shows Tint with no adjustment bound to the mask, and clicks the sky to set a
+//! band around its tone; types the band's edges; intersects a gradient with it, which puts the
+//! eyedropper down; applies an adjustment through the result and shows the band taking a grey card
+//! along with the sky it was drawn for; then intersects a colour range, clicks the sky, ends
+//! picking with Return and shows the grey card come back; then puts a `+0.75 EV` layer **ahead** of
+//! the masked one and shows the band stop selecting the sky altogether; then asks the composed mask
+//! and each component for its overlay, where all four grids are drawn and the two range components'
+//! own grids show the failure and its remedy as pictures. The second reopens that catalog and takes
+//! the colour range's own limits one at a time, each picked **before** any adjustment is bound and
+//! read after one is dragged with the eyedropper still armed — a click on a grey selecting every
+//! neutral, a Shift-click adding a colour, a plain click replacing the swatches, and a drag over
+//! one person's skin selecting another's — then Escape, Pick and Return on the eyedropper, and
+//! finishes with the colour-constrained brush: one stroke across two surfaces, and a colour-held
+//! erase that takes one of them back out and leaves the other alone — read from the picture and
+//! then from that mask's own overlay, which a colour-held stroke used to have none of.
 //!
 //! **Why the readings are taken from the photograph as well as from the overlay.** Every claim this
 //! scenario makes about what a selection selects is read from the rendered photograph with an
@@ -33,7 +37,10 @@
 //!
 //! Positions are normalized content coordinates — `x` a fraction of the content stage's width, `y` of
 //! its height — which is what a script paints and sweeps in. A pick is in **output-stage pixels**,
-//! which is what `render.locate` takes and what the canvas publishes.
+//! which is what `render.locate` takes and what the canvas publishes, and is a press and a release of
+//! the armed eyedropper: a click, a click with Shift, or a drag to a second point. Arming the
+//! eyedropper shows Tint over a stored Off unless Off was chosen, so every frame that reads the
+//! photograph follows an explicit Off.
 //!
 //! Each launch is a [`Plan`]: every frame it captures, named by the step that produces it, with what
 //! that step commits and records. [`verify`] reads the frames by those names for everything a plan
@@ -54,7 +61,7 @@ pub const SCENARIO: &str = "mask-range";
 pub const FIXTURE: &str = "fixtures/generated/range.jpg";
 
 /// The paragraph `reproduce.md` gives this scenario.
-pub const NOTE: &str = "Generate the fixture first with `cargo xtask generate-fixtures --output fixtures/generated`.\n\nTwo launches over one catalog: the first types a luminance band, intersects a gradient and a picked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks the composed mask and each component for its coverage overlay, checking the composition's grid patch by patch against the frame the masked adjustment produced; the second takes the colour range's own limits one at a time and finishes with a colour-held erase across two surfaces, read from the picture and then from that painted mask's own overlay.\n\nThe patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.";
+pub const NOTE: &str = "Generate the fixture first with `cargo xtask generate-fixtures --output fixtures/generated`.\n\nTwo launches over one catalog: the first creates a luminance range (selected, the eyedropper armed, Tint, no adjustment bound), clicks the sky to set a band, types the band, intersects a gradient and a clicked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks the composed mask and each component for its coverage overlay, checking the composition's grid patch by patch against the frame the masked adjustment produced; the second picks colour ranges with a click, a Shift-click, a replacing click and a drag before and between adjustments, ends picking with Escape and Return, and finishes with a colour-held erase across two surfaces, read from the picture and then from that painted mask's own overlay.\n\nThe patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.";
 
 const BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
@@ -79,6 +86,12 @@ const PASSING_EV: f64 = -0.5;
 /// it fully selects it not at all — measured by `the_selection_follows_the_operations_input_not_the_
 /// finished_frame` and reproduced here in the pixels of a render.
 const GLOBAL_EV: f64 = 0.75;
+
+/// The fixture's sky on the band's own `0..100` axis, which a click on it sets the band around, and
+/// how far from the click's ten-unit span either edge may read: the sky is flat, so this is the
+/// sampled tone's own error and not a tuned margin.
+const SKY_TONE: f64 = 47.29;
+const TONE_TOLERANCE: f64 = 2.0;
 
 /// The band this scenario types, on the histogram's own `0..100` axis.
 ///
@@ -179,10 +192,7 @@ fn pick_at(name: &str) -> [u32; 2] {
     ]
 }
 
-/// Mask mode, through the same `workspace.set` the mode strip sends. A pick is its own canvas mode
-/// and it **latches**, exactly as the delivered neutral picker's does, so leaving it is a decision
-/// and not a side effect of having clicked once: every pick is left this way too. A mode commits
-/// nothing.
+/// Mask mode, through the same `workspace.set` the mode strip sends. A mode commits nothing.
 fn mask_mode(name: &str) -> Step {
     Step::new(name, WorkspaceStep::default().mode("mask"))
         .commits(0)
@@ -233,11 +243,6 @@ fn masked_exposure(name: &str, label: &str) -> Step {
     .label(label)
 }
 
-/// The host's own pick entered on the open row. Nothing is committed until the click.
-fn pick_entered(name: &str) -> Step {
-    Step::new(name, MaskStep::Pick).commits(0)
-}
-
 /// The luminance and colour range kinds are an experiment that is off by default, so another
 /// client of the session turns it on, as a script's `flags.set` does, before a range is offered.
 /// The desktop reads the flag from the event that follows and offers both kinds from then on.
@@ -252,11 +257,48 @@ pub fn range_experiment(name: &str) -> Step {
     .commits(0)
 }
 
-/// One click on the named patch, in output-stage pixels. What it commits is the caller's: a new
-/// colour is one entry and a colour the component already holds is none.
+/// One click on the named patch, in output-stage pixels, with the eyedropper armed. What it commits
+/// is the caller's: a luminance click or a colour click that changes the component is one entry.
+/// A colour click **replaces** the swatches the component holds.
 fn pick(name: &str, patch: &str) -> Step {
     let [x, y] = pick_at(patch);
     Step::new(name, script::Step::pick(x, y))
+}
+
+/// A click with Shift held on the named patch, which adds a colour to the swatches held.
+fn pick_added(name: &str, patch: &str) -> Step {
+    let [x, y] = pick_at(patch);
+    Step::new(name, script::Step::pick_shift(x, y))
+}
+
+/// A drag over a square of `PICK_AREA` pixels each way around the named patch's centre, which picks
+/// the area. Well inside the patch, so the area holds one colour and one tone.
+fn pick_area(name: &str, patch: &str) -> Step {
+    let [x, y] = pick_at(patch);
+    Step::new(
+        name,
+        script::Step::pick_drag(
+            [x - PICK_AREA, y - PICK_AREA],
+            [x + PICK_AREA, y + PICK_AREA],
+            false,
+        ),
+    )
+}
+
+/// Half the side of a dragged pick, in output-stage pixels: a patch is 360 by 320 of them.
+const PICK_AREA: u32 = 60;
+/// A patch's shorter side, in output pixels: the dragged square stays within its middle half.
+const _: () = assert!(PICK_AREA * 2 <= 320 / 2);
+
+/// The key that ends picking as the pick bar's Done does.
+const KEY_DONE: &str = "Return";
+
+/// The eyedropper put down by Escape, which commits nothing and keeps Mask mode.
+fn escape(name: &str) -> Step {
+    Step::new(name, script::Step::key(script::KEY_ESCAPE))
+        .commits(0)
+        .mode("mask")
+        .picker(None)
 }
 
 /// Launch 1: the band, the gradient, the failure, the remedy, the input dependence and the overlays.
@@ -269,18 +311,37 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // A new mask whose first component is a luminance range. A **typed** kind: every field of
         // its geometry carries a default, so the button creates it in one history entry rather than
         // opening a gesture with no shape to drag. It starts as the whole tonal range with soft
-        // shoulders, which is the picture, and is narrowed from there.
+        // shoulders. The new row is selected and the eyedropper armed, with no adjustment bound to
+        // the mask: its selection is read at the stage a first Basic adjustment will receive.
         Step::new("band-created", MaskStep::New(LUMINANCE_RANGE.into()))
             .commits(1)
             .label("Add luminance range")
             .no_draft()
             .masks(1)
-            .components(&BANDED[..1]),
-        // The row open, which is what shows its number fields and, above them, the host's own
-        // statement of what a band cannot separate.
-        select("band-row", 0),
-        // The band typed, one declared field at a time, each its own entry. `low` before `high`
-        // because the payload refuses a crossed band rather than rendering an empty selection.
+            .components(&BANDED[..1])
+            .selected_component(Some("Luminance range 1"))
+            .picker(Some(LUMINANCE_RANGE)),
+        // The pointer on the new row asks for its own coverage grid, which is drawn as the picker's
+        // Tint over a stored overlay of Off: a grid read for a mask no layer is bound to.
+        Step::new("band-tint", MaskStep::Hover(Some(Reference::Index(0))))
+            .commits(0)
+            .picker(Some(LUMINANCE_RANGE)),
+        Step::new("band-tint-off-list", MaskStep::Hover(None))
+            .commits(0)
+            .picker(Some(LUMINANCE_RANGE)),
+        // Arming shows Tint unless Off was chosen, and the frames below measure the photograph, so
+        // Off is chosen once now. The eyedropper stays armed.
+        overlay("band-photograph", "off").picker(Some(LUMINANCE_RANGE)),
+        // One click on the sky: the band is set around its tone, one entry, and the photograph is
+        // exactly where it was because no layer is bound to the mask.
+        pick("band-click", "sky-top")
+            .commits(1)
+            .label("Pick Luminance range 1")
+            .picker(Some(LUMINANCE_RANGE)),
+        // The band typed, one declared field at a time, each its own entry, so the rest of the
+        // scenario reads a band of known edges. `low` before `high` because the payload refuses a
+        // crossed band rather than rendering an empty selection. The fields stay editable while the
+        // eyedropper is armed.
         typed("band-low", "low", BAND_LOW),
         typed("band-high", "high", BAND_HIGH),
         typed("band-low-feather", "low_feather", BAND_FEATHER),
@@ -290,7 +351,10 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // difference: the top row is inside it, the bottom row outside. The sweep is a drafted
         // gesture holding the swept geometry, and the apply commits it as one entry.
         Step::new("gradient-mode", MaskStep::Mode("intersect".into())).commits(0),
-        Step::new("gradient-added", MaskStep::Add(LINEAR.into())).commits(0),
+        // A shape gesture owns the next press, so starting one puts the eyedropper down.
+        Step::new("gradient-added", MaskStep::Add(LINEAR.into()))
+            .commits(0)
+            .picker(None),
         Step::new(
             "gradient-swept",
             MaskStep::Sweep {
@@ -319,21 +383,31 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
             .payload(BASIC_EFFECT, json!({ EXPOSURE: MASKED_EV })),
         // A colour range intersected with both. Created with no swatches, which selects nothing:
         // the picture goes back to the one the mask never touched, and that is what an unsampled
-        // colour range means rather than a component that does nothing.
+        // colour range means rather than a component that does nothing. Created, it is selected and
+        // the eyedropper is armed on it again, and the overlay is Tint again over an Off the
+        // person chose before, so Off is chosen once more for the frames that read the photograph.
         Step::new("colour-mode", MaskStep::Mode("intersect".into())).commits(0),
         Step::new("colour-added", MaskStep::Add(COLOUR_RANGE.into()))
             .commits(1)
             .label("Add intersect colour range")
-            .components(&BANDED),
-        // Its row open, the host's own pick entered, and one click on the sky. **This is the
-        // remedy frame**: the sky stays selected and the grey card comes back, which is the
-        // component list doing the work the band cannot.
-        select("colour-row", 2),
-        pick_entered("sky-pick"),
+            .components(&BANDED)
+            .selected_component(Some("Colour range 1"))
+            .picker(Some(COLOUR_RANGE)),
+        overlay("colour-photograph", "off").picker(Some(COLOUR_RANGE)),
+        // One click on the sky, which replaces the swatches (it held none). **This is the remedy
+        // frame**: the sky stays selected and the grey card comes back, which is the component
+        // list doing the work the band cannot.
         pick("remedy", "sky-top")
             .commits(1)
-            .label("Sample Colour range 1"),
-        mask_mode("sky-picked"),
+            .label("Pick Colour range 1")
+            .picker(Some(COLOUR_RANGE)),
+        // Return is the pick bar's Done: the eyedropper is put down, Mask mode and the selection
+        // stay, and nothing is committed.
+        Step::new("pick-done", script::Step::key(KEY_DONE))
+            .commits(0)
+            .mode("mask")
+            .selected_component(Some("Colour range 1"))
+            .picker(None),
         // A **global** exposure layer, from JSON with no mask in the request, which the host places
         // ahead of the masked one: the stack's first Basic layer is this one. **This is the
         // input-dependence frame**: the band reads the pixel its own operation receives, that pixel
@@ -351,7 +425,7 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // stack's first Basic layer again.
         Step::new("global-undone", script::Step::api("history.undo"))
             .commits(1)
-            .label("Sample Colour range 1")
+            .label("Pick Colour range 1")
             .payload(BASIC_EFFECT, json!({ EXPOSURE: MASKED_EV }))
             .same_layer(BASIC_EFFECT, "failure"),
         // The overlay on with the pointer off the list, which asks for the **composed** mask's
@@ -385,55 +459,73 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
 pub fn launch2_plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         // The catalog reopened in a new process, on the entry launch 1 ended on.
-        Step::opened("reopened").label("Sample Colour range 1"),
+        Step::opened("reopened").label("Pick Colour range 1"),
         range_experiment("range-experiment"),
         mask_mode("mask-mode"),
-        // A second mask, one colour range, and an adjustment through it before anything is
-        // sampled. The order is the host's rule and not a convenience: a pick reads the pixel the
-        // operation this mask modulates receives, so a mask no layer is bound to is refused by name.
-        // With no swatch the mask selects nothing, so this commits a layer and changes no pixel.
+        // A second mask, one colour range. Created, it is selected and the eyedropper is armed on
+        // it with nothing bound to the mask and nothing sampled, which selects nothing; and the
+        // overlay is Tint over the stored Off, so Off is chosen for the frames that read the
+        // photograph. The eyedropper stays armed through everything below until it is put down.
         Step::new("grey-mask", MaskStep::New(COLOUR_RANGE.into()))
             .commits(1)
-            .label("Mask 2 · Add colour range"),
-        masked_exposure("grey-mask-exposure", "Mask 2 · Exposure -1.00 EV"),
-        // The row open, the pick entered, and one click on the **grey card**. Every neutral is one
-        // colour to a metric with no lightness term — white, the two greys above it and black are
-        // mutually within `0.0015`, a third of the tightest radius — so one sampled grey selects the
-        // whole tonal range and the frame shows five patches move at once.
-        select("grey-row", 0),
-        pick_entered("grey-pick"),
-        pick("neutral", "grey-card")
+            .label("Mask 2 · Add colour range")
+            .selected_component(Some("Colour range 1"))
+            .picker(Some(COLOUR_RANGE)),
+        overlay("grey-photograph", "off").picker(Some(COLOUR_RANGE)),
+        // One click on the **grey card**, before any adjustment is bound: the pick reads the stage
+        // a first Basic adjustment will receive. Every neutral is one colour to a metric with no
+        // lightness term — white, the two greys above it and black are mutually within `0.0015`, a
+        // third of the tightest radius — so one sampled grey selects the whole tonal range. No
+        // layer is bound, so the picture does not change yet.
+        pick("neutral-picked", "grey-card")
             .commits(1)
-            .label("Mask 2 · Sample Colour range 1"),
-        mask_mode("grey-picked"),
-        // A second swatch, on the orange. A colour range folds its samples by nearest, which is the
-        // same union the component list composes by, so the orange joins the selection and the
-        // neutrals stay in it.
-        pick_entered("orange-pick"),
-        pick("orange", "orange")
+            .label("Mask 2 · Pick Colour range 1")
+            .picker(Some(COLOUR_RANGE)),
+        // An adjustment through the mask, dragged while the eyedropper is still armed, which lands
+        // on the open mask's own layer and **leaves the selection where the pick put it**: the
+        // frame shows five patches move at once.
+        masked_exposure("neutral", "Mask 2 · Exposure -1.00 EV").picker(Some(COLOUR_RANGE)),
+        // A second swatch, on the orange, with Shift held. A colour range folds its samples by
+        // nearest, which is the same union the component list composes by, so the orange joins the
+        // selection and the neutrals stay in it.
+        pick_added("orange", "orange")
             .commits(1)
-            .label("Mask 2 · Sample Colour range 1"),
-        mask_mode("orange-picked"),
-        // A third swatch, on the grey card again. It is the colour the component already holds, so
-        // it is exactly a no-op: the duplicate is dropped before it is stored, so no entry is
-        // appended, and the fold is by nearest sample so no pixel's coverage changes. The frame is
-        // the evidence that a picker misfire costs nothing.
-        pick_entered("duplicate-pick"),
-        pick("duplicate", "grey-card").commits(0),
-        mask_mode("duplicate-picked"),
-        // A third mask, its own adjustment, and one click on the **light skin** patch. Dark skin is
-        // `0.0108` away in the frozen metric, a third of what one face's own shading spans, so any
-        // setting that holds a lit face takes both — and the frame shows both move.
+            .label("Mask 2 · Pick Colour range 1")
+            .picker(Some(COLOUR_RANGE)),
+        // A plain click **replaces** the swatches held: the grey card alone is sampled again, the
+        // orange leaves the selection and nothing else moves. One entry, because the swatches
+        // changed.
+        pick("replaced", "grey-card")
+            .commits(1)
+            .label("Mask 2 · Pick Colour range 1")
+            .picker(Some(COLOUR_RANGE)),
+        // A third mask, one colour range, and a **drag** over the interior of the **light skin**
+        // patch with no adjustment bound: the area's representative colour is the sample. Dark skin
+        // is `0.0108` away in the frozen metric, a third of what one face's own shading spans, so
+        // any setting that holds a lit face takes both — and the frame after the adjustment shows
+        // both move.
         Step::new("skin-mask", MaskStep::New(COLOUR_RANGE.into()))
             .commits(1)
-            .label("Mask 3 · Add colour range"),
-        masked_exposure("skin-mask-exposure", "Mask 3 · Exposure -1.00 EV"),
-        select("skin-row", 0),
-        pick_entered("skin-pick"),
-        pick("skin", "light-skin")
+            .label("Mask 3 · Add colour range")
+            .selected_component(Some("Colour range 1"))
+            .picker(Some(COLOUR_RANGE)),
+        overlay("skin-photograph", "off").picker(Some(COLOUR_RANGE)),
+        pick_area("skin-picked", "light-skin")
             .commits(1)
-            .label("Mask 3 · Sample Colour range 1"),
-        mask_mode("skin-picked"),
+            .label("Mask 3 · Pick Colour range 1")
+            .picker(Some(COLOUR_RANGE)),
+        masked_exposure("skin", "Mask 3 · Exposure -1.00 EV").picker(Some(COLOUR_RANGE)),
+        // Escape puts the eyedropper down and keeps Mask mode and the selection; the row's Pick
+        // arms it again on the selected component; Return, the pick bar's Done, puts it down.
+        escape("picker-escaped").selected_component(Some("Colour range 1")),
+        Step::new("picker-rearmed", MaskStep::Pick)
+            .commits(0)
+            .mode("mask")
+            .picker(Some(COLOUR_RANGE)),
+        Step::new("picker-done", script::Step::key(KEY_DONE))
+            .commits(0)
+            .mode("mask")
+            .picker(None),
         // The colour-constrained brush, in two halves. First an ordinary stroke across the boundary
         // between the bottom sky patch and the foliage beside it, and an adjustment through it: one
         // stroke, two surfaces, both selected. The stroke makes the mask and its first stroke in one
@@ -557,6 +649,51 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
             .commits(0)
             .mode("pointer"),
     ])
+}
+
+/// The range eyedropper as the frame's panel reported it: armed, with the hint of the kind it is
+/// armed on and, for a colour range, how many swatches are held of the most it holds.
+fn armed(frame: &Frame, hint: &str, count: Option<&str>) -> Result {
+    let picker = &frame.state()["masks"]["picker"];
+    ensure(
+        picker["armed"] == json!(true)
+            && picker["hint"]
+                .as_str()
+                .is_some_and(|said| said.contains(hint))
+            && picker["count"] == json!(count),
+        format!("The eyedropper reads {picker}, expected a hint with {hint:?} and count {count:?}"),
+    )
+}
+
+/// The overlay as Tint over a stored setting of Off, which is what an armed eyedropper shows when
+/// the person has not chosen otherwise.
+fn tinting(frame: &Frame) -> Result {
+    let overlay = &frame.state()["mask_overlay"];
+    ensure(
+        overlay["setting"] == json!("off") && overlay["effective"] == json!("tint"),
+        format!("The overlay reads {overlay}, expected Tint over a stored Off"),
+    )
+}
+
+/// The overlay chosen Off, which is what keeps the photograph clean while the eyedropper is armed.
+fn photograph(frame: &Frame) -> Result {
+    let overlay = &frame.state()["mask_overlay"];
+    ensure(
+        overlay["setting"] == json!("off") && overlay["effective"] == json!("off"),
+        format!("The overlay reads {overlay}, expected Off"),
+    )
+}
+
+/// No adjustment is bound to any mask: the stack holds no Basic layer with a mask.
+fn unbound(frame: &Frame) -> Result {
+    let bound: Vec<_> = basic_layers(frame)
+        .into_iter()
+        .filter(|(_, mask)| *mask != Value::Null)
+        .collect();
+    ensure(
+        bound.is_empty(),
+        format!("The frame binds adjustments to masks: {bound:?}"),
+    )
 }
 
 /// One component's own declared geometry, as the **open row's number fields** report it. It is what a
@@ -870,28 +1007,95 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         Tolerance::Within(UNTOUCHED),
     )?;
 
-    // The band created by its own button. A typed kind: the plan holds it to one entry, no draft
-    // and its one component, and here the mask's own gesture state is empty too.
+    // The band created by its own button. A typed kind: the plan holds it to one entry, no draft,
+    // its one component selected and the eyedropper armed on it; here the mask's own gesture state
+    // is empty too, and nothing is bound to the mask.
+    let created = launch.at("band-created")?;
     ensure(
-        launch.at("band-created")?.state()["mask_draft"] == Value::Null,
+        created.state()["mask_draft"] == Value::Null,
         "A typed kind opened a gesture",
     )?;
+    unbound(created)?;
+    armed(created, "Click a tone", None)?;
+    tinting(created)?;
 
-    // The row open, which shows what it was created as — the whole tonal range with soft
-    // shoulders — and where the product says what a band cannot do, before a person has typed a
-    // number into it.
-    let row = launch.at("band-row")?;
-    let fresh = fields(row, 0)?;
+    // The row open as created, which shows what it was created as — the whole tonal range with soft
+    // shoulders — and where the product says what a band cannot do, before a person has typed or
+    // picked a number into it.
+    let fresh = fields(created, 0)?;
     ensure(
         fresh["low"] == json!(0.0) && fresh["high"] == json!(100.0),
         format!("A new band starts at {fresh}"),
     )?;
-    let said = limits(row, 0)?;
+    let said = limits(created, 0)?;
     ensure(
         said.len() == 2
             && said[0].contains("output codes apart")
             && said[1].contains("the 100% view is the truth"),
         format!("The open row said {said:?}"),
+    )?;
+
+    // The tint of a mask **no layer is bound to**: the selection is read at the stage a first Basic
+    // adjustment will receive, so the grid for the new row was drawn rather than refused. It was
+    // drawn as Tint over a stored Off, which is the eyedropper's, not a setting anyone chose.
+    let (mask, band) = (
+        created.only_mask()?["id"].clone(),
+        created.component(0)?["id"].clone(),
+    );
+    ensure(
+        launch.events.iter().any(|event| {
+            let detail = &event["detail"];
+            event["event"] == "mask_overlay"
+                && detail["mask"] == mask
+                && detail["component"] == band
+                && detail["mode"] == json!("tint")
+                && detail["setting"] == json!("off")
+        }),
+        "No coverage grid was drawn for the new band while no layer was bound to its mask",
+    )?;
+    ensure(
+        !launch.events.iter().any(|event| {
+            event["event"] == "mask_overlay_absent" && event["detail"]["mask"] == mask
+        }),
+        "The overlay refused the unbound band",
+    )?;
+    let tint = launch.at("band-tint")?;
+    ensure(
+        tint.component(0)?["hovered"] == json!(true),
+        "The band's row was not hovered for its grid",
+    )?;
+
+    // Off chosen, the eyedropper still armed: the photograph is the one the mask never touched.
+    let clean = launch.at("band-photograph")?;
+    photograph(clean)?;
+    armed(clean, "Click a tone", None)?;
+    same(checks, clean, "with the overlay chosen Off", &opened)?;
+
+    // One click on the sky. The band is set around its tone — ten units each side, and shoulders of
+    // ten — and, with no layer bound, the photograph has not changed.
+    let clicked = launch.at("band-click")?;
+    let around = fields(clicked, 0)?;
+    let tone = SKY_TONE;
+    for (field, expected) in [
+        ("low", tone - 10.0),
+        ("high", tone + 10.0),
+        ("low_feather", 10.0),
+        ("high_feather", 10.0),
+    ] {
+        let value = around[field].as_f64().unwrap_or(f64::NAN);
+        ensure(
+            (value - expected).abs() <= TONE_TOLERANCE,
+            format!(
+                "A click on the sky set {field} to {value}, expected {expected} within {TONE_TOLERANCE}"
+            ),
+        )?;
+    }
+    armed(clicked, "Click a tone", None)?;
+    same(
+        checks,
+        clicked,
+        "a band picked with no layer bound",
+        &opened,
     )?;
 
     // The band typed, one field per entry — four entries, which the plan counts — and four numbers,
@@ -901,6 +1105,12 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         band == &json!({"low":BAND_LOW,"low_feather":BAND_FEATHER,"high":BAND_HIGH,
                         "high_feather":BAND_FEATHER}),
         format!("The typed band reads {band}"),
+    )?;
+
+    // Starting the gradient put the eyedropper down, without leaving Mask mode.
+    ensure(
+        launch.at("gradient-added")?.state()["masks"]["picker"] == Value::Null,
+        "A shape gesture started with the eyedropper still armed",
     )?;
 
     // The gradient committed, intersected with the band, claiming no limit.
@@ -928,14 +1138,19 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         Tolerance::Apart(MOVED),
     )?;
 
-    // An unsampled colour range intersected in. It selects nothing, so the whole picture is back to
-    // the one the mask never touched — which is what an empty swatch list means.
+    // An unsampled colour range intersected in. It is selected, the eyedropper is armed on it with
+    // no swatch held, and the overlay is Tint again; with Off chosen it selects nothing, so the whole
+    // picture is back to the one the mask never touched — which is what an empty swatch list means.
     let added = launch.at("colour-added")?;
     ensure(
         sample_count(added, 2)? == 0,
         "A new colour range already holds a swatch",
     )?;
-    same(checks, added, "an unsampled colour range", &opened)?;
+    armed(added, "Shift-click to add", Some("0 of 5"))?;
+    tinting(added)?;
+    let unsampled = launch.at("colour-photograph")?;
+    photograph(unsampled)?;
+    same(checks, unsampled, "an unsampled colour range", &opened)?;
 
     // One click on the sky. **The remedy.** The sky is selected again and the grey card is back
     // where it started, which is the component list doing what the band cannot.
@@ -945,25 +1160,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         picked.len() == 1,
         format!("The pick left {picked:?} on the row"),
     )?;
-    // Every pick the launch makes reads its pixel on the GPU's tile worker, which its answer names.
-    let picks: Vec<&Value> = launch
-        .events
-        .iter()
-        .filter(|event| event["event"] == "canvas_sample")
-        .collect();
-    ensure(
-        !picks.is_empty()
-            && picks.iter().all(|event| {
-                event["detail"]["renderer"] == json!({"record": "gpu", "reason": null})
-            }),
-        format!(
-            "The picks were not read by the GPU: {:?}",
-            picks
-                .iter()
-                .map(|event| &event["detail"])
-                .collect::<Vec<_>>()
-        ),
-    )?;
+    armed(remedied, "Shift-click to add", Some("1 of 5"))?;
     let remedy = only(
         checks,
         remedied,
@@ -971,6 +1168,14 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         &opened,
         &["sky-top"],
     )?;
+
+    // Return, the pick bar's Done, put the eyedropper down and left everything else where it was.
+    let done = launch.at("pick-done")?;
+    ensure(
+        done.state()["masks"]["picker"] == Value::Null,
+        "Done left the eyedropper armed",
+    )?;
+    same(checks, done, "after Done", &remedy)?;
 
     // A **global** exposure layer, placed ahead of the masked one. The band reads the pixel its own
     // operation receives, that pixel has moved 12.8 units up the axis, and the sky is outside the
@@ -1118,19 +1323,61 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
         remedy,
     )?;
 
-    // A sampled grey. **Every neutral is one colour** to a metric with no lightness term — within
-    // 0.0015 of every other — so one click selects the whole tonal range and five patches move at
-    // once.
+    // A second mask, created with the eyedropper armed and nothing bound to any mask but launch
+    // 1's. With Off chosen the photograph is the reopened one.
+    let created = launch.at("grey-mask")?;
+    armed(created, "Shift-click to add", Some("0 of 5"))?;
+    tinting(created)?;
+    let clean = launch.at("grey-photograph")?;
+    photograph(clean)?;
+    same(
+        checks,
+        clean,
+        "a new colour range with nothing sampled",
+        &reopened,
+    )?;
+
+    // A sampled grey, picked **before any adjustment is bound to the mask**. The pick reads the
+    // stage a first Basic adjustment will receive, so it commits and selects, and the photograph
+    // has not changed because nothing is bound.
+    let picked = launch.at("neutral-picked")?;
+    ensure(
+        samples(picked, 0)?.len() == 1,
+        format!("The row lists {:?}", samples(picked, 0)?),
+    )?;
+    armed(picked, "Shift-click to add", Some("1 of 5"))?;
+    same(
+        checks,
+        picked,
+        "a grey picked with nothing bound",
+        &reopened,
+    )?;
+
+    // **Every neutral is one colour** to a metric with no lightness term — within 0.0015 of every
+    // other — so one click selects the whole tonal range and five patches move at once when an
+    // adjustment is dragged through the mask. The eyedropper is still armed, and the adjustment
+    // landed on the open mask's own layer.
+    let adjusted = launch.at("neutral")?;
+    armed(adjusted, "Shift-click to add", Some("1 of 5"))?;
     let neutral = only(
         checks,
-        launch.at("neutral")?,
-        "a colour range sampled on a grey card",
+        adjusted,
+        "a colour range sampled on a grey card, adjusted",
         &reopened,
         &["grey-card", "white", "grey-65", "black", "grey-8"],
     )?;
+    let layers = basic_layers(adjusted);
+    ensure(
+        layers
+            .iter()
+            .filter(|(_, mask)| *mask != Value::Null)
+            .count()
+            == 2,
+        format!("The stack holds Basic layers {layers:?}"),
+    )?;
 
-    // A second swatch. The fold is by nearest sample, which is the same union the component list
-    // composes by, so the orange joins and the neutrals stay.
+    // A second swatch, added with Shift held. A colour range folds its samples by nearest, which is
+    // the same union the component list composes by, so the orange joins and the neutrals stay.
     let orange = launch.at("orange")?;
     let two = only(
         checks,
@@ -1143,30 +1390,81 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
         samples(orange, 0)?.len() == 2,
         format!("The row lists {:?}", samples(orange, 0)?),
     )?;
+    armed(orange, "Shift-click to add", Some("2 of 5"))?;
 
-    // The same patch sampled again. The duplicate is dropped **before it is stored**, so the row keeps
-    // its two swatches, no entry is appended — the plan holds the pick to no commit — and no pixel
-    // moves. That is stronger than storing a second copy that happened to change nothing: one of the
-    // component's five swatches is not spent on a colour it already holds.
-    let duplicate = launch.at("duplicate")?;
-    let three = same(checks, duplicate, "a duplicate swatch", &two)?;
+    // A plain click **replaces** the swatches held: the grey card alone is sampled again, the
+    // orange leaves the selection, and the neutrals stay.
+    let replaced = launch.at("replaced")?;
     ensure(
-        samples(duplicate, 0)? == samples(orange, 0)?,
+        samples(replaced, 0)?.len() == 1 && samples(replaced, 0)? == samples(picked, 0)?,
         format!(
-            "The row lists {:?}, and it listed {:?}",
-            samples(duplicate, 0)?,
-            samples(orange, 0)?
+            "The row lists {:?}, and the grey alone was {:?}",
+            samples(replaced, 0)?,
+            samples(picked, 0)?
         ),
     )?;
+    armed(replaced, "Shift-click to add", Some("1 of 5"))?;
+    let three = only(
+        checks,
+        replaced,
+        "a plain click replacing the swatches",
+        &two,
+        &["orange"],
+    )?;
+    checks.compare(
+        replaced,
+        "the orange after the replacing click against its unmasked reading",
+        reading(&three, "orange")?,
+        reading(&reopened, "orange")?,
+        Tolerance::Within(UNTOUCHED),
+    )?;
+
+    // A third mask, picked by **dragging over the interior of the light skin** with nothing bound
+    // to it: one swatch, the area's representative colour, and the photograph unchanged.
+    armed(
+        launch.at("skin-mask")?,
+        "Shift-click to add",
+        Some("0 of 5"),
+    )?;
+    photograph(launch.at("skin-photograph")?)?;
+    let dragged = launch.at("skin-picked")?;
+    ensure(
+        samples(dragged, 0)?.len() == 1,
+        format!("The drag left {:?} on the row", samples(dragged, 0)?),
+    )?;
+    ensure(
+        dragged.state()["masks"]["picker"]["rectangle"] == Value::Null,
+        "A released drag left its rectangle on the canvas",
+    )?;
+    same(checks, dragged, "a drag picked with nothing bound", &three)?;
 
     // One person's skin. **Two people's skin is one colour**: dark skin is 0.0108 from light skin, a
     // third of what one face's own shading spans, so any setting that holds a lit face takes both.
     let skin = only(
         checks,
         launch.at("skin")?,
-        "a colour range sampled on light skin",
+        "a colour range picked by a drag on light skin, adjusted",
         &three,
         &["light-skin", "dark-skin"],
+    )?;
+
+    // Escape put the eyedropper down and left Mask mode and the selection alone, the row's Pick
+    // armed it again on the same component with its swatch held, and Return put it down.
+    let escaped = launch.at("picker-escaped")?;
+    ensure(
+        escaped.state()["masks"]["picker"] == Value::Null
+            && escaped.state()["workspace"]["mode"] == json!("mask"),
+        "Escape did not leave Mask mode with the eyedropper down",
+    )?;
+    same(checks, escaped, "after Escape", &skin)?;
+    armed(
+        launch.at("picker-rearmed")?,
+        "Shift-click to add",
+        Some("1 of 5"),
+    )?;
+    ensure(
+        launch.at("picker-done")?.state()["masks"]["picker"] == Value::Null,
+        "Return left the eyedropper armed",
     )?;
 
     // One ordinary stroke across two surfaces, with an adjustment through it. Both move, which is
@@ -1266,6 +1564,65 @@ fn photograph_only(frame: &Frame) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both plans are well formed, and the picking flow is ordered the way the editor answers it: a
+    /// pick lands only while the eyedropper is armed, and Escape or Return only while it is, because
+    /// an Escape with the eyedropper down leaves Mask mode, which is not what these steps mean.
+    #[test]
+    fn the_plans_pick_only_while_armed_and_end_picking_only_while_armed() {
+        let key = |value: &Value, name: &str| value == &json!({"key": name});
+        let mut picks = 0;
+        for plan in [launch1_plan(&[]), launch2_plan(&[])] {
+            plan.validate().unwrap();
+            let mut armed = false;
+            for step in plan.steps() {
+                let script = step.script();
+                let sends = |name: &str| script.as_ref().is_some_and(|value| key(value, name));
+                let pick = script
+                    .as_ref()
+                    .is_some_and(|value| value.get("pick").is_some());
+                if pick {
+                    picks += 1;
+                }
+                if pick || sends(script::KEY_ESCAPE) || sends(KEY_DONE) {
+                    assert!(
+                        armed,
+                        "step {:?} acts on an eyedropper that is down",
+                        step.name()
+                    );
+                }
+                // What the step leaves is what it says, and a step that says nothing leaves it.
+                if let Some(picker) = &step.expect().masks.picker {
+                    armed = picker.is_some();
+                }
+            }
+        }
+        // Launch 1 clicks a tone and a colour; launch 2 clicks, Shift-clicks, clicks to replace
+        // and drags.
+        assert_eq!(picks, 6);
+    }
+
+    /// The pick steps the scenario uses are the ones the editor parses: a click, a Shift-click and a
+    /// drag over a square well inside its patch.
+    #[test]
+    fn the_pick_steps_are_a_click_a_shift_click_and_a_drag_inside_the_patch() {
+        let [x, y] = pick_at("light-skin");
+        assert_eq!(
+            pick_area("drag", "light-skin").script().unwrap(),
+            json!({"pick":{"x":x - PICK_AREA,"y":y - PICK_AREA,"to":[x + PICK_AREA,y + PICK_AREA]}})
+        );
+        assert_eq!(
+            pick_added("shift", "orange").script().unwrap()["pick"]["shift"],
+            json!(true)
+        );
+        assert_eq!(
+            pick("click", "grey-card").script().unwrap(),
+            json!({"pick":{"x":pick_at("grey-card")[0],"y":pick_at("grey-card")[1]}})
+        );
+        for plan in [launch1_plan(&[]), launch2_plan(&[])] {
+            plan.validate().unwrap();
+        }
+    }
 
     #[test]
     fn photograph_baselines_explicitly_hide_coverage_after_each_brush_arm() {

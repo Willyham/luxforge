@@ -117,10 +117,11 @@ fn settable() -> Value {
         },
         "brush": null,
         "window": null,
-        "export_folder": null,
+        "export_last": null,
         "hdr_merge": null,
         "panorama_merge": null,
         "theme": "luxforge.dark",
+        "theme_follows_omarchy": true,
         "update_checks": true,
         "update_install_automatically": false,
         "update_ask_to_move": true,
@@ -170,10 +171,14 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         },
         "brush": {"size": 0.05, "feather": 20.0, "flow": 75.0},
         "window": {"width": 1280.0, "height": 800.0, "x": -40.5, "y": 25.0},
-        "export_folder": exports,
+        "export_last": {
+            "settings": crate::export::settings::baseline_json_in(&exports),
+            "preset_id": "luxforge.print",
+        },
         "hdr_merge": {"alignment": "off", "deghost": "auto"},
         "panorama_merge": {"projection": "cylindrical", "boundary_warp": 40},
         "theme": "luxforge.dark",
+        "theme_follows_omarchy": false,
         "update_checks": false,
         "update_install_automatically": true,
         "update_ask_to_move": false,
@@ -257,10 +262,21 @@ fn every_bad_preference_is_refused_by_name_and_writes_nothing() {
         ),
         (json!({"catalog": ""}), "catalog must not be empty"),
         (
-            json!({"export_folder": "Exports"}),
-            "export_folder must be an absolute path",
+            json!({"export_last": {
+                "settings": crate::export::settings::baseline_json_in(std::path::Path::new("Exports")),
+                "preset_id": null,
+            }}),
+            "export_last: settings.folder must be",
         ),
-        (json!({"export_folder": 3}), "parameter export_folder"),
+        (
+            json!({"export_last": {"settings": {"format": "png"}, "preset_id": null}}),
+            "export_last: settings.format must be",
+        ),
+        (
+            json!({"export_last": {"settings": crate::export::settings::baseline_json(), "preset_id": ""}}),
+            "export_last.preset_id must be",
+        ),
+        (json!({"export_last": 3}), "export_last: "),
         (
             json!({"workspace": {"thirds": true}}),
             "workspace: missing field",
@@ -337,7 +353,10 @@ fn only_a_change_to_a_general_row_is_announced() {
             "window",
             json!({"window": {"width": 900, "height": 700, "x": 10, "y": 20}}),
         ),
-        ("export", json!({"export_folder": exports})),
+        (
+            "export",
+            json!({"export_last": {"settings": crate::export::settings::baseline_json_in(&exports), "preset_id": null}}),
+        ),
         // Choosing a default explicitly shows nothing new.
         ("lens-default", json!({"auto_lens_profile": true})),
         ("collapse", json!({"auto_collapse_history": false})),
@@ -353,10 +372,12 @@ fn only_a_change_to_a_general_row_is_announced() {
             json!({"catalog": harness.dir.join("elsewhere.sqlite")}),
         ),
         ("catalog-reset", json!({"catalog": null})),
-        ("export-reset", json!({"export_folder": null})),
+        ("export-reset", json!({"export_last": null})),
         ("checks", json!({"update_checks": false})),
         ("automatic", json!({"update_install_automatically": true})),
         ("ask-to-move", json!({"update_ask_to_move": false})),
+        ("follow-default", json!({"theme_follows_omarchy": true})),
+        ("follow", json!({"theme_follows_omarchy": false})),
     ] {
         harness.ok(id, "preferences.set", params);
     }
@@ -373,7 +394,61 @@ fn only_a_change_to_a_general_row_is_announced() {
             "catalog-reset",
             "checks",
             "automatic",
-            "ask-to-move"
+            "ask-to-move",
+            "follow"
         ]
+    );
+}
+
+#[test]
+fn visible_preference_and_flag_sync_errors_reconcile_values_and_events() {
+    let harness = Harness::start("visible-sync");
+    let config = harness.file().parent().unwrap().to_path_buf();
+    crate::atomic_file::sync_faults::inject(&config);
+    let failure = harness
+        .send(
+            "visible-preferences",
+            "preferences.set",
+            json!({
+                "auto_collapse_history": false, "raw_look": "neutral", "canvas_background": "black",
+            }),
+        )
+        .error
+        .unwrap();
+    assert_eq!(failure.data.as_ref().unwrap()["published"], true);
+    assert_eq!(failure.data.as_ref().unwrap()["durable"], false);
+    let preferences = harness.ok("read-visible", "preferences.read", json!({}));
+    assert_eq!(preferences["auto_collapse_history"], false);
+    assert_eq!(preferences["raw_look"], "neutral");
+    assert_eq!(preferences["canvas_background"], "black");
+    assert_eq!(harness.announced(), ["visible-preferences"]);
+
+    crate::atomic_file::sync_faults::inject(&config);
+    let failure = harness
+        .send(
+            "visible-flag",
+            "flags.set",
+            json!({
+                "flag": crate::flags::PRERELEASE_CHANNEL, "value": true,
+            }),
+        )
+        .error
+        .unwrap();
+    assert_eq!(failure.data.as_ref().unwrap()["published"], true);
+    let flags = harness.ok("read-flag", "flags.list", json!({}));
+    let flag = flags["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flag| flag["id"] == crate::flags::PRERELEASE_CHANNEL)
+        .unwrap();
+    assert_eq!(flag["value"], true);
+    let events = harness.ok("events-flags", "events.since", json!({"after": 0}));
+    assert!(
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["method"] == "flags.set" && event["request_id"] == "visible-flag")
     );
 }

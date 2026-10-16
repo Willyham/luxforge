@@ -24,6 +24,7 @@ fn event_source() -> ViewSource {
 
 fn summary(count: u32, groups: GroupLayout) -> ViewSummary {
     ViewSummary {
+        paired: 0,
         revision: 7,
         query: ViewQuery::of(event_source()),
         count,
@@ -50,7 +51,7 @@ fn burst(start: u32, len: u32, span_ms: u64) -> Moment {
     }
 }
 
-fn bracket(start: u32, steps: Vec<f32>, evidence: BracketEvidence) -> Moment {
+fn bracket(start: u32, steps: Vec<f32>, evidence: MomentEvidence) -> Moment {
     Moment {
         kind: MomentKind::Bracket,
         evidence: Some(evidence),
@@ -102,7 +103,7 @@ fn trip() -> ViewSummary {
                     picked: 1,
                     ..burst(1, 3, 1400)
                 },
-                bracket(7, vec![-2.0, 0.0, 2.0], BracketEvidence::Metadata),
+                bracket(7, vec![-2.0, 0.0, 2.0], MomentEvidence::Metadata),
                 Moment {
                     picked: 1,
                     ..burst(14, 2, 300)
@@ -114,7 +115,7 @@ fn trip() -> ViewSummary {
 
 /// A moment block, the summary's first, with no pick: a bracket of files offers Pick all.
 fn moment(
-    bracket: bool,
+    kind: MomentKind,
     title: &str,
     detail: &str,
     evidence: Option<&str>,
@@ -123,12 +124,12 @@ fn moment(
 ) -> Block {
     Block::Moment {
         index: 0,
-        bracket,
+        kind,
         title: title.into(),
         detail: detail.into(),
         evidence: evidence.map(Into::into),
         picked: None,
-        actions: moment_actions(bracket, 0, frames),
+        actions: moment_actions(kind, 0, frames),
         frames,
         collapsed,
     }
@@ -138,7 +139,7 @@ fn moment(
 fn numbered(block: Block, number: u32, picked: Option<&str>) -> Block {
     match block {
         Block::Moment {
-            bracket,
+            kind,
             title,
             detail,
             evidence,
@@ -148,7 +149,7 @@ fn numbered(block: Block, number: u32, picked: Option<&str>) -> Block {
             ..
         } => Block::Moment {
             index: number,
-            bracket,
+            kind,
             title,
             detail,
             evidence,
@@ -192,7 +193,14 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
             heading(false, "Leica Q2", "7"),
             Block::Singles(1),
             numbered(
-                moment(false, "Burst", "3 frames in 1.4 s", None, 3, false),
+                moment(
+                    MomentKind::Burst,
+                    "Burst",
+                    "3 frames in 1.4 s",
+                    None,
+                    3,
+                    false
+                ),
                 0,
                 Some("1 picked")
             ),
@@ -200,7 +208,7 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
             heading(false, "Nikon Z 8", "5"),
             numbered(
                 moment(
-                    true,
+                    MomentKind::Bracket,
                     "Bracket",
                     "3 exposures \u{b7} \u{2212}2 \u{b7} 0 \u{b7} +2 EV",
                     Some("from metadata"),
@@ -218,7 +226,14 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
             ),
             Block::Singles(2),
             numbered(
-                moment(false, "Burst", "2 frames in 0.3 s", None, 2, true),
+                moment(
+                    MomentKind::Burst,
+                    "Burst",
+                    "2 frames in 0.3 s",
+                    None,
+                    2,
+                    true
+                ),
                 2,
                 Some("1 picked")
             ),
@@ -312,7 +327,7 @@ fn select_day_and_no_grouping_follow_the_layout_they_are_given() {
     let previews = summary(
         4,
         GroupLayout {
-            moments: vec![bracket(1, vec![-0.7, 0.0, 0.66], BracketEvidence::Previews)],
+            moments: vec![bracket(1, vec![-0.7, 0.0, 0.66], MomentEvidence::Previews)],
             ..GroupLayout::default()
         },
     );
@@ -322,7 +337,7 @@ fn select_day_and_no_grouping_follow_the_layout_they_are_given() {
         vec![
             Block::Singles(1),
             moment(
-                true,
+                MomentKind::Bracket,
                 "Bracket",
                 "3 exposures \u{b7} \u{2212}0.7 \u{b7} 0 \u{b7} +0.7 EV",
                 Some("from previews"),
@@ -345,6 +360,74 @@ fn select_day_and_no_grouping_follow_the_layout_they_are_given() {
         },
     );
     assert_eq!(grid_content(&cut, &BTreeSet::new()).items(), 3);
+}
+
+/// A panorama's header: its title, its frames and span, its evidence, Pick all and the primary
+/// Merge panorama for the frames a panorama merge takes, and no collapse; the Info panel's Moment
+/// band and its reason. A panorama of more frames than a merge takes offers Pick all alone.
+#[test]
+fn a_select_panorama_moment_offers_merge_panorama() {
+    use luxforge_core::catalog_types::MergeKind;
+    let panorama = |start: u32, len: u32, evidence: MomentEvidence| Moment {
+        kind: MomentKind::Panorama,
+        evidence: Some(evidence),
+        steps_ev: Vec::new(),
+        span_ms: 12_000,
+        start,
+        len,
+        picked: 0,
+    };
+    let view = summary(
+        40,
+        GroupLayout {
+            moments: vec![
+                panorama(1, 5, MomentEvidence::Folder),
+                panorama(6, 34, MomentEvidence::Previews),
+            ],
+            ..GroupLayout::default()
+        },
+    );
+    // A panorama never collapses, even when asked to.
+    let content = grid_content(&view, &BTreeSet::from([0]));
+    let Block::Moment {
+        kind,
+        title,
+        detail,
+        evidence,
+        actions,
+        collapsed,
+        ..
+    } = &content.blocks[1]
+    else {
+        panic!("{:?}", content.blocks);
+    };
+    assert_eq!(*kind, MomentKind::Panorama);
+    assert_eq!(title, "Panorama");
+    assert_eq!(detail, "5 frames in 12 s");
+    assert_eq!(evidence.as_deref(), Some("from its folder"));
+    assert_eq!(
+        *actions,
+        [
+            MomentAction::PickAll(5),
+            MomentAction::Merge(MergeKind::Panorama)
+        ]
+    );
+    assert_eq!(actions[1].label(), "Merge panorama");
+    assert!(actions[1].primary() && !*collapsed);
+    let Block::Moment { actions, .. } = &content.blocks[2] else {
+        panic!("{:?}", content.blocks);
+    };
+    assert_eq!(
+        *actions,
+        [MomentAction::PickAll(34)],
+        "past the merge's 32 frames"
+    );
+    assert!(content.labels.is_empty(), "no exposure labels");
+    assert_eq!(why(&view.groups.moments[0]), "Shot into a panorama folder");
+    assert_eq!(
+        why(&view.groups.moments[1]),
+        "Overlapping views, measured on the previews"
+    );
 }
 
 #[test]
@@ -984,6 +1067,7 @@ fn the_select_filter_bar_reads_its_query_and_facets() {
 
 fn row(position: u32) -> ViewRow {
     ViewRow {
+        pair: None,
         position,
         item: RowItem::File {
             file_id: FileId(i64::from(position)),
@@ -1267,8 +1351,15 @@ fn the_select_info_panel_describes_the_active_item() {
     rows[2].exposure.bias_ev = Some(0.0);
     rows[8].moment = Some(MomentRef { index: 1, frame: 1 });
     rows[5].developed_as = Some(AssetId::new());
+    rows[5].pair = Some(luxforge_core::catalog_types::RowPair {
+        file_id: luxforge_core::catalog_types::FileId(99),
+        file_name: "DSC_0005.JPG".into(),
+    });
     rows[2].picked = true;
     assert!(state.rows.answered(7, request.from, rows, 0..20));
+    // A RAW+JPEG pair's cell says so; the Info panel names its JPEG.
+    assert!(state.rows.cell(5).unwrap().paired);
+    assert!(!state.rows.cell(2).unwrap().paired);
 
     let one = |state: &SelectState, active: u32| {
         info(
@@ -1326,6 +1417,11 @@ fn the_select_info_panel_describes_the_active_item() {
         panic!("one item");
     };
     assert!(single.moment.is_empty());
+    assert!(
+        single
+            .metadata
+            .contains(&("With JPEG".to_owned(), "DSC_0005.JPG".to_owned()))
+    );
     assert_eq!(
         single.pick,
         Some(PickBand {

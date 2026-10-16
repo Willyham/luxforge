@@ -293,7 +293,7 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                 detail: detail.clone(),
             }),
             Block::Moment {
-                bracket,
+                kind,
                 title,
                 detail,
                 evidence,
@@ -304,10 +304,11 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                 ..
             } => GridBlock::Moment {
                 header: MomentHeader {
-                    kind: if *bracket {
-                        MomentKind::Bracket
-                    } else {
-                        MomentKind::Burst
+                    kind: match kind {
+                        luxforge_core::catalog_types::MomentKind::Bracket => MomentKind::Bracket,
+                        luxforge_core::catalog_types::MomentKind::Panorama => MomentKind::Panorama,
+                        luxforge_core::catalog_types::MomentKind::Burst
+                        | luxforge_core::catalog_types::MomentKind::Single => MomentKind::Burst,
                     },
                     title: title.clone(),
                     detail: detail.clone(),
@@ -2237,7 +2238,7 @@ impl Editor {
             "pick_all": state.content.blocks.iter().filter_map(|block| match block {
                 Block::Moment { index, actions, .. } => actions.iter().find_map(|action| match action {
                     model::MomentAction::PickAll(_) => Some(json!([index, action.label()])),
-                    model::MomentAction::Merge => None,
+                    model::MomentAction::Merge(_) => None,
                 }),
                 _ => None,
             }).collect::<Vec<_>>(),

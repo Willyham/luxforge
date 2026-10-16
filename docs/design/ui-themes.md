@@ -13,9 +13,9 @@ The visual language's first principle, "the photograph is the only colour on scr
 
 - **The model**, in `luxforge_core::theme`: roles, the derivation, the chroma bound, the contrast floors and their moves, the report and the Luxforge theme document. CIEDE2000 joins the core's other colour equations in `colour.rs`.
 - **The Omarchy reader**, `theme::omarchy`, and the six bundled palettes beside it under `theme/omarchy/bundled/`.
-- **The library**, `theme::library`, and the `theme.*` methods in `api/owner/themes.rs`.
+- **The library**, `theme::library`, and the `theme.*` methods in `api/owner/themes.rs`. The rule for which theme is Omarchy's current one, `follows_omarchy`, lives there too.
 - **The runtime theme**, `luxforge_ui::Theme` and its `Palette`, in `crates/luxforge-ui/src/theme/`. `theme.rs` keeps the sizes, the fonts and the fixed colours.
-- **The desktop's theme**: the mapping from the core's tokens, the launch read, the change and the fallback in `app/themes.rs`; the folder import in `app/theme_folder.rs`; the Appearance tab's plain data in `state/themes.rs`.
+- **The desktop's theme**: the mapping from the core's tokens, the launch read, the change, the fallback and following Omarchy in `app/themes.rs`; the folder import in `app/theme_folder.rs`; the read of Omarchy's current theme in `app/omarchy_current.rs`; the Appearance tab's plain data in `state/themes.rs`.
 
 The [preferences](preferences.md) the owner decided on 2026-10-04 meet themes in two places. The **canvas background** fills the canvas around the photograph: Theme, the theme's surround and the default; Dark, `#19191b`; Black; or an 18% grey, `#777777`. The **interface size** scales everything Iced draws, whatever the theme.
 
@@ -314,7 +314,7 @@ Every method is a host method listed by `schema.list`. The mutating methods take
 | `theme.export` | no | `theme_id` | `{file_name, content}`, a Luxforge theme document |
 | `theme.delete` | yes | `theme_id`, `mutation` | `{outcome, deleted, deduplicated}`. A built-in theme and the active theme are refused by name |
 
-`preferences.read` also answers `theme`. `preferences.set {theme}` takes a theme id, or `null` for Luxforge Dark, and refuses an id the library does not hold. It announces its event whenever the theme changes, as it does for the fields a General row shows. The canvas background gains its proposed `theme` choice the same way, checked and announced as its other choices are.
+`preferences.read` also answers `theme` and `theme_follows_omarchy` ([following Omarchy](#following-omarchy)). `preferences.set {theme}` takes a theme id, or `null` for Luxforge Dark, and refuses an id the library does not hold. It announces its event whenever the theme changes, as it does for the fields a General row shows. The canvas background gains its proposed `theme` choice the same way, checked and announced as its other choices are.
 
 `format` is `omarchy` or `luxforge`. The client reads the files and sends their text, as it does for `preset.import`, because the core reads no user-chosen file ([module capabilities](../decisions.md#module-capabilities)). For Omarchy, `files` maps each file name the reader takes to its text, each at most 64 KiB. A name the reader does not take is refused by name rather than ignored. `folder` is the theme folder's own name, not a path, at most 128 bytes; it names the theme unless `name` does and is kept in the origin, and `format: luxforge` refuses it. A Luxforge theme document carries its format marker; a document of another shape or marker is refused without being read further.
 
@@ -349,7 +349,9 @@ The Settings sheet gains a third tab, **Appearance**, between General and Experi
 - an **Adjusted** badge when the import moved one of the theme's own inks;
 - a check, on the active row.
 
-Clicking a row applies it at once through `preferences.set {theme}`, and the sheet and the workspace behind it redraw in the new theme. **Import Omarchy theme…** takes a theme folder or a folder of theme folders ([importing a folder](#importing-a-folder)). **Import theme file…** takes a Luxforge document. A row's menu, from its More button or a right-click, holds Export…, Copy import report and Delete. Built-in rows have no Delete, and Delete on the active row is refused with its reason, in the tab and the status bar. Stored themes this build cannot read are listed at the end with their reasons, and kept.
+Where Omarchy records a current theme, the tab opens with a **Follow Omarchy's theme** switch ([following Omarchy](#following-omarchy)), whose caption names Omarchy's theme, or says it is not in the library and to import it to follow it.
+
+Clicking a row applies it at once through `preferences.set {theme}`, and the sheet and the workspace behind it redraw in the new theme. While the theme follows Omarchy's there, the click also turns following off. **Import Omarchy theme…** takes a theme folder or a folder of theme folders ([importing a folder](#importing-a-folder)). **Import theme file…** takes a Luxforge document. A row's menu, from its More button or a right-click, holds Export…, Copy import report and Delete. Built-in rows have no Delete, and Delete on the active row is refused with its reason, in the tab and the status bar. Stored themes this build cannot read are listed at the end with their reasons, and kept.
 
 The palette gains **Settings · Appearance** and one **Theme: \<name\>** entry per theme. Which tab is open stays this desktop's own view state, as it is for the other tabs.
 
@@ -359,9 +361,19 @@ A folder that holds a file the reader takes is one theme. A folder whose subfold
 
 The desktop reads only the files the reader takes: each at most 64 KiB, from at most 256 subfolders. It reads them on a task rather than on the update loop ([performance rule 12](../engineering/performance-rules.md#rules)). Each theme is one `theme.import` with its own report. A file that cannot be read fails its own theme only, with the reason. A name the library already holds is listed as a conflict, never renamed or replaced; importing Omarchy's whole `themes` directory therefore imports 16 themes and lists the six bundled themes as already built in. The tab then shows a summary line, the themes imported, those already built in or already imported, and each failure with its folder and reason, until the next import or delete; the status bar shows the summary, and its copy button copies every answer and report.
 
+### Following Omarchy
+
+The owner decided on 2026-10-15 that, where Omarchy runs, the active theme follows Omarchy's current theme whenever the library holds it, until the person chooses a theme themselves.
+
+- **Omarchy's current theme** is the slug Omarchy recorded when it last applied one. The desktop reads Omarchy 4's `~/.local/state/omarchy/current/theme.name`, then Omarchy 3.3 to 3.8's `~/.config/omarchy/current/theme.name`, then, for Omarchy 3.0 to 3.2, which wrote no name, the folder name `~/.config/omarchy/current/theme` links to. The first that answers is the slug. A name file is a regular file read through a bounded reader; a slug is trimmed and must be a folder's own name of at most 128 bytes. Nothing of Omarchy's is written. Only Linux looks, and never an evidence run or a hidden launch, so no automated launch reads the person's Omarchy state.
+- **The theme that is it** is the first in the library's order whose origin is an Omarchy folder naming the same theme as the slug, ignoring case, by the import's own naming rule. A cloned repository's `omarchy-` prefix and `-theme` suffix therefore do not matter, and a bundled theme comes before an imported one. A theme imported from a Luxforge document never matches. Where the library holds no such theme, nothing changes; Luxforge does not import it on its own.
+- **When.** The launch read draws Omarchy's theme from the first frame and the desktop stores it as the active theme with `preferences.set {theme}`. Afterwards the desktop reads Omarchy's current theme again, off the update loop, whenever its window gains focus, and chooses it again once that read answers, once the library is listed again (so importing Omarchy's theme applies it) and once following turns on, by the switch or by another client. There is no watcher thread and no poll.
+- **The preference** is `theme_follows_omarchy`, on by default and announced when it changes. Choosing a theme in the desktop, by a row or a palette entry, while following on Omarchy, sends `{theme, theme_follows_omarchy: false}`. Another client's `preferences.set {theme}` leaves following as it is, so Omarchy's theme returns at the next focus; a client choosing a theme should turn following off as the desktop does.
+- **State and logs.** A captured frame's theme state records `omarchy: {slug, following, theme}`. The log records `omarchy_theme` when the slug read changes and `theme_follows_omarchy`, at launch or on a change, when Omarchy's theme is chosen.
+
 ### Launch, changes and fallback
 
-- **Launch.** The desktop reads the active theme before its first frame, with the preferences it already reads synchronously there (the remembered workspace, the canvas background and the interface size among them). It therefore never draws Luxforge Dark first and then changes. The extra cost is one read of `themes.json`, which `measure`'s launch-to-first-frame records.
+- **Launch.** The desktop reads the active theme before its first frame, with the preferences it already reads synchronously there (the remembered workspace, the canvas background and the interface size among them). It therefore never draws Luxforge Dark first and then changes. The extra cost is one read of `themes.json`, which `measure`'s launch-to-first-frame records, and on Linux the read of Omarchy's current theme name.
 - **A change** by this desktop or by a client of its session redraws the window in the next update. It reads no asset, history page, preview or upload, and each canvas cache rebuilds once.
 - **A missing or unreadable active theme** leaves Luxforge Dark on screen. The status bar names the theme by its id and gives the reason, and the stored choice stays until the person chooses another.
 - **Native appearance.** iced_winit sets the window's appearance from the theme's mode when the window opens and whenever the mode changes (`synchronize` in `window/state.rs`). A light theme therefore turns the macOS window Aqua with no code of Luxforge's. The native file dialogs open without a parent window, so they presumably follow the system's appearance rather than the window's; that is not verified.
@@ -369,6 +381,7 @@ The desktop reads only the files the reader takes: each at most 64 KiB, from at 
 ## Verification
 
 - **Core.** Unit tests cover:
+  - which theme follows an Omarchy slug, and the launch read drawing it while following and naming it to store;
   - the roles and their derivation, with golden tokens for a dark and a light synthetic theme;
   - the surround and rail-backdrop bound, and each contrast floor and move;
   - Luxforge Dark's resolved tokens, which equal the visual language's table;
@@ -383,6 +396,8 @@ The desktop reads only the files the reader takes: each at most 64 KiB, from at 
   - request parity: each Appearance action builds the request an independent JSON client sends;
   - adoption of another client's change with no photograph open;
   - the fallback, and the launch read;
+  - following Omarchy: the launch draws and stores Omarchy's theme; a switch in Omarchy is followed when the window regains focus, and a theme the library does not hold changes nothing; a theme chosen by hand turns following off with the request an independent client sends; the switch turned on again chooses Omarchy's theme; away from Omarchy nothing is read and no switch is shown;
+  - the read of Omarchy's current theme in each release's layout, with names that are not a folder's refused;
   - a theme change, counted as sending no `asset.state`, `history.list` or preview job.
 - **Pixel identity.** The release build before the runtime theme and the build after it captured the gallery's 104 states and the `workspace` scenario's frames under Luxforge Dark. The gallery's 14 board pages decode to identical pixels. Every other frame is identical outside the Performance section's live figures (memory, CPU, GPU, sparkline ends and job times), which differ in the same frames and regions between two runs of the earlier build.
 - **The `theme` smoke scenario**, in the `rendered` tier, at 1440 × 900 on `orientation-1.jpg`:
@@ -401,14 +416,14 @@ The desktop reads only the files the reader takes: each at most 64 KiB, from at 
 - **Point queries:** none.
 - **Owner thread:** each `theme.*` method reads or rewrites one bounded document. An import parses at most 64 KiB per file and derives about seventy colours. No frame work.
 - **Desktop messages:** a theme change sends no `asset.state`, `history.list`, preview job or upload. It redraws once, and each canvas cache rebuilds once. The event sync reads the preferences and the library only on their own events.
-- **Timers, polls and subscriptions:** none added. The event sync's existing wake also runs with no photograph open.
+- **Timers, polls and subscriptions:** none added. The event sync's existing wake also runs with no photograph open. The window's focus event, on the existing event subscription, reads one name file of at most 130 bytes off the update loop; after each message, deciding whether to follow Omarchy costs two comparisons unless something that decides it changed.
 - **Repeated work and caches:** no new cache. Each existing canvas cache's key gains the theme's generation.
 - **Timing:** the style functions sit on the per-message view path, so the drag latency and the workspace derivation are measured once, before and after.
 - **Exactness:** no effect is added. The theme scenario checks that the photograph's pixels and an export's bytes are the same under every theme.
 
 ## Decisions
 
-Decided by the owner on 2026-10-05 and recorded in [decisions](../decisions.md#ui-themes):
+Decided by the owner on 2026-10-05, and on 2026-10-15 for following Omarchy, and recorded in [decisions](../decisions.md#ui-themes):
 
 | Question | Decided |
 | --- | --- |
@@ -417,6 +432,7 @@ Decided by the owner on 2026-10-05 and recorded in [decisions](../decisions.md#u
 | The surround | Near-neutral in every theme (at most 0.010 OKLCh chroma), at the theme's lightness |
 | An accent near a reserved colour | Each theme keeps its own accent; the report notes one under 15 ΔE00 from a reserved colour |
 | Bundled themes | A few popular Omarchy themes, beside imports from a folder |
+| Following Omarchy's current theme (2026-10-15) | Where Omarchy runs, the active theme follows Omarchy's current one when the library holds it, through a preference on by default that choosing a theme turns off. A theme the library does not hold is not imported or drawn ([following Omarchy](#following-omarchy)) |
 
 ### Proposals with recorded defaults
 
@@ -429,7 +445,6 @@ Luxforge runs on these until the owner revises them.
 | Omarchy forms | Omarchy 4 and Omarchy 3 palettes, `light.mode`, and `alacritty.toml` where there is no palette (37 of the 145 reachable curated community themes) | The Omarchy 4 palette only |
 | The canvas background | A fourth choice, Theme, the theme's surround, as the new default; Dark, Black and Grey stay fixed greys | No Theme choice: themes never set the canvas around the photograph, only the histogram plot |
 | Where | A Settings › Appearance tab for the theme list. The canvas background and interface size stay General rows, as decided on 2026-10-04 | A Theme row in General, with the library managed elsewhere |
-| Following Omarchy's current theme on Linux | Later | In this plan: read `~/.local/state/omarchy/current/theme/colors.toml` (in Omarchy 3, `~/.config/omarchy/current/theme`) at launch and whenever the window gains focus, with no watcher thread or poll |
 | Following the system's light or dark appearance | Later | In this plan, with a theme chosen for each |
 
 ## Recorded engineering defaults
@@ -450,7 +465,6 @@ These are the implementation choices Luxforge is built on; the owner can revise 
 
 ## Later
 
-- Following Omarchy's current theme on Linux, if the owner wants it (see the [recorded defaults](#proposals-with-recorded-defaults)). Omarchy 4 rebuilds `~/.local/state/omarchy/current/theme/` on every switch, by removing and renaming the directory, and writes `theme.name` beside it. Omarchy's own guidance for applications is to read that directory's `colors.toml` and never write Omarchy's configuration.
 - Following the system's light or dark appearance, with a theme chosen for each (Iced 0.14 has `system::theme_changes`).
 - A Lightroom-style choice of surround grey, independent of the theme.
 - Installing a theme from a repository URL, as `omarchy theme install` does. That would be the editor's first download a person starts outside module resources.

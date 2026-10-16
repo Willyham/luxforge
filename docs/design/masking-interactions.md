@@ -114,7 +114,12 @@ already showing coverage is kept. Automatic visibility and the gesture's explici
 are separate local view facts; the UI selection reflects the effective presentation, while
 captured state reports stored/effective/forced values. A held tool shows its own mask's coverage
 whatever that mask's eye says. An explicit Off or `O` while drawing is honoured for the remainder
-of that tool interaction.
+of that tool interaction. Arming the range eyedropper is a tool start too: while it is armed the
+overlay shows Tint over a stored Off, unless the person chose Off after arming it.
+
+While the range eyedropper is armed, Escape cancels a drag in progress and keeps the eyedropper,
+or, with no drag, puts it down; Return puts it down as the pick bar's Done. Both answer before
+Mask mode's own Escape, after an open rename, menu or draft, so a second Escape leaves the mode.
 
 In Mask mode, `O` toggles coverage between Off and Tint during unplaced creation, placed gradients,
 armed brushes and held strokes. Both extra black presentations remain UI choices. Outside Mask
@@ -126,9 +131,11 @@ Cmd/Ctrl+O is Open when creation allows it. No auxiliary modifier binding is add
  Coverage, mask eyes and editing history are unaffected. Mapped outlines discard wholly
  off-output arcs before subdivision so they cannot consume the visible arcs' bounded budget.
 
-While an adjustment control is held in Mask mode, effective coverage is Off. The stored mode
-stays unchanged; release and cancellation restore it, including the black presentations. Mask
-shape and brush gestures retain coverage. Both whole-photo and region overlays are suppressed.
+While an adjustment section's slider is held in Mask mode, effective coverage is Off. The stored
+mode stays unchanged; release and cancellation restore it, including the black presentations. The
+mask family's own controls — the range band's grips, the selection's number fields and Refine —
+tune what the overlay draws, so holding one keeps it. Mask shape and brush gestures retain
+coverage. Both whole-photo and region overlays are suppressed.
 
 ## Capture bounds and the pointer
 

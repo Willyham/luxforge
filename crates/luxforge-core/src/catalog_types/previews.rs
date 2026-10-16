@@ -109,7 +109,7 @@ impl PreviewOrigin {
 }
 
 /// Which renderer drew a file Luxforge rendered — a developed photograph's rendered tier, a batch
-/// export's file — in the shape an `export.jpeg` result names its renderer: `{record: "gpu",
+/// export's file — in the shape an `export.write` result names its renderer: `{record: "gpu",
 /// reason: null}`, or `{record: "reference", reason}` with the reason the GPU did not draw it (the
 /// session's, an export's such as `refused` or `tiles-budget`, or the GPU plan's own code), and no
 /// reason on an owner with no GPU provider, whose only renderer is the reference. Read back as
@@ -178,6 +178,14 @@ pub enum PreviewAnswer {
         job_id: JobId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fallback: Option<PreviewInfo>,
+        /// Whether the fallback shows what was asked for, edits included: a file's other stage
+        /// always; for a photograph, another tier or renderer generation of the same entry, or its
+        /// camera preview while that entry is the photograph's Original, and never an earlier
+        /// entry's render nor the camera preview of an edited entry. False with no fallback. A
+        /// client that must never show a photograph without its current edits shows a fallback
+        /// only when this is true.
+        #[serde(default)]
+        fallback_current: bool,
     },
 }
 

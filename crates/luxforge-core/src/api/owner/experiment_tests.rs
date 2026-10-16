@@ -242,3 +242,84 @@ fn a_host_that_forces_the_experiment_on_creates_range_masks_whatever_is_stored()
     harness.edited(LUMINANCE, band());
     harness.stop();
 }
+
+/// Picking edits a range component that already exists, so it runs whatever the experiment flag
+/// says; on the owner each pick defers exactly one read to the tile service and replays once with
+/// its answer, committing one entry, on a mask no layer is bound to. The area read a drag measures
+/// is a query of its own that writes nothing.
+#[test]
+fn picks_run_with_the_experiment_off_and_each_defers_one_read() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let mut harness = Harness::start("pick", LaunchFlags::default());
+    harness.set_flag(true);
+    let made = harness.edited(LUMINANCE, band());
+    let mask = made["mask"].clone();
+    let colour = harness.edited(
+        "mask.add-colour-range",
+        json!({"mask": mask, "mode": "intersect", "refine": 50.0}),
+    );
+    harness.set_flag(false);
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let counted = calls.clone();
+    harness.owner.hold_tiles(Some(Arc::new(move || {
+        counted.fetch_add(1, Ordering::Relaxed);
+    })));
+    let reads = || calls.load(Ordering::Relaxed);
+
+    let clicked = harness.edited(
+        "mask.pick-luminance-range",
+        json!({"mask": mask, "component": made["component"], "x": 0.5, "y": 0.5}),
+    );
+    assert_eq!(clicked["label"], json!("Pick Luminance range 1"));
+    assert_eq!(reads(), 1, "a click defers one read and replays once");
+    let dragged = harness.edited(
+        "mask.pick-colour-range",
+        json!({"mask": mask, "component": colour["component"],
+               "x": 0.25, "y": 0.25, "width": 0.5, "height": 0.5}),
+    );
+    assert_eq!(dragged["label"], json!("Pick Colour range 1"));
+    assert_eq!(reads(), 2, "a drag defers one area read");
+    harness.edited(
+        "mask.pick-colour-range",
+        json!({"mask": mask, "component": colour["component"], "x": 0.1, "y": 0.9, "add": true}),
+    );
+    assert_eq!(reads(), 3);
+
+    let listing = harness.ok("mask.list", json!({"asset_id": harness.asset}));
+    let components = listing["masks"][0]["components"].as_array().unwrap();
+    assert_eq!(
+        components[1]["payload"]["samples"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let band = &components[0]["payload"];
+    assert_eq!(
+        (&band["low_feather"], &band["high_feather"]),
+        (&json!(10.0), &json!(10.0))
+    );
+    assert!(
+        listing["masks"][0]["layers"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+    );
+
+    // The area query is read-only: the revision does not move.
+    let area = harness.ok(
+        "mask.sample-input-area",
+        json!({"asset_id": harness.asset, "mask": mask,
+               "x": 0.25, "y": 0.25, "width": 0.5, "height": 0.5}),
+    );
+    assert_eq!(reads(), 4);
+    assert!(area["points"].as_array().unwrap().len() <= crate::mask::commands::AREA_POINTS);
+    assert_eq!(
+        area["renderer"],
+        json!({"record": "reference", "reason": null})
+    );
+    let state = harness.ok("asset.state", json!({"asset_id": harness.asset}));
+    assert_eq!(state["revision"], json!(harness.revision));
+    harness.owner.hold_tiles(None);
+    harness.stop();
+}

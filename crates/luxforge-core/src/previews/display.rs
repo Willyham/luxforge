@@ -125,6 +125,7 @@ mod tests {
             &luxforge_jpeg::Settings {
                 quality: 95,
                 chroma: (1, 1),
+                optimise: false,
                 segments: &[],
                 icc: None,
                 pixels_per_inch: None,

@@ -1,5 +1,5 @@
 {
-  "format": "luxforge.basic-response",
+  "format": "luxforge.slider-response",
   "version": 1,
   "basis": "lr-align fold of round 1 (lr-round-1), round 1 (round-1b) on the split Basic tone (basic-local-tone.md), measured on a study build with Contrast and Highlights stretched to ±150 and Whites to ±200: each field's measured families fitted jointly, each weighted equally, the knots chosen together with every step at least 0.2 of its Lightroom step, composed with the measured build's responses; Whites above +50 kept at the owner's review of the sheets (2026-10-15), +75 at 85 and +100 at 100",
   "responses": {

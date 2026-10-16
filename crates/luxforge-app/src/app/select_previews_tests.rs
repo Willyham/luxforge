@@ -80,6 +80,7 @@ fn ready(file: Item) -> Result<PreviewAnswer, Refusal> {
 fn queued(fallback: Option<PreviewInfo>) -> Result<PreviewAnswer, Refusal> {
     Ok(PreviewAnswer::Queued {
         job_id: luxforge_core::JobId::new(),
+        fallback_current: fallback.is_some(),
         fallback,
     })
 }
@@ -370,6 +371,7 @@ fn select_previews_a_read_that_ended_without_a_preview_is_not_asked_again() {
             Ok(PreviewAnswer::Queued {
                 job_id: job.clone(),
                 fallback: None,
+                fallback_current: false,
             })
         }
     };

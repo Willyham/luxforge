@@ -89,7 +89,7 @@ pub use model::{
 };
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
 pub use range::REFINE_DEFAULT;
-pub(crate) use range::{REFINE_MAX, REFINE_MIN};
+pub(crate) use range::{Picked, REFINE_MAX, REFINE_MIN};
 pub use stroke::{ColourLimit, Stroke};
 pub(crate) use stroke::{SIZE_MAX, SIZE_MIN, size_is_legal, size_range};
 
@@ -250,7 +250,18 @@ struct ComponentKind {
     /// recorded metadata must be. `None` for every kind that references none. The artifact store
     /// reads it to bind, admit, pin and retain a mask's artifacts exactly as a layer's.
     artifact: Option<ArtifactUse>,
+    /// How a click or a drag on the canvas sets this kind's values from what its mask's input site
+    /// holds there, for a kind whose values are read off the picture. The command family generates
+    /// `mask.pick-<kind>` and the host's `area-pick` canvas declaration from exactly the kinds that
+    /// carry one, so a kind registered with a pick rule is pickable with nothing else edited. `None`
+    /// for every kind that is drawn or placed rather than picked.
+    pick: Option<PickRule>,
 }
+
+/// A kind's pick rule: the payload `component` takes after a pick of `picked`, with `add` asking a
+/// kind that holds samples to keep the ones it has. Pure: the pixels arrive as an argument, read by
+/// the host at the mask's input site.
+pub(crate) type PickRule = fn(&Component, Picked<'_>, bool) -> Result<serde_json::Value, Error>;
 
 /// How a kind references a derived artifact: the one it names in a stored payload, and the check a
 /// recorded artifact's metadata passes before a component may reference it.
@@ -301,6 +312,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         band: None,
         experiment: None,
         artifact: None,
+        pick: None,
     },
     ComponentKind {
         kind: radial::KIND,
@@ -316,6 +328,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         band: None,
         experiment: None,
         artifact: None,
+        pick: None,
     },
     ComponentKind {
         kind: brush::KIND,
@@ -331,6 +344,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         band: None,
         experiment: None,
         artifact: None,
+        pick: None,
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
@@ -346,6 +360,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         band: Some(range::luminance_band),
         experiment: Some(crate::flags::RANGE_MASKS),
         artifact: None,
+        pick: Some(range::pick_luminance),
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
@@ -365,6 +380,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         band: None,
         experiment: Some(crate::flags::RANGE_MASKS),
         artifact: None,
+        pick: Some(range::pick_colour),
     },
     ComponentKind {
         kind: model::KIND,
@@ -383,6 +399,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
             of: model::artifact_of,
             check: model::check_alpha,
         }),
+        pick: None,
     },
 ];
 
@@ -567,6 +584,23 @@ pub fn component_sample_limit(kind: &str) -> Option<usize> {
         .find(|entry| entry.kind == kind)
         .and_then(|entry| entry.samples.as_ref())
         .map(|samples| samples.max)
+}
+
+/// The kinds whose values a click or a drag on the canvas sets, in table order. The command family
+/// generates `mask.pick-<kind>` and one host `area-pick` canvas declaration from exactly this list.
+pub fn picking_kinds() -> impl Iterator<Item = &'static str> {
+    COMPONENT_KINDS
+        .iter()
+        .filter(|entry| entry.pick.is_some())
+        .map(|entry| entry.kind)
+}
+
+/// `kind`'s pick rule, or none when the kind is not picked or this build does not know it.
+pub(crate) fn component_pick(kind: &str) -> Option<PickRule> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .and_then(|entry| entry.pick)
 }
 
 /// What one sampled colour of `kind` declares, or none when the kind samples nothing.

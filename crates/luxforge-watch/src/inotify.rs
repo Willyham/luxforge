@@ -217,21 +217,18 @@ impl Tree {
     /// folder created or moved in is watched, with everything under it, before it is reported, so
     /// its listing misses nothing; one removed or moved out is no longer watched.
     pub(crate) fn handle(&mut self, kernel: &mut impl Kernel, events: &[Event<'_>]) -> Vec<Batch> {
+        if events.iter().any(|event| event.mask & IN_Q_OVERFLOW != 0) {
+            // Lost mkdir/rename/remove events invalidate the descriptor-to-path map too. A
+            // rescan alone repairs the index but leaves new folders unwatched and renamed
+            // folders reporting their old paths. Rebuild once for this bounded read batch;
+            // its other records use the retired descriptors and the rescan covers them.
+            return self.rebuild(kernel);
+        }
         let mut changes: BTreeMap<u64, Vec<PathBuf>> = BTreeMap::new();
         let mut others: BTreeMap<u64, Vec<WatchEvent>> = BTreeMap::new();
         let mut gone = Vec::new();
         let mut new = Vec::new();
         for event in events {
-            if event.mask & IN_Q_OVERFLOW != 0 {
-                for (&root, path) in &self.roots {
-                    others.entry(root).or_default().push(WatchEvent::Rescan {
-                        root,
-                        subtree: path.clone(),
-                        reason: RescanReason::Overflow,
-                    });
-                }
-                continue;
-            }
             if event.mask & IN_IGNORED != 0 {
                 self.watches.remove(&event.wd);
                 continue;
@@ -287,6 +284,34 @@ impl Tree {
             if !events.is_empty() {
                 batches.push((root, path.clone(), events));
             }
+        }
+        batches
+    }
+
+    /// Reinstall the roots after the kernel lost topology changes. Release old descriptors
+    /// before walking so recovery does not need a second set of watches at the kernel limit.
+    /// As for a new folder that cannot be fully watched, keep partial coverage and report the
+    /// failure; every root still gets its rescan, including a missing or unreadable one.
+    fn rebuild(&mut self, kernel: &mut impl Kernel) -> Vec<Batch> {
+        for wd in self.watches.drain().map(|(wd, _)| wd) {
+            kernel.remove(wd);
+        }
+        let roots = self.roots.clone();
+        let mut batches = Vec::with_capacity(roots.len());
+        for (root, path) in roots {
+            let mut events = vec![WatchEvent::Rescan {
+                root,
+                subtree: path.clone(),
+                reason: RescanReason::Overflow,
+            }];
+            if let Err(error) = self.watch(kernel, root, &path) {
+                events.push(WatchEvent::Unwatched {
+                    root,
+                    subtree: path.clone(),
+                    error: error.to_string(),
+                });
+            }
+            batches.push((root, path, events));
         }
         batches
     }
@@ -537,6 +562,89 @@ mod tests {
         let wd = kernel.wd(&second);
         let bytes = buffer(&[event(wd, IN_IGNORED, ""), event(wd, IN_CREATE, "x")]);
         assert!(tree.handle(&mut kernel, &parse(&bytes)).is_empty());
+    }
+
+    #[test]
+    fn overflow_restores_missed_folders_and_renames_before_reporting_the_rescan() {
+        let root = scratch("inotify-overflow-topology");
+        std::fs::create_dir_all(root.join("old/inner")).unwrap();
+        let (mut tree, mut kernel) = (Tree::default(), FakeKernel::default());
+        tree.add_root(&mut kernel, 1, &root).unwrap();
+        let old = kernel.wd(&root.join("old/inner"));
+        // The kernel lost both the rename and creation notifications.
+        std::fs::rename(root.join("old"), root.join("moved")).unwrap();
+        std::fs::create_dir_all(root.join("new/deeper")).unwrap();
+        let bytes = buffer(&[
+            event(-1, IN_Q_OVERFLOW, ""),
+            event(old, IN_CLOSE_WRITE, "stale.jpg"),
+            event(-1, IN_Q_OVERFLOW, ""),
+        ]);
+        assert_eq!(
+            tree.handle(&mut kernel, &parse(&bytes))[0].2,
+            [WatchEvent::Rescan {
+                root: 1,
+                subtree: root.clone(),
+                reason: RescanReason::Overflow,
+            }],
+            "one rebuild per batch, and no paths from retired descriptors"
+        );
+        assert!(!kernel.folders().contains(&root.join("old/inner")));
+        for folder in ["moved/inner", "new/deeper"] {
+            let wd = kernel.wd(&root.join(folder));
+            let bytes = buffer(&[event(wd, IN_CLOSE_WRITE, "a.jpg")]);
+            assert_eq!(
+                tree.handle(&mut kernel, &parse(&bytes))[0].2,
+                [WatchEvent::Changed {
+                    root: 1,
+                    paths: vec![root.join(folder).join("a.jpg")],
+                    cursor: None,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn overflow_reuses_the_watch_budget_and_preserves_rebuilding_failures() {
+        let outer = scratch("inotify-overflow-limit");
+        let inner = outer.join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        let (mut tree, mut kernel) = (Tree::default(), FakeKernel::default());
+        kernel.limit = Some(2);
+        tree.add_root(&mut kernel, 1, &outer).unwrap();
+        tree.add_root(&mut kernel, 2, &inner).unwrap();
+        let overflow = buffer(&[event(-1, IN_Q_OVERFLOW, "")]);
+        let restored = tree.handle(&mut kernel, &parse(&overflow));
+        assert!(restored.iter().all(|(_, _, events)| events.len() == 1));
+        assert_eq!(
+            kernel.folders(),
+            BTreeSet::from([outer.clone(), inner.clone()])
+        );
+        // A new folder no longer fits. The rescan and the failure both remain visible;
+        // nested roots still share restored coverage without exceeding the watch limit.
+        std::fs::create_dir(inner.join("new")).unwrap();
+        let failed = tree.handle(&mut kernel, &parse(&overflow));
+        assert_eq!(failed.len(), 2);
+        for (root, path, events) in failed {
+            assert!(matches!(
+                &events[0],
+                WatchEvent::Rescan {
+                    reason: RescanReason::Overflow,
+                    ..
+                }
+            ));
+            assert!(
+                matches!(&events[1], WatchEvent::Unwatched { root: id, subtree, error }
+                if *id == root && *subtree == path && error.contains("max_user_watches"))
+            );
+        }
+        assert_eq!(kernel.folders().len(), 2);
+        tree.remove_root(&mut kernel, 1);
+        assert_eq!(kernel.folders(), BTreeSet::from([inner.clone()]));
+        // A root removed during the overflow still reports both its rescan and loss of coverage.
+        std::fs::remove_dir_all(&inner).unwrap();
+        let gone = tree.handle(&mut kernel, &parse(&overflow));
+        assert!(matches!(&gone[0].2[1], WatchEvent::Unwatched { .. }));
+        assert!(kernel.folders().is_empty());
     }
 
     #[test]

@@ -57,6 +57,8 @@ const INFINITE: u32 = u32::MAX;
 const STOP: usize = 0;
 const VOLUMES: usize = 1;
 const FOLDER: usize = 2;
+/// A caller left initial root events owed while the thread may be waiting indefinitely.
+const WAKE: usize = 3;
 
 /// Each read's buffer: the most a read over the network may take.
 const BUFFER: usize = 64 * 1024;
@@ -169,6 +171,14 @@ impl Shared {
             Err(_) => self.delivery.owe_volumes(),
         }
     }
+
+    fn initial_root(&self, root: u64, path: &Path, events: Vec<WatchEvent>) {
+        self.delivery.initial_root(root, path, events, || {
+            // SAFETY: the port is open; this plain packet wakes an idle wait so the thread
+            // retries initial delivery even without a directory or volume notification.
+            unsafe { PostQueuedCompletionStatus(self.port.0, 0, WAKE, std::ptr::null()) };
+        });
+    }
 }
 
 /// The volume notification's registration.
@@ -256,7 +266,7 @@ impl Watcher {
                 cursor: None,
             },
         ];
-        self.shared.delivery.root(root.id, &root.path, first);
+        self.shared.initial_root(root.id, &root.path, first);
         Ok(())
     }
 
@@ -471,4 +481,51 @@ fn completed(shared: &Shared, key: usize, bytes: usize, error: Option<u32>) {
         }
     }
     shared.delivery.root(root, &folder, events);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luxforge_test_macros::slow;
+
+    #[test]
+    #[slow]
+    fn native_watch_initial_overflow_posts_a_completion_wake() {
+        // SAFETY: create an unassociated completion port, owned once by Shared below.
+        let port =
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        assert!(!port.is_null());
+        let shared = Shared {
+            port: Owned(port),
+            reads: Mutex::default(),
+            delivery: Delivery::new(Box::new(|_| crate::delivery::Sent::Full), Vec::new()),
+        };
+        // Exercise the same initial-delivery path as add_root, with consumption on this thread
+        // and no live overlapped buffers. A worker cannot steal the posted wake.
+        shared.initial_root(
+            1,
+            Path::new("C:\\photos"),
+            vec![WatchEvent::CaughtUp {
+                root: 1,
+                cursor: None,
+            }],
+        );
+        assert!(shared.delivery.owed());
+        let (mut bytes, mut key) = (0, 0);
+        let mut overlapped = std::ptr::null_mut();
+        // SAFETY: the port is live and each output points to writable storage. A bounded wait
+        // turns a missing wake into a failure instead of hanging the native gate.
+        let received = unsafe {
+            GetQueuedCompletionStatus(
+                shared.port.0,
+                &raw mut bytes,
+                &raw mut key,
+                &raw mut overlapped,
+                100,
+            )
+        };
+        assert_ne!(received, 0);
+        assert_eq!(key, WAKE);
+        assert!(overlapped.is_null());
+    }
 }

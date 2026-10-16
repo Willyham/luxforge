@@ -13,8 +13,8 @@
 //! own client, for the answers the frames are checked against (`develop-picks-expected.json`): the
 //! card's folder as the desktop first views it, and `pick.plan` of its first three files picked.
 //!
-//! The editor then opens that catalog with nothing open. Its frames, in [`plan`] order: `G` showing
-//! Select; the card's `DCIM` folder browsed; its first file clicked and picked with `P`; its second
+//! The editor then opens that catalog with nothing open, which shows Select, as an empty catalog
+//! starts there. Its frames, in [`plan`] order: the launch's own; the card's `DCIM` folder browsed; its first file clicked and picked with `P`; its second
 //! the same; its third clicked and picked with `P`, then Develop N's confirmation opened;
 //! Or add to an existing folder choosing "Portfolio picks"; a place name typed over it, back to a
 //! place, with the year, place and day folders it makes shown beneath; Escape, which changes
@@ -93,7 +93,6 @@ pub fn plan(expected: &Value) -> Result<Plan> {
     let key = |name: &str, key: &str| Step::new(name, script::Step::key(key));
     Ok(Plan::new(vec![
         Step::opened("opened"),
-        key("select", "g"),
         select("card", SelectStep::Folder(card.into()))
             .status(format!("DCIM \u{b7} {count} in view")),
         click("first", 0),
@@ -587,6 +586,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .filter(|_| event["folder"]["kind"] == "place")
         .ok_or_else(|| format!("The core proposes no place: {event}"))?;
 
+    // An empty catalog opened with nothing to open starts in Select.
+    let opened = launch.at("opened")?;
+    ensure(
+        opened.state()["select"]["shown"] == "select",
+        format!("The launch showed {}", opened.state()["select"]["shown"]),
+    )?;
+
     // The card's folder is the core's view; the picks are Select's own `pick.set`s.
     let card = launch.at("card")?;
     ensure(
@@ -894,7 +900,7 @@ mod tests {
         let expected = json!({"card": "/Volumes/NIKON Z 8/DCIM", "count": 20});
         let plan = plan(&expected).unwrap();
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 19);
+        assert_eq!(plan.len(), 18);
         assert!(plan.scripted());
     }
 }

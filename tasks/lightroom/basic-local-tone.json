@@ -263,7 +263,7 @@
     },
     {
       "id": "TASK-006",
-      "description": "Qualify on the M4 and close: whole-corpus gpu-qualification with the RAW manifest, the performance checklist with the scene white's development-path cost at 24 and 60 MP, the owner's review of the study's and the fold's sheets, and a confirming Lightroom round that adds Contrast alone on the photographs.",
+      "description": "Qualify on the M4 and close: whole-corpus gpu-qualification with the RAW manifest, the performance checklist with the scene white's development-path cost at 24 and 60 MP, and the owner's review of the study's and the fold's sheets. Round 3, the confirming round with Contrast on the photographs, is measured and recorded in the design.",
       "status": "pending",
       "dependencies": [
         "TASK-005"
@@ -289,7 +289,7 @@
       ],
       "acceptance_criteria": [
         "Whole-corpus GPU qualification with the RAW manifest passes on the M4; the performance checklist is answered with measured figures.",
-        "The owner has reviewed the sheets and the confirming round's results are recorded in the design."
+        "The owner has reviewed the sheets."
       ],
       "test_strategy": {
         "approach": "manual",

@@ -563,75 +563,96 @@ fn a_mask_with_nothing_to_describe_has_no_thumbnail_and_a_zero_overlay() {
     assert!(exact(silent).raster().is_ok(), "the frame still renders");
 }
 
-/// A mask that reads pixels and that **no layer is bound to** has no coverage grid, and the answer
-/// says so in the host's own words rather than arriving with a silent absence.
-///
-/// A value-based component's coverage is a function of the pixel the masked operation *receives*, and
-/// with no layer bound there is no operation to be the input of: a pixel read anywhere else would be
-/// in a different domain from the one the selection is evaluated in, which is the same rule
-/// `mask.sample-input` and the constrained brush's seed are refused by. So the grid is refused, the
-/// reason names both halves — that the coverage depends on the pixel it reads and that no layer is
-/// bound — and it says where such a selection *can* be read. What is asserted here is that the reason
-/// reaches the client: a client that asked for an overlay and waits for its texture has nothing else
-/// to stop waiting on.
-#[test]
-fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
-    let f = Fixture::open("reads-pixels");
-    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
+/// A value-based mask open under a global `+0.75 EV` Basic layer and a global Presence layer, with
+/// no layer bound to it yet: the stack where an unbound mask's site and its mode both matter. A first
+/// masked Basic layer goes after the global one and ahead of Presence, whose own input is read at
+/// the encoded boundary, while Basic's is read inside the colour run, unclamped.
+fn unbound_band(name: &str) -> (Fixture, MaskId) {
+    let f = Fixture::open(name);
+    f.edit("set-basic", json!({"exposure": 0.75}), "global-basic");
+    f.edit("set-presence", json!({"clarity": 30.0}), "global-presence");
+    let created = f.mask_command(
+        "mask.create-luminance-range",
+        json!({"low": 65.0, "low_feather": 10.0, "high": 90.0, "high_feather": 5.0}),
+        "create",
+    );
     let mask = mask_id(&created);
-    let cells = (12, 9);
-    let overlay = || coverage(&f.job(f.preview()), &mask, None, cells).expect("the mask is held");
+    (f, mask)
+}
 
-    // The gradient alone has a grid, bound or not, because its coverage is position alone: the
-    // difference below is the range component and nothing else.
-    let geometric = overlay();
-    assert!(geometric.grid.is_some());
-    assert!(geometric.absent.is_none());
-
-    f.mask_command(
-        "mask.add-luminance-range",
-        json!({"mask": mask.as_str(), "mode": "intersect", "low": 20.0, "low_feather": 5.0,
-               "high": 80.0, "high_feather": 5.0}),
-        "add-range",
-    );
+/// A value-based mask **no layer is bound to** has a coverage grid, read where a first adjustment
+/// through it would go — and it is exactly the grid the mask has once a first Basic adjustment is
+/// applied through it, so the selection a person sees before adjusting is the one the adjustment
+/// gets.
+#[test]
+fn an_unbound_value_based_mask_has_the_grid_a_first_basic_adjustment_reads() {
+    let (f, mask) = unbound_band("reads-pixels");
+    let cells = (16, 12);
+    let unbound = grid(&f.job(f.preview()), &mask, cells);
     assert!(
-        exact(f.job(f.preview())).raster().is_ok(),
-        "the frame itself still renders: only the overlay is refused"
-    );
-    let reading = overlay();
-    assert!(reading.grid.is_none());
-    let reason = reading
-        .absent
-        .expect("the host's own reason travels with the answer");
-    assert!(
-        reason.contains("depends on the pixel it reads")
-            && reason.contains("no layer is bound to mask")
-            && reason.contains("100%"),
-        "{reason}"
+        unbound.coverage.contains(&MASK_COVERAGE_NONE)
+            && unbound
+                .coverage
+                .iter()
+                .any(|cell| *cell > MASK_COVERAGE_NONE),
+        "the band's grid is uniform, so the equality below proves nothing about its input"
     );
 
-    // Bind an adjustment through the mask and the same request has a grid: the refusal was the
-    // missing operation and not the component's kind.
     f.edit(
         "set-basic",
-        json!({"mask": mask.as_str(), "exposure": 1.0}),
-        "lift",
+        json!({"mask": mask.as_str(), "exposure": -0.5}),
+        "first-adjustment",
     );
-    let bound = overlay();
-    assert!(
-        bound.grid.is_some(),
-        "a bound value-based mask has a grid: {:?}",
-        bound.absent
+    let bound = grid(&f.job(f.preview()), &mask, cells);
+    assert_eq!(
+        bound.coverage, unbound.coverage,
+        "binding the first Basic adjustment does not move the selection"
     );
-    assert!(bound.absent.is_none());
+}
+
+/// `mask.sample-input` on a mask no layer is bound to answers, through the tile service, the pixel a
+/// first Basic adjustment through it receives: the same answer it gives once that adjustment is
+/// applied.
+#[test]
+fn an_unbound_mask_samples_the_input_a_first_basic_adjustment_receives() {
+    let (f, mask) = unbound_band("sample-unbound");
+    // A spread of the 480 x 320 fixture's pixels, so a highlight the global lift pushes past white
+    // is among them: there a value read at the boundary would differ from the colour run's.
+    let positions: Vec<(u32, u32)> = (0..4)
+        .flat_map(|row| (0..5).map(move |column| (column * 96 + 48, row * 80 + 40)))
+        .collect();
+    let sample = |request: &str| -> Vec<Value> {
+        positions
+            .iter()
+            .map(|(x, y)| {
+                let mut answered = f.call(
+                    &format!("{request}-{x}-{y}"),
+                    "mask.sample-input",
+                    json!({"asset_id": f.asset_value, "mask": mask.as_str(), "x": x, "y": y}),
+                );
+                answered
+                    .as_object_mut()
+                    .expect("an object")
+                    .remove("renderer");
+                answered
+            })
+            .collect()
+    };
+    let unbound = sample("unbound");
+    f.edit(
+        "set-basic",
+        json!({"mask": mask.as_str(), "exposure": -0.5}),
+        "first-adjustment",
+    );
+    assert_eq!(sample("bound"), unbound);
 }
 
 /// Every cell of a value-based mask's grid is the mask's own field at the pixel **the masked
 /// operation receives** — the pixel `mask.sample-input` answers at the same coordinate, which is the
 /// pixel the constrained brush's seed is read from.
 ///
-/// That is the shared-rule proof: the overlay resolves the layer through
-/// `mask::commands::input_layer_index` and reads its input through the same prefix evaluation the
+/// That is the shared-rule proof: the overlay resolves the site through
+/// `mask::commands::input_site` and reads its input through the same prefix evaluation the
 /// host's own read-only command does, so the two cannot disagree about which pixel a mask reads. The
 /// expected byte is composed here from the host's answer and [`CompiledMask`], not from the unit that
 /// filled the grid.

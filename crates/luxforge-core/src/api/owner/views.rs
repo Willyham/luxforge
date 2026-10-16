@@ -327,6 +327,7 @@ fn evaluate_into(
         unavailable: evaluation.unavailable,
         stacks: evaluation.stacks.stacks,
         collapsed: evaluation.stacks.collapsed,
+        paired: evaluation.pairs.len() as u32,
         groups: evaluation.layout.clone(),
         library_sequence: evaluation.stamp.library_sequence,
         index_revision: evaluation.stamp.index_revision,
@@ -349,6 +350,7 @@ fn evaluate_into(
             stale: false,
             hidden: evaluation.stacks.hidden,
             badges: evaluation.stacks.badges,
+            pairs: evaluation.pairs,
         },
     );
     Ok(summary)
@@ -616,7 +618,11 @@ mod tests {
             json!({"source": card, "sort": {"key": "file-name"}}),
         );
         assert_eq!(summary["revision"], 1);
-        assert_eq!(summary["count"], 15);
+        assert_eq!(summary["count"], 14);
+        assert_eq!(
+            summary["paired"], 1,
+            "DSC_0007's JPEG shown as its RAW file"
+        );
         assert_eq!(summary["picked"], 2);
         assert_eq!(summary["in_catalog"], 1);
         assert_eq!(
@@ -632,7 +638,7 @@ mod tests {
         assert_eq!(summary["index_revision"], 0);
         let session = ok(&owner, client, "session.state", json!({}));
         assert_eq!(session["browse"]["revision"], 1);
-        assert_eq!(session["browse"]["count"], 15);
+        assert_eq!(session["browse"]["count"], 14);
         assert_eq!(session["browse"]["stale"], false);
         assert_eq!(session["browse"]["query"]["source"]["kind"], "card");
         assert!(
@@ -644,11 +650,11 @@ mod tests {
             &owner,
             client,
             "browse.rows",
-            json!({"from": 13, "count": 5, "revision": 1}),
+            json!({"from": 12, "count": 5, "revision": 1}),
         );
         assert_eq!(window["revision"], 1);
         assert_eq!(window["rows"].as_array().unwrap().len(), 2);
-        assert_eq!(window["rows"][0]["position"], 13);
+        assert_eq!(window["rows"][0]["position"], 12);
         assert_eq!(window["rows"][1]["file_name"], "DSC_0102.NEF");
         assert_eq!(
             code(
@@ -704,7 +710,7 @@ mod tests {
         let session = ok(&owner, client, "session.state", json!({}));
         assert_eq!(
             session["browse"]["selection"]["ranges"],
-            json!([{"start": 2, "len": 3}, {"start": 14, "len": 1}])
+            json!([{"start": 2, "len": 3}, {"start": 13, "len": 1}])
         );
 
         // Evaluated again in another order, the selection follows its items.
@@ -718,7 +724,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|row| [2, 3, 4, 14].contains(&row["position"].as_u64().unwrap()))
+            .filter(|row| [2, 3, 4, 13].contains(&row["position"].as_u64().unwrap()))
             .map(|row| row["file_id"].clone())
             .collect();
         let resorted = ok(
@@ -778,8 +784,8 @@ mod tests {
             14
         );
         assert_eq!(
-            ok(&owner, client, "session.state", json!({}))["browse"]["count"],
-            15
+            ok(&owner, client, "session.state", json!({}))["browse"]["query"]["source"]["kind"],
+            "card"
         );
 
         // An index revision makes every view stale; a stale view still answers its rows.
@@ -961,6 +967,7 @@ mod tests {
                 layout: Default::default(),
                 hidden: Vec::new(),
                 badges: Default::default(),
+                pairs: Default::default(),
                 selection: ViewSelection {
                     count: 3,
                     ranges: vec![

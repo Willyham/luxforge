@@ -32,9 +32,9 @@ pub use document::{THEME_DOCUMENT_FORMAT, THEME_DOCUMENT_VERSION, ThemeDocument}
 pub(crate) use library::ThemeStore;
 pub use library::{
     LUXFORGE_DARK_ID, LaunchTheme, Listing, MAX_LIBRARY_BYTES, MAX_THEME_BYTES,
-    MAX_THEME_FILE_BYTES, MAX_THEME_FOLDER, MAX_THEME_ID, MAX_THEME_NAME, MAX_THEMES, Theme,
-    ThemeExport, ThemeFormat, ThemeInput, ThemeOrigin, Unrecognized, built_in_themes,
-    luxforge_dark_theme,
+    MAX_THEME_FILE_BYTES, MAX_THEME_FOLDER, MAX_THEME_ID, MAX_THEME_NAME, MAX_THEMES, OmarchyTheme,
+    Theme, ThemeExport, ThemeFormat, ThemeInput, ThemeOrigin, Unrecognized, built_in_themes,
+    follows_omarchy, luxforge_dark_theme,
 };
 pub use report::{
     AccentNote, DerivedReason, InkMove, Neutralised, OmarchyDerived, OmarchyReport, OmarchyRole,

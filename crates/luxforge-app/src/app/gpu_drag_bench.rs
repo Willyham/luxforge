@@ -416,8 +416,10 @@ fn rest(
 /// `evaluation`'s output stage streamed through `worker`, the time it took and the bands taken.
 fn export(worker: &GpuTiles, evaluation: &luxforge_core::Evaluation) -> Result<(f64, u64), String> {
     let started = Instant::now();
+    let identity = evaluation.identity().map_err(|error| error.to_string())?;
+    let output = luxforge_core::tiles::OutputSpec::full(identity.width, identity.height);
     let mut stream = worker
-        .stream(evaluation, &Cancel::new())
+        .stream(evaluation, output, &Cancel::new())
         .map_err(|fallback| format!("the reference renders it: {fallback:?}"))?;
     let mut bands = 0;
     while let Some(band) = stream.next() {

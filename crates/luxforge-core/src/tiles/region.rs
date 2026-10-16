@@ -13,7 +13,7 @@
 //! form to [`MAX_REDUCED_POINTS`]. Every band is drawn by one renderer: a band drawn by another
 //! than the first is read again, whole region, from the reference, so an answer never mixes them.
 use super::{
-    Answered, MaskInputMode, ReadPixels, ReadStage, ReadValues, ReferenceReads, TileReads,
+    Answered, InputSite, MaskInputMode, ReadPixels, ReadValues, ReferenceReads, TileReads,
 };
 use crate::{Cancel, Error, Evaluation, Region, Stage};
 use serde_json::Value;
@@ -50,6 +50,10 @@ pub struct RegionRequest {
     pub rect: Region,
     /// The block side of the reduction, a power of two in `1..=`[`MAX_REDUCTION`].
     pub reduction: u32,
+    /// How the stage is read, when the caller states it: a position no layer holds yet, such as an
+    /// unbound mask's ([`crate::mask::commands::input_site`]). `None` reads it as the layer at that
+    /// position receives it.
+    pub mode: Option<MaskInputMode>,
 }
 
 impl RegionRequest {
@@ -59,6 +63,19 @@ impl RegionRequest {
         match &self.stage {
             RegionStage::Before(index) => *index,
             RegionStage::OutputWith { layer, .. } => layer + 1,
+        }
+    }
+
+    /// Where the region is read in `recipe`, and how: the request's mode, or the layer's.
+    pub(crate) fn site(
+        &self,
+        registry: &crate::ModuleRegistry,
+        recipe: &crate::Recipe,
+    ) -> InputSite {
+        let layer = self.layer();
+        match self.mode {
+            Some(mode) => InputSite { index: layer, mode },
+            None => InputSite::of_layer(registry, recipe, layer),
         }
     }
 }
@@ -178,11 +195,7 @@ pub fn read(
     if rect.width == 0 || rect.height == 0 {
         return Ok(empty(Answered::reference(None)));
     }
-    let mode = crate::render::MaskInputMode::for_layer(evaluation.registry(), recipe, layer);
-    let stage_read = ReadStage::Before {
-        layer,
-        mode: MaskInputMode::from(mode),
-    };
+    let stage_read = request.site(evaluation.registry(), recipe).stage();
     // Before allocation: the reduced sums and one band of linear values.
     let band_rows = band_rows(rect.width, reduction).min(rect.height);
     let _scratch = evaluation
@@ -256,7 +269,7 @@ pub fn read(
 /// `rect` widened to whole blocks of `reduction` on the stage's block grid and clipped to the
 /// stage: the origin rounds down to a multiple of the reduction and the far edges round up, then
 /// both are held inside the stage. Empty when `rect` misses the stage.
-fn aligned(rect: Region, reduction: u32, stage: Stage) -> Region {
+pub(crate) fn aligned(rect: Region, reduction: u32, stage: Stage) -> Region {
     let x1 = rect.x0.saturating_add(rect.width).min(stage.width);
     let y1 = rect.y0.saturating_add(rect.height).min(stage.height);
     let x0 = rect.x0.min(stage.width) / reduction * reduction;

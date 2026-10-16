@@ -18,7 +18,9 @@ roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image = { workspace = true, features = ["jpeg"] }
+image-webp.workspace = true
 kamadak-exif.workspace = true
+tiff.workspace = true
 luxforge-core = { path = "../crates/luxforge-core" }
 luxforge-evidence = { path = "../crates/luxforge-evidence" }
 luxforge-raw = { path = "../crates/luxforge-raw" }
@@ -31,6 +33,9 @@ tempfile = "=3.27.0"
 flate2 = "=1.1.10"
 tar = "=0.4.46"
 zip = { version = "=8.2.0", default-features = false, features = ["deflate-flate2"] }
+# Decompresses the pinned prebuilt ONNX Runtime archives the source archive carries
+# (`release-source`), with the features `ort-sys`'s build script already builds it with.
+lzma-rust2 = { version = "=0.15.8", default-features = false, features = ["std", "optimization"] }
 
 # Hardware SHA-256 on aarch64; the reason is in `crates/luxforge-raw/Cargo.toml`.
 [target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]

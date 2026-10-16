@@ -249,8 +249,10 @@ impl Workload {
     fn export(&self, destination: &Path) -> Result<Value> {
         Ok(self.owner.call(
             self.client,
-            "export.jpeg",
-            json!({"asset_id":self.asset,"destination":destination,"mutation":envelope(None)}),
+            "export.write",
+            json!({"asset_id":self.asset,"destination":destination,
+                   "settings":crate::export_smoke::export_settings(destination.parent().unwrap_or(destination)),
+                   "mutation":envelope(None)}),
         )?)
     }
 }

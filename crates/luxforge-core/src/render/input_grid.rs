@@ -15,10 +15,13 @@ use std::{borrow::Cow, sync::Arc};
 
 pub const INPUT_GRID_MAX_CELLS: u64 = 8_000_000;
 
-/// The bound layer and the output-stage coordinates sampled by one input grid.
+/// The position read, how the operation there receives it, and the output-stage coordinates
+/// sampled by one input grid. `mode` is the caller's: a position no layer holds yet is read as the
+/// operation that would go there receives it ([`crate::mask::commands::input_site`]).
 #[derive(Clone, Copy)]
 pub(crate) struct GridRequest<'a> {
     pub layer: usize,
+    pub mode: super::MaskInputMode,
     pub transform: &'a GeometryMap,
     pub region: Region,
     pub cells: (u32, u32),
@@ -129,11 +132,11 @@ pub(crate) fn grid_input(
 ) -> Result<Option<GridInput>, Error> {
     let GridRequest {
         layer,
+        mode,
         transform,
         region,
         cells,
     } = request;
-    let mode = super::MaskInputMode::for_layer(registry, recipe, layer);
     cancel.check()?;
     let prefix = crate::editor::prefix(&recipe.layers, layer)?;
     // The materialized leading run is `source?`, `repair?`, `restoration*`: a repair layer makes
@@ -449,6 +452,7 @@ mod tests {
                     &recipe,
                     GridRequest {
                         layer: 2,
+                        mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                         transform: &transform,
                         region,
                         cells,
@@ -546,6 +550,7 @@ mod tests {
                 &recipe,
                 GridRequest {
                     layer: 2,
+                    mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                     transform: &transform,
                     region,
                     cells,
@@ -651,6 +656,7 @@ mod tests {
                     };
                     let request = GridRequest {
                         layer: 2,
+                        mode: crate::render::MaskInputMode::for_layer(&registry, &held, 2),
                         transform: &transform,
                         region,
                         cells,
@@ -769,6 +775,7 @@ mod tests {
             &recipe,
             GridRequest {
                 layer: 1,
+                mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 1),
                 transform: &transform,
                 region,
                 cells,
@@ -833,6 +840,7 @@ mod tests {
                 &recipe,
                 GridRequest {
                     layer: 1,
+                    mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 1),
                     transform: &transform,
                     region,
                     cells,
@@ -879,6 +887,7 @@ mod tests {
                 &recipe,
                 GridRequest {
                     layer: 2,
+                    mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                     transform: &transform,
                     region,
                     cells,
@@ -926,6 +935,7 @@ mod tests {
             &recipe,
             GridRequest {
                 layer: 2,
+                mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                 transform: &transform,
                 region,
                 cells: (4, 3),
@@ -943,6 +953,7 @@ mod tests {
             &recipe,
             GridRequest {
                 layer: 2,
+                mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                 transform: &transform,
                 region,
                 cells: (4, 3),
@@ -967,6 +978,7 @@ mod tests {
             &recipe,
             GridRequest {
                 layer: 2,
+                mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                 transform: &transform,
                 region,
                 cells: (4, 3),
@@ -990,6 +1002,7 @@ mod tests {
             &recipe,
             GridRequest {
                 layer: 2,
+                mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                 transform: &moved,
                 region,
                 cells: (4, 3),
@@ -1009,6 +1022,7 @@ mod tests {
             &recipe,
             GridRequest {
                 layer: 2,
+                mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                 transform: &transform,
                 region,
                 cells: (4, 3),
@@ -1029,6 +1043,7 @@ mod tests {
                 &recipe,
                 GridRequest {
                     layer: 2,
+                    mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                     transform: &transform,
                     region,
                     cells: (4, 3)
@@ -1046,6 +1061,7 @@ mod tests {
                 &recipe,
                 GridRequest {
                     layer: 2,
+                    mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 2),
                     transform: &transform,
                     region,
                     cells: (4000, 4000)
@@ -1069,6 +1085,7 @@ mod tests {
                 &recipe,
                 GridRequest {
                     layer: 3,
+                    mode: crate::render::MaskInputMode::for_layer(&registry, &recipe, 3),
                     transform: &transform,
                     region,
                     cells: (4, 3)

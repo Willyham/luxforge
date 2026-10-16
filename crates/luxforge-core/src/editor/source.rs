@@ -1212,6 +1212,40 @@ impl EditorService {
         self.read_original.replace(Some(read));
     }
 
+    /// Let go of what the service keeps of `asset_id`'s pixels while nobody is looking at them: its
+    /// prepared source and the development beside it, what a Develop kept of its file, its sample
+    /// grids, the verified artifacts kept ready (a model mask's raster, a repair patch) and the
+    /// drawn-patch cache. The next evaluation that needs them prepares the original
+    /// again through the source worker, as any first open does; the recipe, history and drafts are
+    /// untouched. The caller makes sure no preparation or development is in flight, whose adoption
+    /// would put a source back ([`crate::OwnerHandle::release_source`]).
+    pub(crate) fn release_source(&self, asset_id: &AssetId) -> crate::SourceRelease {
+        let held = self
+            .source_cache
+            .borrow()
+            .as_ref()
+            .filter(|cached| cached.asset_id == *asset_id)
+            .map(|cached| cached.source.retained_bytes() + cached.second.plane_bytes());
+        if held.is_some() {
+            self.source_cache.replace(None);
+        }
+        let read = self
+            .read_original
+            .borrow()
+            .as_ref()
+            .is_some_and(|read| read.asset_id == *asset_id);
+        self.forget_read(asset_id);
+        self.render_context().release_grids(asset_id);
+        crate::SourceRelease {
+            released: held.is_some(),
+            source_bytes: held.unwrap_or(0),
+            read,
+            artifact_bytes: self.prepared_artifacts.borrow_mut().clear(),
+            drawn_bytes: crate::repair::patch::release_drawn(),
+            busy: false,
+        }
+    }
+
     /// Drop what a Develop kept of `asset_id`'s file, once its record is deleted.
     pub(super) fn forget_read(&self, asset_id: &AssetId) {
         let kept = self
@@ -1543,16 +1577,15 @@ fn validate_lens_optics(
             ))
             .with_data(json!({"reason":"source-optics-changed"})));
         }
-        let stage = registry
-            .compile_layers(
-                asset.width,
-                asset.height,
-                &recipe.layers[..index],
-                &recipe.masks,
-                &recipe.strokes,
-                &recipe.artifacts,
-            )?
-            .stage();
+        // From the prefix's source and geometry layers alone, so a stored stack whose repair
+        // patches or model masks are not bound is checked as a bound one is.
+        let stage = registry.geometry_stage(
+            asset.width,
+            asset.height,
+            &recipe.layers[..index],
+            &recipe.strokes,
+            &recipe.artifacts,
+        )?;
         if stage.width.max(stage.height) != profile.normalization.resolved_long
             || stage.width.min(stage.height) != profile.normalization.resolved_short
         {

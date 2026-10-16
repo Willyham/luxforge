@@ -417,18 +417,28 @@ pub(crate) fn list(
 
 /// Store `value` for the listed flag `id`, or remove its stored value for `None`. Returns whether
 /// the stored value changed.
+#[cfg(test)]
 pub(crate) fn set(
     store: &PreferenceStore,
     id: &str,
     value: Option<Value>,
     developer: bool,
 ) -> Result<bool, Error> {
+    set_published(store, id, value, developer)?.finish()
+}
+
+pub(crate) fn set_published(
+    store: &PreferenceStore,
+    id: &str,
+    value: Option<Value>,
+    developer: bool,
+) -> Result<crate::atomic_file::Publication<bool>, Error> {
     let flag = find(id, developer).ok_or_else(|| Error::validation(format!("no flag {id}")))?;
     if let Some(value) = &value {
         flag.check(value)
             .map_err(|reason| Error::validation(format!("flag {id}: {reason}")))?;
     }
-    store.set_flag(flag.id, value)
+    store.set_flag_published(flag.id, value)
 }
 
 #[cfg(test)]

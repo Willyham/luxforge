@@ -15,7 +15,7 @@ use crate::{
         models::{ModelRequest, ModelRow, ModelsModel, ResidentRow},
         preferences::{GeneralControl, GeneralRow, GeneralValue},
         settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
-        themes::{FolderLine, ThemeRow},
+        themes::{FolderLine, OmarchyRow, ThemeRow},
         update::{self as updates, UpdatesGroup},
         usage::{self as statistics, PrivacyModel},
     },
@@ -51,6 +51,9 @@ pub(crate) const EXPERIMENTS_INTRO: &str =
 /// What Appearance says before its rows.
 pub(crate) const APPEARANCE_INTRO: &str = "A theme sets the colours of the interface. It never \
      changes how a photo renders or exports.";
+
+/// The Appearance tab's switch for following Omarchy's current theme, and its accessible label.
+pub(crate) const FOLLOW_OMARCHY: &str = "Follow Omarchy\u{2019}s theme";
 
 pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
     let open = model.open?;
@@ -386,9 +389,10 @@ fn privacy(model: Option<&PrivacyModel>) -> Element<'_, Message> {
     content.into()
 }
 
-/// The Appearance tab: Import Omarchy theme… and Import theme file…, what the last folder import
-/// made of each theme it found, then one row per theme, Luxforge Dark first, and the stored themes
-/// this build cannot read at the end with their reasons.
+/// The Appearance tab: Import Omarchy theme… and Import theme file…, the Follow Omarchy's theme
+/// switch where Omarchy runs, what the last folder import made of each theme it found, then one
+/// row per theme, Luxforge Dark first, and the stored themes this build cannot read at the end
+/// with their reasons.
 fn appearance(model: &SettingsModel) -> Element<'_, Message> {
     let tab = &model.appearance;
     let import = |label: &'static str, message: ThemeMessage| {
@@ -410,6 +414,9 @@ fn appearance(model: &SettingsModel) -> Element<'_, Message> {
     let mut content = column![header, caption(APPEARANCE_INTRO)]
         .spacing(theme::SPACING)
         .width(Length::Fill);
+    if let Some(omarchy) = &tab.omarchy {
+        content = content.push(omarchy_row(omarchy));
+    }
     if let Some(error) = &tab.error {
         content = content.push(error_caption(format!("Could not read the themes: {error}")));
     }
@@ -436,6 +443,25 @@ fn appearance(model: &SettingsModel) -> Element<'_, Message> {
         }
     }
     content.into()
+}
+
+/// Follow Omarchy's theme: its title over what it says of Omarchy's current theme, and its switch.
+fn omarchy_row(omarchy: &OmarchyRow) -> Element<'_, Message> {
+    let text = column![label(FOLLOW_OMARCHY), caption(omarchy.caption.clone())]
+        .spacing(theme::ROW_SPACING)
+        .width(Length::Fill);
+    let control = switch(
+        &ToggleModel {
+            label: FOLLOW_OMARCHY.into(),
+            on: omarchy.following,
+            enabled: true,
+        },
+        |on| Message::Theme(ThemeMessage::Follow(on)),
+    );
+    row![text, control]
+        .spacing(theme::SPACING * 2.0)
+        .align_y(Alignment::Start)
+        .into()
 }
 
 /// What the last Omarchy folder import made of each theme: its summary, a line per outcome naming

@@ -124,6 +124,7 @@ pub(crate) fn develop_instead(
         &Settings {
             quality: QUALITY,
             chroma: CHROMA,
+            optimise: false,
             segments: &[],
             icc: None,
             pixels_per_inch: None,
@@ -576,6 +577,7 @@ fn finish(
         &Settings {
             quality: QUALITY,
             chroma: CHROMA,
+            optimise: false,
             segments: &[],
             icc: icc.as_deref(),
             pixels_per_inch: None,
