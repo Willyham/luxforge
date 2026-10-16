@@ -489,7 +489,7 @@ fn workers(pixels: u64) -> usize {
 }
 
 /// `work` over `items` on `workers` scoped threads, results in item order, or the first failure.
-fn parallel<T: Sync, R: Send>(
+pub(super) fn parallel<T: Sync, R: Send>(
     items: &[T],
     workers: usize,
     work: impl Fn(&T) -> std::result::Result<R, String> + Sync,
